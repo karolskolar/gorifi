@@ -302,10 +302,12 @@ function isSeparatorRow(row) {
 }
 
 function isProductSectionHeader(row) {
-  // Check if row is the products section header (contains "Praženie", "VOC", "Zrnková káva")
+  // Check if row is the products section header (contains "Praženie", "VOC 5-25 kg", "Zrnková káva")
+  // Be specific to avoid matching words like "ovocie" which contains "voc"
   const rowText = row.join(' ').toLowerCase();
   return rowText.includes('praženie') || rowText.includes('prazenie') ||
-         rowText.includes('voc') || rowText.includes('zrnková káva');
+         rowText.includes('voc 5') || rowText.includes('voc 26') ||  // VOC price columns
+         rowText.includes('zrnková káva');
 }
 
 function parsePriceString(priceStr) {
