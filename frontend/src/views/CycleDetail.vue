@@ -25,6 +25,10 @@ const productForm = ref({
 const imagePreview = ref(null)
 const isDragging = ref(false)
 
+// Drag & drop for product list
+const dragOverProductId = ref(null)
+const droppingProductId = ref(null)
+
 // Friend modal
 const showFriendModal = ref(false)
 const newFriendName = ref('')
@@ -202,6 +206,79 @@ function processImageFile(file) {
 function removeImage() {
   productForm.value.image = ''
   imagePreview.value = null
+}
+
+// Drag & drop image from external webpage to product row
+function handleProductDragOver(event, productId) {
+  event.preventDefault()
+  dragOverProductId.value = productId
+}
+
+function handleProductDragLeave(event, productId) {
+  // Only clear if we're actually leaving the element (not entering a child)
+  if (!event.currentTarget.contains(event.relatedTarget)) {
+    dragOverProductId.value = null
+  }
+}
+
+async function handleProductDrop(event, productId) {
+  event.preventDefault()
+  dragOverProductId.value = null
+
+  // Try to get image URL from various drag data types
+  let imageUrl = null
+
+  // Check for URL in dataTransfer
+  const url = event.dataTransfer.getData('text/uri-list') || event.dataTransfer.getData('text/plain')
+  if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+    imageUrl = url
+  }
+
+  // Check for HTML content (img tag)
+  const html = event.dataTransfer.getData('text/html')
+  if (!imageUrl && html) {
+    const match = html.match(/src=["']([^"']+)["']/)
+    if (match && match[1]) {
+      imageUrl = match[1]
+    }
+  }
+
+  // Check for files (local file drop)
+  if (!imageUrl && event.dataTransfer.files.length > 0) {
+    const file = event.dataTransfer.files[0]
+    if (file.type.startsWith('image/')) {
+      const reader = new FileReader()
+      reader.onload = async (e) => {
+        droppingProductId.value = productId
+        try {
+          await api.updateProduct(productId, { image: e.target.result })
+          await loadAll()
+        } catch (err) {
+          error.value = 'Chyba pri ukladani obrazku: ' + err.message
+        } finally {
+          droppingProductId.value = null
+        }
+      }
+      reader.readAsDataURL(file)
+      return
+    }
+  }
+
+  if (!imageUrl) {
+    error.value = 'Nepodarilo sa ziskat URL obrazku. Skuste iny obrazok.'
+    return
+  }
+
+  // Download image from URL via backend
+  droppingProductId.value = productId
+  try {
+    await api.uploadProductImageFromUrl(productId, imageUrl)
+    await loadAll()
+  } catch (err) {
+    error.value = 'Chyba pri stahivani obrazku: ' + err.message
+  } finally {
+    droppingProductId.value = null
+  }
 }
 
 // Friend actions
@@ -396,10 +473,30 @@ function formatPrice(price) {
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-100">
-              <tr v-for="product in products" :key="product.id" class="hover:bg-gray-50">
+              <tr
+                v-for="product in products"
+                :key="product.id"
+                :class="[
+                  'hover:bg-gray-50 transition-all duration-150',
+                  dragOverProductId === product.id ? 'bg-amber-100 ring-2 ring-amber-400 ring-inset' : '',
+                  droppingProductId === product.id ? 'opacity-50' : ''
+                ]"
+                @dragover="handleProductDragOver($event, product.id)"
+                @dragleave="handleProductDragLeave($event, product.id)"
+                @drop="handleProductDrop($event, product.id)"
+              >
                 <td class="px-3 py-2">
-                  <div class="w-12 h-12 bg-gray-100 rounded overflow-hidden flex items-center justify-center">
-                    <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
+                  <div :class="[
+                    'w-12 h-12 rounded overflow-hidden flex items-center justify-center transition-all',
+                    dragOverProductId === product.id ? 'ring-2 ring-amber-500 bg-amber-50' : 'bg-gray-100'
+                  ]">
+                    <div v-if="droppingProductId === product.id" class="animate-pulse">
+                      <svg class="w-6 h-6 text-amber-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                    </div>
+                    <img v-else-if="product.image" :src="product.image" class="w-full h-full object-cover" />
                     <svg v-else class="w-6 h-6 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>

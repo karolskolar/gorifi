@@ -150,6 +150,47 @@ router.post('/:id/image', upload.single('image'), (req, res) => {
   res.json(updated);
 });
 
+// Upload image from URL (for drag & drop from external sites)
+router.post('/:id/image-from-url', async (req, res) => {
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+
+  if (!product) {
+    return res.status(404).json({ error: 'Produkt nebol najdeny' });
+  }
+
+  const { url } = req.body;
+  if (!url) {
+    return res.status(400).json({ error: 'URL obrazku je povinne' });
+  }
+
+  try {
+    // Fetch image from URL
+    const response = await fetch(url);
+    if (!response.ok) {
+      return res.status(400).json({ error: 'Nepodarilo sa stiahnut obrazok z URL' });
+    }
+
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+
+    // Validate it's an image
+    if (!contentType.startsWith('image/')) {
+      return res.status(400).json({ error: 'URL neobsahuje obrazok' });
+    }
+
+    const buffer = await response.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString('base64');
+    const image = `data:${contentType};base64,${base64}`;
+
+    db.prepare('UPDATE products SET image = ? WHERE id = ?').run(image, req.params.id);
+
+    const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+    res.json(updated);
+  } catch (error) {
+    console.error('Image download error:', error);
+    res.status(400).json({ error: 'Chyba pri stahivani obrazku: ' + error.message });
+  }
+});
+
 // Update product
 router.patch('/:id', (req, res) => {
   const { name, description1, description2, roast_type, purpose, price_250g, price_1kg, image, active } = req.body;

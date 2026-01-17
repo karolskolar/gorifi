@@ -57,6 +57,7 @@ export const api = {
   importFromGoogleSheets: (cycleId, url) => request(`/products/import-gsheet/${cycleId}`, { method: 'POST', body: { url } }),
   importFromGoogleSheetsMultirow: (cycleId, url) => request(`/products/import-gsheet-multirow/${cycleId}`, { method: 'POST', body: { url } }),
   uploadProductImage: (id, formData) => request(`/products/${id}/image`, { method: 'POST', body: formData }),
+  uploadProductImageFromUrl: (id, imageUrl) => request(`/products/${id}/image-from-url`, { method: 'POST', body: { url: imageUrl } }),
 
   // Friends
   getFriends: (cycleId) => request(`/friends/cycle/${cycleId}`),
