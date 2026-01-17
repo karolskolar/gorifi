@@ -27,7 +27,7 @@ const routes = [
     component: () => import('./views/Distribution.vue')
   },
   {
-    path: '/order/:token',
+    path: '/order/:cycleId',
     name: 'friend-order',
     component: () => import('./views/FriendOrder.vue')
   }

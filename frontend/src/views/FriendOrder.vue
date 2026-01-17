@@ -1,22 +1,35 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import api from '../api'
+import api, { setCyclePassword, clearCyclePassword } from '../api'
 
 const route = useRoute()
 
+// Auth state
+const authState = ref('loading') // 'loading' | 'login' | 'welcome-back' | 'authenticated'
+const savedAuth = ref(null) // { cycleId, friendId, friendName } from localStorage
+
+// Cycle/friend data
+const cyclePublic = ref(null) // { cycle, friends }
 const friend = ref(null)
 const cycle = ref(null)
 const products = ref([])
 const order = ref(null)
 const cart = ref({}) // { productId-variant: quantity }
 
+// Form state
+const selectedFriendId = ref('')
+const password = ref('')
+const rememberMe = ref(true)
+
+// UI state
 const loading = ref(true)
 const saving = ref(false)
 const error = ref('')
 const successMessage = ref('')
+const authError = ref('')
 
-const token = computed(() => route.params.token)
+const cycleId = computed(() => route.params.cycleId)
 
 const isLocked = computed(() => cycle.value?.status === 'locked' || cycle.value?.status === 'completed')
 const isSubmitted = computed(() => order.value?.status === 'submitted')
@@ -58,34 +71,127 @@ const groupedProducts = computed(() => {
   return groups
 })
 
+const STORAGE_KEY = 'gorifi_auth'
+
 onMounted(async () => {
-  await loadData()
+  await loadPublicData()
 })
 
-async function loadData() {
+async function loadPublicData() {
   loading.value = true
+  authState.value = 'loading'
+  error.value = ''
+
   try {
-    // Get friend info
-    friend.value = await api.getFriendByToken(token.value)
+    // Get public cycle info (no auth required)
+    cyclePublic.value = await api.getCyclePublic(cycleId.value)
 
-    // Get products
-    products.value = await api.getProducts(friend.value.cycle_id)
-
-    // Get existing order
-    const orderData = await api.getOrderByToken(token.value)
-    order.value = orderData.order
-    cycle.value = orderData.cycle
-
-    // Populate cart from existing order items
-    cart.value = {}
-    for (const item of orderData.items) {
-      cart.value[`${item.product_id}-${item.variant}`] = item.quantity
+    // Check localStorage for saved auth
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored)
+        // Check if it's for this cycle
+        if (parsed.cycleId === parseInt(cycleId.value)) {
+          // Verify the friend still exists in this cycle
+          const friendExists = cyclePublic.value.friends.find(f => f.id === parsed.friendId)
+          if (friendExists) {
+            savedAuth.value = parsed
+            selectedFriendId.value = parsed.friendId
+            authState.value = 'welcome-back'
+          } else {
+            // Friend no longer exists, clear storage
+            localStorage.removeItem(STORAGE_KEY)
+            authState.value = 'login'
+          }
+        } else {
+          // Different cycle, show login
+          authState.value = 'login'
+        }
+      } catch {
+        localStorage.removeItem(STORAGE_KEY)
+        authState.value = 'login'
+      }
+    } else {
+      authState.value = 'login'
     }
   } catch (e) {
     error.value = e.message
+    authState.value = 'login'
   } finally {
     loading.value = false
   }
+}
+
+async function authenticate() {
+  if (!selectedFriendId.value || !password.value) {
+    authError.value = 'Vyberte meno a zadajte heslo'
+    return
+  }
+
+  authError.value = ''
+  loading.value = true
+
+  try {
+    // Validate password with server
+    await api.authenticateCycle(cycleId.value, password.value, selectedFriendId.value)
+
+    // Set password for subsequent requests
+    setCyclePassword(password.value)
+
+    // Save to localStorage if remember me is checked
+    const selectedFriend = cyclePublic.value.friends.find(f => f.id === parseInt(selectedFriendId.value))
+    if (rememberMe.value && selectedFriend) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        cycleId: parseInt(cycleId.value),
+        friendId: parseInt(selectedFriendId.value),
+        friendName: selectedFriend.name
+      }))
+      savedAuth.value = {
+        cycleId: parseInt(cycleId.value),
+        friendId: parseInt(selectedFriendId.value),
+        friendName: selectedFriend.name
+      }
+    }
+
+    // Load order data
+    await loadOrderData()
+    authState.value = 'authenticated'
+  } catch (e) {
+    authError.value = e.message
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadOrderData() {
+  // Get order data
+  const orderData = await api.getOrderByFriend(cycleId.value, selectedFriendId.value)
+  order.value = orderData.order
+  cycle.value = orderData.cycle
+  friend.value = orderData.friend
+
+  // Get products
+  products.value = await api.getProducts(cycleId.value)
+
+  // Populate cart from existing order items
+  cart.value = {}
+  for (const item of orderData.items) {
+    cart.value[`${item.product_id}-${item.variant}`] = item.quantity
+  }
+}
+
+function switchUser() {
+  // Clear auth state and go back to login
+  clearCyclePassword()
+  localStorage.removeItem(STORAGE_KEY)
+  savedAuth.value = null
+  selectedFriendId.value = ''
+  password.value = ''
+  authState.value = 'login'
+  friend.value = null
+  order.value = null
+  cart.value = {}
 }
 
 function getCartKey(productId, variant) {
@@ -135,7 +241,7 @@ async function saveCart() {
       quantity: item.quantity
     }))
 
-    const result = await api.updateOrder(token.value, items)
+    const result = await api.updateOrderByFriend(cycleId.value, friend.value.id, items)
     order.value = result.order
     successMessage.value = 'Kosik bol ulozeny'
 
@@ -163,7 +269,7 @@ async function submitOrder() {
   error.value = ''
 
   try {
-    const result = await api.submitOrder(token.value)
+    const result = await api.submitOrderByFriend(cycleId.value, friend.value.id)
     order.value = result.order
     successMessage.value = 'Objednavka bola odoslana!'
   } catch (e) {
@@ -182,25 +288,127 @@ function formatPrice(price) {
   <div class="min-h-screen bg-amber-50">
     <!-- Header -->
     <header class="bg-amber-800 text-white shadow sticky top-0 z-40">
-      <div class="max-w-4xl mx-auto px-4 py-4">
-        <h1 class="text-xl font-bold">Gorifi - Objednavka kavy</h1>
-        <p v-if="friend" class="text-amber-200 text-sm">{{ friend.name }} | {{ cycle?.name }}</p>
+      <div class="max-w-4xl mx-auto px-4 py-4 flex justify-between items-center">
+        <div>
+          <h1 class="text-xl font-bold">Gorifi - Objednavka kavy</h1>
+          <p v-if="authState === 'authenticated' && friend" class="text-amber-200 text-sm">
+            {{ friend.name }} | {{ cycle?.name }}
+          </p>
+          <p v-else-if="cyclePublic" class="text-amber-200 text-sm">{{ cyclePublic.cycle.name }}</p>
+        </div>
+        <button
+          v-if="authState === 'authenticated'"
+          @click="switchUser"
+          class="text-amber-200 hover:text-white text-sm underline"
+        >
+          Zmenit pouzivatela
+        </button>
       </div>
     </header>
 
     <!-- Loading -->
-    <div v-if="loading" class="text-center py-12 text-gray-500">Nacitavam...</div>
+    <div v-if="loading && authState === 'loading'" class="text-center py-12 text-gray-500">Nacitavam...</div>
 
-    <!-- Error -->
-    <div v-else-if="error && !friend" class="max-w-4xl mx-auto px-4 py-12">
+    <!-- Global Error -->
+    <div v-else-if="error && authState === 'loading'" class="max-w-4xl mx-auto px-4 py-12">
       <div class="bg-red-50 text-red-700 p-6 rounded-lg text-center">
         <h2 class="text-lg font-semibold mb-2">Chyba</h2>
         <p>{{ error }}</p>
       </div>
     </div>
 
-    <!-- Main content -->
-    <div v-else class="max-w-4xl mx-auto px-4 py-6">
+    <!-- Login Form -->
+    <div v-else-if="authState === 'login'" class="max-w-md mx-auto px-4 py-12">
+      <div class="bg-white rounded-lg shadow-lg p-6">
+        <h2 class="text-xl font-semibold text-gray-800 mb-6 text-center">Prihlasenie</h2>
+
+        <div v-if="authError" class="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
+          {{ authError }}
+        </div>
+
+        <div class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Vyberte svoje meno</label>
+            <select
+              v-model="selectedFriendId"
+              class="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+            >
+              <option value="">-- Vyberte --</option>
+              <option v-for="f in cyclePublic?.friends" :key="f.id" :value="f.id">
+                {{ f.name }}
+              </option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Heslo</label>
+            <input
+              v-model="password"
+              type="password"
+              placeholder="Zadajte heslo"
+              class="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+              @keyup.enter="authenticate"
+            />
+          </div>
+
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input v-model="rememberMe" type="checkbox" class="rounded border-gray-300 text-amber-600 focus:ring-amber-500" />
+            <span class="text-sm text-gray-600">Zapamatat si ma na tomto zariadeni</span>
+          </label>
+
+          <button
+            @click="authenticate"
+            :disabled="loading || !selectedFriendId || !password"
+            class="w-full px-4 py-3 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {{ loading ? 'Overujem...' : 'Prihlasit sa' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Welcome Back -->
+    <div v-else-if="authState === 'welcome-back'" class="max-w-md mx-auto px-4 py-12">
+      <div class="bg-white rounded-lg shadow-lg p-6">
+        <h2 class="text-xl font-semibold text-gray-800 mb-2 text-center">Vitajte spat!</h2>
+        <p class="text-gray-600 text-center mb-6">{{ savedAuth?.friendName }}</p>
+
+        <div v-if="authError" class="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
+          {{ authError }}
+        </div>
+
+        <div class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Heslo</label>
+            <input
+              v-model="password"
+              type="password"
+              placeholder="Zadajte heslo"
+              class="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+              @keyup.enter="authenticate"
+            />
+          </div>
+
+          <button
+            @click="authenticate"
+            :disabled="loading || !password"
+            class="w-full px-4 py-3 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {{ loading ? 'Overujem...' : 'Pokracovat' }}
+          </button>
+
+          <button
+            @click="switchUser"
+            class="w-full px-4 py-2 text-gray-600 hover:text-gray-800 text-sm"
+          >
+            Nie som {{ savedAuth?.friendName }}? Zmenit pouzivatela
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Authenticated - Order Form -->
+    <div v-else-if="authState === 'authenticated'" class="max-w-4xl mx-auto px-4 py-6">
       <!-- Status banner -->
       <div v-if="isLocked" class="mb-6 p-4 bg-yellow-100 text-yellow-800 rounded-lg text-center">
         <strong>Objednavky su uzamknute.</strong> Uz nie je mozne menit objednavku.

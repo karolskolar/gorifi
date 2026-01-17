@@ -27,6 +27,51 @@ router.get('/:id', (req, res) => {
   res.json(cycle);
 });
 
+// Get public cycle info (no auth required) - for friend ordering page
+router.get('/:id/public', (req, res) => {
+  const cycle = db.prepare('SELECT id, name, status FROM order_cycles WHERE id = ?').get(req.params.id);
+  if (!cycle) {
+    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
+  }
+
+  const friends = db.prepare('SELECT id, name FROM friends WHERE cycle_id = ? ORDER BY name').all(req.params.id);
+
+  res.json({
+    cycle,
+    friends
+  });
+});
+
+// Authenticate for cycle (validates password and friend selection)
+router.post('/:id/auth', (req, res) => {
+  const { password, friendId } = req.body;
+
+  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
+  if (!cycle) {
+    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
+  }
+
+  // Check password
+  if (!cycle.shared_password) {
+    return res.status(400).json({ error: 'Heslo nie je nastavene pre tento cyklus' });
+  }
+
+  if (password !== cycle.shared_password) {
+    return res.status(401).json({ error: 'Nespravne heslo' });
+  }
+
+  // Validate friend belongs to this cycle
+  const friend = db.prepare('SELECT id, name FROM friends WHERE id = ? AND cycle_id = ?').get(friendId, req.params.id);
+  if (!friend) {
+    return res.status(404).json({ error: 'Priatel nebol najdeny v tomto cykle' });
+  }
+
+  res.json({
+    success: true,
+    friend
+  });
+});
+
 // Create new order cycle
 router.post('/', (req, res) => {
   const { name } = req.body;
@@ -39,9 +84,9 @@ router.post('/', (req, res) => {
   res.status(201).json(cycle);
 });
 
-// Update cycle (lock/unlock/complete)
+// Update cycle (lock/unlock/complete/password)
 router.patch('/:id', (req, res) => {
-  const { status, name } = req.body;
+  const { status, name, shared_password } = req.body;
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
 
   if (!cycle) {
@@ -62,6 +107,10 @@ router.patch('/:id', (req, res) => {
   if (name) {
     updates.push('name = ?');
     values.push(name);
+  }
+  if (shared_password !== undefined) {
+    updates.push('shared_password = ?');
+    values.push(shared_password || null);
   }
 
   if (updates.length > 0) {

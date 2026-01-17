@@ -3,23 +3,47 @@ import db from '../db/schema.js';
 
 const router = Router();
 
-// Get order by friend's access token
-router.get('/token/:token', (req, res) => {
-  const friend = db.prepare('SELECT * FROM friends WHERE access_token = ?').get(req.params.token);
+// Helper: Validate password from X-Cycle-Password header
+function validateCyclePassword(req, cycleId) {
+  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
+  if (!cycle) {
+    return { error: 'Cyklus nebol najdeny', status: 404 };
+  }
 
+  const password = req.headers['x-cycle-password'];
+  if (!cycle.shared_password) {
+    return { error: 'Heslo nie je nastavene', status: 400 };
+  }
+  if (password !== cycle.shared_password) {
+    return { error: 'Nespravne heslo', status: 401 };
+  }
+
+  return { cycle };
+}
+
+// Get order by cycle and friend (password protected)
+router.get('/cycle/:cycleId/friend/:friendId', (req, res) => {
+  const { cycleId, friendId } = req.params;
+
+  // Validate password
+  const validation = validateCyclePassword(req, cycleId);
+  if (validation.error) {
+    return res.status(validation.status).json({ error: validation.error });
+  }
+
+  // Validate friend belongs to this cycle
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND cycle_id = ?').get(friendId, cycleId);
   if (!friend) {
-    return res.status(404).json({ error: 'Neplatny odkaz' });
+    return res.status(404).json({ error: 'Priatel nebol najdeny' });
   }
 
   // Get or create order for this friend
-  let order = db.prepare(`
-    SELECT * FROM orders WHERE friend_id = ?
-  `).get(friend.id);
+  let order = db.prepare('SELECT * FROM orders WHERE friend_id = ?').get(friendId);
 
   if (!order) {
     const result = db.prepare(`
       INSERT INTO orders (friend_id, cycle_id) VALUES (?, ?)
-    `).run(friend.id, friend.cycle_id);
+    `).run(friendId, cycleId);
     order = db.prepare('SELECT * FROM orders WHERE id = ?').get(result.lastInsertRowid);
   }
 
@@ -31,38 +55,43 @@ router.get('/token/:token', (req, res) => {
     WHERE oi.order_id = ?
   `).all(order.id);
 
-  // Get cycle info
-  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(friend.cycle_id);
-
   res.json({
     order,
     items,
     friend: { id: friend.id, name: friend.name },
-    cycle
+    cycle: validation.cycle
   });
 });
 
-// Update cart (add/update/remove items)
-router.put('/token/:token', (req, res) => {
-  const friend = db.prepare('SELECT * FROM friends WHERE access_token = ?').get(req.params.token);
+// Update cart by cycle and friend (password protected)
+router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
+  const { cycleId, friendId } = req.params;
 
-  if (!friend) {
-    return res.status(404).json({ error: 'Neplatny odkaz' });
+  // Validate password
+  const validation = validateCyclePassword(req, cycleId);
+  if (validation.error) {
+    return res.status(validation.status).json({ error: validation.error });
   }
+  const cycle = validation.cycle;
 
   // Check if cycle is locked
-  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(friend.cycle_id);
   if (cycle.status === 'locked' || cycle.status === 'completed') {
     return res.status(403).json({ error: 'Objednavky su uzamknute' });
   }
 
+  // Validate friend belongs to this cycle
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND cycle_id = ?').get(friendId, cycleId);
+  if (!friend) {
+    return res.status(404).json({ error: 'Priatel nebol najdeny' });
+  }
+
   // Get or create order
-  let order = db.prepare('SELECT * FROM orders WHERE friend_id = ?').get(friend.id);
+  let order = db.prepare('SELECT * FROM orders WHERE friend_id = ?').get(friendId);
 
   if (!order) {
     const result = db.prepare(`
       INSERT INTO orders (friend_id, cycle_id) VALUES (?, ?)
-    `).run(friend.id, friend.cycle_id);
+    `).run(friendId, cycleId);
     order = db.prepare('SELECT * FROM orders WHERE id = ?').get(result.lastInsertRowid);
   }
 
@@ -122,21 +151,29 @@ router.put('/token/:token', (req, res) => {
   });
 });
 
-// Submit order
-router.post('/token/:token/submit', (req, res) => {
-  const friend = db.prepare('SELECT * FROM friends WHERE access_token = ?').get(req.params.token);
+// Submit order by cycle and friend (password protected)
+router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
+  const { cycleId, friendId } = req.params;
 
-  if (!friend) {
-    return res.status(404).json({ error: 'Neplatny odkaz' });
+  // Validate password
+  const validation = validateCyclePassword(req, cycleId);
+  if (validation.error) {
+    return res.status(validation.status).json({ error: validation.error });
   }
+  const cycle = validation.cycle;
 
   // Check if cycle is locked
-  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(friend.cycle_id);
   if (cycle.status === 'locked' || cycle.status === 'completed') {
     return res.status(403).json({ error: 'Objednavky su uzamknute' });
   }
 
-  const order = db.prepare('SELECT * FROM orders WHERE friend_id = ?').get(friend.id);
+  // Validate friend belongs to this cycle
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND cycle_id = ?').get(friendId, cycleId);
+  if (!friend) {
+    return res.status(404).json({ error: 'Priatel nebol najdeny' });
+  }
+
+  const order = db.prepare('SELECT * FROM orders WHERE friend_id = ?').get(friendId);
 
   if (!order) {
     return res.status(404).json({ error: 'Objednavka neexistuje' });

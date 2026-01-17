@@ -16,22 +16,6 @@ router.get('/cycle/:cycleId', (req, res) => {
   res.json(friends);
 });
 
-// Get friend by access token (for friend ordering page)
-router.get('/token/:token', (req, res) => {
-  const friend = db.prepare(`
-    SELECT f.*, c.name as cycle_name, c.status as cycle_status
-    FROM friends f
-    JOIN order_cycles c ON c.id = f.cycle_id
-    WHERE f.access_token = ?
-  `).get(req.params.token);
-
-  if (!friend) {
-    return res.status(404).json({ error: 'Neplatny odkaz' });
-  }
-
-  res.json(friend);
-});
-
 // Create new friend
 router.post('/', (req, res) => {
   const { cycle_id, name } = req.body;
@@ -46,7 +30,7 @@ router.post('/', (req, res) => {
     return res.status(404).json({ error: 'Cyklus nebol najdeny' });
   }
 
-  // Generate unique access token
+  // Generate unique access token (kept for backwards compatibility but not used)
   const access_token = nanoid(12);
 
   const result = db.prepare(`
@@ -82,21 +66,6 @@ router.delete('/:id', (req, res) => {
     return res.status(404).json({ error: 'Priatel nebol najdeny' });
   }
   res.status(204).send();
-});
-
-// Regenerate access token for friend
-router.post('/:id/regenerate-token', (req, res) => {
-  const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
-
-  if (!friend) {
-    return res.status(404).json({ error: 'Priatel nebol najdeny' });
-  }
-
-  const newToken = nanoid(12);
-  db.prepare('UPDATE friends SET access_token = ? WHERE id = ?').run(newToken, req.params.id);
-
-  const updated = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
-  res.json(updated);
 });
 
 export default router;

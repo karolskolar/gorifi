@@ -31,9 +31,17 @@ async function initDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       status TEXT DEFAULT 'open' CHECK (status IN ('open', 'locked', 'completed')),
+      shared_password TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Migration: Add shared_password column if it doesn't exist (for existing databases)
+  try {
+    db.run('ALTER TABLE order_cycles ADD COLUMN shared_password TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS products (

@@ -1,5 +1,20 @@
 const API_BASE = import.meta.env.VITE_API_URL || '/api'
 
+// Store cycle password for authenticated requests
+let cyclePassword = null
+
+export function setCyclePassword(password) {
+  cyclePassword = password
+}
+
+export function getCyclePassword() {
+  return cyclePassword
+}
+
+export function clearCyclePassword() {
+  cyclePassword = null
+}
+
 async function request(endpoint, options = {}) {
   const url = `${API_BASE}${endpoint}`
   const config = {
@@ -7,6 +22,11 @@ async function request(endpoint, options = {}) {
       'Content-Type': 'application/json',
     },
     ...options,
+  }
+
+  // Add cycle password header if set
+  if (cyclePassword) {
+    config.headers['X-Cycle-Password'] = cyclePassword
   }
 
   if (options.body && typeof options.body === 'object' && !(options.body instanceof FormData)) {
@@ -48,6 +68,13 @@ export const api = {
   getCycleSummary: (id) => request(`/cycles/${id}/summary`),
   getCycleDistribution: (id) => request(`/cycles/${id}/distribution`),
 
+  // Cycle public endpoints (for friend ordering)
+  getCyclePublic: (id) => request(`/cycles/${id}/public`),
+  authenticateCycle: (id, password, friendId) => request(`/cycles/${id}/auth`, {
+    method: 'POST',
+    body: { password, friendId }
+  }),
+
   // Products
   getProducts: (cycleId) => request(`/products/cycle/${cycleId}`),
   createProduct: (data) => request('/products', { method: 'POST', body: data }),
@@ -61,16 +88,21 @@ export const api = {
 
   // Friends
   getFriends: (cycleId) => request(`/friends/cycle/${cycleId}`),
-  getFriendByToken: (token) => request(`/friends/token/${token}`),
   createFriend: (data) => request('/friends', { method: 'POST', body: data }),
   updateFriend: (id, data) => request(`/friends/${id}`, { method: 'PATCH', body: data }),
   deleteFriend: (id) => request(`/friends/${id}`, { method: 'DELETE' }),
-  regenerateToken: (id) => request(`/friends/${id}/regenerate-token`, { method: 'POST' }),
 
-  // Orders
-  getOrderByToken: (token) => request(`/orders/token/${token}`),
-  updateOrder: (token, items) => request(`/orders/token/${token}`, { method: 'PUT', body: { items } }),
-  submitOrder: (token) => request(`/orders/token/${token}/submit`, { method: 'POST' }),
+  // Orders (password-protected, for friends)
+  getOrderByFriend: (cycleId, friendId) => request(`/orders/cycle/${cycleId}/friend/${friendId}`),
+  updateOrderByFriend: (cycleId, friendId, items) => request(`/orders/cycle/${cycleId}/friend/${friendId}`, {
+    method: 'PUT',
+    body: { items }
+  }),
+  submitOrderByFriend: (cycleId, friendId) => request(`/orders/cycle/${cycleId}/friend/${friendId}/submit`, {
+    method: 'POST'
+  }),
+
+  // Orders (admin)
   getOrders: (cycleId) => request(`/orders/cycle/${cycleId}`),
   markPaid: (id, paid) => request(`/orders/${id}/paid`, { method: 'PATCH', body: { paid } }),
 }

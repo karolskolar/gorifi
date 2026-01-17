@@ -41,8 +41,14 @@ const gsheetUrl = ref('')
 const gsheetLoading = ref(false)
 const gsheetFormat = ref('multirow')  // 'simple' or 'multirow'
 
+// Password settings
+const sharedPassword = ref('')
+const passwordSaving = ref(false)
+const passwordMessage = ref('')
+
 const cycleId = computed(() => route.params.id)
 const baseUrl = computed(() => window.location.origin)
+const sharedOrderLink = computed(() => `${baseUrl.value}/order/${cycleId.value}`)
 
 onMounted(async () => {
   await loadAll()
@@ -63,6 +69,7 @@ async function loadAll() {
     friends.value = friendsData
     orders.value = ordersData
     summary.value = summaryData
+    sharedPassword.value = cycleData.shared_password || ''
   } catch (e) {
     error.value = e.message
   } finally {
@@ -80,6 +87,25 @@ async function toggleLock() {
 async function markCompleted() {
   await api.updateCycle(cycleId.value, { status: 'completed' })
   await loadAll()
+}
+
+async function savePassword() {
+  passwordSaving.value = true
+  passwordMessage.value = ''
+  try {
+    await api.updateCycle(cycleId.value, { shared_password: sharedPassword.value || null })
+    passwordMessage.value = 'Heslo bolo ulozene'
+    setTimeout(() => { passwordMessage.value = '' }, 3000)
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    passwordSaving.value = false
+  }
+}
+
+function copySharedLink() {
+  navigator.clipboard.writeText(sharedOrderLink.value)
+  alert('Odkaz bol skopirovany!')
 }
 
 // Product actions
@@ -294,12 +320,6 @@ async function deleteFriend(id) {
   if (!confirm('Naozaj vymazat tohto priatela a jeho objednavku?')) return
   await api.deleteFriend(id)
   await loadAll()
-}
-
-function copyLink(token) {
-  const link = `${baseUrl.value}/order/${token}`
-  navigator.clipboard.writeText(link)
-  alert('Odkaz bol skopirovany!')
 }
 
 // Order actions
@@ -526,6 +546,51 @@ function formatPrice(price) {
 
       <!-- Friends Tab -->
       <div v-else-if="activeTab === 'friends'">
+        <!-- Shared Link Settings -->
+        <div class="bg-white rounded-lg shadow p-4 mb-6">
+          <h3 class="text-sm font-semibold text-gray-700 mb-3">Nastavenia zdielaneho odkazu</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Password -->
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">Heslo pre priatov (povinne)</label>
+              <div class="flex gap-2">
+                <input
+                  v-model="sharedPassword"
+                  type="text"
+                  placeholder="Zadajte heslo"
+                  class="flex-1 px-3 py-2 border rounded-lg text-sm"
+                />
+                <button
+                  @click="savePassword"
+                  :disabled="passwordSaving"
+                  class="px-3 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 text-sm disabled:opacity-50"
+                >
+                  {{ passwordSaving ? 'Ukladam...' : 'Ulozit' }}
+                </button>
+              </div>
+              <p v-if="passwordMessage" class="text-xs text-green-600 mt-1">{{ passwordMessage }}</p>
+            </div>
+            <!-- Shared Link -->
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">Zdielany odkaz pre vsetkych</label>
+              <div class="flex gap-2">
+                <input
+                  :value="sharedOrderLink"
+                  readonly
+                  class="flex-1 px-3 py-2 border rounded-lg text-sm bg-gray-50"
+                />
+                <button
+                  @click="copySharedLink"
+                  class="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm whitespace-nowrap"
+                >
+                  Kopirovat
+                </button>
+              </div>
+              <p v-if="!sharedPassword" class="text-xs text-amber-600 mt-1">Najprv nastavte heslo, aby odkaz fungoval</p>
+            </div>
+          </div>
+        </div>
+
         <div class="flex justify-between items-center mb-4">
           <h2 class="text-lg font-semibold">Priatelia ({{ friends.length }})</h2>
           <button @click="showFriendModal = true" class="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700">
@@ -543,12 +608,6 @@ function formatPrice(price) {
               </div>
             </div>
             <div class="flex gap-2">
-              <button
-                @click="copyLink(friend.access_token)"
-                class="px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 text-sm"
-              >
-                Kopirovat odkaz
-              </button>
               <button @click="deleteFriend(friend.id)" class="text-red-600 hover:text-red-800 text-sm">
                 Vymazat
               </button>
