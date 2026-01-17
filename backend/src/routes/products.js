@@ -217,14 +217,12 @@ router.post('/import-gsheet/:cycleId', async (req, res) => {
     const sheetId = sheetIdMatch[1];
 
     // Extract gid (tab ID), default to 0 if not found
-    let gid = '0';
+    // Only include gid if explicitly provided in URL
     const gidMatch = url.match(/[#?&]gid=(\d+)/);
-    if (gidMatch) {
-      gid = gidMatch[1];
-    }
+    const gidParam = gidMatch ? `&gid=${gidMatch[1]}` : '';
 
     // Fetch CSV from Google Sheets
-    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv${gidParam}`;
     const response = await fetch(csvUrl);
 
     if (!response.ok) {
@@ -478,14 +476,12 @@ router.post('/import-gsheet-multirow/:cycleId', async (req, res) => {
     }
     const sheetId = sheetIdMatch[1];
 
-    let gid = '0';
+    // Only include gid if explicitly provided in URL
     const gidMatch = url.match(/[#?&]gid=(\d+)/);
-    if (gidMatch) {
-      gid = gidMatch[1];
-    }
+    const gidParam = gidMatch ? `&gid=${gidMatch[1]}` : '';
 
     // Fetch CSV from Google Sheets
-    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv${gidParam}`;
     const response = await fetch(csvUrl);
 
     if (!response.ok) {
