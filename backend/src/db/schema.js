@@ -9,6 +9,7 @@ const __dirname = dirname(__filename);
 const dbPath = join(__dirname, 'database.sqlite');
 
 let db = null;
+let inTransaction = false;
 
 // Initialize database
 async function initDb() {
@@ -77,6 +78,14 @@ async function initDb() {
       FOREIGN KEY (cycle_id) REFERENCES order_cycles(id) ON DELETE CASCADE
     )
   `);
+
+  // Migration: Add active column for global friends management
+  // (cycle_id becomes unused but SQLite doesn't support DROP COLUMN)
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN active INTEGER DEFAULT 1');
+  } catch (e) {
+    // Column already exists, ignore
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS orders (
@@ -156,11 +165,16 @@ const dbHelpers = {
     }
     stmt.step();
     stmt.free();
-    saveDb();
 
+    // Get changes BEFORE any other operations that might reset the value
+    const changes = db.getRowsModified();
     const lastIdResult = db.exec('SELECT last_insert_rowid() as id');
     const lastId = lastIdResult[0]?.values[0][0];
-    const changes = db.getRowsModified();
+
+    // Only save if not in a transaction (transaction will save on commit)
+    if (!inTransaction) {
+      saveDb();
+    }
     return { lastInsertRowid: lastId, changes };
   },
 
@@ -176,14 +190,17 @@ const dbHelpers = {
   // Transaction helper
   transaction(fn) {
     return (...args) => {
+      inTransaction = true;
       db.run('BEGIN TRANSACTION');
       try {
         const result = fn(...args);
         db.run('COMMIT');
+        inTransaction = false;
         saveDb();
         return result;
       } catch (e) {
         db.run('ROLLBACK');
+        inTransaction = false;
         throw e;
       }
     };

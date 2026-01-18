@@ -1,7 +1,12 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
+import { Card, CardContent } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 
 const route = useRoute()
 const router = useRouter()
@@ -32,6 +37,11 @@ onMounted(async () => {
   }
 })
 
+// Set page title
+watchEffect(() => {
+  document.title = 'Admin'
+})
+
 function togglePacked(friendId) {
   if (packedFriends.value.has(friendId)) {
     packedFriends.value.delete(friendId)
@@ -52,92 +62,92 @@ function printDistribution() {
 </script>
 
 <template>
-  <div class="min-h-screen bg-amber-50">
+  <div class="min-h-screen bg-background">
     <!-- Header (hidden when printing) -->
-    <header class="bg-amber-800 text-white shadow print:hidden">
+    <header class="bg-primary text-primary-foreground shadow print:hidden">
       <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
         <div class="flex items-center gap-4">
-          <button @click="router.push(`/admin/cycle/${cycleId}`)" class="text-amber-200 hover:text-white">
+          <Button variant="ghost" size="icon" @click="router.push(`/admin/cycle/${cycleId}`)" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
             </svg>
-          </button>
-          <h1 class="text-xl font-bold">Distribucia - {{ cycle?.name || 'Nacitavam...' }}</h1>
+          </Button>
+          <h1 class="text-xl font-bold">Distribúcia - {{ cycle?.name || 'Načítavam...' }}</h1>
         </div>
-        <button
-          @click="printDistribution"
-          class="px-4 py-2 bg-amber-700 rounded-lg hover:bg-amber-600 transition-colors"
-        >
-          Tlacit
-        </button>
+        <Button variant="secondary" @click="printDistribution">
+          Tlačiť
+        </Button>
       </div>
     </header>
 
     <!-- Print header -->
     <div class="hidden print:block p-4 border-b">
-      <h1 class="text-2xl font-bold">Distribucia - {{ cycle?.name }}</h1>
+      <h1 class="text-2xl font-bold">Distribúcia - {{ cycle?.name }}</h1>
     </div>
 
     <!-- Main content -->
     <main class="max-w-7xl mx-auto px-4 py-6 print:max-w-none print:p-4">
-      <div v-if="error" class="mb-4 p-4 bg-red-50 text-red-700 rounded-lg">{{ error }}</div>
+      <Alert v-if="error" variant="destructive" class="mb-4">
+        <AlertDescription>{{ error }}</AlertDescription>
+      </Alert>
 
-      <div v-if="loading" class="text-center py-12 text-gray-500">Nacitavam...</div>
+      <div v-if="loading" class="text-center py-12 text-muted-foreground">Načítavam...</div>
 
       <div v-else class="space-y-4">
-        <div
+        <Card
           v-for="friend in distribution"
           :key="friend.id"
           :class="[
-            'bg-white rounded-lg shadow p-4 print:shadow-none print:border print:break-inside-avoid',
+            'print:shadow-none print:border print:break-inside-avoid',
             packedFriends.has(friend.id) ? 'opacity-50' : ''
           ]"
         >
-          <div class="flex justify-between items-start mb-3">
-            <div>
-              <h3 class="text-lg font-semibold">{{ friend.name }}</h3>
-              <div class="text-sm text-gray-500">
-                <span v-if="friend.paid" class="text-green-600 font-medium">Zaplatene</span>
-                <span v-else class="text-red-600 font-medium">Nezaplatene</span>
-                <span class="mx-2">|</span>
-                <span>Suma: {{ formatPrice(friend.total) }}</span>
+          <CardContent class="p-4">
+            <div class="flex justify-between items-start mb-3">
+              <div>
+                <h3 class="text-lg font-semibold">{{ friend.name }}</h3>
+                <div class="text-sm text-muted-foreground">
+                  <Badge v-if="friend.paid" variant="default" class="bg-green-600">Zaplatené</Badge>
+                  <Badge v-else variant="destructive">Nezaplatené</Badge>
+                  <span class="mx-2">|</span>
+                  <span>Suma: {{ formatPrice(friend.total) }}</span>
+                </div>
               </div>
+              <Button
+                @click="togglePacked(friend.id)"
+                :variant="packedFriends.has(friend.id) ? 'default' : 'outline'"
+                :class="[
+                  'print:hidden',
+                  packedFriends.has(friend.id) ? 'bg-green-600 hover:bg-green-700' : ''
+                ]"
+              >
+                {{ packedFriends.has(friend.id) ? 'Zabalené' : 'Označiť ako zabalené' }}
+              </Button>
             </div>
-            <button
-              @click="togglePacked(friend.id)"
-              :class="[
-                'px-4 py-2 rounded-lg font-medium print:hidden',
-                packedFriends.has(friend.id)
-                  ? 'bg-green-100 text-green-800'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              ]"
-            >
-              {{ packedFriends.has(friend.id) ? 'Zabalene' : 'Oznacit ako zabalene' }}
-            </button>
-          </div>
 
-          <div v-if="friend.items.length === 0" class="text-gray-500 italic">
-            Ziadne polozky
-          </div>
-          <table v-else class="w-full">
-            <thead>
-              <tr class="border-b text-sm text-gray-600">
-                <th class="py-2 text-left">Produkt</th>
-                <th class="py-2 text-center">Varianta</th>
-                <th class="py-2 text-center">Pocet</th>
-                <th class="py-2 text-right">Cena</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(item, i) in friend.items" :key="i" class="border-b border-gray-100">
-                <td class="py-2">{{ item.product_name }}</td>
-                <td class="py-2 text-center">{{ item.variant }}</td>
-                <td class="py-2 text-center font-medium">{{ item.quantity }}x</td>
-                <td class="py-2 text-right">{{ formatPrice(item.price * item.quantity) }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+            <div v-if="friend.items.length === 0" class="text-muted-foreground italic">
+              Žiadne položky
+            </div>
+            <Table v-else>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Produkt</TableHead>
+                  <TableHead class="text-center">Varianta</TableHead>
+                  <TableHead class="text-center">Počet</TableHead>
+                  <TableHead class="text-right">Cena</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow v-for="(item, i) in friend.items" :key="i">
+                  <TableCell>{{ item.product_name }}</TableCell>
+                  <TableCell class="text-center">{{ item.variant }}</TableCell>
+                  <TableCell class="text-center font-medium">{{ item.quantity }}x</TableCell>
+                  <TableCell class="text-right">{{ formatPrice(item.price * item.quantity) }}</TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
       </div>
     </main>
   </div>

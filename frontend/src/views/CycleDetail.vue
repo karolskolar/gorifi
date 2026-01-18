@@ -1,14 +1,22 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 
 const route = useRoute()
 const router = useRouter()
 
 const cycle = ref(null)
 const products = ref([])
-const friends = ref([])
 const orders = ref([])
 const summary = ref(null)
 
@@ -29,10 +37,6 @@ const isDragging = ref(false)
 const dragOverProductId = ref(null)
 const droppingProductId = ref(null)
 
-// Friend modal
-const showFriendModal = ref(false)
-const newFriendName = ref('')
-
 // CSV import
 const csvFile = ref(null)
 
@@ -46,27 +50,52 @@ const sharedPassword = ref('')
 const passwordSaving = ref(false)
 const passwordMessage = ref('')
 
+// Cycle name editing
+const editingCycleName = ref(false)
+const cycleNameEdit = ref('')
+
 const cycleId = computed(() => route.params.id)
 const baseUrl = computed(() => window.location.origin)
 const sharedOrderLink = computed(() => `${baseUrl.value}/order/${cycleId.value}`)
+
+// Expandable orders
+const expandedOrders = ref(new Set())
+
+function toggleExpand(orderId) {
+  if (expandedOrders.value.has(orderId)) {
+    expandedOrders.value.delete(orderId)
+  } else {
+    expandedOrders.value.add(orderId)
+  }
+  expandedOrders.value = new Set(expandedOrders.value) // trigger reactivity
+}
+
+const orderTotals = computed(() => ({
+  count_250g: orders.value.reduce((sum, o) => sum + (o.count_250g || 0), 0),
+  count_1kg: orders.value.reduce((sum, o) => sum + (o.count_1kg || 0), 0),
+  total: orders.value.reduce((sum, o) => sum + (o.total || 0), 0)
+}))
 
 onMounted(async () => {
   await loadAll()
 })
 
+// Set page title
+watchEffect(() => {
+  document.title = 'Admin'
+})
+
 async function loadAll() {
   loading.value = true
   try {
-    const [cycleData, productsData, friendsData, ordersData, summaryData] = await Promise.all([
+    const [cycleData, productsData, ordersData, summaryData] = await Promise.all([
       api.getCycle(cycleId.value),
       api.getProducts(cycleId.value),
-      api.getFriends(cycleId.value),
       api.getOrders(cycleId.value),
       api.getCycleSummary(cycleId.value)
     ])
     cycle.value = cycleData
     products.value = productsData
-    friends.value = friendsData
     orders.value = ordersData
     summary.value = summaryData
     sharedPassword.value = cycleData.shared_password || ''
@@ -89,12 +118,33 @@ async function markCompleted() {
   await loadAll()
 }
 
+function startEditingCycleName() {
+  cycleNameEdit.value = cycle.value?.name || ''
+  editingCycleName.value = true
+}
+
+async function saveCycleName() {
+  if (!cycleNameEdit.value.trim()) return
+  try {
+    await api.updateCycle(cycleId.value, { name: cycleNameEdit.value.trim() })
+    await loadAll()
+    editingCycleName.value = false
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+function cancelEditingCycleName() {
+  editingCycleName.value = false
+  cycleNameEdit.value = ''
+}
+
 async function savePassword() {
   passwordSaving.value = true
   passwordMessage.value = ''
   try {
     await api.updateCycle(cycleId.value, { shared_password: sharedPassword.value || null })
-    passwordMessage.value = 'Heslo bolo ulozene'
+    passwordMessage.value = 'Heslo bolo uložené'
     setTimeout(() => { passwordMessage.value = '' }, 3000)
   } catch (e) {
     error.value = e.message
@@ -105,7 +155,7 @@ async function savePassword() {
 
 function copySharedLink() {
   navigator.clipboard.writeText(sharedOrderLink.value)
-  alert('Odkaz bol skopirovany!')
+  alert('Odkaz bol skopírovaný!')
 }
 
 // Product actions
@@ -146,7 +196,7 @@ async function saveProduct() {
 }
 
 async function deleteProduct(id) {
-  if (!confirm('Naozaj vymazat tento produkt?')) return
+  if (!confirm('Naozaj vymazať tento produkt?')) return
   await api.deleteProduct(id)
   await loadAll()
 }
@@ -184,7 +234,7 @@ async function importGoogleSheets() {
     gsheetUrl.value = ''
     await loadAll()
 
-    let message = `${result.products.length} produktov bolo importovanych z Google Sheets`
+    let message = `${result.products.length} produktov bolo importovaných z Google Sheets`
     if (result.warnings && result.warnings.length > 0) {
       message += `\n\nUpozornenia:\n${result.warnings.join('\n')}`
     }
@@ -280,7 +330,7 @@ async function handleProductDrop(event, productId) {
           await api.updateProduct(productId, { image: e.target.result })
           await loadAll()
         } catch (err) {
-          error.value = 'Chyba pri ukladani obrazku: ' + err.message
+          error.value = 'Chyba pri ukladaní obrázku: ' + err.message
         } finally {
           droppingProductId.value = null
         }
@@ -291,7 +341,7 @@ async function handleProductDrop(event, productId) {
   }
 
   if (!imageUrl) {
-    error.value = 'Nepodarilo sa ziskat URL obrazku. Skuste iny obrazok.'
+    error.value = 'Nepodarilo sa získať URL obrázku. Skúste iný obrázok.'
     return
   }
 
@@ -301,30 +351,15 @@ async function handleProductDrop(event, productId) {
     await api.uploadProductImageFromUrl(productId, imageUrl)
     await loadAll()
   } catch (err) {
-    error.value = 'Chyba pri stahivani obrazku: ' + err.message
+    error.value = 'Chyba pri sťahovaní obrázku: ' + err.message
   } finally {
     droppingProductId.value = null
   }
 }
 
-// Friend actions
-async function addFriend() {
-  if (!newFriendName.value.trim()) return
-  await api.createFriend({ cycle_id: cycleId.value, name: newFriendName.value })
-  newFriendName.value = ''
-  showFriendModal.value = false
-  await loadAll()
-}
-
-async function deleteFriend(id) {
-  if (!confirm('Naozaj vymazat tohto priatela a jeho objednavku?')) return
-  await api.deleteFriend(id)
-  await loadAll()
-}
-
 // Order actions
 async function togglePaid(order) {
-  await api.markPaid(order.order_id, !order.paid)
+  await api.markPaid(order.id, !order.paid)
   await loadAll()
 }
 
@@ -332,7 +367,7 @@ async function togglePaid(order) {
 function copySummary() {
   if (!summary.value) return
 
-  let text = `Objednavka - ${cycle.value.name}\n`
+  let text = `Objednávka - ${cycle.value.name}\n`
   text += '='.repeat(30) + '\n\n'
 
   for (const item of summary.value.items) {
@@ -340,380 +375,436 @@ function copySummary() {
   }
 
   text += '\n' + '='.repeat(30) + '\n'
-  text += `Celkom poloziek: ${summary.value.totalItems}\n`
-  text += `Celkova suma: ${summary.value.totalPrice.toFixed(2)} EUR\n`
+  text += `Celkom položiek: ${summary.value.totalItems}\n`
+  text += `Celková suma: ${summary.value.totalPrice.toFixed(2)} EUR\n`
 
   navigator.clipboard.writeText(text)
-  alert('Sumar bol skopirovany do schranky!')
+  alert('Sumár bol skopírovaný do schránky!')
 }
 
 function formatPrice(price) {
   return price ? `${price.toFixed(2)} EUR` : '-'
 }
+
+function getStatusVariant(status) {
+  switch (status) {
+    case 'open': return 'default'
+    case 'locked': return 'secondary'
+    case 'completed': return 'outline'
+    default: return 'outline'
+  }
+}
 </script>
 
 <template>
-  <div class="min-h-screen bg-amber-50">
+  <div class="min-h-screen bg-background">
     <!-- Header -->
-    <header class="bg-amber-800 text-white shadow">
+    <header class="bg-primary text-primary-foreground shadow">
       <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
         <div class="flex items-center gap-4">
-          <button @click="router.push('/admin/dashboard')" class="text-amber-200 hover:text-white">
+          <Button variant="ghost" size="icon" @click="router.push('/admin/dashboard')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
             </svg>
-          </button>
+          </Button>
           <div>
-            <h1 class="text-xl font-bold">{{ cycle?.name || 'Nacitavam...' }}</h1>
-            <span v-if="cycle" :class="['text-sm px-2 py-0.5 rounded-full', cycle.status === 'open' ? 'bg-green-500' : cycle.status === 'locked' ? 'bg-yellow-500' : 'bg-gray-500']">
-              {{ cycle.status === 'open' ? 'Otvoreny' : cycle.status === 'locked' ? 'Uzamknuty' : 'Dokonceny' }}
-            </span>
+            <div v-if="editingCycleName" class="flex items-center gap-2">
+              <input
+                v-model="cycleNameEdit"
+                @keyup.enter="saveCycleName"
+                @keyup.escape="cancelEditingCycleName"
+                class="text-xl font-bold bg-primary-foreground/20 text-primary-foreground border border-primary-foreground/30 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-primary-foreground/50"
+                autofocus
+              />
+              <button @click="saveCycleName" class="text-primary-foreground/70 hover:text-primary-foreground">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                </svg>
+              </button>
+              <button @click="cancelEditingCycleName" class="text-primary-foreground/70 hover:text-primary-foreground">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <h1 v-else class="text-xl font-bold flex items-center gap-2 cursor-pointer group" @click="startEditingCycleName">
+              {{ cycle?.name || 'Načítavam...' }}
+              <svg class="w-4 h-4 text-primary-foreground/50 group-hover:text-primary-foreground transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+              </svg>
+            </h1>
+            <Badge v-if="cycle" :variant="getStatusVariant(cycle.status)" class="mt-1">
+              {{ cycle.status === 'open' ? 'Otvorený' : cycle.status === 'locked' ? 'Uzamknutý' : 'Dokončený' }}
+            </Badge>
           </div>
         </div>
         <div class="flex gap-2">
-          <button
+          <Button
             v-if="cycle?.status !== 'completed'"
+            variant="secondary"
             @click="toggleLock"
-            class="px-4 py-2 bg-amber-700 rounded-lg hover:bg-amber-600 transition-colors"
           >
-            {{ cycle?.status === 'locked' ? 'Odomknut' : 'Uzamknut' }}
-          </button>
-          <button
+            {{ cycle?.status === 'locked' ? 'Odomknúť' : 'Uzamknúť' }}
+          </Button>
+          <Button
             v-if="cycle?.status === 'locked'"
+            variant="secondary"
             @click="markCompleted"
-            class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-500 transition-colors"
+            class="bg-green-600 hover:bg-green-700 text-white"
           >
-            Oznacit ako dokonceny
-          </button>
-          <button
+            Označiť ako dokončený
+          </Button>
+          <Button
+            variant="secondary"
             @click="router.push(`/admin/cycle/${cycleId}/distribution`)"
-            class="px-4 py-2 bg-amber-700 rounded-lg hover:bg-amber-600 transition-colors"
           >
-            Distribucia
-          </button>
+            Distribúcia
+          </Button>
         </div>
       </div>
     </header>
 
-    <!-- Tabs -->
-    <div class="bg-white border-b">
-      <div class="max-w-7xl mx-auto px-4">
-        <nav class="flex gap-4">
-          <button
-            v-for="tab in ['products', 'friends', 'orders', 'summary']"
-            :key="tab"
-            @click="activeTab = tab"
-            :class="['py-4 px-2 border-b-2 font-medium transition-colors', activeTab === tab ? 'border-amber-600 text-amber-600' : 'border-transparent text-gray-500 hover:text-gray-700']"
-          >
-            {{ tab === 'products' ? 'Produkty' : tab === 'friends' ? 'Priatelia' : tab === 'orders' ? 'Objednavky' : 'Sumar' }}
-          </button>
-        </nav>
-      </div>
-    </div>
-
     <!-- Main content -->
     <main class="max-w-7xl mx-auto px-4 py-6">
-      <div v-if="error" class="mb-4 p-4 bg-red-50 text-red-700 rounded-lg">{{ error }}</div>
+      <Alert v-if="error" variant="destructive" class="mb-4">
+        <AlertDescription>{{ error }}</AlertDescription>
+      </Alert>
 
-      <div v-if="loading" class="text-center py-12 text-gray-500">Nacitavam...</div>
+      <div v-if="loading" class="text-center py-12 text-muted-foreground">Načítavam...</div>
 
-      <!-- Products Tab -->
-      <div v-else-if="activeTab === 'products'">
-        <div class="flex justify-between items-center mb-4">
-          <h2 class="text-lg font-semibold">Produkty ({{ products.length }})</h2>
-          <button @click="openProductModal()" class="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700">
-            + Pridat produkt
-          </button>
-        </div>
-
-        <!-- Import section -->
-        <div class="bg-white rounded-lg shadow p-4 mb-4">
-          <h3 class="text-sm font-medium text-gray-700 mb-3">Import produktov</h3>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <!-- Google Sheets import -->
-            <div>
-              <label class="block text-xs text-gray-500 mb-1">Z Google Sheets (verejny sheet)</label>
-              <!-- Format selector -->
-              <div class="flex gap-4 mb-2">
-                <label class="flex items-center text-sm cursor-pointer">
-                  <input type="radio" v-model="gsheetFormat" value="multirow" class="mr-1.5" />
-                  Viacriadkovy (3 riadky = 1 produkt)
-                </label>
-                <label class="flex items-center text-sm cursor-pointer">
-                  <input type="radio" v-model="gsheetFormat" value="simple" class="mr-1.5" />
-                  Jednoduchy (1 riadok = 1 produkt)
-                </label>
+      <template v-else>
+        <!-- Shared Link Settings -->
+        <Card class="mb-6">
+          <CardContent class="p-4">
+            <h3 class="text-sm font-semibold text-foreground mb-3">Zdieľaný odkaz pre objednávanie</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <!-- Password -->
+              <div>
+                <Label class="text-xs text-muted-foreground mb-1">Heslo pre priateľov (povinné)</Label>
+                <div class="flex gap-2">
+                  <Input
+                    v-model="sharedPassword"
+                    placeholder="Zadajte heslo"
+                  />
+                  <Button
+                    @click="savePassword"
+                    :disabled="passwordSaving"
+                  >
+                    {{ passwordSaving ? 'Ukladám...' : 'Uložiť' }}
+                  </Button>
+                </div>
+                <p v-if="passwordMessage" class="text-xs text-green-600 mt-1">{{ passwordMessage }}</p>
               </div>
-              <div class="flex gap-2">
-                <input
-                  v-model="gsheetUrl"
-                  type="text"
-                  placeholder="https://docs.google.com/spreadsheets/d/..."
-                  class="flex-1 px-3 py-2 border rounded-lg text-sm"
-                  :disabled="gsheetLoading"
-                />
-                <button
-                  @click="importGoogleSheets"
-                  :disabled="!gsheetUrl.trim() || gsheetLoading"
-                  class="px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
-                >
-                  {{ gsheetLoading ? 'Importujem...' : 'Importovat' }}
-                </button>
-              </div>
-            </div>
-            <!-- CSV import -->
-            <div>
-              <label class="block text-xs text-gray-500 mb-1">Z CSV suboru</label>
-              <div class="flex gap-2">
-                <input type="file" accept=".csv" @change="onFileChange" class="flex-1 text-sm" />
-                <button
-                  v-if="csvFile"
-                  @click="importCSV"
-                  class="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm whitespace-nowrap"
-                >
-                  Importovat
-                </button>
+              <!-- Shared Link -->
+              <div>
+                <Label class="text-xs text-muted-foreground mb-1">Odkaz pre priateľov</Label>
+                <div class="flex gap-2">
+                  <Input
+                    :model-value="sharedOrderLink"
+                    readonly
+                    class="bg-muted"
+                  />
+                  <Button
+                    variant="outline"
+                    @click="copySharedLink"
+                  >
+                    Kopírovať
+                  </Button>
+                </div>
+                <p v-if="!sharedPassword" class="text-xs text-yellow-600 mt-1">Najprv nastavte heslo, aby odkaz fungoval</p>
               </div>
             </div>
+          </CardContent>
+        </Card>
+
+        <Tabs v-model="activeTab">
+        <TabsList class="mb-6">
+          <TabsTrigger value="products">Produkty</TabsTrigger>
+          <TabsTrigger value="orders">Objednávky</TabsTrigger>
+          <TabsTrigger value="summary">Sumár</TabsTrigger>
+        </TabsList>
+
+        <!-- Products Tab -->
+        <TabsContent value="products">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-semibold">Produkty ({{ products.length }})</h2>
+            <Button @click="openProductModal()">
+              + Pridať produkt
+            </Button>
           </div>
-        </div>
 
-        <div class="bg-white rounded-lg shadow overflow-hidden">
-          <table class="w-full">
-            <thead class="bg-gray-50">
-              <tr>
-                <th class="px-3 py-3 text-left text-sm font-medium text-gray-600 w-16">Foto</th>
-                <th class="px-3 py-3 text-left text-sm font-medium text-gray-600">Nazov</th>
-                <th class="px-3 py-3 text-left text-sm font-medium text-gray-600">Chutovy profil</th>
-                <th class="px-3 py-3 text-left text-sm font-medium text-gray-600">Prazenie</th>
-                <th class="px-3 py-3 text-left text-sm font-medium text-gray-600">Ucel</th>
-                <th class="px-3 py-3 text-right text-sm font-medium text-gray-600">250g</th>
-                <th class="px-3 py-3 text-right text-sm font-medium text-gray-600">1kg</th>
-                <th class="px-3 py-3 text-right text-sm font-medium text-gray-600">Akcie</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-100">
-              <tr
-                v-for="product in products"
-                :key="product.id"
-                :class="[
-                  'hover:bg-gray-50 transition-all duration-150',
-                  dragOverProductId === product.id ? 'bg-amber-100 ring-2 ring-amber-400 ring-inset' : '',
-                  droppingProductId === product.id ? 'opacity-50' : ''
-                ]"
-                @dragover="handleProductDragOver($event, product.id)"
-                @dragleave="handleProductDragLeave($event, product.id)"
-                @drop="handleProductDrop($event, product.id)"
-              >
-                <td class="px-3 py-2">
-                  <div :class="[
-                    'w-12 h-12 rounded overflow-hidden flex items-center justify-center transition-all',
-                    dragOverProductId === product.id ? 'ring-2 ring-amber-500 bg-amber-50' : 'bg-gray-100'
-                  ]">
-                    <div v-if="droppingProductId === product.id" class="animate-pulse">
-                      <svg class="w-6 h-6 text-amber-500 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          <!-- Import section -->
+          <Card class="mb-4">
+            <CardContent class="p-4">
+              <h3 class="text-sm font-medium text-foreground mb-3">Import produktov</h3>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- Google Sheets import -->
+                <div>
+                  <Label class="text-xs text-muted-foreground mb-1">Z Google Sheets (verejný sheet)</Label>
+                  <!-- Format selector -->
+                  <div class="flex gap-4 mb-2">
+                    <label class="flex items-center text-sm cursor-pointer">
+                      <input type="radio" v-model="gsheetFormat" value="multirow" class="mr-1.5" />
+                      Viacriadkový (3 riadky = 1 produkt)
+                    </label>
+                    <label class="flex items-center text-sm cursor-pointer">
+                      <input type="radio" v-model="gsheetFormat" value="simple" class="mr-1.5" />
+                      Jednoduchý (1 riadok = 1 produkt)
+                    </label>
+                  </div>
+                  <div class="flex gap-2">
+                    <Input
+                      v-model="gsheetUrl"
+                      placeholder="https://docs.google.com/spreadsheets/d/..."
+                      :disabled="gsheetLoading"
+                      class="text-sm"
+                    />
+                    <Button
+                      @click="importGoogleSheets"
+                      :disabled="!gsheetUrl.trim() || gsheetLoading"
+                      class="whitespace-nowrap"
+                    >
+                      {{ gsheetLoading ? 'Importujem...' : 'Importovať' }}
+                    </Button>
+                  </div>
+                </div>
+                <!-- CSV import -->
+                <div>
+                  <Label class="text-xs text-muted-foreground mb-1">Z CSV súboru</Label>
+                  <div class="flex gap-2">
+                    <input type="file" accept=".csv" @change="onFileChange" class="flex-1 text-sm" />
+                    <Button
+                      v-if="csvFile"
+                      @click="importCSV"
+                      class="whitespace-nowrap"
+                    >
+                      Importovať
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead class="w-16">Foto</TableHead>
+                  <TableHead>Názov</TableHead>
+                  <TableHead>Chutový profil</TableHead>
+                  <TableHead>Praženie</TableHead>
+                  <TableHead>Účel</TableHead>
+                  <TableHead class="text-right">250g</TableHead>
+                  <TableHead class="text-right">1kg</TableHead>
+                  <TableHead class="text-right">Akcie</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow
+                  v-for="product in products"
+                  :key="product.id"
+                  :class="[
+                    'transition-all duration-150',
+                    dragOverProductId === product.id ? 'bg-accent ring-2 ring-primary ring-inset' : '',
+                    droppingProductId === product.id ? 'opacity-50' : ''
+                  ]"
+                  @dragover="handleProductDragOver($event, product.id)"
+                  @dragleave="handleProductDragLeave($event, product.id)"
+                  @drop="handleProductDrop($event, product.id)"
+                >
+                  <TableCell>
+                    <div :class="[
+                      'w-12 h-12 rounded overflow-hidden flex items-center justify-center transition-all',
+                      dragOverProductId === product.id ? 'ring-2 ring-primary bg-accent' : 'bg-muted'
+                    ]">
+                      <div v-if="droppingProductId === product.id" class="animate-pulse">
+                        <svg class="w-6 h-6 text-primary animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                      </div>
+                      <img v-else-if="product.image" :src="product.image" class="w-full h-full object-cover" />
+                      <svg v-else class="w-6 h-6 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                       </svg>
                     </div>
-                    <img v-else-if="product.image" :src="product.image" class="w-full h-full object-cover" />
-                    <svg v-else class="w-6 h-6 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                    </svg>
-                  </div>
-                </td>
-                <td class="px-3 py-2">
-                  <div class="font-medium">{{ product.name }}</div>
-                  <div v-if="product.description1" class="text-sm text-gray-500">{{ product.description1 }}</div>
-                </td>
-                <td class="px-3 py-2 text-sm text-gray-600 max-w-xs">
-                  <span v-if="product.description2" class="line-clamp-2">{{ product.description2 }}</span>
-                  <span v-else class="text-gray-300">-</span>
-                </td>
-                <td class="px-3 py-2 text-sm">{{ product.roast_type || '-' }}</td>
-                <td class="px-3 py-2 text-sm">{{ product.purpose || '-' }}</td>
-                <td class="px-3 py-2 text-sm text-right">{{ formatPrice(product.price_250g) }}</td>
-                <td class="px-3 py-2 text-sm text-right">{{ formatPrice(product.price_1kg) }}</td>
-                <td class="px-3 py-2 text-right">
-                  <button @click="openProductModal(product)" class="text-blue-600 hover:text-blue-800 mr-2 text-sm">Upravit</button>
-                  <button @click="deleteProduct(product.id)" class="text-red-600 hover:text-red-800 text-sm">Vymazat</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+                  </TableCell>
+                  <TableCell>
+                    <div class="font-medium">{{ product.name }}</div>
+                    <div v-if="product.description1" class="text-sm text-muted-foreground">{{ product.description1 }}</div>
+                  </TableCell>
+                  <TableCell class="text-sm text-muted-foreground max-w-xs">
+                    <span v-if="product.description2" class="line-clamp-2">{{ product.description2 }}</span>
+                    <span v-else class="text-muted-foreground/50">-</span>
+                  </TableCell>
+                  <TableCell class="text-sm">{{ product.roast_type || '-' }}</TableCell>
+                  <TableCell class="text-sm">{{ product.purpose || '-' }}</TableCell>
+                  <TableCell class="text-sm text-right">{{ formatPrice(product.price_250g) }}</TableCell>
+                  <TableCell class="text-sm text-right">{{ formatPrice(product.price_1kg) }}</TableCell>
+                  <TableCell class="text-right">
+                    <Button variant="ghost" size="sm" @click="openProductModal(product)">Upraviť</Button>
+                    <Button variant="ghost" size="sm" class="text-destructive hover:text-destructive" @click="deleteProduct(product.id)">Vymazať</Button>
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </Card>
+        </TabsContent>
 
-      <!-- Friends Tab -->
-      <div v-else-if="activeTab === 'friends'">
-        <!-- Shared Link Settings -->
-        <div class="bg-white rounded-lg shadow p-4 mb-6">
-          <h3 class="text-sm font-semibold text-gray-700 mb-3">Nastavenia zdielaneho odkazu</h3>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <!-- Password -->
-            <div>
-              <label class="block text-xs text-gray-500 mb-1">Heslo pre priatov (povinne)</label>
-              <div class="flex gap-2">
-                <input
-                  v-model="sharedPassword"
-                  type="text"
-                  placeholder="Zadajte heslo"
-                  class="flex-1 px-3 py-2 border rounded-lg text-sm"
-                />
-                <button
-                  @click="savePassword"
-                  :disabled="passwordSaving"
-                  class="px-3 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 text-sm disabled:opacity-50"
-                >
-                  {{ passwordSaving ? 'Ukladam...' : 'Ulozit' }}
-                </button>
+        <!-- Orders Tab -->
+        <TabsContent value="orders">
+          <h2 class="text-lg font-semibold mb-4">Objednávky ({{ orders.length }})</h2>
+
+          <div v-if="orders.length === 0" class="text-center py-12 text-muted-foreground">
+            Zatiaľ žiadne objednávky
+          </div>
+
+          <Card v-else>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead class="w-10"></TableHead>
+                  <TableHead>Priateľ</TableHead>
+                  <TableHead class="text-center">250g</TableHead>
+                  <TableHead class="text-center">1kg</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead class="text-right">Suma</TableHead>
+                  <TableHead class="text-center">Zaplatené</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <template v-for="order in orders" :key="order.id">
+                  <TableRow>
+                    <TableCell class="p-2">
+                      <button
+                        @click="toggleExpand(order.id)"
+                        class="w-8 h-8 flex items-center justify-center rounded hover:bg-muted transition-colors"
+                      >
+                        <svg
+                          class="w-4 h-4 transition-transform"
+                          :class="{ 'rotate-90': expandedOrders.has(order.id) }"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                        </svg>
+                      </button>
+                    </TableCell>
+                    <TableCell class="font-medium">{{ order.friend_name }}</TableCell>
+                    <TableCell class="text-center">{{ order.count_250g || 0 }}</TableCell>
+                    <TableCell class="text-center">{{ order.count_1kg || 0 }}</TableCell>
+                    <TableCell>
+                      <Badge :variant="order.status === 'submitted' ? 'default' : 'secondary'">
+                        {{ order.status === 'submitted' ? 'Odoslané' : 'Rozpracované' }}
+                      </Badge>
+                    </TableCell>
+                    <TableCell class="text-right">{{ formatPrice(order.total) }}</TableCell>
+                    <TableCell class="text-center">
+                      <button
+                        @click="togglePaid(order)"
+                        :class="['w-6 h-6 rounded border-2 flex items-center justify-center mx-auto', order.paid ? 'bg-green-500 border-green-500 text-white' : 'border-border']"
+                      >
+                        <svg v-if="order.paid" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                        </svg>
+                      </button>
+                    </TableCell>
+                  </TableRow>
+                  <!-- Expanded items row -->
+                  <TableRow v-if="expandedOrders.has(order.id)">
+                    <TableCell colspan="7" class="bg-muted/50 p-4">
+                      <div v-if="order.items && order.items.length > 0" class="space-y-1">
+                        <div v-for="item in order.items" :key="`${item.product_id}-${item.variant}`" class="flex justify-between py-1 text-sm">
+                          <span>{{ item.product_name }} ({{ item.variant }})</span>
+                          <span class="text-muted-foreground">{{ item.quantity }}x - {{ formatPrice(item.price * item.quantity) }}</span>
+                        </div>
+                      </div>
+                      <div v-else class="text-sm text-muted-foreground">Žiadne položky</div>
+                    </TableCell>
+                  </TableRow>
+                </template>
+              </TableBody>
+              <tfoot>
+                <TableRow class="font-semibold bg-muted">
+                  <TableCell></TableCell>
+                  <TableCell>Celkom</TableCell>
+                  <TableCell class="text-center">{{ orderTotals.count_250g }}</TableCell>
+                  <TableCell class="text-center">{{ orderTotals.count_1kg }}</TableCell>
+                  <TableCell></TableCell>
+                  <TableCell class="text-right">{{ formatPrice(orderTotals.total) }}</TableCell>
+                  <TableCell></TableCell>
+                </TableRow>
+              </tfoot>
+            </Table>
+          </Card>
+        </TabsContent>
+
+        <!-- Summary Tab -->
+        <TabsContent value="summary">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-semibold">Sumár objednávky</h2>
+            <Button @click="copySummary">
+              Kopírovať do schranky
+            </Button>
+          </div>
+
+          <Card>
+            <CardContent class="p-6">
+              <div v-if="summary?.items.length === 0" class="text-center text-muted-foreground py-8">
+                Zatiaľ žiadne objednávky
               </div>
-              <p v-if="passwordMessage" class="text-xs text-green-600 mt-1">{{ passwordMessage }}</p>
-            </div>
-            <!-- Shared Link -->
-            <div>
-              <label class="block text-xs text-gray-500 mb-1">Zdielany odkaz pre vsetkych</label>
-              <div class="flex gap-2">
-                <input
-                  :value="sharedOrderLink"
-                  readonly
-                  class="flex-1 px-3 py-2 border rounded-lg text-sm bg-gray-50"
-                />
-                <button
-                  @click="copySharedLink"
-                  class="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm whitespace-nowrap"
-                >
-                  Kopirovat
-                </button>
+              <div v-else>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Produkt</TableHead>
+                      <TableHead>Varianta</TableHead>
+                      <TableHead class="text-right">Počet</TableHead>
+                      <TableHead class="text-right">Suma</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow v-for="(item, i) in summary.items" :key="i">
+                      <TableCell>{{ item.name }}</TableCell>
+                      <TableCell>{{ item.variant }}</TableCell>
+                      <TableCell class="text-right">{{ item.total_quantity }}x</TableCell>
+                      <TableCell class="text-right">{{ formatPrice(item.total_price) }}</TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+
+                <div class="border-t pt-4 mt-4 flex justify-between text-lg font-semibold">
+                  <span>Celkom položiek: {{ summary.totalItems }}</span>
+                  <span>Celková suma: {{ formatPrice(summary.totalPrice) }}</span>
+                </div>
               </div>
-              <p v-if="!sharedPassword" class="text-xs text-amber-600 mt-1">Najprv nastavte heslo, aby odkaz fungoval</p>
-            </div>
-          </div>
-        </div>
-
-        <div class="flex justify-between items-center mb-4">
-          <h2 class="text-lg font-semibold">Priatelia ({{ friends.length }})</h2>
-          <button @click="showFriendModal = true" class="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700">
-            + Pridat priatela
-          </button>
-        </div>
-
-        <div class="grid gap-3">
-          <div v-for="friend in friends" :key="friend.id" class="bg-white rounded-lg shadow p-4 flex justify-between items-center">
-            <div>
-              <div class="font-medium">{{ friend.name }}</div>
-              <div class="text-sm text-gray-500">
-                {{ friend.order_status === 'submitted' ? `Objednane: ${formatPrice(friend.total)}` : 'Neobjednane' }}
-                <span v-if="friend.paid" class="ml-2 text-green-600">Zaplatene</span>
-              </div>
-            </div>
-            <div class="flex gap-2">
-              <button @click="deleteFriend(friend.id)" class="text-red-600 hover:text-red-800 text-sm">
-                Vymazat
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Orders Tab -->
-      <div v-else-if="activeTab === 'orders'">
-        <h2 class="text-lg font-semibold mb-4">Objednavky</h2>
-
-        <div class="bg-white rounded-lg shadow overflow-hidden">
-          <table class="w-full">
-            <thead class="bg-gray-50">
-              <tr>
-                <th class="px-4 py-3 text-left text-sm font-medium text-gray-600">Priatel</th>
-                <th class="px-4 py-3 text-left text-sm font-medium text-gray-600">Status</th>
-                <th class="px-4 py-3 text-right text-sm font-medium text-gray-600">Suma</th>
-                <th class="px-4 py-3 text-center text-sm font-medium text-gray-600">Zaplatene</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-100">
-              <tr v-for="friend in friends" :key="friend.id" class="hover:bg-gray-50">
-                <td class="px-4 py-3 font-medium">{{ friend.name }}</td>
-                <td class="px-4 py-3">
-                  <span :class="['px-2 py-1 rounded-full text-xs font-medium', friend.order_status === 'submitted' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600']">
-                    {{ friend.order_status === 'submitted' ? 'Odoslane' : 'Neodoslane' }}
-                  </span>
-                </td>
-                <td class="px-4 py-3 text-right">{{ formatPrice(friend.total) }}</td>
-                <td class="px-4 py-3 text-center">
-                  <button
-                    v-if="friend.order_id"
-                    @click="togglePaid(friend)"
-                    :class="['w-6 h-6 rounded border-2 flex items-center justify-center', friend.paid ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300']"
-                  >
-                    <svg v-if="friend.paid" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                    </svg>
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Summary Tab -->
-      <div v-else-if="activeTab === 'summary'">
-        <div class="flex justify-between items-center mb-4">
-          <h2 class="text-lg font-semibold">Sumar objednavky</h2>
-          <button @click="copySummary" class="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700">
-            Kopirovat do schranky
-          </button>
-        </div>
-
-        <div class="bg-white rounded-lg shadow p-6">
-          <div v-if="summary?.items.length === 0" class="text-center text-gray-500 py-8">
-            Zatial ziadne objednavky
-          </div>
-          <div v-else>
-            <table class="w-full mb-6">
-              <thead>
-                <tr class="border-b">
-                  <th class="py-2 text-left font-medium">Produkt</th>
-                  <th class="py-2 text-left font-medium">Varianta</th>
-                  <th class="py-2 text-right font-medium">Pocet</th>
-                  <th class="py-2 text-right font-medium">Suma</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(item, i) in summary.items" :key="i" class="border-b border-gray-100">
-                  <td class="py-2">{{ item.name }}</td>
-                  <td class="py-2">{{ item.variant }}</td>
-                  <td class="py-2 text-right">{{ item.total_quantity }}x</td>
-                  <td class="py-2 text-right">{{ formatPrice(item.total_price) }}</td>
-                </tr>
-              </tbody>
-            </table>
-
-            <div class="border-t pt-4 flex justify-between text-lg font-semibold">
-              <span>Celkom poloziek: {{ summary.totalItems }}</span>
-              <span>Celkova suma: {{ formatPrice(summary.totalPrice) }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+        </Tabs>
+      </template>
     </main>
 
     <!-- Product Modal -->
-    <div v-if="showProductModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto" @click.stop>
-        <h3 class="text-lg font-semibold mb-4">{{ editingProduct ? 'Upravit produkt' : 'Novy produkt' }}</h3>
+    <Dialog :open="showProductModal" @update:open="showProductModal = $event">
+      <DialogContent class="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{{ editingProduct ? 'Upraviť produkt' : 'Nový produkt' }}</DialogTitle>
+        </DialogHeader>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 py-4">
           <!-- Left column - Image -->
           <div>
-            <label class="block text-sm font-medium text-gray-700 mb-2">Fotografia produktu</label>
+            <Label class="mb-2">Fotografia produktu</Label>
             <div
               @drop="handleDrop"
               @dragover="handleDragOver"
               @dragleave="handleDragLeave"
               :class="[
                 'border-2 border-dashed rounded-lg p-4 text-center transition-colors cursor-pointer',
-                isDragging ? 'border-amber-500 bg-amber-50' : 'border-gray-300 hover:border-gray-400'
+                isDragging ? 'border-primary bg-accent' : 'border-border hover:border-muted-foreground'
               ]"
               @click="$refs.imageInput.click()"
             >
@@ -729,80 +820,64 @@ function formatPrice(price) {
                 <img :src="imagePreview" class="max-h-48 mx-auto rounded" />
                 <button
                   @click.stop="removeImage"
-                  class="absolute top-2 right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600"
+                  class="absolute top-2 right-2 bg-destructive text-destructive-foreground rounded-full w-6 h-6 flex items-center justify-center hover:bg-destructive/90"
                 >
                   &times;
                 </button>
               </div>
               <div v-else class="py-8">
-                <svg class="w-12 h-12 mx-auto text-gray-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg class="w-12 h-12 mx-auto text-muted-foreground mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                 </svg>
-                <p class="text-sm text-gray-500">Kliknite alebo pretiahnite obrazok</p>
-                <p class="text-xs text-gray-400 mt-1">JPG, PNG, max 5MB</p>
+                <p class="text-sm text-muted-foreground">Kliknite alebo preťahnite obrázok</p>
+                <p class="text-xs text-muted-foreground/70 mt-1">JPG, PNG, max 5MB</p>
               </div>
             </div>
           </div>
 
           <!-- Right column - Fields -->
           <div class="space-y-3">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Nazov *</label>
-              <input v-model="productForm.name" class="w-full px-3 py-2 border rounded-lg text-sm" />
+            <div class="space-y-1">
+              <Label>Názov *</Label>
+              <Input v-model="productForm.name" />
             </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Popis (podnadpis)</label>
-              <input v-model="productForm.description1" class="w-full px-3 py-2 border rounded-lg text-sm" />
+            <div class="space-y-1">
+              <Label>Popis (podnadpis)</Label>
+              <Input v-model="productForm.description1" />
             </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Chutovy profil</label>
-              <textarea v-model="productForm.description2" rows="2" class="w-full px-3 py-2 border rounded-lg text-sm"></textarea>
-            </div>
-            <div class="grid grid-cols-2 gap-3">
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Prazenie</label>
-                <input v-model="productForm.roast_type" class="w-full px-3 py-2 border rounded-lg text-sm" />
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Ucel</label>
-                <input v-model="productForm.purpose" class="w-full px-3 py-2 border rounded-lg text-sm" />
-              </div>
+            <div class="space-y-1">
+              <Label>Chutový profil</Label>
+              <textarea v-model="productForm.description2" rows="2" class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"></textarea>
             </div>
             <div class="grid grid-cols-2 gap-3">
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Cena 250g (EUR)</label>
-                <input v-model="productForm.price_250g" type="number" step="0.01" class="w-full px-3 py-2 border rounded-lg text-sm" />
+              <div class="space-y-1">
+                <Label>Praženie</Label>
+                <Input v-model="productForm.roast_type" />
               </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Cena 1kg (EUR)</label>
-                <input v-model="productForm.price_1kg" type="number" step="0.01" class="w-full px-3 py-2 border rounded-lg text-sm" />
+              <div class="space-y-1">
+                <Label>Účel</Label>
+                <Input v-model="productForm.purpose" />
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="space-y-1">
+                <Label>Cena 250g (EUR)</Label>
+                <Input v-model="productForm.price_250g" type="number" step="0.01" />
+              </div>
+              <div class="space-y-1">
+                <Label>Cena 1kg (EUR)</Label>
+                <Input v-model="productForm.price_1kg" type="number" step="0.01" />
               </div>
             </div>
           </div>
         </div>
 
-        <div class="flex gap-3 justify-end mt-6 pt-4 border-t">
-          <button @click="showProductModal = false" class="px-4 py-2 text-gray-600 hover:text-gray-800">Zrusit</button>
-          <button @click="saveProduct" class="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700">Ulozit</button>
-        </div>
-      </div>
-    </div>
+        <DialogFooter>
+          <Button variant="outline" @click="showProductModal = false">Zrušiť</Button>
+          <Button @click="saveProduct">Uložiť</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
-    <!-- Friend Modal -->
-    <div v-if="showFriendModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-md" @click.stop>
-        <h3 class="text-lg font-semibold mb-4">Novy priatel</h3>
-        <input
-          v-model="newFriendName"
-          placeholder="Meno priatela"
-          class="w-full px-4 py-2 border rounded-lg mb-4"
-          @keyup.enter="addFriend"
-        />
-        <div class="flex gap-3 justify-end">
-          <button @click="showFriendModal = false" class="px-4 py-2 text-gray-600 hover:text-gray-800">Zrusit</button>
-          <button @click="addFriend" class="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700">Pridat</button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>

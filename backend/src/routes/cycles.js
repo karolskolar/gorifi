@@ -7,10 +7,8 @@ const router = Router();
 router.get('/', (req, res) => {
   const cycles = db.prepare(`
     SELECT c.*,
-           COUNT(DISTINCT f.id) as friends_count,
            COUNT(DISTINCT CASE WHEN o.status = 'submitted' THEN o.id END) as orders_count
     FROM order_cycles c
-    LEFT JOIN friends f ON f.cycle_id = c.id
     LEFT JOIN orders o ON o.cycle_id = c.id
     GROUP BY c.id
     ORDER BY c.created_at DESC
@@ -31,10 +29,11 @@ router.get('/:id', (req, res) => {
 router.get('/:id/public', (req, res) => {
   const cycle = db.prepare('SELECT id, name, status FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
-    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
+    return res.status(404).json({ error: 'Cyklus nebol nájdený' });
   }
 
-  const friends = db.prepare('SELECT id, name FROM friends WHERE cycle_id = ? ORDER BY name').all(req.params.id);
+  // Return all active friends (global, not cycle-specific)
+  const friends = db.prepare('SELECT id, name FROM friends WHERE active = 1 ORDER BY name').all();
 
   res.json({
     cycle,
@@ -48,22 +47,22 @@ router.post('/:id/auth', (req, res) => {
 
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
-    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
+    return res.status(404).json({ error: 'Cyklus nebol nájdený' });
   }
 
   // Check password
   if (!cycle.shared_password) {
-    return res.status(400).json({ error: 'Heslo nie je nastavene pre tento cyklus' });
+    return res.status(400).json({ error: 'Heslo nie je nastavené pre tento cyklus' });
   }
 
   if (password !== cycle.shared_password) {
-    return res.status(401).json({ error: 'Nespravne heslo' });
+    return res.status(401).json({ error: 'Nesprávne heslo' });
   }
 
-  // Validate friend belongs to this cycle
-  const friend = db.prepare('SELECT id, name FROM friends WHERE id = ? AND cycle_id = ?').get(friendId, req.params.id);
+  // Validate friend exists and is active (global, no cycle check)
+  const friend = db.prepare('SELECT id, name FROM friends WHERE id = ? AND active = 1').get(friendId);
   if (!friend) {
-    return res.status(404).json({ error: 'Priatel nebol najdeny v tomto cykle' });
+    return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
   }
 
   res.json({
@@ -164,22 +163,19 @@ router.get('/:id/summary', (req, res) => {
 router.get('/:id/distribution', (req, res) => {
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
-    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
+    return res.status(404).json({ error: 'Cyklus nebol nájdený' });
   }
 
-  const friends = db.prepare(`
+  // Get friends who have submitted orders for this cycle (global friends)
+  const friendsWithOrders = db.prepare(`
     SELECT f.id, f.name, o.id as order_id, o.status, o.paid, o.total
-    FROM friends f
-    LEFT JOIN orders o ON o.friend_id = f.id AND o.status = 'submitted'
-    WHERE f.cycle_id = ?
+    FROM orders o
+    JOIN friends f ON f.id = o.friend_id
+    WHERE o.cycle_id = ? AND o.status = 'submitted'
     ORDER BY f.name
   `).all(req.params.id);
 
-  const distribution = friends.map(friend => {
-    if (!friend.order_id) {
-      return { ...friend, items: [] };
-    }
-
+  const distribution = friendsWithOrders.map(friend => {
     const items = db.prepare(`
       SELECT p.name as product_name, oi.variant, oi.quantity, oi.price
       FROM order_items oi

@@ -86,9 +86,9 @@ export const api = {
   uploadProductImage: (id, formData) => request(`/products/${id}/image`, { method: 'POST', body: formData }),
   uploadProductImageFromUrl: (id, imageUrl) => request(`/products/${id}/image-from-url`, { method: 'POST', body: { url: imageUrl } }),
 
-  // Friends
-  getFriends: (cycleId) => request(`/friends/cycle/${cycleId}`),
-  createFriend: (data) => request('/friends', { method: 'POST', body: data }),
+  // Friends (global)
+  getFriends: (activeOnly = false) => request(`/friends${activeOnly ? '?active=true' : ''}`),
+  createFriend: (name) => request('/friends', { method: 'POST', body: { name } }),
   updateFriend: (id, data) => request(`/friends/${id}`, { method: 'PATCH', body: data }),
   deleteFriend: (id) => request(`/friends/${id}`, { method: 'DELETE' }),
 

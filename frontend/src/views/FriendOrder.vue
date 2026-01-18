@@ -1,7 +1,14 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 import api, { setCyclePassword, clearCyclePassword } from '../api'
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Button } from '@/components/ui/button'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Badge } from '@/components/ui/badge'
 
 const route = useRoute()
 
@@ -77,6 +84,11 @@ onMounted(async () => {
   await loadPublicData()
 })
 
+// Set page title
+watchEffect(() => {
+  document.title = 'Objednávka'
+})
+
 async function loadPublicData() {
   loading.value = true
   authState.value = 'loading'
@@ -97,7 +109,7 @@ async function loadPublicData() {
           const friendExists = cyclePublic.value.friends.find(f => f.id === parsed.friendId)
           if (friendExists) {
             savedAuth.value = parsed
-            selectedFriendId.value = parsed.friendId
+            selectedFriendId.value = String(parsed.friendId)
             authState.value = 'welcome-back'
           } else {
             // Friend no longer exists, clear storage
@@ -243,7 +255,7 @@ async function saveCart() {
 
     const result = await api.updateOrderByFriend(cycleId.value, friend.value.id, items)
     order.value = result.order
-    successMessage.value = 'Kosik bol ulozeny'
+    successMessage.value = 'Košík bol uložený'
 
     setTimeout(() => {
       successMessage.value = ''
@@ -258,7 +270,7 @@ async function saveCart() {
 async function submitOrder() {
   if (isLocked.value) return
   if (cartItems.value.length === 0) {
-    error.value = 'Kosik je prazdny'
+    error.value = 'Košík je prázdny'
     return
   }
 
@@ -271,7 +283,7 @@ async function submitOrder() {
   try {
     const result = await api.submitOrderByFriend(cycleId.value, friend.value.id)
     order.value = result.order
-    successMessage.value = 'Objednavka bola odoslana!'
+    successMessage.value = 'Objednávka bola odoslaná!'
   } catch (e) {
     error.value = e.message
   } finally {
@@ -285,260 +297,319 @@ function formatPrice(price) {
 </script>
 
 <template>
-  <div class="min-h-screen bg-amber-50">
+  <div class="min-h-screen bg-background">
     <!-- Header -->
-    <header class="bg-amber-800 text-white shadow sticky top-0 z-40">
-      <div class="max-w-4xl mx-auto px-4 py-4 flex justify-between items-center">
-        <div>
-          <h1 class="text-xl font-bold">Gorifi - Objednavka kavy</h1>
-          <p v-if="authState === 'authenticated' && friend" class="text-amber-200 text-sm">
-            {{ friend.name }} | {{ cycle?.name }}
-          </p>
-          <p v-else-if="cyclePublic" class="text-amber-200 text-sm">{{ cyclePublic.cycle.name }}</p>
+    <header class="bg-primary text-primary-foreground shadow sticky top-0 z-40 relative">
+      <div class="max-w-4xl mx-auto px-4 py-3 flex justify-between items-center">
+        <!-- Logo only when not authenticated, left-aligned info when authenticated -->
+        <div v-if="authState === 'authenticated' && friend" class="flex flex-col">
+          <span class="text-lg font-semibold">{{ friend.name }}</span>
+          <span class="text-primary-foreground/70 text-sm">{{ cycle?.name }}</span>
         </div>
-        <button
+        <div v-else class="flex-1 flex justify-center">
+          <img
+            src="https://www.goriffee.com/wp-content/uploads/2024/02/01-GORIFFEE-Logo-RGB-400x110.png"
+            alt="Goriffee"
+            class="h-10 object-contain"
+          />
+        </div>
+        <Button
           v-if="authState === 'authenticated'"
+          variant="ghost"
           @click="switchUser"
-          class="text-amber-200 hover:text-white text-sm underline"
+          class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10"
         >
-          Zmenit pouzivatela
-        </button>
+          Zmeniť používateľa
+        </Button>
       </div>
     </header>
 
     <!-- Loading -->
-    <div v-if="loading && authState === 'loading'" class="text-center py-12 text-gray-500">Nacitavam...</div>
+    <div v-if="loading && authState === 'loading'" class="text-center py-12 text-muted-foreground">Načítavam...</div>
 
     <!-- Global Error -->
     <div v-else-if="error && authState === 'loading'" class="max-w-4xl mx-auto px-4 py-12">
-      <div class="bg-red-50 text-red-700 p-6 rounded-lg text-center">
-        <h2 class="text-lg font-semibold mb-2">Chyba</h2>
-        <p>{{ error }}</p>
-      </div>
+      <Alert variant="destructive">
+        <AlertDescription>
+          <strong>Chyba:</strong> {{ error }}
+        </AlertDescription>
+      </Alert>
     </div>
 
     <!-- Login Form -->
-    <div v-else-if="authState === 'login'" class="max-w-md mx-auto px-4 py-12">
-      <div class="bg-white rounded-lg shadow-lg p-6">
-        <h2 class="text-xl font-semibold text-gray-800 mb-6 text-center">Prihlasenie</h2>
+    <div v-else-if="authState === 'login'" class="max-w-md mx-auto px-4 py-8">
+      <!-- Three friends image -->
+      <div class="flex justify-center mb-6">
+        <img
+          src="https://www.goriffee.com/wp-content/uploads/2025/01/goriffee_three_friends-1.png"
+          alt="Goriffee Friends"
+          class="h-32 object-contain"
+        />
+      </div>
+      <Card>
+        <CardHeader class="text-center">
+          <CardTitle>Prihlásenie</CardTitle>
+        </CardHeader>
+        <CardContent class="space-y-4">
+          <Alert v-if="authError" variant="destructive">
+            <AlertDescription>{{ authError }}</AlertDescription>
+          </Alert>
 
-        <div v-if="authError" class="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
-          {{ authError }}
-        </div>
-
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Vyberte svoje meno</label>
-            <select
-              v-model="selectedFriendId"
-              class="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
-            >
-              <option value="">-- Vyberte --</option>
-              <option v-for="f in cyclePublic?.friends" :key="f.id" :value="f.id">
-                {{ f.name }}
-              </option>
-            </select>
+          <div class="space-y-2">
+            <Label>Vyberte svoje meno</Label>
+            <Select v-model="selectedFriendId">
+              <SelectTrigger>
+                <SelectValue placeholder="-- Vyberte --" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem v-for="f in cyclePublic?.friends" :key="f.id" :value="String(f.id)">
+                  {{ f.name }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Heslo</label>
-            <input
+          <div class="space-y-2">
+            <Label>Heslo</Label>
+            <Input
               v-model="password"
               type="password"
               placeholder="Zadajte heslo"
-              class="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
               @keyup.enter="authenticate"
             />
           </div>
 
           <label class="flex items-center gap-2 cursor-pointer">
-            <input v-model="rememberMe" type="checkbox" class="rounded border-gray-300 text-amber-600 focus:ring-amber-500" />
-            <span class="text-sm text-gray-600">Zapamatat si ma na tomto zariadeni</span>
+            <input v-model="rememberMe" type="checkbox" class="rounded border-input" />
+            <span class="text-sm text-muted-foreground">Zapamätať si ma na tomto zariadení</span>
           </label>
 
-          <button
+          <Button
             @click="authenticate"
             :disabled="loading || !selectedFriendId || !password"
-            class="w-full px-4 py-3 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            class="w-full"
           >
-            {{ loading ? 'Overujem...' : 'Prihlasit sa' }}
-          </button>
-        </div>
-      </div>
+            {{ loading ? 'Overujem...' : 'Prihlásiť sa' }}
+          </Button>
+        </CardContent>
+      </Card>
     </div>
 
     <!-- Welcome Back -->
-    <div v-else-if="authState === 'welcome-back'" class="max-w-md mx-auto px-4 py-12">
-      <div class="bg-white rounded-lg shadow-lg p-6">
-        <h2 class="text-xl font-semibold text-gray-800 mb-2 text-center">Vitajte spat!</h2>
-        <p class="text-gray-600 text-center mb-6">{{ savedAuth?.friendName }}</p>
+    <div v-else-if="authState === 'welcome-back'" class="max-w-md mx-auto px-4 py-8">
+      <!-- Three friends image -->
+      <div class="flex justify-center mb-6">
+        <img
+          src="https://www.goriffee.com/wp-content/uploads/2025/01/goriffee_three_friends-1.png"
+          alt="Goriffee Friends"
+          class="h-32 object-contain"
+        />
+      </div>
+      <Card>
+        <CardHeader class="text-center">
+          <CardTitle>Vitajte späť!</CardTitle>
+          <CardDescription>{{ savedAuth?.friendName }}</CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-4">
+          <Alert v-if="authError" variant="destructive">
+            <AlertDescription>{{ authError }}</AlertDescription>
+          </Alert>
 
-        <div v-if="authError" class="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
-          {{ authError }}
-        </div>
-
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Heslo</label>
-            <input
+          <div class="space-y-2">
+            <Label>Heslo</Label>
+            <Input
               v-model="password"
               type="password"
               placeholder="Zadajte heslo"
-              class="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
               @keyup.enter="authenticate"
             />
           </div>
 
-          <button
+          <Button
             @click="authenticate"
             :disabled="loading || !password"
-            class="w-full px-4 py-3 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            class="w-full"
           >
-            {{ loading ? 'Overujem...' : 'Pokracovat' }}
-          </button>
+            {{ loading ? 'Overujem...' : 'Pokračovať' }}
+          </Button>
 
-          <button
+          <Button
+            variant="ghost"
             @click="switchUser"
-            class="w-full px-4 py-2 text-gray-600 hover:text-gray-800 text-sm"
+            class="w-full"
           >
-            Nie som {{ savedAuth?.friendName }}? Zmenit pouzivatela
-          </button>
-        </div>
-      </div>
+            Nie som {{ savedAuth?.friendName }}? Zmeniť používateľa
+          </Button>
+        </CardContent>
+      </Card>
     </div>
 
     <!-- Authenticated - Order Form -->
     <div v-else-if="authState === 'authenticated'" class="max-w-4xl mx-auto px-4 py-6">
       <!-- Status banner -->
-      <div v-if="isLocked" class="mb-6 p-4 bg-yellow-100 text-yellow-800 rounded-lg text-center">
-        <strong>Objednavky su uzamknute.</strong> Uz nie je mozne menit objednavku.
-      </div>
+      <Alert v-if="isLocked" class="mb-6 border-yellow-500 bg-yellow-50 text-yellow-800">
+        <AlertDescription>
+          <strong>Objednávky sú uzamknuté.</strong> Už nie je možné meniť objednávku.
+        </AlertDescription>
+      </Alert>
 
-      <div v-if="isSubmitted && !isLocked" class="mb-6 p-4 bg-green-100 text-green-800 rounded-lg text-center">
-        <strong>Vasa objednavka bola odoslana!</strong> Stale ju mozete upravit az do uzamknutia.
-      </div>
+      <Alert v-if="isSubmitted && !isLocked" class="mb-6 border-green-500 bg-green-50 text-green-800">
+        <AlertDescription>
+          <strong>Vaša objednávka bola odoslaná!</strong> Stále ju môžete upraviť až do uzamknutia.
+        </AlertDescription>
+      </Alert>
 
       <!-- Messages -->
-      <div v-if="error" class="mb-4 p-4 bg-red-50 text-red-700 rounded-lg">{{ error }}</div>
-      <div v-if="successMessage" class="mb-4 p-4 bg-green-50 text-green-700 rounded-lg">{{ successMessage }}</div>
+      <Alert v-if="error" variant="destructive" class="mb-4">
+        <AlertDescription>{{ error }}</AlertDescription>
+      </Alert>
+      <Alert v-if="successMessage" class="mb-4 border-green-500 bg-green-50 text-green-800">
+        <AlertDescription>{{ successMessage }}</AlertDescription>
+      </Alert>
 
       <!-- Products by roast type -->
       <div v-for="(groupProducts, roastType) in groupedProducts" :key="roastType" class="mb-8">
-        <h2 class="text-lg font-semibold text-gray-800 mb-4 sticky top-16 bg-amber-50 py-2 z-30">
+        <h2 class="text-lg font-semibold text-foreground mb-4 sticky top-16 bg-background py-2 z-30">
           {{ roastType }}
         </h2>
 
         <div class="space-y-3">
-          <div
+          <Card
             v-for="product in groupProducts"
             :key="product.id"
-            class="bg-white rounded-lg shadow p-4"
           >
-            <div class="flex gap-4 mb-3">
-              <!-- Product image -->
-              <div class="w-20 h-20 flex-shrink-0 bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center">
-                <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
-                <svg v-else class="w-8 h-8 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-              </div>
-              <!-- Product info -->
-              <div class="flex-1 min-w-0">
-                <h3 class="font-semibold text-gray-800">{{ product.name }}</h3>
-                <p v-if="product.description1" class="text-sm text-gray-600">{{ product.description1 }}</p>
-                <p v-if="product.description2" class="text-sm text-gray-500 mt-1 line-clamp-2">{{ product.description2 }}</p>
-                <p v-if="product.purpose" class="text-xs text-amber-700 mt-1">{{ product.purpose }}</p>
-              </div>
-            </div>
-
-            <div class="grid grid-cols-2 gap-4">
-              <!-- 250g variant -->
-              <div v-if="product.price_250g" class="border rounded-lg p-3">
-                <div class="flex justify-between items-center mb-2">
-                  <span class="text-sm font-medium">250g</span>
-                  <span class="text-sm text-amber-700 font-semibold">{{ formatPrice(product.price_250g) }}</span>
+            <CardContent class="p-4">
+              <div class="flex gap-4 mb-3">
+                <!-- Product image -->
+                <div class="w-20 h-20 flex-shrink-0 bg-muted rounded-lg overflow-hidden flex items-center justify-center">
+                  <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
+                  <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
                 </div>
-                <div class="flex items-center justify-center gap-3">
-                  <button
-                    @click="decrement(product.id, '250g')"
-                    :disabled="isLocked || getQuantity(product.id, '250g') === 0"
-                    class="w-8 h-8 rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-                  >
-                    -
-                  </button>
-                  <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '250g') }}</span>
-                  <button
-                    @click="increment(product.id, '250g')"
-                    :disabled="isLocked"
-                    class="w-8 h-8 rounded-full bg-amber-100 text-amber-700 hover:bg-amber-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-                  >
-                    +
-                  </button>
+                <!-- Product info -->
+                <div class="flex-1 min-w-0">
+                  <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
+                  <p v-if="product.description1" class="text-sm text-muted-foreground">{{ product.description1 }}</p>
+                  <p v-if="product.description2" class="text-sm text-muted-foreground/70 mt-1 line-clamp-2">{{ product.description2 }}</p>
+                  <Badge v-if="product.purpose" variant="secondary" class="mt-1">{{ product.purpose }}</Badge>
                 </div>
               </div>
 
-              <!-- 1kg variant -->
-              <div v-if="product.price_1kg" class="border rounded-lg p-3">
-                <div class="flex justify-between items-center mb-2">
-                  <span class="text-sm font-medium">1kg</span>
-                  <span class="text-sm text-amber-700 font-semibold">{{ formatPrice(product.price_1kg) }}</span>
+              <div class="grid grid-cols-2 gap-4">
+                <!-- 250g variant -->
+                <div
+                  v-if="product.price_250g"
+                  :class="[
+                    'rounded-lg p-3 transition-colors',
+                    getQuantity(product.id, '250g') > 0
+                      ? 'bg-primary/10 border-2 border-primary'
+                      : 'border bg-background'
+                  ]"
+                >
+                  <div class="flex justify-between items-center mb-2">
+                    <span class="text-sm font-medium">250g</span>
+                    <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_250g) }}</span>
+                  </div>
+                  <div class="flex items-center justify-center gap-3">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="decrement(product.id, '250g')"
+                      :disabled="isLocked || getQuantity(product.id, '250g') === 0"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      -
+                    </Button>
+                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '250g') }}</span>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="increment(product.id, '250g')"
+                      :disabled="isLocked"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      +
+                    </Button>
+                  </div>
                 </div>
-                <div class="flex items-center justify-center gap-3">
-                  <button
-                    @click="decrement(product.id, '1kg')"
-                    :disabled="isLocked || getQuantity(product.id, '1kg') === 0"
-                    class="w-8 h-8 rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-                  >
-                    -
-                  </button>
-                  <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '1kg') }}</span>
-                  <button
-                    @click="increment(product.id, '1kg')"
-                    :disabled="isLocked"
-                    class="w-8 h-8 rounded-full bg-amber-100 text-amber-700 hover:bg-amber-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-                  >
-                    +
-                  </button>
+
+                <!-- 1kg variant -->
+                <div
+                  v-if="product.price_1kg"
+                  :class="[
+                    'rounded-lg p-3 transition-colors',
+                    getQuantity(product.id, '1kg') > 0
+                      ? 'bg-primary/10 border-2 border-primary'
+                      : 'border bg-background'
+                  ]"
+                >
+                  <div class="flex justify-between items-center mb-2">
+                    <span class="text-sm font-medium">1kg</span>
+                    <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_1kg) }}</span>
+                  </div>
+                  <div class="flex items-center justify-center gap-3">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="decrement(product.id, '1kg')"
+                      :disabled="isLocked || getQuantity(product.id, '1kg') === 0"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      -
+                    </Button>
+                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '1kg') }}</span>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="increment(product.id, '1kg')"
+                      :disabled="isLocked"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      +
+                    </Button>
+                  </div>
                 </div>
               </div>
-            </div>
-          </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
 
       <!-- Sticky cart footer -->
-      <div v-if="cartItems.length > 0" class="fixed bottom-0 left-0 right-0 bg-white shadow-lg border-t z-50">
+      <div v-if="cartItems.length > 0" class="fixed bottom-0 left-0 right-0 bg-card shadow-lg border-t z-50">
         <div class="max-w-4xl mx-auto px-4 py-4">
           <div class="flex justify-between items-center mb-3">
             <div>
-              <span class="text-gray-600">Poloziek: {{ cartItems.length }}</span>
+              <span class="text-muted-foreground">Položiek: {{ cartItems.length }}</span>
               <span class="mx-2">|</span>
               <span class="font-semibold text-lg">Celkom: {{ formatPrice(cartTotal) }}</span>
             </div>
           </div>
 
           <div v-if="!isLocked" class="flex gap-3">
-            <button
+            <Button
+              variant="outline"
               @click="saveCart"
               :disabled="saving"
-              class="flex-1 px-4 py-3 bg-gray-100 text-gray-700 rounded-lg font-medium hover:bg-gray-200 disabled:opacity-50"
+              class="flex-1"
             >
-              {{ saving ? 'Ukladam...' : 'Ulozit kosik' }}
-            </button>
-            <button
+              {{ saving ? 'Ukladám...' : 'Uložiť košík' }}
+            </Button>
+            <Button
               @click="submitOrder"
               :disabled="saving"
-              class="flex-1 px-4 py-3 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 disabled:opacity-50"
+              class="flex-1"
             >
-              {{ saving ? 'Odosielam...' : (isSubmitted ? 'Aktualizovat objednavku' : 'Odoslat objednavku') }}
-            </button>
+              {{ saving ? 'Odosielam...' : (isSubmitted ? 'Aktualizovať objednávku' : 'Odoslať objednávku') }}
+            </Button>
           </div>
 
           <!-- Cart details toggle -->
           <details class="mt-3">
-            <summary class="text-sm text-gray-500 cursor-pointer">Zobrazit polozky v kosiku</summary>
-            <div class="mt-2 text-sm">
-              <div v-for="item in cartItems" :key="item.key" class="flex justify-between py-1 border-b border-gray-100">
+            <summary class="text-sm text-muted-foreground cursor-pointer">Zobraziť položky v košíku</summary>
+            <div class="mt-2 text-sm max-h-40 overflow-y-auto">
+              <div v-for="item in cartItems" :key="item.key" class="flex justify-between py-1 border-b border-border">
                 <span>{{ item.product_name }} ({{ item.variant }}) x{{ item.quantity }}</span>
                 <span>{{ formatPrice(item.total) }}</span>
               </div>

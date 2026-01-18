@@ -1,7 +1,12 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Button } from '@/components/ui/button'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 
 const router = useRouter()
 const password = ref('')
@@ -33,6 +38,11 @@ onMounted(async () => {
   }
 })
 
+// Set page title
+watchEffect(() => {
+  document.title = 'Admin'
+})
+
 async function handleSubmit() {
   if (!password.value) {
     error.value = 'Zadajte heslo'
@@ -60,38 +70,36 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <div class="min-h-screen flex items-center justify-center bg-amber-50">
-    <div class="bg-white p-8 rounded-lg shadow-lg w-full max-w-md">
-      <div class="text-center mb-8">
-        <h1 class="text-3xl font-bold text-amber-800">Gorifi</h1>
-        <p class="text-gray-600 mt-2">Sprava objednavok kavy</p>
-      </div>
+  <div class="min-h-screen flex items-center justify-center bg-background">
+    <Card class="w-full max-w-md">
+      <CardHeader class="text-center">
+        <CardTitle class="text-3xl">Gorifi</CardTitle>
+        <CardDescription>Správa objednávok kávy</CardDescription>
+      </CardHeader>
 
-      <form @submit.prevent="handleSubmit">
-        <div class="mb-4">
-          <label class="block text-gray-700 text-sm font-medium mb-2">
-            {{ isSetup ? 'Admin heslo' : 'Nastavte admin heslo' }}
-          </label>
-          <input
-            v-model="password"
-            type="password"
-            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent"
-            :placeholder="isSetup ? 'Zadajte heslo' : 'Zvolte heslo (min. 4 znaky)'"
-          />
-        </div>
+      <CardContent>
+        <form @submit.prevent="handleSubmit" class="space-y-4">
+          <div class="space-y-2">
+            <Label for="password">
+              {{ isSetup ? 'Admin heslo' : 'Nastavte admin heslo' }}
+            </Label>
+            <Input
+              id="password"
+              v-model="password"
+              type="password"
+              :placeholder="isSetup ? 'Zadajte heslo' : 'Zvoľte heslo (min. 4 znaky)'"
+            />
+          </div>
 
-        <div v-if="error" class="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
-          {{ error }}
-        </div>
+          <Alert v-if="error" variant="destructive">
+            <AlertDescription>{{ error }}</AlertDescription>
+          </Alert>
 
-        <button
-          type="submit"
-          :disabled="loading"
-          class="w-full bg-amber-600 text-white py-2 px-4 rounded-lg font-medium hover:bg-amber-700 transition-colors disabled:opacity-50"
-        >
-          {{ loading ? 'Nacitavam...' : (isSetup ? 'Prihlasit sa' : 'Nastavit heslo') }}
-        </button>
-      </form>
-    </div>
+          <Button type="submit" :disabled="loading" class="w-full">
+            {{ loading ? 'Načítavam...' : (isSetup ? 'Prihlásiť sa' : 'Nastaviť heslo') }}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
   </div>
 </template>

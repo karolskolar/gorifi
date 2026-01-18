@@ -17,6 +17,11 @@ const routes = [
     component: () => import('./views/AdminDashboard.vue')
   },
   {
+    path: '/admin/friends',
+    name: 'admin-friends',
+    component: () => import('./views/AdminFriends.vue')
+  },
+  {
     path: '/admin/cycle/:id',
     name: 'cycle-detail',
     component: () => import('./views/CycleDetail.vue')

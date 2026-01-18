@@ -31,14 +31,14 @@ router.get('/cycle/:cycleId/friend/:friendId', (req, res) => {
     return res.status(validation.status).json({ error: validation.error });
   }
 
-  // Validate friend belongs to this cycle
-  const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND cycle_id = ?').get(friendId, cycleId);
+  // Validate friend exists and is active (global, no cycle check)
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(friendId);
   if (!friend) {
-    return res.status(404).json({ error: 'Priatel nebol najdeny' });
+    return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
   }
 
-  // Get or create order for this friend
-  let order = db.prepare('SELECT * FROM orders WHERE friend_id = ?').get(friendId);
+  // Get or create order for this friend in this cycle
+  let order = db.prepare('SELECT * FROM orders WHERE friend_id = ? AND cycle_id = ?').get(friendId, cycleId);
 
   if (!order) {
     const result = db.prepare(`
@@ -79,14 +79,14 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
     return res.status(403).json({ error: 'Objednavky su uzamknute' });
   }
 
-  // Validate friend belongs to this cycle
-  const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND cycle_id = ?').get(friendId, cycleId);
+  // Validate friend exists and is active (global, no cycle check)
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(friendId);
   if (!friend) {
-    return res.status(404).json({ error: 'Priatel nebol najdeny' });
+    return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
   }
 
-  // Get or create order
-  let order = db.prepare('SELECT * FROM orders WHERE friend_id = ?').get(friendId);
+  // Get or create order for this friend in this cycle
+  let order = db.prepare('SELECT * FROM orders WHERE friend_id = ? AND cycle_id = ?').get(friendId, cycleId);
 
   if (!order) {
     const result = db.prepare(`
@@ -167,13 +167,13 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
     return res.status(403).json({ error: 'Objednavky su uzamknute' });
   }
 
-  // Validate friend belongs to this cycle
-  const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND cycle_id = ?').get(friendId, cycleId);
+  // Validate friend exists and is active (global, no cycle check)
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(friendId);
   if (!friend) {
-    return res.status(404).json({ error: 'Priatel nebol najdeny' });
+    return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
   }
 
-  const order = db.prepare('SELECT * FROM orders WHERE friend_id = ?').get(friendId);
+  const order = db.prepare('SELECT * FROM orders WHERE friend_id = ? AND cycle_id = ?').get(friendId, cycleId);
 
   if (!order) {
     return res.status(404).json({ error: 'Objednavka neexistuje' });
@@ -230,6 +230,24 @@ router.get('/cycle/:cycleId', (req, res) => {
     WHERE o.cycle_id = ?
     ORDER BY o.submitted_at DESC
   `).all(req.params.cycleId);
+
+  // Add items to each order and calculate package counts
+  for (const order of orders) {
+    order.items = db.prepare(`
+      SELECT oi.*, p.name as product_name
+      FROM order_items oi
+      JOIN products p ON p.id = oi.product_id
+      WHERE oi.order_id = ?
+      ORDER BY p.name, oi.variant
+    `).all(order.id);
+
+    order.count_250g = order.items
+      .filter(i => i.variant === '250g')
+      .reduce((sum, i) => sum + i.quantity, 0);
+    order.count_1kg = order.items
+      .filter(i => i.variant === '1kg')
+      .reduce((sum, i) => sum + i.quantity, 0);
+  }
 
   res.json(orders);
 });

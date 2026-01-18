@@ -73,3 +73,30 @@ cd frontend && npm run dev
 ### Vue Patterns
 - Use `computed()` for derived state from route params
 - Reactivity trigger for objects: `cart.value = { ...cart.value }`
+
+## Deployment
+
+### Architecture
+```
+Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
+├── gorifi.skolar.sk     → port 80 → gorifi-backend:3000
+└── gorifi-dev.skolar.sk → port 80 → gorifi-staging:3001
+```
+
+### Deploy Commands
+```bash
+./deploy/deploy.sh staging             # Deploy to dev
+./deploy/deploy.sh production          # Deploy to production
+./deploy/deploy.sh staging backend     # Backend only
+./deploy/deploy.sh production frontend # Frontend only
+```
+
+### Deploy Files
+- `deploy/ecosystem.config.cjs` - PM2 config (both apps)
+- `deploy/nginx-gorifi.conf` - Production nginx
+- `deploy/nginx-gorifi-staging.conf` - Dev/staging nginx
+- `deploy/deploy.sh` - Deployment script
+
+### Staging Indicator
+- `VITE_STAGING=true` env var shows amber "STAGING" banner
+- Set automatically by deploy script for staging builds
