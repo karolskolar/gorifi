@@ -1,11 +1,12 @@
 <script setup>
-import { ref, computed, onMounted, watchEffect } from 'vue'
+import { ref, computed, onMounted, watchEffect, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api, { getFriendsPassword } from '../api'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,6 +23,7 @@ const loading = ref(true)
 const saving = ref(false)
 const error = ref('')
 const successMessage = ref('')
+const activeTab = ref('Espresso')
 
 const cycleId = computed(() => route.params.cycleId)
 
@@ -64,6 +66,41 @@ const groupedProducts = computed(() => {
   }
   return groups
 })
+
+const availablePurposes = computed(() => {
+  // Order: Espresso, Filter, then others
+  const order = ['Espresso', 'Filter']
+  const purposes = Object.keys(groupedProducts.value)
+  const sorted = []
+  for (const p of order) {
+    if (purposes.includes(p)) sorted.push(p)
+  }
+  for (const p of purposes) {
+    if (!order.includes(p)) sorted.push(p)
+  }
+  return sorted
+})
+
+const backgroundClass = computed(() => {
+  if (activeTab.value === 'Espresso') return 'bg-stone-200'
+  if (activeTab.value === 'Filter') return 'bg-sky-50'
+  return 'bg-background'
+})
+
+function getTabTriggerClass(purpose) {
+  const isActive = activeTab.value === purpose
+  if (!isActive) return ''
+  if (purpose === 'Espresso') return 'bg-stone-600 text-white data-[state=active]:bg-stone-600 data-[state=active]:text-white'
+  if (purpose === 'Filter') return 'bg-sky-600 text-white data-[state=active]:bg-sky-600 data-[state=active]:text-white'
+  return ''
+}
+
+// Set active tab to first available purpose when products load
+watch(availablePurposes, (purposes) => {
+  if (purposes.length > 0 && !purposes.includes(activeTab.value)) {
+    activeTab.value = purposes[0]
+  }
+}, { immediate: true })
 
 const STORAGE_KEY = 'gorifi_friend_auth'
 
@@ -234,7 +271,7 @@ function formatPrice(price) {
 </script>
 
 <template>
-  <div class="min-h-screen bg-background">
+  <div :class="['min-h-screen transition-colors', backgroundClass]">
     <!-- Header -->
     <header class="bg-primary text-primary-foreground shadow sticky top-0 z-40 relative">
       <div class="max-w-4xl mx-auto px-4 py-3 flex justify-between items-center">
@@ -293,113 +330,224 @@ function formatPrice(price) {
         <AlertDescription>{{ successMessage }}</AlertDescription>
       </Alert>
 
-      <!-- Products by roast type -->
-      <div v-for="(groupProducts, roastType) in groupedProducts" :key="roastType" class="mb-8">
-        <h2 class="text-lg font-semibold text-foreground mb-4 sticky top-16 bg-background py-2 z-30">
-          {{ roastType }}
-        </h2>
-
-        <div class="space-y-3">
-          <Card
-            v-for="product in groupProducts"
-            :key="product.id"
+      <!-- Products by purpose with tabs -->
+      <Tabs v-if="availablePurposes.length > 1" v-model="activeTab" :default-value="availablePurposes[0]" class="w-full">
+        <TabsList class="sticky top-16 z-30 w-full justify-start bg-card/95 backdrop-blur">
+          <TabsTrigger
+            v-for="purpose in availablePurposes"
+            :key="purpose"
+            :value="purpose"
+            :class="['flex-1', getTabTriggerClass(purpose)]"
           >
-            <CardContent class="p-4">
-              <div class="flex gap-4 mb-3">
-                <!-- Product image -->
-                <div class="w-20 h-20 flex-shrink-0 bg-muted rounded-lg overflow-hidden flex items-center justify-center">
-                  <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
-                  <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                  </svg>
-                </div>
-                <!-- Product info -->
-                <div class="flex-1 min-w-0">
-                  <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
-                  <p v-if="product.description1" class="text-sm text-muted-foreground">{{ product.description1 }}</p>
-                  <p v-if="product.description2" class="text-sm text-muted-foreground/70 mt-1 line-clamp-2">{{ product.description2 }}</p>
-                  <Badge v-if="product.purpose" variant="secondary" class="mt-1">{{ product.purpose }}</Badge>
-                </div>
-              </div>
+            {{ purpose }}
+          </TabsTrigger>
+        </TabsList>
 
-              <div class="grid grid-cols-2 gap-4">
-                <!-- 250g variant -->
-                <div
-                  v-if="product.price_250g"
-                  :class="[
-                    'rounded-lg p-3 transition-colors',
-                    getQuantity(product.id, '250g') > 0
-                      ? 'bg-primary/10 border-2 border-primary'
-                      : 'border bg-background'
-                  ]"
-                >
-                  <div class="flex justify-between items-center mb-2">
-                    <span class="text-sm font-medium">250g</span>
-                    <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_250g) }}</span>
+        <TabsContent
+          v-for="purpose in availablePurposes"
+          :key="purpose"
+          :value="purpose"
+          class="mt-4"
+        >
+          <div class="space-y-3">
+            <Card
+              v-for="product in groupedProducts[purpose]"
+              :key="product.id"
+            >
+              <CardContent class="p-4">
+                <div class="flex gap-4 mb-3">
+                  <!-- Product image -->
+                  <div class="w-20 h-20 flex-shrink-0 bg-muted rounded-lg overflow-hidden flex items-center justify-center">
+                    <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
+                    <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
                   </div>
-                  <div class="flex items-center justify-center gap-3">
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="decrement(product.id, '250g')"
-                      :disabled="isLocked || getQuantity(product.id, '250g') === 0"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      -
-                    </Button>
-                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '250g') }}</span>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="increment(product.id, '250g')"
-                      :disabled="isLocked"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      +
-                    </Button>
+                  <!-- Product info -->
+                  <div class="flex-1 min-w-0">
+                    <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
+                    <p v-if="product.description1" class="text-sm text-muted-foreground">{{ product.description1 }}</p>
+                    <p v-if="product.description2" class="text-sm text-muted-foreground/70 mt-1 line-clamp-2">{{ product.description2 }}</p>
                   </div>
                 </div>
 
-                <!-- 1kg variant -->
-                <div
-                  v-if="product.price_1kg"
-                  :class="[
-                    'rounded-lg p-3 transition-colors',
-                    getQuantity(product.id, '1kg') > 0
-                      ? 'bg-primary/10 border-2 border-primary'
-                      : 'border bg-background'
-                  ]"
-                >
-                  <div class="flex justify-between items-center mb-2">
-                    <span class="text-sm font-medium">1kg</span>
-                    <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_1kg) }}</span>
+                <div class="grid grid-cols-2 gap-4">
+                  <!-- 250g variant -->
+                  <div
+                    v-if="product.price_250g"
+                    :class="[
+                      'rounded-lg p-3 transition-colors',
+                      getQuantity(product.id, '250g') > 0
+                        ? 'bg-primary/10 border-2 border-primary'
+                        : 'border bg-card'
+                    ]"
+                  >
+                    <div class="flex justify-between items-center mb-2">
+                      <span class="text-sm font-medium">250g</span>
+                      <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_250g) }}</span>
+                    </div>
+                    <div class="flex items-center justify-center gap-3">
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="decrement(product.id, '250g')"
+                        :disabled="isLocked || getQuantity(product.id, '250g') === 0"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        -
+                      </Button>
+                      <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '250g') }}</span>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="increment(product.id, '250g')"
+                        :disabled="isLocked"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        +
+                      </Button>
+                    </div>
                   </div>
-                  <div class="flex items-center justify-center gap-3">
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="decrement(product.id, '1kg')"
-                      :disabled="isLocked || getQuantity(product.id, '1kg') === 0"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      -
-                    </Button>
-                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '1kg') }}</span>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="increment(product.id, '1kg')"
-                      :disabled="isLocked"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      +
-                    </Button>
+
+                  <!-- 1kg variant -->
+                  <div
+                    v-if="product.price_1kg"
+                    :class="[
+                      'rounded-lg p-3 transition-colors',
+                      getQuantity(product.id, '1kg') > 0
+                        ? 'bg-primary/10 border-2 border-primary'
+                        : 'border bg-card'
+                    ]"
+                  >
+                    <div class="flex justify-between items-center mb-2">
+                      <span class="text-sm font-medium">1kg</span>
+                      <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_1kg) }}</span>
+                    </div>
+                    <div class="flex items-center justify-center gap-3">
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="decrement(product.id, '1kg')"
+                        :disabled="isLocked || getQuantity(product.id, '1kg') === 0"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        -
+                      </Button>
+                      <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '1kg') }}</span>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="increment(product.id, '1kg')"
+                        :disabled="isLocked"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        +
+                      </Button>
+                    </div>
                   </div>
                 </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+      </Tabs>
+
+      <!-- Fallback: show all products without tabs when only one purpose -->
+      <div v-else-if="availablePurposes.length === 1" class="space-y-3">
+        <Card
+          v-for="product in groupedProducts[availablePurposes[0]]"
+          :key="product.id"
+        >
+          <CardContent class="p-4">
+            <div class="flex gap-4 mb-3">
+              <div class="w-20 h-20 flex-shrink-0 bg-muted rounded-lg overflow-hidden flex items-center justify-center">
+                <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
+                <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
               </div>
-            </CardContent>
-          </Card>
-        </div>
+              <div class="flex-1 min-w-0">
+                <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
+                <p v-if="product.description1" class="text-sm text-muted-foreground">{{ product.description1 }}</p>
+                <p v-if="product.description2" class="text-sm text-muted-foreground/70 mt-1 line-clamp-2">{{ product.description2 }}</p>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+              <div
+                v-if="product.price_250g"
+                :class="[
+                  'rounded-lg p-3 transition-colors',
+                  getQuantity(product.id, '250g') > 0
+                    ? 'bg-primary/10 border-2 border-primary'
+                    : 'border bg-card'
+                ]"
+              >
+                <div class="flex justify-between items-center mb-2">
+                  <span class="text-sm font-medium">250g</span>
+                  <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_250g) }}</span>
+                </div>
+                <div class="flex items-center justify-center gap-3">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    @click="decrement(product.id, '250g')"
+                    :disabled="isLocked || getQuantity(product.id, '250g') === 0"
+                    class="h-8 w-8 rounded-full"
+                  >
+                    -
+                  </Button>
+                  <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '250g') }}</span>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    @click="increment(product.id, '250g')"
+                    :disabled="isLocked"
+                    class="h-8 w-8 rounded-full"
+                  >
+                    +
+                  </Button>
+                </div>
+              </div>
+
+              <div
+                v-if="product.price_1kg"
+                :class="[
+                  'rounded-lg p-3 transition-colors',
+                  getQuantity(product.id, '1kg') > 0
+                    ? 'bg-primary/10 border-2 border-primary'
+                    : 'border bg-card'
+                ]"
+              >
+                <div class="flex justify-between items-center mb-2">
+                  <span class="text-sm font-medium">1kg</span>
+                  <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_1kg) }}</span>
+                </div>
+                <div class="flex items-center justify-center gap-3">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    @click="decrement(product.id, '1kg')"
+                    :disabled="isLocked || getQuantity(product.id, '1kg') === 0"
+                    class="h-8 w-8 rounded-full"
+                  >
+                    -
+                  </Button>
+                  <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '1kg') }}</span>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    @click="increment(product.id, '1kg')"
+                    :disabled="isLocked"
+                    class="h-8 w-8 rounded-full"
+                  >
+                    +
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       <!-- Sticky cart footer -->
