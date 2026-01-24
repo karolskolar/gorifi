@@ -44,21 +44,23 @@ cd frontend && npm run dev
 ### API Client
 - Frontend API client in `frontend/src/api.js`
 - Supports FormData for file uploads (auto-removes Content-Type header)
-- Custom headers can be injected (e.g., `X-Cycle-Password`)
+- Custom headers can be injected (e.g., `X-Friends-Password`)
 
 ### Authentication
 - **Admin:** Password-based, stored in settings table
-- **Friends:** Shared password per cycle + friend selection from dropdown
-- Password sent via `X-Cycle-Password` header for friend order endpoints
+- **Friends:** Single global password (set in Admin > Settings) + friend selection from dropdown (honor system)
+- Password sent via `X-Friends-Password` header for friend order endpoints
 
 ## Learnings
 
-### Friend Ordering Flow (2026-01-17)
-- URL format: `/order/:cycleId` (single shared URL per cycle)
-- Friends authenticate by selecting name + entering shared password
-- Auth state stored in localStorage key `gorifi_auth` as `{ cycleId, friendId, friendName }`
-- Three UI states in FriendOrder.vue: `login` → `welcome-back` → `authenticated`
-- Password validated via `POST /cycles/:id/auth`, then stored in memory for `X-Cycle-Password` header
+### Friend Ordering Flow (2026-01-24)
+- URL format: `/` → Friend portal (login + cycle list), `/cycle/:cycleId` → Order page
+- Friends authenticate with global password (same for everyone), select name from dropdown
+- Auth state stored in localStorage key `gorifi_friend_auth` as `{ friendId, friendName, password }`
+- FriendPortal.vue handles login, shows cycle list with order status
+- FriendOrder.vue shows products/cart, redirects to portal if not authenticated
+- Password validated via `POST /friends/auth`, stored in memory for `X-Friends-Password` header
+- Admin sets global friends password in `/admin/settings`
 
 ### Database Migrations
 - Add new columns with try/catch pattern after CREATE TABLE:

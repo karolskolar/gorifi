@@ -122,6 +122,12 @@ async function initDb() {
     )
   `);
 
+  // Initialize friends_password if not exists (empty string means not set)
+  const friendsPassword = db.prepare("SELECT * FROM settings WHERE key = 'friends_password'").get();
+  if (!friendsPassword) {
+    db.run("INSERT INTO settings (key, value) VALUES ('friends_password', '')");
+  }
+
   saveDb();
   return db;
 }

@@ -3,22 +3,34 @@ import db from '../db/schema.js';
 
 const router = Router();
 
-// Helper: Validate password from X-Cycle-Password header
+// Helper: Validate password from X-Friends-Password (global) or X-Cycle-Password (legacy) header
 function validateCyclePassword(req, cycleId) {
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
   if (!cycle) {
     return { error: 'Cyklus nebol najdeny', status: 404 };
   }
 
-  const password = req.headers['x-cycle-password'];
-  if (!cycle.shared_password) {
-    return { error: 'Heslo nie je nastavene', status: 400 };
-  }
-  if (password !== cycle.shared_password) {
-    return { error: 'Nespravne heslo', status: 401 };
+  // Try global friends password first (new system)
+  const friendsPassword = req.headers['x-friends-password'];
+  if (friendsPassword) {
+    const setting = db.prepare("SELECT value FROM settings WHERE key = 'friends_password'").get();
+    if (setting && setting.value && friendsPassword === setting.value) {
+      return { cycle };
+    }
   }
 
-  return { cycle };
+  // Fall back to per-cycle password (legacy)
+  const cyclePassword = req.headers['x-cycle-password'];
+  if (cycle.shared_password && cyclePassword === cycle.shared_password) {
+    return { cycle };
+  }
+
+  // Check if any password was provided
+  if (!friendsPassword && !cyclePassword) {
+    return { error: 'Heslo nie je poskytnuté', status: 401 };
+  }
+
+  return { error: 'Nespravne heslo', status: 401 };
 }
 
 // Get order by cycle and friend (password protected)
@@ -221,33 +233,75 @@ router.patch('/:id/paid', (req, res) => {
   res.json(updated);
 });
 
-// Admin: Get all orders for a cycle
+// Admin: Get all orders for a cycle (includes all active friends)
 router.get('/cycle/:cycleId', (req, res) => {
-  const orders = db.prepare(`
+  const cycleId = req.params.cycleId;
+
+  // Get all active friends
+  const allFriends = db.prepare(`
+    SELECT id, name FROM friends WHERE active = 1 ORDER BY name
+  `).all();
+
+  // Get existing orders for this cycle
+  const existingOrders = db.prepare(`
     SELECT o.*, f.name as friend_name
     FROM orders o
     JOIN friends f ON f.id = o.friend_id
     WHERE o.cycle_id = ?
-    ORDER BY o.submitted_at DESC
-  `).all(req.params.cycleId);
+  `).all(cycleId);
 
-  // Add items to each order and calculate package counts
-  for (const order of orders) {
-    order.items = db.prepare(`
-      SELECT oi.*, p.name as product_name
-      FROM order_items oi
-      JOIN products p ON p.id = oi.product_id
-      WHERE oi.order_id = ?
-      ORDER BY p.name, oi.variant
-    `).all(order.id);
-
-    order.count_250g = order.items
-      .filter(i => i.variant === '250g')
-      .reduce((sum, i) => sum + i.quantity, 0);
-    order.count_1kg = order.items
-      .filter(i => i.variant === '1kg')
-      .reduce((sum, i) => sum + i.quantity, 0);
+  // Create a map of friend_id to order
+  const ordersByFriend = {};
+  for (const order of existingOrders) {
+    ordersByFriend[order.friend_id] = order;
   }
+
+  // Build combined list: all friends with their order (or placeholder)
+  const orders = allFriends.map(friend => {
+    const existingOrder = ordersByFriend[friend.id];
+
+    if (existingOrder) {
+      // Friend has an order - add items and counts
+      existingOrder.items = db.prepare(`
+        SELECT oi.*, p.name as product_name
+        FROM order_items oi
+        JOIN products p ON p.id = oi.product_id
+        WHERE oi.order_id = ?
+        ORDER BY p.name, oi.variant
+      `).all(existingOrder.id);
+
+      existingOrder.count_250g = existingOrder.items
+        .filter(i => i.variant === '250g')
+        .reduce((sum, i) => sum + i.quantity, 0);
+      existingOrder.count_1kg = existingOrder.items
+        .filter(i => i.variant === '1kg')
+        .reduce((sum, i) => sum + i.quantity, 0);
+
+      return existingOrder;
+    } else {
+      // Friend has no order - return placeholder
+      return {
+        id: null,
+        friend_id: friend.id,
+        friend_name: friend.name,
+        cycle_id: parseInt(cycleId),
+        status: 'none',
+        paid: 0,
+        total: 0,
+        items: [],
+        count_250g: 0,
+        count_1kg: 0
+      };
+    }
+  });
+
+  // Sort: submitted first, then draft, then none (by name within each group)
+  orders.sort((a, b) => {
+    const statusOrder = { submitted: 0, draft: 1, none: 2 };
+    const statusDiff = statusOrder[a.status] - statusOrder[b.status];
+    if (statusDiff !== 0) return statusDiff;
+    return a.friend_name.localeCompare(b.friend_name);
+  });
 
   res.json(orders);
 });

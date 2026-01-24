@@ -1,18 +1,31 @@
 const API_BASE = import.meta.env.VITE_API_URL || '/api'
 
-// Store cycle password for authenticated requests
-let cyclePassword = null
+// Store global friends password for authenticated requests
+let friendsPassword = null
 
+export function setFriendsPassword(password) {
+  friendsPassword = password
+}
+
+export function getFriendsPassword() {
+  return friendsPassword
+}
+
+export function clearFriendsPassword() {
+  friendsPassword = null
+}
+
+// Legacy aliases for backward compatibility
 export function setCyclePassword(password) {
-  cyclePassword = password
+  friendsPassword = password
 }
 
 export function getCyclePassword() {
-  return cyclePassword
+  return friendsPassword
 }
 
 export function clearCyclePassword() {
-  cyclePassword = null
+  friendsPassword = null
 }
 
 async function request(endpoint, options = {}) {
@@ -24,9 +37,9 @@ async function request(endpoint, options = {}) {
     ...options,
   }
 
-  // Add cycle password header if set
-  if (cyclePassword) {
-    config.headers['X-Cycle-Password'] = cyclePassword
+  // Add friends password header if set (new global auth)
+  if (friendsPassword) {
+    config.headers['X-Friends-Password'] = friendsPassword
   }
 
   if (options.body && typeof options.body === 'object' && !(options.body instanceof FormData)) {
@@ -68,12 +81,23 @@ export const api = {
   getCycleSummary: (id) => request(`/cycles/${id}/summary`),
   getCycleDistribution: (id) => request(`/cycles/${id}/distribution`),
 
-  // Cycle public endpoints (for friend ordering)
+  // Cycle public endpoints (for friend ordering - legacy)
   getCyclePublic: (id) => request(`/cycles/${id}/public`),
   authenticateCycle: (id, password, friendId) => request(`/cycles/${id}/auth`, {
     method: 'POST',
     body: { password, friendId }
   }),
+
+  // Friends global auth (new system)
+  authenticateFriends: (password, friendId) => request('/friends/auth', {
+    method: 'POST',
+    body: { password, friendId }
+  }),
+  getFriendsCycles: (friendId) => request(`/friends/cycles${friendId ? `?friendId=${friendId}` : ''}`),
+
+  // Admin settings
+  getAdminSettings: () => request('/admin/settings'),
+  updateAdminSettings: (data) => request('/admin/settings', { method: 'PUT', body: data }),
 
   // Products
   getProducts: (cycleId) => request(`/products/cycle/${cycleId}`),

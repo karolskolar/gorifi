@@ -3,8 +3,13 @@ import { createRouter, createWebHistory } from 'vue-router'
 const routes = [
   {
     path: '/',
-    name: 'home',
-    redirect: '/admin'
+    name: 'friend-portal',
+    component: () => import('./views/FriendPortal.vue')
+  },
+  {
+    path: '/cycle/:cycleId',
+    name: 'friend-order',
+    component: () => import('./views/FriendOrder.vue')
   },
   {
     path: '/admin',
@@ -15,6 +20,11 @@ const routes = [
     path: '/admin/dashboard',
     name: 'admin-dashboard',
     component: () => import('./views/AdminDashboard.vue')
+  },
+  {
+    path: '/admin/settings',
+    name: 'admin-settings',
+    component: () => import('./views/AdminSettings.vue')
   },
   {
     path: '/admin/friends',
@@ -31,10 +41,10 @@ const routes = [
     name: 'distribution',
     component: () => import('./views/Distribution.vue')
   },
+  // Legacy route for backward compatibility
   {
     path: '/order/:cycleId',
-    name: 'friend-order',
-    component: () => import('./views/FriendOrder.vue')
+    redirect: to => ({ path: `/cycle/${to.params.cycleId}` })
   }
 ]
 

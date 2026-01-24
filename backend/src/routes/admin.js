@@ -100,6 +100,29 @@ router.post('/logout', (req, res) => {
   res.json({ success: true });
 });
 
+// Get admin settings (friends_password, etc.)
+router.get('/settings', (req, res) => {
+  const friendsPassword = db.prepare("SELECT value FROM settings WHERE key = 'friends_password'").get();
+
+  res.json({
+    friendsPassword: friendsPassword?.value || ''
+  });
+});
+
+// Update admin settings
+router.put('/settings', (req, res) => {
+  const { friendsPassword } = req.body;
+
+  if (friendsPassword !== undefined) {
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('friends_password', ?)").run(friendsPassword || '');
+  }
+
+  res.json({
+    success: true,
+    friendsPassword: friendsPassword || ''
+  });
+});
+
 // Change password (requires current password)
 router.post('/change-password', (req, res) => {
   const { currentPassword, newPassword } = req.body;

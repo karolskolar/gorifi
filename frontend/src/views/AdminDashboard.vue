@@ -96,8 +96,11 @@ function getStatusText(status) {
           <Button variant="ghost" @click="router.push('/admin/friends')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             Priatelia
           </Button>
+          <Button variant="ghost" @click="router.push('/admin/settings')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
+            Nastavenia
+          </Button>
           <Button variant="ghost" @click="logout" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
-            Odhlásiť sa
+            Odhlasit sa
           </Button>
         </div>
       </div>

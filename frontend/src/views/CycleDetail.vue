@@ -45,18 +45,12 @@ const gsheetUrl = ref('')
 const gsheetLoading = ref(false)
 const gsheetFormat = ref('multirow')  // 'simple' or 'multirow'
 
-// Password settings
-const sharedPassword = ref('')
-const passwordSaving = ref(false)
-const passwordMessage = ref('')
 
 // Cycle name editing
 const editingCycleName = ref(false)
 const cycleNameEdit = ref('')
 
 const cycleId = computed(() => route.params.id)
-const baseUrl = computed(() => window.location.origin)
-const sharedOrderLink = computed(() => `${baseUrl.value}/order/${cycleId.value}`)
 
 // Expandable orders
 const expandedOrders = ref(new Set())
@@ -98,7 +92,6 @@ async function loadAll() {
     products.value = productsData
     orders.value = ordersData
     summary.value = summaryData
-    sharedPassword.value = cycleData.shared_password || ''
   } catch (e) {
     error.value = e.message
   } finally {
@@ -139,24 +132,6 @@ function cancelEditingCycleName() {
   cycleNameEdit.value = ''
 }
 
-async function savePassword() {
-  passwordSaving.value = true
-  passwordMessage.value = ''
-  try {
-    await api.updateCycle(cycleId.value, { shared_password: sharedPassword.value || null })
-    passwordMessage.value = 'Heslo bolo uložené'
-    setTimeout(() => { passwordMessage.value = '' }, 3000)
-  } catch (e) {
-    error.value = e.message
-  } finally {
-    passwordSaving.value = false
-  }
-}
-
-function copySharedLink() {
-  navigator.clipboard.writeText(sharedOrderLink.value)
-  alert('Odkaz bol skopírovaný!')
-}
 
 // Product actions
 function openProductModal(product = null) {
@@ -433,7 +408,7 @@ function getStatusVariant(status) {
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
               </svg>
             </h1>
-            <Badge v-if="cycle" :variant="getStatusVariant(cycle.status)" class="mt-1">
+            <Badge v-if="cycle" :variant="getStatusVariant(cycle.status)" class="mt-1 text-primary-foreground bg-primary-foreground/20 border-primary-foreground/30">
               {{ cycle.status === 'open' ? 'Otvorený' : cycle.status === 'locked' ? 'Uzamknutý' : 'Dokončený' }}
             </Badge>
           </div>
@@ -473,50 +448,6 @@ function getStatusVariant(status) {
       <div v-if="loading" class="text-center py-12 text-muted-foreground">Načítavam...</div>
 
       <template v-else>
-        <!-- Shared Link Settings -->
-        <Card class="mb-6">
-          <CardContent class="p-4">
-            <h3 class="text-sm font-semibold text-foreground mb-3">Zdieľaný odkaz pre objednávanie</h3>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <!-- Password -->
-              <div>
-                <Label class="text-xs text-muted-foreground mb-1">Heslo pre priateľov (povinné)</Label>
-                <div class="flex gap-2">
-                  <Input
-                    v-model="sharedPassword"
-                    placeholder="Zadajte heslo"
-                  />
-                  <Button
-                    @click="savePassword"
-                    :disabled="passwordSaving"
-                  >
-                    {{ passwordSaving ? 'Ukladám...' : 'Uložiť' }}
-                  </Button>
-                </div>
-                <p v-if="passwordMessage" class="text-xs text-green-600 mt-1">{{ passwordMessage }}</p>
-              </div>
-              <!-- Shared Link -->
-              <div>
-                <Label class="text-xs text-muted-foreground mb-1">Odkaz pre priateľov</Label>
-                <div class="flex gap-2">
-                  <Input
-                    :model-value="sharedOrderLink"
-                    readonly
-                    class="bg-muted"
-                  />
-                  <Button
-                    variant="outline"
-                    @click="copySharedLink"
-                  >
-                    Kopírovať
-                  </Button>
-                </div>
-                <p v-if="!sharedPassword" class="text-xs text-yellow-600 mt-1">Najprv nastavte heslo, aby odkaz fungoval</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
         <Tabs v-model="activeTab">
         <TabsList class="mb-6">
           <TabsTrigger value="products">Produkty</TabsTrigger>
@@ -678,6 +609,7 @@ function getStatusVariant(status) {
                   <TableRow>
                     <TableCell class="p-2">
                       <button
+                        v-if="order.status !== 'none'"
                         @click="toggleExpand(order.id)"
                         class="w-8 h-8 flex items-center justify-center rounded hover:bg-muted transition-colors"
                       >
@@ -696,13 +628,17 @@ function getStatusVariant(status) {
                     <TableCell class="text-center">{{ order.count_250g || 0 }}</TableCell>
                     <TableCell class="text-center">{{ order.count_1kg || 0 }}</TableCell>
                     <TableCell>
-                      <Badge :variant="order.status === 'submitted' ? 'default' : 'secondary'">
-                        {{ order.status === 'submitted' ? 'Odoslané' : 'Rozpracované' }}
+                      <Badge
+                        :variant="order.status === 'submitted' ? 'default' : order.status === 'none' ? 'outline' : 'secondary'"
+                        :class="order.status === 'none' ? 'text-muted-foreground' : ''"
+                      >
+                        {{ order.status === 'submitted' ? 'Odoslane' : order.status === 'none' ? 'Neobjednane' : 'Rozpracovane' }}
                       </Badge>
                     </TableCell>
                     <TableCell class="text-right">{{ formatPrice(order.total) }}</TableCell>
                     <TableCell class="text-center">
                       <button
+                        v-if="order.status !== 'none'"
                         @click="togglePaid(order)"
                         :class="['w-6 h-6 rounded border-2 flex items-center justify-center mx-auto', order.paid ? 'bg-green-500 border-green-500 text-white' : 'border-border']"
                       >
@@ -710,10 +646,11 @@ function getStatusVariant(status) {
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                         </svg>
                       </button>
+                      <span v-else class="text-muted-foreground">-</span>
                     </TableCell>
                   </TableRow>
                   <!-- Expanded items row -->
-                  <TableRow v-if="expandedOrders.has(order.id)">
+                  <TableRow v-if="order.status !== 'none' && expandedOrders.has(order.id)">
                     <TableCell colspan="7" class="bg-muted/50 p-4">
                       <div v-if="order.items && order.items.length > 0" class="space-y-1">
                         <div v-for="item in order.items" :key="`${item.product_id}-${item.variant}`" class="flex justify-between py-1 text-sm">
