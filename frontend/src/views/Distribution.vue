@@ -133,7 +133,7 @@ function printDistribution() {
                 <TableRow>
                   <TableHead>Produkt</TableHead>
                   <TableHead class="text-center">Varianta</TableHead>
-                  <TableHead class="text-center">Počet</TableHead>
+                  <TableHead class="text-center">Pocet</TableHead>
                   <TableHead class="text-right">Cena</TableHead>
                 </TableRow>
               </TableHeader>
@@ -145,6 +145,13 @@ function printDistribution() {
                   <TableCell class="text-right">{{ formatPrice(item.price * item.quantity) }}</TableCell>
                 </TableRow>
               </TableBody>
+              <tfoot>
+                <TableRow class="bg-muted font-semibold">
+                  <TableCell colspan="2">Celkom balickov</TableCell>
+                  <TableCell class="text-center">{{ friend.items.reduce((sum, item) => sum + item.quantity, 0) }}</TableCell>
+                  <TableCell></TableCell>
+                </TableRow>
+              </tfoot>
             </Table>
           </CardContent>
         </Card>
