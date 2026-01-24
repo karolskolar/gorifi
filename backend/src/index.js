@@ -6,6 +6,7 @@ import productsRouter from './routes/products.js';
 import friendsRouter from './routes/friends.js';
 import ordersRouter from './routes/orders.js';
 import adminRouter from './routes/admin.js';
+import transactionsRouter from './routes/transactions.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -20,6 +21,7 @@ app.use('/api/products', productsRouter);
 app.use('/api/friends', friendsRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/transactions', transactionsRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {

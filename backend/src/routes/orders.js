@@ -218,28 +218,121 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
   });
 });
 
-// Admin: Mark order as paid/unpaid
+// Admin: Mark order as paid/unpaid (creates payment transaction)
 router.patch('/:id/paid', (req, res) => {
   const { paid } = req.body;
-  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+  const order = db.prepare(`
+    SELECT o.*, c.name as cycle_name
+    FROM orders o
+    JOIN order_cycles c ON c.id = o.cycle_id
+    WHERE o.id = ?
+  `).get(req.params.id);
 
   if (!order) {
     return res.status(404).json({ error: 'Objednavka neexistuje' });
   }
 
-  db.prepare('UPDATE orders SET paid = ? WHERE id = ?').run(paid ? 1 : 0, req.params.id);
+  // Use transaction to ensure consistency
+  const togglePaid = db.transaction(() => {
+    if (paid && !order.paid) {
+      // Marking as paid - create payment transaction
+      db.prepare(`
+        INSERT INTO transactions (friend_id, order_id, type, amount, note)
+        VALUES (?, ?, 'payment', ?, ?)
+      `).run(order.friend_id, order.id, order.total, order.cycle_name);
+    } else if (!paid && order.paid) {
+      // Marking as unpaid - create reversal transaction (negative payment)
+      db.prepare(`
+        INSERT INTO transactions (friend_id, order_id, type, amount, note)
+        VALUES (?, ?, 'payment', ?, ?)
+      `).run(order.friend_id, order.id, -order.total, `${order.cycle_name} - storno`);
+    }
+
+    db.prepare('UPDATE orders SET paid = ? WHERE id = ?').run(paid ? 1 : 0, req.params.id);
+  });
+
+  togglePaid();
 
   const updated = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
-  res.json(updated);
+
+  // Get updated balance
+  const balanceResult = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) as balance FROM transactions WHERE friend_id = ?
+  `).get(order.friend_id);
+
+  res.json({
+    ...updated,
+    friend_balance: balanceResult.balance
+  });
+});
+
+// Admin: Toggle order packed status (creates charge/reversal transaction)
+router.patch('/:id/packed', (req, res) => {
+  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+
+  if (!order) {
+    return res.status(404).json({ error: 'Objednávka neexistuje' });
+  }
+
+  if (order.status !== 'submitted') {
+    return res.status(400).json({ error: 'Len odoslané objednávky môžu byť označené ako zabalené' });
+  }
+
+  const newPackedStatus = order.packed ? 0 : 1;
+
+  // Use transaction to ensure consistency
+  const togglePacked = db.transaction(() => {
+    if (newPackedStatus === 1) {
+      // Marking as packed - create charge transaction (negative amount)
+      db.prepare(`
+        INSERT INTO transactions (friend_id, order_id, type, amount, note)
+        VALUES (?, ?, 'charge', ?, NULL)
+      `).run(order.friend_id, order.id, -order.total);
+
+      db.prepare('UPDATE orders SET packed = 1, packed_at = CURRENT_TIMESTAMP WHERE id = ?').run(order.id);
+    } else {
+      // Unpacking - create reversal transaction (positive amount to cancel the charge)
+      db.prepare(`
+        INSERT INTO transactions (friend_id, order_id, type, amount, note)
+        VALUES (?, ?, 'charge', ?, 'Stornované')
+      `).run(order.friend_id, order.id, order.total);
+
+      db.prepare('UPDATE orders SET packed = 0, packed_at = NULL WHERE id = ?').run(order.id);
+    }
+  });
+
+  togglePacked();
+
+  const updated = db.prepare(`
+    SELECT o.*, f.name as friend_name
+    FROM orders o
+    JOIN friends f ON f.id = o.friend_id
+    WHERE o.id = ?
+  `).get(req.params.id);
+
+  // Get updated balance
+  const balanceResult = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) as balance FROM transactions WHERE friend_id = ?
+  `).get(order.friend_id);
+
+  res.json({
+    ...updated,
+    friend_balance: balanceResult.balance
+  });
 });
 
 // Admin: Get all orders for a cycle (includes all active friends)
 router.get('/cycle/:cycleId', (req, res) => {
   const cycleId = req.params.cycleId;
 
-  // Get all active friends
+  // Get all active friends with balance
   const allFriends = db.prepare(`
-    SELECT id, name FROM friends WHERE active = 1 ORDER BY name
+    SELECT f.id, f.name, COALESCE(SUM(t.amount), 0) as balance
+    FROM friends f
+    LEFT JOIN transactions t ON t.friend_id = f.id
+    WHERE f.active = 1
+    GROUP BY f.id
+    ORDER BY f.name
   `).all();
 
   // Get existing orders for this cycle
@@ -276,6 +369,7 @@ router.get('/cycle/:cycleId', (req, res) => {
       existingOrder.count_1kg = existingOrder.items
         .filter(i => i.variant === '1kg')
         .reduce((sum, i) => sum + i.quantity, 0);
+      existingOrder.friend_balance = friend.balance;
 
       return existingOrder;
     } else {
@@ -284,9 +378,11 @@ router.get('/cycle/:cycleId', (req, res) => {
         id: null,
         friend_id: friend.id,
         friend_name: friend.name,
+        friend_balance: friend.balance,
         cycle_id: parseInt(cycleId),
         status: 'none',
         paid: 0,
+        packed: 0,
         total: 0,
         items: [],
         count_250g: 0,

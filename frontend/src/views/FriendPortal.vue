@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
+import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
 
 const router = useRouter()
 
@@ -160,9 +161,9 @@ function getStatusVariant(status) {
 
 function getStatusText(status) {
   switch (status) {
-    case 'open': return 'Otvoreny'
-    case 'locked': return 'Uzamknuty'
-    case 'completed': return 'Dokonceny'
+    case 'open': return 'Otvorený'
+    case 'locked': return 'Uzamknutý'
+    case 'completed': return 'Dokončený'
     default: return status
   }
 }
@@ -199,13 +200,13 @@ function getCurrentFriendName() {
           @click="switchUser"
           class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10"
         >
-          Zmenit pouzivatela
+          Zmeniť používateľa
         </Button>
       </div>
     </header>
 
     <!-- Loading -->
-    <div v-if="loading && authState === 'loading'" class="text-center py-12 text-muted-foreground">Nacitavam...</div>
+    <div v-if="loading && authState === 'loading'" class="text-center py-12 text-muted-foreground">Načítavam...</div>
 
     <!-- Global Error -->
     <div v-else-if="error && authState === 'loading'" class="max-w-4xl mx-auto px-4 py-12">
@@ -228,7 +229,7 @@ function getCurrentFriendName() {
       </div>
       <Card>
         <CardHeader class="text-center">
-          <CardTitle>Prihlasenie</CardTitle>
+          <CardTitle>Prihlásenie</CardTitle>
           <CardDescription>Vyberte svoje meno a zadajte heslo</CardDescription>
         </CardHeader>
         <CardContent class="space-y-4">
@@ -262,7 +263,7 @@ function getCurrentFriendName() {
 
           <label class="flex items-center gap-2 cursor-pointer">
             <input v-model="rememberMe" type="checkbox" class="rounded border-input" />
-            <span class="text-sm text-muted-foreground">Zapamatat si ma na tomto zariadeni</span>
+            <span class="text-sm text-muted-foreground">Zapamätať si ma na tomto zariadení</span>
           </label>
 
           <Button
@@ -270,7 +271,7 @@ function getCurrentFriendName() {
             :disabled="loading || !selectedFriendId || !password"
             class="w-full"
           >
-            {{ loading ? 'Overujem...' : 'Prihlasit sa' }}
+            {{ loading ? 'Overujem...' : 'Prihlásiť sa' }}
           </Button>
         </CardContent>
       </Card>
@@ -278,10 +279,13 @@ function getCurrentFriendName() {
 
     <!-- Authenticated - Cycle List -->
     <div v-else-if="authState === 'authenticated'" class="max-w-4xl mx-auto px-4 py-6">
-      <h2 class="text-xl font-semibold mb-4 text-foreground">Objednavkove cykly</h2>
+      <!-- Balance Card -->
+      <FriendBalanceCard :friend-id="selectedFriendId" />
+
+      <h2 class="text-xl font-semibold mb-4 text-foreground">Objednávkové cykly</h2>
 
       <div v-if="cycles.length === 0" class="text-center py-12 text-muted-foreground">
-        Ziadne dostupne cykly
+        Žiadne dostupné cykly
       </div>
 
       <div v-else class="space-y-3">
@@ -300,10 +304,10 @@ function getCurrentFriendName() {
                     {{ getStatusText(cycle.status) }}
                   </Badge>
                   <Badge v-if="cycle.hasOrder" variant="outline" class="border-green-500 text-green-700">
-                    Objednane
+                    Objednané
                   </Badge>
                   <Badge v-else-if="cycle.status === 'open'" variant="outline" class="border-yellow-500 text-yellow-700">
-                    Neobjednane
+                    Neobjednané
                   </Badge>
                 </div>
               </div>

@@ -129,6 +129,27 @@ export const api = {
   // Orders (admin)
   getOrders: (cycleId) => request(`/orders/cycle/${cycleId}`),
   markPaid: (id, paid) => request(`/orders/${id}/paid`, { method: 'PATCH', body: { paid } }),
+  togglePacked: (id) => request(`/orders/${id}/packed`, { method: 'PATCH' }),
+
+  // Friends detail
+  getFriendDetail: (id) => request(`/friends/${id}/detail`),
+  getFriendBalance: (id) => request(`/friends/${id}/balance`),
+
+  // Transactions
+  getTransactions: (friendId) => request(`/transactions/friend/${friendId}`),
+  addPayment: (friend_id, amount, note, date) => request('/transactions/payment', {
+    method: 'POST',
+    body: { friend_id, amount, note, date }
+  }),
+  addAdjustment: (friend_id, order_id, amount, note) => request('/transactions/adjustment', {
+    method: 'POST',
+    body: { friend_id, order_id, amount, note }
+  }),
+  updateTransaction: (id, data) => request(`/transactions/${id}`, {
+    method: 'PATCH',
+    body: data
+  }),
+  deleteTransaction: (id) => request(`/transactions/${id}`, { method: 'DELETE' }),
 }
 
 export default api

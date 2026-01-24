@@ -122,6 +122,34 @@ async function initDb() {
     )
   `);
 
+  // Migration: Add packed column to orders
+  try {
+    db.run('ALTER TABLE orders ADD COLUMN packed INTEGER DEFAULT 0');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  try {
+    db.run('ALTER TABLE orders ADD COLUMN packed_at DATETIME');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Create transactions table for balance tracking
+  db.run(`
+    CREATE TABLE IF NOT EXISTS transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      friend_id INTEGER NOT NULL,
+      order_id INTEGER,
+      type TEXT NOT NULL CHECK (type IN ('payment', 'charge', 'adjustment')),
+      amount REAL NOT NULL,
+      note TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
+      FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL
+    )
+  `);
+
   // Initialize friends_password if not exists (empty string means not set)
   const friendsPassword = db.prepare("SELECT * FROM settings WHERE key = 'friends_password'").get();
   if (!friendsPassword) {

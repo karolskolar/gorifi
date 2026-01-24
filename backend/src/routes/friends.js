@@ -93,14 +93,103 @@ router.get('/cycles', (req, res) => {
   res.json(cyclesWithOrders);
 });
 
-// Get all friends (global, optionally filter by active status)
+// Get all friends (global, optionally filter by active status) with balance
 router.get('/', (req, res) => {
   const activeOnly = req.query.active === 'true';
   const sql = activeOnly
-    ? 'SELECT * FROM friends WHERE active = 1 ORDER BY name'
-    : 'SELECT * FROM friends ORDER BY name';
+    ? `SELECT f.*, COALESCE(SUM(t.amount), 0) as balance
+       FROM friends f
+       LEFT JOIN transactions t ON t.friend_id = f.id
+       WHERE f.active = 1
+       GROUP BY f.id
+       ORDER BY f.name`
+    : `SELECT f.*, COALESCE(SUM(t.amount), 0) as balance
+       FROM friends f
+       LEFT JOIN transactions t ON t.friend_id = f.id
+       GROUP BY f.id
+       ORDER BY f.name`;
   const friends = db.prepare(sql).all();
   res.json(friends);
+});
+
+// Get friend balance and recent transactions (for friend portal, requires friend auth)
+router.get('/:id/balance', (req, res) => {
+  const validation = validateFriendsPassword(req);
+  if (validation.error) {
+    return res.status(validation.status).json({ error: validation.error });
+  }
+
+  const friendId = req.params.id;
+
+  const friend = db.prepare(`
+    SELECT f.id, f.name, COALESCE(SUM(t.amount), 0) as balance
+    FROM friends f
+    LEFT JOIN transactions t ON t.friend_id = f.id
+    WHERE f.id = ?
+    GROUP BY f.id
+  `).get(friendId);
+
+  if (!friend) {
+    return res.status(404).json({ error: 'Priateľ nebol nájdený' });
+  }
+
+  // Get last 5 transactions
+  const transactions = db.prepare(`
+    SELECT t.id, t.type, t.amount, t.note, t.created_at, c.name as cycle_name
+    FROM transactions t
+    LEFT JOIN orders o ON o.id = t.order_id
+    LEFT JOIN order_cycles c ON c.id = o.cycle_id
+    WHERE t.friend_id = ?
+    ORDER BY t.created_at DESC
+    LIMIT 5
+  `).all(friendId);
+
+  res.json({
+    balance: friend.balance,
+    transactions
+  });
+});
+
+// Get friend detail with balance, transactions, and orders
+router.get('/:id/detail', (req, res) => {
+  const friendId = req.params.id;
+
+  const friend = db.prepare(`
+    SELECT f.*, COALESCE(SUM(t.amount), 0) as balance
+    FROM friends f
+    LEFT JOIN transactions t ON t.friend_id = f.id
+    WHERE f.id = ?
+    GROUP BY f.id
+  `).get(friendId);
+
+  if (!friend) {
+    return res.status(404).json({ error: 'Priateľ nebol nájdený' });
+  }
+
+  // Get all transactions for this friend
+  const transactions = db.prepare(`
+    SELECT t.*, o.cycle_id, c.name as cycle_name
+    FROM transactions t
+    LEFT JOIN orders o ON o.id = t.order_id
+    LEFT JOIN order_cycles c ON c.id = o.cycle_id
+    WHERE t.friend_id = ?
+    ORDER BY t.created_at DESC
+  `).all(friendId);
+
+  // Get all orders for this friend
+  const orders = db.prepare(`
+    SELECT o.*, c.name as cycle_name
+    FROM orders o
+    JOIN order_cycles c ON c.id = o.cycle_id
+    WHERE o.friend_id = ? AND o.status = 'submitted'
+    ORDER BY o.submitted_at DESC
+  `).all(friendId);
+
+  res.json({
+    friend,
+    transactions,
+    orders
+  });
 });
 
 // Create new friend (global, no cycle_id required)
@@ -161,12 +250,26 @@ router.patch('/:id', (req, res) => {
   res.json(updated);
 });
 
-// Delete friend
+// Delete friend (blocked if balance is non-zero)
 router.delete('/:id', (req, res) => {
-  const result = db.prepare('DELETE FROM friends WHERE id = ?').run(req.params.id);
-  if (result.changes === 0) {
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
+  if (!friend) {
     return res.status(404).json({ error: 'Priateľ nebol nájdený' });
   }
+
+  // Check balance
+  const balanceResult = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) as balance FROM transactions WHERE friend_id = ?
+  `).get(req.params.id);
+
+  // Use small epsilon for floating point comparison
+  if (Math.abs(balanceResult.balance) > 0.01) {
+    return res.status(400).json({
+      error: `Priateľ má nenulový zostatok (${balanceResult.balance.toFixed(2)} EUR). Pred vymazaním vyrovnajte zostatok.`
+    });
+  }
+
+  const result = db.prepare('DELETE FROM friends WHERE id = ?').run(req.params.id);
   res.status(204).send();
 });
 

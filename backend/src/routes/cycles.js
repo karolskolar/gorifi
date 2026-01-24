@@ -167,8 +167,10 @@ router.get('/:id/distribution', (req, res) => {
   }
 
   // Get friends who have submitted orders for this cycle (global friends)
+  // Include packed status and balance
   const friendsWithOrders = db.prepare(`
-    SELECT f.id, f.name, o.id as order_id, o.status, o.paid, o.total
+    SELECT f.id, f.name, o.id as order_id, o.status, o.paid, o.total, o.packed, o.packed_at,
+           COALESCE((SELECT SUM(amount) FROM transactions WHERE friend_id = f.id), 0) as balance
     FROM orders o
     JOIN friends f ON f.id = o.friend_id
     WHERE o.cycle_id = ? AND o.status = 'submitted'

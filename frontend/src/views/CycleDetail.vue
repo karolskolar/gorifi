@@ -11,6 +11,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
+import BalanceBadge from '@/components/BalanceBadge.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -597,6 +598,7 @@ function getStatusVariant(status) {
                 <TableRow>
                   <TableHead class="w-10"></TableHead>
                   <TableHead>Priateľ</TableHead>
+                  <TableHead class="text-right">Zostatok</TableHead>
                   <TableHead class="text-center">250g</TableHead>
                   <TableHead class="text-center">1kg</TableHead>
                   <TableHead>Status</TableHead>
@@ -625,6 +627,9 @@ function getStatusVariant(status) {
                       </button>
                     </TableCell>
                     <TableCell class="font-medium">{{ order.friend_name }}</TableCell>
+                    <TableCell class="text-right">
+                      <BalanceBadge :balance="order.friend_balance || 0" />
+                    </TableCell>
                     <TableCell class="text-center">{{ order.count_250g || 0 }}</TableCell>
                     <TableCell class="text-center">{{ order.count_1kg || 0 }}</TableCell>
                     <TableCell>
@@ -651,7 +656,7 @@ function getStatusVariant(status) {
                   </TableRow>
                   <!-- Expanded items row -->
                   <TableRow v-if="order.status !== 'none' && expandedOrders.has(order.id)">
-                    <TableCell colspan="7" class="bg-muted/50 p-4">
+                    <TableCell colspan="8" class="bg-muted/50 p-4">
                       <div v-if="order.items && order.items.length > 0" class="space-y-1">
                         <div v-for="item in order.items" :key="`${item.product_id}-${item.variant}`" class="flex justify-between py-1 text-sm">
                           <span>{{ item.product_name }} ({{ item.variant }})</span>
@@ -667,6 +672,7 @@ function getStatusVariant(status) {
                 <TableRow class="font-semibold bg-muted">
                   <TableCell></TableCell>
                   <TableCell>Celkom</TableCell>
+                  <TableCell></TableCell>
                   <TableCell class="text-center">{{ orderTotals.count_250g }}</TableCell>
                   <TableCell class="text-center">{{ orderTotals.count_1kg }}</TableCell>
                   <TableCell></TableCell>

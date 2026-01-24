@@ -11,6 +11,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { Switch } from '@/components/ui/switch'
+import BalanceBadge from '@/components/BalanceBadge.vue'
 
 const router = useRouter()
 const friends = ref([])
@@ -145,6 +146,7 @@ async function logout() {
           <TableHeader>
             <TableRow>
               <TableHead>Meno</TableHead>
+              <TableHead class="text-right">Zostatok</TableHead>
               <TableHead class="text-center">Stav</TableHead>
               <TableHead class="text-right">Akcie</TableHead>
             </TableRow>
@@ -152,6 +154,9 @@ async function logout() {
           <TableBody>
             <TableRow v-for="friend in friends" :key="friend.id">
               <TableCell class="font-medium">{{ friend.name }}</TableCell>
+              <TableCell class="text-right">
+                <BalanceBadge :balance="friend.balance || 0" />
+              </TableCell>
               <TableCell class="text-center">
                 <div class="flex items-center justify-center gap-4">
                   <Switch
@@ -165,6 +170,7 @@ async function logout() {
               </TableCell>
               <TableCell class="text-right">
                 <Button variant="ghost" size="sm" @click="openModal(friend)">Upraviť</Button>
+                <Button variant="ghost" size="sm" @click="router.push(`/admin/friends/${friend.id}`)">Detail</Button>
                 <Button variant="ghost" size="sm" class="text-destructive hover:text-destructive" @click="deleteFriend(friend.id)">Vymazať</Button>
               </TableCell>
             </TableRow>

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
+import BalanceBadge from '@/components/BalanceBadge.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -15,41 +16,44 @@ const cycle = ref(null)
 const distribution = ref([])
 const loading = ref(true)
 const error = ref('')
-const packedFriends = ref(new Set())
+const packingOrderId = ref(null)
 
 const cycleId = route.params.id
 
 onMounted(async () => {
+  await loadData()
+})
+
+async function loadData() {
   try {
     const data = await api.getCycleDistribution(cycleId)
     cycle.value = data.cycle
     distribution.value = data.distribution
-
-    // Load packed status from localStorage
-    const stored = localStorage.getItem(`packed-${cycleId}`)
-    if (stored) {
-      packedFriends.value = new Set(JSON.parse(stored))
-    }
   } catch (e) {
     error.value = e.message
   } finally {
     loading.value = false
   }
-})
+}
 
 // Set page title
 watchEffect(() => {
   document.title = 'Admin'
 })
 
-function togglePacked(friendId) {
-  if (packedFriends.value.has(friendId)) {
-    packedFriends.value.delete(friendId)
-  } else {
-    packedFriends.value.add(friendId)
+async function togglePacked(friend) {
+  if (packingOrderId.value) return
+
+  packingOrderId.value = friend.order_id
+  error.value = ''
+  try {
+    await api.togglePacked(friend.order_id)
+    await loadData()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    packingOrderId.value = null
   }
-  // Save to localStorage
-  localStorage.setItem(`packed-${cycleId}`, JSON.stringify([...packedFriends.value]))
 }
 
 function formatPrice(price) {
@@ -99,29 +103,32 @@ function printDistribution() {
           :key="friend.id"
           :class="[
             'print:shadow-none print:border print:break-inside-avoid',
-            packedFriends.has(friend.id) ? 'opacity-50' : ''
+            friend.packed ? 'opacity-50' : ''
           ]"
         >
           <CardContent class="p-4">
             <div class="flex justify-between items-start mb-3">
               <div>
                 <h3 class="text-lg font-semibold">{{ friend.name }}</h3>
-                <div class="text-sm text-muted-foreground">
+                <div class="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
+                  <BalanceBadge :balance="friend.balance || 0" />
+                  <span class="mx-1">|</span>
                   <Badge v-if="friend.paid" variant="default" class="bg-green-600">Zaplatené</Badge>
                   <Badge v-else variant="destructive">Nezaplatené</Badge>
-                  <span class="mx-2">|</span>
+                  <span class="mx-1">|</span>
                   <span>Suma: {{ formatPrice(friend.total) }}</span>
                 </div>
               </div>
               <Button
-                @click="togglePacked(friend.id)"
-                :variant="packedFriends.has(friend.id) ? 'default' : 'outline'"
+                @click="togglePacked(friend)"
+                :variant="friend.packed ? 'default' : 'outline'"
+                :disabled="packingOrderId === friend.order_id"
                 :class="[
                   'print:hidden',
-                  packedFriends.has(friend.id) ? 'bg-green-600 hover:bg-green-700' : ''
+                  friend.packed ? 'bg-green-600 hover:bg-green-700' : ''
                 ]"
               >
-                {{ packedFriends.has(friend.id) ? 'Zabalené' : 'Označiť ako zabalené' }}
+                {{ packingOrderId === friend.order_id ? 'Spracovávam...' : (friend.packed ? 'Zabalené' : 'Označiť ako zabalené') }}
               </Button>
             </div>
 
