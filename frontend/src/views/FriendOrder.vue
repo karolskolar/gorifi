@@ -7,6 +7,14 @@ import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 
 const route = useRoute()
 const router = useRouter()
@@ -24,6 +32,8 @@ const saving = ref(false)
 const error = ref('')
 const successMessage = ref('')
 const activeTab = ref('Espresso')
+const showSuccessModal = ref(false)
+const successModalMessage = ref('')
 
 const cycleId = computed(() => route.params.cycleId)
 
@@ -133,7 +143,7 @@ onMounted(async () => {
 
 // Set page title
 watchEffect(() => {
-  document.title = cycle.value?.name ? `${cycle.value.name} - Objednavka` : 'Objednavka'
+  document.title = cycle.value?.name ? `${cycle.value.name} - Objednávka` : 'Objednávka'
 })
 
 async function loadOrderData() {
@@ -229,7 +239,7 @@ async function saveCart() {
 
     const result = await api.updateOrderByFriend(cycleId.value, friend.value.id, items)
     order.value = result.order
-    successMessage.value = 'Kosik bol ulozeny'
+    successMessage.value = 'Košík bol uložený'
 
     setTimeout(() => {
       successMessage.value = ''
@@ -244,9 +254,12 @@ async function saveCart() {
 async function submitOrder() {
   if (isLocked.value) return
   if (cartItems.value.length === 0) {
-    error.value = 'Kosik je prazdny'
+    error.value = 'Košík je prázdny'
     return
   }
+
+  // Capture state before submitting
+  const wasAlreadySubmitted = isSubmitted.value
 
   // First save the cart
   await saveCart()
@@ -257,12 +270,20 @@ async function submitOrder() {
   try {
     const result = await api.submitOrderByFriend(cycleId.value, friend.value.id)
     order.value = result.order
-    successMessage.value = 'Objednavka bola odoslana!'
+    successModalMessage.value = wasAlreadySubmitted
+      ? 'Vaša objednávka bola aktualizovaná!'
+      : 'Vaša objednávka bola úspešne odoslaná!'
+    showSuccessModal.value = true
   } catch (e) {
     error.value = e.message
   } finally {
     saving.value = false
   }
+}
+
+function handleSuccessModalClose() {
+  showSuccessModal.value = false
+  router.push('/')
 }
 
 function formatPrice(price) {
@@ -295,7 +316,7 @@ function formatPrice(price) {
     </header>
 
     <!-- Loading -->
-    <div v-if="loading" class="text-center py-12 text-muted-foreground">Nacitavam...</div>
+    <div v-if="loading" class="text-center py-12 text-muted-foreground">Načítavam...</div>
 
     <!-- Error -->
     <div v-else-if="error && !friend" class="max-w-4xl mx-auto px-4 py-12">
@@ -304,7 +325,7 @@ function formatPrice(price) {
           <strong>Chyba:</strong> {{ error }}
         </AlertDescription>
       </Alert>
-      <Button @click="goBack" class="mt-4">Spat na zoznam cyklov</Button>
+      <Button @click="goBack" class="mt-4">Späť na zoznam cyklov</Button>
     </div>
 
     <!-- Order Form -->
@@ -312,13 +333,13 @@ function formatPrice(price) {
       <!-- Status banner -->
       <Alert v-if="isLocked" class="mb-6 border-yellow-500 bg-yellow-50 text-yellow-800">
         <AlertDescription>
-          <strong>Objednavky su uzamknute.</strong> Uz nie je mozne menit objednavku.
+          <strong>Objednávky sú uzamknuté.</strong> Už nie je možné meniť objednávku.
         </AlertDescription>
       </Alert>
 
       <Alert v-if="isSubmitted && !isLocked" class="mb-6 border-green-500 bg-green-50 text-green-800">
         <AlertDescription>
-          <strong>Vasa objednavka bola odoslana!</strong> Stale ju mozete upravit az do uzamknutia.
+          <strong>Vaša objednávka bola odoslaná!</strong> Stále ju môžete upraviť až do uzamknutia.
         </AlertDescription>
       </Alert>
 
@@ -555,7 +576,7 @@ function formatPrice(price) {
         <div class="max-w-4xl mx-auto px-4 py-4">
           <div class="flex justify-between items-center mb-3">
             <div>
-              <span class="text-muted-foreground">Poloziek: {{ cartItems.length }}</span>
+              <span class="text-muted-foreground">Položiek: {{ cartItems.length }}</span>
               <span class="mx-2">|</span>
               <span class="font-semibold text-lg">Celkom: {{ formatPrice(cartTotal) }}</span>
             </div>
@@ -568,20 +589,20 @@ function formatPrice(price) {
               :disabled="saving"
               class="flex-1"
             >
-              {{ saving ? 'Ukladam...' : 'Ulozit kosik' }}
+              {{ saving ? 'Ukladám...' : 'Uložiť košík' }}
             </Button>
             <Button
               @click="submitOrder"
               :disabled="saving"
               class="flex-1"
             >
-              {{ saving ? 'Odosielam...' : (isSubmitted ? 'Aktualizovat objednavku' : 'Odoslat objednavku') }}
+              {{ saving ? 'Odosielám...' : (isSubmitted ? 'Aktualizovať objednávku' : 'Odoslať objednávku') }}
             </Button>
           </div>
 
           <!-- Cart details toggle -->
           <details class="mt-3">
-            <summary class="text-sm text-muted-foreground cursor-pointer">Zobrazit polozky v kosiku</summary>
+            <summary class="text-sm text-muted-foreground cursor-pointer">Zobraziť položky v košíku</summary>
             <div class="mt-2 text-sm max-h-40 overflow-y-auto">
               <div v-for="item in cartItems" :key="item.key" class="flex justify-between py-1 border-b border-border">
                 <span>{{ item.product_name }} ({{ item.variant }}) x{{ item.quantity }}</span>
@@ -595,5 +616,27 @@ function formatPrice(price) {
       <!-- Spacer for fixed footer -->
       <div v-if="cartItems.length > 0" class="h-40"></div>
     </div>
+
+    <!-- Success Modal -->
+    <Dialog :open="showSuccessModal" @update:open="val => !val && handleSuccessModalClose()">
+      <DialogContent class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle class="flex items-center gap-2">
+            <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Hotovo!
+          </DialogTitle>
+          <DialogDescription class="text-base">
+            {{ successModalMessage }}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button @click="handleSuccessModalClose" class="w-full">
+            OK
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>
