@@ -6,7 +6,7 @@ set -e
 
 # Configuration - Update these values
 SERVER_USER="root"
-SERVER_HOST="your-server-ip"
+SERVER_HOST="gorifi"
 
 # Colors for output
 RED='\033[0;31m'
