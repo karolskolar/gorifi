@@ -78,7 +78,7 @@ onMounted(async () => {
 
 // Set page title
 watchEffect(() => {
-  document.title = 'Admin'
+  document.title = cycle.value?.name ? `${cycle.value.name} - Gorifi Admin` : 'Gorifi Admin'
 })
 
 async function loadAll() {
