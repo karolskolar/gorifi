@@ -28,7 +28,7 @@ router.get('/:id', (req, res) => {
 
 // Create single product (manual entry) - with optional image
 router.post('/', upload.single('image'), (req, res) => {
-  const { cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, price_20pc5g } = req.body;
+  const { cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_1kg, price_20pc5g } = req.body;
 
   if (!cycle_id || !name) {
     return res.status(400).json({ error: 'cycle_id a nazov su povinne' });
@@ -45,9 +45,9 @@ router.post('/', upload.single('image'), (req, res) => {
   }
 
   const result = db.prepare(`
-    INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, price_20pc5g, image)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, price_20pc5g, image);
+    INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_1kg, price_20pc5g, image)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_1kg, price_20pc5g, image);
 
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(product);
@@ -193,7 +193,7 @@ router.post('/:id/image-from-url', async (req, res) => {
 
 // Update product
 router.patch('/:id', (req, res) => {
-  const { name, description1, description2, roast_type, purpose, price_250g, price_1kg, price_20pc5g, image, active } = req.body;
+  const { name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_1kg, price_20pc5g, image, active } = req.body;
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
 
   if (!product) {
@@ -208,6 +208,8 @@ router.patch('/:id', (req, res) => {
   if (description2 !== undefined) { updates.push('description2 = ?'); values.push(description2); }
   if (roast_type !== undefined) { updates.push('roast_type = ?'); values.push(roast_type); }
   if (purpose !== undefined) { updates.push('purpose = ?'); values.push(purpose); }
+  if (price_150g !== undefined) { updates.push('price_150g = ?'); values.push(price_150g); }
+  if (price_200g !== undefined) { updates.push('price_200g = ?'); values.push(price_200g); }
   if (price_250g !== undefined) { updates.push('price_250g = ?'); values.push(price_250g); }
   if (price_1kg !== undefined) { updates.push('price_1kg = ?'); values.push(price_1kg); }
   if (price_20pc5g !== undefined) { updates.push('price_20pc5g = ?'); values.push(price_20pc5g); }
@@ -352,11 +354,18 @@ function isProductSectionHeader(row) {
          rowText.includes('zrnková káva');
 }
 
-function parsePriceString(priceStr) {
-  const result = { price250g: null, price1kg: null, error: null };
+function parsePriceString(priceStr, variantLabel = '') {
+  const result = { price150g: null, price200g: null, price250g: null, price1kg: null, error: null };
   if (!priceStr || !priceStr.trim()) return result;
 
   const normalized = priceStr.replace(/\s+/g, ' ').trim();
+  const labelLower = variantLabel.toLowerCase();
+
+  // Detect variant types from label
+  const has150g = labelLower.includes('150');
+  const has200g = labelLower.includes('200');
+  const has250g = labelLower.includes('250');
+  const has1kg = labelLower.includes('1kg') || labelLower.includes('1 kg');
 
   // Try to split by common separators: " / ", "/", " - ", "-"
   const separators = [' / ', '/', ' - ', '-'];
@@ -377,22 +386,49 @@ function parsePriceString(priceStr) {
   };
 
   if (!parts || parts.length !== 2) {
-    // Try as single price
+    // Single price - determine variant from label
     const singlePrice = parsePrice(normalized);
     if (singlePrice !== null) {
-      result.price250g = singlePrice;
-      result.error = 'Single price found, assumed 250g';
+      if (has150g) {
+        result.price150g = singlePrice;
+      } else if (has200g) {
+        result.price200g = singlePrice;
+      } else {
+        result.price250g = singlePrice;
+        result.error = 'Single price found, assumed 250g';
+      }
     }
     return result;
   }
 
-  result.price250g = parsePrice(parts[0]);
-  result.price1kg = parsePrice(parts[1]);
+  // Two prices - assign based on label
+  const price1 = parsePrice(parts[0]);
+  const price2 = parsePrice(parts[1]);
 
-  // Sanity check: 1kg should be more expensive than 250g
-  if (result.price250g && result.price1kg && result.price1kg < result.price250g) {
-    [result.price250g, result.price1kg] = [result.price1kg, result.price250g];
-    result.error = 'Prices were swapped (250g was larger than 1kg)';
+  if (has150g && has1kg) {
+    result.price150g = price1;
+    result.price1kg = price2;
+  } else if (has200g && has1kg) {
+    result.price200g = price1;
+    result.price1kg = price2;
+  } else {
+    // Default: 250g / 1kg
+    result.price250g = price1;
+    result.price1kg = price2;
+  }
+
+  // Sanity check: 1kg should be more expensive than smaller variants
+  const smallPrice = result.price150g || result.price200g || result.price250g;
+  if (smallPrice && result.price1kg && result.price1kg < smallPrice) {
+    // Swap them
+    if (result.price150g) {
+      [result.price150g, result.price1kg] = [result.price1kg, result.price150g];
+    } else if (result.price200g) {
+      [result.price200g, result.price1kg] = [result.price1kg, result.price200g];
+    } else {
+      [result.price250g, result.price1kg] = [result.price1kg, result.price250g];
+    }
+    result.error = 'Prices were swapped (small variant was larger than 1kg)';
   }
 
   return result;
@@ -448,15 +484,18 @@ function parseMultiRowProducts(csvContent) {
     // Row 3: B=flavor profile, H=roast level (Light roast/Medium roast)
 
     if (rowInProduct === 0) {
-      // Row 1: Name (B=1), Purpose (H=7)
+      // Row 1: Name (B=1), Purpose (H=7), Variant label (I=8)
       currentProduct = {
         name: (row[1] || '').trim(),
         description1: '',
         description2: '',
         purpose: (row[7] || '').trim(),  // Filter, Espresso, etc.
         roast_type: '',
+        price_150g: null,
+        price_200g: null,
         price_250g: null,
         price_1kg: null,
+        _variantLabel: (row[8] || '').trim(),  // e.g., "150g", "200g / 1kg", "250g / 1kg"
         _rowStart: i + 1
       };
       rowInProduct = 1;
@@ -464,8 +503,10 @@ function parseMultiRowProducts(csvContent) {
       // Row 2: Description (B=1), Price (I=8)
       currentProduct.description1 = (row[1] || '').trim();
 
-      // Parse price from column I (index 8) - this is where the actual price is!
-      const priceResult = parsePriceString(row[8] || '');
+      // Parse price from column I (index 8) using variant label from row 1
+      const priceResult = parsePriceString(row[8] || '', currentProduct._variantLabel);
+      currentProduct.price_150g = priceResult.price150g;
+      currentProduct.price_200g = priceResult.price200g;
       currentProduct.price_250g = priceResult.price250g;
       currentProduct.price_1kg = priceResult.price1kg;
       if (priceResult.error) {
@@ -550,9 +591,9 @@ router.post('/import-gsheet-multirow/:cycleId', async (req, res) => {
     for (const p of products) {
       if (p.name) {
         const result = db.prepare(`
-          INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(cycleId, p.name, p.description1, p.description2, p.roast_type, p.purpose, p.price_250g, p.price_1kg);
+          INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_1kg)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(cycleId, p.name, p.description1, p.description2, p.roast_type, p.purpose, p.price_150g, p.price_200g, p.price_250g, p.price_1kg);
         insertedIds.push(result.lastInsertRowid);
       }
     }

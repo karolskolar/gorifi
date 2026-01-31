@@ -82,6 +82,18 @@ async function initDb() {
     // Column already exists, ignore
   }
 
+  // Migration: Add price_150g and price_200g columns for new variants
+  try {
+    db.run('ALTER TABLE products ADD COLUMN price_150g REAL');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.run('ALTER TABLE products ADD COLUMN price_200g REAL');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS friends (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

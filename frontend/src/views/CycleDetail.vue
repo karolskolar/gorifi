@@ -29,7 +29,7 @@ const error = ref('')
 const showProductModal = ref(false)
 const editingProduct = ref(null)
 const productForm = ref({
-  name: '', description1: '', description2: '', roast_type: '', purpose: '', price_250g: '', price_1kg: '', price_20pc5g: '', image: ''
+  name: '', description1: '', description2: '', roast_type: '', purpose: '', price_150g: '', price_200g: '', price_250g: '', price_1kg: '', price_20pc5g: '', image: ''
 })
 const imagePreview = ref(null)
 const isDragging = ref(false)
@@ -66,6 +66,8 @@ function toggleExpand(orderId) {
 }
 
 const orderTotals = computed(() => ({
+  count_150g: orders.value.reduce((sum, o) => sum + (o.count_150g || 0), 0),
+  count_200g: orders.value.reduce((sum, o) => sum + (o.count_200g || 0), 0),
   count_250g: orders.value.reduce((sum, o) => sum + (o.count_250g || 0), 0),
   count_1kg: orders.value.reduce((sum, o) => sum + (o.count_1kg || 0), 0),
   count_20pc5g: orders.value.reduce((sum, o) => sum + (o.count_20pc5g || 0), 0),
@@ -141,6 +143,8 @@ function openProductModal(product = null) {
   if (product) {
     productForm.value = {
       ...product,
+      price_150g: product.price_150g || '',
+      price_200g: product.price_200g || '',
       price_250g: product.price_250g || '',
       price_1kg: product.price_1kg || '',
       price_20pc5g: product.price_20pc5g || '',
@@ -148,7 +152,7 @@ function openProductModal(product = null) {
     }
     imagePreview.value = product.image || null
   } else {
-    productForm.value = { name: '', description1: '', description2: '', roast_type: '', purpose: '', price_250g: '', price_1kg: '', price_20pc5g: '', image: '' }
+    productForm.value = { name: '', description1: '', description2: '', roast_type: '', purpose: '', price_150g: '', price_200g: '', price_250g: '', price_1kg: '', price_20pc5g: '', image: '' }
     imagePreview.value = null
   }
   showProductModal.value = true
@@ -158,6 +162,8 @@ async function saveProduct() {
   const data = {
     ...productForm.value,
     cycle_id: cycleId.value,
+    price_150g: productForm.value.price_150g ? parseFloat(productForm.value.price_150g) : null,
+    price_200g: productForm.value.price_200g ? parseFloat(productForm.value.price_200g) : null,
     price_250g: productForm.value.price_250g ? parseFloat(productForm.value.price_250g) : null,
     price_1kg: productForm.value.price_1kg ? parseFloat(productForm.value.price_1kg) : null,
     price_20pc5g: productForm.value.price_20pc5g ? parseFloat(productForm.value.price_20pc5g) : null,
@@ -530,6 +536,8 @@ function getStatusVariant(status) {
                   <TableHead>Chutový profil</TableHead>
                   <TableHead>Praženie</TableHead>
                   <TableHead>Účel</TableHead>
+                  <TableHead class="text-right">150g</TableHead>
+                  <TableHead class="text-right">200g</TableHead>
                   <TableHead class="text-right">250g</TableHead>
                   <TableHead class="text-right">1kg</TableHead>
                   <TableHead class="text-right">20ks×5g</TableHead>
@@ -576,6 +584,8 @@ function getStatusVariant(status) {
                   </TableCell>
                   <TableCell class="text-sm">{{ product.roast_type || '-' }}</TableCell>
                   <TableCell class="text-sm">{{ product.purpose || '-' }}</TableCell>
+                  <TableCell class="text-sm text-right">{{ formatPrice(product.price_150g) }}</TableCell>
+                  <TableCell class="text-sm text-right">{{ formatPrice(product.price_200g) }}</TableCell>
                   <TableCell class="text-sm text-right">{{ formatPrice(product.price_250g) }}</TableCell>
                   <TableCell class="text-sm text-right">{{ formatPrice(product.price_1kg) }}</TableCell>
                   <TableCell class="text-sm text-right">{{ formatPrice(product.price_20pc5g) }}</TableCell>
@@ -604,6 +614,8 @@ function getStatusVariant(status) {
                   <TableHead class="w-10"></TableHead>
                   <TableHead>Priateľ</TableHead>
                   <TableHead class="text-right">Zostatok</TableHead>
+                  <TableHead class="text-center">150g</TableHead>
+                  <TableHead class="text-center">200g</TableHead>
                   <TableHead class="text-center">250g</TableHead>
                   <TableHead class="text-center">1kg</TableHead>
                   <TableHead class="text-center">20ks</TableHead>
@@ -636,6 +648,8 @@ function getStatusVariant(status) {
                     <TableCell class="text-right">
                       <BalanceBadge :balance="order.friend_balance || 0" />
                     </TableCell>
+                    <TableCell class="text-center">{{ order.count_150g || 0 }}</TableCell>
+                    <TableCell class="text-center">{{ order.count_200g || 0 }}</TableCell>
                     <TableCell class="text-center">{{ order.count_250g || 0 }}</TableCell>
                     <TableCell class="text-center">{{ order.count_1kg || 0 }}</TableCell>
                     <TableCell class="text-center">{{ order.count_20pc5g || 0 }}</TableCell>
@@ -663,7 +677,7 @@ function getStatusVariant(status) {
                   </TableRow>
                   <!-- Expanded items row -->
                   <TableRow v-if="order.status !== 'none' && expandedOrders.has(order.id)">
-                    <TableCell colspan="9" class="bg-muted/50 p-4">
+                    <TableCell colspan="11" class="bg-muted/50 p-4">
                       <div v-if="order.items && order.items.length > 0" class="space-y-1">
                         <div v-for="item in order.items" :key="`${item.product_id}-${item.variant}`" class="flex justify-between py-1 text-sm">
                           <span>{{ item.product_name }} ({{ item.variant }})</span>
@@ -680,6 +694,8 @@ function getStatusVariant(status) {
                   <TableCell></TableCell>
                   <TableCell>Celkom</TableCell>
                   <TableCell></TableCell>
+                  <TableCell class="text-center">{{ orderTotals.count_150g }}</TableCell>
+                  <TableCell class="text-center">{{ orderTotals.count_200g }}</TableCell>
                   <TableCell class="text-center">{{ orderTotals.count_250g }}</TableCell>
                   <TableCell class="text-center">{{ orderTotals.count_1kg }}</TableCell>
                   <TableCell class="text-center">{{ orderTotals.count_20pc5g }}</TableCell>
@@ -810,17 +826,25 @@ function getStatusVariant(status) {
                 <Input v-model="productForm.purpose" />
               </div>
             </div>
-            <div class="grid grid-cols-3 gap-3">
+            <div class="grid grid-cols-5 gap-3">
               <div class="space-y-1">
-                <Label>Cena 250g (EUR)</Label>
+                <Label>150g (EUR)</Label>
+                <Input v-model="productForm.price_150g" type="number" step="0.01" />
+              </div>
+              <div class="space-y-1">
+                <Label>200g (EUR)</Label>
+                <Input v-model="productForm.price_200g" type="number" step="0.01" />
+              </div>
+              <div class="space-y-1">
+                <Label>250g (EUR)</Label>
                 <Input v-model="productForm.price_250g" type="number" step="0.01" />
               </div>
               <div class="space-y-1">
-                <Label>Cena 1kg (EUR)</Label>
+                <Label>1kg (EUR)</Label>
                 <Input v-model="productForm.price_1kg" type="number" step="0.01" />
               </div>
               <div class="space-y-1">
-                <Label>Cena 20ks×5g (EUR)</Label>
+                <Label>20ks×5g (EUR)</Label>
                 <Input v-model="productForm.price_20pc5g" type="number" step="0.01" />
               </div>
             </div>

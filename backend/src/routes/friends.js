@@ -86,6 +86,8 @@ router.get('/cycles', (req, res) => {
     const kilosResult = db.prepare(`
       SELECT COALESCE(SUM(
         CASE
+          WHEN oi.variant = '150g' THEN oi.quantity * 0.15
+          WHEN oi.variant = '200g' THEN oi.quantity * 0.2
           WHEN oi.variant = '250g' THEN oi.quantity * 0.25
           WHEN oi.variant = '1kg' THEN oi.quantity * 1.0
           WHEN oi.variant = '20pc5g' THEN oi.quantity * 0.1

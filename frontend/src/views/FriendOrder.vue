@@ -50,6 +50,8 @@ const cartItems = computed(() => {
         let price
         if (variant === '1kg') price = product.price_1kg
         else if (variant === '20pc5g') price = product.price_20pc5g
+        else if (variant === '150g') price = product.price_150g
+        else if (variant === '200g') price = product.price_200g
         else price = product.price_250g
         items.push({
           key,
@@ -435,8 +437,82 @@ function formatPrice(price) {
                   </div>
                 </div>
 
-                <!-- Classic variants (250g / 1kg) -->
+                <!-- Weight variants (150g / 200g / 250g / 1kg) -->
                 <div v-else class="grid grid-cols-2 gap-4">
+                  <!-- 150g variant -->
+                  <div
+                    v-if="product.price_150g"
+                    :class="[
+                      'rounded-lg p-3 transition-colors',
+                      getQuantity(product.id, '150g') > 0
+                        ? 'bg-primary/10 border-2 border-primary'
+                        : 'border bg-card'
+                    ]"
+                  >
+                    <div class="flex justify-between items-center mb-2">
+                      <span class="text-sm font-medium">150g</span>
+                      <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_150g) }}</span>
+                    </div>
+                    <div class="flex items-center justify-center gap-3">
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="decrement(product.id, '150g')"
+                        :disabled="isLocked || getQuantity(product.id, '150g') === 0"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        -
+                      </Button>
+                      <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '150g') }}</span>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="increment(product.id, '150g')"
+                        :disabled="isLocked"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        +
+                      </Button>
+                    </div>
+                  </div>
+
+                  <!-- 200g variant -->
+                  <div
+                    v-if="product.price_200g"
+                    :class="[
+                      'rounded-lg p-3 transition-colors',
+                      getQuantity(product.id, '200g') > 0
+                        ? 'bg-primary/10 border-2 border-primary'
+                        : 'border bg-card'
+                    ]"
+                  >
+                    <div class="flex justify-between items-center mb-2">
+                      <span class="text-sm font-medium">200g</span>
+                      <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_200g) }}</span>
+                    </div>
+                    <div class="flex items-center justify-center gap-3">
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="decrement(product.id, '200g')"
+                        :disabled="isLocked || getQuantity(product.id, '200g') === 0"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        -
+                      </Button>
+                      <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '200g') }}</span>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="increment(product.id, '200g')"
+                        :disabled="isLocked"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        +
+                      </Button>
+                    </div>
+                  </div>
+
                   <!-- 250g variant -->
                   <div
                     v-if="product.price_250g"
@@ -576,8 +652,80 @@ function formatPrice(price) {
               </div>
             </div>
 
-            <!-- Classic variants (250g / 1kg) -->
+            <!-- Weight variants (150g / 200g / 250g / 1kg) -->
             <div v-else class="grid grid-cols-2 gap-4">
+              <div
+                v-if="product.price_150g"
+                :class="[
+                  'rounded-lg p-3 transition-colors',
+                  getQuantity(product.id, '150g') > 0
+                    ? 'bg-primary/10 border-2 border-primary'
+                    : 'border bg-card'
+                ]"
+              >
+                <div class="flex justify-between items-center mb-2">
+                  <span class="text-sm font-medium">150g</span>
+                  <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_150g) }}</span>
+                </div>
+                <div class="flex items-center justify-center gap-3">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    @click="decrement(product.id, '150g')"
+                    :disabled="isLocked || getQuantity(product.id, '150g') === 0"
+                    class="h-8 w-8 rounded-full"
+                  >
+                    -
+                  </Button>
+                  <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '150g') }}</span>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    @click="increment(product.id, '150g')"
+                    :disabled="isLocked"
+                    class="h-8 w-8 rounded-full"
+                  >
+                    +
+                  </Button>
+                </div>
+              </div>
+
+              <div
+                v-if="product.price_200g"
+                :class="[
+                  'rounded-lg p-3 transition-colors',
+                  getQuantity(product.id, '200g') > 0
+                    ? 'bg-primary/10 border-2 border-primary'
+                    : 'border bg-card'
+                ]"
+              >
+                <div class="flex justify-between items-center mb-2">
+                  <span class="text-sm font-medium">200g</span>
+                  <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_200g) }}</span>
+                </div>
+                <div class="flex items-center justify-center gap-3">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    @click="decrement(product.id, '200g')"
+                    :disabled="isLocked || getQuantity(product.id, '200g') === 0"
+                    class="h-8 w-8 rounded-full"
+                  >
+                    -
+                  </Button>
+                  <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '200g') }}</span>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    @click="increment(product.id, '200g')"
+                    :disabled="isLocked"
+                    class="h-8 w-8 rounded-full"
+                  >
+                    +
+                  </Button>
+                </div>
+              </div>
+
               <div
                 v-if="product.price_250g"
                 :class="[

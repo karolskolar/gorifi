@@ -130,6 +130,8 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
       let price;
       if (item.variant === '1kg') price = product.price_1kg;
       else if (item.variant === '20pc5g') price = product.price_20pc5g;
+      else if (item.variant === '150g') price = product.price_150g;
+      else if (item.variant === '200g') price = product.price_200g;
       else price = product.price_250g;
       if (!price) continue;
 
@@ -366,6 +368,12 @@ router.get('/cycle/:cycleId', (req, res) => {
         ORDER BY p.name, oi.variant
       `).all(existingOrder.id);
 
+      existingOrder.count_150g = existingOrder.items
+        .filter(i => i.variant === '150g')
+        .reduce((sum, i) => sum + i.quantity, 0);
+      existingOrder.count_200g = existingOrder.items
+        .filter(i => i.variant === '200g')
+        .reduce((sum, i) => sum + i.quantity, 0);
       existingOrder.count_250g = existingOrder.items
         .filter(i => i.variant === '250g')
         .reduce((sum, i) => sum + i.quantity, 0);
@@ -391,6 +399,8 @@ router.get('/cycle/:cycleId', (req, res) => {
         packed: 0,
         total: 0,
         items: [],
+        count_150g: 0,
+        count_200g: 0,
         count_250g: 0,
         count_1kg: 0,
         count_20pc5g: 0
