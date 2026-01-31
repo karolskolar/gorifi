@@ -23,7 +23,7 @@ onMounted(async () => {
 
 // Set page title
 watchEffect(() => {
-  document.title = 'Admin'
+  document.title = 'Gorifi Admin'
 })
 
 async function loadCycles() {

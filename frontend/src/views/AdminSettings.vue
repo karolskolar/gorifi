@@ -24,7 +24,7 @@ onMounted(async () => {
 
 // Set page title
 watchEffect(() => {
-  document.title = 'Nastavenia - Admin'
+  document.title = 'Nastavenia - Gorifi Admin'
 })
 
 async function loadSettings() {

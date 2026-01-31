@@ -88,6 +88,7 @@ router.get('/cycles', (req, res) => {
         CASE
           WHEN oi.variant = '250g' THEN oi.quantity * 0.25
           WHEN oi.variant = '1kg' THEN oi.quantity * 1.0
+          WHEN oi.variant = '20pc5g' THEN oi.quantity * 0.1
           ELSE 0
         END
       ), 0) as totalKilos

@@ -29,7 +29,7 @@ const error = ref('')
 const showProductModal = ref(false)
 const editingProduct = ref(null)
 const productForm = ref({
-  name: '', description1: '', description2: '', roast_type: '', purpose: '', price_250g: '', price_1kg: '', image: ''
+  name: '', description1: '', description2: '', roast_type: '', purpose: '', price_250g: '', price_1kg: '', price_20pc5g: '', image: ''
 })
 const imagePreview = ref(null)
 const isDragging = ref(false)
@@ -68,6 +68,7 @@ function toggleExpand(orderId) {
 const orderTotals = computed(() => ({
   count_250g: orders.value.reduce((sum, o) => sum + (o.count_250g || 0), 0),
   count_1kg: orders.value.reduce((sum, o) => sum + (o.count_1kg || 0), 0),
+  count_20pc5g: orders.value.reduce((sum, o) => sum + (o.count_20pc5g || 0), 0),
   total: orders.value.reduce((sum, o) => sum + (o.total || 0), 0)
 }))
 
@@ -142,11 +143,12 @@ function openProductModal(product = null) {
       ...product,
       price_250g: product.price_250g || '',
       price_1kg: product.price_1kg || '',
+      price_20pc5g: product.price_20pc5g || '',
       image: product.image || ''
     }
     imagePreview.value = product.image || null
   } else {
-    productForm.value = { name: '', description1: '', description2: '', roast_type: '', purpose: '', price_250g: '', price_1kg: '', image: '' }
+    productForm.value = { name: '', description1: '', description2: '', roast_type: '', purpose: '', price_250g: '', price_1kg: '', price_20pc5g: '', image: '' }
     imagePreview.value = null
   }
   showProductModal.value = true
@@ -158,6 +160,7 @@ async function saveProduct() {
     cycle_id: cycleId.value,
     price_250g: productForm.value.price_250g ? parseFloat(productForm.value.price_250g) : null,
     price_1kg: productForm.value.price_1kg ? parseFloat(productForm.value.price_1kg) : null,
+    price_20pc5g: productForm.value.price_20pc5g ? parseFloat(productForm.value.price_20pc5g) : null,
     image: productForm.value.image || null
   }
 
@@ -529,6 +532,7 @@ function getStatusVariant(status) {
                   <TableHead>Účel</TableHead>
                   <TableHead class="text-right">250g</TableHead>
                   <TableHead class="text-right">1kg</TableHead>
+                  <TableHead class="text-right">20ks×5g</TableHead>
                   <TableHead class="text-right">Akcie</TableHead>
                 </TableRow>
               </TableHeader>
@@ -574,6 +578,7 @@ function getStatusVariant(status) {
                   <TableCell class="text-sm">{{ product.purpose || '-' }}</TableCell>
                   <TableCell class="text-sm text-right">{{ formatPrice(product.price_250g) }}</TableCell>
                   <TableCell class="text-sm text-right">{{ formatPrice(product.price_1kg) }}</TableCell>
+                  <TableCell class="text-sm text-right">{{ formatPrice(product.price_20pc5g) }}</TableCell>
                   <TableCell class="text-right">
                     <Button variant="ghost" size="sm" @click="openProductModal(product)">Upraviť</Button>
                     <Button variant="ghost" size="sm" class="text-destructive hover:text-destructive" @click="deleteProduct(product.id)">Vymazať</Button>
@@ -601,6 +606,7 @@ function getStatusVariant(status) {
                   <TableHead class="text-right">Zostatok</TableHead>
                   <TableHead class="text-center">250g</TableHead>
                   <TableHead class="text-center">1kg</TableHead>
+                  <TableHead class="text-center">20ks</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead class="text-right">Suma</TableHead>
                   <TableHead class="text-center">Zaplatené</TableHead>
@@ -632,6 +638,7 @@ function getStatusVariant(status) {
                     </TableCell>
                     <TableCell class="text-center">{{ order.count_250g || 0 }}</TableCell>
                     <TableCell class="text-center">{{ order.count_1kg || 0 }}</TableCell>
+                    <TableCell class="text-center">{{ order.count_20pc5g || 0 }}</TableCell>
                     <TableCell>
                       <Badge
                         :variant="order.status === 'submitted' ? 'default' : order.status === 'none' ? 'outline' : 'secondary'"
@@ -656,7 +663,7 @@ function getStatusVariant(status) {
                   </TableRow>
                   <!-- Expanded items row -->
                   <TableRow v-if="order.status !== 'none' && expandedOrders.has(order.id)">
-                    <TableCell colspan="8" class="bg-muted/50 p-4">
+                    <TableCell colspan="9" class="bg-muted/50 p-4">
                       <div v-if="order.items && order.items.length > 0" class="space-y-1">
                         <div v-for="item in order.items" :key="`${item.product_id}-${item.variant}`" class="flex justify-between py-1 text-sm">
                           <span>{{ item.product_name }} ({{ item.variant }})</span>
@@ -675,6 +682,7 @@ function getStatusVariant(status) {
                   <TableCell></TableCell>
                   <TableCell class="text-center">{{ orderTotals.count_250g }}</TableCell>
                   <TableCell class="text-center">{{ orderTotals.count_1kg }}</TableCell>
+                  <TableCell class="text-center">{{ orderTotals.count_20pc5g }}</TableCell>
                   <TableCell></TableCell>
                   <TableCell class="text-right">{{ formatPrice(orderTotals.total) }}</TableCell>
                   <TableCell></TableCell>
@@ -802,7 +810,7 @@ function getStatusVariant(status) {
                 <Input v-model="productForm.purpose" />
               </div>
             </div>
-            <div class="grid grid-cols-2 gap-3">
+            <div class="grid grid-cols-3 gap-3">
               <div class="space-y-1">
                 <Label>Cena 250g (EUR)</Label>
                 <Input v-model="productForm.price_250g" type="number" step="0.01" />
@@ -810,6 +818,10 @@ function getStatusVariant(status) {
               <div class="space-y-1">
                 <Label>Cena 1kg (EUR)</Label>
                 <Input v-model="productForm.price_1kg" type="number" step="0.01" />
+              </div>
+              <div class="space-y-1">
+                <Label>Cena 20ks×5g (EUR)</Label>
+                <Input v-model="productForm.price_20pc5g" type="number" step="0.01" />
               </div>
             </div>
           </div>

@@ -33,7 +33,7 @@ onMounted(async () => {
 })
 
 watchEffect(() => {
-  document.title = friend.value ? `${friend.value.name} - Admin` : 'Admin'
+  document.title = friend.value ? `${friend.value.name} - Gorifi Admin` : 'Gorifi Admin'
 })
 
 async function loadData() {

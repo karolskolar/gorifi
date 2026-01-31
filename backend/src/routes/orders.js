@@ -127,7 +127,10 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
       const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id);
       if (!product) continue;
 
-      const price = item.variant === '1kg' ? product.price_1kg : product.price_250g;
+      let price;
+      if (item.variant === '1kg') price = product.price_1kg;
+      else if (item.variant === '20pc5g') price = product.price_20pc5g;
+      else price = product.price_250g;
       if (!price) continue;
 
       db.prepare(`
@@ -369,6 +372,9 @@ router.get('/cycle/:cycleId', (req, res) => {
       existingOrder.count_1kg = existingOrder.items
         .filter(i => i.variant === '1kg')
         .reduce((sum, i) => sum + i.quantity, 0);
+      existingOrder.count_20pc5g = existingOrder.items
+        .filter(i => i.variant === '20pc5g')
+        .reduce((sum, i) => sum + i.quantity, 0);
       existingOrder.friend_balance = friend.balance;
 
       return existingOrder;
@@ -386,7 +392,8 @@ router.get('/cycle/:cycleId', (req, res) => {
         total: 0,
         items: [],
         count_250g: 0,
-        count_1kg: 0
+        count_1kg: 0,
+        count_20pc5g: 0
       };
     }
   });

@@ -28,7 +28,7 @@ router.get('/:id', (req, res) => {
 
 // Create single product (manual entry) - with optional image
 router.post('/', upload.single('image'), (req, res) => {
-  const { cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg } = req.body;
+  const { cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, price_20pc5g } = req.body;
 
   if (!cycle_id || !name) {
     return res.status(400).json({ error: 'cycle_id a nazov su povinne' });
@@ -45,9 +45,9 @@ router.post('/', upload.single('image'), (req, res) => {
   }
 
   const result = db.prepare(`
-    INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, image)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, image);
+    INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, price_20pc5g, image)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, price_20pc5g, image);
 
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(product);
@@ -193,7 +193,7 @@ router.post('/:id/image-from-url', async (req, res) => {
 
 // Update product
 router.patch('/:id', (req, res) => {
-  const { name, description1, description2, roast_type, purpose, price_250g, price_1kg, image, active } = req.body;
+  const { name, description1, description2, roast_type, purpose, price_250g, price_1kg, price_20pc5g, image, active } = req.body;
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
 
   if (!product) {
@@ -210,6 +210,7 @@ router.patch('/:id', (req, res) => {
   if (purpose !== undefined) { updates.push('purpose = ?'); values.push(purpose); }
   if (price_250g !== undefined) { updates.push('price_250g = ?'); values.push(price_250g); }
   if (price_1kg !== undefined) { updates.push('price_1kg = ?'); values.push(price_1kg); }
+  if (price_20pc5g !== undefined) { updates.push('price_20pc5g = ?'); values.push(price_20pc5g); }
   if (image !== undefined) { updates.push('image = ?'); values.push(image); }
   if (active !== undefined) { updates.push('active = ?'); values.push(active ? 1 : 0); }
 

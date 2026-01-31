@@ -38,7 +38,7 @@ async function loadData() {
 
 // Set page title
 watchEffect(() => {
-  document.title = 'Admin'
+  document.title = 'Distribúcia - Gorifi Admin'
 })
 
 async function togglePacked(friend) {

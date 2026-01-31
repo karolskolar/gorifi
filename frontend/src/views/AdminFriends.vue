@@ -29,7 +29,7 @@ onMounted(async () => {
 
 // Set page title
 watchEffect(() => {
-  document.title = 'Admin'
+  document.title = 'Priatelia - Gorifi Admin'
 })
 
 async function loadFriends() {

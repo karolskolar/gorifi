@@ -47,7 +47,10 @@ const cartItems = computed(() => {
       const [productId, variant] = key.split('-')
       const product = products.value.find(p => p.id === parseInt(productId))
       if (product) {
-        const price = variant === '1kg' ? product.price_1kg : product.price_250g
+        let price
+        if (variant === '1kg') price = product.price_1kg
+        else if (variant === '20pc5g') price = product.price_20pc5g
+        else price = product.price_250g
         items.push({
           key,
           product_id: parseInt(productId),
@@ -78,8 +81,8 @@ const groupedProducts = computed(() => {
 })
 
 const availablePurposes = computed(() => {
-  // Order: Espresso, Filter, then others
-  const order = ['Espresso', 'Filter']
+  // Order: Espresso, Filter, Kapsuly, then others
+  const order = ['Espresso', 'Filter', 'Kapsuly']
   const purposes = Object.keys(groupedProducts.value)
   const sorted = []
   for (const p of order) {
@@ -94,6 +97,7 @@ const availablePurposes = computed(() => {
 const backgroundClass = computed(() => {
   if (activeTab.value === 'Espresso') return 'bg-stone-200'
   if (activeTab.value === 'Filter') return 'bg-sky-50'
+  if (activeTab.value === 'Kapsuly') return 'bg-amber-50'
   return 'bg-background'
 })
 
@@ -102,6 +106,7 @@ function getTabTriggerClass(purpose) {
   if (!isActive) return ''
   if (purpose === 'Espresso') return 'bg-stone-600 text-white data-[state=active]:bg-stone-600 data-[state=active]:text-white'
   if (purpose === 'Filter') return 'bg-sky-600 text-white data-[state=active]:bg-sky-600 data-[state=active]:text-white'
+  if (purpose === 'Kapsuly') return 'bg-amber-600 text-white data-[state=active]:bg-amber-600 data-[state=active]:text-white'
   return ''
 }
 
@@ -392,7 +397,46 @@ function formatPrice(price) {
                   </div>
                 </div>
 
-                <div class="grid grid-cols-2 gap-4">
+                <!-- Capsule variant (20 ks × 5g) -->
+                <div v-if="product.price_20pc5g" class="grid grid-cols-1 gap-4">
+                  <div
+                    :class="[
+                      'rounded-lg p-3 transition-colors',
+                      getQuantity(product.id, '20pc5g') > 0
+                        ? 'bg-primary/10 border-2 border-primary'
+                        : 'border bg-card'
+                    ]"
+                  >
+                    <div class="flex justify-between items-center mb-2">
+                      <span class="text-sm font-medium">20 ks × 5g</span>
+                      <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_20pc5g) }}</span>
+                    </div>
+                    <div class="flex items-center justify-center gap-3">
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="decrement(product.id, '20pc5g')"
+                        :disabled="isLocked || getQuantity(product.id, '20pc5g') === 0"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        -
+                      </Button>
+                      <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '20pc5g') }}</span>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="increment(product.id, '20pc5g')"
+                        :disabled="isLocked"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        +
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Classic variants (250g / 1kg) -->
+                <div v-else class="grid grid-cols-2 gap-4">
                   <!-- 250g variant -->
                   <div
                     v-if="product.price_250g"
@@ -494,7 +538,46 @@ function formatPrice(price) {
               </div>
             </div>
 
-            <div class="grid grid-cols-2 gap-4">
+            <!-- Capsule variant (20 ks × 5g) -->
+            <div v-if="product.price_20pc5g" class="grid grid-cols-1 gap-4">
+              <div
+                :class="[
+                  'rounded-lg p-3 transition-colors',
+                  getQuantity(product.id, '20pc5g') > 0
+                    ? 'bg-primary/10 border-2 border-primary'
+                    : 'border bg-card'
+                ]"
+              >
+                <div class="flex justify-between items-center mb-2">
+                  <span class="text-sm font-medium">20 ks × 5g</span>
+                  <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_20pc5g) }}</span>
+                </div>
+                <div class="flex items-center justify-center gap-3">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    @click="decrement(product.id, '20pc5g')"
+                    :disabled="isLocked || getQuantity(product.id, '20pc5g') === 0"
+                    class="h-8 w-8 rounded-full"
+                  >
+                    -
+                  </Button>
+                  <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '20pc5g') }}</span>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    @click="increment(product.id, '20pc5g')"
+                    :disabled="isLocked"
+                    class="h-8 w-8 rounded-full"
+                  >
+                    +
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Classic variants (250g / 1kg) -->
+            <div v-else class="grid grid-cols-2 gap-4">
               <div
                 v-if="product.price_250g"
                 :class="[

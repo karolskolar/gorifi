@@ -75,6 +75,13 @@ async function initDb() {
     // Column already exists, ignore
   }
 
+  // Migration: Add price_20pc5g column for capsule products
+  try {
+    db.run('ALTER TABLE products ADD COLUMN price_20pc5g REAL');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS friends (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,6 +128,42 @@ async function initDb() {
       FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
     )
   `);
+
+  // Migration: Recreate order_items table to allow '20pc5g' variant
+  // SQLite doesn't support ALTER TABLE to modify CHECK constraints
+  try {
+    // Check if migration is needed by looking for the old constraint
+    const tableInfo = db.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='order_items'");
+    const tableSql = tableInfo[0]?.values[0]?.[0] || '';
+
+    if (tableSql.includes("IN ('250g', '1kg')") && !tableSql.includes("'20pc5g'")) {
+      // Create new table without restrictive CHECK constraint
+      db.run(`
+        CREATE TABLE order_items_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          order_id INTEGER NOT NULL,
+          product_id INTEGER NOT NULL,
+          variant TEXT NOT NULL,
+          quantity INTEGER NOT NULL DEFAULT 1,
+          price REAL NOT NULL,
+          FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+          FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        )
+      `);
+
+      // Copy data from old table
+      db.run(`
+        INSERT INTO order_items_new (id, order_id, product_id, variant, quantity, price)
+        SELECT id, order_id, product_id, variant, quantity, price FROM order_items
+      `);
+
+      // Drop old table and rename new one
+      db.run('DROP TABLE order_items');
+      db.run('ALTER TABLE order_items_new RENAME TO order_items');
+    }
+  } catch (e) {
+    console.error('Migration error (order_items variant constraint):', e.message);
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS settings (

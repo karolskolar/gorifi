@@ -40,7 +40,7 @@ onMounted(async () => {
 
 // Set page title
 watchEffect(() => {
-  document.title = 'Admin'
+  document.title = 'Prihlásenie - Gorifi Admin'
 })
 
 async function handleSubmit() {
