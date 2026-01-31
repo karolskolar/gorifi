@@ -136,3 +136,31 @@ Brazil Santos,Tmave,Espresso,7.50,25.00
 ## Zaloha dat
 
 SQLite databaza je ulozena v `backend/src/db/database.sqlite`. Staci zalohovat tento subor.
+
+## Reset admin hesla
+
+Admin heslo je ulozene ako SHA-256 hash v databaze. Pre reset spustite prikaz (nahradte `noveheslo` vasim heslom):
+
+### Lokalne (macOS)
+
+```bash
+sqlite3 backend/src/db/database.sqlite "UPDATE settings SET value = '$(echo -n 'noveheslo' | shasum -a 256 | cut -d' ' -f1)' WHERE key = 'admin_password';"
+```
+
+### Lokalne (Linux)
+
+```bash
+sqlite3 backend/src/db/database.sqlite "UPDATE settings SET value = '$(echo -n 'noveheslo' | sha256sum | cut -d' ' -f1)' WHERE key = 'admin_password';"
+```
+
+### Staging
+
+```bash
+ssh gorifi "sqlite3 /var/www/gorifi-staging/backend/src/db/database.sqlite \"UPDATE settings SET value = '\$(echo -n 'noveheslo' | sha256sum | cut -d' ' -f1)' WHERE key = 'admin_password';\""
+```
+
+### Production
+
+```bash
+ssh gorifi "sqlite3 /var/www/gorifi/backend/src/db/database.sqlite \"UPDATE settings SET value = '\$(echo -n 'noveheslo' | sha256sum | cut -d' ' -f1)' WHERE key = 'admin_password';\""
+```

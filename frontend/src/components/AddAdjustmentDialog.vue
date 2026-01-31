@@ -48,7 +48,7 @@ async function handleSubmit() {
   loading.value = true
   try {
     await emit('submit', {
-      order_id: selectedOrderId.value || null,
+      order_id: selectedOrderId.value && selectedOrderId.value !== 'none' ? selectedOrderId.value : null,
       amount: amountNum,
       note: note.value.trim()
     })
@@ -82,7 +82,7 @@ function formatPrice(price) {
               <SelectValue placeholder="Vyberte objednávku..." />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">Žiadna</SelectItem>
+              <SelectItem value="none">Žiadna</SelectItem>
               <SelectItem v-for="order in orders" :key="order.id" :value="String(order.id)">
                 {{ order.cycle_name }} - {{ formatPrice(order.total) }}
               </SelectItem>

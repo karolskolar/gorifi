@@ -26,7 +26,7 @@ router.get('/friend/:friendId', (req, res) => {
 
 // POST /transactions/payment - Record a payment from friend
 router.post('/payment', (req, res) => {
-  const { friend_id, amount, note, date } = req.body;
+  const { friend_id, order_id, amount, note, date } = req.body;
 
   if (!friend_id) {
     return res.status(400).json({ error: 'friend_id je povinný' });
@@ -41,6 +41,14 @@ router.post('/payment', (req, res) => {
     return res.status(404).json({ error: 'Priateľ nebol nájdený' });
   }
 
+  // Validate order if provided
+  if (order_id) {
+    const order = db.prepare('SELECT * FROM orders WHERE id = ? AND friend_id = ?').get(order_id, friend_id);
+    if (!order) {
+      return res.status(404).json({ error: 'Objednávka nebola nájdená alebo nepatrí tomuto priateľovi' });
+    }
+  }
+
   // Note max 160 chars
   const truncatedNote = note ? note.substring(0, 160) : null;
 
@@ -48,9 +56,9 @@ router.post('/payment', (req, res) => {
   const createdAt = date ? new Date(date).toISOString() : new Date().toISOString();
 
   const result = db.prepare(`
-    INSERT INTO transactions (friend_id, type, amount, note, created_at)
-    VALUES (?, 'payment', ?, ?, ?)
-  `).run(friend_id, amount, truncatedNote, createdAt);
+    INSERT INTO transactions (friend_id, order_id, type, amount, note, created_at)
+    VALUES (?, ?, 'payment', ?, ?, ?)
+  `).run(friend_id, order_id || null, amount, truncatedNote, createdAt);
 
   const transaction = db.prepare('SELECT * FROM transactions WHERE id = ?').get(result.lastInsertRowid);
 

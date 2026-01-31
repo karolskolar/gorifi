@@ -4,11 +4,16 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import BalanceBadge from './BalanceBadge.vue'
 
 const props = defineProps({
   open: Boolean,
   friend: Object,
+  orders: {
+    type: Array,
+    default: () => []
+  },
   currentBalance: {
     type: Number,
     default: 0
@@ -17,6 +22,7 @@ const props = defineProps({
 
 const emit = defineEmits(['update:open', 'submit'])
 
+const selectedOrderId = ref('')
 const amount = ref('')
 const note = ref('')
 const selectedDate = ref(new Date())
@@ -47,6 +53,7 @@ function changeDate(days) {
 
 watch(() => props.open, (isOpen) => {
   if (isOpen) {
+    selectedOrderId.value = ''
     amount.value = ''
     note.value = ''
     selectedDate.value = new Date()
@@ -60,6 +67,7 @@ async function handleSubmit() {
   loading.value = true
   try {
     await emit('submit', {
+      order_id: selectedOrderId.value && selectedOrderId.value !== 'none' ? selectedOrderId.value : null,
       amount: amountNum,
       note: note.value.trim() || null,
       date: selectedDate.value.toISOString()
@@ -68,6 +76,10 @@ async function handleSubmit() {
   } finally {
     loading.value = false
   }
+}
+
+function formatPrice(price) {
+  return price ? `${price.toFixed(2)} EUR` : '-'
 }
 </script>
 
@@ -112,6 +124,21 @@ async function handleSubmit() {
               </svg>
             </Button>
           </div>
+        </div>
+
+        <div class="space-y-2">
+          <Label>Objednávka (voliteľné)</Label>
+          <Select v-model="selectedOrderId">
+            <SelectTrigger>
+              <SelectValue placeholder="Vyberte objednávku..." />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">Žiadna</SelectItem>
+              <SelectItem v-for="order in orders" :key="order.id" :value="String(order.id)">
+                {{ order.cycle_name }} - {{ formatPrice(order.total) }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         <div class="space-y-2">

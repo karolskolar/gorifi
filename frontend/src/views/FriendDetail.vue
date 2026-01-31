@@ -53,7 +53,7 @@ async function loadData() {
 
 async function handleAddPayment(data) {
   try {
-    await api.addPayment(friendId, data.amount, data.note, data.date)
+    await api.addPayment(friendId, data.order_id, data.amount, data.note, data.date)
     await loadData()
   } catch (e) {
     error.value = e.message
@@ -264,6 +264,7 @@ function getTransactionTypeVariant(type) {
     <AddPaymentDialog
       v-model:open="showPaymentDialog"
       :friend="friend"
+      :orders="orders"
       :current-balance="friend?.balance || 0"
       @submit="handleAddPayment"
     />

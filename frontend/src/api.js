@@ -137,9 +137,9 @@ export const api = {
 
   // Transactions
   getTransactions: (friendId) => request(`/transactions/friend/${friendId}`),
-  addPayment: (friend_id, amount, note, date) => request('/transactions/payment', {
+  addPayment: (friend_id, order_id, amount, note, date) => request('/transactions/payment', {
     method: 'POST',
-    body: { friend_id, amount, note, date }
+    body: { friend_id, order_id, amount, note, date }
   }),
   addAdjustment: (friend_id, order_id, amount, note) => request('/transactions/adjustment', {
     method: 'POST',
