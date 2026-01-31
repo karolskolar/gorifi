@@ -54,15 +54,15 @@ router.get('/cycles', (req, res) => {
 
   const friendId = req.query.friendId;
 
-  // Get all cycles (open, locked, completed)
+  // Get all cycles (open, locked, completed) with stored total_friends
   const cycles = db.prepare(`
-    SELECT c.id, c.name, c.status, c.created_at
+    SELECT c.id, c.name, c.status, c.created_at, c.total_friends
     FROM order_cycles c
     WHERE c.name != '_placeholder'
     ORDER BY c.created_at DESC
   `).all();
 
-  // Add friend's order status to each cycle
+  // Add friend's order status and cycle progress to each cycle
   const cyclesWithOrders = cycles.map(cycle => {
     let hasOrder = false;
     let orderTotal = 0;
@@ -82,11 +82,35 @@ router.get('/cycles', (req, res) => {
       }
     }
 
+    // Get total kilos for this cycle (all submitted orders)
+    const kilosResult = db.prepare(`
+      SELECT COALESCE(SUM(
+        CASE
+          WHEN oi.variant = '250g' THEN oi.quantity * 0.25
+          WHEN oi.variant = '1kg' THEN oi.quantity * 1.0
+          ELSE 0
+        END
+      ), 0) as totalKilos
+      FROM orders o
+      JOIN order_items oi ON oi.order_id = o.id
+      WHERE o.cycle_id = ? AND o.status = 'submitted'
+    `).get(cycle.id);
+
+    // Count submitted orders (unique friends) for this cycle
+    const submittedResult = db.prepare(`
+      SELECT COUNT(DISTINCT o.friend_id) as submittedOrders
+      FROM orders o
+      WHERE o.cycle_id = ? AND o.status = 'submitted'
+    `).get(cycle.id);
+
     return {
       ...cycle,
       hasOrder,
       orderTotal,
-      orderStatus
+      orderStatus,
+      totalKilos: kilosResult.totalKilos,
+      submittedOrders: submittedResult.submittedOrders,
+      totalFriends: cycle.total_friends || 0
     };
   });
 

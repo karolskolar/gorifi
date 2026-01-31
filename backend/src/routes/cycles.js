@@ -78,7 +78,11 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: 'Nazov je povinny' });
   }
 
-  const result = db.prepare('INSERT INTO order_cycles (name) VALUES (?)').run(name);
+  // Count active friends at the time of cycle creation
+  const friendsCount = db.prepare('SELECT COUNT(*) as count FROM friends WHERE active = 1').get();
+  const totalFriends = friendsCount.count;
+
+  const result = db.prepare('INSERT INTO order_cycles (name, total_friends) VALUES (?, ?)').run(name, totalFriends);
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(cycle);
 });

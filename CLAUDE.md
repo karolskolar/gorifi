@@ -76,6 +76,12 @@ cd frontend && npm run dev
 - Use `computed()` for derived state from route params
 - Reactivity trigger for objects: `cart.value = { ...cart.value }`
 
+### Cycle Progress Feature (2026-01-31)
+- Each cycle stores `total_friends` at creation time (snapshot of active friends count)
+- This ensures progress display (e.g., "5/12 priateľov") remains fixed even if friends are added later
+- `/friends/cycles` endpoint returns: `totalKilos`, `submittedOrders`, `totalFriends`
+- Kilos calculated from order_items: 250g = 0.25kg, 1kg = 1.0kg
+
 ## Deployment
 
 ### Architecture

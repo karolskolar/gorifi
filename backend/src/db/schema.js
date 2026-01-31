@@ -44,6 +44,13 @@ async function initDb() {
     // Column already exists, ignore
   }
 
+  // Migration: Add total_friends column to store friend count at cycle creation time
+  try {
+    db.run('ALTER TABLE order_cycles ADD COLUMN total_friends INTEGER DEFAULT 0');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
