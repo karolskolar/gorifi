@@ -113,6 +113,9 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
     return res.status(400).json({ error: 'items musia byt pole' });
   }
 
+  // Get markup ratio for price calculation (default to 1.0 if not set)
+  const markupRatio = cycle.markup_ratio || 1.0;
+
   // Update items in a transaction
   const updateItems = db.transaction((orderItems) => {
     // Clear existing items
@@ -123,17 +126,20 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
     for (const item of orderItems) {
       if (item.quantity <= 0) continue;
 
-      // Get product and price
+      // Get product and base price
       const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id);
       if (!product) continue;
 
-      let price;
-      if (item.variant === '1kg') price = product.price_1kg;
-      else if (item.variant === '20pc5g') price = product.price_20pc5g;
-      else if (item.variant === '150g') price = product.price_150g;
-      else if (item.variant === '200g') price = product.price_200g;
-      else price = product.price_250g;
-      if (!price) continue;
+      let basePrice;
+      if (item.variant === '1kg') basePrice = product.price_1kg;
+      else if (item.variant === '20pc5g') basePrice = product.price_20pc5g;
+      else if (item.variant === '150g') basePrice = product.price_150g;
+      else if (item.variant === '200g') basePrice = product.price_200g;
+      else basePrice = product.price_250g;
+      if (!basePrice) continue;
+
+      // Apply markup to get final price (round to 2 decimal places)
+      const price = Math.round(basePrice * markupRatio * 100) / 100;
 
       db.prepare(`
         INSERT INTO order_items (order_id, product_id, variant, quantity, price)

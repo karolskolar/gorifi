@@ -46,6 +46,10 @@ const gsheetUrl = ref('')
 const gsheetLoading = ref(false)
 const gsheetFormat = ref('multirow')  // 'simple' or 'multirow'
 
+// Markup ratio
+const markupPercent = ref(0)
+const markupSaving = ref(false)
+
 
 // Cycle name editing
 const editingCycleName = ref(false)
@@ -96,6 +100,8 @@ async function loadAll() {
     products.value = productsData
     orders.value = ordersData
     summary.value = summaryData
+    // Initialize markup percentage from cycle data (ratio 1.19 = 19%)
+    markupPercent.value = Math.round(((cycleData.markup_ratio || 1.0) - 1) * 100)
   } catch (e) {
     error.value = e.message
   } finally {
@@ -134,6 +140,21 @@ async function saveCycleName() {
 function cancelEditingCycleName() {
   editingCycleName.value = false
   cycleNameEdit.value = ''
+}
+
+async function saveMarkup() {
+  markupSaving.value = true
+  error.value = ''
+  try {
+    // Convert percentage to ratio (19% -> 1.19)
+    const ratio = 1 + (markupPercent.value / 100)
+    await api.updateCycle(cycleId.value, { markup_ratio: ratio })
+    await loadAll()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    markupSaving.value = false
+  }
 }
 
 
@@ -473,6 +494,37 @@ function getStatusVariant(status) {
               + Pridať produkt
             </Button>
           </div>
+
+          <!-- Markup ratio setting -->
+          <Card class="mb-4">
+            <CardContent class="p-4">
+              <div class="flex items-center gap-4">
+                <Label class="text-sm font-medium whitespace-nowrap">Prirážka pre priateľov:</Label>
+                <div class="flex items-center gap-2">
+                  <Input
+                    v-model.number="markupPercent"
+                    type="number"
+                    step="1"
+                    min="0"
+                    max="100"
+                    class="w-20 text-center"
+                    :disabled="markupSaving"
+                  />
+                  <span class="text-muted-foreground">%</span>
+                </div>
+                <Button
+                  @click="saveMarkup"
+                  :disabled="markupSaving"
+                  size="sm"
+                >
+                  {{ markupSaving ? 'Ukladám...' : 'Uložiť' }}
+                </Button>
+                <span v-if="cycle?.markup_ratio && cycle.markup_ratio !== 1.0" class="text-sm text-muted-foreground">
+                  (cena × {{ cycle.markup_ratio.toFixed(2) }})
+                </span>
+              </div>
+            </CardContent>
+          </Card>
 
           <!-- Import section -->
           <Card class="mb-4">

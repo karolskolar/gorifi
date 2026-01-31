@@ -112,9 +112,10 @@ export const api = {
 
   // Friends (global)
   getFriends: (activeOnly = false) => request(`/friends${activeOnly ? '?active=true' : ''}`),
-  createFriend: (name) => request('/friends', { method: 'POST', body: { name } }),
+  createFriend: (data) => request('/friends', { method: 'POST', body: data }),
   updateFriend: (id, data) => request(`/friends/${id}`, { method: 'PATCH', body: data }),
   deleteFriend: (id) => request(`/friends/${id}`, { method: 'DELETE' }),
+  updateFriendProfile: (id, data) => request(`/friends/${id}/profile`, { method: 'PATCH', body: data }),
 
   // Orders (password-protected, for friends)
   getOrderByFriend: (cycleId, friendId) => request(`/orders/cycle/${cycleId}/friend/${friendId}`),

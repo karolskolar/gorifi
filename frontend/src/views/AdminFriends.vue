@@ -21,7 +21,8 @@ const error = ref('')
 // Modal state
 const showModal = ref(false)
 const editingFriend = ref(null)
-const friendName = ref('')
+const friendName = ref('')      // login name
+const friendDisplayName = ref('') // display name (Meno)
 
 onMounted(async () => {
   await loadFriends()
@@ -46,6 +47,7 @@ async function loadFriends() {
 function openModal(friend = null) {
   editingFriend.value = friend
   friendName.value = friend ? friend.name : ''
+  friendDisplayName.value = friend ? (friend.display_name || '') : ''
   showModal.value = true
 }
 
@@ -53,13 +55,18 @@ async function saveFriend() {
   if (!friendName.value.trim()) return
 
   try {
+    const data = {
+      name: friendName.value.trim(),
+      display_name: friendDisplayName.value.trim() || null
+    }
     if (editingFriend.value) {
-      await api.updateFriend(editingFriend.value.id, { name: friendName.value })
+      await api.updateFriend(editingFriend.value.id, data)
     } else {
-      await api.createFriend(friendName.value)
+      await api.createFriend(data)
     }
     showModal.value = false
     friendName.value = ''
+    friendDisplayName.value = ''
     editingFriend.value = null
     await loadFriends()
   } catch (e) {
@@ -145,7 +152,9 @@ async function logout() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Meno</TableHead>
+              <TableHead>ID</TableHead>
+              <TableHead>Prihlasovacie meno</TableHead>
+              <TableHead>Poznámka</TableHead>
               <TableHead class="text-right">Zostatok</TableHead>
               <TableHead class="text-center">Stav</TableHead>
               <TableHead class="text-right">Akcie</TableHead>
@@ -153,7 +162,9 @@ async function logout() {
           </TableHeader>
           <TableBody>
             <TableRow v-for="friend in friends" :key="friend.id">
+              <TableCell class="text-muted-foreground font-mono text-sm">{{ friend.uid || '-' }}</TableCell>
               <TableCell class="font-medium">{{ friend.name }}</TableCell>
+              <TableCell class="text-muted-foreground">{{ friend.display_name || '-' }}</TableCell>
               <TableCell class="text-right">
                 <BalanceBadge :balance="friend.balance || 0" />
               </TableCell>
@@ -195,20 +206,34 @@ async function logout() {
           <DialogTitle>{{ editingFriend ? 'Upraviť priateľa' : 'Nový priateľ' }}</DialogTitle>
         </DialogHeader>
         <div class="space-y-4 py-4">
+          <div v-if="editingFriend?.uid" class="space-y-2">
+            <Label class="text-muted-foreground">Jedinečné ID</Label>
+            <div class="font-mono text-sm bg-muted px-3 py-2 rounded">{{ editingFriend.uid }}</div>
+          </div>
           <div class="space-y-2">
-            <Label>Meno priateľa</Label>
+            <Label>Prihlasovacie meno *</Label>
             <Input
               v-model="friendName"
-              placeholder="Zadajte meno"
+              placeholder="Zobrazuje sa v prihlasovacom dropdowne"
               @keyup.enter="saveFriend"
             />
+            <p class="text-xs text-muted-foreground">Toto meno sa zobrazuje pri prihlasovaní</p>
+          </div>
+          <div class="space-y-2">
+            <Label>Poznámka (voliteľné)</Label>
+            <Input
+              v-model="friendDisplayName"
+              placeholder="Napr. 'Ivet a Peto', interná poznámka"
+              @keyup.enter="saveFriend"
+            />
+            <p class="text-xs text-muted-foreground">Interná poznámka pre admina (nezobrazuje sa priateľovi)</p>
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" @click="showModal = false">
             Zrušiť
           </Button>
-          <Button @click="saveFriend">
+          <Button @click="saveFriend" :disabled="!friendName.trim()">
             {{ editingFriend ? 'Uložiť' : 'Pridať' }}
           </Button>
         </DialogFooter>

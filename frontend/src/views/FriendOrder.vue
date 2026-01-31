@@ -39,20 +39,24 @@ const cycleId = computed(() => route.params.cycleId)
 
 const isLocked = computed(() => cycle.value?.status === 'locked' || cycle.value?.status === 'completed')
 const isSubmitted = computed(() => order.value?.status === 'submitted')
+const markupRatio = computed(() => cycle.value?.markup_ratio || 1.0)
 
 const cartItems = computed(() => {
   const items = []
+  const ratio = markupRatio.value
   for (const [key, quantity] of Object.entries(cart.value)) {
     if (quantity > 0) {
       const [productId, variant] = key.split('-')
       const product = products.value.find(p => p.id === parseInt(productId))
       if (product) {
-        let price
-        if (variant === '1kg') price = product.price_1kg
-        else if (variant === '20pc5g') price = product.price_20pc5g
-        else if (variant === '150g') price = product.price_150g
-        else if (variant === '200g') price = product.price_200g
-        else price = product.price_250g
+        let basePrice
+        if (variant === '1kg') basePrice = product.price_1kg
+        else if (variant === '20pc5g') basePrice = product.price_20pc5g
+        else if (variant === '150g') basePrice = product.price_150g
+        else if (variant === '200g') basePrice = product.price_200g
+        else basePrice = product.price_250g
+        // Apply markup ratio to get final price
+        const price = Math.round(basePrice * ratio * 100) / 100
         items.push({
           key,
           product_id: parseInt(productId),
@@ -296,6 +300,11 @@ function handleSuccessModalClose() {
 function formatPrice(price) {
   return price ? `${price.toFixed(2)} EUR` : '-'
 }
+
+function applyMarkup(price) {
+  if (!price) return null
+  return Math.round(price * markupRatio.value * 100) / 100
+}
 </script>
 
 <template>
@@ -411,7 +420,7 @@ function formatPrice(price) {
                   >
                     <div class="flex justify-between items-center mb-2">
                       <span class="text-sm font-medium">20 ks × 5g</span>
-                      <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_20pc5g) }}</span>
+                      <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_20pc5g)) }}</span>
                     </div>
                     <div class="flex items-center justify-center gap-3">
                       <Button
@@ -451,7 +460,7 @@ function formatPrice(price) {
                   >
                     <div class="flex justify-between items-center mb-2">
                       <span class="text-sm font-medium">150g</span>
-                      <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_150g) }}</span>
+                      <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_150g)) }}</span>
                     </div>
                     <div class="flex items-center justify-center gap-3">
                       <Button
@@ -488,7 +497,7 @@ function formatPrice(price) {
                   >
                     <div class="flex justify-between items-center mb-2">
                       <span class="text-sm font-medium">200g</span>
-                      <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_200g) }}</span>
+                      <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_200g)) }}</span>
                     </div>
                     <div class="flex items-center justify-center gap-3">
                       <Button
@@ -525,7 +534,7 @@ function formatPrice(price) {
                   >
                     <div class="flex justify-between items-center mb-2">
                       <span class="text-sm font-medium">250g</span>
-                      <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_250g) }}</span>
+                      <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_250g)) }}</span>
                     </div>
                     <div class="flex items-center justify-center gap-3">
                       <Button
@@ -562,7 +571,7 @@ function formatPrice(price) {
                   >
                     <div class="flex justify-between items-center mb-2">
                       <span class="text-sm font-medium">1kg</span>
-                      <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_1kg) }}</span>
+                      <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_1kg)) }}</span>
                     </div>
                     <div class="flex items-center justify-center gap-3">
                       <Button
@@ -626,7 +635,7 @@ function formatPrice(price) {
               >
                 <div class="flex justify-between items-center mb-2">
                   <span class="text-sm font-medium">20 ks × 5g</span>
-                  <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_20pc5g) }}</span>
+                  <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_20pc5g)) }}</span>
                 </div>
                 <div class="flex items-center justify-center gap-3">
                   <Button
@@ -665,7 +674,7 @@ function formatPrice(price) {
               >
                 <div class="flex justify-between items-center mb-2">
                   <span class="text-sm font-medium">150g</span>
-                  <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_150g) }}</span>
+                  <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_150g)) }}</span>
                 </div>
                 <div class="flex items-center justify-center gap-3">
                   <Button
@@ -701,7 +710,7 @@ function formatPrice(price) {
               >
                 <div class="flex justify-between items-center mb-2">
                   <span class="text-sm font-medium">200g</span>
-                  <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_200g) }}</span>
+                  <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_200g)) }}</span>
                 </div>
                 <div class="flex items-center justify-center gap-3">
                   <Button
@@ -737,7 +746,7 @@ function formatPrice(price) {
               >
                 <div class="flex justify-between items-center mb-2">
                   <span class="text-sm font-medium">250g</span>
-                  <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_250g) }}</span>
+                  <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_250g)) }}</span>
                 </div>
                 <div class="flex items-center justify-center gap-3">
                   <Button
@@ -773,7 +782,7 @@ function formatPrice(price) {
               >
                 <div class="flex justify-between items-center mb-2">
                   <span class="text-sm font-medium">1kg</span>
-                  <span class="text-sm text-primary font-semibold">{{ formatPrice(product.price_1kg) }}</span>
+                  <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_1kg)) }}</span>
                 </div>
                 <div class="flex items-center justify-center gap-3">
                   <Button

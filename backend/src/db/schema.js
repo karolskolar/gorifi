@@ -8,6 +8,16 @@ const __dirname = dirname(__filename);
 
 const dbPath = join(__dirname, 'database.sqlite');
 
+// Generate a unique 8-character alphanumeric ID
+function generateUid() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Removed confusing chars: 0, O, I, 1
+  let uid = '';
+  for (let i = 0; i < 8; i++) {
+    uid += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return uid;
+}
+
 let db = null;
 let inTransaction = false;
 
@@ -47,6 +57,13 @@ async function initDb() {
   // Migration: Add total_friends column to store friend count at cycle creation time
   try {
     db.run('ALTER TABLE order_cycles ADD COLUMN total_friends INTEGER DEFAULT 0');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Migration: Add markup_ratio column for per-cycle price markup (e.g., 1.19 = 19% markup)
+  try {
+    db.run('ALTER TABLE order_cycles ADD COLUMN markup_ratio REAL DEFAULT 1.0');
   } catch (e) {
     // Column already exists, ignore
   }
@@ -111,6 +128,47 @@ async function initDb() {
     db.run('ALTER TABLE friends ADD COLUMN active INTEGER DEFAULT 1');
   } catch (e) {
     // Column already exists, ignore
+  }
+
+  // Migration: Add display_name column (optional, for full name like "Ivet a Peto")
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN display_name TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Migration: Add uid column (unique identifier, system-generated, immutable)
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN uid TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Generate UIDs for existing friends that don't have one
+  try {
+    const friendsWithoutUid = db.exec("SELECT id FROM friends WHERE uid IS NULL");
+    if (friendsWithoutUid.length > 0 && friendsWithoutUid[0].values.length > 0) {
+      for (const row of friendsWithoutUid[0].values) {
+        const friendId = row[0];
+        let uid = generateUid();
+        // Ensure uniqueness
+        let existing = db.exec(`SELECT id FROM friends WHERE uid = '${uid}'`);
+        while (existing.length > 0 && existing[0].values.length > 0) {
+          uid = generateUid();
+          existing = db.exec(`SELECT id FROM friends WHERE uid = '${uid}'`);
+        }
+        db.run(`UPDATE friends SET uid = '${uid}' WHERE id = ${friendId}`);
+      }
+    }
+  } catch (e) {
+    console.error('Migration error (generating UIDs):', e.message);
+  }
+
+  // Add UNIQUE index on uid if not exists (separate step to avoid issues with NULL values)
+  try {
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_friends_uid ON friends(uid) WHERE uid IS NOT NULL');
+  } catch (e) {
+    // Index already exists or other error, ignore
   }
 
   db.run(`
@@ -313,4 +371,4 @@ const dbHelpers = {
 await initDb();
 
 export default dbHelpers;
-export { saveDb };
+export { saveDb, generateUid };

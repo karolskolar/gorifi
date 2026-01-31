@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
 
 const router = useRouter()
@@ -20,6 +21,7 @@ const savedAuth = ref(null) // { friendId, friendName } from localStorage
 // Data
 const friends = ref([])
 const cycles = ref([])
+const currentFriend = ref(null) // full friend object with uid, name, display_name
 
 // Form state
 const selectedFriendId = ref('')
@@ -30,6 +32,11 @@ const rememberMe = ref(true)
 const loading = ref(true)
 const error = ref('')
 const authError = ref('')
+
+// Profile editing
+const showProfileModal = ref(false)
+const profileName = ref('')
+const profileSaving = ref(false)
 
 const STORAGE_KEY = 'gorifi_friend_auth'
 
@@ -60,6 +67,8 @@ async function loadInitialData() {
         const friendExists = friends.value.find(f => f.id === parsed.friendId)
         if (friendExists && parsed.password) {
           savedAuth.value = parsed
+          // Restore current friend data from friends list (has latest data)
+          currentFriend.value = friendExists
           selectedFriendId.value = String(parsed.friendId)
           // Try to authenticate with saved password
           password.value = parsed.password
@@ -101,17 +110,22 @@ async function authenticate(silent = false) {
     // Set password for subsequent requests
     setFriendsPassword(password.value)
 
-    // Save to localStorage if remember me is checked
+    // Get full friend data
     const selectedFriend = friends.value.find(f => f.id === parseInt(selectedFriendId.value))
+    currentFriend.value = selectedFriend
+
+    // Save to localStorage if remember me is checked
     if (rememberMe.value && selectedFriend) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         friendId: parseInt(selectedFriendId.value),
         friendName: selectedFriend.name,
+        friendUid: selectedFriend.uid,
         password: password.value
       }))
       savedAuth.value = {
         friendId: parseInt(selectedFriendId.value),
-        friendName: selectedFriend.name
+        friendName: selectedFriend.name,
+        friendUid: selectedFriend.uid
       }
     }
 
@@ -140,6 +154,7 @@ function switchUser() {
   clearFriendsPassword()
   localStorage.removeItem(STORAGE_KEY)
   savedAuth.value = null
+  currentFriend.value = null
   selectedFriendId.value = ''
   password.value = ''
   authState.value = 'login'
@@ -173,8 +188,56 @@ function formatPrice(price) {
 }
 
 function getCurrentFriendName() {
-  const friend = friends.value.find(f => f.id === parseInt(selectedFriendId.value))
-  return friend?.name || savedAuth.value?.friendName || ''
+  // Show login name (display_name is admin-only)
+  return currentFriend.value?.name || savedAuth.value?.friendName || ''
+}
+
+function getCurrentFriendLoginName() {
+  return currentFriend.value?.name || savedAuth.value?.friendName || ''
+}
+
+function getCurrentFriendUid() {
+  return currentFriend.value?.uid || savedAuth.value?.friendUid || ''
+}
+
+function openProfileModal() {
+  profileName.value = currentFriend.value?.name || savedAuth.value?.friendName || ''
+  showProfileModal.value = true
+}
+
+async function saveProfile() {
+  if (!profileName.value.trim()) return
+
+  profileSaving.value = true
+  try {
+    const friendId = selectedFriendId.value
+    const updated = await api.updateFriendProfile(friendId, {
+      name: profileName.value.trim()
+    })
+
+    // Update local state
+    currentFriend.value = { ...currentFriend.value, ...updated }
+
+    // Update friends list
+    const idx = friends.value.findIndex(f => f.id === parseInt(friendId))
+    if (idx >= 0) {
+      friends.value[idx] = { ...friends.value[idx], ...updated }
+    }
+
+    // Update localStorage
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      parsed.friendName = updated.name
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+    }
+
+    showProfileModal.value = false
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    profileSaving.value = false
+  }
 }
 
 function formatKilos(kilos) {
@@ -194,9 +257,22 @@ function formatProgress(submitted, total) {
     <!-- Header -->
     <header class="bg-primary text-primary-foreground shadow sticky top-0 z-40">
       <div class="max-w-4xl mx-auto px-4 py-3 flex justify-between items-center">
-        <div v-if="authState === 'authenticated'" class="flex flex-col">
-          <span class="text-lg font-semibold">{{ getCurrentFriendName() }}</span>
-          <span class="text-primary-foreground/70 text-sm">Vyberte cyklus</span>
+        <div v-if="authState === 'authenticated'" class="flex items-center gap-3">
+          <div class="flex flex-col">
+            <span class="text-lg font-semibold">{{ getCurrentFriendName() }}</span>
+            <span class="text-primary-foreground/70 text-xs font-mono">{{ getCurrentFriendUid() }}</span>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            @click="openProfileModal"
+            class="text-primary-foreground/50 hover:text-primary-foreground hover:bg-primary-foreground/10"
+            title="Upraviť profil"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+            </svg>
+          </Button>
         </div>
         <div v-else class="flex-1 flex justify-center">
           <img
@@ -340,5 +416,38 @@ function formatProgress(submitted, total) {
         </Card>
       </div>
     </div>
+
+    <!-- Profile Edit Modal -->
+    <Dialog :open="showProfileModal" @update:open="showProfileModal = $event">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Upraviť profil</DialogTitle>
+        </DialogHeader>
+        <div class="space-y-4 py-4">
+          <div class="space-y-2">
+            <Label class="text-muted-foreground">Jedinečné ID</Label>
+            <div class="font-mono text-sm bg-muted px-3 py-2 rounded">{{ getCurrentFriendUid() }}</div>
+            <p class="text-xs text-muted-foreground">Toto ID sa nedá zmeniť</p>
+          </div>
+          <div class="space-y-2">
+            <Label>Prihlasovacie meno *</Label>
+            <Input
+              v-model="profileName"
+              placeholder="Vaše prihlasovacie meno"
+              :disabled="profileSaving"
+            />
+            <p class="text-xs text-muted-foreground">Toto meno sa zobrazuje pri prihlasovaní</p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="showProfileModal = false" :disabled="profileSaving">
+            Zrušiť
+          </Button>
+          <Button @click="saveProfile" :disabled="!profileName.trim() || profileSaving">
+            {{ profileSaving ? 'Ukladám...' : 'Uložiť' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>

@@ -27,7 +27,7 @@ router.get('/:id', (req, res) => {
 
 // Get public cycle info (no auth required) - for friend ordering page
 router.get('/:id/public', (req, res) => {
-  const cycle = db.prepare('SELECT id, name, status FROM order_cycles WHERE id = ?').get(req.params.id);
+  const cycle = db.prepare('SELECT id, name, status, markup_ratio FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
     return res.status(404).json({ error: 'Cyklus nebol nájdený' });
   }
@@ -87,9 +87,9 @@ router.post('/', (req, res) => {
   res.status(201).json(cycle);
 });
 
-// Update cycle (lock/unlock/complete/password)
+// Update cycle (lock/unlock/complete/password/markup_ratio)
 router.patch('/:id', (req, res) => {
-  const { status, name, shared_password } = req.body;
+  const { status, name, shared_password, markup_ratio } = req.body;
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
 
   if (!cycle) {
@@ -114,6 +114,10 @@ router.patch('/:id', (req, res) => {
   if (shared_password !== undefined) {
     updates.push('shared_password = ?');
     values.push(shared_password || null);
+  }
+  if (markup_ratio !== undefined) {
+    updates.push('markup_ratio = ?');
+    values.push(markup_ratio);
   }
 
   if (updates.length > 0) {

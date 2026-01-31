@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
-import db from '../db/schema.js';
+import db, { generateUid } from '../db/schema.js';
 
 const router = Router();
 
@@ -221,14 +221,21 @@ router.get('/:id/detail', (req, res) => {
 
 // Create new friend (global, no cycle_id required)
 router.post('/', (req, res) => {
-  const { name } = req.body;
+  const { name, display_name } = req.body;
 
   if (!name) {
-    return res.status(400).json({ error: 'Meno je povinné' });
+    return res.status(400).json({ error: 'Prihlasovacie meno je povinné' });
   }
 
   // Generate unique access token (kept for backwards compatibility)
   const access_token = nanoid(12);
+
+  // Generate unique UID (8 alphanumeric characters)
+  let uid = generateUid();
+  // Ensure uniqueness (unlikely to collide, but check anyway)
+  while (db.prepare('SELECT id FROM friends WHERE uid = ?').get(uid)) {
+    uid = generateUid();
+  }
 
   // cycle_id column still has foreign key constraint, so we need a valid cycle_id
   // Use the first available cycle, or create a placeholder cycle if none exist
@@ -239,17 +246,17 @@ router.post('/', (req, res) => {
   }
 
   const result = db.prepare(`
-    INSERT INTO friends (cycle_id, name, access_token, active)
-    VALUES (?, ?, ?, 1)
-  `).run(cycle.id, name, access_token);
+    INSERT INTO friends (cycle_id, name, display_name, uid, access_token, active)
+    VALUES (?, ?, ?, ?, ?, 1)
+  `).run(cycle.id, name, display_name || null, uid, access_token);
 
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(friend);
 });
 
-// Update friend (name and/or active status)
+// Update friend (name, display_name, and/or active status) - Admin endpoint
 router.patch('/:id', (req, res) => {
-  const { name, active } = req.body;
+  const { name, display_name, active } = req.body;
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
 
   if (!friend) {
@@ -263,6 +270,10 @@ router.patch('/:id', (req, res) => {
     updates.push('name = ?');
     values.push(name);
   }
+  if (display_name !== undefined) {
+    updates.push('display_name = ?');
+    values.push(display_name || null);
+  }
   if (active !== undefined) {
     updates.push('active = ?');
     values.push(active ? 1 : 0);
@@ -274,6 +285,33 @@ router.patch('/:id', (req, res) => {
   }
 
   const updated = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
+  res.json(updated);
+});
+
+// Update own profile (friend can update their login name only) - requires friends password
+// Note: display_name is admin-only and cannot be changed by friends
+router.patch('/:id/profile', (req, res) => {
+  const validation = validateFriendsPassword(req);
+  if (validation.error) {
+    return res.status(validation.status).json({ error: validation.error });
+  }
+
+  const { name } = req.body;
+  const friendId = req.params.id;
+
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(friendId);
+  if (!friend) {
+    return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
+  }
+
+  if (name !== undefined) {
+    if (!name.trim()) {
+      return res.status(400).json({ error: 'Prihlasovacie meno je povinné' });
+    }
+    db.prepare('UPDATE friends SET name = ? WHERE id = ?').run(name.trim(), friendId);
+  }
+
+  const updated = db.prepare('SELECT id, name, uid FROM friends WHERE id = ?').get(friendId);
   res.json(updated);
 });
 
