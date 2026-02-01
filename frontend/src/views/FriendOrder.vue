@@ -25,6 +25,7 @@ const cycle = ref(null)
 const products = ref([])
 const order = ref(null)
 const cart = ref({}) // { productId-variant: quantity }
+const lastSubmittedCart = ref(null) // Snapshot of cart at last submission
 
 // UI state
 const loading = ref(true)
@@ -41,6 +42,19 @@ const cycleId = computed(() => route.params.cycleId)
 const isLocked = computed(() => cycle.value?.status === 'locked' || cycle.value?.status === 'completed')
 const isSubmitted = computed(() => order.value?.status === 'submitted')
 const markupRatio = computed(() => cycle.value?.markup_ratio || 1.0)
+
+// Check if there are unsubmitted changes after an order was submitted
+const hasUnsubmittedChanges = computed(() => {
+  if (!isSubmitted.value || !lastSubmittedCart.value) return false
+  // Compare current cart with last submitted cart
+  const currentKeys = Object.keys(cart.value).filter(k => cart.value[k] > 0)
+  const lastKeys = Object.keys(lastSubmittedCart.value).filter(k => lastSubmittedCart.value[k] > 0)
+  if (currentKeys.length !== lastKeys.length) return true
+  for (const key of currentKeys) {
+    if (cart.value[key] !== lastSubmittedCart.value[key]) return true
+  }
+  return false
+})
 
 const cartItems = computed(() => {
   const items = []
@@ -207,6 +221,13 @@ async function loadOrderData() {
     for (const item of orderData.items) {
       cart.value[`${item.product_id}-${item.variant}`] = item.quantity
     }
+
+    // If order is already submitted, store snapshot for change detection
+    if (orderData.order?.status === 'submitted') {
+      lastSubmittedCart.value = { ...cart.value }
+    } else {
+      lastSubmittedCart.value = null
+    }
   } catch (e) {
     error.value = e.message
     // If auth error, redirect to portal
@@ -340,6 +361,8 @@ async function submitOrder() {
   try {
     const result = await api.submitOrderByFriend(cycleId.value, friend.value.id)
     order.value = result.order
+    // Store snapshot of submitted cart for change detection
+    lastSubmittedCart.value = { ...cart.value }
     successModalMessage.value = wasAlreadySubmitted
       ? 'Vaša objednávka bola aktualizovaná!'
       : 'Vaša objednávka bola úspešne odoslaná!'
@@ -876,6 +899,22 @@ function applyMarkup(price) {
           <div v-if="cycle?.expected_date" class="text-sm text-primary mb-2">
             📅 Objednávka do: <span class="font-medium">{{ cycle.expected_date }}</span>
           </div>
+
+          <!-- Order status notifications -->
+          <div v-if="!isLocked && cartItems.length > 0 && !isSubmitted" class="mb-3 px-3 py-2 bg-yellow-50 border border-yellow-300 rounded-lg text-yellow-800 text-sm flex items-center gap-2">
+            <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <span><strong>Objednávka ešte nebola odoslaná.</strong> Stlačte tlačidlo "Odoslať objednávku".</span>
+          </div>
+
+          <div v-else-if="!isLocked && hasUnsubmittedChanges" class="mb-3 px-3 py-2 bg-orange-50 border border-orange-300 rounded-lg text-orange-800 text-sm flex items-center gap-2">
+            <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <span><strong>Zmeny v objednávke neboli odoslané.</strong> Stlačte tlačidlo "Aktualizovať objednávku".</span>
+          </div>
+
           <div class="flex justify-between items-center mb-3">
             <div class="flex items-center gap-2">
               <span class="text-muted-foreground">Položiek: {{ cartItems.length }}</span>
