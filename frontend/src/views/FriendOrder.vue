@@ -482,7 +482,7 @@ function applyMarkup(price) {
         </AlertDescription>
       </Alert>
 
-      <Alert v-if="isSubmitted && !isLocked" class="mb-6 border-green-500 bg-green-50 text-green-800">
+      <Alert v-if="isSubmitted && !isLocked && cartItems.length > 0" class="mb-6 border-green-500 bg-green-50 text-green-800">
         <AlertDescription>
           <strong>Vaša objednávka bola odoslaná!</strong> Stále ju môžete upraviť až do uzamknutia.
         </AlertDescription>

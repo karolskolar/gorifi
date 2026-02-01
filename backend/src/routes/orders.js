@@ -149,8 +149,14 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
       total += price * item.quantity;
     }
 
-    // Update order total (preserve existing status - don't reset to draft)
-    db.prepare('UPDATE orders SET total = ? WHERE id = ?').run(total, order.id);
+    // Update order total
+    // If cart is now empty, reset status to 'draft' (order was canceled)
+    // Otherwise preserve existing status
+    if (total === 0) {
+      db.prepare('UPDATE orders SET total = ?, status = ? WHERE id = ?').run(total, 'draft', order.id);
+    } else {
+      db.prepare('UPDATE orders SET total = ? WHERE id = ?').run(total, order.id);
+    }
 
     return total;
   });
