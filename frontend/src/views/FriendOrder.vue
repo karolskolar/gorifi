@@ -36,6 +36,7 @@ const activeTab = ref('Espresso')
 const showSuccessModal = ref(false)
 const successModalMessage = ref('')
 const showCancelModal = ref(false)
+const initialLoadComplete = ref(false) // Prevents auto-save during initial load
 
 const cycleId = computed(() => route.params.cycleId)
 
@@ -228,6 +229,12 @@ async function loadOrderData() {
     } else {
       lastSubmittedCart.value = null
     }
+
+    // Mark initial load as complete after a short delay
+    // This prevents auto-save from triggering during initial data population
+    setTimeout(() => {
+      initialLoadComplete.value = true
+    }, 100)
   } catch (e) {
     error.value = e.message
     // If auth error, redirect to portal
@@ -316,7 +323,8 @@ async function saveCart(silent = false) {
 
 // Auto-save cart when it changes (debounced)
 watch(cart, () => {
-  if (isLocked.value || !friend.value) return
+  // Skip auto-save during initial load or when locked
+  if (!initialLoadComplete.value || isLocked.value || !friend.value) return
 
   // Clear previous timeout
   if (autoSaveTimeout) clearTimeout(autoSaveTimeout)
