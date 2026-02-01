@@ -1,6 +1,6 @@
 <script setup>
-import { ref, computed, onMounted, watchEffect, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { ref, computed, onMounted, onBeforeUnmount, watchEffect, watch } from 'vue'
+import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import api, { getFriendsPassword } from '../api'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -37,6 +37,8 @@ const showSuccessModal = ref(false)
 const successModalMessage = ref('')
 const showCancelModal = ref(false)
 const initialLoadComplete = ref(false) // Prevents auto-save during initial load
+const showLeaveModal = ref(false) // Confirmation modal when leaving with unsaved changes
+const pendingNavigation = ref(null) // Store pending navigation path
 
 const cycleId = computed(() => route.params.cycleId)
 
@@ -247,8 +249,38 @@ async function loadOrderData() {
 }
 
 function goBack() {
+  // If there are unsaved changes on a submitted order, show confirmation modal
+  if (hasUnsubmittedChanges.value) {
+    pendingNavigation.value = '/'
+    showLeaveModal.value = true
+    return
+  }
   router.push('/')
 }
+
+function confirmLeave() {
+  showLeaveModal.value = false
+  if (pendingNavigation.value) {
+    router.push(pendingNavigation.value)
+    pendingNavigation.value = null
+  }
+}
+
+function cancelLeave() {
+  showLeaveModal.value = false
+  pendingNavigation.value = null
+}
+
+// Navigation guard - warn when leaving with unsaved changes
+onBeforeRouteLeave((to, from, next) => {
+  if (hasUnsubmittedChanges.value && !showLeaveModal.value) {
+    pendingNavigation.value = to.fullPath
+    showLeaveModal.value = true
+    next(false) // Cancel navigation
+  } else {
+    next() // Allow navigation
+  }
+})
 
 function getCartKey(productId, variant) {
   return `${productId}-${variant}`
@@ -321,10 +353,11 @@ async function saveCart(silent = false) {
   }
 }
 
-// Auto-save cart when it changes (debounced)
+// Auto-save cart when it changes (debounced) - only for non-submitted orders
 watch(cart, () => {
-  // Skip auto-save during initial load or when locked
-  if (!initialLoadComplete.value || isLocked.value || !friend.value) return
+  // Skip auto-save during initial load, when locked, or when order is already submitted
+  // For submitted orders, changes are only saved when user clicks "Aktualizovať objednávku"
+  if (!initialLoadComplete.value || isLocked.value || !friend.value || isSubmitted.value) return
 
   // Clear previous timeout
   if (autoSaveTimeout) clearTimeout(autoSaveTimeout)
@@ -346,8 +379,11 @@ async function confirmCancelOrder() {
   // Clear the cart
   cart.value = {}
 
-  // Save empty cart to server
-  await saveCart(true)
+  // Only auto-save if order is not yet submitted
+  // For submitted orders, user must click "Aktualizovať objednávku" to confirm
+  if (!isSubmitted.value) {
+    await saveCart(true)
+  }
 }
 
 async function submitOrder() {
@@ -1025,6 +1061,31 @@ function applyMarkup(price) {
           </Button>
           <Button @click="confirmCancelOrder" class="flex-1 bg-red-600 hover:bg-red-700">
             Áno, zrušiť
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Leave Confirmation Modal (unsaved changes) -->
+    <Dialog :open="showLeaveModal" @update:open="showLeaveModal = $event">
+      <DialogContent class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle class="flex items-center gap-2">
+            <svg class="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            Neuložené zmeny
+          </DialogTitle>
+          <DialogDescription class="text-base">
+            Máte neuložené zmeny v objednávke. Naozaj chcete opustiť stránku? Zmeny nebudú uložené.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter class="flex gap-2">
+          <Button variant="outline" @click="cancelLeave" class="flex-1">
+            Zostať
+          </Button>
+          <Button @click="confirmLeave" class="flex-1 bg-orange-600 hover:bg-orange-700">
+            Opustiť
           </Button>
         </DialogFooter>
       </DialogContent>
