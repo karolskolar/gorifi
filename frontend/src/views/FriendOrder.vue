@@ -873,6 +873,9 @@ function applyMarkup(price) {
       <!-- Sticky cart footer -->
       <div class="fixed bottom-0 left-0 right-0 bg-card shadow-lg border-t z-50">
         <div class="max-w-4xl mx-auto px-4 py-4">
+          <div v-if="cycle?.expected_date" class="text-sm text-primary mb-2">
+            📅 Objednávka do: <span class="font-medium">{{ cycle.expected_date }}</span>
+          </div>
           <div class="flex justify-between items-center mb-3">
             <div class="flex items-center gap-2">
               <span class="text-muted-foreground">Položiek: {{ cartItems.length }}</span>

@@ -386,6 +386,9 @@ function formatProgress(submitted, total) {
             <div class="flex justify-between items-start">
               <div class="flex-1">
                 <h3 class="font-semibold text-foreground">{{ cycle.name }}</h3>
+                <div v-if="cycle.expected_date" class="text-sm text-primary mt-1">
+                  📅 {{ cycle.expected_date }}
+                </div>
                 <div class="flex items-center gap-2 mt-2">
                   <Badge :variant="getStatusVariant(cycle.status)">
                     {{ getStatusText(cycle.status) }}

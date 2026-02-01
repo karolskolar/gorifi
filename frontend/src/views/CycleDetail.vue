@@ -50,6 +50,9 @@ const gsheetFormat = ref('multirow')  // 'simple' or 'multirow'
 const markupPercent = ref(0)
 const markupSaving = ref(false)
 
+// Expected date
+const expectedDate = ref('')
+const expectedDateSaving = ref(false)
 
 // Cycle name editing
 const editingCycleName = ref(false)
@@ -102,6 +105,8 @@ async function loadAll() {
     summary.value = summaryData
     // Initialize markup percentage from cycle data (ratio 1.19 = 19%)
     markupPercent.value = Math.round(((cycleData.markup_ratio || 1.0) - 1) * 100)
+    // Initialize expected date
+    expectedDate.value = cycleData.expected_date || ''
   } catch (e) {
     error.value = e.message
   } finally {
@@ -154,6 +159,19 @@ async function saveMarkup() {
     error.value = e.message
   } finally {
     markupSaving.value = false
+  }
+}
+
+async function saveExpectedDate() {
+  expectedDateSaving.value = true
+  error.value = ''
+  try {
+    await api.updateCycle(cycleId.value, { expected_date: expectedDate.value || null })
+    await loadAll()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    expectedDateSaving.value = false
   }
 }
 
@@ -495,9 +513,28 @@ function getStatusVariant(status) {
             </Button>
           </div>
 
-          <!-- Markup ratio setting -->
+          <!-- Cycle settings -->
           <Card class="mb-4">
-            <CardContent class="p-4">
+            <CardContent class="p-4 space-y-4">
+              <!-- Expected date -->
+              <div class="flex items-center gap-4">
+                <Label class="text-sm font-medium whitespace-nowrap">Očakávaný dátum objednávky:</Label>
+                <Input
+                  v-model="expectedDate"
+                  type="text"
+                  placeholder="napr. 15. februára 2026"
+                  class="w-64"
+                  :disabled="expectedDateSaving"
+                />
+                <Button
+                  @click="saveExpectedDate"
+                  :disabled="expectedDateSaving"
+                  size="sm"
+                >
+                  {{ expectedDateSaving ? 'Ukladám...' : 'Uložiť' }}
+                </Button>
+              </div>
+              <!-- Markup ratio -->
               <div class="flex items-center gap-4">
                 <Label class="text-sm font-medium whitespace-nowrap">Prirážka pre priateľov:</Label>
                 <div class="flex items-center gap-2">

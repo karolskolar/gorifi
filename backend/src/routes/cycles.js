@@ -27,7 +27,7 @@ router.get('/:id', (req, res) => {
 
 // Get public cycle info (no auth required) - for friend ordering page
 router.get('/:id/public', (req, res) => {
-  const cycle = db.prepare('SELECT id, name, status, markup_ratio FROM order_cycles WHERE id = ?').get(req.params.id);
+  const cycle = db.prepare('SELECT id, name, status, markup_ratio, expected_date FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
     return res.status(404).json({ error: 'Cyklus nebol nájdený' });
   }
@@ -73,7 +73,7 @@ router.post('/:id/auth', (req, res) => {
 
 // Create new order cycle
 router.post('/', (req, res) => {
-  const { name } = req.body;
+  const { name, expected_date } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Nazov je povinny' });
   }
@@ -82,14 +82,14 @@ router.post('/', (req, res) => {
   const friendsCount = db.prepare('SELECT COUNT(*) as count FROM friends WHERE active = 1').get();
   const totalFriends = friendsCount.count;
 
-  const result = db.prepare('INSERT INTO order_cycles (name, total_friends) VALUES (?, ?)').run(name, totalFriends);
+  const result = db.prepare('INSERT INTO order_cycles (name, total_friends, expected_date) VALUES (?, ?, ?)').run(name, totalFriends, expected_date || null);
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(cycle);
 });
 
-// Update cycle (lock/unlock/complete/password/markup_ratio)
+// Update cycle (lock/unlock/complete/password/markup_ratio/expected_date)
 router.patch('/:id', (req, res) => {
-  const { status, name, shared_password, markup_ratio } = req.body;
+  const { status, name, shared_password, markup_ratio, expected_date } = req.body;
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
 
   if (!cycle) {
@@ -118,6 +118,10 @@ router.patch('/:id', (req, res) => {
   if (markup_ratio !== undefined) {
     updates.push('markup_ratio = ?');
     values.push(markup_ratio);
+  }
+  if (expected_date !== undefined) {
+    updates.push('expected_date = ?');
+    values.push(expected_date || null);
   }
 
   if (updates.length > 0) {

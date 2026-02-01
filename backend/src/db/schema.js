@@ -68,6 +68,13 @@ async function initDb() {
     // Column already exists, ignore
   }
 
+  // Migration: Add expected_date column for expected order date/time
+  try {
+    db.run('ALTER TABLE order_cycles ADD COLUMN expected_date TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -56,7 +56,7 @@ router.get('/cycles', (req, res) => {
 
   // Get all cycles (open, locked, completed) with stored total_friends
   const cycles = db.prepare(`
-    SELECT c.id, c.name, c.status, c.created_at, c.total_friends
+    SELECT c.id, c.name, c.status, c.created_at, c.total_friends, c.expected_date
     FROM order_cycles c
     WHERE c.name != '_placeholder'
     ORDER BY c.created_at DESC
