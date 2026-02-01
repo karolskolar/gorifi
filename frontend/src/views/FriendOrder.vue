@@ -34,6 +34,7 @@ const successMessage = ref('')
 const activeTab = ref('Espresso')
 const showSuccessModal = ref(false)
 const successModalMessage = ref('')
+const showCancelModal = ref(false)
 
 const cycleId = computed(() => route.params.cycleId)
 
@@ -61,6 +62,7 @@ const cartItems = computed(() => {
           key,
           product_id: parseInt(productId),
           product_name: product.name,
+          purpose: product.purpose || 'Ostatné',
           variant,
           quantity,
           price,
@@ -70,6 +72,25 @@ const cartItems = computed(() => {
     }
   }
   return items
+})
+
+const groupedCartItems = computed(() => {
+  const groups = {}
+  for (const item of cartItems.value) {
+    const purpose = item.purpose
+    if (!groups[purpose]) groups[purpose] = []
+    groups[purpose].push(item)
+  }
+  // Sort by purpose order: Espresso, Filter, Kapsule, then others
+  const order = ['Espresso', 'Filter', 'Kapsule']
+  const sortedGroups = {}
+  for (const p of order) {
+    if (groups[p]) sortedGroups[p] = groups[p]
+  }
+  for (const p of Object.keys(groups)) {
+    if (!order.includes(p)) sortedGroups[p] = groups[p]
+  }
+  return sortedGroups
 })
 
 const cartTotal = computed(() => {
@@ -234,12 +255,19 @@ function decrement(productId, variant) {
   }
 }
 
-async function saveCart() {
-  if (isLocked.value) return
+// Auto-save debounce timer
+let autoSaveTimeout = null
+const autoSaving = ref(false)
 
-  saving.value = true
+async function saveCart(silent = false) {
+  if (isLocked.value) return
+  if (!friend.value) return
+
+  if (!silent) saving.value = true
+  else autoSaving.value = true
+
   error.value = ''
-  successMessage.value = ''
+  if (!silent) successMessage.value = ''
 
   try {
     const items = cartItems.value.map(item => ({
@@ -250,16 +278,47 @@ async function saveCart() {
 
     const result = await api.updateOrderByFriend(cycleId.value, friend.value.id, items)
     order.value = result.order
-    successMessage.value = 'Košík bol uložený'
 
-    setTimeout(() => {
-      successMessage.value = ''
-    }, 3000)
+    if (!silent) {
+      successMessage.value = 'Košík bol uložený'
+      setTimeout(() => {
+        successMessage.value = ''
+      }, 3000)
+    }
   } catch (e) {
     error.value = e.message
   } finally {
-    saving.value = false
+    if (!silent) saving.value = false
+    else autoSaving.value = false
   }
+}
+
+// Auto-save cart when it changes (debounced)
+watch(cart, () => {
+  if (isLocked.value || !friend.value) return
+
+  // Clear previous timeout
+  if (autoSaveTimeout) clearTimeout(autoSaveTimeout)
+
+  // Debounce: save after 500ms of no changes
+  autoSaveTimeout = setTimeout(() => {
+    saveCart(true)
+  }, 500)
+}, { deep: true })
+
+function cancelOrder() {
+  if (isLocked.value) return
+  showCancelModal.value = true
+}
+
+async function confirmCancelOrder() {
+  showCancelModal.value = false
+
+  // Clear the cart
+  cart.value = {}
+
+  // Save empty cart to server
+  await saveCart(true)
 }
 
 async function submitOrder() {
@@ -812,28 +871,29 @@ function applyMarkup(price) {
       </div>
 
       <!-- Sticky cart footer -->
-      <div v-if="cartItems.length > 0" class="fixed bottom-0 left-0 right-0 bg-card shadow-lg border-t z-50">
+      <div class="fixed bottom-0 left-0 right-0 bg-card shadow-lg border-t z-50">
         <div class="max-w-4xl mx-auto px-4 py-4">
           <div class="flex justify-between items-center mb-3">
-            <div>
+            <div class="flex items-center gap-2">
               <span class="text-muted-foreground">Položiek: {{ cartItems.length }}</span>
               <span class="mx-2">|</span>
               <span class="font-semibold text-lg">Celkom: {{ formatPrice(cartTotal) }}</span>
+              <span v-if="autoSaving" class="text-xs text-muted-foreground animate-pulse">Ukladám...</span>
             </div>
           </div>
 
           <div v-if="!isLocked" class="flex gap-3">
             <Button
               variant="outline"
-              @click="saveCart"
-              :disabled="saving"
-              class="flex-1"
+              @click="cancelOrder"
+              :disabled="saving || cartItems.length === 0"
+              class="flex-1 border-red-500 text-red-600 hover:bg-red-50 hover:text-red-700"
             >
-              {{ saving ? 'Ukladám...' : 'Uložiť košík' }}
+              Zrušiť objednávku
             </Button>
             <Button
               @click="submitOrder"
-              :disabled="saving"
+              :disabled="saving || cartItems.length === 0"
               class="flex-1"
             >
               {{ saving ? 'Odosielám...' : (isSubmitted ? 'Aktualizovať objednávku' : 'Odoslať objednávku') }}
@@ -843,18 +903,34 @@ function applyMarkup(price) {
           <!-- Cart details toggle -->
           <details class="mt-3">
             <summary class="text-sm text-muted-foreground cursor-pointer">Zobraziť položky v košíku</summary>
-            <div class="mt-2 text-sm max-h-40 overflow-y-auto">
-              <div v-for="item in cartItems" :key="item.key" class="flex justify-between py-1 border-b border-border">
-                <span>{{ item.product_name }} ({{ item.variant }}) x{{ item.quantity }}</span>
-                <span>{{ formatPrice(item.total) }}</span>
+            <div class="mt-2 text-sm max-h-48 overflow-y-auto">
+              <div v-if="cartItems.length === 0" class="text-muted-foreground py-2 text-center">
+                Košík je prázdny
               </div>
+              <template v-else v-for="(items, purpose) in groupedCartItems" :key="purpose">
+                <div
+                  class="text-xs font-semibold px-2 py-1 mt-2 first:mt-0 rounded"
+                  :class="{
+                    'bg-stone-200 text-stone-700': purpose === 'Espresso',
+                    'bg-sky-100 text-sky-700': purpose === 'Filter',
+                    'bg-amber-100 text-amber-700': purpose === 'Kapsule',
+                    'bg-muted text-muted-foreground': !['Espresso', 'Filter', 'Kapsule'].includes(purpose)
+                  }"
+                >
+                  {{ purpose }}
+                </div>
+                <div v-for="item in items" :key="item.key" class="flex justify-between py-1 border-b border-border">
+                  <span>{{ item.product_name }} ({{ item.variant }}) x{{ item.quantity }}</span>
+                  <span>{{ formatPrice(item.total) }}</span>
+                </div>
+              </template>
             </div>
           </details>
         </div>
       </div>
 
       <!-- Spacer for fixed footer -->
-      <div v-if="cartItems.length > 0" class="h-40"></div>
+      <div class="h-40"></div>
     </div>
 
     <!-- Success Modal -->
@@ -874,6 +950,31 @@ function applyMarkup(price) {
         <DialogFooter>
           <Button @click="handleSuccessModalClose" class="w-full">
             OK
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Cancel Order Confirmation Modal -->
+    <Dialog :open="showCancelModal" @update:open="showCancelModal = $event">
+      <DialogContent class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle class="flex items-center gap-2">
+            <svg class="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            Zrušiť objednávku?
+          </DialogTitle>
+          <DialogDescription class="text-base">
+            Naozaj chcete zrušiť objednávku a vymazať všetky položky z košíka?
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter class="flex gap-2">
+          <Button variant="outline" @click="showCancelModal = false" class="flex-1">
+            Nie
+          </Button>
+          <Button @click="confirmCancelOrder" class="flex-1 bg-red-600 hover:bg-red-700">
+            Áno, zrušiť
           </Button>
         </DialogFooter>
       </DialogContent>
