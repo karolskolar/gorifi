@@ -87,8 +87,8 @@ const groupedProducts = computed(() => {
 })
 
 const availablePurposes = computed(() => {
-  // Order: Espresso, Filter, Kapsuly, then others
-  const order = ['Espresso', 'Filter', 'Kapsuly']
+  // Order: Espresso, Filter, Kapsule, then others
+  const order = ['Espresso', 'Filter', 'Kapsule']
   const purposes = Object.keys(groupedProducts.value)
   const sorted = []
   for (const p of order) {
@@ -102,8 +102,8 @@ const availablePurposes = computed(() => {
 
 const backgroundClass = computed(() => {
   if (activeTab.value === 'Espresso') return 'bg-stone-200'
-  if (activeTab.value === 'Filter') return 'bg-sky-50'
-  if (activeTab.value === 'Kapsuly') return 'bg-amber-50'
+  if (activeTab.value === 'Filter') return 'bg-sky-100'
+  if (activeTab.value === 'Kapsule') return 'bg-amber-100'
   return 'bg-background'
 })
 
@@ -112,7 +112,7 @@ function getTabTriggerClass(purpose) {
   if (!isActive) return ''
   if (purpose === 'Espresso') return 'bg-stone-600 text-white data-[state=active]:bg-stone-600 data-[state=active]:text-white'
   if (purpose === 'Filter') return 'bg-sky-600 text-white data-[state=active]:bg-sky-600 data-[state=active]:text-white'
-  if (purpose === 'Kapsuly') return 'bg-amber-600 text-white data-[state=active]:bg-amber-600 data-[state=active]:text-white'
+  if (purpose === 'Kapsule') return 'bg-amber-600 text-white data-[state=active]:bg-amber-600 data-[state=active]:text-white'
   return ''
 }
 
