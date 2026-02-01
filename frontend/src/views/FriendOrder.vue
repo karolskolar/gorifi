@@ -384,9 +384,10 @@ async function confirmCancelOrder() {
 
   // Reset the snapshot since we've now saved an empty cart
   // This prevents the "unsaved changes" warning from showing
-  if (isSubmitted.value) {
-    lastSubmittedCart.value = {}
-  }
+  lastSubmittedCart.value = {}
+
+  // Redirect back to cycle list
+  router.push('/')
 }
 
 async function submitOrder() {
