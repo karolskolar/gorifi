@@ -379,10 +379,13 @@ async function confirmCancelOrder() {
   // Clear the cart
   cart.value = {}
 
-  // Only auto-save if order is not yet submitted
-  // For submitted orders, user must click "Aktualizovať objednávku" to confirm
-  if (!isSubmitted.value) {
-    await saveCart(true)
+  // Always save when explicitly canceling - this is a deliberate user action
+  await saveCart(true)
+
+  // Reset the snapshot since we've now saved an empty cart
+  // This prevents the "unsaved changes" warning from showing
+  if (isSubmitted.value) {
+    lastSubmittedCart.value = {}
   }
 }
 
