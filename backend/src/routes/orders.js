@@ -150,18 +150,28 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
     }
 
     // Update order total
-    // If cart is now empty, reset status to 'draft' (order was canceled)
+    // If cart is now empty, delete the order entirely (order was canceled)
     // Otherwise preserve existing status
     if (total === 0) {
-      db.prepare('UPDATE orders SET total = ?, status = ? WHERE id = ?').run(total, 'draft', order.id);
+      db.prepare('DELETE FROM orders WHERE id = ?').run(order.id);
+      return { total: 0, deleted: true };
     } else {
       db.prepare('UPDATE orders SET total = ? WHERE id = ?').run(total, order.id);
+      return { total, deleted: false };
     }
-
-    return total;
   });
 
-  updateItems(items);
+  const result = updateItems(items);
+
+  // If order was deleted (canceled), return empty response
+  if (result.deleted) {
+    return res.json({
+      order: null,
+      items: [],
+      friend: { id: friend.id, name: friend.name },
+      cycle
+    });
+  }
 
   // Return updated order
   const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
