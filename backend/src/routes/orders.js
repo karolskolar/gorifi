@@ -149,8 +149,8 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
       total += price * item.quantity;
     }
 
-    // Update order total
-    db.prepare('UPDATE orders SET total = ?, status = ? WHERE id = ?').run(total, 'draft', order.id);
+    // Update order total (preserve existing status - don't reset to draft)
+    db.prepare('UPDATE orders SET total = ? WHERE id = ?').run(total, order.id);
 
     return total;
   });
