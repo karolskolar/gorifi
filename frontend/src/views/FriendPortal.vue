@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
-import api, { setFriendsPassword, clearFriendsPassword, getFriendsPassword } from '../api'
+import api, { setFriendsPassword, clearFriendsPassword, getFriendsPassword, setFriendsAuthInfo } from '../api'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -113,6 +113,13 @@ async function authenticate(silent = false) {
     // Get full friend data
     const selectedFriend = friends.value.find(f => f.id === parseInt(selectedFriendId.value))
     currentFriend.value = selectedFriend
+
+    // Set auth info in memory (for when remember me is not checked)
+    setFriendsAuthInfo({
+      friendId: parseInt(selectedFriendId.value),
+      friendName: selectedFriend.name,
+      friendUid: selectedFriend.uid
+    })
 
     // Save to localStorage if remember me is checked
     if (rememberMe.value && selectedFriend) {

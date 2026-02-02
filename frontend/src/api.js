@@ -1,7 +1,8 @@
 const API_BASE = import.meta.env.VITE_API_URL || '/api'
 
-// Store global friends password for authenticated requests
+// Store global friends password and info for authenticated requests
 let friendsPassword = null
+let friendsAuthInfo = null // { friendId, friendName, friendUid }
 
 export function setFriendsPassword(password) {
   friendsPassword = password
@@ -13,6 +14,15 @@ export function getFriendsPassword() {
 
 export function clearFriendsPassword() {
   friendsPassword = null
+  friendsAuthInfo = null
+}
+
+export function setFriendsAuthInfo(info) {
+  friendsAuthInfo = info
+}
+
+export function getFriendsAuthInfo() {
+  return friendsAuthInfo
 }
 
 // Legacy aliases for backward compatibility

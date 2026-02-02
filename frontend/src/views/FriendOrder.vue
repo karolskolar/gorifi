@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watchEffect, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
-import api, { getFriendsPassword } from '../api'
+import api, { getFriendsPassword, getFriendsAuthInfo } from '../api'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -200,15 +200,24 @@ async function loadOrderData() {
   error.value = ''
 
   try {
-    // Get friend info from localStorage
+    // Get friend info from localStorage or in-memory auth
+    let friendId = null
     const stored = localStorage.getItem(STORAGE_KEY)
-    if (!stored) {
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      friendId = parsed.friendId
+    } else {
+      // Try in-memory auth info (when "remember me" was not checked)
+      const authInfo = getFriendsAuthInfo()
+      if (authInfo) {
+        friendId = authInfo.friendId
+      }
+    }
+
+    if (!friendId) {
       router.push('/')
       return
     }
-
-    const parsed = JSON.parse(stored)
-    const friendId = parsed.friendId
 
     // Get order data
     const orderData = await api.getOrderByFriend(cycleId.value, friendId)
