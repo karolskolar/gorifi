@@ -49,26 +49,19 @@ router.get('/cycle/:cycleId/friend/:friendId', (req, res) => {
     return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
   }
 
-  // Get or create order for this friend in this cycle
-  let order = db.prepare('SELECT * FROM orders WHERE friend_id = ? AND cycle_id = ?').get(friendId, cycleId);
+  // Get existing order for this friend in this cycle (don't auto-create)
+  const order = db.prepare('SELECT * FROM orders WHERE friend_id = ? AND cycle_id = ?').get(friendId, cycleId);
 
-  if (!order) {
-    const result = db.prepare(`
-      INSERT INTO orders (friend_id, cycle_id) VALUES (?, ?)
-    `).run(friendId, cycleId);
-    order = db.prepare('SELECT * FROM orders WHERE id = ?').get(result.lastInsertRowid);
-  }
-
-  // Get order items
-  const items = db.prepare(`
+  // Get order items if order exists
+  const items = order ? db.prepare(`
     SELECT oi.*, p.name as product_name, p.roast_type, p.description1
     FROM order_items oi
     JOIN products p ON p.id = oi.product_id
     WHERE oi.order_id = ?
-  `).all(order.id);
+  `).all(order.id) : [];
 
   res.json({
-    order,
+    order: order || null,
     items,
     friend: { id: friend.id, name: friend.name },
     cycle: validation.cycle

@@ -82,22 +82,30 @@ cd frontend && npm run dev
 - `/friends/cycles` endpoint returns: `totalKilos`, `submittedOrders`, `totalFriends`
 - Kilos calculated from order_items: 250g = 0.25kg, 1kg = 1.0kg
 
-### Order Auto-Save & Status Notifications (2026-02-01)
-- **Auto-save behavior differs based on order status:**
-  - Non-submitted orders: Cart changes are auto-saved (debounced 500ms)
+### Order Auto-Save & Status Notifications (2026-02-01, updated 2026-02-02)
+- **Auto-save behavior differs based on order existence and status:**
+  - No order exists yet: NO auto-save (items stay in cart but not saved to DB until submit)
+  - Existing draft orders: Cart changes are auto-saved (debounced 500ms)
   - Submitted orders: Changes are NOT auto-saved; user must click "Aktualizovať objednávku"
+- **Order creation:** Orders are only created when user explicitly submits (not by auto-save)
 - **Status notifications in cart footer:**
   - Yellow: "Objednávka ešte nebola odoslaná" - when cart has items but not submitted
   - Orange: "Zmeny v objednávke neboli odoslané ani uložené" - when submitted order has unsaved changes
 - **Change detection:** `lastSubmittedCart` ref stores snapshot of cart at submission time
-- **Leave confirmation:** Modal shown when navigating away with unsaved changes on submitted orders
+- **Leave confirmation:** Modal shown when navigating away with:
+  - Unsaved changes on submitted orders
+  - Cart items but no order (new items not yet submitted)
 - **Cancel order behavior:**
-  - Deletes the order record entirely (not just set to 'draft')
+  - If order exists: Deletes the order record entirely
+  - If no order: Just clears cart (no DB operation)
   - Shows as "Neobjednané" in admin dashboard
   - Redirects user to cycle list after canceling
 - **Backend order updates:** PUT `/orders/cycle/:cycleId/friend/:friendId`
+  - Creates order if doesn't exist (only when explicitly called)
   - Preserves order status when items change (doesn't reset to 'draft')
   - Deletes order entirely when cart is emptied (total = 0)
+- **Backend order retrieval:** GET `/orders/cycle/:cycleId/friend/:friendId`
+  - Does NOT auto-create orders; returns null if no order exists
 
 ## Deployment
 

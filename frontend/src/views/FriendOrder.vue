@@ -47,10 +47,32 @@ const isLocked = computed(() => cycle.value?.status === 'locked' || cycle.value?
 const isSubmitted = computed(() => order.value?.status === 'submitted')
 const markupRatio = computed(() => cycle.value?.markup_ratio || 1.0)
 
-// Check if there are unsubmitted changes after an order was submitted
+// Check if there are unsaved changes that would be lost on leaving:
+// 1. Order is submitted but cart differs from last submission
+// 2. No order exists but cart has items (items not saved yet)
+const hasUnsavedChanges = computed(() => {
+  // Case 1: No order exists but cart has items - these would be lost
+  if (!order.value && cartItems.value.length > 0) {
+    return true
+  }
+
+  // Case 2: Order is submitted but cart differs from last submission
+  if (isSubmitted.value && lastSubmittedCart.value) {
+    const currentKeys = Object.keys(cart.value).filter(k => cart.value[k] > 0)
+    const lastKeys = Object.keys(lastSubmittedCart.value).filter(k => lastSubmittedCart.value[k] > 0)
+    if (currentKeys.length !== lastKeys.length) return true
+    for (const key of currentKeys) {
+      if (cart.value[key] !== lastSubmittedCart.value[key]) return true
+    }
+  }
+
+  return false
+})
+
+// Alias for backward compatibility with existing template references
 const hasUnsubmittedChanges = computed(() => {
+  // For the status notification, only show when order is submitted but has changes
   if (!isSubmitted.value || !lastSubmittedCart.value) return false
-  // Compare current cart with last submitted cart
   const currentKeys = Object.keys(cart.value).filter(k => cart.value[k] > 0)
   const lastKeys = Object.keys(lastSubmittedCart.value).filter(k => lastSubmittedCart.value[k] > 0)
   if (currentKeys.length !== lastKeys.length) return true
@@ -259,8 +281,8 @@ async function loadOrderData() {
 }
 
 function goBack() {
-  // If there are unsaved changes on a submitted order, show confirmation modal
-  if (hasUnsubmittedChanges.value) {
+  // If there are unsaved changes, show confirmation modal
+  if (hasUnsavedChanges.value) {
     pendingNavigation.value = '/'
     showLeaveModal.value = true
     return
@@ -287,7 +309,7 @@ onBeforeRouteLeave((to, from, next) => {
   if (leaveConfirmed.value) {
     leaveConfirmed.value = false // Reset for next time
     next() // Allow navigation after user confirmed
-  } else if (hasUnsubmittedChanges.value && !showLeaveModal.value) {
+  } else if (hasUnsavedChanges.value && !showLeaveModal.value) {
     pendingNavigation.value = to.fullPath
     showLeaveModal.value = true
     next(false) // Cancel navigation
@@ -367,11 +389,12 @@ async function saveCart(silent = false) {
   }
 }
 
-// Auto-save cart when it changes (debounced) - only for non-submitted orders
+// Auto-save cart when it changes (debounced) - only for existing draft orders
 watch(cart, () => {
-  // Skip auto-save during initial load, when locked, or when order is already submitted
-  // For submitted orders, changes are only saved when user clicks "Aktualizovať objednávku"
-  if (!initialLoadComplete.value || isLocked.value || !friend.value || isSubmitted.value) return
+  // Skip auto-save during initial load, when locked, when order is already submitted,
+  // or when there's no existing order (don't auto-create orders, only auto-save existing drafts)
+  // New orders are only created when user explicitly submits
+  if (!initialLoadComplete.value || isLocked.value || !friend.value || isSubmitted.value || !order.value) return
 
   // Clear previous timeout
   if (autoSaveTimeout) clearTimeout(autoSaveTimeout)
@@ -393,12 +416,18 @@ async function confirmCancelOrder() {
   // Clear the cart
   cart.value = {}
 
-  // Always save when explicitly canceling - this is a deliberate user action
-  await saveCart(true)
+  // Only save if there's an existing order to delete
+  // If there's no order yet (user just added items without saving), no need to save
+  if (order.value) {
+    await saveCart(true)
+  }
 
   // Reset the snapshot since we've now saved an empty cart
   // This prevents the "unsaved changes" warning from showing
   lastSubmittedCart.value = {}
+
+  // Mark as confirmed to bypass navigation guard
+  leaveConfirmed.value = true
 
   // Redirect back to cycle list
   router.push('/')
@@ -438,6 +467,7 @@ async function submitOrder() {
 
 function handleSuccessModalClose() {
   showSuccessModal.value = false
+  leaveConfirmed.value = true // Bypass navigation guard
   router.push('/')
 }
 
