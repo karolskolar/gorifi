@@ -383,11 +383,18 @@ router.get('/cycle/:cycleId', (req, res) => {
     if (existingOrder) {
       // Friend has an order - add items and counts
       existingOrder.items = db.prepare(`
-        SELECT oi.*, p.name as product_name
+        SELECT oi.*, p.name as product_name, p.purpose
         FROM order_items oi
         JOIN products p ON p.id = oi.product_id
         WHERE oi.order_id = ?
-        ORDER BY p.name, oi.variant
+        ORDER BY
+          CASE p.purpose
+            WHEN 'Espresso' THEN 1
+            WHEN 'Filter' THEN 2
+            WHEN 'Kapsule' THEN 3
+            ELSE 4
+          END,
+          p.name, oi.variant
       `).all(existingOrder.id);
 
       existingOrder.count_150g = existingOrder.items

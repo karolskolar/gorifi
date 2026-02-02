@@ -150,14 +150,21 @@ router.get('/:id/summary', (req, res) => {
   }
 
   const summary = db.prepare(`
-    SELECT p.name, oi.variant, SUM(oi.quantity) as total_quantity,
+    SELECT p.name, p.purpose, oi.variant, SUM(oi.quantity) as total_quantity,
            SUM(oi.quantity * oi.price) as total_price
     FROM order_items oi
     JOIN orders o ON o.id = oi.order_id
     JOIN products p ON p.id = oi.product_id
     WHERE o.cycle_id = ? AND o.status = 'submitted'
     GROUP BY p.id, oi.variant
-    ORDER BY p.name, oi.variant
+    ORDER BY
+      CASE p.purpose
+        WHEN 'Espresso' THEN 1
+        WHEN 'Filter' THEN 2
+        WHEN 'Kapsule' THEN 3
+        ELSE 4
+      END,
+      p.name, oi.variant
   `).all(req.params.id);
 
   const totalItems = summary.reduce((acc, item) => acc + item.total_quantity, 0);
@@ -191,11 +198,18 @@ router.get('/:id/distribution', (req, res) => {
 
   const distribution = friendsWithOrders.map(friend => {
     const items = db.prepare(`
-      SELECT p.name as product_name, oi.variant, oi.quantity, oi.price
+      SELECT p.name as product_name, p.purpose, oi.variant, oi.quantity, oi.price
       FROM order_items oi
       JOIN products p ON p.id = oi.product_id
       WHERE oi.order_id = ?
-      ORDER BY p.name
+      ORDER BY
+        CASE p.purpose
+          WHEN 'Espresso' THEN 1
+          WHEN 'Filter' THEN 2
+          WHEN 'Kapsule' THEN 3
+          ELSE 4
+        END,
+        p.name
     `).all(friend.order_id);
 
     return { ...friend, items };

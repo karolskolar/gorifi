@@ -769,7 +769,21 @@ function getStatusVariant(status) {
                     <TableCell colspan="11" class="bg-muted/50 p-4">
                       <div v-if="order.items && order.items.length > 0" class="space-y-1">
                         <div v-for="item in order.items" :key="`${item.product_id}-${item.variant}`" class="flex justify-between py-1 text-sm">
-                          <span>{{ item.product_name }} ({{ item.variant }})</span>
+                          <span>
+                            <Badge
+                              v-if="item.purpose"
+                              variant="outline"
+                              :class="{
+                                'border-stone-400 text-stone-600 bg-stone-50': item.purpose === 'Espresso',
+                                'border-sky-400 text-sky-600 bg-sky-50': item.purpose === 'Filter',
+                                'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule'
+                              }"
+                              class="mr-2 text-xs"
+                            >
+                              {{ item.purpose }}
+                            </Badge>
+                            {{ item.product_name }} ({{ item.variant }})
+                          </span>
                           <span class="text-muted-foreground">{{ item.quantity }}x - {{ formatPrice(item.price * item.quantity) }}</span>
                         </div>
                       </div>
@@ -815,6 +829,7 @@ function getStatusVariant(status) {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead>Účel</TableHead>
                       <TableHead>Produkt</TableHead>
                       <TableHead>Varianta</TableHead>
                       <TableHead class="text-right">Počet</TableHead>
@@ -823,6 +838,20 @@ function getStatusVariant(status) {
                   </TableHeader>
                   <TableBody>
                     <TableRow v-for="(item, i) in summary.items" :key="i">
+                      <TableCell>
+                        <Badge
+                          v-if="item.purpose"
+                          variant="outline"
+                          :class="{
+                            'border-stone-400 text-stone-600 bg-stone-50': item.purpose === 'Espresso',
+                            'border-sky-400 text-sky-600 bg-sky-50': item.purpose === 'Filter',
+                            'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule'
+                          }"
+                        >
+                          {{ item.purpose }}
+                        </Badge>
+                        <span v-else class="text-muted-foreground">-</span>
+                      </TableCell>
                       <TableCell>{{ item.name }}</TableCell>
                       <TableCell>{{ item.variant }}</TableCell>
                       <TableCell class="text-right">{{ item.total_quantity }}x</TableCell>

@@ -138,14 +138,29 @@ function printDistribution() {
             <Table v-else>
               <TableHeader>
                 <TableRow>
+                  <TableHead>Účel</TableHead>
                   <TableHead>Produkt</TableHead>
                   <TableHead class="text-center">Varianta</TableHead>
-                  <TableHead class="text-center">Pocet</TableHead>
+                  <TableHead class="text-center">Počet</TableHead>
                   <TableHead class="text-right">Cena</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 <TableRow v-for="(item, i) in friend.items" :key="i">
+                  <TableCell>
+                    <Badge
+                      v-if="item.purpose"
+                      variant="outline"
+                      :class="{
+                        'border-stone-400 text-stone-600 bg-stone-50': item.purpose === 'Espresso',
+                        'border-sky-400 text-sky-600 bg-sky-50': item.purpose === 'Filter',
+                        'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule'
+                      }"
+                    >
+                      {{ item.purpose }}
+                    </Badge>
+                    <span v-else class="text-muted-foreground">-</span>
+                  </TableCell>
                   <TableCell>{{ item.product_name }}</TableCell>
                   <TableCell class="text-center">{{ item.variant }}</TableCell>
                   <TableCell class="text-center font-medium">{{ item.quantity }}x</TableCell>
@@ -154,7 +169,7 @@ function printDistribution() {
               </TableBody>
               <tfoot>
                 <TableRow class="bg-muted font-semibold">
-                  <TableCell colspan="2">Celkom balickov</TableCell>
+                  <TableCell colspan="3">Celkom balíčkov</TableCell>
                   <TableCell class="text-center">{{ friend.items.reduce((sum, item) => sum + item.quantity, 0) }}</TableCell>
                   <TableCell></TableCell>
                 </TableRow>
