@@ -39,6 +39,7 @@ const showCancelModal = ref(false)
 const initialLoadComplete = ref(false) // Prevents auto-save during initial load
 const showLeaveModal = ref(false) // Confirmation modal when leaving with unsaved changes
 const pendingNavigation = ref(null) // Store pending navigation path
+const leaveConfirmed = ref(false) // Flag to bypass navigation guard after confirming leave
 
 const cycleId = computed(() => route.params.cycleId)
 
@@ -269,6 +270,7 @@ function goBack() {
 
 function confirmLeave() {
   showLeaveModal.value = false
+  leaveConfirmed.value = true // Bypass navigation guard
   if (pendingNavigation.value) {
     router.push(pendingNavigation.value)
     pendingNavigation.value = null
@@ -282,7 +284,10 @@ function cancelLeave() {
 
 // Navigation guard - warn when leaving with unsaved changes
 onBeforeRouteLeave((to, from, next) => {
-  if (hasUnsubmittedChanges.value && !showLeaveModal.value) {
+  if (leaveConfirmed.value) {
+    leaveConfirmed.value = false // Reset for next time
+    next() // Allow navigation after user confirmed
+  } else if (hasUnsubmittedChanges.value && !showLeaveModal.value) {
     pendingNavigation.value = to.fullPath
     showLeaveModal.value = true
     next(false) // Cancel navigation
