@@ -394,11 +394,28 @@ function copySummary() {
   let text = `Objednávka - ${cycle.value.name}\n`
   text += '='.repeat(30) + '\n\n'
 
+  // Group items by purpose
+  const purposeOrder = ['Espresso', 'Filter', 'Kapsule']
+  const grouped = {}
+
   for (const item of summary.value.items) {
-    text += `${item.name} ${item.variant}: ${item.total_quantity}x\n`
+    const purpose = item.purpose || 'Ostatné'
+    if (!grouped[purpose]) grouped[purpose] = []
+    grouped[purpose].push(item)
   }
 
-  text += '\n' + '='.repeat(30) + '\n'
+  // Output items grouped by purpose
+  const sortedPurposes = [...purposeOrder.filter(p => grouped[p]), ...Object.keys(grouped).filter(p => !purposeOrder.includes(p))]
+
+  for (const purpose of sortedPurposes) {
+    text += `--- ${purpose} ---\n`
+    for (const item of grouped[purpose]) {
+      text += `${item.name} ${item.variant}: ${item.total_quantity}x\n`
+    }
+    text += '\n'
+  }
+
+  text += '='.repeat(30) + '\n'
   text += `Celkom položiek: ${summary.value.totalItems}\n`
   text += `Celková suma: ${summary.value.totalPrice.toFixed(2)} EUR\n`
 
