@@ -40,6 +40,7 @@ const initialLoadComplete = ref(false) // Prevents auto-save during initial load
 const showLeaveModal = ref(false) // Confirmation modal when leaving with unsaved changes
 const pendingNavigation = ref(null) // Store pending navigation path
 const leaveConfirmed = ref(false) // Flag to bypass navigation guard after confirming leave
+const changesNotificationDismissed = ref(false) // Track if "changes not saved" notification was dismissed
 
 const cycleId = computed(() => route.params.cycleId)
 
@@ -391,6 +392,10 @@ async function saveCart(silent = false) {
 
 // Auto-save cart when it changes (debounced) - only for existing draft orders
 watch(cart, () => {
+  // Reset the "changes not saved" notification dismissed state when cart changes
+  // This ensures the notification reappears if user makes more changes after dismissing
+  changesNotificationDismissed.value = false
+
   // Skip auto-save during initial load, when locked, when order is already submitted,
   // or when there's no existing order (don't auto-create orders, only auto-save existing drafts)
   // New orders are only created when user explicitly submits
@@ -1000,11 +1005,20 @@ function applyMarkup(price) {
             <span><strong>Objednávka ešte nebola odoslaná.</strong> Stlačte tlačidlo "Odoslať objednávku".</span>
           </div>
 
-          <div v-else-if="!isLocked && hasUnsubmittedChanges" class="mb-3 px-3 py-2 bg-orange-50 border border-orange-300 rounded-lg text-orange-800 text-sm flex items-center gap-2">
+          <div v-else-if="!isLocked && hasUnsubmittedChanges && !changesNotificationDismissed" class="mb-3 px-3 py-2 bg-orange-50 border border-orange-300 rounded-lg text-orange-800 text-sm flex items-center gap-2">
             <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
-            <span><strong>Zmeny v objednávke neboli odoslané ani uložené.</strong> Stlačte tlačidlo "Aktualizovať objednávku", aby sa zmeny uložili.</span>
+            <span class="flex-1"><strong>Zmeny v objednávke neboli odoslané ani uložené.</strong> Stlačte tlačidlo "Aktualizovať objednávku", aby sa zmeny uložili.</span>
+            <button
+              @click="changesNotificationDismissed = true"
+              class="flex-shrink-0 p-1 hover:bg-orange-100 rounded"
+              title="Zavrieť"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
 
           <div class="flex justify-between items-center mb-3">
