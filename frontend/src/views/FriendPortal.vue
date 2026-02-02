@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
-import api, { setFriendsPassword, clearFriendsPassword, getFriendsPassword, setFriendsAuthInfo } from '../api'
+import api, { setFriendsPassword, clearFriendsPassword, getFriendsPassword, setFriendsAuthInfo, getFriendsAuthInfo } from '../api'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -84,6 +84,20 @@ async function loadInitialData() {
         authState.value = 'login'
       }
     } else {
+      // Check for in-memory auth (when "remember me" was not checked)
+      const memoryPassword = getFriendsPassword()
+      const memoryAuthInfo = getFriendsAuthInfo()
+      if (memoryPassword && memoryAuthInfo) {
+        const friendExists = friends.value.find(f => f.id === memoryAuthInfo.friendId)
+        if (friendExists) {
+          currentFriend.value = friendExists
+          selectedFriendId.value = String(memoryAuthInfo.friendId)
+          // Load cycles and show authenticated state
+          await loadCycles()
+          authState.value = 'authenticated'
+          return
+        }
+      }
       authState.value = 'login'
     }
   } catch (e) {
