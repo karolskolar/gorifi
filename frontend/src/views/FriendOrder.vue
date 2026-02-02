@@ -1034,7 +1034,7 @@ function applyMarkup(price) {
       </div>
 
       <!-- Spacer for fixed footer -->
-      <div class="h-40"></div>
+      <div class="h-72"></div>
     </div>
 
     <!-- Success Modal -->
