@@ -1,77 +1,44 @@
 # Session Summary
 
-**Date:** 2026-01-18
-**Status:** Deployment infrastructure ready, not yet deployed
+**Date:** 2026-02-03
 
 ## Summary
+Fixed cart items appearing in admin before submission by changing auto-save behavior. Added dismissable notification for unsaved changes. Updated friend portal to show individual order kilos instead of cycle totals. Fixed first-time production deployment issues.
 
-Added staging/dev environment support for deploying to Proxmox LXC container. Created deployment scripts, PM2 config, and nginx configs for running both production (`gorifi.skolar.sk`) and dev (`gorifi-dev.skolar.sk`) from the same container on different ports.
-
-## Files Changed/Added
-
-| File | Change |
-|------|--------|
-| `deploy/ecosystem.config.cjs` | Added `gorifi-staging` PM2 app on port 3001 |
-| `deploy/nginx-gorifi.conf` | Updated server_name to `gorifi.skolar.sk` |
-| `deploy/nginx-gorifi-staging.conf` | **NEW** - nginx config for dev environment |
-| `deploy/deploy.sh` | Rewritten to require environment arg (production/staging) |
-| `frontend/src/App.vue` | Added staging banner (amber bar when `VITE_STAGING=true`) |
-| `CLAUDE.md` | Added deployment documentation |
+## Files Changed
+- `frontend/src/views/FriendOrder.vue` - Auto-save only for existing drafts, dismissable notifications, improved leave guards
+- `frontend/src/views/FriendPortal.vue` - Show friend's own order kilos, removed progress display
+- `backend/src/routes/orders.js` - GET endpoint no longer auto-creates orders
+- `backend/src/routes/friends.js` - Return friend's order kilos instead of cycle total
+- `deploy/deploy.sh` - Copy ecosystem config before PM2 start, create log dirs
+- `CLAUDE.md` - Updated with session learnings
 
 ## Current State
+- All changes committed and pushed to GitHub
+- Production deployed successfully to gorifi.skolar.sk
+- Staging at gorifi-dev.skolar.sk
 
-- Deployment scripts ready
-- **Not yet deployed to server**
-- Server needs one-time setup (directories, nginx, PM2)
+## Commits Made This Session
+1. `Fix cart items appearing in admin before submission`
+2. `Add close button to unsaved changes notification`
+3. `Show friend's own order kilos instead of cycle total in portal`
+4. `Fix first-time production deployment`
 
 ## Next Steps
+- Test production site thoroughly
+- Consider adding more user feedback for mobile experience
+- Monitor for any edge cases with the new auto-save behavior
 
-### 1. Server Setup (one-time)
+## How to Test
 ```bash
-# SSH into LXC container
-apt update && apt install -y nodejs npm nginx
-npm install -g pm2
-
-# Create directories
-mkdir -p /var/www/gorifi/{backend,frontend/dist}
-mkdir -p /var/www/gorifi-staging/{backend,frontend/dist}
-mkdir -p /var/log/gorifi /var/log/gorifi-staging
-
-# Setup nginx
-cp nginx-gorifi.conf /etc/nginx/sites-available/gorifi
-cp nginx-gorifi-staging.conf /etc/nginx/sites-available/gorifi-staging
-ln -s /etc/nginx/sites-available/gorifi /etc/nginx/sites-enabled/
-ln -s /etc/nginx/sites-available/gorifi-staging /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default
-nginx -t && systemctl reload nginx
-```
-
-### 2. Nginx Proxy Manager
-Create proxy hosts:
-- `gorifi.skolar.sk` → `<container-ip>:80` + SSL
-- `gorifi-dev.skolar.sk` → `<container-ip>:80` + SSL
-
-### 3. Configure & Deploy
-```bash
-# Edit deploy/deploy.sh - set SERVER_HOST
-vim deploy/deploy.sh
-
-# Deploy to dev first
+# Deploy
+./deploy/deploy.sh production
 ./deploy/deploy.sh staging
 
-# Verify
-ssh root@<ip> 'pm2 status'
-```
+# Verify backend
+ssh root@gorifi 'pm2 status && curl -s http://localhost:3000/api/admin/setup-status'
 
-## How to Test Locally
-
-```bash
-# Backend
-cd backend && npm run dev
-
-# Frontend
-cd frontend && npm run dev
-
-# Test staging banner
-VITE_STAGING=true npm run dev
+# Test sites
+curl -s -I https://gorifi.skolar.sk
+curl -s -I https://gorifi-dev.skolar.sk
 ```

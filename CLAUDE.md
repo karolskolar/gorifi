@@ -133,3 +133,19 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 ### Staging Indicator
 - `VITE_STAGING=true` env var shows amber "STAGING" banner
 - Set automatically by deploy script for staging builds
+
+### Friend Portal Display (2026-02-03)
+- Cycle list shows friend's own order kilos (not cycle total)
+- Progress display (submitted/total friends) removed from friend view
+- Kilos only shown when friend has an order
+- Capsules counted as 100g (20 × 5g)
+
+### Dismissable Notifications (2026-02-03)
+- Orange "unsaved changes" notification can be closed to save screen space on mobile
+- Notification reappears if user makes more cart changes after dismissing
+- State tracked via `changesNotificationDismissed` ref, reset on cart change
+
+### First-Time Deployment (2026-02-03)
+- Deploy script must copy `ecosystem.config.cjs` BEFORE starting PM2 (not after)
+- Script creates log directories (`/var/log/gorifi`, `/var/log/gorifi-staging`) if missing
+- Both production and staging run in same LXC container on different ports (3000, 3001)
