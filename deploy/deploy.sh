@@ -136,6 +136,12 @@ fi
 if [ "$DEPLOY_BACKEND" = true ]; then
   echo -e "${YELLOW}Deploying backend to $ENVIRONMENT...${NC}"
 
+  # Ensure remote directories exist
+  ssh "$SERVER_USER@$SERVER_HOST" "mkdir -p $REMOTE_PATH/backend /var/log/gorifi /var/log/gorifi-staging"
+
+  # Copy ecosystem config first (needed for PM2 start on first deploy)
+  scp "$SCRIPT_DIR/ecosystem.config.cjs" "$SERVER_USER@$SERVER_HOST:$REMOTE_PATH/"
+
   # Sync backend files (excluding node_modules and database)
   rsync -avz --delete \
     --exclude 'node_modules' \
@@ -168,10 +174,6 @@ if [ "$DEPLOY_FRONTEND" = true ]; then
 
   echo -e "${GREEN}Frontend deployed to $ENVIRONMENT!${NC}"
 fi
-
-# Copy deployment config files
-echo -e "${YELLOW}Syncing config files...${NC}"
-scp "$SCRIPT_DIR/ecosystem.config.cjs" "$SERVER_USER@$SERVER_HOST:$REMOTE_PATH/"
 
 echo ""
 echo -e "${GREEN}=== Deployment Complete ($ENVIRONMENT) ===${NC}"
