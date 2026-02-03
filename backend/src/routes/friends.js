@@ -62,11 +62,12 @@ router.get('/cycles', (req, res) => {
     ORDER BY c.created_at DESC
   `).all();
 
-  // Add friend's order status and cycle progress to each cycle
+  // Add friend's order status to each cycle
   const cyclesWithOrders = cycles.map(cycle => {
     let hasOrder = false;
     let orderTotal = 0;
     let orderStatus = null;
+    let orderKilos = 0;
 
     if (friendId) {
       const order = db.prepare(`
@@ -79,41 +80,32 @@ router.get('/cycles', (req, res) => {
         hasOrder = true;
         orderTotal = order.total;
         orderStatus = order.status;
+
+        // Calculate kilos for this friend's order only
+        const friendKilosResult = db.prepare(`
+          SELECT COALESCE(SUM(
+            CASE
+              WHEN oi.variant = '150g' THEN oi.quantity * 0.15
+              WHEN oi.variant = '200g' THEN oi.quantity * 0.2
+              WHEN oi.variant = '250g' THEN oi.quantity * 0.25
+              WHEN oi.variant = '1kg' THEN oi.quantity * 1.0
+              WHEN oi.variant = '20pc5g' THEN oi.quantity * 0.1
+              ELSE 0
+            END
+          ), 0) as orderKilos
+          FROM order_items oi
+          WHERE oi.order_id = ?
+        `).get(order.id);
+        orderKilos = friendKilosResult.orderKilos;
       }
     }
-
-    // Get total kilos for this cycle (all submitted orders)
-    const kilosResult = db.prepare(`
-      SELECT COALESCE(SUM(
-        CASE
-          WHEN oi.variant = '150g' THEN oi.quantity * 0.15
-          WHEN oi.variant = '200g' THEN oi.quantity * 0.2
-          WHEN oi.variant = '250g' THEN oi.quantity * 0.25
-          WHEN oi.variant = '1kg' THEN oi.quantity * 1.0
-          WHEN oi.variant = '20pc5g' THEN oi.quantity * 0.1
-          ELSE 0
-        END
-      ), 0) as totalKilos
-      FROM orders o
-      JOIN order_items oi ON oi.order_id = o.id
-      WHERE o.cycle_id = ? AND o.status = 'submitted'
-    `).get(cycle.id);
-
-    // Count submitted orders (unique friends) for this cycle
-    const submittedResult = db.prepare(`
-      SELECT COUNT(DISTINCT o.friend_id) as submittedOrders
-      FROM orders o
-      WHERE o.cycle_id = ? AND o.status = 'submitted'
-    `).get(cycle.id);
 
     return {
       ...cycle,
       hasOrder,
       orderTotal,
       orderStatus,
-      totalKilos: kilosResult.totalKilos,
-      submittedOrders: submittedResult.submittedOrders,
-      totalFriends: cycle.total_friends || 0
+      orderKilos
     };
   });
 

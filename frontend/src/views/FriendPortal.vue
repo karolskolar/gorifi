@@ -265,12 +265,6 @@ function formatKilos(kilos) {
   if (!kilos || kilos === 0) return '0 kg'
   return `${kilos.toFixed(2)} kg`
 }
-
-function formatProgress(submitted, total) {
-  if (total === 0) return '-'
-  const percent = Math.round((submitted / total) * 100)
-  return `${submitted}/${total} priateľov (${percent}%)`
-}
 </script>
 
 <template>
@@ -421,10 +415,8 @@ function formatProgress(submitted, total) {
                     Neobjednané
                   </Badge>
                 </div>
-                <div class="flex items-center gap-3 mt-2 text-sm text-muted-foreground">
-                  <span>☕ {{ formatKilos(cycle.totalKilos) }}</span>
-                  <span>•</span>
-                  <span>{{ formatProgress(cycle.submittedOrders, cycle.totalFriends) }}</span>
+                <div v-if="cycle.hasOrder" class="flex items-center gap-3 mt-2 text-sm text-muted-foreground">
+                  <span>☕ {{ formatKilos(cycle.orderKilos) }}</span>
                 </div>
               </div>
               <div class="text-right">
