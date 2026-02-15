@@ -441,7 +441,7 @@ function getStatusVariant(status) {
   <div class="min-h-screen bg-background">
     <!-- Header -->
     <header class="bg-primary text-primary-foreground shadow">
-      <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
+      <div class="max-w-7xl mx-auto px-4 py-4 flex flex-wrap justify-between items-center gap-2">
         <div class="flex items-center gap-4">
           <Button variant="ghost" size="icon" @click="router.push('/admin/dashboard')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -479,10 +479,11 @@ function getStatusVariant(status) {
             </Badge>
           </div>
         </div>
-        <div class="flex gap-2">
+        <div class="flex flex-wrap gap-2">
           <Button
             v-if="cycle?.status !== 'completed'"
             variant="secondary"
+            size="sm"
             @click="toggleLock"
           >
             {{ cycle?.status === 'locked' ? 'Odomknúť' : 'Uzamknúť' }}
@@ -490,6 +491,7 @@ function getStatusVariant(status) {
           <Button
             v-if="cycle?.status === 'locked'"
             variant="secondary"
+            size="sm"
             @click="markCompleted"
             class="bg-green-600 hover:bg-green-700 text-white"
           >
@@ -497,6 +499,7 @@ function getStatusVariant(status) {
           </Button>
           <Button
             variant="secondary"
+            size="sm"
             @click="router.push(`/admin/cycle/${cycleId}/distribution`)"
           >
             Distribúcia
@@ -534,26 +537,28 @@ function getStatusVariant(status) {
           <Card class="mb-4">
             <CardContent class="p-4 space-y-4">
               <!-- Expected date -->
-              <div class="flex items-center gap-4">
-                <Label class="text-sm font-medium whitespace-nowrap">Očakávaný dátum objednávky:</Label>
-                <Input
-                  v-model="expectedDate"
-                  type="text"
-                  placeholder="napr. 15. februára 2026"
-                  class="w-64"
-                  :disabled="expectedDateSaving"
-                />
-                <Button
-                  @click="saveExpectedDate"
-                  :disabled="expectedDateSaving"
-                  size="sm"
-                >
-                  {{ expectedDateSaving ? 'Ukladám...' : 'Uložiť' }}
-                </Button>
+              <div class="space-y-1">
+                <Label class="text-sm font-medium">Očakávaný dátum objednávky:</Label>
+                <div class="flex items-center gap-2">
+                  <Input
+                    v-model="expectedDate"
+                    type="text"
+                    placeholder="napr. 15. februára 2026"
+                    class="flex-1"
+                    :disabled="expectedDateSaving"
+                  />
+                  <Button
+                    @click="saveExpectedDate"
+                    :disabled="expectedDateSaving"
+                    size="sm"
+                  >
+                    {{ expectedDateSaving ? 'Ukladám...' : 'Uložiť' }}
+                  </Button>
+                </div>
               </div>
               <!-- Markup ratio -->
-              <div class="flex items-center gap-4">
-                <Label class="text-sm font-medium whitespace-nowrap">Prirážka pre priateľov:</Label>
+              <div class="space-y-1">
+                <Label class="text-sm font-medium">Prirážka pre priateľov:</Label>
                 <div class="flex items-center gap-2">
                   <Input
                     v-model.number="markupPercent"
@@ -565,17 +570,17 @@ function getStatusVariant(status) {
                     :disabled="markupSaving"
                   />
                   <span class="text-muted-foreground">%</span>
+                  <Button
+                    @click="saveMarkup"
+                    :disabled="markupSaving"
+                    size="sm"
+                  >
+                    {{ markupSaving ? 'Ukladám...' : 'Uložiť' }}
+                  </Button>
+                  <span v-if="cycle?.markup_ratio && cycle.markup_ratio !== 1.0" class="text-sm text-muted-foreground">
+                    (cena × {{ cycle.markup_ratio.toFixed(2) }})
+                  </span>
                 </div>
-                <Button
-                  @click="saveMarkup"
-                  :disabled="markupSaving"
-                  size="sm"
-                >
-                  {{ markupSaving ? 'Ukladám...' : 'Uložiť' }}
-                </Button>
-                <span v-if="cycle?.markup_ratio && cycle.markup_ratio !== 1.0" class="text-sm text-muted-foreground">
-                  (cena × {{ cycle.markup_ratio.toFixed(2) }})
-                </span>
               </div>
             </CardContent>
           </Card>

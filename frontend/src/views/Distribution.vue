@@ -132,49 +132,48 @@ function printDistribution() {
               </Button>
             </div>
 
-            <div v-if="friend.items.length === 0" class="text-muted-foreground italic">
-              Žiadne položky
-            </div>
-            <Table v-else>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Účel</TableHead>
-                  <TableHead>Produkt</TableHead>
-                  <TableHead class="text-center">Varianta</TableHead>
-                  <TableHead class="text-center">Počet</TableHead>
-                  <TableHead class="text-right">Cena</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                <TableRow v-for="(item, i) in friend.items" :key="i">
-                  <TableCell>
-                    <Badge
-                      v-if="item.purpose"
-                      variant="outline"
-                      :class="{
-                        'border-stone-400 text-stone-600 bg-stone-50': item.purpose === 'Espresso',
-                        'border-sky-400 text-sky-600 bg-sky-50': item.purpose === 'Filter',
-                        'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule'
-                      }"
-                    >
-                      {{ item.purpose }}
-                    </Badge>
-                    <span v-else class="text-muted-foreground">-</span>
-                  </TableCell>
-                  <TableCell>{{ item.product_name }}</TableCell>
-                  <TableCell class="text-center">{{ item.variant }}</TableCell>
-                  <TableCell class="text-center font-medium">{{ item.quantity }}x</TableCell>
-                  <TableCell class="text-right">{{ formatPrice(item.price * item.quantity) }}</TableCell>
-                </TableRow>
-              </TableBody>
-              <tfoot>
-                <TableRow class="bg-muted font-semibold">
-                  <TableCell colspan="3">Celkom balíčkov</TableCell>
-                  <TableCell class="text-center">{{ friend.items.reduce((sum, item) => sum + item.quantity, 0) }}</TableCell>
-                  <TableCell></TableCell>
-                </TableRow>
-              </tfoot>
-            </Table>
+            <template v-if="!friend.packed">
+              <div v-if="friend.items.length === 0" class="text-muted-foreground italic">
+                Žiadne položky
+              </div>
+              <Table v-else>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Účel</TableHead>
+                    <TableHead>Produkt</TableHead>
+                    <TableHead class="text-center">Varianta</TableHead>
+                    <TableHead class="text-center">Počet</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow v-for="(item, i) in friend.items" :key="i">
+                    <TableCell>
+                      <Badge
+                        v-if="item.purpose"
+                        variant="outline"
+                        :class="{
+                          'border-stone-400 text-stone-600 bg-stone-50': item.purpose === 'Espresso',
+                          'border-sky-400 text-sky-600 bg-sky-50': item.purpose === 'Filter',
+                          'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule'
+                        }"
+                      >
+                        {{ item.purpose }}
+                      </Badge>
+                      <span v-else class="text-muted-foreground">-</span>
+                    </TableCell>
+                    <TableCell>{{ item.product_name }}</TableCell>
+                    <TableCell class="text-center">{{ item.variant }}</TableCell>
+                    <TableCell class="text-center font-medium">{{ item.quantity }}x</TableCell>
+                  </TableRow>
+                </TableBody>
+                <tfoot>
+                  <TableRow class="bg-muted font-semibold">
+                    <TableCell colspan="3">Celkom balíčkov</TableCell>
+                    <TableCell class="text-center">{{ friend.items.reduce((sum, item) => sum + item.quantity, 0) }}</TableCell>
+                  </TableRow>
+                </tfoot>
+              </Table>
+            </template>
           </CardContent>
         </Card>
       </div>
