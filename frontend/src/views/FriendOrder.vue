@@ -635,17 +635,17 @@ function applyMarkup(price) {
                 <div v-if="product.price_20pc5g" class="grid grid-cols-1 gap-4">
                   <div
                     :class="[
-                      'rounded-lg p-3 transition-colors',
+                      'rounded-lg p-2 transition-colors',
                       getQuantity(product.id, '20pc5g') > 0
                         ? 'bg-primary/10 border-2 border-primary'
                         : 'border bg-card'
                     ]"
                   >
-                    <div class="flex justify-between items-center mb-2">
+                    <div class="flex justify-between items-center mb-1">
                       <span class="text-sm font-medium">20 ks × 5g</span>
                       <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_20pc5g)) }}</span>
                     </div>
-                    <div class="flex items-center justify-center gap-3">
+                    <div class="flex items-center justify-center gap-2">
                       <Button
                         variant="outline"
                         size="icon"
@@ -675,17 +675,17 @@ function applyMarkup(price) {
                   <div
                     v-if="product.price_150g"
                     :class="[
-                      'rounded-lg p-3 transition-colors',
+                      'rounded-lg p-2 transition-colors',
                       getQuantity(product.id, '150g') > 0
                         ? 'bg-primary/10 border-2 border-primary'
                         : 'border bg-card'
                     ]"
                   >
-                    <div class="flex justify-between items-center mb-2">
+                    <div class="flex justify-between items-center mb-1">
                       <span class="text-sm font-medium">150g</span>
                       <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_150g)) }}</span>
                     </div>
-                    <div class="flex items-center justify-center gap-3">
+                    <div class="flex items-center justify-center gap-2">
                       <Button
                         variant="outline"
                         size="icon"
@@ -712,17 +712,17 @@ function applyMarkup(price) {
                   <div
                     v-if="product.price_200g"
                     :class="[
-                      'rounded-lg p-3 transition-colors',
+                      'rounded-lg p-2 transition-colors',
                       getQuantity(product.id, '200g') > 0
                         ? 'bg-primary/10 border-2 border-primary'
                         : 'border bg-card'
                     ]"
                   >
-                    <div class="flex justify-between items-center mb-2">
+                    <div class="flex justify-between items-center mb-1">
                       <span class="text-sm font-medium">200g</span>
                       <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_200g)) }}</span>
                     </div>
-                    <div class="flex items-center justify-center gap-3">
+                    <div class="flex items-center justify-center gap-2">
                       <Button
                         variant="outline"
                         size="icon"
@@ -749,17 +749,17 @@ function applyMarkup(price) {
                   <div
                     v-if="product.price_250g"
                     :class="[
-                      'rounded-lg p-3 transition-colors',
+                      'rounded-lg p-2 transition-colors',
                       getQuantity(product.id, '250g') > 0
                         ? 'bg-primary/10 border-2 border-primary'
                         : 'border bg-card'
                     ]"
                   >
-                    <div class="flex justify-between items-center mb-2">
+                    <div class="flex justify-between items-center mb-1">
                       <span class="text-sm font-medium">250g</span>
                       <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_250g)) }}</span>
                     </div>
-                    <div class="flex items-center justify-center gap-3">
+                    <div class="flex items-center justify-center gap-2">
                       <Button
                         variant="outline"
                         size="icon"
@@ -786,17 +786,17 @@ function applyMarkup(price) {
                   <div
                     v-if="product.price_1kg"
                     :class="[
-                      'rounded-lg p-3 transition-colors',
+                      'rounded-lg p-2 transition-colors',
                       getQuantity(product.id, '1kg') > 0
                         ? 'bg-primary/10 border-2 border-primary'
                         : 'border bg-card'
                     ]"
                   >
-                    <div class="flex justify-between items-center mb-2">
+                    <div class="flex justify-between items-center mb-1">
                       <span class="text-sm font-medium">1kg</span>
                       <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_1kg)) }}</span>
                     </div>
-                    <div class="flex items-center justify-center gap-3">
+                    <div class="flex items-center justify-center gap-2">
                       <Button
                         variant="outline"
                         size="icon"
@@ -850,17 +850,17 @@ function applyMarkup(price) {
             <div v-if="product.price_20pc5g" class="grid grid-cols-1 gap-4">
               <div
                 :class="[
-                  'rounded-lg p-3 transition-colors',
+                  'rounded-lg p-2 transition-colors',
                   getQuantity(product.id, '20pc5g') > 0
                     ? 'bg-primary/10 border-2 border-primary'
                     : 'border bg-card'
                 ]"
               >
-                <div class="flex justify-between items-center mb-2">
+                <div class="flex justify-between items-center mb-1">
                   <span class="text-sm font-medium">20 ks × 5g</span>
                   <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_20pc5g)) }}</span>
                 </div>
-                <div class="flex items-center justify-center gap-3">
+                <div class="flex items-center justify-center gap-2">
                   <Button
                     variant="outline"
                     size="icon"
@@ -889,17 +889,17 @@ function applyMarkup(price) {
               <div
                 v-if="product.price_150g"
                 :class="[
-                  'rounded-lg p-3 transition-colors',
+                  'rounded-lg p-2 transition-colors',
                   getQuantity(product.id, '150g') > 0
                     ? 'bg-primary/10 border-2 border-primary'
                     : 'border bg-card'
                 ]"
               >
-                <div class="flex justify-between items-center mb-2">
+                <div class="flex justify-between items-center mb-1">
                   <span class="text-sm font-medium">150g</span>
                   <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_150g)) }}</span>
                 </div>
-                <div class="flex items-center justify-center gap-3">
+                <div class="flex items-center justify-center gap-2">
                   <Button
                     variant="outline"
                     size="icon"
@@ -925,17 +925,17 @@ function applyMarkup(price) {
               <div
                 v-if="product.price_200g"
                 :class="[
-                  'rounded-lg p-3 transition-colors',
+                  'rounded-lg p-2 transition-colors',
                   getQuantity(product.id, '200g') > 0
                     ? 'bg-primary/10 border-2 border-primary'
                     : 'border bg-card'
                 ]"
               >
-                <div class="flex justify-between items-center mb-2">
+                <div class="flex justify-between items-center mb-1">
                   <span class="text-sm font-medium">200g</span>
                   <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_200g)) }}</span>
                 </div>
-                <div class="flex items-center justify-center gap-3">
+                <div class="flex items-center justify-center gap-2">
                   <Button
                     variant="outline"
                     size="icon"
@@ -961,17 +961,17 @@ function applyMarkup(price) {
               <div
                 v-if="product.price_250g"
                 :class="[
-                  'rounded-lg p-3 transition-colors',
+                  'rounded-lg p-2 transition-colors',
                   getQuantity(product.id, '250g') > 0
                     ? 'bg-primary/10 border-2 border-primary'
                     : 'border bg-card'
                 ]"
               >
-                <div class="flex justify-between items-center mb-2">
+                <div class="flex justify-between items-center mb-1">
                   <span class="text-sm font-medium">250g</span>
                   <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_250g)) }}</span>
                 </div>
-                <div class="flex items-center justify-center gap-3">
+                <div class="flex items-center justify-center gap-2">
                   <Button
                     variant="outline"
                     size="icon"
@@ -997,17 +997,17 @@ function applyMarkup(price) {
               <div
                 v-if="product.price_1kg"
                 :class="[
-                  'rounded-lg p-3 transition-colors',
+                  'rounded-lg p-2 transition-colors',
                   getQuantity(product.id, '1kg') > 0
                     ? 'bg-primary/10 border-2 border-primary'
                     : 'border bg-card'
                 ]"
               >
-                <div class="flex justify-between items-center mb-2">
+                <div class="flex justify-between items-center mb-1">
                   <span class="text-sm font-medium">1kg</span>
                   <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_1kg)) }}</span>
                 </div>
-                <div class="flex items-center justify-center gap-3">
+                <div class="flex items-center justify-center gap-2">
                   <Button
                     variant="outline"
                     size="icon"
@@ -1036,45 +1036,45 @@ function applyMarkup(price) {
 
       <!-- Sticky cart footer -->
       <div class="fixed bottom-0 left-0 right-0 bg-card shadow-lg border-t z-50">
-        <div class="max-w-4xl mx-auto px-4 py-4">
-          <div v-if="cycle?.expected_date" class="text-sm text-primary mb-2">
+        <div class="max-w-4xl mx-auto px-4 py-2">
+          <div v-if="cycle?.expected_date" class="text-xs text-primary mb-1">
             📅 Objednávka do: <span class="font-medium">{{ cycle.expected_date }}</span>
           </div>
 
           <!-- Order status notifications -->
-          <div v-if="!isLocked && cartItems.length > 0 && !isSubmitted" class="mb-3 px-3 py-2 bg-yellow-50 border border-yellow-300 rounded-lg text-yellow-800 text-sm flex items-center gap-2">
-            <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div v-if="!isLocked && cartItems.length > 0 && !isSubmitted" class="mb-1.5 px-2 py-1.5 bg-yellow-50 border border-yellow-300 rounded text-yellow-800 text-xs flex items-center gap-1.5">
+            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
-            <span><strong>Objednávka ešte nebola odoslaná.</strong> Stlačte tlačidlo "Odoslať objednávku".</span>
+            <strong>Objednávka ešte nebola odoslaná.</strong>
           </div>
 
-          <div v-else-if="!isLocked && hasUnsubmittedChanges && !changesNotificationDismissed" class="mb-3 px-3 py-2 bg-orange-50 border border-orange-300 rounded-lg text-orange-800 text-sm flex items-center gap-2">
-            <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div v-else-if="!isLocked && hasUnsubmittedChanges && !changesNotificationDismissed" class="mb-1.5 px-2 py-1.5 bg-orange-50 border border-orange-300 rounded text-orange-800 text-xs flex items-center gap-1.5">
+            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
-            <span class="flex-1"><strong>Zmeny v objednávke neboli odoslané ani uložené.</strong> Stlačte tlačidlo "Aktualizovať objednávku", aby sa zmeny uložili.</span>
+            <span class="flex-1"><strong>Zmeny neboli odoslané.</strong> Stlačte "Aktualizovať objednávku".</span>
             <button
               @click="changesNotificationDismissed = true"
-              class="flex-shrink-0 p-1 hover:bg-orange-100 rounded"
+              class="flex-shrink-0 p-0.5 hover:bg-orange-100 rounded"
               title="Zavrieť"
             >
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
           </div>
 
-          <div class="flex justify-between items-center mb-3">
-            <div class="flex items-center gap-2">
-              <span class="text-muted-foreground">Položiek: {{ cartItems.length }}</span>
-              <span class="mx-2">|</span>
-              <span class="font-semibold text-lg">Celkom: {{ formatPrice(cartTotal) }}</span>
+          <div class="flex justify-between items-center mb-1.5">
+            <div class="flex items-center gap-1.5">
+              <span class="text-xs text-muted-foreground">Položiek: {{ cartItems.length }}</span>
+              <span class="mx-1 text-xs">|</span>
+              <span class="font-semibold text-sm">Celkom: {{ formatPrice(cartTotal) }}</span>
               <span v-if="autoSaving" class="text-xs text-muted-foreground animate-pulse">Ukladám...</span>
             </div>
           </div>
 
-          <div v-if="!isLocked" class="flex gap-3">
+          <div v-if="!isLocked" class="flex gap-2">
             <Button
               variant="outline"
               size="sm"
@@ -1124,7 +1124,7 @@ function applyMarkup(price) {
       </div>
 
       <!-- Spacer for fixed footer -->
-      <div class="h-72"></div>
+      <div class="h-48"></div>
     </div>
 
     <!-- Success Modal -->
@@ -1248,7 +1248,7 @@ function applyMarkup(price) {
                 v-model="pickupLocationNote"
                 type="text"
                 placeholder="Poznámka (voliteľné)"
-                class="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                class="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               />
             </div>
           </label>
