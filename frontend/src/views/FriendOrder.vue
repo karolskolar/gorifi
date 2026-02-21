@@ -42,6 +42,12 @@ const pendingNavigation = ref(null) // Store pending navigation path
 const leaveConfirmed = ref(false) // Flag to bypass navigation guard after confirming leave
 const changesNotificationDismissed = ref(false) // Track if "changes not saved" notification was dismissed
 
+// Pickup location state
+const pickupLocations = ref([])
+const showPickupModal = ref(false)
+const selectedPickupLocationId = ref(null) // null = "Iné"
+const pickupLocationNote = ref('')
+
 const cycleId = computed(() => route.params.cycleId)
 
 const isLocked = computed(() => cycle.value?.status === 'locked' || cycle.value?.status === 'completed')
@@ -212,6 +218,13 @@ onMounted(async () => {
   }
 
   await loadOrderData()
+
+  // Load pickup locations
+  try {
+    pickupLocations.value = await api.getPickupLocations()
+  } catch (e) {
+    // Non-critical, proceed without locations
+  }
 })
 
 // Set page title
@@ -445,6 +458,28 @@ async function submitOrder() {
     return
   }
 
+  // If pickup locations exist, show the modal first
+  if (pickupLocations.value.length > 0) {
+    // Pre-select previous choice when updating a submitted order
+    if (order.value?.pickup_location_id) {
+      selectedPickupLocationId.value = order.value.pickup_location_id
+      pickupLocationNote.value = ''
+    } else if (order.value?.pickup_location_note) {
+      selectedPickupLocationId.value = null
+      pickupLocationNote.value = order.value.pickup_location_note
+    } else {
+      selectedPickupLocationId.value = null
+      pickupLocationNote.value = ''
+    }
+    showPickupModal.value = true
+    return
+  }
+
+  // No locations configured, submit directly
+  await doSubmitOrder()
+}
+
+async function doSubmitOrder() {
   // Capture state before submitting
   const wasAlreadySubmitted = isSubmitted.value
 
@@ -455,7 +490,11 @@ async function submitOrder() {
   error.value = ''
 
   try {
-    const result = await api.submitOrderByFriend(cycleId.value, friend.value.id)
+    const pickupData = {
+      pickup_location_id: selectedPickupLocationId.value || null,
+      pickup_location_note: selectedPickupLocationId.value ? null : (pickupLocationNote.value || null)
+    }
+    const result = await api.submitOrderByFriend(cycleId.value, friend.value.id, pickupData)
     order.value = result.order
     // Store snapshot of submitted cart for change detection
     lastSubmittedCart.value = { ...cart.value }
@@ -468,6 +507,11 @@ async function submitOrder() {
   } finally {
     saving.value = false
   }
+}
+
+function confirmPickupAndSubmit() {
+  showPickupModal.value = false
+  doSubmitOrder()
 }
 
 function handleSuccessModalClose() {
@@ -1033,16 +1077,18 @@ function applyMarkup(price) {
           <div v-if="!isLocked" class="flex gap-3">
             <Button
               variant="outline"
+              size="sm"
               @click="cancelOrder"
               :disabled="saving || cartItems.length === 0"
-              class="flex-1 border-red-500 text-red-600 hover:bg-red-50 hover:text-red-700"
+              class="flex-1 h-8 text-xs border-red-500 text-red-600 hover:bg-red-50 hover:text-red-700"
             >
               Zrušiť objednávku
             </Button>
             <Button
+              size="sm"
               @click="submitOrder"
               :disabled="saving || cartItems.length === 0"
-              class="flex-1"
+              class="flex-1 h-8 text-xs"
             >
               {{ saving ? 'Odosielám...' : (isSubmitted ? 'Aktualizovať objednávku' : 'Odoslať objednávku') }}
             </Button>
@@ -1148,6 +1194,71 @@ function applyMarkup(price) {
           </Button>
           <Button @click="confirmLeave" class="flex-1 bg-orange-600 hover:bg-orange-700">
             Opustiť
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Pickup Location Modal -->
+    <Dialog :open="showPickupModal" @update:open="showPickupModal = $event">
+      <DialogContent class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Miesto vyzdvihnutia</DialogTitle>
+          <DialogDescription class="text-base">
+            Vyberte, kde si chcete vyzdvihnúť objednávku.
+          </DialogDescription>
+        </DialogHeader>
+        <div class="space-y-2 py-2">
+          <label
+            v-for="loc in pickupLocations"
+            :key="loc.id"
+            :class="[
+              'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+              selectedPickupLocationId === loc.id ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
+            ]"
+          >
+            <input
+              type="radio"
+              :value="loc.id"
+              v-model="selectedPickupLocationId"
+              class="mt-0.5"
+            />
+            <div>
+              <div class="font-medium">{{ loc.name }}</div>
+              <div v-if="loc.address" class="text-sm text-muted-foreground">{{ loc.address }}</div>
+            </div>
+          </label>
+          <!-- "Iné" option -->
+          <label
+            :class="[
+              'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+              selectedPickupLocationId === null ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
+            ]"
+          >
+            <input
+              type="radio"
+              :value="null"
+              v-model="selectedPickupLocationId"
+              class="mt-0.5"
+            />
+            <div class="flex-1">
+              <div class="font-medium">Iné</div>
+              <input
+                v-if="selectedPickupLocationId === null"
+                v-model="pickupLocationNote"
+                type="text"
+                placeholder="Poznámka (voliteľné)"
+                class="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              />
+            </div>
+          </label>
+        </div>
+        <DialogFooter class="flex gap-2">
+          <Button variant="outline" @click="showPickupModal = false" class="flex-1">
+            Zrušiť
+          </Button>
+          <Button @click="confirmPickupAndSubmit" class="flex-1">
+            Potvrdiť a odoslať
           </Button>
         </DialogFooter>
       </DialogContent>

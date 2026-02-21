@@ -133,8 +133,9 @@ export const api = {
     method: 'PUT',
     body: { items }
   }),
-  submitOrderByFriend: (cycleId, friendId) => request(`/orders/cycle/${cycleId}/friend/${friendId}/submit`, {
-    method: 'POST'
+  submitOrderByFriend: (cycleId, friendId, pickupData = {}) => request(`/orders/cycle/${cycleId}/friend/${friendId}/submit`, {
+    method: 'POST',
+    body: pickupData
   }),
 
   // Orders (admin)
@@ -145,6 +146,13 @@ export const api = {
   // Friends detail
   getFriendDetail: (id) => request(`/friends/${id}/detail`),
   getFriendBalance: (id) => request(`/friends/${id}/balance`),
+
+  // Pickup locations
+  getPickupLocations: () => request('/pickup-locations'),
+  getAllPickupLocations: () => request('/pickup-locations/all'),
+  createPickupLocation: (data) => request('/pickup-locations', { method: 'POST', body: data }),
+  updatePickupLocation: (id, data) => request(`/pickup-locations/${id}`, { method: 'PATCH', body: data }),
+  deletePickupLocation: (id) => request(`/pickup-locations/${id}`, { method: 'DELETE' }),
 
   // Transactions
   getTransactions: (friendId) => request(`/transactions/friend/${friendId}`),

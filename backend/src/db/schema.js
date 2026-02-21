@@ -262,6 +262,29 @@ async function initDb() {
     // Column already exists, ignore
   }
 
+  // Create pickup_locations table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS pickup_locations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      address TEXT,
+      active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Migration: Add pickup_location_id and pickup_location_note to orders
+  try {
+    db.run('ALTER TABLE orders ADD COLUMN pickup_location_id INTEGER');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.run('ALTER TABLE orders ADD COLUMN pickup_location_note TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   // Create transactions table for balance tracking
   db.run(`
     CREATE TABLE IF NOT EXISTS transactions (

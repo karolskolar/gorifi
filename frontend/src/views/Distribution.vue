@@ -117,6 +117,15 @@ function printDistribution() {
                   <Badge v-else variant="destructive">Nezaplatené</Badge>
                   <span class="mx-1">|</span>
                   <span>Suma: {{ formatPrice(friend.total) }}</span>
+                  <template v-if="friend.pickup_location_name || friend.pickup_location_note">
+                    <span class="mx-1">|</span>
+                    <Badge
+                      variant="outline"
+                      class="border-blue-400 text-blue-600 bg-blue-50"
+                    >
+                      {{ friend.pickup_location_name || friend.pickup_location_note }}
+                    </Badge>
+                  </template>
                 </div>
               </div>
               <Button

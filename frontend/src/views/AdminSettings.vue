@@ -18,6 +18,14 @@ const saving = ref(false)
 const error = ref('')
 const successMessage = ref('')
 
+// Pickup locations
+const pickupLocations = ref([])
+const newLocationName = ref('')
+const newLocationAddress = ref('')
+const editingLocationId = ref(null)
+const editingLocationName = ref('')
+const editingLocationAddress = ref('')
+
 onMounted(async () => {
   await loadSettings()
 })
@@ -32,12 +40,71 @@ async function loadSettings() {
   error.value = ''
 
   try {
-    const settings = await api.getAdminSettings()
+    const [settings, locations] = await Promise.all([
+      api.getAdminSettings(),
+      api.getAllPickupLocations()
+    ])
     friendsPassword.value = settings.friendsPassword || ''
+    pickupLocations.value = locations
   } catch (e) {
     error.value = e.message
   } finally {
     loading.value = false
+  }
+}
+
+async function addLocation() {
+  if (!newLocationName.value.trim()) return
+  error.value = ''
+  try {
+    await api.createPickupLocation({ name: newLocationName.value.trim(), address: newLocationAddress.value.trim() })
+    newLocationName.value = ''
+    newLocationAddress.value = ''
+    pickupLocations.value = await api.getAllPickupLocations()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+function startEditLocation(loc) {
+  editingLocationId.value = loc.id
+  editingLocationName.value = loc.name
+  editingLocationAddress.value = loc.address || ''
+}
+
+async function saveLocation(id) {
+  if (!editingLocationName.value.trim()) return
+  error.value = ''
+  try {
+    await api.updatePickupLocation(id, { name: editingLocationName.value.trim(), address: editingLocationAddress.value.trim() })
+    editingLocationId.value = null
+    pickupLocations.value = await api.getAllPickupLocations()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+function cancelEditLocation() {
+  editingLocationId.value = null
+}
+
+async function toggleLocationActive(loc) {
+  error.value = ''
+  try {
+    await api.updatePickupLocation(loc.id, { active: !loc.active })
+    pickupLocations.value = await api.getAllPickupLocations()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function deleteLocation(id) {
+  error.value = ''
+  try {
+    await api.deletePickupLocation(id)
+    pickupLocations.value = await api.getAllPickupLocations()
+  } catch (e) {
+    error.value = e.message
   }
 }
 
@@ -128,6 +195,60 @@ async function saveSettings() {
             <p class="text-xs text-muted-foreground mt-1">
               Priatelia pristupia na hlavnu stranku, kde sa prihlasia pomocou tohto hesla.
             </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- Pickup Locations -->
+      <Card v-if="!loading" class="mt-6">
+        <CardHeader>
+          <CardTitle>Miesta vyzdvihnutia</CardTitle>
+          <CardDescription>
+            Miesta, kde si priatelia mozu vyzdvihnut objednanu kavu.
+            Pri odoslani objednavky si vyberaju jedno z tychto miest.
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-4">
+          <!-- Existing locations -->
+          <div v-if="pickupLocations.length > 0" class="space-y-2">
+            <div
+              v-for="loc in pickupLocations"
+              :key="loc.id"
+              :class="['flex items-center gap-2 p-3 rounded-lg border', !loc.active ? 'opacity-50 bg-muted' : '']"
+            >
+              <template v-if="editingLocationId === loc.id">
+                <div class="flex-1 space-y-2">
+                  <Input v-model="editingLocationName" placeholder="Nazov" />
+                  <Input v-model="editingLocationAddress" placeholder="Adresa (volitelne)" />
+                </div>
+                <Button size="sm" @click="saveLocation(loc.id)">Ulozit</Button>
+                <Button size="sm" variant="outline" @click="cancelEditLocation">Zrusit</Button>
+              </template>
+              <template v-else>
+                <div class="flex-1">
+                  <div class="font-medium">{{ loc.name }}</div>
+                  <div v-if="loc.address" class="text-sm text-muted-foreground">{{ loc.address }}</div>
+                </div>
+                <Button size="sm" variant="ghost" @click="startEditLocation(loc)">Upravit</Button>
+                <Button size="sm" variant="ghost" @click="toggleLocationActive(loc)">
+                  {{ loc.active ? 'Deaktivovat' : 'Aktivovat' }}
+                </Button>
+                <Button size="sm" variant="ghost" class="text-destructive hover:text-destructive" @click="deleteLocation(loc.id)">Vymazat</Button>
+              </template>
+            </div>
+          </div>
+          <div v-else class="text-sm text-muted-foreground py-2">
+            Zatial ziadne miesta. Pridajte prve miesto vyzdvihnutia.
+          </div>
+
+          <!-- Add new location -->
+          <div class="pt-4 border-t space-y-2">
+            <Label>Pridat nove miesto</Label>
+            <div class="flex gap-2">
+              <Input v-model="newLocationName" placeholder="Nazov" class="flex-1" />
+              <Input v-model="newLocationAddress" placeholder="Adresa (volitelne)" class="flex-1" />
+              <Button @click="addLocation" :disabled="!newLocationName.trim()">Pridat</Button>
+            </div>
           </div>
         </CardContent>
       </Card>

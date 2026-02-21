@@ -149,3 +149,15 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 - Deploy script must copy `ecosystem.config.cjs` BEFORE starting PM2 (not after)
 - Script creates log directories (`/var/log/gorifi`, `/var/log/gorifi-staging`) if missing
 - Both production and staging run in same LXC container on different ports (3000, 3001)
+
+### Pickup Locations Feature (2026-02-20)
+- Admin configures pickup locations (name + address) in Settings
+- `pickup_locations` table: id, name, address, active, created_at
+- `orders` table has `pickup_location_id` (nullable FK) and `pickup_location_note` (text for "Iné" option)
+- Route: `backend/src/routes/pickup-locations.js` — CRUD endpoints (GET `/` public, GET `/all` admin, POST, PATCH, DELETE)
+- Friend order submit (`POST /orders/cycle/:cycleId/friend/:friendId/submit`) accepts `pickup_location_id` + `pickup_location_note` in body
+- FriendOrder.vue shows pickup modal on submit when locations exist; skips modal if none configured (backward compatible)
+- "Iné" = NULL pickup_location_id + optional note text
+- Delete with existing orders = soft-delete (active=0) instead of hard delete
+- Admin views (CycleDetail orders tab, Distribution) show pickup location as blue badge
+- Deploy script deploys from local files (rsync), no git push needed — but backend restart required for DB migrations

@@ -217,10 +217,27 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
     return res.status(400).json({ error: 'Objednavka je prazdna' });
   }
 
-  // Submit order
+  // Handle pickup location
+  const { pickup_location_id, pickup_location_note } = req.body || {};
+
+  if (pickup_location_id !== undefined && pickup_location_id !== null) {
+    // Validate location exists and is active
+    const location = db.prepare('SELECT * FROM pickup_locations WHERE id = ? AND active = 1').get(pickup_location_id);
+    if (!location) {
+      return res.status(400).json({ error: 'Vybrané miesto vyzdvihnutia neexistuje alebo nie je aktívne' });
+    }
+  }
+
+  // Submit order with pickup location
   db.prepare(`
-    UPDATE orders SET status = 'submitted', submitted_at = CURRENT_TIMESTAMP WHERE id = ?
-  `).run(order.id);
+    UPDATE orders SET status = 'submitted', submitted_at = CURRENT_TIMESTAMP,
+      pickup_location_id = ?, pickup_location_note = ?
+    WHERE id = ?
+  `).run(
+    pickup_location_id || null,
+    pickup_location_id ? null : (pickup_location_note || null),
+    order.id
+  );
 
   const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
   const items = db.prepare(`
@@ -357,9 +374,10 @@ router.get('/cycle/:cycleId', (req, res) => {
 
   // Get existing orders for this cycle
   const existingOrders = db.prepare(`
-    SELECT o.*, f.name as friend_name
+    SELECT o.*, f.name as friend_name, pl.name as pickup_location_name
     FROM orders o
     JOIN friends f ON f.id = o.friend_id
+    LEFT JOIN pickup_locations pl ON pl.id = o.pickup_location_id
     WHERE o.cycle_id = ?
   `).all(cycleId);
 

@@ -765,12 +765,28 @@ function getStatusVariant(status) {
                     <TableCell class="text-center">{{ order.count_1kg || 0 }}</TableCell>
                     <TableCell class="text-center">{{ order.count_20pc5g || 0 }}</TableCell>
                     <TableCell>
-                      <Badge
-                        :variant="order.status === 'submitted' ? 'default' : order.status === 'none' ? 'outline' : 'secondary'"
-                        :class="order.status === 'none' ? 'text-muted-foreground' : ''"
-                      >
-                        {{ order.status === 'submitted' ? 'Odoslane' : order.status === 'none' ? 'Neobjednane' : 'Rozpracovane' }}
-                      </Badge>
+                      <div class="flex flex-wrap gap-1">
+                        <Badge
+                          :variant="order.status === 'submitted' ? 'default' : order.status === 'none' ? 'outline' : 'secondary'"
+                          :class="order.status === 'none' ? 'text-muted-foreground' : ''"
+                        >
+                          {{ order.status === 'submitted' ? 'Odoslane' : order.status === 'none' ? 'Neobjednane' : 'Rozpracovane' }}
+                        </Badge>
+                        <Badge
+                          v-if="order.pickup_location_name"
+                          variant="outline"
+                          class="border-blue-400 text-blue-600 bg-blue-50"
+                        >
+                          {{ order.pickup_location_name }}
+                        </Badge>
+                        <Badge
+                          v-else-if="order.pickup_location_note"
+                          variant="outline"
+                          class="border-gray-400 text-gray-600 bg-gray-50"
+                        >
+                          {{ order.pickup_location_note }}
+                        </Badge>
+                      </div>
                     </TableCell>
                     <TableCell class="text-right">{{ formatPrice(order.total) }}</TableCell>
                     <TableCell class="text-center">

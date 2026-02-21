@@ -189,9 +189,11 @@ router.get('/:id/distribution', (req, res) => {
   // Include packed status and balance
   const friendsWithOrders = db.prepare(`
     SELECT f.id, f.name, o.id as order_id, o.status, o.paid, o.total, o.packed, o.packed_at,
+           o.pickup_location_id, o.pickup_location_note, pl.name as pickup_location_name,
            COALESCE((SELECT SUM(amount) FROM transactions WHERE friend_id = f.id), 0) as balance
     FROM orders o
     JOIN friends f ON f.id = o.friend_id
+    LEFT JOIN pickup_locations pl ON pl.id = o.pickup_location_id
     WHERE o.cycle_id = ? AND o.status = 'submitted'
     ORDER BY f.name
   `).all(req.params.id);
