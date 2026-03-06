@@ -10,8 +10,10 @@
   },
   "dependencies": {
     "@vueuse/core": "^14.1.0",
+    "bysquare": "^3.2.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "qrcode": "^1.5.4",
     "radix-vue": "^1.9.17",
     "tailwind-merge": "^3.4.0",
     "tailwindcss-animate": "^1.0.7",

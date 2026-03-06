@@ -103,23 +103,46 @@ router.post('/logout', (req, res) => {
 // Get admin settings (friends_password, etc.)
 router.get('/settings', (req, res) => {
   const friendsPassword = db.prepare("SELECT value FROM settings WHERE key = 'friends_password'").get();
+  const paymentIban = db.prepare("SELECT value FROM settings WHERE key = 'payment_iban'").get();
+  const paymentRevolutUsername = db.prepare("SELECT value FROM settings WHERE key = 'payment_revolut_username'").get();
 
   res.json({
-    friendsPassword: friendsPassword?.value || ''
+    friendsPassword: friendsPassword?.value || '',
+    paymentIban: paymentIban?.value || '',
+    paymentRevolutUsername: paymentRevolutUsername?.value || ''
+  });
+});
+
+// Public payment settings (no auth required)
+router.get('/payment-settings', (req, res) => {
+  const paymentIban = db.prepare("SELECT value FROM settings WHERE key = 'payment_iban'").get();
+  const paymentRevolutUsername = db.prepare("SELECT value FROM settings WHERE key = 'payment_revolut_username'").get();
+
+  res.json({
+    paymentIban: paymentIban?.value || '',
+    paymentRevolutUsername: paymentRevolutUsername?.value || ''
   });
 });
 
 // Update admin settings
 router.put('/settings', (req, res) => {
-  const { friendsPassword } = req.body;
+  const { friendsPassword, paymentIban, paymentRevolutUsername } = req.body;
 
   if (friendsPassword !== undefined) {
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('friends_password', ?)").run(friendsPassword || '');
   }
+  if (paymentIban !== undefined) {
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('payment_iban', ?)").run(paymentIban || '');
+  }
+  if (paymentRevolutUsername !== undefined) {
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('payment_revolut_username', ?)").run(paymentRevolutUsername || '');
+  }
 
   res.json({
     success: true,
-    friendsPassword: friendsPassword || ''
+    friendsPassword: friendsPassword || '',
+    paymentIban: paymentIban || '',
+    paymentRevolutUsername: paymentRevolutUsername || ''
   });
 });
 

@@ -15,6 +15,9 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import PaymentModal from '@/components/PaymentModal.vue'
+import { encode as bysquareEncode, PaymentOptions, CurrencyCode, Version } from 'bysquare'
+import QRCode from 'qrcode'
 
 const route = useRoute()
 const router = useRouter()
@@ -47,6 +50,18 @@ const pickupLocations = ref([])
 const showPickupModal = ref(false)
 const selectedPickupLocationId = ref(null) // null = "Iné"
 const pickupLocationNote = ref('')
+
+// Payment state
+const paymentIban = ref('')
+const paymentRevolutUsername = ref('')
+const showPaymentModal = ref(false)
+const successQrDataUrl = ref(null)
+const hasPaymentSettings = computed(() => !!(paymentIban.value || paymentRevolutUsername.value))
+const paymentReference = computed(() => {
+  const friendName = friend.value?.name || ''
+  const cycleName = cycle.value?.name || ''
+  return `${friendName} / ${cycleName}`
+})
 
 const cycleId = computed(() => route.params.cycleId)
 
@@ -219,11 +234,17 @@ onMounted(async () => {
 
   await loadOrderData()
 
-  // Load pickup locations
+  // Load pickup locations and payment settings
   try {
-    pickupLocations.value = await api.getPickupLocations()
+    const [locations, paymentSettings] = await Promise.all([
+      api.getPickupLocations(),
+      api.getPaymentSettings()
+    ])
+    pickupLocations.value = locations
+    paymentIban.value = paymentSettings.paymentIban || ''
+    paymentRevolutUsername.value = paymentSettings.paymentRevolutUsername || ''
   } catch (e) {
-    // Non-critical, proceed without locations
+    // Non-critical, proceed without locations/payment
   }
 })
 
@@ -502,10 +523,41 @@ async function doSubmitOrder() {
       ? 'Vaša objednávka bola aktualizovaná!'
       : 'Vaša objednávka bola úspešne odoslaná!'
     showSuccessModal.value = true
+    generateSuccessQr()
   } catch (e) {
     error.value = e.message
   } finally {
     saving.value = false
+  }
+}
+
+async function generateSuccessQr() {
+  if (!paymentIban.value) return
+  try {
+    const today = new Date()
+    const dateStr = today.getFullYear().toString()
+      + (today.getMonth() + 1).toString().padStart(2, '0')
+      + today.getDate().toString().padStart(2, '0')
+
+    const qrString = bysquareEncode({
+      invoiceId: '',
+      payments: [{
+        type: PaymentOptions.PaymentOrder,
+        amount: cartTotal.value,
+        currencyCode: CurrencyCode.EUR,
+        paymentDueDate: dateStr,
+        variableSymbol: '',
+        constantSymbol: '',
+        specificSymbol: '',
+        originatorsReferenceInformation: '',
+        paymentNote: paymentReference.value || '',
+        bankAccounts: [{ iban: paymentIban.value.replace(/\s/g, ''), bic: '' }],
+        beneficiary: { name: 'Gorifi', street: '', city: '' }
+      }]
+    }, { version: Version['1.0.0'] })
+    successQrDataUrl.value = await QRCode.toDataURL(qrString, { errorCorrectionLevel: 'M', width: 256, margin: 2 })
+  } catch (e) {
+    console.error('QR generation failed:', e)
   }
 }
 
@@ -1082,7 +1134,16 @@ function applyMarkup(price) {
               :disabled="saving || cartItems.length === 0"
               class="flex-1 h-8 text-xs border-red-500 text-red-600 hover:bg-red-50 hover:text-red-700"
             >
-              Zrušiť objednávku
+              Zrušiť
+            </Button>
+            <Button
+              v-if="isSubmitted && hasPaymentSettings"
+              variant="outline"
+              size="sm"
+              @click="showPaymentModal = true"
+              class="flex-1 h-8 text-xs border-green-500 text-green-600 hover:bg-green-50 hover:text-green-700"
+            >
+              Zaplatiť
             </Button>
             <Button
               size="sm"
@@ -1090,7 +1151,7 @@ function applyMarkup(price) {
               :disabled="saving || cartItems.length === 0"
               class="flex-1 h-8 text-xs"
             >
-              {{ saving ? 'Odosielám...' : (isSubmitted ? 'Aktualizovať objednávku' : 'Odoslať objednávku') }}
+              {{ saving ? 'Odosielám...' : (isSubmitted ? 'Aktualizovať' : 'Odoslať') }}
             </Button>
           </div>
 
@@ -1127,9 +1188,9 @@ function applyMarkup(price) {
       <div class="h-48"></div>
     </div>
 
-    <!-- Success Modal -->
+    <!-- Success Modal (with inline payment details) -->
     <Dialog :open="showSuccessModal" @update:open="val => !val && handleSuccessModalClose()">
-      <DialogContent class="sm:max-w-md">
+      <DialogContent class="sm:max-w-md max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle class="flex items-center gap-2">
             <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1141,13 +1202,53 @@ function applyMarkup(price) {
             {{ successModalMessage }}
           </DialogDescription>
         </DialogHeader>
+
+        <!-- Inline payment details -->
+        <div v-if="hasPaymentSettings" class="space-y-3 pt-2">
+          <p class="text-sm font-medium text-center">Suma na úhradu: <strong>{{ formatPrice(cartTotal) }}</strong></p>
+
+          <a
+            v-if="paymentRevolutUsername"
+            :href="`https://revolut.me/${paymentRevolutUsername}`"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="flex items-center justify-center gap-2 w-full px-4 py-3 bg-[#0075EB] hover:bg-[#0066cc] text-white rounded-lg font-medium transition-colors"
+          >
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M20.1 6.8c-.3-1.2-1-2.2-2-2.9-.9-.7-2.1-1-3.3-1H6.2L4 20.1h4.1l1-5.5h3.7c1.6 0 3-.5 4.1-1.4 1.1-.9 1.9-2.2 2.2-3.8l.5-2.6zM16 9.2l-.2 1c-.2.9-.6 1.5-1.2 2-.6.5-1.4.7-2.3.7H9.1l1-5.5h3.2c.7 0 1.2.2 1.6.6.4.4.5.9.4 1.5l-.3 1.7z"/>
+            </svg>
+            Zaplatiť cez Revolut
+          </a>
+
+          <div v-if="paymentIban" class="text-center space-y-2">
+            <p class="text-sm text-muted-foreground">Pay by Square (QR kód pre bankovú appku)</p>
+            <div v-if="successQrDataUrl" class="flex justify-center">
+              <img :src="successQrDataUrl" alt="Pay by Square QR" class="w-48 h-48" />
+            </div>
+            <div v-else class="py-4 text-sm text-muted-foreground animate-pulse">
+              Generujem QR kod...
+            </div>
+            <p class="text-xs text-muted-foreground">IBAN: {{ paymentIban }}</p>
+          </div>
+        </div>
+
         <DialogFooter>
-          <Button @click="handleSuccessModalClose" class="w-full">
+          <Button variant="outline" @click="handleSuccessModalClose" class="w-full">
             OK
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <!-- Payment Modal (for footer button) -->
+    <PaymentModal
+      :open="showPaymentModal"
+      :amount="cartTotal"
+      :reference="paymentReference"
+      :iban="paymentIban"
+      :revolut-username="paymentRevolutUsername"
+      @close="showPaymentModal = false"
+    />
 
     <!-- Cancel Order Confirmation Modal -->
     <Dialog :open="showCancelModal" @update:open="showCancelModal = $event">

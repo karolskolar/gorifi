@@ -13,8 +13,11 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 const router = useRouter()
 
 const friendsPassword = ref('')
+const paymentIban = ref('')
+const paymentRevolutUsername = ref('')
 const loading = ref(true)
 const saving = ref(false)
+const savingPayment = ref(false)
 const error = ref('')
 const successMessage = ref('')
 
@@ -45,6 +48,8 @@ async function loadSettings() {
       api.getAllPickupLocations()
     ])
     friendsPassword.value = settings.friendsPassword || ''
+    paymentIban.value = settings.paymentIban || ''
+    paymentRevolutUsername.value = settings.paymentRevolutUsername || ''
     pickupLocations.value = locations
   } catch (e) {
     error.value = e.message
@@ -123,6 +128,25 @@ async function saveSettings() {
     saving.value = false
   }
 }
+
+async function savePaymentSettings() {
+  savingPayment.value = true
+  error.value = ''
+  successMessage.value = ''
+
+  try {
+    await api.updateAdminSettings({
+      paymentIban: paymentIban.value,
+      paymentRevolutUsername: paymentRevolutUsername.value
+    })
+    successMessage.value = 'Platobne udaje boli ulozene'
+    setTimeout(() => { successMessage.value = '' }, 3000)
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    savingPayment.value = false
+  }
+}
 </script>
 
 <template>
@@ -195,6 +219,49 @@ async function saveSettings() {
             <p class="text-xs text-muted-foreground mt-1">
               Priatelia pristupia na hlavnu stranku, kde sa prihlasia pomocou tohto hesla.
             </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- Payment Settings -->
+      <Card v-if="!loading" class="mt-6">
+        <CardHeader>
+          <CardTitle>Platobne udaje</CardTitle>
+          <CardDescription>
+            Tieto udaje sa zobrazia priatelom po odoslani objednavky, aby mohli zaplatit.
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-4">
+          <div class="space-y-2">
+            <Label for="paymentIban">IBAN</Label>
+            <Input
+              id="paymentIban"
+              v-model="paymentIban"
+              type="text"
+              placeholder="SK..."
+            />
+            <p class="text-xs text-muted-foreground">
+              Pre generovanie Pay by Square QR kodu (skenovatelny slovenskymi bankovymi appkami).
+            </p>
+          </div>
+
+          <div class="space-y-2">
+            <Label for="paymentRevolutUsername">Revolut username</Label>
+            <Input
+              id="paymentRevolutUsername"
+              v-model="paymentRevolutUsername"
+              type="text"
+              placeholder="napr. karolskolar"
+            />
+            <p class="text-xs text-muted-foreground">
+              Pre tlacidlo na platbu cez Revolut (revolut.me odkaz).
+            </p>
+          </div>
+
+          <div class="pt-4">
+            <Button @click="savePaymentSettings" :disabled="savingPayment">
+              {{ savingPayment ? 'Ukladam...' : 'Ulozit platobne udaje' }}
+            </Button>
           </div>
         </CardContent>
       </Card>

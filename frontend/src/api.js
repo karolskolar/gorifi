@@ -108,6 +108,7 @@ export const api = {
   // Admin settings
   getAdminSettings: () => request('/admin/settings'),
   updateAdminSettings: (data) => request('/admin/settings', { method: 'PUT', body: data }),
+  getPaymentSettings: () => request('/admin/payment-settings'),
 
   // Products
   getProducts: (cycleId) => request(`/products/cycle/${cycleId}`),
