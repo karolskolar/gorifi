@@ -6,7 +6,7 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const dbPath = join(__dirname, 'database.sqlite');
+const dbPath = process.env.DB_PATH || join(__dirname, 'database.sqlite');
 
 // Generate a unique 8-character alphanumeric ID
 function generateUid() {

@@ -1,0 +1,12 @@
+services:
+  gorifi:
+    build: .
+    container_name: gorifi
+    ports:
+      - "3100:3000"
+    volumes:
+      - gorifi-data:/data
+    restart: unless-stopped
+
+volumes:
+  gorifi-data:

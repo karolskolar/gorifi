@@ -100,7 +100,7 @@ function getStatusText(status) {
             Nastavenia
           </Button>
           <Button variant="ghost" @click="logout" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
-            Odhlasit sa
+            Odhlásiť sa
           </Button>
         </div>
       </div>
