@@ -74,7 +74,62 @@ function toggleExpand(orderId) {
 
 const isBakery = computed(() => cycle.value?.type === 'bakery')
 
+const ordersView = ref('friend') // 'friend' or 'product'
+const expandedProducts = ref(new Set())
+
+function toggleExpandProduct(key) {
+  if (expandedProducts.value.has(key)) {
+    expandedProducts.value.delete(key)
+  } else {
+    expandedProducts.value.add(key)
+  }
+  expandedProducts.value = new Set(expandedProducts.value)
+}
+
 const submittedOrders = computed(() => orders.value.filter(o => o.status === 'submitted' || o.status === 'draft'))
+
+// Group by product: { productKey: { product_name, purpose, variant, total_quantity, total_price, friends: [{ friend_name, quantity, price }] } }
+const ordersByProduct = computed(() => {
+  const map = {}
+  for (const order of submittedOrders.value) {
+    if (!order.items) continue
+    for (const item of order.items) {
+      const key = `${item.product_id}-${item.variant}`
+      if (!map[key]) {
+        map[key] = {
+          key,
+          product_name: item.product_name,
+          purpose: item.purpose,
+          variant: item.variant,
+          total_quantity: 0,
+          total_price: 0,
+          friends: []
+        }
+      }
+      map[key].total_quantity += item.quantity
+      map[key].total_price += item.price * item.quantity
+      map[key].friends.push({
+        friend_name: order.friend_name,
+        quantity: item.quantity,
+        price: item.price * item.quantity
+      })
+    }
+  }
+  // Sort friends within each product by quantity desc
+  const result = Object.values(map)
+  for (const p of result) {
+    p.friends.sort((a, b) => b.quantity - a.quantity)
+  }
+  // Sort products by purpose then name
+  result.sort((a, b) => {
+    const purposeOrder = { 'Espresso': 1, 'Filter': 2, 'Kapsule': 3, 'Slané': 4, 'Sladké': 5 }
+    const pa = purposeOrder[a.purpose] || 6
+    const pb = purposeOrder[b.purpose] || 6
+    if (pa !== pb) return pa - pb
+    return a.product_name.localeCompare(b.product_name)
+  })
+  return result
+})
 
 const orderTotals = computed(() => ({
   count_150g: submittedOrders.value.reduce((sum, o) => sum + (o.count_150g || 0), 0),
@@ -736,12 +791,100 @@ function getStatusVariant(status) {
 
         <!-- Orders Tab -->
         <TabsContent value="orders">
-          <h2 class="text-lg font-semibold mb-4">Objednávky ({{ submittedOrders.length }})</h2>
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-semibold">Objednávky ({{ submittedOrders.length }})</h2>
+            <div v-if="submittedOrders.length > 0" class="flex gap-1 bg-muted rounded-lg p-1">
+              <button
+                @click="ordersView = 'friend'"
+                :class="['px-3 py-1 text-sm rounded-md transition-colors', ordersView === 'friend' ? 'bg-background shadow font-medium' : 'text-muted-foreground hover:text-foreground']"
+              >
+                Podľa priateľa
+              </button>
+              <button
+                @click="ordersView = 'product'"
+                :class="['px-3 py-1 text-sm rounded-md transition-colors', ordersView === 'product' ? 'bg-background shadow font-medium' : 'text-muted-foreground hover:text-foreground']"
+              >
+                Podľa produktu
+              </button>
+            </div>
+          </div>
 
           <div v-if="orders.length === 0" class="text-center py-12 text-muted-foreground">
             Zatiaľ žiadne objednávky
           </div>
 
+          <!-- Product view -->
+          <Card v-else-if="ordersView === 'product'">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead class="w-10"></TableHead>
+                  <TableHead>Produkt</TableHead>
+                  <TableHead class="text-center">Ks</TableHead>
+                  <TableHead class="text-right">Suma</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <template v-for="product in ordersByProduct" :key="product.key">
+                  <TableRow class="cursor-pointer hover:bg-muted/50" @click="toggleExpandProduct(product.key)">
+                    <TableCell class="p-2">
+                      <button class="w-8 h-8 flex items-center justify-center rounded hover:bg-muted transition-colors">
+                        <svg
+                          class="w-4 h-4 transition-transform"
+                          :class="{ 'rotate-90': expandedProducts.has(product.key) }"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                        </svg>
+                      </button>
+                    </TableCell>
+                    <TableCell>
+                      <div class="flex items-center gap-2">
+                        <Badge
+                          v-if="product.purpose"
+                          variant="outline"
+                          :class="{
+                            'border-stone-400 text-stone-600 bg-stone-50': product.purpose === 'Espresso',
+                            'border-sky-400 text-sky-600 bg-sky-50': product.purpose === 'Filter',
+                            'border-amber-400 text-amber-600 bg-amber-50': product.purpose === 'Kapsule' || product.purpose === 'Slané',
+                            'border-pink-400 text-pink-600 bg-pink-50': product.purpose === 'Sladké'
+                          }"
+                          class="text-xs"
+                        >
+                          {{ product.purpose }}
+                        </Badge>
+                        <span class="font-medium">{{ product.product_name }}</span>
+                        <span class="text-xs text-muted-foreground">({{ product.variant === 'unit' ? 'ks' : product.variant }})</span>
+                      </div>
+                    </TableCell>
+                    <TableCell class="text-center font-medium">{{ product.total_quantity }}</TableCell>
+                    <TableCell class="text-right">{{ formatPrice(product.total_price) }}</TableCell>
+                  </TableRow>
+                  <!-- Expanded friends list -->
+                  <template v-if="expandedProducts.has(product.key)">
+                    <TableRow v-for="(f, i) in product.friends" :key="`${product.key}-${i}`" class="bg-muted/30">
+                      <TableCell></TableCell>
+                      <TableCell class="text-sm text-muted-foreground">{{ f.friend_name }}</TableCell>
+                      <TableCell class="text-center text-sm text-muted-foreground">{{ f.quantity }}</TableCell>
+                      <TableCell class="text-right text-sm text-muted-foreground">{{ formatPrice(f.price) }}</TableCell>
+                    </TableRow>
+                  </template>
+                </template>
+              </TableBody>
+              <tfoot>
+                <TableRow class="font-semibold bg-muted">
+                  <TableCell></TableCell>
+                  <TableCell>Celkom</TableCell>
+                  <TableCell class="text-center">{{ ordersByProduct.reduce((s, p) => s + p.total_quantity, 0) }}</TableCell>
+                  <TableCell class="text-right">{{ formatPrice(orderTotals.total) }}</TableCell>
+                </TableRow>
+              </tfoot>
+            </Table>
+          </Card>
+
+          <!-- Friend view -->
           <Card v-else>
             <Table>
               <TableHeader>
