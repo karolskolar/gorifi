@@ -68,6 +68,7 @@ const cycleId = computed(() => route.params.cycleId)
 const isLocked = computed(() => cycle.value?.status === 'locked' || cycle.value?.status === 'completed')
 const isSubmitted = computed(() => order.value?.status === 'submitted')
 const markupRatio = computed(() => cycle.value?.markup_ratio || 1.0)
+const isBakery = computed(() => cycle.value?.type === 'bakery')
 
 // Check if there are unsaved changes that would be lost on leaving:
 // 1. Order is submitted but cart differs from last submission
@@ -113,7 +114,8 @@ const cartItems = computed(() => {
       const product = products.value.find(p => p.id === parseInt(productId))
       if (product) {
         let basePrice
-        if (variant === '1kg') basePrice = product.price_1kg
+        if (variant === 'unit') basePrice = product.price_unit
+        else if (variant === '1kg') basePrice = product.price_1kg
         else if (variant === '20pc5g') basePrice = product.price_20pc5g
         else if (variant === '150g') basePrice = product.price_150g
         else if (variant === '200g') basePrice = product.price_200g
@@ -184,6 +186,11 @@ const availablePurposes = computed(() => {
 })
 
 const backgroundClass = computed(() => {
+  if (isBakery.value) {
+    if (activeTab.value === 'Slané') return 'bg-amber-50'
+    if (activeTab.value === 'Sladké') return 'bg-pink-50'
+    return 'bg-background'
+  }
   if (activeTab.value === 'Espresso') return 'bg-stone-200'
   if (activeTab.value === 'Filter') return 'bg-sky-100'
   if (activeTab.value === 'Kapsule') return 'bg-amber-100'
@@ -193,6 +200,8 @@ const backgroundClass = computed(() => {
 function getTabTriggerClass(purpose) {
   const isActive = activeTab.value === purpose
   if (!isActive) return ''
+  if (purpose === 'Slané') return 'bg-amber-600 text-white data-[state=active]:bg-amber-600 data-[state=active]:text-white'
+  if (purpose === 'Sladké') return 'bg-pink-600 text-white data-[state=active]:bg-pink-600 data-[state=active]:text-white'
   if (purpose === 'Espresso') return 'bg-stone-600 text-white data-[state=active]:bg-stone-600 data-[state=active]:text-white'
   if (purpose === 'Filter') return 'bg-sky-600 text-white data-[state=active]:bg-sky-600 data-[state=active]:text-white'
   if (purpose === 'Kapsule') return 'bg-amber-600 text-white data-[state=active]:bg-amber-600 data-[state=active]:text-white'
@@ -237,7 +246,7 @@ onMounted(async () => {
   // Load pickup locations and payment settings
   try {
     const [locations, paymentSettings] = await Promise.all([
-      api.getPickupLocations(),
+      api.getPickupLocations(cycle.value?.type || 'coffee'),
       api.getPaymentSettings()
     ])
     pickupLocations.value = locations
@@ -666,7 +675,68 @@ function applyMarkup(price) {
               v-for="product in groupedProducts[purpose]"
               :key="product.id"
             >
-              <CardContent class="p-4">
+              <!-- Bakery product card -->
+              <CardContent v-if="isBakery && product.price_unit" class="p-0">
+                <div
+                  :class="[
+                    'flex rounded-lg overflow-hidden transition-colors',
+                    getQuantity(product.id, 'unit') > 0
+                      ? 'ring-2 ring-primary'
+                      : ''
+                  ]"
+                >
+                  <!-- Product image - full height left side -->
+                  <div class="w-28 flex-shrink-0 bg-muted flex items-center justify-center">
+                    <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
+                    <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                  </div>
+                  <!-- Product info + controls -->
+                  <div class="flex-1 min-w-0 p-3 flex flex-col">
+                    <div class="flex justify-between items-start gap-2">
+                      <div class="min-w-0 flex-1">
+                        <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
+                        <p v-if="product.description1" class="text-sm text-muted-foreground mt-0.5">{{ product.description1 }}</p>
+                        <details v-if="product.composition" class="mt-1">
+                          <summary class="text-xs text-muted-foreground/70 cursor-pointer select-none">Zloženie</summary>
+                          <p class="text-xs text-muted-foreground/70 mt-0.5">{{ product.composition }}</p>
+                        </details>
+                      </div>
+                    </div>
+                    <div class="mt-auto pt-2 flex items-center justify-between">
+                      <div class="text-sm">
+                        <span class="font-semibold text-primary">{{ formatPrice(applyMarkup(product.price_unit)) }}</span>
+                        <span v-if="product.weight_grams" class="text-muted-foreground ml-1">/ {{ product.weight_grams }}g</span>
+                      </div>
+                      <div class="flex items-center gap-1.5">
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          @click="decrement(product.id, 'unit')"
+                          :disabled="isLocked || getQuantity(product.id, 'unit') === 0"
+                          class="h-8 w-8 rounded-full"
+                        >
+                          -
+                        </Button>
+                        <span class="w-6 text-center font-semibold text-sm">{{ getQuantity(product.id, 'unit') }}</span>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          @click="increment(product.id, 'unit')"
+                          :disabled="isLocked"
+                          class="h-8 w-8 rounded-full"
+                        >
+                          +
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+
+              <!-- Coffee product card -->
+              <CardContent v-else class="p-4">
                 <div class="flex gap-4 mb-3">
                   <!-- Product image -->
                   <div class="w-20 h-20 flex-shrink-0 bg-muted rounded-lg overflow-hidden flex items-center justify-center">
@@ -883,7 +953,68 @@ function applyMarkup(price) {
           v-for="product in groupedProducts[availablePurposes[0]]"
           :key="product.id"
         >
-          <CardContent class="p-4">
+          <!-- Bakery product card -->
+          <CardContent v-if="isBakery && product.price_unit" class="p-0">
+            <div
+              :class="[
+                'flex rounded-lg overflow-hidden transition-colors',
+                getQuantity(product.id, 'unit') > 0
+                  ? 'ring-2 ring-primary'
+                  : ''
+              ]"
+            >
+              <!-- Product image - full height left side -->
+              <div class="w-28 flex-shrink-0 bg-muted flex items-center justify-center">
+                <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
+                <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+              </div>
+              <!-- Product info + controls -->
+              <div class="flex-1 min-w-0 p-3 flex flex-col">
+                <div class="flex justify-between items-start gap-2">
+                  <div class="min-w-0 flex-1">
+                    <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
+                    <p v-if="product.description1" class="text-sm text-muted-foreground mt-0.5">{{ product.description1 }}</p>
+                    <details v-if="product.composition" class="mt-1">
+                      <summary class="text-xs text-muted-foreground/70 cursor-pointer select-none">Zloženie</summary>
+                      <p class="text-xs text-muted-foreground/70 mt-0.5">{{ product.composition }}</p>
+                    </details>
+                  </div>
+                </div>
+                <div class="mt-auto pt-2 flex items-center justify-between">
+                  <div class="text-sm">
+                    <span class="font-semibold text-primary">{{ formatPrice(applyMarkup(product.price_unit)) }}</span>
+                    <span v-if="product.weight_grams" class="text-muted-foreground ml-1">/ {{ product.weight_grams }}g</span>
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="decrement(product.id, 'unit')"
+                      :disabled="isLocked || getQuantity(product.id, 'unit') === 0"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      -
+                    </Button>
+                    <span class="w-6 text-center font-semibold text-sm">{{ getQuantity(product.id, 'unit') }}</span>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="increment(product.id, 'unit')"
+                      :disabled="isLocked"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      +
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+
+          <!-- Coffee product card -->
+          <CardContent v-else class="p-4">
             <div class="flex gap-4 mb-3">
               <div class="w-20 h-20 flex-shrink-0 bg-muted rounded-lg overflow-hidden flex items-center justify-center">
                 <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
@@ -1168,14 +1299,15 @@ function applyMarkup(price) {
                   :class="{
                     'bg-stone-200 text-stone-700': purpose === 'Espresso',
                     'bg-sky-100 text-sky-700': purpose === 'Filter',
-                    'bg-amber-100 text-amber-700': purpose === 'Kapsule',
-                    'bg-muted text-muted-foreground': !['Espresso', 'Filter', 'Kapsule'].includes(purpose)
+                    'bg-amber-100 text-amber-700': purpose === 'Kapsule' || purpose === 'Slané',
+                    'bg-pink-100 text-pink-700': purpose === 'Sladké',
+                    'bg-muted text-muted-foreground': !['Espresso', 'Filter', 'Kapsule', 'Slané', 'Sladké'].includes(purpose)
                   }"
                 >
                   {{ purpose }}
                 </div>
                 <div v-for="item in items" :key="item.key" class="flex justify-between py-1 border-b border-border">
-                  <span>{{ item.product_name }} ({{ item.variant }}) x{{ item.quantity }}</span>
+                  <span>{{ item.product_name }} ({{ item.variant === 'unit' ? 'ks' : item.variant }}) x{{ item.quantity }}</span>
                   <span>{{ formatPrice(item.total) }}</span>
                 </div>
               </template>

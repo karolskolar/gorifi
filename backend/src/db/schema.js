@@ -273,6 +273,14 @@ async function initDb() {
     )
   `);
 
+  // Migration: Add for_coffee and for_bakery columns to pickup_locations
+  try {
+    db.run('ALTER TABLE pickup_locations ADD COLUMN for_coffee INTEGER DEFAULT 1');
+  } catch (e) {}
+  try {
+    db.run('ALTER TABLE pickup_locations ADD COLUMN for_bakery INTEGER DEFAULT 1');
+  } catch (e) {}
+
   // Migration: Add pickup_location_id and pickup_location_note to orders
   try {
     db.run('ALTER TABLE orders ADD COLUMN pickup_location_id INTEGER');
@@ -299,6 +307,67 @@ async function initDb() {
       FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL
     )
   `);
+
+  // Create bakery_products table (persistent catalog)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS bakery_products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT,
+      weight_grams INTEGER,
+      price REAL NOT NULL,
+      composition TEXT,
+      category TEXT NOT NULL DEFAULT 'slané',
+      image TEXT,
+      active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Create cycle_bakery_products junction table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS cycle_bakery_products (
+      cycle_id INTEGER NOT NULL,
+      bakery_product_id INTEGER NOT NULL,
+      PRIMARY KEY (cycle_id, bakery_product_id),
+      FOREIGN KEY (cycle_id) REFERENCES order_cycles(id) ON DELETE CASCADE,
+      FOREIGN KEY (bakery_product_id) REFERENCES bakery_products(id)
+    )
+  `);
+
+  // Create friend_subscriptions table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS friend_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      friend_id INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
+      UNIQUE(friend_id, type)
+    )
+  `);
+
+  // Migration: Add type column to order_cycles
+  try {
+    db.run("ALTER TABLE order_cycles ADD COLUMN type TEXT DEFAULT 'coffee'");
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Migration: Add bakery-support columns to products
+  try {
+    db.run('ALTER TABLE products ADD COLUMN source_bakery_product_id INTEGER');
+  } catch (e) {}
+  try {
+    db.run('ALTER TABLE products ADD COLUMN price_unit REAL');
+  } catch (e) {}
+  try {
+    db.run('ALTER TABLE products ADD COLUMN weight_grams INTEGER');
+  } catch (e) {}
+  try {
+    db.run('ALTER TABLE products ADD COLUMN composition TEXT');
+  } catch (e) {}
 
   // Initialize friends_password if not exists (empty string means not set)
   const friendsPassword = db.prepare("SELECT * FROM settings WHERE key = 'friends_password'").get();

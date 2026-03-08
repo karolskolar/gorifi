@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watchEffect } from 'vue'
+import { ref, computed, onMounted, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card'
@@ -16,6 +16,10 @@ const loading = ref(true)
 const error = ref('')
 const showNewCycleModal = ref(false)
 const newCycleName = ref('')
+const newCycleType = ref('coffee')
+const bakeryProducts = ref([])
+const selectedBakeryProductIds = ref([])
+const bakeryProductSearch = ref('')
 
 onMounted(async () => {
   await loadCycles()
@@ -37,11 +41,46 @@ async function loadCycles() {
   }
 }
 
+async function openNewCycleModal() {
+  showNewCycleModal.value = true
+  newCycleType.value = 'coffee'
+  selectedBakeryProductIds.value = []
+  bakeryProductSearch.value = ''
+  // Load bakery products for picker
+  try {
+    bakeryProducts.value = await api.getBakeryProducts()
+  } catch (e) {
+    // Non-critical
+  }
+}
+
+function toggleBakeryProduct(id) {
+  const idx = selectedBakeryProductIds.value.indexOf(id)
+  if (idx >= 0) {
+    selectedBakeryProductIds.value.splice(idx, 1)
+  } else {
+    selectedBakeryProductIds.value.push(id)
+  }
+}
+
+const filteredBakeryProducts = computed(() => {
+  if (!bakeryProductSearch.value.trim()) return bakeryProducts.value
+  const q = bakeryProductSearch.value.toLowerCase()
+  return bakeryProducts.value.filter(p => p.name.toLowerCase().includes(q))
+})
+
 async function createCycle() {
   if (!newCycleName.value.trim()) return
 
   try {
-    await api.createCycle(newCycleName.value)
+    const data = {
+      name: newCycleName.value,
+      type: newCycleType.value
+    }
+    if (newCycleType.value === 'bakery') {
+      data.bakery_product_ids = selectedBakeryProductIds.value
+    }
+    await api.createCycle(data)
     newCycleName.value = ''
     showNewCycleModal.value = false
     await loadCycles()
@@ -96,6 +135,9 @@ function getStatusText(status) {
           <Button variant="ghost" @click="router.push('/admin/friends')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             Priatelia
           </Button>
+          <Button variant="ghost" @click="router.push('/admin/bakery-products')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
+            Pekáreň
+          </Button>
           <Button variant="ghost" @click="router.push('/admin/settings')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             Nastavenia
           </Button>
@@ -110,7 +152,7 @@ function getStatusText(status) {
     <main class="max-w-7xl mx-auto px-4 py-8">
       <div class="flex justify-between items-center mb-6">
         <h2 class="text-2xl font-bold text-foreground">Objednávkové cykly</h2>
-        <Button @click="showNewCycleModal = true">
+        <Button @click="openNewCycleModal()">
           + Nový cyklus
         </Button>
       </div>
@@ -125,7 +167,7 @@ function getStatusText(status) {
 
       <div v-else-if="cycles.length === 0" class="text-center py-12">
         <p class="text-muted-foreground mb-4">Zatiaľ žiadne objednávkové cykly</p>
-        <Button @click="showNewCycleModal = true">
+        <Button @click="openNewCycleModal()">
           Vytvoriť prvý cyklus
         </Button>
       </div>
@@ -146,6 +188,9 @@ function getStatusText(status) {
                 </p>
               </div>
               <div class="flex items-center gap-2">
+                <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
+                  Pekáreň
+                </Badge>
                 <Badge :variant="getStatusVariant(cycle.status)">
                   {{ getStatusText(cycle.status) }}
                 </Badge>
@@ -181,6 +226,50 @@ function getStatusText(status) {
               placeholder="napr. Január 2026"
               @keyup.enter="createCycle"
             />
+          </div>
+          <div class="space-y-2">
+            <Label>Typ</Label>
+            <div class="flex gap-4">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" v-model="newCycleType" value="coffee" />
+                <span class="text-sm">Káva</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" v-model="newCycleType" value="bakery" />
+                <span class="text-sm">Pekáreň</span>
+              </label>
+            </div>
+          </div>
+          <!-- Bakery product picker -->
+          <div v-if="newCycleType === 'bakery'" class="space-y-2">
+            <Label>Produkty z katalógu ({{ selectedBakeryProductIds.length }} vybraných)</Label>
+            <Input
+              v-model="bakeryProductSearch"
+              placeholder="Hľadať produkt..."
+              class="mb-2"
+            />
+            <div class="max-h-48 overflow-y-auto border rounded-md p-2 space-y-1">
+              <label
+                v-for="bp in filteredBakeryProducts"
+                :key="bp.id"
+                class="flex items-center gap-2 p-1.5 rounded hover:bg-muted cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectedBakeryProductIds.includes(bp.id)"
+                  @change="toggleBakeryProduct(bp.id)"
+                  class="rounded"
+                />
+                <span class="text-sm flex-1">{{ bp.name }}</span>
+                <Badge variant="outline" class="text-xs" :class="bp.category === 'sladké' ? 'border-pink-400 text-pink-600' : 'border-amber-400 text-amber-600'">
+                  {{ bp.category === 'sladké' ? 'Sladké' : 'Slané' }}
+                </Badge>
+                <span class="text-xs text-muted-foreground">{{ bp.price.toFixed(2) }} EUR</span>
+              </label>
+              <div v-if="filteredBakeryProducts.length === 0" class="text-sm text-muted-foreground text-center py-2">
+                Žiadne produkty v katalógu
+              </div>
+            </div>
           </div>
         </div>
         <DialogFooter>

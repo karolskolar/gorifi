@@ -38,6 +38,13 @@ const showProfileModal = ref(false)
 const profileName = ref('')
 const profileSaving = ref(false)
 
+// Subscriptions
+const subscriptions = ref([]) // ['coffee', 'bakery']
+const showSubscriptionModal = ref(false)
+const subCoffee = ref(true)
+const subBakery = ref(true)
+const subSaving = ref(false)
+
 const STORAGE_KEY = 'gorifi_friend_auth'
 
 onMounted(async () => {
@@ -168,6 +175,13 @@ async function authenticate(silent = false) {
 
 async function loadCycles() {
   cycles.value = await api.getFriendsCycles(selectedFriendId.value)
+  // Load subscriptions
+  try {
+    const subs = await api.getSubscriptions(selectedFriendId.value)
+    subscriptions.value = subs.types || []
+  } catch (e) {
+    // Non-critical
+  }
 }
 
 function switchUser() {
@@ -259,6 +273,35 @@ async function saveProfile() {
   } finally {
     profileSaving.value = false
   }
+}
+
+function openSubscriptionModal() {
+  subCoffee.value = subscriptions.value.length === 0 || subscriptions.value.includes('coffee')
+  subBakery.value = subscriptions.value.length === 0 || subscriptions.value.includes('bakery')
+  showSubscriptionModal.value = true
+}
+
+async function saveSubscriptions() {
+  subSaving.value = true
+  try {
+    const types = []
+    if (subCoffee.value) types.push('coffee')
+    if (subBakery.value) types.push('bakery')
+    await api.updateSubscriptions(selectedFriendId.value, types)
+    subscriptions.value = types
+    showSubscriptionModal.value = false
+    // Reload cycles with new filter
+    await loadCycles()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    subSaving.value = false
+  }
+}
+
+function getCycleTypeLabel(type) {
+  if (type === 'bakery') return 'Pekáreň'
+  return 'Káva'
 }
 
 function formatKilos(kilos) {
@@ -384,7 +427,21 @@ function formatKilos(kilos) {
       <!-- Balance Card -->
       <FriendBalanceCard :friend-id="selectedFriendId" />
 
-      <h2 class="text-xl font-semibold mb-4 text-foreground">Objednávkové cykly</h2>
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-semibold text-foreground">Objednávkové cykly</h2>
+        <Button
+          variant="ghost"
+          size="icon"
+          @click="openSubscriptionModal"
+          title="Nastavenia odberu"
+          class="text-muted-foreground hover:text-foreground"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+        </Button>
+      </div>
 
       <div v-if="cycles.length === 0" class="text-center py-12 text-muted-foreground">
         Žiadne dostupné cykly
@@ -405,6 +462,9 @@ function formatKilos(kilos) {
                   📅 {{ cycle.expected_date }}
                 </div>
                 <div class="flex items-center gap-2 mt-2">
+                  <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
+                    Pekáreň
+                  </Badge>
                   <Badge :variant="getStatusVariant(cycle.status)">
                     {{ getStatusText(cycle.status) }}
                   </Badge>
@@ -432,6 +492,35 @@ function formatKilos(kilos) {
         </Card>
       </div>
     </div>
+
+    <!-- Subscription Modal -->
+    <Dialog :open="showSubscriptionModal" @update:open="showSubscriptionModal = $event">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Nastavenia odberu</DialogTitle>
+        </DialogHeader>
+        <div class="space-y-4 py-4">
+          <p class="text-sm text-muted-foreground">Vyberte, ktoré typy objednávok chcete vidieť:</p>
+          <label class="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/50">
+            <input v-model="subCoffee" type="checkbox" class="rounded" />
+            <span class="font-medium">Káva</span>
+          </label>
+          <label class="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/50">
+            <input v-model="subBakery" type="checkbox" class="rounded" />
+            <span class="font-medium">Pekáreň</span>
+          </label>
+          <p class="text-xs text-muted-foreground">Ak nevyberiete nič, budú sa zobrazovať všetky cykly.</p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="showSubscriptionModal = false" :disabled="subSaving">
+            Zrušiť
+          </Button>
+          <Button @click="saveSubscriptions" :disabled="subSaving">
+            {{ subSaving ? 'Ukladám...' : 'Uložiť' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <!-- Profile Edit Modal -->
     <Dialog :open="showProfileModal" @update:open="showProfileModal = $event">

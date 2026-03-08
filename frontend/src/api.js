@@ -85,7 +85,7 @@ export const api = {
   // Cycles
   getCycles: () => request('/cycles'),
   getCycle: (id) => request(`/cycles/${id}`),
-  createCycle: (name) => request('/cycles', { method: 'POST', body: { name } }),
+  createCycle: (data) => request('/cycles', { method: 'POST', body: typeof data === 'string' ? { name: data } : data }),
   updateCycle: (id, data) => request(`/cycles/${id}`, { method: 'PATCH', body: data }),
   deleteCycle: (id) => request(`/cycles/${id}`, { method: 'DELETE' }),
   getCycleSummary: (id) => request(`/cycles/${id}/summary`),
@@ -149,11 +149,23 @@ export const api = {
   getFriendBalance: (id) => request(`/friends/${id}/balance`),
 
   // Pickup locations
-  getPickupLocations: () => request('/pickup-locations'),
+  getPickupLocations: (type) => request(type ? `/pickup-locations?type=${type}` : '/pickup-locations'),
   getAllPickupLocations: () => request('/pickup-locations/all'),
   createPickupLocation: (data) => request('/pickup-locations', { method: 'POST', body: data }),
   updatePickupLocation: (id, data) => request(`/pickup-locations/${id}`, { method: 'PATCH', body: data }),
   deletePickupLocation: (id) => request(`/pickup-locations/${id}`, { method: 'DELETE' }),
+
+  // Bakery products (catalog)
+  getBakeryProducts: () => request('/bakery-products'),
+  getAllBakeryProducts: () => request('/bakery-products/all'),
+  createBakeryProduct: (data) => request('/bakery-products', { method: 'POST', body: data }),
+  updateBakeryProduct: (id, data) => request(`/bakery-products/${id}`, { method: 'PATCH', body: data }),
+  deleteBakeryProduct: (id) => request(`/bakery-products/${id}`, { method: 'DELETE' }),
+  uploadBakeryProductImage: (id, formData) => request(`/bakery-products/${id}/image`, { method: 'POST', body: formData }),
+
+  // Subscriptions
+  getSubscriptions: (friendId) => request(`/subscriptions/friend/${friendId}`),
+  updateSubscriptions: (friendId, types) => request(`/subscriptions/friend/${friendId}`, { method: 'PUT', body: { types } }),
 
   // Transactions
   getTransactions: (friendId) => request(`/transactions/friend/${friendId}`),

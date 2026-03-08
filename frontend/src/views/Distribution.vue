@@ -163,7 +163,8 @@ function printDistribution() {
                         :class="{
                           'border-stone-400 text-stone-600 bg-stone-50': item.purpose === 'Espresso',
                           'border-sky-400 text-sky-600 bg-sky-50': item.purpose === 'Filter',
-                          'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule'
+                          'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule' || item.purpose === 'Slané',
+                          'border-pink-400 text-pink-600 bg-pink-50': item.purpose === 'Sladké'
                         }"
                       >
                         {{ item.purpose }}
@@ -171,7 +172,7 @@ function printDistribution() {
                       <span v-else class="text-muted-foreground">-</span>
                     </TableCell>
                     <TableCell>{{ item.product_name }}</TableCell>
-                    <TableCell class="text-center">{{ item.variant }}</TableCell>
+                    <TableCell class="text-center">{{ item.variant === 'unit' ? 'ks' : item.variant }}</TableCell>
                     <TableCell class="text-center font-medium">{{ item.quantity }}x</TableCell>
                   </TableRow>
                 </TableBody>

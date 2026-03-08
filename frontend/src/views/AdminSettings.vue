@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watchEffect } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 
@@ -28,9 +28,21 @@ const newLocationAddress = ref('')
 const editingLocationId = ref(null)
 const editingLocationName = ref('')
 const editingLocationAddress = ref('')
+const openMenuId = ref(null)
+
+function closeMenuOnOutsideClick(e) {
+  if (openMenuId.value && !e.target.closest('.relative')) {
+    openMenuId.value = null
+  }
+}
 
 onMounted(async () => {
+  document.addEventListener('click', closeMenuOnOutsideClick)
   await loadSettings()
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', closeMenuOnOutsideClick)
 })
 
 // Set page title
@@ -103,6 +115,16 @@ async function toggleLocationActive(loc) {
   }
 }
 
+async function toggleLocationType(loc, field, value) {
+  error.value = ''
+  try {
+    await api.updatePickupLocation(loc.id, { [field]: value })
+    pickupLocations.value = await api.getAllPickupLocations()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
 async function deleteLocation(id) {
   error.value = ''
   try {
@@ -120,7 +142,7 @@ async function saveSettings() {
 
   try {
     await api.updateAdminSettings({ friendsPassword: friendsPassword.value })
-    successMessage.value = 'Nastavenia boli ulozene'
+    successMessage.value = 'Nastavenia boli uložené'
     setTimeout(() => { successMessage.value = '' }, 3000)
   } catch (e) {
     error.value = e.message
@@ -139,7 +161,7 @@ async function savePaymentSettings() {
       paymentIban: paymentIban.value,
       paymentRevolutUsername: paymentRevolutUsername.value
     })
-    successMessage.value = 'Platobne udaje boli ulozene'
+    successMessage.value = 'Platobné údaje boli uložené'
     setTimeout(() => { successMessage.value = '' }, 3000)
   } catch (e) {
     error.value = e.message
@@ -181,14 +203,14 @@ async function savePaymentSettings() {
       </Alert>
 
       <div v-if="loading" class="text-center py-12 text-muted-foreground">
-        Nacitavam...
+        Načítavam...
       </div>
 
       <Card v-else>
         <CardHeader>
           <CardTitle>Heslo pre priatelov</CardTitle>
           <CardDescription>
-            Toto heslo budu pouzivat vsetci priatelia na prihlasenie do objednavkoveho portalu.
+            Toto heslo budú používať všetci priatelia na prihlásenie do objednávkového portálu.
             Kazdy si vyberie svoje meno zo zoznamu a zada toto spolocne heslo.
           </CardDescription>
         </CardHeader>
@@ -208,7 +230,7 @@ async function savePaymentSettings() {
 
           <div class="pt-4">
             <Button @click="saveSettings" :disabled="saving">
-              {{ saving ? 'Ukladam...' : 'Ulozit heslo' }}
+              {{ saving ? 'Ukladám...' : 'Uložiť heslo' }}
             </Button>
           </div>
 
@@ -260,7 +282,7 @@ async function savePaymentSettings() {
 
           <div class="pt-4">
             <Button @click="savePaymentSettings" :disabled="savingPayment">
-              {{ savingPayment ? 'Ukladam...' : 'Ulozit platobne udaje' }}
+              {{ savingPayment ? 'Ukladám...' : 'Uložiť platobné údaje' }}
             </Button>
           </div>
         </CardContent>
@@ -271,8 +293,8 @@ async function savePaymentSettings() {
         <CardHeader>
           <CardTitle>Miesta vyzdvihnutia</CardTitle>
           <CardDescription>
-            Miesta, kde si priatelia mozu vyzdvihnut objednanu kavu.
-            Pri odoslani objednavky si vyberaju jedno z tychto miest.
+            Miesta, kde si priatelia môžu vyzdvihnúť objednanú kávu alebo pečivo.
+            Pri odoslaní objednávky si vyberajú jedno z týchto miest.
           </CardDescription>
         </CardHeader>
         <CardContent class="space-y-4">
@@ -281,40 +303,65 @@ async function savePaymentSettings() {
             <div
               v-for="loc in pickupLocations"
               :key="loc.id"
-              :class="['flex items-center gap-2 p-3 rounded-lg border', !loc.active ? 'opacity-50 bg-muted' : '']"
+              :class="['flex items-center gap-3 px-3 py-2 rounded-lg border', !loc.active ? 'opacity-50 bg-muted' : '']"
             >
               <template v-if="editingLocationId === loc.id">
-                <div class="flex-1 space-y-2">
-                  <Input v-model="editingLocationName" placeholder="Nazov" />
-                  <Input v-model="editingLocationAddress" placeholder="Adresa (volitelne)" />
+                <div class="flex-1 flex gap-2 items-center">
+                  <Input v-model="editingLocationName" placeholder="Názov" class="flex-1" />
+                  <Input v-model="editingLocationAddress" placeholder="Adresa" class="flex-1" />
+                  <Button size="sm" @click="saveLocation(loc.id)">Uložiť</Button>
+                  <Button size="sm" variant="outline" @click="cancelEditLocation">Zrušiť</Button>
                 </div>
-                <Button size="sm" @click="saveLocation(loc.id)">Ulozit</Button>
-                <Button size="sm" variant="outline" @click="cancelEditLocation">Zrusit</Button>
               </template>
               <template v-else>
-                <div class="flex-1">
-                  <div class="font-medium">{{ loc.name }}</div>
-                  <div v-if="loc.address" class="text-sm text-muted-foreground">{{ loc.address }}</div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-1">
+                    <span class="font-medium">{{ loc.name }}</span>
+                    <span v-if="loc.address" class="text-sm text-muted-foreground">· {{ loc.address }}</span>
+                  </div>
                 </div>
-                <Button size="sm" variant="ghost" @click="startEditLocation(loc)">Upravit</Button>
-                <Button size="sm" variant="ghost" @click="toggleLocationActive(loc)">
-                  {{ loc.active ? 'Deaktivovat' : 'Aktivovat' }}
-                </Button>
-                <Button size="sm" variant="ghost" class="text-destructive hover:text-destructive" @click="deleteLocation(loc.id)">Vymazat</Button>
+                <label class="flex items-center gap-1 text-xs cursor-pointer flex-shrink-0" :class="loc.for_coffee ? 'text-foreground' : 'text-muted-foreground'">
+                  <input type="checkbox" :checked="loc.for_coffee" @change="toggleLocationType(loc, 'for_coffee', $event.target.checked)" class="rounded" />
+                  Káva
+                </label>
+                <label class="flex items-center gap-1 text-xs cursor-pointer flex-shrink-0" :class="loc.for_bakery ? 'text-foreground' : 'text-muted-foreground'">
+                  <input type="checkbox" :checked="loc.for_bakery" @change="toggleLocationType(loc, 'for_bakery', $event.target.checked)" class="rounded" />
+                  Pekáreň
+                </label>
+                <div class="relative flex-shrink-0">
+                  <button
+                    @click="openMenuId = openMenuId === loc.id ? null : loc.id"
+                    class="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
+                  >
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                      <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+                    </svg>
+                  </button>
+                  <div
+                    v-if="openMenuId === loc.id"
+                    class="absolute right-0 top-full mt-1 z-10 bg-popover border rounded-md shadow-md py-1 min-w-[140px]"
+                  >
+                    <button class="w-full text-left px-3 py-1.5 text-sm hover:bg-muted" @click="startEditLocation(loc); openMenuId = null">Upraviť</button>
+                    <button class="w-full text-left px-3 py-1.5 text-sm hover:bg-muted" @click="toggleLocationActive(loc); openMenuId = null">
+                      {{ loc.active ? 'Deaktivovať' : 'Aktivovať' }}
+                    </button>
+                    <button class="w-full text-left px-3 py-1.5 text-sm text-destructive hover:bg-muted" @click="deleteLocation(loc.id); openMenuId = null">Vymazať</button>
+                  </div>
+                </div>
               </template>
             </div>
           </div>
           <div v-else class="text-sm text-muted-foreground py-2">
-            Zatial ziadne miesta. Pridajte prve miesto vyzdvihnutia.
+            Zatiaľ žiadne miesta. Pridajte prvé miesto vyzdvihnutia.
           </div>
 
           <!-- Add new location -->
           <div class="pt-4 border-t space-y-2">
-            <Label>Pridat nove miesto</Label>
+            <Label>Pridať nové miesto</Label>
             <div class="flex gap-2">
-              <Input v-model="newLocationName" placeholder="Nazov" class="flex-1" />
-              <Input v-model="newLocationAddress" placeholder="Adresa (volitelne)" class="flex-1" />
-              <Button @click="addLocation" :disabled="!newLocationName.trim()">Pridat</Button>
+              <Input v-model="newLocationName" placeholder="Názov" class="flex-1" />
+              <Input v-model="newLocationAddress" placeholder="Adresa (voliteľné)" class="flex-1" />
+              <Button @click="addLocation" :disabled="!newLocationName.trim()">Pridať</Button>
             </div>
           </div>
         </CardContent>

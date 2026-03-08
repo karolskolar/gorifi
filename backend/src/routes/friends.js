@@ -56,7 +56,7 @@ router.get('/cycles', (req, res) => {
 
   // Get all cycles (open, locked, completed) with stored total_friends
   const cycles = db.prepare(`
-    SELECT c.id, c.name, c.status, c.created_at, c.total_friends, c.expected_date
+    SELECT c.id, c.name, c.status, c.created_at, c.total_friends, c.expected_date, c.type
     FROM order_cycles c
     WHERE c.name != '_placeholder'
     ORDER BY c.created_at DESC
@@ -90,10 +90,12 @@ router.get('/cycles', (req, res) => {
               WHEN oi.variant = '250g' THEN oi.quantity * 0.25
               WHEN oi.variant = '1kg' THEN oi.quantity * 1.0
               WHEN oi.variant = '20pc5g' THEN oi.quantity * 0.1
+              WHEN oi.variant = 'unit' THEN oi.quantity * COALESCE(p.weight_grams, 0) / 1000.0
               ELSE 0
             END
           ), 0) as orderKilos
           FROM order_items oi
+          LEFT JOIN products p ON p.id = oi.product_id
           WHERE oi.order_id = ?
         `).get(order.id);
         orderKilos = friendKilosResult.orderKilos;
@@ -109,7 +111,22 @@ router.get('/cycles', (req, res) => {
     };
   });
 
-  res.json(cyclesWithOrders);
+  // Filter by friend's subscriptions (if they have any)
+  let filteredCycles = cyclesWithOrders;
+  if (friendId) {
+    const subs = db.prepare('SELECT type FROM friend_subscriptions WHERE friend_id = ?').all(friendId);
+    if (subs.length > 0) {
+      const subscribedTypes = subs.map(s => s.type);
+      filteredCycles = cyclesWithOrders.filter(c => {
+        // Always show cycles where friend has an existing order
+        if (c.hasOrder) return true;
+        // Filter by subscription type
+        return subscribedTypes.includes(c.type || 'coffee');
+      });
+    }
+  }
+
+  res.json(filteredCycles);
 });
 
 // Get all friends (global, optionally filter by active status) with balance

@@ -128,6 +128,7 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
       else if (item.variant === '20pc5g') basePrice = product.price_20pc5g;
       else if (item.variant === '150g') basePrice = product.price_150g;
       else if (item.variant === '200g') basePrice = product.price_200g;
+      else if (item.variant === 'unit') basePrice = product.price_unit;
       else basePrice = product.price_250g;
       if (!basePrice) continue;
 
@@ -387,48 +388,60 @@ router.get('/cycle/:cycleId', (req, res) => {
     ordersByFriend[order.friend_id] = order;
   }
 
-  // Build combined list: all friends with their order (or placeholder)
-  const orders = allFriends.map(friend => {
-    const existingOrder = ordersByFriend[friend.id];
+  // Build combined list
+  // Friends with orders always appear; friends without orders only for non-submitted view
+  const balanceByFriend = {};
+  for (const f of allFriends) {
+    balanceByFriend[f.id] = f.balance;
+  }
 
-    if (existingOrder) {
-      // Friend has an order - add items and counts
-      existingOrder.items = db.prepare(`
-        SELECT oi.*, p.name as product_name, p.purpose
-        FROM order_items oi
-        JOIN products p ON p.id = oi.product_id
-        WHERE oi.order_id = ?
-        ORDER BY
-          CASE p.purpose
-            WHEN 'Espresso' THEN 1
-            WHEN 'Filter' THEN 2
-            WHEN 'Kapsule' THEN 3
-            ELSE 4
-          END,
-          p.name, oi.variant
-      `).all(existingOrder.id);
+  const orders = [];
 
-      existingOrder.count_150g = existingOrder.items
-        .filter(i => i.variant === '150g')
-        .reduce((sum, i) => sum + i.quantity, 0);
-      existingOrder.count_200g = existingOrder.items
-        .filter(i => i.variant === '200g')
-        .reduce((sum, i) => sum + i.quantity, 0);
-      existingOrder.count_250g = existingOrder.items
-        .filter(i => i.variant === '250g')
-        .reduce((sum, i) => sum + i.quantity, 0);
-      existingOrder.count_1kg = existingOrder.items
-        .filter(i => i.variant === '1kg')
-        .reduce((sum, i) => sum + i.quantity, 0);
-      existingOrder.count_20pc5g = existingOrder.items
-        .filter(i => i.variant === '20pc5g')
-        .reduce((sum, i) => sum + i.quantity, 0);
-      existingOrder.friend_balance = friend.balance;
+  // Add friends who have orders in this cycle
+  for (const order of existingOrders) {
+    order.items = db.prepare(`
+      SELECT oi.*, p.name as product_name, p.purpose
+      FROM order_items oi
+      JOIN products p ON p.id = oi.product_id
+      WHERE oi.order_id = ?
+      ORDER BY
+        CASE p.purpose
+          WHEN 'Espresso' THEN 1
+          WHEN 'Filter' THEN 2
+          WHEN 'Kapsule' THEN 3
+          ELSE 4
+        END,
+        p.name, oi.variant
+    `).all(order.id);
 
-      return existingOrder;
-    } else {
-      // Friend has no order - return placeholder
-      return {
+    order.count_150g = order.items
+      .filter(i => i.variant === '150g')
+      .reduce((sum, i) => sum + i.quantity, 0);
+    order.count_200g = order.items
+      .filter(i => i.variant === '200g')
+      .reduce((sum, i) => sum + i.quantity, 0);
+    order.count_250g = order.items
+      .filter(i => i.variant === '250g')
+      .reduce((sum, i) => sum + i.quantity, 0);
+    order.count_1kg = order.items
+      .filter(i => i.variant === '1kg')
+      .reduce((sum, i) => sum + i.quantity, 0);
+    order.count_20pc5g = order.items
+      .filter(i => i.variant === '20pc5g')
+      .reduce((sum, i) => sum + i.quantity, 0);
+    order.count_unit = order.items
+      .filter(i => i.variant === 'unit')
+      .reduce((sum, i) => sum + i.quantity, 0);
+    order.friend_balance = balanceByFriend[order.friend_id] ?? 0;
+
+    orders.push(order);
+  }
+
+  // Add friends without orders as placeholders
+  const friendsWithOrders = new Set(existingOrders.map(o => o.friend_id));
+  for (const friend of allFriends) {
+    if (!friendsWithOrders.has(friend.id)) {
+      orders.push({
         id: null,
         friend_id: friend.id,
         friend_name: friend.name,
@@ -443,10 +456,11 @@ router.get('/cycle/:cycleId', (req, res) => {
         count_200g: 0,
         count_250g: 0,
         count_1kg: 0,
-        count_20pc5g: 0
-      };
+        count_20pc5g: 0,
+        count_unit: 0
+      });
     }
-  });
+  }
 
   // Sort: submitted first, then draft, then none (by name within each group)
   orders.sort((a, b) => {

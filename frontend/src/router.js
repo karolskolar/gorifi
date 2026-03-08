@@ -27,6 +27,11 @@ const routes = [
     component: () => import('./views/AdminSettings.vue')
   },
   {
+    path: '/admin/bakery-products',
+    name: 'admin-bakery-products',
+    component: () => import('./views/AdminBakeryProducts.vue')
+  },
+  {
     path: '/admin/friends',
     name: 'admin-friends',
     component: () => import('./views/AdminFriends.vue')

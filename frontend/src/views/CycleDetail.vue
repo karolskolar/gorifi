@@ -72,13 +72,18 @@ function toggleExpand(orderId) {
   expandedOrders.value = new Set(expandedOrders.value) // trigger reactivity
 }
 
+const isBakery = computed(() => cycle.value?.type === 'bakery')
+
+const submittedOrders = computed(() => orders.value.filter(o => o.status === 'submitted' || o.status === 'draft'))
+
 const orderTotals = computed(() => ({
-  count_150g: orders.value.reduce((sum, o) => sum + (o.count_150g || 0), 0),
-  count_200g: orders.value.reduce((sum, o) => sum + (o.count_200g || 0), 0),
-  count_250g: orders.value.reduce((sum, o) => sum + (o.count_250g || 0), 0),
-  count_1kg: orders.value.reduce((sum, o) => sum + (o.count_1kg || 0), 0),
-  count_20pc5g: orders.value.reduce((sum, o) => sum + (o.count_20pc5g || 0), 0),
-  total: orders.value.reduce((sum, o) => sum + (o.total || 0), 0)
+  count_150g: submittedOrders.value.reduce((sum, o) => sum + (o.count_150g || 0), 0),
+  count_200g: submittedOrders.value.reduce((sum, o) => sum + (o.count_200g || 0), 0),
+  count_250g: submittedOrders.value.reduce((sum, o) => sum + (o.count_250g || 0), 0),
+  count_1kg: submittedOrders.value.reduce((sum, o) => sum + (o.count_1kg || 0), 0),
+  count_20pc5g: submittedOrders.value.reduce((sum, o) => sum + (o.count_20pc5g || 0), 0),
+  count_unit: submittedOrders.value.reduce((sum, o) => sum + (o.count_unit || 0), 0),
+  total: submittedOrders.value.reduce((sum, o) => sum + (o.total || 0), 0)
 }))
 
 onMounted(async () => {
@@ -410,7 +415,7 @@ function copySummary() {
   for (const purpose of sortedPurposes) {
     text += `--- ${purpose} ---\n`
     for (const item of grouped[purpose]) {
-      text += `${item.name} ${item.variant}: ${item.total_quantity}x\n`
+      text += `${item.name} ${item.variant === 'unit' ? 'ks' : item.variant}: ${item.total_quantity}x\n`
     }
     text += '\n'
   }
@@ -585,8 +590,8 @@ function getStatusVariant(status) {
             </CardContent>
           </Card>
 
-          <!-- Import section -->
-          <Card class="mb-4">
+          <!-- Import section (coffee only) -->
+          <Card v-if="!isBakery" class="mb-4">
             <CardContent class="p-4">
               <h3 class="text-sm font-medium text-foreground mb-3">Import produktov</h3>
               <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -644,14 +649,22 @@ function getStatusVariant(status) {
                 <TableRow>
                   <TableHead class="w-16">Foto</TableHead>
                   <TableHead>Názov</TableHead>
-                  <TableHead>Chutový profil</TableHead>
-                  <TableHead>Praženie</TableHead>
-                  <TableHead>Účel</TableHead>
-                  <TableHead class="text-right">150g</TableHead>
-                  <TableHead class="text-right">200g</TableHead>
-                  <TableHead class="text-right">250g</TableHead>
-                  <TableHead class="text-right">1kg</TableHead>
-                  <TableHead class="text-right">20ks×5g</TableHead>
+                  <template v-if="isBakery">
+                    <TableHead>Kategória</TableHead>
+                    <TableHead class="text-right">Hmotnosť</TableHead>
+                    <TableHead class="text-right">Cena/ks</TableHead>
+                    <TableHead>Zloženie</TableHead>
+                  </template>
+                  <template v-else>
+                    <TableHead>Chutový profil</TableHead>
+                    <TableHead>Praženie</TableHead>
+                    <TableHead>Účel</TableHead>
+                    <TableHead class="text-right">150g</TableHead>
+                    <TableHead class="text-right">200g</TableHead>
+                    <TableHead class="text-right">250g</TableHead>
+                    <TableHead class="text-right">1kg</TableHead>
+                    <TableHead class="text-right">20ks×5g</TableHead>
+                  </template>
                   <TableHead class="text-right">Akcie</TableHead>
                 </TableRow>
               </TableHeader>
@@ -689,17 +702,28 @@ function getStatusVariant(status) {
                     <div class="font-medium">{{ product.name }}</div>
                     <div v-if="product.description1" class="text-sm text-muted-foreground">{{ product.description1 }}</div>
                   </TableCell>
-                  <TableCell class="text-sm text-muted-foreground max-w-xs">
-                    <span v-if="product.description2" class="line-clamp-2">{{ product.description2 }}</span>
-                    <span v-else class="text-muted-foreground/50">-</span>
-                  </TableCell>
-                  <TableCell class="text-sm">{{ product.roast_type || '-' }}</TableCell>
-                  <TableCell class="text-sm">{{ product.purpose || '-' }}</TableCell>
-                  <TableCell class="text-sm text-right">{{ formatPrice(product.price_150g) }}</TableCell>
-                  <TableCell class="text-sm text-right">{{ formatPrice(product.price_200g) }}</TableCell>
-                  <TableCell class="text-sm text-right">{{ formatPrice(product.price_250g) }}</TableCell>
-                  <TableCell class="text-sm text-right">{{ formatPrice(product.price_1kg) }}</TableCell>
-                  <TableCell class="text-sm text-right">{{ formatPrice(product.price_20pc5g) }}</TableCell>
+                  <template v-if="isBakery">
+                    <TableCell class="text-sm">{{ product.purpose || '-' }}</TableCell>
+                    <TableCell class="text-sm text-right">{{ product.weight_grams ? `${product.weight_grams}g` : '-' }}</TableCell>
+                    <TableCell class="text-sm text-right">{{ formatPrice(product.price_unit) }}</TableCell>
+                    <TableCell class="text-sm text-muted-foreground max-w-xs">
+                      <span v-if="product.composition" class="line-clamp-1">{{ product.composition }}</span>
+                      <span v-else>-</span>
+                    </TableCell>
+                  </template>
+                  <template v-else>
+                    <TableCell class="text-sm text-muted-foreground max-w-xs">
+                      <span v-if="product.description2" class="line-clamp-2">{{ product.description2 }}</span>
+                      <span v-else class="text-muted-foreground/50">-</span>
+                    </TableCell>
+                    <TableCell class="text-sm">{{ product.roast_type || '-' }}</TableCell>
+                    <TableCell class="text-sm">{{ product.purpose || '-' }}</TableCell>
+                    <TableCell class="text-sm text-right">{{ formatPrice(product.price_150g) }}</TableCell>
+                    <TableCell class="text-sm text-right">{{ formatPrice(product.price_200g) }}</TableCell>
+                    <TableCell class="text-sm text-right">{{ formatPrice(product.price_250g) }}</TableCell>
+                    <TableCell class="text-sm text-right">{{ formatPrice(product.price_1kg) }}</TableCell>
+                    <TableCell class="text-sm text-right">{{ formatPrice(product.price_20pc5g) }}</TableCell>
+                  </template>
                   <TableCell class="text-right">
                     <Button variant="ghost" size="sm" @click="openProductModal(product)">Upraviť</Button>
                     <Button variant="ghost" size="sm" class="text-destructive hover:text-destructive" @click="deleteProduct(product.id)">Vymazať</Button>
@@ -712,7 +736,7 @@ function getStatusVariant(status) {
 
         <!-- Orders Tab -->
         <TabsContent value="orders">
-          <h2 class="text-lg font-semibold mb-4">Objednávky ({{ orders.length }})</h2>
+          <h2 class="text-lg font-semibold mb-4">Objednávky ({{ submittedOrders.length }})</h2>
 
           <div v-if="orders.length === 0" class="text-center py-12 text-muted-foreground">
             Zatiaľ žiadne objednávky
@@ -725,18 +749,23 @@ function getStatusVariant(status) {
                   <TableHead class="w-10"></TableHead>
                   <TableHead>Priateľ</TableHead>
                   <TableHead class="text-right">Zostatok</TableHead>
-                  <TableHead class="text-center">150g</TableHead>
-                  <TableHead class="text-center">200g</TableHead>
-                  <TableHead class="text-center">250g</TableHead>
-                  <TableHead class="text-center">1kg</TableHead>
-                  <TableHead class="text-center">20ks</TableHead>
+                  <template v-if="isBakery">
+                    <TableHead class="text-center">Ks</TableHead>
+                  </template>
+                  <template v-else>
+                    <TableHead class="text-center">150g</TableHead>
+                    <TableHead class="text-center">200g</TableHead>
+                    <TableHead class="text-center">250g</TableHead>
+                    <TableHead class="text-center">1kg</TableHead>
+                    <TableHead class="text-center">20ks</TableHead>
+                  </template>
                   <TableHead>Status</TableHead>
                   <TableHead class="text-right">Suma</TableHead>
                   <TableHead class="text-center">Zaplatené</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                <template v-for="order in orders" :key="order.id">
+                <template v-for="order in submittedOrders" :key="order.id || order.friend_id">
                   <TableRow>
                     <TableCell class="p-2">
                       <button
@@ -759,11 +788,16 @@ function getStatusVariant(status) {
                     <TableCell class="text-right">
                       <BalanceBadge :balance="order.friend_balance || 0" />
                     </TableCell>
-                    <TableCell class="text-center">{{ order.count_150g || 0 }}</TableCell>
-                    <TableCell class="text-center">{{ order.count_200g || 0 }}</TableCell>
-                    <TableCell class="text-center">{{ order.count_250g || 0 }}</TableCell>
-                    <TableCell class="text-center">{{ order.count_1kg || 0 }}</TableCell>
-                    <TableCell class="text-center">{{ order.count_20pc5g || 0 }}</TableCell>
+                    <template v-if="isBakery">
+                      <TableCell class="text-center">{{ order.count_unit || 0 }}</TableCell>
+                    </template>
+                    <template v-else>
+                      <TableCell class="text-center">{{ order.count_150g || 0 }}</TableCell>
+                      <TableCell class="text-center">{{ order.count_200g || 0 }}</TableCell>
+                      <TableCell class="text-center">{{ order.count_250g || 0 }}</TableCell>
+                      <TableCell class="text-center">{{ order.count_1kg || 0 }}</TableCell>
+                      <TableCell class="text-center">{{ order.count_20pc5g || 0 }}</TableCell>
+                    </template>
                     <TableCell>
                       <div class="flex flex-wrap gap-1">
                         <Badge
@@ -804,7 +838,7 @@ function getStatusVariant(status) {
                   </TableRow>
                   <!-- Expanded items row -->
                   <TableRow v-if="order.status !== 'none' && expandedOrders.has(order.id)">
-                    <TableCell colspan="11" class="bg-muted/50 p-4">
+                    <TableCell :colspan="isBakery ? 7 : 11" class="bg-muted/50 p-4">
                       <div v-if="order.items && order.items.length > 0" class="space-y-1">
                         <div v-for="item in order.items" :key="`${item.product_id}-${item.variant}`" class="flex justify-between py-1 text-sm">
                           <span>
@@ -814,13 +848,14 @@ function getStatusVariant(status) {
                               :class="{
                                 'border-stone-400 text-stone-600 bg-stone-50': item.purpose === 'Espresso',
                                 'border-sky-400 text-sky-600 bg-sky-50': item.purpose === 'Filter',
-                                'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule'
+                                'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule' || item.purpose === 'Slané',
+                                'border-pink-400 text-pink-600 bg-pink-50': item.purpose === 'Sladké'
                               }"
                               class="mr-2 text-xs"
                             >
                               {{ item.purpose }}
                             </Badge>
-                            {{ item.product_name }} ({{ item.variant }})
+                            {{ item.product_name }} ({{ item.variant === 'unit' ? 'ks' : item.variant }})
                           </span>
                           <span class="text-muted-foreground">{{ item.quantity }}x - {{ formatPrice(item.price * item.quantity) }}</span>
                         </div>
@@ -835,11 +870,16 @@ function getStatusVariant(status) {
                   <TableCell></TableCell>
                   <TableCell>Celkom</TableCell>
                   <TableCell></TableCell>
-                  <TableCell class="text-center">{{ orderTotals.count_150g }}</TableCell>
-                  <TableCell class="text-center">{{ orderTotals.count_200g }}</TableCell>
-                  <TableCell class="text-center">{{ orderTotals.count_250g }}</TableCell>
-                  <TableCell class="text-center">{{ orderTotals.count_1kg }}</TableCell>
-                  <TableCell class="text-center">{{ orderTotals.count_20pc5g }}</TableCell>
+                  <template v-if="isBakery">
+                    <TableCell class="text-center">{{ orderTotals.count_unit }}</TableCell>
+                  </template>
+                  <template v-else>
+                    <TableCell class="text-center">{{ orderTotals.count_150g }}</TableCell>
+                    <TableCell class="text-center">{{ orderTotals.count_200g }}</TableCell>
+                    <TableCell class="text-center">{{ orderTotals.count_250g }}</TableCell>
+                    <TableCell class="text-center">{{ orderTotals.count_1kg }}</TableCell>
+                    <TableCell class="text-center">{{ orderTotals.count_20pc5g }}</TableCell>
+                  </template>
                   <TableCell></TableCell>
                   <TableCell class="text-right">{{ formatPrice(orderTotals.total) }}</TableCell>
                   <TableCell></TableCell>
@@ -883,7 +923,8 @@ function getStatusVariant(status) {
                           :class="{
                             'border-stone-400 text-stone-600 bg-stone-50': item.purpose === 'Espresso',
                             'border-sky-400 text-sky-600 bg-sky-50': item.purpose === 'Filter',
-                            'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule'
+                            'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule' || item.purpose === 'Slané',
+                                'border-pink-400 text-pink-600 bg-pink-50': item.purpose === 'Sladké'
                           }"
                         >
                           {{ item.purpose }}
@@ -891,7 +932,7 @@ function getStatusVariant(status) {
                         <span v-else class="text-muted-foreground">-</span>
                       </TableCell>
                       <TableCell>{{ item.name }}</TableCell>
-                      <TableCell>{{ item.variant }}</TableCell>
+                      <TableCell>{{ item.variant === 'unit' ? 'ks' : item.variant }}</TableCell>
                       <TableCell class="text-right">{{ item.total_quantity }}x</TableCell>
                       <TableCell class="text-right">{{ formatPrice(item.total_price) }}</TableCell>
                     </TableRow>

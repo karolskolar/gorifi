@@ -4,8 +4,17 @@ import db from '../db/schema.js';
 const router = Router();
 
 // GET /pickup-locations - List active locations (public, for friend order form)
+// Optional query param: ?type=coffee or ?type=bakery to filter by cycle type
 router.get('/', (req, res) => {
-  const locations = db.prepare('SELECT * FROM pickup_locations WHERE active = 1 ORDER BY name').all();
+  const { type } = req.query;
+  let sql = 'SELECT * FROM pickup_locations WHERE active = 1';
+  if (type === 'coffee') {
+    sql += ' AND for_coffee = 1';
+  } else if (type === 'bakery') {
+    sql += ' AND for_bakery = 1';
+  }
+  sql += ' ORDER BY name';
+  const locations = db.prepare(sql).all();
   res.json(locations);
 });
 
@@ -17,15 +26,15 @@ router.get('/all', (req, res) => {
 
 // POST /pickup-locations - Create location (admin)
 router.post('/', (req, res) => {
-  const { name, address } = req.body;
+  const { name, address, for_coffee, for_bakery } = req.body;
 
   if (!name || !name.trim()) {
     return res.status(400).json({ error: 'Názov je povinný' });
   }
 
   const result = db.prepare(
-    'INSERT INTO pickup_locations (name, address) VALUES (?, ?)'
-  ).run(name.trim(), address?.trim() || null);
+    'INSERT INTO pickup_locations (name, address, for_coffee, for_bakery) VALUES (?, ?, ?, ?)'
+  ).run(name.trim(), address?.trim() || null, for_coffee !== undefined ? (for_coffee ? 1 : 0) : 1, for_bakery !== undefined ? (for_bakery ? 1 : 0) : 1);
 
   const location = db.prepare('SELECT * FROM pickup_locations WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(location);
@@ -38,7 +47,7 @@ router.patch('/:id', (req, res) => {
     return res.status(404).json({ error: 'Miesto nebolo nájdené' });
   }
 
-  const { name, address, active } = req.body;
+  const { name, address, active, for_coffee, for_bakery } = req.body;
 
   if (name !== undefined) {
     if (!name.trim()) return res.status(400).json({ error: 'Názov je povinný' });
@@ -49,6 +58,12 @@ router.patch('/:id', (req, res) => {
   }
   if (active !== undefined) {
     db.prepare('UPDATE pickup_locations SET active = ? WHERE id = ?').run(active ? 1 : 0, req.params.id);
+  }
+  if (for_coffee !== undefined) {
+    db.prepare('UPDATE pickup_locations SET for_coffee = ? WHERE id = ?').run(for_coffee ? 1 : 0, req.params.id);
+  }
+  if (for_bakery !== undefined) {
+    db.prepare('UPDATE pickup_locations SET for_bakery = ? WHERE id = ?').run(for_bakery ? 1 : 0, req.params.id);
   }
 
   const updated = db.prepare('SELECT * FROM pickup_locations WHERE id = ?').get(req.params.id);

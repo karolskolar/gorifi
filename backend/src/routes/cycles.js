@@ -27,7 +27,7 @@ router.get('/:id', (req, res) => {
 
 // Get public cycle info (no auth required) - for friend ordering page
 router.get('/:id/public', (req, res) => {
-  const cycle = db.prepare('SELECT id, name, status, markup_ratio, expected_date FROM order_cycles WHERE id = ?').get(req.params.id);
+  const cycle = db.prepare('SELECT id, name, status, markup_ratio, expected_date, type FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
     return res.status(404).json({ error: 'Cyklus nebol nájdený' });
   }
@@ -73,17 +73,40 @@ router.post('/:id/auth', (req, res) => {
 
 // Create new order cycle
 router.post('/', (req, res) => {
-  const { name, expected_date } = req.body;
+  const { name, expected_date, type, bakery_product_ids } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Nazov je povinny' });
   }
+
+  const cycleType = type || 'coffee';
 
   // Count active friends at the time of cycle creation
   const friendsCount = db.prepare('SELECT COUNT(*) as count FROM friends WHERE active = 1').get();
   const totalFriends = friendsCount.count;
 
-  const result = db.prepare('INSERT INTO order_cycles (name, total_friends, expected_date) VALUES (?, ?, ?)').run(name, totalFriends, expected_date || null);
-  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(result.lastInsertRowid);
+  const result = db.prepare('INSERT INTO order_cycles (name, total_friends, expected_date, type) VALUES (?, ?, ?, ?)').run(name, totalFriends, expected_date || null, cycleType);
+  const cycleId = result.lastInsertRowid;
+
+  // For bakery cycles, snapshot selected bakery products into the products table
+  if (cycleType === 'bakery' && Array.isArray(bakery_product_ids) && bakery_product_ids.length > 0) {
+    for (const bpId of bakery_product_ids) {
+      const bp = db.prepare('SELECT * FROM bakery_products WHERE id = ? AND active = 1').get(bpId);
+      if (!bp) continue;
+
+      // Insert into cycle_bakery_products junction
+      db.prepare('INSERT INTO cycle_bakery_products (cycle_id, bakery_product_id) VALUES (?, ?)').run(cycleId, bp.id);
+
+      // Snapshot into products table
+      // Map: name->name, description->description1, price->price_unit, weight_grams, composition, category->purpose, image
+      const categoryLabel = bp.category === 'sladké' ? 'Sladké' : 'Slané';
+      db.prepare(`
+        INSERT INTO products (cycle_id, name, description1, purpose, price_unit, weight_grams, composition, image, source_bakery_product_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(cycleId, bp.name, bp.description || null, categoryLabel, bp.price, bp.weight_grams || null, bp.composition || null, bp.image || null, bp.id);
+    }
+  }
+
+  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
   res.status(201).json(cycle);
 });
 
