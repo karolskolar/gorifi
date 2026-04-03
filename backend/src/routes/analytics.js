@@ -14,38 +14,12 @@ import {
 
 const router = Router();
 
-// Validate admin token helper
-function requireAdmin(req, res) {
-  const token = req.headers['x-admin-token'];
-  if (!token) {
-    res.status(401).json({ error: 'Neautorizovaný prístup' });
-    return false;
-  }
-  const setting = db.prepare("SELECT value FROM settings WHERE key = 'admin_token'").get();
-  if (!setting) {
-    res.status(401).json({ error: 'Neautorizovaný prístup' });
-    return false;
-  }
-  try {
-    const { token: storedToken, expiry } = JSON.parse(setting.value);
-    if (token === storedToken && Date.now() < expiry) {
-      return true;
-    }
-  } catch (e) {
-    // invalid format
-  }
-  res.status(401).json({ error: 'Neautorizovaný prístup' });
-  return false;
-}
-
 // Round kg to 1 decimal place
 function roundKg(value) {
   return Math.round(value * 10) / 10;
 }
 
 router.get('/coffee', (req, res) => {
-  if (!requireAdmin(req, res)) return;
-
   try {
     // 1. Get all coffee cycles (completed or locked), chronological
     const cycles = db.all(
