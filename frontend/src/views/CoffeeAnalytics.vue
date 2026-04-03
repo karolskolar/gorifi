@@ -8,6 +8,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import CycleTrendsChart from '@/components/analytics/CycleTrendsChart.vue'
 
 const router = useRouter()
 const loading = ref(true)
@@ -125,6 +126,27 @@ const simMarginPerCycle = computed(() => {
 const simAnnualMargin = computed(() => {
   // Assume ~12 cycles per year (monthly)
   return Math.round(simMarginPerCycle.value * 12 * 100) / 100
+})
+
+// === Cycle Comparison computed ===
+const comparison = computed(() => {
+  if (!data.value || data.value.cycles.length < 2) return null
+  const curr = data.value.cycles.at(-1)
+  const prev = data.value.cycles.at(-2)
+
+  function delta(currVal, prevVal, unit) {
+    const diff = currVal - prevVal
+    const pct = prevVal !== 0 ? ((diff / Math.abs(prevVal)) * 100) : (diff !== 0 ? 100 : 0)
+    const direction = diff > 0.001 ? 'up' : diff < -0.001 ? 'down' : 'flat'
+    return { current: currVal, previous: prevVal, diff, pct: Math.round(pct * 10) / 10, direction, unit }
+  }
+
+  return {
+    total_kg: delta(curr.total_kg, prev.total_kg, 'kg'),
+    num_friends: delta(curr.num_friends, prev.num_friends, ''),
+    avg_kg_per_person: delta(curr.avg_kg_per_person ?? 0, prev.avg_kg_per_person ?? 0, 'kg'),
+    operator_margin: delta(curr.operator_margin ?? 0, prev.operator_margin ?? 0, '\u20AC'),
+  }
 })
 </script>
 
@@ -352,6 +374,66 @@ const simAnnualMargin = computed(() => {
             </div>
           </CardContent>
         </Card>
+
+        <!-- ============================== -->
+        <!-- Part D: Cycle Trends Chart      -->
+        <!-- ============================== -->
+        <Card v-if="data.cycles.length >= 2">
+          <CardHeader>
+            <CardTitle>Vývoj objednávok</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <CycleTrendsChart :cycles="data.cycles" />
+          </CardContent>
+        </Card>
+        <Card v-else>
+          <CardHeader>
+            <CardTitle>Vývoj objednávok</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p class="text-muted-foreground">Nedostatok dát pre analýzu trendov — potrebné aspoň 2 dokončené cykly.</p>
+          </CardContent>
+        </Card>
+
+        <!-- ============================== -->
+        <!-- Part E: Comparison Cards        -->
+        <!-- ============================== -->
+        <div v-if="comparison" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card v-for="(item, key) in [
+            { key: 'total_kg', label: 'Celkové kg', fmt: (v) => v.toFixed(1) },
+            { key: 'num_friends', label: 'Priatelia', fmt: (v) => v },
+            { key: 'avg_kg_per_person', label: 'Priemer kg/os', fmt: (v) => v.toFixed(2) },
+            { key: 'operator_margin', label: 'Marža', fmt: (v) => v.toFixed(2) },
+          ]" :key="item.key">
+            <CardContent class="pt-6 text-center">
+              <p class="text-sm text-muted-foreground mb-1">{{ item.label }}</p>
+              <p class="text-2xl font-bold">
+                {{ item.fmt(comparison[item.key].current) }}
+                <span v-if="comparison[item.key].unit" class="text-sm font-normal text-muted-foreground">{{ comparison[item.key].unit }}</span>
+              </p>
+              <div class="mt-1 text-sm flex items-center justify-center gap-1">
+                <span v-if="comparison[item.key].direction === 'up'" class="text-green-600">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+                </span>
+                <span v-else-if="comparison[item.key].direction === 'down'" class="text-red-600">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                </span>
+                <span v-else class="text-gray-400">—</span>
+                <span :class="{
+                  'text-green-600': comparison[item.key].direction === 'up',
+                  'text-red-600': comparison[item.key].direction === 'down',
+                  'text-gray-400': comparison[item.key].direction === 'flat',
+                }">
+                  {{ comparison[item.key].direction === 'flat' ? '0%' : (comparison[item.key].pct > 0 ? '+' : '') + comparison[item.key].pct + '%' }}
+                </span>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <!-- ============================== -->
+        <!-- Part F: Growth Milestones       -->
+        <!-- ============================== -->
 
       </div>
     </main>
