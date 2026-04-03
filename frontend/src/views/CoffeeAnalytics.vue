@@ -186,7 +186,7 @@ const comparison = computed(() => {
       <div v-else-if="data" class="space-y-8">
 
         <!-- ============================== -->
-        <!-- Part A: Tier Progress Card      -->
+        <!-- 1. Tier Progress Card             -->
         <!-- ============================== -->
         <Card>
           <CardHeader>
@@ -262,45 +262,7 @@ const comparison = computed(() => {
         </Card>
 
         <!-- ============================== -->
-        <!-- Part B: Growth Roadmap          -->
-        <!-- ============================== -->
-        <Card>
-          <CardHeader>
-            <CardTitle>Plán rastu</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ol class="space-y-3">
-              <li
-                v-for="(m, i) in milestones"
-                :key="i"
-                class="flex items-start gap-3"
-              >
-                <!-- Checkbox icon -->
-                <span v-if="m.done" class="mt-0.5 flex-shrink-0 text-green-600">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
-                  </svg>
-                </span>
-                <span v-else class="mt-0.5 flex-shrink-0 text-muted-foreground">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="3" y="3" width="18" height="18" rx="2"/>
-                  </svg>
-                </span>
-                <div>
-                  <p :class="['text-sm', m.done ? 'text-foreground font-medium' : 'text-muted-foreground']">
-                    {{ m.label }}
-                  </p>
-                  <p v-if="!m.done && m.friendsNeeded" class="text-xs text-muted-foreground mt-0.5">
-                    ešte ~{{ m.friendsNeeded }} {{ m.friendsNeeded === 1 ? 'priateľ' : (m.friendsNeeded < 5 ? 'priatelia' : 'priateľov') }}
-                  </p>
-                </div>
-              </li>
-            </ol>
-          </CardContent>
-        </Card>
-
-        <!-- ============================== -->
-        <!-- Part C: Scenario Simulator      -->
+        <!-- 2. Scenario Simulator           -->
         <!-- ============================== -->
         <Card>
           <CardHeader>
@@ -380,7 +342,7 @@ const comparison = computed(() => {
         </Card>
 
         <!-- ============================== -->
-        <!-- Part D: Cycle Trends Chart      -->
+        <!-- 3. Cycle Trends Chart             -->
         <!-- ============================== -->
         <Card v-if="data.cycles.length >= 2">
           <CardHeader>
@@ -400,7 +362,7 @@ const comparison = computed(() => {
         </Card>
 
         <!-- ============================== -->
-        <!-- Part E: Comparison Cards        -->
+        <!-- 4. Comparison Cards               -->
         <!-- ============================== -->
         <div v-if="comparison" class="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Card v-for="(item, key) in [
@@ -436,7 +398,7 @@ const comparison = computed(() => {
         </div>
 
         <!-- ============================== -->
-        <!-- Margin Tracker                  -->
+        <!-- 5. Margin Tracker                 -->
         <!-- ============================== -->
         <Card>
           <CardHeader>
@@ -454,7 +416,7 @@ const comparison = computed(() => {
         </Card>
 
         <!-- ============================== -->
-        <!-- Buyer Flow                      -->
+        <!-- 6. Buyer Flow                     -->
         <!-- ============================== -->
         <Card v-if="data.cycles.length >= 2">
           <CardHeader><CardTitle>Pohyb priateľov medzi cyklami</CardTitle></CardHeader>
@@ -462,7 +424,7 @@ const comparison = computed(() => {
         </Card>
 
         <!-- ============================== -->
-        <!-- Part F: Friend Segments         -->
+        <!-- 7. Friend Segments                -->
         <!-- ============================== -->
         <Card v-if="data.friends && data.friends.length > 0">
           <CardHeader>
@@ -474,7 +436,7 @@ const comparison = computed(() => {
         </Card>
 
         <!-- ============================== -->
-        <!-- Part G: Friend Table            -->
+        <!-- 8. Friend Table                   -->
         <!-- ============================== -->
         <Card v-if="data.friends && data.friends.length > 0">
           <CardHeader>
@@ -482,6 +444,82 @@ const comparison = computed(() => {
           </CardHeader>
           <CardContent>
             <FriendAnalyticsTable :friends="data.friends" />
+          </CardContent>
+        </Card>
+
+        <!-- ============================== -->
+        <!-- 9. Concentration Risk             -->
+        <!-- ============================== -->
+        <Card>
+          <CardHeader><CardTitle>Koncentrácia rizika</CardTitle></CardHeader>
+          <CardContent class="space-y-4">
+            <!-- Top 5 share progress bar -->
+            <div>
+              <div class="text-sm text-muted-foreground">Top 5 priateľov — podiel na objeme (posledný cyklus)</div>
+              <div class="flex items-center gap-3 mt-1">
+                <div class="flex-1 h-3 bg-muted rounded-full overflow-hidden">
+                  <div class="h-full rounded-full transition-all"
+                    :class="data.summary.top5_share > 40 ? 'bg-red-500' : 'bg-green-500'"
+                    :style="{ width: data.summary.top5_share + '%' }"
+                  ></div>
+                </div>
+                <span class="font-bold text-lg">{{ data.summary.top5_share }}%</span>
+              </div>
+            </div>
+
+            <!-- Warning if > 40% -->
+            <Alert v-if="data.summary.concentration_warning" variant="destructive">
+              <AlertDescription>Vysoká koncentrácia — tvoj objem závisí od niekoľkých kľúčových ľudí.</AlertDescription>
+            </Alert>
+
+            <!-- Minimum viable base -->
+            <div v-if="data.summary.min_viable_base" class="p-4 bg-muted rounded-lg">
+              <div class="text-sm text-muted-foreground">Minimálna základňa pre 26 kg (úroveň 35%)</div>
+              <div class="text-lg font-semibold">
+                {{ data.summary.min_viable_base }} jadro+pravidelní priatelia
+                <span class="text-sm font-normal text-muted-foreground">
+                  (teraz {{ data.summary.core_regular_count }} pri priemere {{ data.summary.core_regular_avg_kg }} kg/os)
+                </span>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <!-- ============================== -->
+        <!-- 10. Growth Roadmap              -->
+        <!-- ============================== -->
+        <Card>
+          <CardHeader>
+            <CardTitle>Plán rastu</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ol class="space-y-3">
+              <li
+                v-for="(m, i) in milestones"
+                :key="i"
+                class="flex items-start gap-3"
+              >
+                <!-- Checkbox icon -->
+                <span v-if="m.done" class="mt-0.5 flex-shrink-0 text-green-600">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                  </svg>
+                </span>
+                <span v-else class="mt-0.5 flex-shrink-0 text-muted-foreground">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="3" width="18" height="18" rx="2"/>
+                  </svg>
+                </span>
+                <div>
+                  <p :class="['text-sm', m.done ? 'text-foreground font-medium' : 'text-muted-foreground']">
+                    {{ m.label }}
+                  </p>
+                  <p v-if="!m.done && m.friendsNeeded" class="text-xs text-muted-foreground mt-0.5">
+                    ešte ~{{ m.friendsNeeded }} {{ m.friendsNeeded === 1 ? 'priateľ' : (m.friendsNeeded < 5 ? 'priatelia' : 'priateľov') }}
+                  </p>
+                </div>
+              </li>
+            </ol>
           </CardContent>
         </Card>
 
