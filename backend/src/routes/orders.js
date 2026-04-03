@@ -1,18 +1,31 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
+import { validateFriendAuth, getAuthMode } from '../middleware/friend-auth.js';
 
 const router = Router();
 
-// Helper: Validate password from X-Friends-Password (global) or X-Cycle-Password (legacy) header
+// Helper: Validate password from Bearer token, X-Friends-Password (global), or X-Cycle-Password (legacy) header
 function validateCyclePassword(req, cycleId) {
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
   if (!cycle) {
     return { error: 'Cyklus nebol najdeny', status: 404 };
   }
 
-  // Try global friends password first (new system)
+  // Try Bearer token first (new token-based auth)
+  const authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const authResult = validateFriendAuth(req);
+    if (authResult.valid) {
+      return { cycle };
+    }
+  }
+
+  // Try global friends password (shared password system) — blocked in modern mode
   const friendsPassword = req.headers['x-friends-password'];
   if (friendsPassword) {
+    if (getAuthMode() === 'modern') {
+      return { error: 'Spolocne heslo nie je povolene. Prihlaste sa menom a heslom.', status: 401 };
+    }
     const setting = db.prepare("SELECT value FROM settings WHERE key = 'friends_password'").get();
     if (setting && setting.value && friendsPassword === setting.value) {
       return { cycle };
@@ -25,8 +38,8 @@ function validateCyclePassword(req, cycleId) {
     return { cycle };
   }
 
-  // Check if any password was provided
-  if (!friendsPassword && !cyclePassword) {
+  // Check if any auth was provided
+  if (!authHeader && !friendsPassword && !cyclePassword) {
     return { error: 'Heslo nie je poskytnuté', status: 401 };
   }
 

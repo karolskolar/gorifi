@@ -1,7 +1,8 @@
 const API_BASE = import.meta.env.VITE_API_URL || '/api'
 
-// Store global friends password and info for authenticated requests
+// Store global friends password, token, and info for authenticated requests
 let friendsPassword = null
+let friendsToken = null
 let friendsAuthInfo = null // { friendId, friendName, friendUid }
 
 export function setFriendsPassword(password) {
@@ -12,8 +13,17 @@ export function getFriendsPassword() {
   return friendsPassword
 }
 
+export function setFriendsToken(token) {
+  friendsToken = token
+}
+
+export function getFriendsToken() {
+  return friendsToken
+}
+
 export function clearFriendsPassword() {
   friendsPassword = null
+  friendsToken = null
   friendsAuthInfo = null
 }
 
@@ -47,9 +57,17 @@ async function request(endpoint, options = {}) {
     ...options,
   }
 
-  // Add friends password header if set (new global auth)
-  if (friendsPassword) {
+  // Add auth header: prefer Bearer token, fall back to shared password
+  if (friendsToken) {
+    config.headers['Authorization'] = `Bearer ${friendsToken}`
+  } else if (friendsPassword) {
     config.headers['X-Friends-Password'] = friendsPassword
+  }
+
+  // Add admin token if provided (from adminRequest helper)
+  if (options.adminToken) {
+    config.headers['X-Admin-Token'] = options.adminToken
+    delete config.adminToken
   }
 
   if (options.body && typeof options.body === 'object' && !(options.body instanceof FormData)) {
@@ -72,6 +90,14 @@ async function request(endpoint, options = {}) {
   }
 
   return response.json()
+}
+
+function adminRequest(endpoint, options = {}) {
+  const adminToken = localStorage.getItem('adminToken')
+  if (adminToken) {
+    options.adminToken = adminToken
+  }
+  return request(endpoint, options)
 }
 
 export const api = {
@@ -98,11 +124,25 @@ export const api = {
     body: { password, friendId }
   }),
 
-  // Friends global auth (new system)
+  // Friends auth
+  getAuthMode: () => request('/friends/auth-mode'),
   authenticateFriends: (password, friendId) => request('/friends/auth', {
     method: 'POST',
     body: { password, friendId }
   }),
+  authenticateFriendsPersonal: (username, password) => request('/friends/auth', {
+    method: 'POST',
+    body: { username, password }
+  }),
+  setupCredentials: (friendId, username, password) => request(`/friends/${friendId}/setup-credentials`, {
+    method: 'POST',
+    body: { username, password }
+  }),
+  changeFriendPassword: (friendId, currentPassword, newPassword) => request(`/friends/${friendId}/change-password`, {
+    method: 'PUT',
+    body: { currentPassword, newPassword }
+  }),
+  checkUsername: (username) => request(`/friends/check-username/${username}`),
   getFriendsCycles: (friendId) => request(`/friends/cycles${friendId ? `?friendId=${friendId}` : ''}`),
 
   // Admin settings
@@ -127,6 +167,8 @@ export const api = {
   updateFriend: (id, data) => request(`/friends/${id}`, { method: 'PATCH', body: data }),
   deleteFriend: (id) => request(`/friends/${id}`, { method: 'DELETE' }),
   updateFriendProfile: (id, data) => request(`/friends/${id}/profile`, { method: 'PATCH', body: data }),
+  adminResetFriendPassword: (id, password) => adminRequest(`/friends/${id}/reset-password`, { method: 'PUT', body: { password } }),
+  adminSetFriendUsername: (id, username) => adminRequest(`/friends/${id}/admin-username`, { method: 'PUT', body: { username } }),
 
   // Orders (password-protected, for friends)
   getOrderByFriend: (cycleId, friendId) => request(`/orders/cycle/${cycleId}/friend/${friendId}`),
@@ -166,6 +208,7 @@ export const api = {
   // Subscriptions
   getSubscriptions: (friendId) => request(`/subscriptions/friend/${friendId}`),
   updateSubscriptions: (friendId, types) => request(`/subscriptions/friend/${friendId}`, { method: 'PUT', body: { types } }),
+  adminUpdateSubscriptions: (friendId, types) => request(`/subscriptions/admin/${friendId}`, { method: 'PUT', body: { types } }),
 
   // Transactions
   getTransactions: (friendId) => request(`/transactions/friend/${friendId}`),

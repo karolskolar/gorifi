@@ -105,11 +105,13 @@ router.get('/settings', (req, res) => {
   const friendsPassword = db.prepare("SELECT value FROM settings WHERE key = 'friends_password'").get();
   const paymentIban = db.prepare("SELECT value FROM settings WHERE key = 'payment_iban'").get();
   const paymentRevolutUsername = db.prepare("SELECT value FROM settings WHERE key = 'payment_revolut_username'").get();
+  const authMode = db.prepare("SELECT value FROM settings WHERE key = 'auth_mode'").get();
 
   res.json({
     friendsPassword: friendsPassword?.value || '',
     paymentIban: paymentIban?.value || '',
-    paymentRevolutUsername: paymentRevolutUsername?.value || ''
+    paymentRevolutUsername: paymentRevolutUsername?.value || '',
+    authMode: authMode?.value || 'legacy'
   });
 });
 
@@ -137,12 +139,24 @@ router.put('/settings', (req, res) => {
   if (paymentRevolutUsername !== undefined) {
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('payment_revolut_username', ?)").run(paymentRevolutUsername || '');
   }
+  if (req.body.authMode !== undefined) {
+    const validModes = ['legacy', 'transition', 'modern'];
+    const mode = validModes.includes(req.body.authMode) ? req.body.authMode : 'legacy';
+    const previousMode = db.prepare("SELECT value FROM settings WHERE key = 'auth_mode'").get();
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('auth_mode', ?)").run(mode);
+    // Invalidate all friend sessions on mode change to force re-login
+    if (previousMode?.value !== mode) {
+      db.prepare('DELETE FROM friend_sessions').run();
+    }
+  }
 
+  const currentAuthMode = db.prepare("SELECT value FROM settings WHERE key = 'auth_mode'").get();
   res.json({
     success: true,
     friendsPassword: friendsPassword || '',
     paymentIban: paymentIban || '',
-    paymentRevolutUsername: paymentRevolutUsername || ''
+    paymentRevolutUsername: paymentRevolutUsername || '',
+    authMode: currentAuthMode?.value || 'legacy'
   });
 });
 

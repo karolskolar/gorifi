@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watchEffect, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
-import api, { getFriendsPassword, getFriendsAuthInfo } from '../api'
+import api, { getFriendsPassword, getFriendsAuthInfo, getFriendsToken } from '../api'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -218,8 +218,8 @@ watch(availablePurposes, (purposes) => {
 const STORAGE_KEY = 'gorifi_friend_auth'
 
 onMounted(async () => {
-  // Check if authenticated
-  if (!getFriendsPassword()) {
+  // Check if authenticated (token or password)
+  if (!getFriendsToken() && !getFriendsPassword()) {
     // Try to restore from localStorage
     const stored = localStorage.getItem(STORAGE_KEY)
     if (!stored) {
@@ -228,11 +228,11 @@ onMounted(async () => {
     }
     try {
       const parsed = JSON.parse(stored)
-      if (!parsed.password) {
+      if (!parsed.token && !parsed.password) {
         router.push('/')
         return
       }
-      // Password will be set by FriendPortal, redirect there
+      // Auth will be restored by FriendPortal, redirect there
       router.push('/')
       return
     } catch {

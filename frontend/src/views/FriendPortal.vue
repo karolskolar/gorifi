@@ -1,7 +1,7 @@
 <script setup>
-import { ref, onMounted, watchEffect } from 'vue'
+import { ref, computed, onMounted, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
-import api, { setFriendsPassword, clearFriendsPassword, getFriendsPassword, setFriendsAuthInfo, getFriendsAuthInfo } from '../api'
+import api, { setFriendsPassword, clearFriendsPassword, getFriendsPassword, setFriendsAuthInfo, getFriendsAuthInfo, setFriendsToken, getFriendsToken } from '../api'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -38,12 +38,43 @@ const showProfileModal = ref(false)
 const profileName = ref('')
 const profileSaving = ref(false)
 
+// Archive
+const showArchive = ref(false)
+
 // Subscriptions
 const subscriptions = ref([]) // ['coffee', 'bakery']
 const showSubscriptionModal = ref(false)
 const subCoffee = ref(true)
 const subBakery = ref(true)
 const subSaving = ref(false)
+
+// Auth mode
+const authMode = ref('legacy') // 'legacy' | 'transition' | 'modern'
+const loginTab = ref('shared') // 'shared' | 'personal'
+
+// Personal login fields
+const loginUsername = ref('')
+const loginPassword = ref('')
+
+// Credential setup modal
+const showCredentialSetup = ref(false)
+const setupUsername = ref('')
+const setupPassword = ref('')
+const setupPasswordConfirm = ref('')
+const setupError = ref('')
+const setupSaving = ref(false)
+const usernameAvailable = ref(null) // null = not checked, true/false
+const usernameChecking = ref(false)
+let usernameCheckTimeout = null
+
+// Password change
+const showPasswordChange = ref(false)
+const changeCurrentPassword = ref('')
+const changeNewPassword = ref('')
+const changeNewPasswordConfirm = ref('')
+const changePasswordError = ref('')
+const changePasswordSaving = ref(false)
+const changePasswordSuccess = ref('')
 
 const STORAGE_KEY = 'gorifi_friend_auth'
 
@@ -62,27 +93,58 @@ async function loadInitialData() {
   error.value = ''
 
   try {
-    // Get friends list (public endpoint)
-    friends.value = await api.getFriends(true) // active only
+    // Fetch auth mode and friends list in parallel
+    const [modeResult, friendsList] = await Promise.all([
+      api.getAuthMode(),
+      api.getFriends(true)
+    ])
+    authMode.value = modeResult.authMode
+    friends.value = friendsList
+
+    // Set default login tab based on auth mode
+    if (authMode.value === 'modern') {
+      loginTab.value = 'personal'
+    }
 
     // Check localStorage for saved auth
     const stored = localStorage.getItem(STORAGE_KEY)
     if (stored) {
       try {
         const parsed = JSON.parse(stored)
-        // Verify the friend still exists
         const friendExists = friends.value.find(f => f.id === parsed.friendId)
-        if (friendExists && parsed.password) {
+
+        // Token-based restore (new format)
+        if (friendExists && parsed.token) {
           savedAuth.value = parsed
-          // Restore current friend data from friends list (has latest data)
           currentFriend.value = friendExists
           selectedFriendId.value = String(parsed.friendId)
-          // Try to authenticate with saved password
+          setFriendsToken(parsed.token)
+          setFriendsAuthInfo({
+            friendId: parsed.friendId,
+            friendName: parsed.friendName,
+            friendUid: parsed.friendUid
+          })
+          try {
+            await loadCycles()
+            authState.value = 'authenticated'
+    window.scrollTo(0, 0)
+            return
+          } catch {
+            // Token expired or invalid, clear and show login
+            localStorage.removeItem(STORAGE_KEY)
+            clearFriendsPassword()
+            authState.value = 'login'
+          }
+        }
+        // Password-based restore (old format, backward compat)
+        else if (friendExists && parsed.password) {
+          savedAuth.value = parsed
+          currentFriend.value = friendExists
+          selectedFriendId.value = String(parsed.friendId)
           password.value = parsed.password
           await authenticate(true)
           return
         } else {
-          // Friend no longer exists or no password saved, clear storage
           localStorage.removeItem(STORAGE_KEY)
           authState.value = 'login'
         }
@@ -92,17 +154,23 @@ async function loadInitialData() {
       }
     } else {
       // Check for in-memory auth (when "remember me" was not checked)
+      const memoryToken = getFriendsToken()
       const memoryPassword = getFriendsPassword()
       const memoryAuthInfo = getFriendsAuthInfo()
-      if (memoryPassword && memoryAuthInfo) {
+      if ((memoryToken || memoryPassword) && memoryAuthInfo) {
         const friendExists = friends.value.find(f => f.id === memoryAuthInfo.friendId)
         if (friendExists) {
           currentFriend.value = friendExists
           selectedFriendId.value = String(memoryAuthInfo.friendId)
-          // Load cycles and show authenticated state
-          await loadCycles()
-          authState.value = 'authenticated'
-          return
+          try {
+            await loadCycles()
+            authState.value = 'authenticated'
+    window.scrollTo(0, 0)
+            return
+          } catch {
+            clearFriendsPassword()
+            authState.value = 'login'
+          }
         }
       }
       authState.value = 'login'
@@ -126,16 +194,20 @@ async function authenticate(silent = false) {
 
   try {
     // Validate password with server
-    await api.authenticateFriends(password.value, selectedFriendId.value)
+    const result = await api.authenticateFriends(password.value, selectedFriendId.value)
 
-    // Set password for subsequent requests
+    // Set token for subsequent requests (new system)
+    if (result.token) {
+      setFriendsToken(result.token)
+    }
+    // Also set password as fallback
     setFriendsPassword(password.value)
 
     // Get full friend data
     const selectedFriend = friends.value.find(f => f.id === parseInt(selectedFriendId.value))
     currentFriend.value = selectedFriend
 
-    // Set auth info in memory (for when remember me is not checked)
+    // Set auth info in memory
     setFriendsAuthInfo({
       friendId: parseInt(selectedFriendId.value),
       friendName: selectedFriend.name,
@@ -144,30 +216,85 @@ async function authenticate(silent = false) {
 
     // Save to localStorage if remember me is checked
     if (rememberMe.value && selectedFriend) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      const storageData = {
         friendId: parseInt(selectedFriendId.value),
         friendName: selectedFriend.name,
         friendUid: selectedFriend.uid,
-        password: password.value
-      }))
-      savedAuth.value = {
-        friendId: parseInt(selectedFriendId.value),
-        friendName: selectedFriend.name,
-        friendUid: selectedFriend.uid
       }
+      // Save token if available, otherwise password (backward compat)
+      if (result.token) {
+        storageData.token = result.token
+      } else {
+        storageData.password = password.value
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(storageData))
+      savedAuth.value = storageData
     }
 
     // Load cycles
     await loadCycles()
     authState.value = 'authenticated'
+    window.scrollTo(0, 0)
+
+    // In transition mode, prompt credential setup if user doesn't have personal credentials
+    if (authMode.value === 'transition' && result.hasCredentials === false) {
+      showCredentialSetup.value = true
+    }
   } catch (e) {
     if (!silent) {
       authError.value = e.message
     } else {
       // Silent auth failed, show login
       localStorage.removeItem(STORAGE_KEY)
+      clearFriendsPassword()
       authState.value = 'login'
     }
+  } finally {
+    loading.value = false
+  }
+}
+
+async function authenticatePersonal() {
+  if (!loginUsername.value || !loginPassword.value) {
+    authError.value = 'Zadajte užívateľské meno a heslo'
+    return
+  }
+
+  authError.value = ''
+  loading.value = true
+
+  try {
+    const result = await api.authenticateFriendsPersonal(loginUsername.value.toLowerCase(), loginPassword.value)
+
+    // Set token for subsequent requests
+    setFriendsToken(result.token)
+
+    // Refresh friends list to find full friend data
+    friends.value = await api.getFriends(true)
+    const friend = friends.value.find(f => f.id === result.friend.id)
+    currentFriend.value = friend || result.friend
+    selectedFriendId.value = String(result.friend.id)
+
+    setFriendsAuthInfo({
+      friendId: result.friend.id,
+      friendName: result.friend.name,
+      friendUid: result.friend.uid
+    })
+
+    if (rememberMe.value) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        friendId: result.friend.id,
+        friendName: result.friend.name,
+        friendUid: result.friend.uid,
+        token: result.token
+      }))
+    }
+
+    await loadCycles()
+    authState.value = 'authenticated'
+    window.scrollTo(0, 0)
+  } catch (e) {
+    authError.value = e.message
   } finally {
     loading.value = false
   }
@@ -192,6 +319,8 @@ function switchUser() {
   currentFriend.value = null
   selectedFriendId.value = ''
   password.value = ''
+  loginUsername.value = ''
+  loginPassword.value = ''
   authState.value = 'login'
   cycles.value = []
 }
@@ -299,6 +428,143 @@ async function saveSubscriptions() {
   }
 }
 
+// Username validation with debounce
+function checkUsernameAvailability() {
+  usernameAvailable.value = null
+  if (usernameCheckTimeout) clearTimeout(usernameCheckTimeout)
+
+  const username = setupUsername.value.toLowerCase()
+  if (!username || username.length < 3 || !/^[a-z0-9._-]+$/.test(username)) {
+    return
+  }
+
+  usernameChecking.value = true
+  usernameCheckTimeout = setTimeout(async () => {
+    try {
+      const result = await api.checkUsername(username)
+      usernameAvailable.value = result.available
+    } catch {
+      usernameAvailable.value = null
+    } finally {
+      usernameChecking.value = false
+    }
+  }, 400)
+}
+
+async function saveCredentials() {
+  setupError.value = ''
+
+  const username = setupUsername.value.toLowerCase().trim()
+  if (!username || username.length < 3 || !/^[a-z0-9._-]+$/.test(username)) {
+    setupError.value = 'Užívateľské meno musí mať aspoň 3 znaky a obsahovať len malé písmená, čísla, _ a -'
+    return
+  }
+
+  if (!setupPassword.value || setupPassword.value.length < 4) {
+    setupError.value = 'Heslo musí mať aspoň 4 znaky'
+    return
+  }
+
+  if (setupPassword.value !== setupPasswordConfirm.value) {
+    setupError.value = 'Heslá sa nezhodujú'
+    return
+  }
+
+  setupSaving.value = true
+  try {
+    const result = await api.setupCredentials(selectedFriendId.value, username, setupPassword.value)
+
+    // Update token
+    if (result.token) {
+      setFriendsToken(result.token)
+    }
+
+    // Update local state
+    if (result.friend) {
+      currentFriend.value = { ...currentFriend.value, ...result.friend }
+    }
+
+    // Update localStorage with new token
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      if (result.token) parsed.token = result.token
+      delete parsed.password // Remove old password
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+    }
+
+    showCredentialSetup.value = false
+    // Reset form
+    setupUsername.value = ''
+    setupPassword.value = ''
+    setupPasswordConfirm.value = ''
+  } catch (e) {
+    setupError.value = e.message
+  } finally {
+    setupSaving.value = false
+  }
+}
+
+async function changePassword() {
+  changePasswordError.value = ''
+  changePasswordSuccess.value = ''
+
+  if (!changeCurrentPassword.value) {
+    changePasswordError.value = 'Zadajte aktuálne heslo'
+    return
+  }
+
+  if (!changeNewPassword.value || changeNewPassword.value.length < 4) {
+    changePasswordError.value = 'Nové heslo musí mať aspoň 4 znaky'
+    return
+  }
+
+  if (changeNewPassword.value !== changeNewPasswordConfirm.value) {
+    changePasswordError.value = 'Nové heslá sa nezhodujú'
+    return
+  }
+
+  changePasswordSaving.value = true
+  try {
+    const result = await api.changeFriendPassword(selectedFriendId.value, changeCurrentPassword.value, changeNewPassword.value)
+
+    // Update token
+    if (result.token) {
+      setFriendsToken(result.token)
+      // Update localStorage
+      const stored = localStorage.getItem(STORAGE_KEY)
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        parsed.token = result.token
+        delete parsed.password
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+      }
+    }
+
+    changePasswordSuccess.value = 'Heslo bolo úspešne zmenené'
+    changeCurrentPassword.value = ''
+    changeNewPassword.value = ''
+    changeNewPasswordConfirm.value = ''
+    // Auto-hide success after 3s
+    setTimeout(() => { changePasswordSuccess.value = '' }, 3000)
+  } catch (e) {
+    changePasswordError.value = e.message
+  } finally {
+    changePasswordSaving.value = false
+  }
+}
+
+// Computed: friends to show in dropdown (exclude those with credentials in transition mode)
+const dropdownFriends = computed(() => {
+  if (authMode.value === 'transition') {
+    return friends.value.filter(f => !f.hasCredentials)
+  }
+  return friends.value
+})
+
+const activeCycles = computed(() => cycles.value.filter(c => c.status !== 'completed'))
+const archivedCycles = computed(() => cycles.value.filter(c => c.status === 'completed'))
+
 function getCycleTypeLabel(type) {
   if (type === 'bakery') return 'Pekáreň'
   return 'Káva'
@@ -375,49 +641,110 @@ function formatKilos(kilos) {
       <Card>
         <CardHeader class="text-center">
           <CardTitle>Prihlásenie</CardTitle>
-          <CardDescription>Vyberte svoje meno a zadajte heslo</CardDescription>
+          <CardDescription v-if="authMode === 'modern'">Prihláste sa užívateľským menom a heslom</CardDescription>
+          <CardDescription v-else>Vyberte svoje meno a zadajte heslo</CardDescription>
         </CardHeader>
         <CardContent class="space-y-4">
           <Alert v-if="authError" variant="destructive">
             <AlertDescription>{{ authError }}</AlertDescription>
           </Alert>
 
-          <div class="space-y-2">
-            <Label>Vyberte svoje meno</Label>
-            <Select v-model="selectedFriendId">
-              <SelectTrigger>
-                <SelectValue placeholder="-- Vyberte --" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem v-for="f in friends" :key="f.id" :value="String(f.id)">
-                  {{ f.name }}
-                </SelectItem>
-              </SelectContent>
-            </Select>
+          <!-- Tab switcher (only in transition mode) -->
+          <div v-if="authMode === 'transition'" class="flex rounded-lg border p-1 gap-1">
+            <button
+              @click="loginTab = 'shared'; authError = ''"
+              class="flex-1 px-3 py-1.5 text-sm rounded-md transition-colors"
+              :class="loginTab === 'shared' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'"
+            >
+              Spoločné heslo
+            </button>
+            <button
+              @click="loginTab = 'personal'; authError = ''"
+              class="flex-1 px-3 py-1.5 text-sm rounded-md transition-colors"
+              :class="loginTab === 'personal' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'"
+            >
+              Osobné prihlásenie
+            </button>
           </div>
 
-          <div class="space-y-2">
-            <Label>Heslo</Label>
-            <Input
-              v-model="password"
-              type="password"
-              placeholder="Zadajte heslo"
-              @keyup.enter="authenticate()"
-            />
-          </div>
+          <!-- Shared password login (legacy + transition shared tab) -->
+          <template v-if="authMode !== 'modern' && loginTab === 'shared'">
+            <div class="space-y-2">
+              <Label>Vyberte svoje meno</Label>
+              <Select v-model="selectedFriendId">
+                <SelectTrigger>
+                  <SelectValue placeholder="-- Vyberte --" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem v-for="f in dropdownFriends" :key="f.id" :value="String(f.id)">
+                    {{ f.name }}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
-          <label class="flex items-center gap-2 cursor-pointer">
-            <input v-model="rememberMe" type="checkbox" class="rounded border-input" />
-            <span class="text-sm text-muted-foreground">Zapamätať si ma na tomto zariadení</span>
-          </label>
+            <div class="space-y-2">
+              <Label>Heslo</Label>
+              <Input
+                v-model="password"
+                type="password"
+                placeholder="Zadajte heslo"
+                @keyup.enter="authenticate()"
+              />
+            </div>
 
-          <Button
-            @click="authenticate()"
-            :disabled="loading || !selectedFriendId || !password"
-            class="w-full"
-          >
-            {{ loading ? 'Overujem...' : 'Prihlásiť sa' }}
-          </Button>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input v-model="rememberMe" type="checkbox" class="rounded border-input" />
+              <span class="text-sm text-muted-foreground">Zapamätať si ma na tomto zariadení</span>
+            </label>
+
+            <Button
+              @click="authenticate()"
+              :disabled="loading || !selectedFriendId || !password"
+              class="w-full"
+            >
+              {{ loading ? 'Overujem...' : 'Prihlásiť sa' }}
+            </Button>
+          </template>
+
+          <!-- Personal login (transition personal tab + modern) -->
+          <template v-if="authMode === 'modern' || loginTab === 'personal'">
+            <div class="space-y-2">
+              <Label>Užívateľské meno</Label>
+              <Input
+                v-model="loginUsername"
+                type="text"
+                placeholder="Zadajte užívateľské meno"
+                autocomplete="username"
+                autocapitalize="none"
+                autocorrect="off"
+              />
+            </div>
+
+            <div class="space-y-2">
+              <Label>Heslo</Label>
+              <Input
+                v-model="loginPassword"
+                type="password"
+                placeholder="Zadajte heslo"
+                autocomplete="current-password"
+                @keyup.enter="authenticatePersonal()"
+              />
+            </div>
+
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input v-model="rememberMe" type="checkbox" class="rounded border-input" />
+              <span class="text-sm text-muted-foreground">Zapamätať si ma na tomto zariadení</span>
+            </label>
+
+            <Button
+              @click="authenticatePersonal()"
+              :disabled="loading || !loginUsername || !loginPassword"
+              class="w-full"
+            >
+              {{ loading ? 'Overujem...' : 'Prihlásiť sa' }}
+            </Button>
+          </template>
         </CardContent>
       </Card>
     </div>
@@ -447,50 +774,125 @@ function formatKilos(kilos) {
         Žiadne dostupné cykly
       </div>
 
-      <div v-else class="space-y-3">
-        <Card
-          v-for="cycle in cycles"
-          :key="cycle.id"
-          class="cursor-pointer hover:shadow-md transition-shadow"
-          @click="goToCycle(cycle.id)"
-        >
-          <CardContent class="p-4">
-            <div class="flex justify-between items-start">
-              <div class="flex-1">
-                <h3 class="font-semibold text-foreground">{{ cycle.name }}</h3>
-                <div v-if="cycle.expected_date" class="text-sm text-primary mt-1">
-                  📅 {{ cycle.expected_date }}
+      <template v-else>
+        <!-- Active cycles -->
+        <div v-if="activeCycles.length === 0" class="text-center py-8 text-muted-foreground">
+          Žiadne aktívne cykly
+        </div>
+        <div v-else class="space-y-3">
+          <Card
+            v-for="cycle in activeCycles"
+            :key="cycle.id"
+            class="cursor-pointer hover:shadow-md transition-shadow"
+            :class="cycle.type === 'bakery' ? 'bg-orange-50/70 border-orange-200' : 'bg-gray-50 border-gray-200'"
+            @click="goToCycle(cycle.id)"
+          >
+            <CardContent class="p-4">
+              <div class="flex justify-between items-start">
+                <div class="flex-1">
+                  <h3 class="font-semibold text-foreground">{{ cycle.name }}</h3>
+                  <div v-if="cycle.expected_date" class="text-sm text-primary mt-1">
+                    📅 {{ cycle.expected_date }}
+                  </div>
+                  <div class="flex items-center gap-2 mt-2">
+                    <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
+                      Pekáreň
+                    </Badge>
+                    <Badge v-else variant="outline" class="border-amber-700 text-amber-800 bg-amber-100">
+                      Káva
+                    </Badge>
+                    <Badge :variant="getStatusVariant(cycle.status)">
+                      {{ getStatusText(cycle.status) }}
+                    </Badge>
+                    <Badge v-if="cycle.hasOrder" variant="outline" class="border-green-500 text-green-700">
+                      Objednané
+                    </Badge>
+                    <Badge v-else-if="cycle.status === 'open'" variant="outline" class="border-yellow-500 text-yellow-700">
+                      Neobjednané
+                    </Badge>
+                  </div>
+                  <div v-if="cycle.hasOrder" class="flex items-center gap-3 mt-2 text-sm text-muted-foreground">
+                    <span v-if="cycle.type === 'bakery'">🥐 {{ cycle.orderItemCount }} ks</span>
+                    <span v-else>☕ {{ formatKilos(cycle.orderKilos) }}</span>
+                  </div>
                 </div>
-                <div class="flex items-center gap-2 mt-2">
-                  <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
-                    Pekáreň
-                  </Badge>
-                  <Badge :variant="getStatusVariant(cycle.status)">
-                    {{ getStatusText(cycle.status) }}
-                  </Badge>
-                  <Badge v-if="cycle.hasOrder" variant="outline" class="border-green-500 text-green-700">
-                    Objednané
-                  </Badge>
-                  <Badge v-else-if="cycle.status === 'open'" variant="outline" class="border-yellow-500 text-yellow-700">
-                    Neobjednané
-                  </Badge>
-                </div>
-                <div v-if="cycle.hasOrder" class="flex items-center gap-3 mt-2 text-sm text-muted-foreground">
-                  <span>☕ {{ formatKilos(cycle.orderKilos) }}</span>
+                <div class="text-right">
+                  <span v-if="cycle.hasOrder" class="text-sm font-medium text-foreground">
+                    {{ formatPrice(cycle.orderTotal) }}
+                  </span>
+                  <svg class="w-5 h-5 text-muted-foreground mt-2 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                  </svg>
                 </div>
               </div>
-              <div class="text-right">
-                <span v-if="cycle.hasOrder" class="text-sm font-medium text-foreground">
-                  {{ formatPrice(cycle.orderTotal) }}
-                </span>
-                <svg class="w-5 h-5 text-muted-foreground mt-2 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-                </svg>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <!-- Archived cycles -->
+        <div v-if="archivedCycles.length > 0" class="mt-6">
+          <button
+            @click="showArchive = !showArchive"
+            class="flex items-center gap-2 w-full text-left py-2 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <svg
+              class="w-4 h-4 transition-transform"
+              :class="showArchive ? 'rotate-90' : ''"
+              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
+            <span class="text-sm font-medium">Archív ({{ archivedCycles.length }})</span>
+          </button>
+
+          <div v-if="showArchive" class="space-y-3 mt-3">
+            <Card
+              v-for="cycle in archivedCycles"
+              :key="cycle.id"
+              class="cursor-pointer hover:shadow-md transition-shadow opacity-75"
+              :class="cycle.type === 'bakery' ? 'bg-orange-50/70 border-orange-200' : 'bg-gray-50 border-gray-200'"
+              @click="goToCycle(cycle.id)"
+            >
+              <CardContent class="p-4">
+                <div class="flex justify-between items-start">
+                  <div class="flex-1">
+                    <h3 class="font-semibold text-foreground">{{ cycle.name }}</h3>
+                    <div v-if="cycle.expected_date" class="text-sm text-primary mt-1">
+                      📅 {{ cycle.expected_date }}
+                    </div>
+                    <div class="flex items-center gap-2 mt-2">
+                      <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
+                        Pekáreň
+                      </Badge>
+                      <Badge v-else variant="outline" class="border-amber-700 text-amber-800 bg-amber-100">
+                        Káva
+                      </Badge>
+                      <Badge :variant="getStatusVariant(cycle.status)">
+                        {{ getStatusText(cycle.status) }}
+                      </Badge>
+                      <Badge v-if="cycle.hasOrder" variant="outline" class="border-green-500 text-green-700">
+                        Objednané
+                      </Badge>
+                    </div>
+                    <div v-if="cycle.hasOrder" class="flex items-center gap-3 mt-2 text-sm text-muted-foreground">
+                      <span v-if="cycle.type === 'bakery'">🥐 {{ cycle.orderItemCount }} ks</span>
+                      <span v-else>☕ {{ formatKilos(cycle.orderKilos) }}</span>
+                    </div>
+                  </div>
+                  <div class="text-right">
+                    <span v-if="cycle.hasOrder" class="text-sm font-medium text-foreground">
+                      {{ formatPrice(cycle.orderTotal) }}
+                    </span>
+                    <svg class="w-5 h-5 text-muted-foreground mt-2 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                    </svg>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </template>
     </div>
 
     <!-- Subscription Modal -->
@@ -534,6 +936,10 @@ function formatKilos(kilos) {
             <div class="font-mono text-sm bg-muted px-3 py-2 rounded">{{ getCurrentFriendUid() }}</div>
             <p class="text-xs text-muted-foreground">Toto ID sa nedá zmeniť</p>
           </div>
+          <div v-if="currentFriend?.username" class="space-y-2">
+            <Label class="text-muted-foreground">Užívateľské meno</Label>
+            <div class="font-mono text-sm bg-muted px-3 py-2 rounded">{{ currentFriend.username }}</div>
+          </div>
           <div class="space-y-2">
             <Label>Prihlasovacie meno *</Label>
             <Input
@@ -543,6 +949,52 @@ function formatKilos(kilos) {
             />
             <p class="text-xs text-muted-foreground">Toto meno sa zobrazuje pri prihlasovaní</p>
           </div>
+
+          <!-- Password change section (only if user has credentials) -->
+          <template v-if="currentFriend?.hasCredentials">
+            <div class="border-t pt-4 mt-4">
+              <button
+                @click="showPasswordChange = !showPasswordChange"
+                class="text-sm font-medium text-primary hover:underline"
+              >
+                {{ showPasswordChange ? 'Skryť zmenu hesla' : 'Zmeniť heslo' }}
+              </button>
+            </div>
+
+            <template v-if="showPasswordChange">
+              <Alert v-if="changePasswordError" variant="destructive">
+                <AlertDescription>{{ changePasswordError }}</AlertDescription>
+              </Alert>
+              <Alert v-if="changePasswordSuccess" class="border-green-200 bg-green-50">
+                <AlertDescription class="text-green-700">{{ changePasswordSuccess }}</AlertDescription>
+              </Alert>
+
+              <div class="space-y-2">
+                <Label>Aktuálne heslo</Label>
+                <Input v-model="changeCurrentPassword" type="password" :disabled="changePasswordSaving" />
+              </div>
+              <div class="space-y-2">
+                <Label>Nové heslo</Label>
+                <Input v-model="changeNewPassword" type="password" :disabled="changePasswordSaving" />
+              </div>
+              <div class="space-y-2">
+                <Label>Potvrdiť nové heslo</Label>
+                <Input
+                  v-model="changeNewPasswordConfirm"
+                  type="password"
+                  :disabled="changePasswordSaving"
+                  @keyup.enter="changePassword()"
+                />
+              </div>
+              <Button
+                @click="changePassword()"
+                :disabled="changePasswordSaving || !changeCurrentPassword || !changeNewPassword || !changeNewPasswordConfirm"
+                size="sm"
+              >
+                {{ changePasswordSaving ? 'Mením heslo...' : 'Zmeniť heslo' }}
+              </Button>
+            </template>
+          </template>
         </div>
         <DialogFooter>
           <Button variant="outline" @click="showProfileModal = false" :disabled="profileSaving">
@@ -550,6 +1002,73 @@ function formatKilos(kilos) {
           </Button>
           <Button @click="saveProfile" :disabled="!profileName.trim() || profileSaving">
             {{ profileSaving ? 'Ukladám...' : 'Uložiť' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Credential Setup Modal -->
+    <Dialog :open="showCredentialSetup" @update:open="showCredentialSetup = $event">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Nastavte si osobné prihlásenie</DialogTitle>
+        </DialogHeader>
+        <div class="space-y-4 py-4">
+          <p class="text-sm text-muted-foreground">
+            Nastavte si vlastné užívateľské meno a heslo pre bezpečnejšie prihlasovanie.
+          </p>
+
+          <Alert v-if="setupError" variant="destructive">
+            <AlertDescription>{{ setupError }}</AlertDescription>
+          </Alert>
+
+          <div class="space-y-2">
+            <Label>Užívateľské meno</Label>
+            <Input
+              v-model="setupUsername"
+              type="text"
+              placeholder="napr. janko_hrasko"
+              autocapitalize="none"
+              autocorrect="off"
+              :disabled="setupSaving"
+              @input="checkUsernameAvailability"
+            />
+            <p v-if="usernameChecking" class="text-xs text-muted-foreground">Overujem dostupnosť...</p>
+            <p v-else-if="usernameAvailable === true" class="text-xs text-green-600">Užívateľské meno je voľné</p>
+            <p v-else-if="usernameAvailable === false" class="text-xs text-red-600">Toto meno je už obsadené</p>
+            <p class="text-xs text-muted-foreground">Len malé písmená, čísla, bodka (.), podtržník (_) a pomlčka (-). Min. 3 znaky.</p>
+          </div>
+
+          <div class="space-y-2">
+            <Label>Heslo</Label>
+            <Input
+              v-model="setupPassword"
+              type="password"
+              placeholder="Minimálne 4 znaky"
+              :disabled="setupSaving"
+            />
+          </div>
+
+          <div class="space-y-2">
+            <Label>Potvrdiť heslo</Label>
+            <Input
+              v-model="setupPasswordConfirm"
+              type="password"
+              placeholder="Zopakujte heslo"
+              :disabled="setupSaving"
+              @keyup.enter="saveCredentials()"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="showCredentialSetup = false" :disabled="setupSaving">
+            Neskôr
+          </Button>
+          <Button
+            @click="saveCredentials()"
+            :disabled="setupSaving || !setupUsername || !setupPassword || !setupPasswordConfirm || usernameAvailable === false"
+          >
+            {{ setupSaving ? 'Ukladám...' : 'Nastaviť' }}
           </Button>
         </DialogFooter>
       </DialogContent>

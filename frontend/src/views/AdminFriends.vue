@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watchEffect } from 'vue'
+import { ref, onMounted, onUnmounted, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 import { Card, CardContent } from '@/components/ui/card'
@@ -24,8 +24,32 @@ const editingFriend = ref(null)
 const friendName = ref('')      // login name
 const friendDisplayName = ref('') // display name (Meno)
 
+// Credential management
+const showResetPasswordModal = ref(false)
+const showSetUsernameModal = ref(false)
+const credentialFriend = ref(null)
+const resetPasswordValue = ref('')
+const setUsernameValue = ref('')
+const credentialError = ref('')
+const credentialSaving = ref(false)
+const credentialSuccess = ref('')
+
+// Action menu state
+const openMenuId = ref(null)
+
+function handleClickOutside(e) {
+  if (openMenuId.value !== null && !e.target.closest('.relative.inline-block')) {
+    openMenuId.value = null
+  }
+}
+
 onMounted(async () => {
+  document.addEventListener('click', handleClickOutside)
   await loadFriends()
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
 })
 
 // Set page title
@@ -94,6 +118,90 @@ async function deleteFriend(id) {
   }
 }
 
+function toggleMenu(friendId) {
+  openMenuId.value = openMenuId.value === friendId ? null : friendId
+}
+
+function closeMenu() {
+  openMenuId.value = null
+}
+
+async function toggleSubscription(friend, type) {
+  try {
+    const current = friend.subscriptions || []
+    let updated
+    // If no subscriptions set (means "all"), unchecking one type means setting the other
+    if (current.length === 0) {
+      const allTypes = ['coffee', 'bakery']
+      updated = allTypes.filter(t => t !== type)
+    } else if (current.includes(type)) {
+      updated = current.filter(t => t !== type)
+    } else {
+      updated = [...current, type]
+    }
+    await api.adminUpdateSubscriptions(friend.id, updated)
+    friend.subscriptions = updated
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+function openResetPassword(friend) {
+  credentialFriend.value = friend
+  resetPasswordValue.value = ''
+  credentialError.value = ''
+  credentialSuccess.value = ''
+  showResetPasswordModal.value = true
+}
+
+async function resetPassword() {
+  if (!resetPasswordValue.value || resetPasswordValue.value.length < 4) {
+    credentialError.value = 'Heslo musí mať aspoň 4 znaky'
+    return
+  }
+  credentialSaving.value = true
+  credentialError.value = ''
+  try {
+    await api.adminResetFriendPassword(credentialFriend.value.id, resetPasswordValue.value)
+    showResetPasswordModal.value = false
+    credentialSuccess.value = `Heslo pre ${credentialFriend.value.name} bolo resetované`
+    setTimeout(() => { credentialSuccess.value = '' }, 3000)
+    await loadFriends()
+  } catch (e) {
+    credentialError.value = e.message
+  } finally {
+    credentialSaving.value = false
+  }
+}
+
+function openSetUsername(friend) {
+  credentialFriend.value = friend
+  setUsernameValue.value = friend.username || ''
+  credentialError.value = ''
+  credentialSuccess.value = ''
+  showSetUsernameModal.value = true
+}
+
+async function setUsername() {
+  if (!setUsernameValue.value.trim()) {
+    credentialError.value = 'Užívateľské meno je povinné'
+    return
+  }
+  credentialSaving.value = true
+  credentialError.value = ''
+  try {
+    await api.adminSetFriendUsername(credentialFriend.value.id, setUsernameValue.value.toLowerCase().trim())
+    showSetUsernameModal.value = false
+    credentialSuccess.value = `Username pre ${credentialFriend.value.name} bol nastavený`
+    setTimeout(() => { credentialSuccess.value = '' }, 3000)
+    await loadFriends()
+  } catch (e) {
+    credentialError.value = e.message
+  } finally {
+    credentialSaving.value = false
+  }
+}
+
 function goToDashboard() {
   router.push('/admin/dashboard')
 }
@@ -137,6 +245,10 @@ async function logout() {
         <AlertDescription>{{ error }}</AlertDescription>
       </Alert>
 
+      <Alert v-if="credentialSuccess" class="mb-4 border-green-500 bg-green-50 text-green-800">
+        <AlertDescription>{{ credentialSuccess }}</AlertDescription>
+      </Alert>
+
       <div v-if="loading" class="text-center py-12 text-muted-foreground">
         Načítavam...
       </div>
@@ -157,6 +269,9 @@ async function logout() {
               <TableHead>Poznámka</TableHead>
               <TableHead class="text-right">Zostatok</TableHead>
               <TableHead class="text-center">Stav</TableHead>
+              <TableHead class="text-center">Prihlásenie</TableHead>
+              <TableHead class="text-center">Káva</TableHead>
+              <TableHead class="text-center">Pekáreň</TableHead>
               <TableHead class="text-right">Akcie</TableHead>
             </TableRow>
           </TableHeader>
@@ -179,10 +294,75 @@ async function logout() {
                   </Badge>
                 </div>
               </TableCell>
+              <TableCell class="text-center">
+                <div class="flex flex-col items-center gap-1">
+                  <Badge v-if="friend.hasCredentials" variant="outline" class="border-green-500 text-green-700 text-xs">
+                    {{ friend.username || 'Nastavené' }}
+                  </Badge>
+                  <span v-else class="text-xs text-muted-foreground">-</span>
+                </div>
+              </TableCell>
+              <TableCell class="text-center">
+                <input
+                  type="checkbox"
+                  :checked="!friend.subscriptions?.length || friend.subscriptions.includes('coffee')"
+                  @change="toggleSubscription(friend, 'coffee')"
+                  class="w-4 h-4 rounded border-gray-300 cursor-pointer"
+                />
+              </TableCell>
+              <TableCell class="text-center">
+                <input
+                  type="checkbox"
+                  :checked="!friend.subscriptions?.length || friend.subscriptions.includes('bakery')"
+                  @change="toggleSubscription(friend, 'bakery')"
+                  class="w-4 h-4 rounded border-gray-300 cursor-pointer"
+                />
+              </TableCell>
               <TableCell class="text-right">
-                <Button variant="ghost" size="sm" @click="openModal(friend)">Upraviť</Button>
-                <Button variant="ghost" size="sm" @click="router.push(`/admin/friends/${friend.id}`)">Detail</Button>
-                <Button variant="ghost" size="sm" class="text-destructive hover:text-destructive" @click="deleteFriend(friend.id)">Vymazať</Button>
+                <div class="relative inline-block">
+                  <Button variant="ghost" size="icon" class="h-8 w-8" @click="toggleMenu(friend.id)">
+                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                      <circle cx="12" cy="5" r="2" />
+                      <circle cx="12" cy="12" r="2" />
+                      <circle cx="12" cy="19" r="2" />
+                    </svg>
+                  </Button>
+                  <div
+                    v-if="openMenuId === friend.id"
+                    class="absolute right-0 top-full mt-1 z-50 bg-white border rounded-md shadow-lg py-1 min-w-[140px]"
+                  >
+                    <button
+                      class="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors"
+                      @click="openModal(friend); closeMenu()"
+                    >
+                      Upraviť
+                    </button>
+                    <button
+                      class="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors"
+                      @click="router.push(`/admin/friends/${friend.id}`); closeMenu()"
+                    >
+                      Detail
+                    </button>
+                    <button
+                      class="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors"
+                      @click="openSetUsername(friend); closeMenu()"
+                    >
+                      Nastaviť username
+                    </button>
+                    <button
+                      class="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors"
+                      @click="openResetPassword(friend); closeMenu()"
+                    >
+                      Resetovať heslo
+                    </button>
+                    <button
+                      class="w-full text-left px-3 py-2 text-sm text-destructive hover:bg-muted transition-colors"
+                      @click="deleteFriend(friend.id); closeMenu()"
+                    >
+                      Vymazať
+                    </button>
+                  </div>
+                </div>
               </TableCell>
             </TableRow>
           </TableBody>
@@ -235,6 +415,70 @@ async function logout() {
           </Button>
           <Button @click="saveFriend" :disabled="!friendName.trim()">
             {{ editingFriend ? 'Uložiť' : 'Pridať' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Reset Password Modal -->
+    <Dialog :open="showResetPasswordModal" @update:open="showResetPasswordModal = $event">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Resetovať heslo — {{ credentialFriend?.name }}</DialogTitle>
+        </DialogHeader>
+        <div class="space-y-4 py-4">
+          <Alert v-if="credentialError" variant="destructive">
+            <AlertDescription>{{ credentialError }}</AlertDescription>
+          </Alert>
+          <div class="space-y-2">
+            <Label>Nové heslo</Label>
+            <Input
+              v-model="resetPasswordValue"
+              type="text"
+              placeholder="Minimálne 4 znaky"
+              :disabled="credentialSaving"
+              @keyup.enter="resetPassword()"
+            />
+            <p class="text-xs text-muted-foreground">Heslo je zobrazené ako text pre jednoduchšie zdieľanie s priateľom.</p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="showResetPasswordModal = false" :disabled="credentialSaving">Zrušiť</Button>
+          <Button @click="resetPassword()" :disabled="credentialSaving || !resetPasswordValue">
+            {{ credentialSaving ? 'Ukladám...' : 'Resetovať heslo' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Set Username Modal -->
+    <Dialog :open="showSetUsernameModal" @update:open="showSetUsernameModal = $event">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Nastaviť username — {{ credentialFriend?.name }}</DialogTitle>
+        </DialogHeader>
+        <div class="space-y-4 py-4">
+          <Alert v-if="credentialError" variant="destructive">
+            <AlertDescription>{{ credentialError }}</AlertDescription>
+          </Alert>
+          <div class="space-y-2">
+            <Label>Užívateľské meno</Label>
+            <Input
+              v-model="setUsernameValue"
+              type="text"
+              placeholder="napr. janko_hrasko"
+              autocapitalize="none"
+              autocorrect="off"
+              :disabled="credentialSaving"
+              @keyup.enter="setUsername()"
+            />
+            <p class="text-xs text-muted-foreground">Len malé písmená, čísla, bodka (.), podtržník (_) a pomlčka (-). Min. 3 znaky.</p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="showSetUsernameModal = false" :disabled="credentialSaving">Zrušiť</Button>
+          <Button @click="setUsername()" :disabled="credentialSaving || !setUsernameValue">
+            {{ credentialSaving ? 'Ukladám...' : 'Uložiť username' }}
           </Button>
         </DialogFooter>
       </DialogContent>

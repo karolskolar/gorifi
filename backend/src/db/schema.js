@@ -369,10 +369,49 @@ async function initDb() {
     db.run('ALTER TABLE products ADD COLUMN composition TEXT');
   } catch (e) {}
 
+  // Migration: Add username column for per-user authentication
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN username TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Migration: Add password_hash column for per-user authentication (bcrypt)
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN password_hash TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Add UNIQUE index on username if not exists
+  try {
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_friends_username ON friends(username) WHERE username IS NOT NULL');
+  } catch (e) {
+    // Index already exists or other error, ignore
+  }
+
+  // Create friend_sessions table for token-based authentication
+  db.run(`
+    CREATE TABLE IF NOT EXISTS friend_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      friend_id INTEGER NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      expires_at INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE
+    )
+  `);
+
   // Initialize friends_password if not exists (empty string means not set)
   const friendsPassword = db.prepare("SELECT * FROM settings WHERE key = 'friends_password'").get();
   if (!friendsPassword) {
     db.run("INSERT INTO settings (key, value) VALUES ('friends_password', '')");
+  }
+
+  // Initialize auth_mode if not exists (default: legacy)
+  const authModeCheck = db.exec("SELECT * FROM settings WHERE key = 'auth_mode'");
+  if (!authModeCheck.length || !authModeCheck[0].values.length) {
+    db.run("INSERT INTO settings (key, value) VALUES ('auth_mode', 'legacy')");
   }
 
   saveDb();

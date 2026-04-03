@@ -1,29 +1,45 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import db, { generateUid } from '../db/schema.js';
+import { validateFriendAuth, createFriendSession, invalidateFriendSessions, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
 
 const router = Router();
 
-// Helper: Validate global friends password from X-Friends-Password header
-function validateFriendsPassword(req) {
-  const setting = db.prepare("SELECT value FROM settings WHERE key = 'friends_password'").get();
-  if (!setting || !setting.value) {
-    return { error: 'Heslo pre priateľov nie je nastavené', status: 400 };
-  }
+// GET /friends/auth-mode - Public endpoint to get current auth mode
+router.get('/auth-mode', (req, res) => {
+  res.json({ authMode: getAuthMode() });
+});
 
-  const password = req.headers['x-friends-password'];
-  if (password !== setting.value) {
-    return { error: 'Nesprávne heslo', status: 401 };
-  }
-
-  return { valid: true };
-}
-
-// POST /friends/auth - Global authentication for friends
+// POST /friends/auth - Authentication for friends (shared password or personal credentials)
 router.post('/auth', (req, res) => {
-  const { password, friendId } = req.body;
+  const { password, friendId, username } = req.body;
+  const authMode = getAuthMode();
 
-  // Validate password against global friends_password
+  // Personal login: username + password
+  if (username) {
+    const friend = db.prepare('SELECT * FROM friends WHERE username = ? AND active = 1').get(username.toLowerCase());
+    if (!friend || !friend.password_hash) {
+      return res.status(401).json({ error: 'Nesprávne prihlasovacie údaje' });
+    }
+
+    if (!comparePassword(password, friend.password_hash)) {
+      return res.status(401).json({ error: 'Nesprávne prihlasovacie údaje' });
+    }
+
+    const session = createFriendSession(friend.id);
+    return res.json({
+      success: true,
+      friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username },
+      token: session.token,
+      hasCredentials: true
+    });
+  }
+
+  // Shared password login: password + friendId
+  if (authMode === 'modern') {
+    return res.status(401).json({ error: 'Spoločné heslo nie je povolené. Prihláste sa menom a heslom.' });
+  }
+
   const setting = db.prepare("SELECT value FROM settings WHERE key = 'friends_password'").get();
   if (!setting || !setting.value) {
     return res.status(400).json({ error: 'Heslo pre priateľov nie je nastavené' });
@@ -33,21 +49,126 @@ router.post('/auth', (req, res) => {
     return res.status(401).json({ error: 'Nesprávne heslo' });
   }
 
-  // Validate friend exists and is active (optional - honor system)
   if (friendId) {
-    const friend = db.prepare('SELECT id, name FROM friends WHERE id = ? AND active = 1').get(friendId);
+    const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(friendId);
     if (!friend) {
       return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
     }
-    return res.json({ success: true, friend });
+
+    const session = createFriendSession(friend.id);
+    return res.json({
+      success: true,
+      friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username },
+      token: session.token,
+      hasCredentials: !!friend.password_hash
+    });
   }
 
   res.json({ success: true });
 });
 
+// POST /friends/:id/setup-credentials - Set username + password for first time
+router.post('/:id/setup-credentials', (req, res) => {
+  const validation = validateFriendAuth(req);
+  if (validation.error) {
+    return res.status(validation.status).json({ error: validation.error });
+  }
+
+  const friendId = req.params.id;
+
+  // If authenticated via token, verify the token owner matches the requested friend
+  if (validation.friendId && String(validation.friendId) !== String(friendId)) {
+    return res.status(403).json({ error: 'Nemáte oprávnenie upravovať iného používateľa' });
+  }
+
+  const { username, password } = req.body;
+
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(friendId);
+  if (!friend) {
+    return res.status(404).json({ error: 'Priateľ nebol nájdený' });
+  }
+
+  // First-time only — if credentials already set, use change-password instead
+  if (friend.password_hash && friend.username) {
+    return res.status(409).json({ error: 'Prihlasovacie údaje sú už nastavené. Použite zmenu hesla.' });
+  }
+
+  // Validate username
+  const usernameError = validateUsername(username);
+  if (usernameError) {
+    return res.status(400).json({ error: usernameError });
+  }
+
+  if (isUsernameTaken(username.toLowerCase(), friendId)) {
+    return res.status(409).json({ error: 'Užívateľské meno je už obsadené' });
+  }
+
+  if (!password || password.length < 4) {
+    return res.status(400).json({ error: 'Heslo musí mať aspoň 4 znaky' });
+  }
+
+  db.prepare('UPDATE friends SET username = ?, password_hash = ? WHERE id = ?')
+    .run(username.toLowerCase(), hashPassword(password), friendId);
+
+  // Create new session with credentials
+  invalidateFriendSessions(friendId);
+  const session = createFriendSession(friendId);
+
+  const updated = db.prepare('SELECT id, name, uid, username FROM friends WHERE id = ?').get(friendId);
+  res.json({ success: true, friend: updated, token: session.token });
+});
+
+// PUT /friends/:id/change-password - Change own password (requires token auth)
+router.put('/:id/change-password', (req, res) => {
+  const validation = validateFriendAuth(req);
+  if (validation.error) {
+    return res.status(validation.status).json({ error: validation.error });
+  }
+
+  // Must be authenticated via token and match the friend ID
+  if (!validation.friendId || String(validation.friendId) !== String(req.params.id)) {
+    return res.status(403).json({ error: 'Nemáte oprávnenie meniť heslo iného používateľa' });
+  }
+
+  const friendId = req.params.id;
+  const { currentPassword, newPassword } = req.body;
+
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(friendId);
+  if (!friend || !friend.password_hash) {
+    return res.status(400).json({ error: 'Nemáte nastavené osobné heslo' });
+  }
+
+  if (!comparePassword(currentPassword, friend.password_hash)) {
+    return res.status(401).json({ error: 'Aktuálne heslo nie je správne' });
+  }
+
+  if (!newPassword || newPassword.length < 4) {
+    return res.status(400).json({ error: 'Nové heslo musí mať aspoň 4 znaky' });
+  }
+
+  db.prepare('UPDATE friends SET password_hash = ? WHERE id = ?').run(hashPassword(newPassword), friendId);
+
+  // Invalidate all sessions and create a new one
+  invalidateFriendSessions(friendId);
+  const session = createFriendSession(friendId);
+
+  res.json({ success: true, token: session.token });
+});
+
+// GET /friends/check-username/:username - Public check if username is available
+router.get('/check-username/:username', (req, res) => {
+  const username = req.params.username.toLowerCase();
+  const usernameError = validateUsername(username);
+  if (usernameError) {
+    return res.json({ available: false, error: usernameError });
+  }
+  const taken = isUsernameTaken(username);
+  res.json({ available: !taken });
+});
+
 // GET /friends/cycles - List cycles for authenticated friend
 router.get('/cycles', (req, res) => {
-  const validation = validateFriendsPassword(req);
+  const validation = validateFriendAuth(req);
   if (validation.error) {
     return res.status(validation.status).json({ error: validation.error });
   }
@@ -68,6 +189,7 @@ router.get('/cycles', (req, res) => {
     let orderTotal = 0;
     let orderStatus = null;
     let orderKilos = 0;
+    let orderItemCount = 0;
 
     if (friendId) {
       const order = db.prepare(`
@@ -99,6 +221,14 @@ router.get('/cycles', (req, res) => {
           WHERE oi.order_id = ?
         `).get(order.id);
         orderKilos = friendKilosResult.orderKilos;
+
+        // Calculate total item count (useful for bakery)
+        const itemCountResult = db.prepare(`
+          SELECT COALESCE(SUM(oi.quantity), 0) as itemCount
+          FROM order_items oi
+          WHERE oi.order_id = ?
+        `).get(order.id);
+        orderItemCount = itemCountResult.itemCount;
       }
     }
 
@@ -107,7 +237,8 @@ router.get('/cycles', (req, res) => {
       hasOrder,
       orderTotal,
       orderStatus,
-      orderKilos
+      orderKilos,
+      orderItemCount
     };
   });
 
@@ -145,17 +276,37 @@ router.get('/', (req, res) => {
        GROUP BY f.id
        ORDER BY f.name`;
   const friends = db.prepare(sql).all();
+
+  // Attach subscriptions and credential info to each friend
+  const allSubs = db.prepare('SELECT friend_id, type FROM friend_subscriptions').all();
+  const subsMap = {};
+  for (const s of allSubs) {
+    if (!subsMap[s.friend_id]) subsMap[s.friend_id] = [];
+    subsMap[s.friend_id].push(s.type);
+  }
+  for (const f of friends) {
+    f.subscriptions = subsMap[f.id] || [];
+    f.hasCredentials = !!f.password_hash;
+    // Don't expose password_hash to clients
+    delete f.password_hash;
+  }
+
   res.json(friends);
 });
 
 // Get friend balance and recent transactions (for friend portal, requires friend auth)
 router.get('/:id/balance', (req, res) => {
-  const validation = validateFriendsPassword(req);
+  const validation = validateFriendAuth(req);
   if (validation.error) {
     return res.status(validation.status).json({ error: validation.error });
   }
 
   const friendId = req.params.id;
+
+  // If authenticated via token, verify the token owner matches
+  if (validation.friendId && String(validation.friendId) !== String(friendId)) {
+    return res.status(403).json({ error: 'Nemáte oprávnenie zobrazovať údaje iného používateľa' });
+  }
 
   const friend = db.prepare(`
     SELECT f.id, f.name, COALESCE(SUM(t.amount), 0) as balance
@@ -286,6 +437,10 @@ router.patch('/:id', (req, res) => {
   if (active !== undefined) {
     updates.push('active = ?');
     values.push(active ? 1 : 0);
+    // Invalidate sessions when deactivating
+    if (!active) {
+      invalidateFriendSessions(req.params.id);
+    }
   }
 
   if (updates.length > 0) {
@@ -300,13 +455,18 @@ router.patch('/:id', (req, res) => {
 // Update own profile (friend can update their login name only) - requires friends password
 // Note: display_name is admin-only and cannot be changed by friends
 router.patch('/:id/profile', (req, res) => {
-  const validation = validateFriendsPassword(req);
+  const validation = validateFriendAuth(req);
   if (validation.error) {
     return res.status(validation.status).json({ error: validation.error });
   }
 
   const { name } = req.body;
   const friendId = req.params.id;
+
+  // If authenticated via token, verify the token owner matches
+  if (validation.friendId && String(validation.friendId) !== String(friendId)) {
+    return res.status(403).json({ error: 'Nemáte oprávnenie upravovať iného používateľa' });
+  }
 
   const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(friendId);
   if (!friend) {
@@ -321,6 +481,74 @@ router.patch('/:id/profile', (req, res) => {
   }
 
   const updated = db.prepare('SELECT id, name, uid FROM friends WHERE id = ?').get(friendId);
+  res.json(updated);
+});
+
+// Helper: Verify admin token
+function requireAdmin(req, res) {
+  const token = req.headers['x-admin-token'];
+  if (!token) {
+    res.status(401).json({ error: 'Neautorizovaný prístup' });
+    return false;
+  }
+  const setting = db.prepare("SELECT value FROM settings WHERE key = 'admin_token'").get();
+  if (!setting) {
+    res.status(401).json({ error: 'Neautorizovaný prístup' });
+    return false;
+  }
+  try {
+    const { token: stored, expiry } = JSON.parse(setting.value);
+    if (token === stored && Date.now() < expiry) return true;
+  } catch {}
+  res.status(401).json({ error: 'Neautorizovaný prístup' });
+  return false;
+}
+
+// Admin: Reset friend password
+router.put('/:id/reset-password', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const { password } = req.body;
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
+
+  if (!friend) {
+    return res.status(404).json({ error: 'Priateľ nebol nájdený' });
+  }
+
+  if (!password || password.length < 4) {
+    return res.status(400).json({ error: 'Heslo musí mať aspoň 4 znaky' });
+  }
+
+  db.prepare('UPDATE friends SET password_hash = ? WHERE id = ?').run(hashPassword(password), req.params.id);
+  invalidateFriendSessions(req.params.id);
+
+  res.json({ success: true });
+});
+
+// Admin: Set/change friend username
+router.put('/:id/admin-username', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const { username } = req.body;
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
+
+  if (!friend) {
+    return res.status(404).json({ error: 'Priateľ nebol nájdený' });
+  }
+
+  const usernameError = validateUsername(username);
+  if (usernameError) {
+    return res.status(400).json({ error: usernameError });
+  }
+
+  if (isUsernameTaken(username.toLowerCase(), friend.id)) {
+    return res.status(409).json({ error: 'Užívateľské meno je už obsadené' });
+  }
+
+  db.prepare('UPDATE friends SET username = ? WHERE id = ?').run(username.toLowerCase(), req.params.id);
+  invalidateFriendSessions(req.params.id);
+  const updated = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
+  delete updated.password_hash;
   res.json(updated);
 });
 

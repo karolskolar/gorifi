@@ -15,6 +15,8 @@ const router = useRouter()
 const friendsPassword = ref('')
 const paymentIban = ref('')
 const paymentRevolutUsername = ref('')
+const authMode = ref('legacy')
+const savingAuthMode = ref(false)
 const loading = ref(true)
 const saving = ref(false)
 const savingPayment = ref(false)
@@ -62,6 +64,7 @@ async function loadSettings() {
     friendsPassword.value = settings.friendsPassword || ''
     paymentIban.value = settings.paymentIban || ''
     paymentRevolutUsername.value = settings.paymentRevolutUsername || ''
+    authMode.value = settings.authMode || 'legacy'
     pickupLocations.value = locations
   } catch (e) {
     error.value = e.message
@@ -148,6 +151,23 @@ async function saveSettings() {
     error.value = e.message
   } finally {
     saving.value = false
+  }
+}
+
+async function saveAuthMode() {
+  savingAuthMode.value = true
+  error.value = ''
+  successMessage.value = ''
+
+  try {
+    const result = await api.updateAdminSettings({ authMode: authMode.value })
+    authMode.value = result.authMode
+    successMessage.value = 'Režim autentifikácie bol uložený'
+    setTimeout(() => { successMessage.value = '' }, 3000)
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    savingAuthMode.value = false
   }
 }
 
@@ -241,6 +261,52 @@ async function savePaymentSettings() {
             <p class="text-xs text-muted-foreground mt-1">
               Priatelia pristupia na hlavnu stranku, kde sa prihlasia pomocou tohto hesla.
             </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- Auth Mode -->
+      <Card v-if="!loading" class="mt-6">
+        <CardHeader>
+          <CardTitle>Režim autentifikácie</CardTitle>
+          <CardDescription>
+            Ovládajte, ako sa priatelia prihlasujú do portálu.
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-4">
+          <div class="space-y-3">
+            <label class="flex items-start gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/50" :class="authMode === 'legacy' ? 'border-primary bg-primary/5' : ''">
+              <input type="radio" v-model="authMode" value="legacy" class="mt-1" />
+              <div>
+                <div class="font-medium">Spoločné heslo (pôvodné)</div>
+                <p class="text-xs text-muted-foreground">Priatelia si vyberú meno zo zoznamu a zadajú spoločné heslo. Aktuálne správanie.</p>
+              </div>
+            </label>
+            <label class="flex items-start gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/50" :class="authMode === 'transition' ? 'border-primary bg-primary/5' : ''">
+              <input type="radio" v-model="authMode" value="transition" class="mt-1" />
+              <div>
+                <div class="font-medium">Prechodný režim</div>
+                <p class="text-xs text-muted-foreground">Obe možnosti prihlásenia — spoločné heslo aj osobné prihlásenie. Po prihlásení spoločným heslom budú priatelia vyzvaní na nastavenie vlastných prihlasovacích údajov.</p>
+              </div>
+            </label>
+            <label class="flex items-start gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/50" :class="authMode === 'modern' ? 'border-primary bg-primary/5' : ''">
+              <input type="radio" v-model="authMode" value="modern" class="mt-1" />
+              <div>
+                <div class="font-medium">Osobné prihlásenie</div>
+                <p class="text-xs text-muted-foreground">Len užívateľské meno a heslo. Zoznam mien sa nezobrazuje.</p>
+                <Alert v-if="authMode === 'modern'" class="mt-2 border-yellow-300 bg-yellow-50">
+                  <AlertDescription class="text-yellow-800 text-xs">
+                    Priatelia bez nastavených prihlasovacích údajov sa nebudú môcť prihlásiť. Pred prepnutím overte, že všetci majú nastavené údaje.
+                  </AlertDescription>
+                </Alert>
+              </div>
+            </label>
+          </div>
+
+          <div class="pt-4">
+            <Button @click="saveAuthMode" :disabled="savingAuthMode">
+              {{ savingAuthMode ? 'Ukladám...' : 'Uložiť režim' }}
+            </Button>
           </div>
         </CardContent>
       </Card>
