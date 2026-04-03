@@ -9,6 +9,8 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import CycleTrendsChart from '@/components/analytics/CycleTrendsChart.vue'
+import SegmentDonutChart from '@/components/analytics/SegmentDonutChart.vue'
+import FriendAnalyticsTable from '@/components/analytics/FriendAnalyticsTable.vue'
 
 const router = useRouter()
 const loading = ref(true)
@@ -432,8 +434,28 @@ const comparison = computed(() => {
         </div>
 
         <!-- ============================== -->
-        <!-- Part F: Growth Milestones       -->
+        <!-- Part F: Friend Segments         -->
         <!-- ============================== -->
+        <Card v-if="data.friends && data.friends.length > 0">
+          <CardHeader>
+            <CardTitle>Segmenty priateľov</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <SegmentDonutChart :friends="data.friends" />
+          </CardContent>
+        </Card>
+
+        <!-- ============================== -->
+        <!-- Part G: Friend Table            -->
+        <!-- ============================== -->
+        <Card v-if="data.friends && data.friends.length > 0">
+          <CardHeader>
+            <CardTitle>Prehľad priateľov</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <FriendAnalyticsTable :friends="data.friends" />
+          </CardContent>
+        </Card>
 
       </div>
     </main>
