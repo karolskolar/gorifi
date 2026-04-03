@@ -67,7 +67,7 @@ router.get('/coffee', (req, res) => {
 
     // 2. Get all submitted orders for those cycles
     const orders = db.all(
-      `SELECT o.*, f.name as friend_name, f.active as friend_active
+      `SELECT o.*, o.total AS order_value, f.name as friend_name, f.active as friend_active
        FROM orders o
        JOIN friends f ON o.friend_id = f.id
        WHERE o.cycle_id IN (${placeholders}) AND o.status = 'submitted'`,
@@ -126,10 +126,10 @@ router.get('/coffee', (req, res) => {
       let totalKg = 0;
       let totalValue = 0;
       for (const order of cycleOrders) {
+        totalValue += order.order_value || 0;
         const orderItems = itemsByOrder[order.id] || [];
         for (const item of orderItems) {
           totalKg += variantToKg(item.variant, item.quantity);
-          totalValue += item.price * item.quantity;
         }
       }
 
@@ -171,7 +171,7 @@ router.get('/coffee', (req, res) => {
     // 5. Per-friend stats
     // =========================================================
     // Get ALL active friends (including those with no orders)
-    const allActiveFriends = db.all("SELECT id, name, active FROM friends WHERE active = 1");
+    const allActiveFriends = db.all("SELECT id, name, display_name, active FROM friends WHERE active = 1");
 
     // Also get friends who have orders but may be inactive
     const allFriendIdsWithOrders = [...new Set(orders.map(o => o.friend_id))];
@@ -186,7 +186,7 @@ router.get('/coffee', (req, res) => {
     if (allFriendIdsWithOrders.length > 0) {
       const fPlaceholders = allFriendIdsWithOrders.map(() => '?').join(',');
       const friendRows = db.all(
-        `SELECT id, name, active FROM friends WHERE id IN (${fPlaceholders})`,
+        `SELECT id, name, display_name, active FROM friends WHERE id IN (${fPlaceholders})`,
         allFriendIdsWithOrders
       );
       for (const f of friendRows) {
@@ -198,7 +198,7 @@ router.get('/coffee', (req, res) => {
     const allFriendIds = [...new Set([...allActiveFriends.map(f => f.id), ...allFriendIdsWithOrders])];
 
     // Last N cycle IDs for classification (up to last 5)
-    const lastNCycleIds = cycleIds.slice(-5);
+    const lastNCycleIds = cycleIds.slice(-3);
 
     const friendStats = allFriendIds.map(friendId => {
       const friend = friendMap[friendId];
@@ -229,11 +229,11 @@ router.get('/coffee', (req, res) => {
         const cycleOrders = friendOrders.filter(o => o.cycle_id === cycleId);
         let cycleKg = 0;
         for (const order of cycleOrders) {
+          totalValue += order.order_value || 0;
           const orderItems = itemsByOrder[order.id] || [];
           for (const item of orderItems) {
             const kg = variantToKg(item.variant, item.quantity);
             cycleKg += kg;
-            totalValue += item.price * item.quantity;
           }
         }
         if (cycleOrders.length > 0) {
@@ -259,7 +259,7 @@ router.get('/coffee', (req, res) => {
 
       return {
         id: friendId,
-        name: friend.name,
+        name: friend.display_name || friend.name,
         active: !!friend.active,
         cycles_participated: cyclesParticipated,
         total_cycles: totalCycles,
@@ -322,16 +322,30 @@ router.get('/coffee', (req, res) => {
       ? roundKg(last3Cycles.reduce((sum, c) => sum + c.avg_kg_per_person, 0) / last3Cycles.length)
       : 0;
 
-    // Top 5 friends by total kg and their share
-    const sortedFriends = [...friendStats].sort((a, b) => b.total_kg - a.total_kg);
-    const top5 = sortedFriends.slice(0, 5);
-    const totalKgAllFriends = friendStats.reduce((sum, f) => sum + f.total_kg, 0);
-    const top5Share = totalKgAllFriends > 0
-      ? Math.round((top5.reduce((sum, f) => sum + f.total_kg, 0) / totalKgAllFriends) * 100) / 100
+    // Top 5 friends by kg in last cycle and their share
+    const lastCycleId = cycleIds[cycleIds.length - 1];
+    const lastCycleOrders = ordersByCycle[lastCycleId] || [];
+    const lastCycleFriendKg = {};
+    for (const order of lastCycleOrders) {
+      const orderItems = itemsByOrder[order.id] || [];
+      let kg = 0;
+      for (const item of orderItems) {
+        kg += variantToKg(item.variant, item.quantity);
+      }
+      lastCycleFriendKg[order.friend_id] = (lastCycleFriendKg[order.friend_id] || 0) + kg;
+    }
+    const lastCycleFriendKgArr = Object.entries(lastCycleFriendKg)
+      .map(([id, kg]) => ({ id: Number(id), kg }))
+      .sort((a, b) => b.kg - a.kg);
+    const top5LastCycle = lastCycleFriendKgArr.slice(0, 5);
+    const totalKgLastCycle = lastCycleFriendKgArr.reduce((sum, f) => sum + f.kg, 0);
+    const top5Kg = top5LastCycle.reduce((sum, f) => sum + f.kg, 0);
+    const top5Share = totalKgLastCycle > 0
+      ? Math.round((top5Kg / totalKgLastCycle) * 100)
       : 0;
 
     // Concentration warning if top 5 account for >40%
-    const concentrationWarning = top5Share > 0.4;
+    const concentrationWarning = top5Share > 40;
 
     // Minimum viable base: how many friends needed to sustain current tier alone
     const minViableBase = currentTier && avgKgPerPerson > 0
