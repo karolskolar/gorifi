@@ -225,6 +225,9 @@ export const api = {
     body: data
   }),
   deleteTransaction: (id) => request(`/transactions/${id}`, { method: 'DELETE' }),
+
+  // Analytics
+  getCoffeeAnalytics: () => adminRequest('/analytics/coffee'),
 }
 
 export default api
