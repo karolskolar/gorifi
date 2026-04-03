@@ -1,14 +1,22 @@
 <script setup>
-import { ref, watchEffect, onMounted } from 'vue'
+import { ref, computed, watchEffect, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 
 const router = useRouter()
 const loading = ref(true)
 const error = ref('')
 const data = ref(null)
+
+// Simulator state
+const simFriends = ref(10)
+const simAvgKg = ref(1.0)
 
 watchEffect(() => {
   document.title = 'Štatistiky káva - Gorifi Admin'
@@ -17,11 +25,106 @@ watchEffect(() => {
 onMounted(async () => {
   try {
     data.value = await api.getCoffeeAnalytics()
+    // Initialize simulator defaults from data
+    if (data.value && data.value.cycles.length > 0) {
+      const lastCycle = data.value.cycles[data.value.cycles.length - 1]
+      simFriends.value = lastCycle.num_friends || 10
+      simAvgKg.value = data.value.summary.avg_kg_per_person || 1.0
+    }
   } catch (e) {
     error.value = e.message
   } finally {
     loading.value = false
   }
+})
+
+// === Tier Progress computed ===
+const rollingAvg = computed(() => data.value?.summary?.rolling_avg_kg_3 ?? 0)
+const avgKgPerPerson = computed(() => data.value?.summary?.avg_kg_per_person ?? 0)
+const buyerDiscount = computed(() => data.value?.summary?.buyer_discount ?? 0.30)
+
+const BAR_MAX = 60
+
+const tierColor = computed(() => {
+  const kg = rollingAvg.value
+  if (kg >= 51) return 'green'
+  if (kg >= 26) return 'blue'
+  return 'amber'
+})
+
+const tierColorClasses = computed(() => {
+  const c = tierColor.value
+  if (c === 'green') return { bar: 'bg-green-500', text: 'text-green-700', badge: 'bg-green-100 text-green-800 border-green-300' }
+  if (c === 'blue') return { bar: 'bg-blue-500', text: 'text-blue-700', badge: 'bg-blue-100 text-blue-800 border-blue-300' }
+  return { bar: 'bg-amber-500', text: 'text-amber-700', badge: 'bg-amber-100 text-amber-800 border-amber-300' }
+})
+
+const progressPercent = computed(() => Math.min((rollingAvg.value / BAR_MAX) * 100, 100))
+
+const currentTier = computed(() => data.value?.summary?.current_tier)
+const nextTier = computed(() => data.value?.summary?.next_tier)
+const distanceToNext = computed(() => data.value?.summary?.distance_to_next_tier ?? 0)
+const friendsNeeded = computed(() => data.value?.summary?.friends_needed_for_next_tier)
+const isMaxTier = computed(() => !nextTier.value && currentTier.value)
+
+// === Growth Roadmap computed ===
+const milestones = computed(() => {
+  const kg = rollingAvg.value
+  const avgPp = avgKgPerPerson.value
+  return [
+    {
+      label: 'Dosiahnuť 5 kg (veľkoobchodná cena, 30% zľava)',
+      done: kg >= 5,
+      friendsNeeded: kg < 5 && avgPp > 0 ? Math.ceil((5 - kg) / avgPp) : null,
+    },
+    {
+      label: 'Dosiahnuť 26 kg stabilne (35% zľava → 5% marža)',
+      done: kg >= 26,
+      friendsNeeded: kg < 26 && avgPp > 0 ? Math.ceil((26 - kg) / avgPp) : null,
+    },
+    {
+      label: 'Dosiahnuť 51 kg (40% zľava → 10% marža)',
+      done: kg >= 51,
+      friendsNeeded: kg < 51 && avgPp > 0 ? Math.ceil((51 - kg) / avgPp) : null,
+    },
+  ]
+})
+
+// === Scenario Simulator computed ===
+const simTotalKg = computed(() => {
+  return Math.round(simFriends.value * simAvgKg.value * 10) / 10
+})
+
+const simTier = computed(() => {
+  const kg = simTotalKg.value
+  if (kg >= 51) return { discount: 0.40, label: '40%' }
+  if (kg >= 26) return { discount: 0.35, label: '35%' }
+  if (kg >= 5) return { discount: 0.30, label: '30%' }
+  return null
+})
+
+const simTierLabel = computed(() => {
+  if (!simTier.value) return 'Bez zľavy'
+  return simTier.value.label + ' zľava'
+})
+
+const avgPricePerKg = computed(() => {
+  if (!data.value || data.value.cycles.length === 0) return 0
+  const lastCycle = data.value.cycles[data.value.cycles.length - 1]
+  return lastCycle.total_kg > 0 ? lastCycle.total_value / lastCycle.total_kg : 0
+})
+
+const simMarginPerCycle = computed(() => {
+  if (!simTier.value) return 0
+  const bd = buyerDiscount.value
+  if (simTier.value.discount <= bd) return 0
+  const totalValue = simTotalKg.value * avgPricePerKg.value
+  return Math.round(totalValue * (1 - (1 - simTier.value.discount) / (1 - bd)) * 100) / 100
+})
+
+const simAnnualMargin = computed(() => {
+  // Assume ~12 cycles per year (monthly)
+  return Math.round(simMarginPerCycle.value * 12 * 100) / 100
 })
 </script>
 
@@ -55,7 +158,201 @@ onMounted(async () => {
       </div>
 
       <div v-else-if="data" class="space-y-8">
-        <p class="text-muted-foreground">Analytics data loaded: {{ data.cycles.length }} cycles, {{ data.friends.length }} friends.</p>
+
+        <!-- ============================== -->
+        <!-- Part A: Tier Progress Card      -->
+        <!-- ============================== -->
+        <Card>
+          <CardHeader>
+            <CardTitle class="flex items-center gap-3">
+              Úroveň zľavy
+              <Badge v-if="isMaxTier" class="bg-green-100 text-green-800 border-green-300">
+                Maximálna úroveň zľavy dosiahnutá!
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <!-- Large rolling average display -->
+            <div class="flex items-baseline gap-2 mb-4">
+              <span :class="['text-4xl font-bold', tierColorClasses.text]">
+                {{ rollingAvg }} kg
+              </span>
+              <span class="text-muted-foreground text-sm">priemer za posledné 3 cykly</span>
+            </div>
+
+            <!-- Progress bar with tier markers -->
+            <div class="relative mb-6">
+              <div class="w-full h-4 bg-muted rounded-full overflow-hidden">
+                <div
+                  :class="['h-full rounded-full transition-all duration-500', tierColorClasses.bar]"
+                  :style="{ width: progressPercent + '%' }"
+                />
+              </div>
+              <!-- Tier threshold markers -->
+              <div class="relative w-full h-6 mt-1">
+                <!-- 26 kg marker (35%) -->
+                <div
+                  class="absolute top-0 flex flex-col items-center -translate-x-1/2"
+                  :style="{ left: (26 / BAR_MAX * 100) + '%' }"
+                >
+                  <div class="w-px h-3 bg-muted-foreground/50" />
+                  <span class="text-xs text-muted-foreground whitespace-nowrap">26 kg (35%)</span>
+                </div>
+                <!-- 51 kg marker (40%) -->
+                <div
+                  class="absolute top-0 flex flex-col items-center -translate-x-1/2"
+                  :style="{ left: (51 / BAR_MAX * 100) + '%' }"
+                >
+                  <div class="w-px h-3 bg-muted-foreground/50" />
+                  <span class="text-xs text-muted-foreground whitespace-nowrap">51 kg (40%)</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Distance to next tier message -->
+            <div v-if="nextTier" class="space-y-1">
+              <p class="text-sm">
+                Do úrovne <strong>{{ nextTier.label }}</strong> chýba
+                <strong :class="tierColorClasses.text">{{ distanceToNext }} kg</strong>
+              </p>
+              <p v-if="friendsNeeded && avgKgPerPerson > 0" class="text-sm text-muted-foreground">
+                To je približne <strong>{{ friendsNeeded }} {{ friendsNeeded === 1 ? 'nový priateľ' : (friendsNeeded < 5 ? 'noví priatelia' : 'nových priateľov') }}</strong>
+                pri priemernom odbere {{ avgKgPerPerson }} kg/osobu
+              </p>
+            </div>
+
+            <!-- Current tier info -->
+            <div v-if="currentTier" class="mt-3">
+              <Badge :class="tierColorClasses.badge">
+                Aktuálna úroveň: {{ currentTier.label }} zľava
+              </Badge>
+            </div>
+            <div v-else class="mt-3">
+              <Badge variant="outline" class="text-muted-foreground">
+                Zatiaľ bez úrovne zľavy
+              </Badge>
+            </div>
+          </CardContent>
+        </Card>
+
+        <!-- ============================== -->
+        <!-- Part B: Growth Roadmap          -->
+        <!-- ============================== -->
+        <Card>
+          <CardHeader>
+            <CardTitle>Plán rastu</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ol class="space-y-3">
+              <li
+                v-for="(m, i) in milestones"
+                :key="i"
+                class="flex items-start gap-3"
+              >
+                <!-- Checkbox icon -->
+                <span v-if="m.done" class="mt-0.5 flex-shrink-0 text-green-600">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                  </svg>
+                </span>
+                <span v-else class="mt-0.5 flex-shrink-0 text-muted-foreground">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="3" width="18" height="18" rx="2"/>
+                  </svg>
+                </span>
+                <div>
+                  <p :class="['text-sm', m.done ? 'text-foreground font-medium' : 'text-muted-foreground']">
+                    {{ m.label }}
+                  </p>
+                  <p v-if="!m.done && m.friendsNeeded" class="text-xs text-muted-foreground mt-0.5">
+                    ešte ~{{ m.friendsNeeded }} {{ m.friendsNeeded === 1 ? 'priateľ' : (m.friendsNeeded < 5 ? 'priatelia' : 'priateľov') }}
+                  </p>
+                </div>
+              </li>
+            </ol>
+          </CardContent>
+        </Card>
+
+        <!-- ============================== -->
+        <!-- Part C: Scenario Simulator      -->
+        <!-- ============================== -->
+        <Card>
+          <CardHeader>
+            <CardTitle>Simulátor scenárov</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div class="grid gap-6 sm:grid-cols-2">
+              <!-- Input 1: Number of friends -->
+              <div class="space-y-2">
+                <Label>Počet priateľov</Label>
+                <div class="flex items-center gap-3">
+                  <input
+                    type="range"
+                    :min="1"
+                    :max="80"
+                    v-model.number="simFriends"
+                    class="flex-1 h-2 accent-primary cursor-pointer"
+                  />
+                  <Input
+                    type="number"
+                    v-model.number="simFriends"
+                    :min="1"
+                    :max="80"
+                    class="w-20"
+                  />
+                </div>
+              </div>
+
+              <!-- Input 2: Avg kg per person -->
+              <div class="space-y-2">
+                <Label>Priemerný odber na osobu (kg)</Label>
+                <div class="flex items-center gap-3">
+                  <input
+                    type="range"
+                    :min="0.1"
+                    :max="3.0"
+                    :step="0.1"
+                    v-model.number="simAvgKg"
+                    class="flex-1 h-2 accent-primary cursor-pointer"
+                  />
+                  <Input
+                    type="number"
+                    v-model.number="simAvgKg"
+                    :min="0.1"
+                    :max="3.0"
+                    :step="0.1"
+                    class="w-20"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <!-- Output -->
+            <div class="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div class="rounded-lg border p-4 text-center">
+                <p class="text-sm text-muted-foreground mb-1">Celkovo kg</p>
+                <p class="text-2xl font-bold">{{ simTotalKg }}</p>
+              </div>
+              <div class="rounded-lg border p-4 text-center">
+                <p class="text-sm text-muted-foreground mb-1">Úroveň zľavy</p>
+                <p class="text-2xl font-bold">{{ simTierLabel }}</p>
+              </div>
+              <div :class="['rounded-lg border p-4 text-center', simMarginPerCycle > 0 ? 'bg-green-50 border-green-200' : '']">
+                <p class="text-sm text-muted-foreground mb-1">Marža / cyklus</p>
+                <p :class="['text-2xl font-bold', simMarginPerCycle > 0 ? 'text-green-700' : '']">
+                  {{ simMarginPerCycle.toFixed(2) }} &euro;
+                </p>
+              </div>
+              <div :class="['rounded-lg border p-4 text-center', simAnnualMargin > 0 ? 'bg-green-50 border-green-200' : '']">
+                <p class="text-sm text-muted-foreground mb-1">Ročná marža (12 cyklov)</p>
+                <p :class="['text-2xl font-bold', simAnnualMargin > 0 ? 'text-green-700' : '']">
+                  {{ simAnnualMargin.toFixed(2) }} &euro;
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
       </div>
     </main>
   </div>
