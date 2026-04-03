@@ -11,6 +11,8 @@ import { Label } from '@/components/ui/label'
 import CycleTrendsChart from '@/components/analytics/CycleTrendsChart.vue'
 import SegmentDonutChart from '@/components/analytics/SegmentDonutChart.vue'
 import FriendAnalyticsTable from '@/components/analytics/FriendAnalyticsTable.vue'
+import MarginChart from '@/components/analytics/MarginChart.vue'
+import BuyerFlowChart from '@/components/analytics/BuyerFlowChart.vue'
 
 const router = useRouter()
 const loading = ref(true)
@@ -432,6 +434,32 @@ const comparison = computed(() => {
             </CardContent>
           </Card>
         </div>
+
+        <!-- ============================== -->
+        <!-- Margin Tracker                  -->
+        <!-- ============================== -->
+        <Card>
+          <CardHeader>
+            <div class="flex justify-between items-start">
+              <CardTitle>Vývoj marže</CardTitle>
+              <div class="text-right">
+                <div class="text-2xl font-bold">{{ data.summary.cumulative_margin_all.toFixed(2) }} &euro;</div>
+                <div class="text-sm text-muted-foreground">celková marža</div>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <MarginChart :cycles="data.cycles" :cumulative-margin-all="data.summary.cumulative_margin_all" />
+          </CardContent>
+        </Card>
+
+        <!-- ============================== -->
+        <!-- Buyer Flow                      -->
+        <!-- ============================== -->
+        <Card v-if="data.cycles.length >= 2">
+          <CardHeader><CardTitle>Pohyb priateľov medzi cyklami</CardTitle></CardHeader>
+          <CardContent><BuyerFlowChart :cycles="data.cycles" /></CardContent>
+        </Card>
 
         <!-- ============================== -->
         <!-- Part F: Friend Segments         -->
