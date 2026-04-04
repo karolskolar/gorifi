@@ -132,6 +132,9 @@ function getStatusText(status) {
       <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
         <h1 class="text-xl font-bold">Gorifi - Admin</h1>
         <div class="flex items-center gap-2">
+          <Button variant="ghost" @click="router.push('/admin/analytics/coffee')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
+            Štatistiky
+          </Button>
           <Button variant="ghost" @click="router.push('/admin/friends')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             Priatelia
           </Button>

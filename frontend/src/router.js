@@ -32,6 +32,21 @@ const routes = [
     component: () => import('./views/AdminBakeryProducts.vue')
   },
   {
+    path: '/admin/analytics/live',
+    name: 'analytics-live',
+    component: () => import('./views/LiveCycleDashboard.vue')
+  },
+  {
+    path: '/admin/analytics/coffee',
+    name: 'analytics-coffee',
+    component: () => import('./views/CoffeeAnalytics.vue')
+  },
+  {
+    path: '/admin/analytics/bakery',
+    name: 'analytics-bakery',
+    component: () => import('./views/BakeryAnalytics.vue')
+  },
+  {
     path: '/admin/friends',
     name: 'admin-friends',
     component: () => import('./views/AdminFriends.vue')
