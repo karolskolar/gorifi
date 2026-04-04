@@ -161,3 +161,17 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 - Delete with existing orders = soft-delete (active=0) instead of hard delete
 - Admin views (CycleDetail orders tab, Distribution) show pickup location as blue badge
 - Deploy script deploys from local files (rsync), no git push needed — but backend restart required for DB migrations
+- Production deploy requires `y` confirmation prompt — pipe `echo "y" |` to auto-confirm
+
+### Coffee Analytics Feature (2026-04-03)
+- Admin-only analytics dashboard at `/admin/analytics/coffee` (and `/admin/analytics/bakery` placeholder)
+- Single backend endpoint `GET /api/analytics/coffee` computes all metrics (cycles, friends, summary)
+- Computation helpers in `backend/src/helpers/analytics.js` (tier logic, margin formula, weight calc, segmentation)
+- Charts use Chart.js via vue-chartjs (Bar, Doughnut components)
+- Chart components in `frontend/src/components/analytics/` (CycleTrendsChart, MarginChart, SegmentDonutChart, BuyerFlowChart, FriendAnalyticsTable)
+- Tier thresholds: 5kg→30%, 26kg→35%, 51kg→40% — stored as constants in helpers
+- Margin formula: `totalOrderValue × (1 - (1 - tierDiscount) / (1 - 0.30))`
+- Friend segmentation: core/regular/occasional/new/inactive based on last 3 coffee cycles
+- Admin routes in this project do NOT validate tokens server-side — frontend handles auth via localStorage + dashboard token verify. Don't add server-side admin auth checks to new routes.
+- Weight from order_items: variant → kg mapping in `variantToKg()` helper
+- Spec: `docs/coffee-analytics-spec.md`, Plan: `docs/superpowers/plans/2026-04-03-coffee-analytics.md`
