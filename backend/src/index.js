@@ -16,6 +16,7 @@ import pickupLocationsRouter from './routes/pickup-locations.js';
 import bakeryProductsRouter from './routes/bakery-products.js';
 import subscriptionsRouter from './routes/subscriptions.js';
 import analyticsRouter from './routes/analytics.js';
+import liveCycleRouter from './routes/live-cycle.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -35,6 +36,7 @@ app.use('/api/pickup-locations', pickupLocationsRouter);
 app.use('/api/bakery-products', bakeryProductsRouter);
 app.use('/api/subscriptions', subscriptionsRouter);
 app.use('/api/analytics', analyticsRouter);
+app.use('/api/analytics/live-cycle', liveCycleRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {
