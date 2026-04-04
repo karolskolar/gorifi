@@ -228,6 +228,7 @@ export const api = {
 
   // Analytics
   getCoffeeAnalytics: () => adminRequest('/analytics/coffee'),
+  getLiveCycle: () => adminRequest('/analytics/live-cycle'),
 }
 
 export default api

@@ -169,6 +169,7 @@ const comparison = computed(() => {
 
     <main class="max-w-7xl mx-auto px-4 py-8">
       <div class="flex gap-2 mb-6">
+        <Button variant="outline" @click="router.push('/admin/analytics/live')">Živý prehľad</Button>
         <Button variant="default">Káva</Button>
         <Button variant="outline" @click="router.push('/admin/analytics/bakery')">Pekáreň</Button>
       </div>

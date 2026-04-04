@@ -26,6 +26,7 @@ watchEffect(() => {
 
     <main class="max-w-7xl mx-auto px-4 py-8">
       <div class="flex gap-2 mb-6">
+        <Button variant="outline" @click="router.push('/admin/analytics/live')">Živý prehľad</Button>
         <Button variant="outline" @click="router.push('/admin/analytics/coffee')">Káva</Button>
         <Button variant="default">Pekáreň</Button>
       </div>
