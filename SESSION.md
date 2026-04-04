@@ -1,43 +1,35 @@
 # Session Summary
 
 **Date:** 2026-04-03/04
-**Branch:** `feature/coffee-analytics`
+**Branch:** merged to `main`
 
 ## Summary
 
-Built a complete admin analytics dashboard for coffee order cycles. Includes tier tracking with progress bar, scenario simulator, cycle-over-cycle trends chart, friend segmentation (donut + sortable table), margin tracker, buyer flow/retention chart, concentration risk indicator, and growth roadmap milestones. Deployed to both staging and production.
+Built two features: (1) a comprehensive coffee analytics dashboard with tier tracking, scenario simulator, cycle trends, friend segmentation, margin tracker, buyer flow, concentration risk, and growth roadmap; (2) a live cycle dashboard showing real-time progress during an open ordering cycle with tier progress bar, metric cards, previous cycle comparison, and a "who hasn't ordered yet" nudge list. Both deployed to production and merged to main.
 
 ## Files Changed/Created
 
 ### Backend
-- `backend/src/helpers/analytics.js` (new) — computation helpers
+- `backend/src/helpers/analytics.js` (new) — computation helpers (tier, margin, weight, segmentation)
 - `backend/src/routes/analytics.js` (new) — GET /api/analytics/coffee endpoint
+- `backend/src/routes/live-cycle.js` (new) — GET /api/analytics/live-cycle endpoint
 - `backend/src/index.js` (modified) — route registration
 
 ### Frontend
-- `frontend/src/views/CoffeeAnalytics.vue` (new) — main analytics page
+- `frontend/src/views/CoffeeAnalytics.vue` (new) — historical analytics page (10 sections)
+- `frontend/src/views/LiveCycleDashboard.vue` (new) — live cycle dashboard (4 sections)
 - `frontend/src/views/BakeryAnalytics.vue` (new) — placeholder
 - `frontend/src/components/analytics/` (new) — 5 chart/table components
-- `frontend/src/api.js` (modified) — added getCoffeeAnalytics()
-- `frontend/src/router.js` (modified) — added analytics routes
-- `frontend/src/views/AdminDashboard.vue` (modified) — added nav button
+- `frontend/src/api.js` (modified) — added analytics API methods
+- `frontend/src/router.js` (modified) — added 3 analytics routes
+- `frontend/src/views/AdminDashboard.vue` (modified) — added Štatistiky nav button
+
+### Docs
+- `docs/coffee-analytics-spec.md`, `docs/live-cycle-dashboard-spec.md` — specs
+- `docs/data-model.md` — full data model overview
+- `docs/superpowers/plans/` — implementation plans
 
 ## Current State
 
-- Feature complete, deployed to production
-- User is fine-tuning calculations against real production data
-- Branch `feature/coffee-analytics` not yet merged to main
-
-## Next Steps
-
-- Verify all calculations against production data, fix any issues
-- Merge `feature/coffee-analytics` → `main` when satisfied
-- Future: build bakery analytics (currently placeholder)
-
-## How to Test
-
-```bash
-cd backend && npm run dev    # port 3000
-cd frontend && npm run dev   # port 5173
-# Navigate to http://localhost:5173/admin/analytics/coffee
-```
+- Both features merged to main, pushed to GitHub, deployed to production
+- Session complete

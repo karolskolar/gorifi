@@ -175,3 +175,14 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 - Admin routes in this project do NOT validate tokens server-side — frontend handles auth via localStorage + dashboard token verify. Don't add server-side admin auth checks to new routes.
 - Weight from order_items: variant → kg mapping in `variantToKg()` helper
 - Spec: `docs/coffee-analytics-spec.md`, Plan: `docs/superpowers/plans/2026-04-03-coffee-analytics.md`
+
+### Live Cycle Dashboard Feature (2026-04-04)
+- Real-time dashboard at `/admin/analytics/live` for current open coffee cycle
+- Backend endpoint `GET /api/analytics/live-cycle` in `backend/src/routes/live-cycle.js`
+- Shows tier progress bar, 6 metric cards, previous cycle comparison, "who hasn't ordered" nudge list
+- Auto-refreshes every 60 seconds + manual refresh button
+- Tab navigation: Živý prehľad | Káva | Pekáreň (across all 3 analytics pages)
+- Only shows coffee cycles; bakery live dashboard not yet implemented
+- "Who hasn't ordered" list uses friend segmentation (Core/Regular prioritized) for nudge targeting
+- Hidden when cycle status is 'locked' (no point nudging)
+- Spec: `docs/live-cycle-dashboard-spec.md`
