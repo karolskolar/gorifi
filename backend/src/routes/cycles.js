@@ -173,7 +173,7 @@ router.get('/:id/summary', (req, res) => {
   }
 
   const summary = db.prepare(`
-    SELECT p.name, p.purpose, oi.variant, SUM(oi.quantity) as total_quantity,
+    SELECT p.name, p.purpose, p.description1, p.roast_type, oi.variant, SUM(oi.quantity) as total_quantity,
            SUM(oi.quantity * oi.price) as total_price
     FROM order_items oi
     JOIN orders o ON o.id = oi.order_id

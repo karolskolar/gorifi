@@ -470,7 +470,9 @@ function copySummary() {
   for (const purpose of sortedPurposes) {
     text += `--- ${purpose} ---\n`
     for (const item of grouped[purpose]) {
-      text += `${item.name} ${item.variant === 'unit' ? 'ks' : item.variant}: ${item.total_quantity}x\n`
+      const details = [item.description1, item.roast_type].filter(Boolean).join(', ')
+      const nameWithDetails = details ? `${item.name} - ${details}` : item.name
+      text += `${nameWithDetails} ${item.variant === 'unit' ? 'ks' : item.variant}: ${item.total_quantity}x\n`
     }
     text += '\n'
   }
@@ -1074,7 +1076,7 @@ function getStatusVariant(status) {
                         </Badge>
                         <span v-else class="text-muted-foreground">-</span>
                       </TableCell>
-                      <TableCell>{{ item.name }}</TableCell>
+                      <TableCell>{{ item.name }}<span v-if="item.description1 || item.roast_type" class="text-muted-foreground"> - {{ [item.description1, item.roast_type].filter(Boolean).join(', ') }}</span></TableCell>
                       <TableCell>{{ item.variant === 'unit' ? 'ks' : item.variant }}</TableCell>
                       <TableCell class="text-right">{{ item.total_quantity }}x</TableCell>
                       <TableCell class="text-right">{{ formatPrice(item.total_price) }}</TableCell>
