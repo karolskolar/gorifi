@@ -402,6 +402,27 @@ async function initDb() {
     )
   `);
 
+  // Create vouchers table for friend discount vouchers
+  db.run(`
+    CREATE TABLE IF NOT EXISTS vouchers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      friend_id INTEGER NOT NULL,
+      source_cycle_id INTEGER NOT NULL,
+      supplier_discount REAL NOT NULL,
+      applied_discount REAL NOT NULL,
+      order_total REAL NOT NULL,
+      retail_total REAL NOT NULL,
+      voucher_amount REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'declined')),
+      transaction_id INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      resolved_at DATETIME,
+      FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
+      FOREIGN KEY (source_cycle_id) REFERENCES order_cycles(id),
+      FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL
+    )
+  `);
+
   // Initialize friends_password if not exists (empty string means not set)
   const friendsPassword = db.prepare("SELECT * FROM settings WHERE key = 'friends_password'").get();
   if (!friendsPassword) {
