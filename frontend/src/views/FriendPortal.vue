@@ -48,6 +48,13 @@ const subCoffee = ref(true)
 const subBakery = ref(true)
 const subSaving = ref(false)
 
+// Vouchers
+const pendingVouchers = ref([])
+const currentVoucher = ref(null)
+const showVoucherModal = ref(false)
+const voucherResolved = ref(null) // { action: 'accept'|'decline', amount, cycleName }
+const resolvingVoucher = ref(false)
+
 // Auth mode
 const authMode = ref('legacy') // 'legacy' | 'transition' | 'modern'
 const loginTab = ref('shared') // 'shared' | 'personal'
@@ -126,6 +133,7 @@ async function loadInitialData() {
           })
           try {
             await loadCycles()
+            await checkPendingVouchers()
             authState.value = 'authenticated'
     window.scrollTo(0, 0)
             return
@@ -164,6 +172,7 @@ async function loadInitialData() {
           selectedFriendId.value = String(memoryAuthInfo.friendId)
           try {
             await loadCycles()
+            await checkPendingVouchers()
             authState.value = 'authenticated'
     window.scrollTo(0, 0)
             return
@@ -233,6 +242,7 @@ async function authenticate(silent = false) {
 
     // Load cycles
     await loadCycles()
+    await checkPendingVouchers()
     authState.value = 'authenticated'
     window.scrollTo(0, 0)
 
@@ -291,6 +301,7 @@ async function authenticatePersonal() {
     }
 
     await loadCycles()
+    await checkPendingVouchers()
     authState.value = 'authenticated'
     window.scrollTo(0, 0)
   } catch (e) {
@@ -308,6 +319,46 @@ async function loadCycles() {
     subscriptions.value = subs.types || []
   } catch (e) {
     // Non-critical
+  }
+}
+
+async function checkPendingVouchers() {
+  try {
+    const friendId = selectedFriendId.value || getFriendsAuthInfo()?.friendId
+    if (!friendId) return
+    const vouchers = await api.getPendingVouchers(friendId)
+    pendingVouchers.value = vouchers
+    if (vouchers.length > 0) {
+      currentVoucher.value = vouchers[0]
+      showVoucherModal.value = true
+    }
+  } catch (e) {
+    console.error('Voucher check failed:', e)
+  }
+}
+
+async function resolveVoucher(action) {
+  if (!currentVoucher.value || resolvingVoucher.value) return
+  resolvingVoucher.value = true
+  try {
+    await api.resolveVoucher(currentVoucher.value.id, action)
+    const amount = currentVoucher.value.voucher_amount
+    const cycleName = currentVoucher.value.cycle_name
+    voucherResolved.value = { action, amount, cycleName }
+
+    pendingVouchers.value = pendingVouchers.value.filter(v => v.id !== currentVoucher.value.id)
+    if (pendingVouchers.value.length > 0) {
+      currentVoucher.value = pendingVouchers.value[0]
+      voucherResolved.value = null
+    } else {
+      showVoucherModal.value = false
+      currentVoucher.value = null
+      setTimeout(() => { voucherResolved.value = null }, 5000)
+    }
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    resolvingVoucher.value = false
   }
 }
 
@@ -615,6 +666,23 @@ function formatKilos(kilos) {
         </Button>
       </div>
     </header>
+
+    <div v-if="voucherResolved && !showVoucherModal" class="max-w-4xl mx-auto px-4 mt-4">
+      <div v-if="voucherResolved.action === 'accept'" class="bg-green-900/30 border border-green-700/50 rounded-lg p-4 flex items-center gap-3">
+        <span class="text-2xl">✅</span>
+        <div>
+          <div class="font-semibold text-green-400">Kredit {{ voucherResolved.amount.toFixed(2) }} € pridaný</div>
+          <div class="text-sm text-muted-foreground">Bude odpočítaný z tvojej ďalšej objednávky</div>
+        </div>
+      </div>
+      <div v-else class="bg-purple-900/20 border border-purple-700/30 rounded-lg p-4 flex items-center gap-3">
+        <span class="text-2xl">💚</span>
+        <div>
+          <div class="font-semibold">Ďakujeme za podporu!</div>
+          <div class="text-sm text-muted-foreground">Tvoj voucher {{ voucherResolved.amount.toFixed(2) }} € bol venovaný projektu</div>
+        </div>
+      </div>
+    </div>
 
     <!-- Loading -->
     <div v-if="loading && authState === 'loading'" class="text-center py-12 text-muted-foreground">Načítavam...</div>
@@ -1073,5 +1141,42 @@ function formatKilos(kilos) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <div v-if="showVoucherModal && currentVoucher" class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+      <div class="bg-card rounded-2xl p-7 max-w-sm w-full shadow-2xl">
+        <div class="text-center mb-5">
+          <div class="text-4xl mb-2">🎁</div>
+          <div class="text-xl font-bold mb-1.5">Máš voucher!</div>
+          <div class="text-sm text-muted-foreground">
+            Za tvoju objednávku z cyklu <span class="font-semibold text-foreground">{{ currentVoucher.cycle_name }}</span> ti patrí zľavový voucher.
+          </div>
+        </div>
+        <div class="bg-muted rounded-xl p-4 text-center mb-5">
+          <div class="text-sm text-muted-foreground mb-1">
+            Hodnota voucheru je {{ Math.round(currentVoucher.supplier_discount - currentVoucher.applied_discount) }}% z tvojej objednávky
+          </div>
+          <div class="text-3xl font-bold text-green-400">{{ currentVoucher.voucher_amount.toFixed(2) }} €</div>
+        </div>
+        <div class="flex flex-col gap-2.5">
+          <button
+            @click="resolveVoucher('accept')"
+            :disabled="resolvingVoucher"
+            class="w-full bg-green-500 hover:bg-green-600 text-green-950 font-semibold py-3.5 rounded-xl transition-colors disabled:opacity-50"
+          >
+            {{ resolvingVoucher ? 'Spracovávam...' : 'Použiť ako kredit na ďalšiu objednávku' }}
+          </button>
+          <button
+            @click="resolveVoucher('decline')"
+            :disabled="resolvingVoucher"
+            class="w-full border border-border text-muted-foreground hover:text-foreground py-3.5 rounded-xl transition-colors disabled:opacity-50"
+          >
+            Nepotrebujem — podporím projekt 💚
+          </button>
+        </div>
+        <div class="text-center mt-3.5 text-xs text-muted-foreground/50">
+          Toto rozhodnutie je jednorazové a nedá sa zmeniť.
+        </div>
+      </div>
+    </div>
   </div>
 </template>
