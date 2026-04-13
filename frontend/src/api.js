@@ -229,6 +229,19 @@ export const api = {
   // Analytics
   getCoffeeAnalytics: () => adminRequest('/analytics/coffee'),
   getLiveCycle: () => adminRequest('/analytics/live-cycle'),
+
+  // Vouchers
+  generateVouchers: (data) => adminRequest('/vouchers/generate', { method: 'POST', body: data }),
+  getVouchers: (params) => {
+    const query = new URLSearchParams()
+    if (params?.status) query.set('status', params.status)
+    if (params?.source_cycle_id) query.set('source_cycle_id', params.source_cycle_id)
+    const qs = query.toString()
+    return adminRequest(`/vouchers${qs ? `?${qs}` : ''}`)
+  },
+  getVoucherCycleFriends: (cycleId) => adminRequest(`/vouchers/cycle/${cycleId}/friends`),
+  getPendingVouchers: (friendId) => request(`/vouchers/pending${friendId ? `?friendId=${friendId}` : ''}`),
+  resolveVoucher: (id, action) => request(`/vouchers/${id}/resolve`, { method: 'POST', body: { action } }),
 }
 
 export default api
