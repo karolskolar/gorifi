@@ -141,6 +141,9 @@ function getStatusText(status) {
           <Button variant="ghost" @click="router.push('/admin/bakery-products')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             Pekáreň
           </Button>
+          <Button variant="ghost" @click="router.push('/admin/vouchers')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
+            Vouchery
+          </Button>
           <Button variant="ghost" @click="router.push('/admin/settings')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             Nastavenia
           </Button>
