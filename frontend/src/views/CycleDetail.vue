@@ -279,6 +279,22 @@ async function saveProduct() {
   await loadAll()
 }
 
+function duplicateProduct(product) {
+  editingProduct.value = null
+  productForm.value = {
+    ...product,
+    name: product.name + ' (kópia)',
+    price_150g: product.price_150g || '',
+    price_200g: product.price_200g || '',
+    price_250g: product.price_250g || '',
+    price_1kg: product.price_1kg || '',
+    price_20pc5g: product.price_20pc5g || '',
+    image: product.image || ''
+  }
+  imagePreview.value = product.image || null
+  showProductModal.value = true
+}
+
 async function deleteProduct(id) {
   if (!confirm('Naozaj vymazať tento produkt?')) return
   await api.deleteProduct(id)
@@ -708,6 +724,7 @@ function getStatusVariant(status) {
                   <TableHead>Názov</TableHead>
                   <template v-if="isBakery">
                     <TableHead>Kategória</TableHead>
+                    <TableHead>Praženie</TableHead>
                     <TableHead class="text-right">Hmotnosť</TableHead>
                     <TableHead class="text-right">Cena/ks</TableHead>
                     <TableHead>Zloženie</TableHead>
@@ -761,6 +778,7 @@ function getStatusVariant(status) {
                   </TableCell>
                   <template v-if="isBakery">
                     <TableCell class="text-sm">{{ product.purpose || '-' }}</TableCell>
+                    <TableCell class="text-sm">{{ product.roast_type || '-' }}</TableCell>
                     <TableCell class="text-sm text-right">{{ product.weight_grams ? `${product.weight_grams}g` : '-' }}</TableCell>
                     <TableCell class="text-sm text-right">{{ formatPrice(product.price_unit) }}</TableCell>
                     <TableCell class="text-sm text-muted-foreground max-w-xs">
@@ -783,6 +801,9 @@ function getStatusVariant(status) {
                   </template>
                   <TableCell class="text-right">
                     <Button variant="ghost" size="sm" @click="openProductModal(product)">Upraviť</Button>
+                    <Button variant="ghost" size="sm" @click="duplicateProduct(product)" title="Duplikovať">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                    </Button>
                     <Button variant="ghost" size="sm" class="text-destructive hover:text-destructive" @click="deleteProduct(product.id)">Vymazať</Button>
                   </TableCell>
                 </TableRow>
@@ -1168,7 +1189,7 @@ function getStatusVariant(status) {
                 <Input v-model="productForm.purpose" />
               </div>
             </div>
-            <div class="grid grid-cols-5 gap-3">
+            <div class="grid grid-cols-3 gap-3">
               <div class="space-y-1">
                 <Label>150g (EUR)</Label>
                 <Input v-model="productForm.price_150g" type="number" step="0.01" />

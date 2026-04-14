@@ -6,7 +6,6 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import BalanceBadge from '@/components/BalanceBadge.vue'
 
 const route = useRoute()
@@ -17,6 +16,7 @@ const distribution = ref([])
 const loading = ref(true)
 const error = ref('')
 const packingOrderId = ref(null)
+const checkedItems = ref({}) // { `${friendId}-${itemIndex}`: true }
 
 const cycleId = route.params.id
 
@@ -58,6 +58,19 @@ async function togglePacked(friend) {
 
 function formatPrice(price) {
   return price ? `${price.toFixed(2)} EUR` : '-'
+}
+
+function toggleItem(friendId, index) {
+  const key = `${friendId}-${index}`
+  checkedItems.value = { ...checkedItems.value, [key]: !checkedItems.value[key] }
+}
+
+function isItemChecked(friendId, index) {
+  return !!checkedItems.value[`${friendId}-${index}`]
+}
+
+function checkedCount(friend) {
+  return friend.items.reduce((sum, _, i) => sum + (isItemChecked(friend.id, i) ? 1 : 0), 0)
 }
 
 function printDistribution() {
@@ -112,32 +125,30 @@ function printDistribution() {
                 <h3 class="text-lg font-semibold">{{ friend.name }}</h3>
                 <div class="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
                   <BalanceBadge :balance="friend.balance || 0" />
-                  <span class="mx-1">|</span>
                   <Badge v-if="friend.paid" variant="default" class="bg-green-600">Zaplatené</Badge>
                   <Badge v-else variant="destructive">Nezaplatené</Badge>
-                  <span class="mx-1">|</span>
-                  <span>Suma: {{ formatPrice(friend.total) }}</span>
-                  <template v-if="friend.pickup_location_name || friend.pickup_location_note">
-                    <span class="mx-1">|</span>
-                    <Badge
-                      variant="outline"
-                      class="border-blue-400 text-blue-600 bg-blue-50"
-                    >
-                      {{ friend.pickup_location_name || friend.pickup_location_note }}
-                    </Badge>
-                  </template>
+                  <span>{{ formatPrice(friend.total) }}</span>
+                  <Badge
+                    v-if="friend.pickup_location_name || friend.pickup_location_note"
+                    variant="outline"
+                    class="border-blue-400 text-blue-600 bg-blue-50"
+                  >
+                    {{ friend.pickup_location_name || friend.pickup_location_note }}
+                  </Badge>
+                  <span v-if="!friend.packed && friend.items.length > 0" class="text-xs">· {{ checkedCount(friend) }}/{{ friend.items.length }} ✓</span>
                 </div>
               </div>
               <Button
                 @click="togglePacked(friend)"
                 :variant="friend.packed ? 'default' : 'outline'"
                 :disabled="packingOrderId === friend.order_id"
+                size="sm"
                 :class="[
-                  'print:hidden',
+                  'print:hidden shrink-0',
                   friend.packed ? 'bg-green-600 hover:bg-green-700' : ''
                 ]"
               >
-                {{ packingOrderId === friend.order_id ? 'Spracovávam...' : (friend.packed ? 'Zabalené' : 'Označiť ako zabalené') }}
+                {{ packingOrderId === friend.order_id ? '...' : (friend.packed ? 'Zabalené' : 'Zabaliť') }}
               </Button>
             </div>
 
@@ -145,21 +156,28 @@ function printDistribution() {
               <div v-if="friend.items.length === 0" class="text-muted-foreground italic">
                 Žiadne položky
               </div>
-              <Table v-else>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Účel</TableHead>
-                    <TableHead>Produkt</TableHead>
-                    <TableHead class="text-center">Varianta</TableHead>
-                    <TableHead class="text-center">Počet</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  <TableRow v-for="(item, i) in friend.items" :key="i">
-                    <TableCell>
+              <div v-else class="flex flex-col gap-1.5">
+                <div
+                  v-for="(item, i) in friend.items"
+                  :key="i"
+                  @click="toggleItem(friend.id, i)"
+                  class="flex items-center gap-2.5 border rounded-lg px-3 py-2.5 cursor-pointer transition-all select-none print:border-gray-300"
+                  :class="isItemChecked(friend.id, i)
+                    ? 'bg-green-50 border-green-200 opacity-50 dark:bg-green-950/20 dark:border-green-800'
+                    : 'bg-card border-border hover:border-muted-foreground/30'"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="isItemChecked(friend.id, i)"
+                    class="w-5 h-5 accent-green-500 shrink-0 pointer-events-none print:hidden"
+                  />
+                  <div class="flex-1 min-w-0" :class="isItemChecked(friend.id, i) ? 'line-through' : ''">
+                    <div class="font-semibold text-sm">{{ item.product_name }}</div>
+                    <div class="flex gap-1 mt-1 flex-wrap">
                       <Badge
                         v-if="item.purpose"
                         variant="outline"
+                        class="text-[11px] px-1.5 py-0"
                         :class="{
                           'border-stone-400 text-stone-600 bg-stone-50': item.purpose === 'Espresso',
                           'border-sky-400 text-sky-600 bg-sky-50': item.purpose === 'Filter',
@@ -169,20 +187,42 @@ function printDistribution() {
                       >
                         {{ item.purpose }}
                       </Badge>
-                      <span v-else class="text-muted-foreground">-</span>
-                    </TableCell>
-                    <TableCell>{{ item.product_name }}</TableCell>
-                    <TableCell class="text-center">{{ item.variant === 'unit' ? 'ks' : item.variant }}</TableCell>
-                    <TableCell class="text-center font-medium">{{ item.quantity }}x</TableCell>
-                  </TableRow>
-                </TableBody>
-                <tfoot>
-                  <TableRow class="bg-muted font-semibold">
-                    <TableCell colspan="3">Celkom balíčkov</TableCell>
-                    <TableCell class="text-center">{{ friend.items.reduce((sum, item) => sum + item.quantity, 0) }}</TableCell>
-                  </TableRow>
-                </tfoot>
-              </Table>
+                      <Badge
+                        v-if="item.roast_type"
+                        variant="outline"
+                        class="text-[11px] px-1.5 py-0 border-amber-300 text-amber-700 bg-amber-50"
+                      >
+                        {{ item.roast_type }}
+                      </Badge>
+                      <Badge variant="outline" class="text-[11px] px-1.5 py-0 border-green-400 text-green-700 bg-green-50 font-semibold">
+                        {{ item.variant === 'unit' ? 'ks' : item.variant }} × {{ item.quantity }}
+                      </Badge>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <!-- Print-only table fallback -->
+            <template v-if="!friend.packed && friend.items.length > 0">
+              <table class="hidden print:table w-full text-sm mt-2">
+                <thead>
+                  <tr class="border-b">
+                    <th class="text-left py-1">Produkt</th>
+                    <th class="text-left py-1">Praženie</th>
+                    <th class="text-center py-1">Varianta</th>
+                    <th class="text-center py-1">Počet</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(item, i) in friend.items" :key="'print-'+i" class="border-b border-gray-200">
+                    <td class="py-1">{{ item.product_name }}</td>
+                    <td class="py-1">{{ item.roast_type || '-' }}</td>
+                    <td class="text-center py-1">{{ item.variant === 'unit' ? 'ks' : item.variant }}</td>
+                    <td class="text-center py-1">{{ item.quantity }}×</td>
+                  </tr>
+                </tbody>
+              </table>
             </template>
           </CardContent>
         </Card>

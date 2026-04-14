@@ -87,6 +87,21 @@ async function saveProduct() {
   }
 }
 
+function duplicateProduct(product) {
+  editingProduct.value = null
+  form.value = {
+    name: (product.name || '') + ' (kópia)',
+    description: product.description || '',
+    weight_grams: product.weight_grams || '',
+    price: product.price || '',
+    composition: product.composition || '',
+    category: product.category || 'slané',
+    image: product.image || ''
+  }
+  imagePreview.value = product.image || null
+  showModal.value = true
+}
+
 async function deleteProduct(id) {
   if (!confirm('Naozaj vymazať tento produkt?')) return
   try {
@@ -238,6 +253,9 @@ async function logout() {
               </TableCell>
               <TableCell class="text-right">
                 <Button variant="ghost" size="sm" @click="openModal(product)">Upraviť</Button>
+                <Button variant="ghost" size="sm" @click="duplicateProduct(product)" title="Duplikovať">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                </Button>
                 <Button variant="ghost" size="sm" class="text-destructive hover:text-destructive" @click="deleteProduct(product.id)">Vymazať</Button>
               </TableCell>
             </TableRow>

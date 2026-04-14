@@ -11,6 +11,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 
 const router = useRouter()
+const mobileMenuOpen = ref(false)
 const cycles = ref([])
 const loading = ref(true)
 const error = ref('')
@@ -131,7 +132,8 @@ function getStatusText(status) {
     <header class="bg-primary text-primary-foreground shadow">
       <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
         <h1 class="text-xl font-bold">Gorifi - Admin</h1>
-        <div class="flex items-center gap-2">
+        <!-- Desktop nav -->
+        <div class="hidden md:flex items-center gap-2">
           <Button variant="ghost" @click="router.push('/admin/analytics/coffee')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             Štatistiky
           </Button>
@@ -151,6 +153,22 @@ function getStatusText(status) {
             Odhlásiť sa
           </Button>
         </div>
+        <!-- Mobile hamburger -->
+        <button @click="mobileMenuOpen = !mobileMenuOpen" class="md:hidden p-2 rounded hover:bg-primary-foreground/10 transition-colors">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path v-if="!mobileMenuOpen" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+            <path v-else stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <!-- Mobile menu dropdown -->
+      <div v-if="mobileMenuOpen" class="md:hidden border-t border-primary-foreground/10 px-4 py-2 space-y-1">
+        <button @click="router.push('/admin/analytics/coffee'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Štatistiky</button>
+        <button @click="router.push('/admin/friends'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Priatelia</button>
+        <button @click="router.push('/admin/bakery-products'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Pekáreň</button>
+        <button @click="router.push('/admin/vouchers'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Vouchery</button>
+        <button @click="router.push('/admin/settings'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Nastavenia</button>
+        <button @click="logout(); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Odhlásiť sa</button>
       </div>
     </header>
 
