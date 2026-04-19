@@ -382,6 +382,7 @@ function goToCycle(cycleId) {
 
 function getStatusVariant(status) {
   switch (status) {
+    case 'planned': return 'outline'
     case 'open': return 'default'
     case 'locked': return 'secondary'
     case 'completed': return 'outline'
@@ -391,6 +392,7 @@ function getStatusVariant(status) {
 
 function getStatusText(status) {
   switch (status) {
+    case 'planned': return 'Plánovaný'
     case 'open': return 'Otvorený'
     case 'locked': return 'Uzamknutý'
     case 'completed': return 'Dokončený'
@@ -851,9 +853,12 @@ function formatKilos(kilos) {
           <Card
             v-for="cycle in activeCycles"
             :key="cycle.id"
-            class="cursor-pointer hover:shadow-md transition-shadow"
-            :class="cycle.type === 'bakery' ? 'bg-orange-50/70 border-orange-200' : 'bg-gray-50 border-gray-200'"
-            @click="goToCycle(cycle.id)"
+            :class="[
+              cycle.type === 'bakery' ? 'bg-orange-50/70 border-orange-200' : 'bg-gray-50 border-gray-200',
+              cycle.status !== 'planned' ? 'cursor-pointer hover:shadow-md' : 'opacity-90'
+            ]"
+            class="transition-shadow"
+            @click="cycle.status !== 'planned' && goToCycle(cycle.id)"
           >
             <CardContent class="p-4">
               <div class="flex justify-between items-start">
@@ -862,6 +867,9 @@ function formatKilos(kilos) {
                   <div v-if="cycle.expected_date" class="text-sm text-primary mt-1">
                     📅 {{ cycle.expected_date }}
                   </div>
+                  <div v-if="cycle.status === 'planned' && cycle.plan_note" class="text-sm text-muted-foreground mt-2 whitespace-pre-line">
+                    {{ cycle.plan_note }}
+                  </div>
                   <div class="flex items-center gap-2 mt-2">
                     <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
                       Pekáreň
@@ -869,7 +877,10 @@ function formatKilos(kilos) {
                     <Badge v-else variant="outline" class="border-amber-700 text-amber-800 bg-amber-100">
                       Káva
                     </Badge>
-                    <Badge :variant="getStatusVariant(cycle.status)">
+                    <Badge v-if="cycle.status === 'planned'" variant="outline" class="border-blue-400 text-blue-700 bg-blue-50">
+                      Plánovaný
+                    </Badge>
+                    <Badge v-else :variant="getStatusVariant(cycle.status)">
                       {{ getStatusText(cycle.status) }}
                     </Badge>
                     <Badge v-if="cycle.hasOrder" variant="outline" class="border-green-500 text-green-700">
@@ -884,7 +895,7 @@ function formatKilos(kilos) {
                     <span v-else>☕ {{ formatKilos(cycle.orderKilos) }}</span>
                   </div>
                 </div>
-                <div class="text-right">
+                <div v-if="cycle.status !== 'planned'" class="text-right">
                   <span v-if="cycle.hasOrder" class="text-sm font-medium text-foreground">
                     {{ formatPrice(cycle.orderTotal) }}
                   </span>
