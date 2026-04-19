@@ -90,19 +90,36 @@ router.post('/', (req, res) => {
   // For bakery cycles, snapshot selected bakery products into the products table
   if (cycleType === 'bakery' && Array.isArray(bakery_product_ids) && bakery_product_ids.length > 0) {
     for (const bpId of bakery_product_ids) {
-      const bp = db.prepare('SELECT * FROM bakery_products WHERE id = ? AND active = 1').get(bpId);
+      const bp = db.get('SELECT * FROM bakery_products WHERE id = ? AND active = 1', [bpId]);
       if (!bp) continue;
 
       // Insert into cycle_bakery_products junction
-      db.prepare('INSERT INTO cycle_bakery_products (cycle_id, bakery_product_id) VALUES (?, ?)').run(cycleId, bp.id);
+      db.run('INSERT INTO cycle_bakery_products (cycle_id, bakery_product_id) VALUES (?, ?)', [cycleId, bp.id]);
 
-      // Snapshot into products table
-      // Map: name->name, description->description1, price->price_unit, weight_grams, composition, category->purpose, image
+      // Get active variants for this product
+      const variants = db.all(
+        'SELECT * FROM bakery_product_variants WHERE bakery_product_id = ? AND active = 1 ORDER BY sort_order',
+        [bp.id]
+      );
+
+      // Snapshot each variant as its own products row
       const categoryLabel = bp.category === 'sladké' ? 'Sladké' : 'Slané';
-      db.prepare(`
-        INSERT INTO products (cycle_id, name, description1, purpose, price_unit, weight_grams, composition, image, source_bakery_product_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(cycleId, bp.name, bp.description || null, categoryLabel, bp.price, bp.weight_grams || null, bp.composition || null, bp.image || null, bp.id);
+      for (const variant of variants) {
+        db.run(
+          `INSERT INTO products (cycle_id, name, description1, purpose, price_unit, weight_grams, composition, image, source_bakery_product_id, variant_label, source_variant_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [cycleId, bp.name, bp.description || null, categoryLabel, variant.price, variant.weight_grams || null, bp.composition || null, bp.image || null, bp.id, variant.label || null, variant.id]
+        );
+      }
+
+      // Fallback: if product has no variants, snapshot with product-level data
+      if (variants.length === 0) {
+        db.run(
+          `INSERT INTO products (cycle_id, name, description1, purpose, price_unit, weight_grams, composition, image, source_bakery_product_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [cycleId, bp.name, bp.description || null, categoryLabel, bp.price, bp.weight_grams || null, bp.composition || null, bp.image || null, bp.id]
+        );
+      }
     }
   }
 
@@ -223,7 +240,7 @@ router.get('/:id/distribution', (req, res) => {
 
   const distribution = friendsWithOrders.map(friend => {
     const items = db.prepare(`
-      SELECT p.name as product_name, p.purpose, p.roast_type, oi.variant, oi.quantity, oi.price
+      SELECT p.name as product_name, p.purpose, p.roast_type, p.variant_label, oi.variant, oi.quantity, oi.price
       FROM order_items oi
       JOIN products p ON p.id = oi.product_id
       WHERE oi.order_id = ?
