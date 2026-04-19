@@ -172,7 +172,7 @@ function printDistribution() {
                     class="w-5 h-5 accent-green-500 shrink-0 pointer-events-none print:hidden"
                   />
                   <div class="flex-1 min-w-0" :class="isItemChecked(friend.id, i) ? 'line-through' : ''">
-                    <div class="font-semibold text-sm">{{ item.product_name }}</div>
+                    <div class="font-semibold text-sm">{{ item.product_name }}<span v-if="item.variant_label" class="font-normal text-muted-foreground"> — {{ item.variant_label }}</span></div>
                     <div class="flex gap-1 mt-1 flex-wrap">
                       <Badge
                         v-if="item.purpose"
@@ -216,7 +216,7 @@ function printDistribution() {
                 </thead>
                 <tbody>
                   <tr v-for="(item, i) in friend.items" :key="'print-'+i" class="border-b border-gray-200">
-                    <td class="py-1">{{ item.product_name }}</td>
+                    <td class="py-1">{{ item.product_name }}<span v-if="item.variant_label"> — {{ item.variant_label }}</span></td>
                     <td class="py-1">{{ item.roast_type || '-' }}</td>
                     <td class="text-center py-1">{{ item.variant === 'unit' ? 'ks' : item.variant }}</td>
                     <td class="text-center py-1">{{ item.quantity }}×</td>
