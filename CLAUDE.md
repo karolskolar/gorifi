@@ -186,3 +186,16 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 - "Who hasn't ordered" list uses friend segmentation (Core/Regular prioritized) for nudge targeting
 - Hidden when cycle status is 'locked' (no point nudging)
 - Spec: `docs/live-cycle-dashboard-spec.md`
+
+### Bakery Product Variants Feature (2026-04-19)
+- Bakery products support multiple weight/price variants (e.g. Makovník: 1ks, 1/2, 1/4)
+- `bakery_product_variants` table: id, bakery_product_id, label, weight_grams, price, sort_order, active
+- Existing products auto-migrated to have one variant each (from their weight_grams + price)
+- `products` table gained `variant_label` and `source_variant_id` columns for cycle snapshots
+- Cycle creation: each variant becomes its own `products` row (N variants → N rows), grouped by `source_bakery_product_id`
+- FriendOrder.vue groups snapshotted products by `source_bakery_product_id` into single cards with per-variant +/- controls
+- `variant_label` shown in: friend cart, admin orders tab, summary tab, clipboard copy, distribution view
+- Admin modal: weight/price fields replaced with repeatable variant rows (label + weight + price) with add/remove
+- Bakery products also have a `subtitle` column — shown next to product name in friend order (lighter, smaller text)
+- Subtitle snapshotted as `description2` in products table (coffee already uses description2 for its own purpose)
+- Spec: `docs/superpowers/specs/2026-04-19-bakery-product-variants-design.md`
