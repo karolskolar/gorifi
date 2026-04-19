@@ -744,9 +744,8 @@ function applyMarkup(price) {
                     <div class="mt-auto pt-2 space-y-1.5">
                       <div v-for="v in product._variants" :key="v.id" class="flex items-center justify-between">
                         <div class="text-sm">
-                          <span v-if="v.variant_label" class="text-xs text-muted-foreground mr-1">{{ v.variant_label }}</span>
                           <span class="font-semibold text-primary">{{ formatPrice(applyMarkup(v.price_unit)) }}</span>
-                          <span v-if="v.weight_grams" class="text-muted-foreground ml-1">/ {{ v.weight_grams }}g</span>
+                          <span v-if="v.variant_label" class="text-muted-foreground ml-1">/ {{ v.variant_label }}</span>
                         </div>
                         <div class="flex items-center gap-1.5">
                           <Button
@@ -1031,9 +1030,8 @@ function applyMarkup(price) {
                 <div class="mt-auto pt-2 space-y-1.5">
                   <div v-for="v in product._variants" :key="v.id" class="flex items-center justify-between">
                     <div class="text-sm">
-                      <span v-if="v.variant_label" class="text-xs text-muted-foreground mr-1">{{ v.variant_label }}</span>
                       <span class="font-semibold text-primary">{{ formatPrice(applyMarkup(v.price_unit)) }}</span>
-                      <span v-if="v.weight_grams" class="text-muted-foreground ml-1">/ {{ v.weight_grams }}g</span>
+                      <span v-if="v.variant_label" class="text-muted-foreground ml-1">/ {{ v.variant_label }}</span>
                     </div>
                     <div class="flex items-center gap-1.5">
                       <Button
