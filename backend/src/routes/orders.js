@@ -67,7 +67,7 @@ router.get('/cycle/:cycleId/friend/:friendId', (req, res) => {
 
   // Get order items if order exists
   const items = order ? db.prepare(`
-    SELECT oi.*, p.name as product_name, p.roast_type, p.description1
+    SELECT oi.*, p.name as product_name, p.roast_type, p.description1, p.variant_label
     FROM order_items oi
     JOIN products p ON p.id = oi.product_id
     WHERE oi.order_id = ?
@@ -183,7 +183,7 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
   // Return updated order
   const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
   const updatedItems = db.prepare(`
-    SELECT oi.*, p.name as product_name, p.roast_type, p.description1
+    SELECT oi.*, p.name as product_name, p.roast_type, p.description1, p.variant_label
     FROM order_items oi
     JOIN products p ON p.id = oi.product_id
     WHERE oi.order_id = ?
@@ -255,7 +255,7 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
 
   const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
   const items = db.prepare(`
-    SELECT oi.*, p.name as product_name, p.roast_type, p.description1
+    SELECT oi.*, p.name as product_name, p.roast_type, p.description1, p.variant_label
     FROM order_items oi
     JOIN products p ON p.id = oi.product_id
     WHERE oi.order_id = ?
@@ -413,7 +413,7 @@ router.get('/cycle/:cycleId', (req, res) => {
   // Add friends who have orders in this cycle
   for (const order of existingOrders) {
     order.items = db.prepare(`
-      SELECT oi.*, p.name as product_name, p.purpose
+      SELECT oi.*, p.name as product_name, p.purpose, p.variant_label
       FROM order_items oi
       JOIN products p ON p.id = oi.product_id
       WHERE oi.order_id = ?

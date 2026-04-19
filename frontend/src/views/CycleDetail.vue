@@ -99,6 +99,7 @@ const ordersByProduct = computed(() => {
         map[key] = {
           key,
           product_name: item.product_name,
+          variant_label: item.variant_label || null,
           purpose: item.purpose,
           variant: item.variant,
           total_quantity: 0,
@@ -488,7 +489,8 @@ function copySummary() {
     for (const item of grouped[purpose]) {
       const details = [item.description1, item.roast_type].filter(Boolean).join(', ')
       const nameWithDetails = details ? `${item.name} - ${details}` : item.name
-      text += `${nameWithDetails} ${item.variant === 'unit' ? 'ks' : item.variant}: ${item.total_quantity}x\n`
+      const variantDisplay = item.variant_label ? item.variant_label : (item.variant === 'unit' ? 'ks' : item.variant)
+      text += `${nameWithDetails} ${variantDisplay}: ${item.total_quantity}x\n`
     }
     text += '\n'
   }
@@ -879,7 +881,7 @@ function getStatusVariant(status) {
                           {{ product.purpose }}
                         </Badge>
                         <span class="font-medium">{{ product.product_name }}</span>
-                        <span class="text-xs text-muted-foreground">({{ product.variant === 'unit' ? 'ks' : product.variant }})</span>
+                        <span class="text-xs text-muted-foreground">({{ product.variant_label ? product.variant_label : (product.variant === 'unit' ? 'ks' : product.variant) }})</span>
                       </div>
                     </TableCell>
                     <TableCell class="text-center font-medium">{{ product.total_quantity }}</TableCell>
@@ -1021,7 +1023,7 @@ function getStatusVariant(status) {
                             >
                               {{ item.purpose }}
                             </Badge>
-                            {{ item.product_name }} ({{ item.variant === 'unit' ? 'ks' : item.variant }})
+                            {{ item.product_name }} ({{ item.variant_label ? item.variant_label : (item.variant === 'unit' ? 'ks' : item.variant) }})
                           </span>
                           <span class="text-muted-foreground">{{ item.quantity }}x - {{ formatPrice(item.price * item.quantity) }}</span>
                         </div>
@@ -1098,7 +1100,7 @@ function getStatusVariant(status) {
                         <span v-else class="text-muted-foreground">-</span>
                       </TableCell>
                       <TableCell>{{ item.name }}<span v-if="item.description1 || item.roast_type" class="text-muted-foreground"> - {{ [item.description1, item.roast_type].filter(Boolean).join(', ') }}</span></TableCell>
-                      <TableCell>{{ item.variant === 'unit' ? 'ks' : item.variant }}</TableCell>
+                      <TableCell>{{ item.variant_label ? item.variant_label : (item.variant === 'unit' ? 'ks' : item.variant) }}</TableCell>
                       <TableCell class="text-right">{{ item.total_quantity }}x</TableCell>
                       <TableCell class="text-right">{{ formatPrice(item.total_price) }}</TableCell>
                     </TableRow>

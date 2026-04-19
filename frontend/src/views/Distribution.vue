@@ -195,7 +195,7 @@ function printDistribution() {
                         {{ item.roast_type }}
                       </Badge>
                       <Badge variant="outline" class="text-[11px] px-1.5 py-0 border-green-400 text-green-700 bg-green-50 font-semibold">
-                        {{ item.variant === 'unit' ? 'ks' : item.variant }} × {{ item.quantity }}
+                        {{ item.variant_label ? item.variant_label : (item.variant === 'unit' ? 'ks' : item.variant) }} × {{ item.quantity }}
                       </Badge>
                     </div>
                   </div>
@@ -218,7 +218,7 @@ function printDistribution() {
                   <tr v-for="(item, i) in friend.items" :key="'print-'+i" class="border-b border-gray-200">
                     <td class="py-1">{{ item.product_name }}<span v-if="item.variant_label"> — {{ item.variant_label }}</span></td>
                     <td class="py-1">{{ item.roast_type || '-' }}</td>
-                    <td class="text-center py-1">{{ item.variant === 'unit' ? 'ks' : item.variant }}</td>
+                    <td class="text-center py-1">{{ item.variant_label ? item.variant_label : (item.variant === 'unit' ? 'ks' : item.variant) }}</td>
                     <td class="text-center py-1">{{ item.quantity }}×</td>
                   </tr>
                 </tbody>

@@ -126,6 +126,7 @@ const cartItems = computed(() => {
           key,
           product_id: parseInt(productId),
           product_name: product.name,
+          variant_label: product.variant_label || null,
           purpose: product.purpose || 'Ostatné',
           variant,
           quantity,
@@ -1356,7 +1357,7 @@ function applyMarkup(price) {
                   {{ purpose }}
                 </div>
                 <div v-for="item in items" :key="item.key" class="flex justify-between py-1 border-b border-border">
-                  <span>{{ item.product_name }} ({{ item.variant === 'unit' ? 'ks' : item.variant }}) x{{ item.quantity }}</span>
+                  <span>{{ item.product_name }} ({{ item.variant_label ? item.variant_label : (item.variant === 'unit' ? 'ks' : item.variant) }}) x{{ item.quantity }}</span>
                   <span>{{ formatPrice(item.total) }}</span>
                 </div>
               </template>
