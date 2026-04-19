@@ -41,7 +41,7 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS order_cycles (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
-      status TEXT DEFAULT 'open' CHECK (status IN ('open', 'locked', 'completed')),
+      status TEXT DEFAULT 'open' CHECK (status IN ('planned', 'open', 'locked', 'completed')),
       shared_password TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -80,6 +80,32 @@ async function initDb() {
     db.run('ALTER TABLE order_cycles ADD COLUMN plan_note TEXT');
   } catch (e) {
     // Column already exists, ignore
+  }
+
+  // Migration: Update CHECK constraint to allow 'planned' status
+  // SQLite can't ALTER CHECK constraints, so recreate table if needed
+  try {
+    db.run("INSERT INTO order_cycles (name, status) VALUES ('_check_test', 'planned')");
+    db.run("DELETE FROM order_cycles WHERE name = '_check_test'");
+  } catch (e) {
+    // CHECK constraint rejects 'planned', recreate table
+    db.run('PRAGMA foreign_keys = OFF');
+    db.run(`CREATE TABLE order_cycles_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      status TEXT DEFAULT 'open' CHECK (status IN ('planned', 'open', 'locked', 'completed')),
+      shared_password TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      total_friends INTEGER DEFAULT 0,
+      markup_ratio REAL DEFAULT 1.0,
+      expected_date TEXT,
+      plan_note TEXT,
+      type TEXT DEFAULT 'coffee'
+    )`);
+    db.run('INSERT INTO order_cycles_new SELECT id, name, status, shared_password, created_at, total_friends, markup_ratio, expected_date, plan_note, type FROM order_cycles');
+    db.run('DROP TABLE order_cycles');
+    db.run('ALTER TABLE order_cycles_new RENAME TO order_cycles');
+    db.run('PRAGMA foreign_keys = ON');
   }
 
   db.run(`
