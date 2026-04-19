@@ -867,7 +867,7 @@ function formatKilos(kilos) {
                   <div v-if="cycle.expected_date" class="text-sm text-primary mt-1">
                     📅 {{ cycle.expected_date }}
                   </div>
-                  <div v-if="cycle.status === 'planned' && cycle.plan_note" class="text-sm text-muted-foreground mt-2 whitespace-pre-line">
+                  <div v-if="cycle.plan_note" class="text-sm text-muted-foreground mt-2 whitespace-pre-line">
                     {{ cycle.plan_note }}
                   </div>
                   <div class="flex items-center gap-2 mt-2">
