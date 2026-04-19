@@ -21,6 +21,8 @@ const newCycleType = ref('coffee')
 const bakeryProducts = ref([])
 const selectedBakeryProductIds = ref([])
 const bakeryProductSearch = ref('')
+const newCycleStatus = ref('open')
+const newCyclePlanNote = ref('')
 
 onMounted(async () => {
   await loadCycles()
@@ -47,6 +49,8 @@ async function openNewCycleModal() {
   newCycleType.value = 'coffee'
   selectedBakeryProductIds.value = []
   bakeryProductSearch.value = ''
+  newCycleStatus.value = 'open'
+  newCyclePlanNote.value = ''
   // Load bakery products for picker
   try {
     bakeryProducts.value = await api.getBakeryProducts()
@@ -76,13 +80,17 @@ async function createCycle() {
   try {
     const data = {
       name: newCycleName.value,
-      type: newCycleType.value
+      type: newCycleType.value,
+      status: newCycleStatus.value,
+      plan_note: newCyclePlanNote.value || null
     }
     if (newCycleType.value === 'bakery') {
       data.bakery_product_ids = selectedBakeryProductIds.value
     }
     await api.createCycle(data)
     newCycleName.value = ''
+    newCycleStatus.value = 'open'
+    newCyclePlanNote.value = ''
     showNewCycleModal.value = false
     await loadCycles()
   } catch (e) {
@@ -109,6 +117,7 @@ async function logout() {
 
 function getStatusVariant(status) {
   switch (status) {
+    case 'planned': return 'outline'
     case 'open': return 'default'
     case 'locked': return 'secondary'
     case 'completed': return 'outline'
@@ -118,6 +127,7 @@ function getStatusVariant(status) {
 
 function getStatusText(status) {
   switch (status) {
+    case 'planned': return 'Plánovaný'
     case 'open': return 'Otvorený'
     case 'locked': return 'Uzamknutý'
     case 'completed': return 'Dokončený'
@@ -267,6 +277,28 @@ function getStatusText(status) {
                 <span class="text-sm">Pekáreň</span>
               </label>
             </div>
+          </div>
+          <div class="space-y-2">
+            <Label>Stav</Label>
+            <div class="flex gap-4">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" v-model="newCycleStatus" value="open" />
+                <span class="text-sm">Otvorený</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" v-model="newCycleStatus" value="planned" />
+                <span class="text-sm">Plánovaný</span>
+              </label>
+            </div>
+          </div>
+          <div v-if="newCycleStatus === 'planned'" class="space-y-2">
+            <Label>Plán objednávky</Label>
+            <textarea
+              v-model="newCyclePlanNote"
+              placeholder="napr. 1. - 3. máj objednávanie&#10;4. - 5. máj dodávka&#10;od 6. mája distribúcia"
+              rows="4"
+              class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            ></textarea>
           </div>
           <!-- Bakery product picker -->
           <div v-if="newCycleType === 'bakery'" class="space-y-2">
