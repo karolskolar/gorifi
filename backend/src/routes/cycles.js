@@ -106,18 +106,18 @@ router.post('/', (req, res) => {
       const categoryLabel = bp.category === 'sladké' ? 'Sladké' : 'Slané';
       for (const variant of variants) {
         db.run(
-          `INSERT INTO products (cycle_id, name, description1, purpose, price_unit, weight_grams, composition, image, source_bakery_product_id, variant_label, source_variant_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [cycleId, bp.name, bp.description || null, categoryLabel, variant.price, variant.weight_grams || null, bp.composition || null, bp.image || null, bp.id, variant.label || null, variant.id]
+          `INSERT INTO products (cycle_id, name, description1, description2, purpose, price_unit, weight_grams, composition, image, source_bakery_product_id, variant_label, source_variant_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [cycleId, bp.name, bp.description || null, bp.subtitle || null, categoryLabel, variant.price, variant.weight_grams || null, bp.composition || null, bp.image || null, bp.id, variant.label || null, variant.id]
         );
       }
 
       // Fallback: if product has no variants, snapshot with product-level data
       if (variants.length === 0) {
         db.run(
-          `INSERT INTO products (cycle_id, name, description1, purpose, price_unit, weight_grams, composition, image, source_bakery_product_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [cycleId, bp.name, bp.description || null, categoryLabel, bp.price, bp.weight_grams || null, bp.composition || null, bp.image || null, bp.id]
+          `INSERT INTO products (cycle_id, name, description1, description2, purpose, price_unit, weight_grams, composition, image, source_bakery_product_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [cycleId, bp.name, bp.description || null, bp.subtitle || null, categoryLabel, bp.price, bp.weight_grams || null, bp.composition || null, bp.image || null, bp.id]
         );
       }
     }

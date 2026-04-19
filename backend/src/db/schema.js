@@ -325,6 +325,11 @@ async function initDb() {
     )
   `);
 
+  // Migration: Add subtitle column to bakery_products
+  try {
+    db.run('ALTER TABLE bakery_products ADD COLUMN subtitle TEXT');
+  } catch (e) {}
+
   // Create bakery_product_variants table
   db.run(`
     CREATE TABLE IF NOT EXISTS bakery_product_variants (

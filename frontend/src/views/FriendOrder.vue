@@ -730,8 +730,9 @@ function applyMarkup(price) {
                   <div class="flex-1 min-w-0 p-3 flex flex-col">
                     <div class="flex justify-between items-start gap-2">
                       <div class="min-w-0 flex-1">
-                        <div class="flex items-center gap-2">
+                        <div class="flex items-baseline gap-2">
                           <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
+                          <span v-if="product.description2" class="text-sm text-muted-foreground">{{ product.description2 }}</span>
                         </div>
                         <p v-if="product.description1" class="text-sm text-muted-foreground mt-0.5">{{ product.description1 }}</p>
                         <details v-if="product.composition" class="mt-1">
@@ -1016,8 +1017,9 @@ function applyMarkup(price) {
               <div class="flex-1 min-w-0 p-3 flex flex-col">
                 <div class="flex justify-between items-start gap-2">
                   <div class="min-w-0 flex-1">
-                    <div class="flex items-center gap-2">
+                    <div class="flex items-baseline gap-2">
                       <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
+                      <span v-if="product.description2" class="text-sm text-muted-foreground">{{ product.description2 }}</span>
                     </div>
                     <p v-if="product.description1" class="text-sm text-muted-foreground mt-0.5">{{ product.description1 }}</p>
                     <details v-if="product.composition" class="mt-1">

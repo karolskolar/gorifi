@@ -47,7 +47,7 @@ router.get('/:id', (req, res) => {
 
 // Create product with variants
 router.post('/', upload.single('image'), (req, res) => {
-  const { name, description, weight_grams, price, composition, category } = req.body;
+  const { name, description, subtitle, weight_grams, price, composition, category } = req.body;
   let variants = req.body.variants;
 
   // Parse variants if sent as JSON string (from FormData)
@@ -77,8 +77,8 @@ router.post('/', upload.single('image'), (req, res) => {
   }
 
   const result = db.run(
-    'INSERT INTO bakery_products (name, description, weight_grams, price, composition, category, image) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [name, description || null, variants[0].weight_grams || null, variants[0].price, composition || null, category || 'slané', image]
+    'INSERT INTO bakery_products (name, description, subtitle, weight_grams, price, composition, category, image) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [name, description || null, subtitle || null, variants[0].weight_grams || null, variants[0].price, composition || null, category || 'slané', image]
   );
   const productId = result.lastInsertRowid;
 
@@ -106,13 +106,14 @@ router.patch('/:id', (req, res) => {
     return res.status(404).json({ error: 'Produkt nebol najdeny' });
   }
 
-  const { name, description, weight_grams, price, composition, category, image, active, variants } = req.body;
+  const { name, description, subtitle, weight_grams, price, composition, category, image, active, variants } = req.body;
 
   const updates = [];
   const values = [];
 
   if (name !== undefined) { updates.push('name = ?'); values.push(name); }
   if (description !== undefined) { updates.push('description = ?'); values.push(description || null); }
+  if (subtitle !== undefined) { updates.push('subtitle = ?'); values.push(subtitle || null); }
   if (composition !== undefined) { updates.push('composition = ?'); values.push(composition || null); }
   if (category !== undefined) { updates.push('category = ?'); values.push(category); }
   if (image !== undefined) { updates.push('image = ?'); values.push(image || null); }

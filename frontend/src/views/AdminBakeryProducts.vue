@@ -21,7 +21,7 @@ const error = ref('')
 const showModal = ref(false)
 const editingProduct = ref(null)
 const form = ref({
-  name: '', description: '', composition: '', category: 'slané', image: '',
+  name: '', subtitle: '', description: '', composition: '', category: 'slané', image: '',
   variants: [{ label: '', weight_grams: '', price: '' }]
 })
 const imagePreview = ref(null)
@@ -54,6 +54,7 @@ function openModal(product = null) {
       : [{ label: '', weight_grams: product.weight_grams || '', price: product.price || '' }]
     form.value = {
       name: product.name || '',
+      subtitle: product.subtitle || '',
       description: product.description || '',
       composition: product.composition || '',
       category: product.category || 'slané',
@@ -63,7 +64,7 @@ function openModal(product = null) {
     imagePreview.value = product.image || null
   } else {
     form.value = {
-      name: '', description: '', composition: '', category: 'slané', image: '',
+      name: '', subtitle: '', description: '', composition: '', category: 'slané', image: '',
       variants: [{ label: '', weight_grams: '', price: '' }]
     }
     imagePreview.value = null
@@ -80,6 +81,7 @@ async function saveProduct() {
   try {
     const data = {
       name: form.value.name,
+      subtitle: form.value.subtitle || null,
       description: form.value.description || null,
       composition: form.value.composition || null,
       category: form.value.category,
@@ -111,6 +113,7 @@ function duplicateProduct(product) {
     : [{ label: '', weight_grams: product.weight_grams || '', price: product.price || '' }]
   form.value = {
     name: (product.name || '') + ' (kópia)',
+    subtitle: product.subtitle || '',
     description: product.description || '',
     composition: product.composition || '',
     category: product.category || 'slané',
@@ -351,6 +354,10 @@ async function logout() {
             <div class="space-y-1">
               <Label>Názov *</Label>
               <Input v-model="form.name" />
+            </div>
+            <div class="space-y-1">
+              <Label>Podnadpis</Label>
+              <Input v-model="form.subtitle" placeholder="napr. 230g, bezlepkový..." />
             </div>
             <div class="space-y-1">
               <Label>Popis</Label>
