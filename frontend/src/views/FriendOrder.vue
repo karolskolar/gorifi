@@ -171,6 +171,40 @@ const groupedProducts = computed(() => {
   return groups
 })
 
+const groupedBakeryProducts = computed(() => {
+  if (!isBakery.value) return groupedProducts.value
+
+  const result = {}
+  for (const [purpose, purposeProducts] of Object.entries(groupedProducts.value)) {
+    const groups = []
+    const seen = new Set()
+    for (const product of purposeProducts) {
+      const groupKey = product.source_bakery_product_id || product.id
+      if (seen.has(groupKey)) continue
+      seen.add(groupKey)
+
+      // Find all products with same source_bakery_product_id
+      const variants = purposeProducts.filter(p =>
+        p.source_bakery_product_id && p.source_bakery_product_id === product.source_bakery_product_id
+      )
+
+      if (variants.length > 1) {
+        // Multi-variant product: first variant provides the card info
+        groups.push({ ...variants[0], _variants: variants })
+      } else {
+        // Single product (no grouping needed)
+        groups.push({ ...product, _variants: [product] })
+      }
+    }
+    result[purpose] = groups
+  }
+  return result
+})
+
+function getGroupQuantityTotal(variants) {
+  return variants.reduce((sum, v) => sum + getQuantity(v.id, 'unit'), 0)
+}
+
 const availablePurposes = computed(() => {
   // Order: Espresso, Filter, Kapsule, then others
   const order = ['Espresso', 'Filter', 'Kapsule']
@@ -672,15 +706,15 @@ function applyMarkup(price) {
         >
           <div class="space-y-3">
             <Card
-              v-for="product in groupedProducts[purpose]"
+              v-for="product in (isBakery ? groupedBakeryProducts[purpose] : groupedProducts[purpose])"
               :key="product.id"
             >
-              <!-- Bakery product card -->
+              <!-- Bakery product card with variant support -->
               <CardContent v-if="isBakery && product.price_unit" class="p-0">
                 <div
                   :class="[
                     'flex rounded-lg overflow-hidden transition-colors',
-                    getQuantity(product.id, 'unit') > 0
+                    getGroupQuantityTotal(product._variants) > 0
                       ? 'ring-2 ring-primary'
                       : ''
                   ]"
@@ -692,13 +726,12 @@ function applyMarkup(price) {
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
                   </div>
-                  <!-- Product info + controls -->
+                  <!-- Product info + variant rows -->
                   <div class="flex-1 min-w-0 p-3 flex flex-col">
                     <div class="flex justify-between items-start gap-2">
                       <div class="min-w-0 flex-1">
                         <div class="flex items-center gap-2">
                           <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
-                          <span v-if="product.roast_type" class="text-xs text-muted-foreground/70 bg-muted px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roast_type }}</span>
                         </div>
                         <p v-if="product.description1" class="text-sm text-muted-foreground mt-0.5">{{ product.description1 }}</p>
                         <details v-if="product.composition" class="mt-1">
@@ -707,31 +740,35 @@ function applyMarkup(price) {
                         </details>
                       </div>
                     </div>
-                    <div class="mt-auto pt-2 flex items-center justify-between">
-                      <div class="text-sm">
-                        <span class="font-semibold text-primary">{{ formatPrice(applyMarkup(product.price_unit)) }}</span>
-                        <span v-if="product.weight_grams" class="text-muted-foreground ml-1">/ {{ product.weight_grams }}g</span>
-                      </div>
-                      <div class="flex items-center gap-1.5">
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          @click="decrement(product.id, 'unit')"
-                          :disabled="isLocked || getQuantity(product.id, 'unit') === 0"
-                          class="h-8 w-8 rounded-full"
-                        >
-                          -
-                        </Button>
-                        <span class="w-6 text-center font-semibold text-sm">{{ getQuantity(product.id, 'unit') }}</span>
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          @click="increment(product.id, 'unit')"
-                          :disabled="isLocked"
-                          class="h-8 w-8 rounded-full"
-                        >
-                          +
-                        </Button>
+                    <!-- Variant rows -->
+                    <div class="mt-auto pt-2 space-y-1.5">
+                      <div v-for="v in product._variants" :key="v.id" class="flex items-center justify-between">
+                        <div class="text-sm">
+                          <span v-if="v.variant_label" class="text-xs text-muted-foreground mr-1">{{ v.variant_label }}</span>
+                          <span class="font-semibold text-primary">{{ formatPrice(applyMarkup(v.price_unit)) }}</span>
+                          <span v-if="v.weight_grams" class="text-muted-foreground ml-1">/ {{ v.weight_grams }}g</span>
+                        </div>
+                        <div class="flex items-center gap-1.5">
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            @click="decrement(v.id, 'unit')"
+                            :disabled="isLocked || getQuantity(v.id, 'unit') === 0"
+                            class="h-8 w-8 rounded-full"
+                          >
+                            -
+                          </Button>
+                          <span class="w-6 text-center font-semibold text-sm">{{ getQuantity(v.id, 'unit') }}</span>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            @click="increment(v.id, 'unit')"
+                            :disabled="isLocked"
+                            class="h-8 w-8 rounded-full"
+                          >
+                            +
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -956,15 +993,15 @@ function applyMarkup(price) {
       <!-- Fallback: show all products without tabs when only one purpose -->
       <div v-else-if="availablePurposes.length === 1" class="space-y-3">
         <Card
-          v-for="product in groupedProducts[availablePurposes[0]]"
+          v-for="product in (isBakery ? groupedBakeryProducts[availablePurposes[0]] : groupedProducts[availablePurposes[0]])"
           :key="product.id"
         >
-          <!-- Bakery product card -->
+          <!-- Bakery product card with variant support -->
           <CardContent v-if="isBakery && product.price_unit" class="p-0">
             <div
               :class="[
                 'flex rounded-lg overflow-hidden transition-colors',
-                getQuantity(product.id, 'unit') > 0
+                getGroupQuantityTotal(product._variants) > 0
                   ? 'ring-2 ring-primary'
                   : ''
               ]"
@@ -976,11 +1013,13 @@ function applyMarkup(price) {
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                 </svg>
               </div>
-              <!-- Product info + controls -->
+              <!-- Product info + variant rows -->
               <div class="flex-1 min-w-0 p-3 flex flex-col">
                 <div class="flex justify-between items-start gap-2">
                   <div class="min-w-0 flex-1">
-                    <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
+                    <div class="flex items-center gap-2">
+                      <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
+                    </div>
                     <p v-if="product.description1" class="text-sm text-muted-foreground mt-0.5">{{ product.description1 }}</p>
                     <details v-if="product.composition" class="mt-1">
                       <summary class="text-xs text-muted-foreground/70 cursor-pointer select-none">Zloženie</summary>
@@ -988,31 +1027,35 @@ function applyMarkup(price) {
                     </details>
                   </div>
                 </div>
-                <div class="mt-auto pt-2 flex items-center justify-between">
-                  <div class="text-sm">
-                    <span class="font-semibold text-primary">{{ formatPrice(applyMarkup(product.price_unit)) }}</span>
-                    <span v-if="product.weight_grams" class="text-muted-foreground ml-1">/ {{ product.weight_grams }}g</span>
-                  </div>
-                  <div class="flex items-center gap-1.5">
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="decrement(product.id, 'unit')"
-                      :disabled="isLocked || getQuantity(product.id, 'unit') === 0"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      -
-                    </Button>
-                    <span class="w-6 text-center font-semibold text-sm">{{ getQuantity(product.id, 'unit') }}</span>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="increment(product.id, 'unit')"
-                      :disabled="isLocked"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      +
-                    </Button>
+                <!-- Variant rows -->
+                <div class="mt-auto pt-2 space-y-1.5">
+                  <div v-for="v in product._variants" :key="v.id" class="flex items-center justify-between">
+                    <div class="text-sm">
+                      <span v-if="v.variant_label" class="text-xs text-muted-foreground mr-1">{{ v.variant_label }}</span>
+                      <span class="font-semibold text-primary">{{ formatPrice(applyMarkup(v.price_unit)) }}</span>
+                      <span v-if="v.weight_grams" class="text-muted-foreground ml-1">/ {{ v.weight_grams }}g</span>
+                    </div>
+                    <div class="flex items-center gap-1.5">
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="decrement(v.id, 'unit')"
+                        :disabled="isLocked || getQuantity(v.id, 'unit') === 0"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        -
+                      </Button>
+                      <span class="w-6 text-center font-semibold text-sm">{{ getQuantity(v.id, 'unit') }}</span>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="increment(v.id, 'unit')"
+                        :disabled="isLocked"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        +
+                      </Button>
+                    </div>
                   </div>
                 </div>
               </div>
