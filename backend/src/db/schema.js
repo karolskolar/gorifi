@@ -325,6 +325,39 @@ async function initDb() {
     )
   `);
 
+  // Create bakery_product_variants table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS bakery_product_variants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bakery_product_id INTEGER NOT NULL,
+      label TEXT,
+      weight_grams INTEGER,
+      price REAL NOT NULL,
+      sort_order INTEGER DEFAULT 0,
+      active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (bakery_product_id) REFERENCES bakery_products(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Migration: Populate variants from existing bakery_products that have no variants yet
+  try {
+    const existingVariants = db.exec('SELECT COUNT(*) FROM bakery_product_variants');
+    const count = existingVariants[0]?.values[0]?.[0] || 0;
+    if (count === 0) {
+      const productsWithPrice = db.exec('SELECT id, weight_grams, price FROM bakery_products WHERE price IS NOT NULL');
+      if (productsWithPrice.length > 0 && productsWithPrice[0].values.length > 0) {
+        for (const row of productsWithPrice[0].values) {
+          const [id, weight_grams, price] = row;
+          db.run('INSERT INTO bakery_product_variants (bakery_product_id, weight_grams, price, sort_order) VALUES (?, ?, ?, 0)',
+            [id, weight_grams, price]);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Migration error (bakery product variants):', e.message);
+  }
+
   // Create cycle_bakery_products junction table
   db.run(`
     CREATE TABLE IF NOT EXISTS cycle_bakery_products (
@@ -367,6 +400,12 @@ async function initDb() {
   } catch (e) {}
   try {
     db.run('ALTER TABLE products ADD COLUMN composition TEXT');
+  } catch (e) {}
+  try {
+    db.run('ALTER TABLE products ADD COLUMN variant_label TEXT');
+  } catch (e) {}
+  try {
+    db.run('ALTER TABLE products ADD COLUMN source_variant_id INTEGER');
   } catch (e) {}
 
   // Migration: Add username column for per-user authentication
