@@ -27,7 +27,7 @@ router.get('/:id', (req, res) => {
 
 // Get public cycle info (no auth required) - for friend ordering page
 router.get('/:id/public', (req, res) => {
-  const cycle = db.prepare('SELECT id, name, status, markup_ratio, expected_date, type FROM order_cycles WHERE id = ?').get(req.params.id);
+  const cycle = db.prepare('SELECT id, name, status, markup_ratio, expected_date, type, plan_note FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
     return res.status(404).json({ error: 'Cyklus nebol nájdený' });
   }
@@ -73,18 +73,19 @@ router.post('/:id/auth', (req, res) => {
 
 // Create new order cycle
 router.post('/', (req, res) => {
-  const { name, expected_date, type, bakery_product_ids } = req.body;
+  const { name, expected_date, type, bakery_product_ids, plan_note, status } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Nazov je povinny' });
   }
 
   const cycleType = type || 'coffee';
+  const cycleStatus = status === 'planned' ? 'planned' : 'open';
 
   // Count active friends at the time of cycle creation
   const friendsCount = db.prepare('SELECT COUNT(*) as count FROM friends WHERE active = 1').get();
   const totalFriends = friendsCount.count;
 
-  const result = db.prepare('INSERT INTO order_cycles (name, total_friends, expected_date, type) VALUES (?, ?, ?, ?)').run(name, totalFriends, expected_date || null, cycleType);
+  const result = db.prepare('INSERT INTO order_cycles (name, status, total_friends, expected_date, type, plan_note) VALUES (?, ?, ?, ?, ?, ?)').run(name, cycleStatus, totalFriends, expected_date || null, cycleType, plan_note || null);
   const cycleId = result.lastInsertRowid;
 
   // For bakery cycles, snapshot selected bakery products into the products table
@@ -129,14 +130,14 @@ router.post('/', (req, res) => {
 
 // Update cycle (lock/unlock/complete/password/markup_ratio/expected_date)
 router.patch('/:id', (req, res) => {
-  const { status, name, shared_password, markup_ratio, expected_date } = req.body;
+  const { status, name, shared_password, markup_ratio, expected_date, plan_note } = req.body;
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
 
   if (!cycle) {
     return res.status(404).json({ error: 'Cyklus nebol najdeny' });
   }
 
-  if (status && !['open', 'locked', 'completed'].includes(status)) {
+  if (status && !['planned', 'open', 'locked', 'completed'].includes(status)) {
     return res.status(400).json({ error: 'Neplatny status' });
   }
 
@@ -162,6 +163,10 @@ router.patch('/:id', (req, res) => {
   if (expected_date !== undefined) {
     updates.push('expected_date = ?');
     values.push(expected_date || null);
+  }
+  if (plan_note !== undefined) {
+    updates.push('plan_note = ?');
+    values.push(plan_note || null);
   }
 
   if (updates.length > 0) {

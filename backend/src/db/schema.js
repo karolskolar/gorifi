@@ -75,6 +75,13 @@ async function initDb() {
     // Column already exists, ignore
   }
 
+  // Migration: Add plan_note column for preliminary cycle schedule text
+  try {
+    db.run('ALTER TABLE order_cycles ADD COLUMN plan_note TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
