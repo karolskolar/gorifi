@@ -54,6 +54,10 @@ const markupSaving = ref(false)
 const expectedDate = ref('')
 const expectedDateSaving = ref(false)
 
+// Plan note
+const planNote = ref('')
+const planNoteSaving = ref(false)
+
 // Cycle name editing
 const editingCycleName = ref(false)
 const cycleNameEdit = ref('')
@@ -168,6 +172,7 @@ async function loadAll() {
     markupPercent.value = Math.round(((cycleData.markup_ratio || 1.0) - 1) * 100)
     // Initialize expected date
     expectedDate.value = cycleData.expected_date || ''
+    planNote.value = cycleData.plan_note || ''
   } catch (e) {
     error.value = e.message
   } finally {
@@ -236,6 +241,23 @@ async function saveExpectedDate() {
   }
 }
 
+async function savePlanNote() {
+  planNoteSaving.value = true
+  error.value = ''
+  try {
+    await api.updateCycle(cycleId.value, { plan_note: planNote.value || null })
+    await loadAll()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    planNoteSaving.value = false
+  }
+}
+
+async function openPlannedCycle() {
+  await api.updateCycle(cycleId.value, { status: 'open' })
+  await loadAll()
+}
 
 // Product actions
 function openProductModal(product = null) {
@@ -509,6 +531,7 @@ function formatPrice(price) {
 
 function getStatusVariant(status) {
   switch (status) {
+    case 'planned': return 'outline'
     case 'open': return 'default'
     case 'locked': return 'secondary'
     case 'completed': return 'outline'
@@ -555,13 +578,22 @@ function getStatusVariant(status) {
               </svg>
             </h1>
             <Badge v-if="cycle" :variant="getStatusVariant(cycle.status)" class="mt-1 text-primary-foreground bg-primary-foreground/20 border-primary-foreground/30">
-              {{ cycle.status === 'open' ? 'Otvorený' : cycle.status === 'locked' ? 'Uzamknutý' : 'Dokončený' }}
+              {{ cycle.status === 'planned' ? 'Plánovaný' : cycle.status === 'open' ? 'Otvorený' : cycle.status === 'locked' ? 'Uzamknutý' : 'Dokončený' }}
             </Badge>
           </div>
         </div>
         <div class="flex flex-wrap gap-2">
           <Button
-            v-if="cycle?.status !== 'completed'"
+            v-if="cycle?.status === 'planned'"
+            variant="secondary"
+            size="sm"
+            @click="openPlannedCycle"
+            class="bg-green-600 hover:bg-green-700 text-white"
+          >
+            Otvoriť objednávanie
+          </Button>
+          <Button
+            v-if="cycle?.status === 'open' || cycle?.status === 'locked'"
             variant="secondary"
             size="sm"
             @click="toggleLock"
@@ -635,6 +667,19 @@ function getStatusVariant(status) {
                     {{ expectedDateSaving ? 'Ukladám...' : 'Uložiť' }}
                   </Button>
                 </div>
+              </div>
+              <!-- Plan note -->
+              <div class="space-y-2">
+                <Label>Plán objednávky</Label>
+                <textarea
+                  v-model="planNote"
+                  placeholder="napr. 1. - 3. máj objednávanie&#10;4. - 5. máj dodávka"
+                  rows="4"
+                  class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                ></textarea>
+                <Button size="sm" @click="savePlanNote" :disabled="planNoteSaving">
+                  {{ planNoteSaving ? 'Ukladám...' : 'Uložiť plán' }}
+                </Button>
               </div>
               <!-- Markup ratio -->
               <div class="space-y-1">
