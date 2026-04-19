@@ -423,6 +423,20 @@ async function initDb() {
     )
   `);
 
+  // Migration: Add friend grouping columns for rewards report
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN is_root INTEGER DEFAULT 0');
+  } catch (e) {}
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN root_friend_id INTEGER');
+  } catch (e) {}
+
+  // Initialize rewards_threshold_kg setting if not exists
+  const rewardsThreshold = db.exec("SELECT * FROM settings WHERE key = 'rewards_threshold_kg'");
+  if (!rewardsThreshold.length || !rewardsThreshold[0].values.length) {
+    db.run("INSERT INTO settings (key, value) VALUES ('rewards_threshold_kg', '10')");
+  }
+
   // Initialize friends_password if not exists (empty string means not set)
   const friendsPassword = db.prepare("SELECT * FROM settings WHERE key = 'friends_password'").get();
   if (!friendsPassword) {

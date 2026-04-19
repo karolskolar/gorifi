@@ -29,6 +29,7 @@ watchEffect(() => {
         <Button variant="outline" @click="router.push('/admin/analytics/live')">Živý prehľad</Button>
         <Button variant="outline" @click="router.push('/admin/analytics/coffee')">Káva</Button>
         <Button variant="default">Pekáreň</Button>
+        <Button variant="outline" @click="router.push('/admin/analytics/rewards')">Odmeny</Button>
       </div>
 
       <Card>

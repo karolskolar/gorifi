@@ -18,6 +18,8 @@ import subscriptionsRouter from './routes/subscriptions.js';
 import analyticsRouter from './routes/analytics.js';
 import liveCycleRouter from './routes/live-cycle.js';
 import vouchersRouter from './routes/vouchers.js';
+import friendGroupsRouter from './routes/friend-groups.js';
+import rewardsRouter from './routes/rewards.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -39,6 +41,8 @@ app.use('/api/subscriptions', subscriptionsRouter);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/analytics/live-cycle', liveCycleRouter);
 app.use('/api/vouchers', vouchersRouter);
+app.use('/api/friend-groups', friendGroupsRouter);
+app.use('/api/analytics/rewards', rewardsRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {

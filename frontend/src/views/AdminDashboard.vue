@@ -146,6 +146,9 @@ function getStatusText(status) {
           <Button variant="ghost" @click="router.push('/admin/vouchers')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             Vouchery
           </Button>
+          <Button variant="ghost" @click="router.push('/admin/friend-groups')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
+            Skupiny
+          </Button>
           <Button variant="ghost" @click="router.push('/admin/settings')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             Nastavenia
           </Button>
@@ -167,6 +170,7 @@ function getStatusText(status) {
         <button @click="router.push('/admin/friends'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Priatelia</button>
         <button @click="router.push('/admin/bakery-products'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Pekáreň</button>
         <button @click="router.push('/admin/vouchers'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Vouchery</button>
+        <button @click="router.push('/admin/friend-groups'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Skupiny</button>
         <button @click="router.push('/admin/settings'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Nastavenia</button>
         <button @click="logout(); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Odhlásiť sa</button>
       </div>

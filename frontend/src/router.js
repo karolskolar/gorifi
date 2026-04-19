@@ -52,6 +52,16 @@ const routes = [
     component: () => import('./views/BakeryAnalytics.vue')
   },
   {
+    path: '/admin/analytics/rewards',
+    name: 'analytics-rewards',
+    component: () => import('./views/AdminRewardsReport.vue')
+  },
+  {
+    path: '/admin/friend-groups',
+    name: 'admin-friend-groups',
+    component: () => import('./views/AdminFriendGroups.vue')
+  },
+  {
     path: '/admin/friends',
     name: 'admin-friends',
     component: () => import('./views/AdminFriends.vue')

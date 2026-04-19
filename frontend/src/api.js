@@ -230,6 +230,18 @@ export const api = {
   getCoffeeAnalytics: () => adminRequest('/analytics/coffee'),
   getLiveCycle: () => adminRequest('/analytics/live-cycle'),
 
+  // Friend groups
+  getFriendGroups: () => adminRequest('/friend-groups'),
+  setRootStatus: (id, isRoot, force = false) => adminRequest(`/friend-groups/${id}/root-status${force ? '?force=true' : ''}`, {
+    method: 'PATCH', body: { isRoot }
+  }),
+  assignRoot: (id, rootFriendId) => adminRequest(`/friend-groups/${id}/assign-root`, {
+    method: 'PATCH', body: { rootFriendId }
+  }),
+
+  // Rewards report
+  getRewardsReport: (limit) => adminRequest(`/analytics/rewards${limit ? `?limit=${limit}` : ''}`),
+
   // Vouchers
   generateVouchers: (data) => adminRequest('/vouchers/generate', { method: 'POST', body: data }),
   getVouchers: (params) => {

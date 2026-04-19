@@ -150,6 +150,12 @@ const visibleNotOrdered = computed(() => {
       >
         Pekaren
       </button>
+      <button
+        class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted-foreground hover:text-foreground"
+        @click="router.push('/admin/analytics/rewards')"
+      >
+        Odmeny
+      </button>
     </div>
 
     <!-- Loading -->

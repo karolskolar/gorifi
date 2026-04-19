@@ -172,6 +172,7 @@ const comparison = computed(() => {
         <Button variant="outline" @click="router.push('/admin/analytics/live')">Živý prehľad</Button>
         <Button variant="default">Káva</Button>
         <Button variant="outline" @click="router.push('/admin/analytics/bakery')">Pekáreň</Button>
+        <Button variant="outline" @click="router.push('/admin/analytics/rewards')">Odmeny</Button>
       </div>
 
       <Alert v-if="error" variant="destructive" class="mb-4">
