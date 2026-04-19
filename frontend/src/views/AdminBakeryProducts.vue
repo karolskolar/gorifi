@@ -21,7 +21,8 @@ const error = ref('')
 const showModal = ref(false)
 const editingProduct = ref(null)
 const form = ref({
-  name: '', description: '', weight_grams: '', price: '', composition: '', category: 'slané', image: ''
+  name: '', description: '', composition: '', category: 'slané', image: '',
+  variants: [{ label: '', weight_grams: '', price: '' }]
 })
 const imagePreview = ref(null)
 const isDragging = ref(false)
@@ -48,32 +49,48 @@ async function loadProducts() {
 function openModal(product = null) {
   editingProduct.value = product
   if (product) {
+    const variants = (product.variants && product.variants.length > 0)
+      ? product.variants.map(v => ({ id: v.id, label: v.label || '', weight_grams: v.weight_grams || '', price: v.price || '' }))
+      : [{ label: '', weight_grams: product.weight_grams || '', price: product.price || '' }]
     form.value = {
       name: product.name || '',
       description: product.description || '',
-      weight_grams: product.weight_grams || '',
-      price: product.price || '',
       composition: product.composition || '',
       category: product.category || 'slané',
-      image: product.image || ''
+      image: product.image || '',
+      variants
     }
     imagePreview.value = product.image || null
   } else {
-    form.value = { name: '', description: '', weight_grams: '', price: '', composition: '', category: 'slané', image: '' }
+    form.value = {
+      name: '', description: '', composition: '', category: 'slané', image: '',
+      variants: [{ label: '', weight_grams: '', price: '' }]
+    }
     imagePreview.value = null
   }
   showModal.value = true
 }
 
 async function saveProduct() {
-  if (!form.value.name.trim() || !form.value.price) return
+  if (!form.value.name.trim()) return
+  // At least one variant with a price is required
+  const validVariants = form.value.variants.filter(v => v.price)
+  if (validVariants.length === 0) return
 
   try {
     const data = {
-      ...form.value,
-      price: parseFloat(form.value.price),
-      weight_grams: form.value.weight_grams ? parseInt(form.value.weight_grams) : null,
-      image: form.value.image || null
+      name: form.value.name,
+      description: form.value.description || null,
+      composition: form.value.composition || null,
+      category: form.value.category,
+      image: form.value.image || null,
+      variants: form.value.variants.map((v, i) => ({
+        ...(v.id ? { id: v.id } : {}),
+        label: v.label || null,
+        weight_grams: v.weight_grams ? parseInt(v.weight_grams) : null,
+        price: parseFloat(v.price),
+        sort_order: i
+      }))
     }
     if (editingProduct.value) {
       await api.updateBakeryProduct(editingProduct.value.id, data)
@@ -89,17 +106,29 @@ async function saveProduct() {
 
 function duplicateProduct(product) {
   editingProduct.value = null
+  const variants = (product.variants && product.variants.length > 0)
+    ? product.variants.map(v => ({ label: v.label || '', weight_grams: v.weight_grams || '', price: v.price || '' }))
+    : [{ label: '', weight_grams: product.weight_grams || '', price: product.price || '' }]
   form.value = {
     name: (product.name || '') + ' (kópia)',
     description: product.description || '',
-    weight_grams: product.weight_grams || '',
-    price: product.price || '',
     composition: product.composition || '',
     category: product.category || 'slané',
-    image: product.image || ''
+    image: product.image || '',
+    variants
   }
   imagePreview.value = product.image || null
   showModal.value = true
+}
+
+function addVariant() {
+  form.value.variants.push({ label: '', weight_grams: '', price: '' })
+}
+
+function removeVariant(index) {
+  if (form.value.variants.length > 1) {
+    form.value.variants.splice(index, 1)
+  }
 }
 
 async function deleteProduct(id) {
@@ -214,8 +243,7 @@ async function logout() {
               <TableHead class="w-16">Foto</TableHead>
               <TableHead>Názov</TableHead>
               <TableHead>Kategória</TableHead>
-              <TableHead class="text-right">Hmotnosť</TableHead>
-              <TableHead class="text-right">Cena</TableHead>
+              <TableHead class="text-right">Varianty</TableHead>
               <TableHead>Zloženie</TableHead>
               <TableHead class="text-center">Stav</TableHead>
               <TableHead class="text-right">Akcie</TableHead>
@@ -240,8 +268,16 @@ async function logout() {
                   {{ getCategoryLabel(product.category) }}
                 </Badge>
               </TableCell>
-              <TableCell class="text-right text-sm">{{ product.weight_grams ? `${product.weight_grams}g` : '-' }}</TableCell>
-              <TableCell class="text-right text-sm">{{ formatPrice(product.price) }}</TableCell>
+              <TableCell class="text-right text-sm">
+                <div v-if="product.variants && product.variants.length > 0" class="space-y-0.5">
+                  <div v-for="v in product.variants" :key="v.id" class="whitespace-nowrap">
+                    <span v-if="v.label" class="text-muted-foreground">{{ v.label }}: </span>
+                    <span>{{ formatPrice(v.price) }}</span>
+                    <span v-if="v.weight_grams" class="text-muted-foreground"> / {{ v.weight_grams }}g</span>
+                  </div>
+                </div>
+                <span v-else>{{ formatPrice(product.price) }}</span>
+              </TableCell>
               <TableCell class="text-sm text-muted-foreground max-w-xs">
                 <span v-if="product.composition" class="line-clamp-1">{{ product.composition }}</span>
                 <span v-else>-</span>
@@ -332,15 +368,34 @@ async function logout() {
                 </SelectContent>
               </Select>
             </div>
-            <div class="grid grid-cols-2 gap-3">
-              <div class="space-y-1">
-                <Label>Hmotnosť (g)</Label>
-                <Input v-model="form.weight_grams" type="number" />
+            <div class="space-y-2">
+              <Label>Varianty</Label>
+              <div v-for="(variant, index) in form.variants" :key="index" class="flex items-center gap-2">
+                <Input v-model="variant.label" placeholder="napr. Malá" class="flex-1" />
+                <Input v-model="variant.weight_grams" type="number" placeholder="g" class="w-20" />
+                <Input v-model="variant.price" type="number" step="0.01" placeholder="EUR" class="w-24" />
+                <button
+                  v-if="form.variants.length > 1"
+                  @click="removeVariant(index)"
+                  class="text-destructive hover:text-destructive/80 p-1"
+                  type="button"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+                <div v-else class="w-6"></div>
               </div>
-              <div class="space-y-1">
-                <Label>Cena (EUR) *</Label>
-                <Input v-model="form.price" type="number" step="0.01" />
-              </div>
+              <button
+                @click="addVariant"
+                type="button"
+                class="text-sm text-primary hover:text-primary/80 flex items-center gap-1"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                </svg>
+                Pridať variant
+              </button>
             </div>
             <div class="space-y-1">
               <Label>Zloženie / alergény</Label>
@@ -351,7 +406,7 @@ async function logout() {
 
         <DialogFooter>
           <Button variant="outline" @click="showModal = false">Zrušiť</Button>
-          <Button @click="saveProduct" :disabled="!form.name.trim() || !form.price">Uložiť</Button>
+          <Button @click="saveProduct" :disabled="!form.name.trim() || !form.variants.some(v => v.price)">Uložiť</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
