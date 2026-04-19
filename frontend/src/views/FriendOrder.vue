@@ -65,7 +65,7 @@ const paymentReference = computed(() => {
 
 const cycleId = computed(() => route.params.cycleId)
 
-const isLocked = computed(() => cycle.value?.status === 'locked' || cycle.value?.status === 'completed')
+const isLocked = computed(() => cycle.value?.status === 'planned' || cycle.value?.status === 'locked' || cycle.value?.status === 'completed')
 const isSubmitted = computed(() => order.value?.status === 'submitted')
 const markupRatio = computed(() => cycle.value?.markup_ratio || 1.0)
 const isBakery = computed(() => cycle.value?.type === 'bakery')
