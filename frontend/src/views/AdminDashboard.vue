@@ -24,6 +24,11 @@ const bakeryProductSearch = ref('')
 const newCycleStatus = ref('open')
 const newCyclePlanNote = ref('')
 
+// Delete confirmation
+const showDeleteModal = ref(false)
+const deletingCycleId = ref(null)
+const deletingCycleName = ref('')
+
 onMounted(async () => {
   await loadCycles()
 })
@@ -98,14 +103,20 @@ async function createCycle() {
   }
 }
 
-async function deleteCycle(id) {
-  if (!confirm('Naozaj chcete vymazať tento cyklus? Všetky dáta budú stratené.')) return
+function confirmDeleteCycle(cycle) {
+  deletingCycleId.value = cycle.id
+  deletingCycleName.value = cycle.name
+  showDeleteModal.value = true
+}
 
+async function deleteCycle() {
   try {
-    await api.deleteCycle(id)
+    await api.deleteCycle(deletingCycleId.value)
+    showDeleteModal.value = false
     await loadCycles()
   } catch (e) {
     error.value = e.message
+    showDeleteModal.value = false
   }
 }
 
@@ -159,6 +170,9 @@ function getStatusText(status) {
           <Button variant="ghost" @click="router.push('/admin/friend-groups')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             Skupiny
           </Button>
+          <Button variant="ghost" @click="router.push('/admin/invitations')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
+            Pozvánky
+          </Button>
           <Button variant="ghost" @click="router.push('/admin/settings')" class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10">
             Nastavenia
           </Button>
@@ -181,6 +195,7 @@ function getStatusText(status) {
         <button @click="router.push('/admin/bakery-products'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Pekáreň</button>
         <button @click="router.push('/admin/vouchers'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Vouchery</button>
         <button @click="router.push('/admin/friend-groups'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Skupiny</button>
+        <button @click="router.push('/admin/invitations'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Pozvánky</button>
         <button @click="router.push('/admin/settings'); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Nastavenia</button>
         <button @click="logout(); mobileMenuOpen = false" class="block w-full text-left px-3 py-2 rounded text-sm text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10 transition-colors">Odhlásiť sa</button>
       </div>
@@ -235,7 +250,7 @@ function getStatusText(status) {
                 <Button
                   variant="ghost"
                   size="icon"
-                  @click.stop="deleteCycle(cycle.id)"
+                  @click.stop="confirmDeleteCycle(cycle)"
                   class="text-destructive hover:text-destructive hover:bg-destructive/10"
                 >
                   <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -339,6 +354,22 @@ function getStatusText(status) {
           <Button @click="createCycle">
             Vytvoriť
           </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Delete Cycle Confirmation -->
+    <Dialog :open="showDeleteModal" @update:open="showDeleteModal = $event">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Vymazať cyklus</DialogTitle>
+        </DialogHeader>
+        <p class="py-4 text-sm text-muted-foreground">
+          Naozaj chcete vymazať cyklus <strong class="text-foreground">{{ deletingCycleName }}</strong>? Všetky dáta budú stratené.
+        </p>
+        <DialogFooter>
+          <Button variant="outline" @click="showDeleteModal = false">Zrušiť</Button>
+          <Button variant="destructive" @click="deleteCycle">Vymazať</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

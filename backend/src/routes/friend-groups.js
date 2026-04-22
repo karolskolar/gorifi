@@ -66,6 +66,38 @@ router.patch('/:id/root-status', (req, res) => {
   }
 });
 
+// PATCH /api/friend-groups/batch-assign — assign multiple friends to a root
+router.patch('/batch-assign', (req, res) => {
+  try {
+    const { friendIds, rootFriendId } = req.body;
+
+    if (!Array.isArray(friendIds) || friendIds.length === 0) {
+      return res.status(400).json({ error: 'Zoznam priateľov je prázdny' });
+    }
+
+    if (rootFriendId !== null && rootFriendId !== undefined) {
+      const root = db.get('SELECT id, is_root FROM friends WHERE id = ?', [rootFriendId]);
+      if (!root || !root.is_root) {
+        return res.status(400).json({ error: 'Cieľový priateľ nie je hlavný priateľ' });
+      }
+    }
+
+    const runBatch = db.transaction(() => {
+      for (const friendId of friendIds) {
+        const friend = db.get('SELECT id, is_root FROM friends WHERE id = ?', [friendId]);
+        if (!friend || friend.is_root) continue;
+        db.run('UPDATE friends SET root_friend_id = ? WHERE id = ?', [rootFriendId || null, friendId]);
+      }
+    });
+    runBatch();
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Error batch assigning:', e.message);
+    res.status(500).json({ error: 'Chyba pri priraďovaní' });
+  }
+});
+
 // PATCH /api/friend-groups/:id/assign-root — assign sibling to root friend
 router.patch('/:id/assign-root', (req, res) => {
   try {

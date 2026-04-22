@@ -180,11 +180,19 @@ router.patch('/:id', (req, res) => {
 
 // Delete cycle
 router.delete('/:id', (req, res) => {
-  const result = db.prepare('DELETE FROM order_cycles WHERE id = ?').run(req.params.id);
-  if (result.changes === 0) {
-    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
+  try {
+    // Clear voucher references first (FK without CASCADE)
+    db.prepare('DELETE FROM vouchers WHERE source_cycle_id = ?').run(req.params.id);
+
+    const result = db.prepare('DELETE FROM order_cycles WHERE id = ?').run(req.params.id);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Cyklus nebol najdeny' });
+    }
+    res.status(204).send();
+  } catch (e) {
+    console.error('Error deleting cycle:', e.message);
+    res.status(500).json({ error: 'Chyba pri mazaní cyklu: ' + e.message });
   }
-  res.status(204).send();
 });
 
 // Get order summary for cycle (for email to company)

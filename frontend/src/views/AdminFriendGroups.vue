@@ -15,10 +15,10 @@ const error = ref('')
 const groups = ref([])
 const unassigned = ref([])
 
-// Modal state
-const showAssignModal = ref(false)
-const assigningFriend = ref(null)
-const selectedRootId = ref('')
+// Members modal (multi-select)
+const showMembersModal = ref(false)
+const membersModalRootId = ref(null)
+const selectedFriendIds = ref(new Set())
 
 // Add root modal
 const showAddRootModal = ref(false)
@@ -68,17 +68,59 @@ async function removeSibling(friendId) {
   }
 }
 
-function openAssignModal(friend) {
-  assigningFriend.value = friend
-  selectedRootId.value = ''
-  showAssignModal.value = true
+function openMembersModal(rootId) {
+  membersModalRootId.value = rootId
+  // Pre-select current members of this group
+  const group = groups.value.find(g => g.rootFriend.id === rootId)
+  selectedFriendIds.value = new Set(group ? group.siblings.map(s => s.id) : [])
+  showMembersModal.value = true
 }
 
-async function confirmAssign() {
-  if (!selectedRootId.value) return
+// All friends available for this group: current siblings + unassigned
+const membersModalFriends = computed(() => {
+  const group = groups.value.find(g => g.rootFriend.id === membersModalRootId.value)
+  const currentSiblings = group ? group.siblings : []
+  return [...currentSiblings, ...unassigned.value].sort((a, b) =>
+    a.name.localeCompare(b.name)
+  )
+})
+
+function toggleFriend(friendId) {
+  const newSet = new Set(selectedFriendIds.value)
+  if (newSet.has(friendId)) {
+    newSet.delete(friendId)
+  } else {
+    newSet.add(friendId)
+  }
+  selectedFriendIds.value = newSet
+}
+
+async function confirmMembers() {
+  const rootId = membersModalRootId.value
+  const group = groups.value.find(g => g.rootFriend.id === rootId)
+  const currentSiblingIds = new Set(group ? group.siblings.map(s => s.id) : [])
+  const newSelectedIds = selectedFriendIds.value
+
+  // Friends to add (selected but not currently in group)
+  const toAdd = [...newSelectedIds].filter(id => !currentSiblingIds.has(id))
+  // Friends to remove (currently in group but not selected)
+  const toRemove = [...currentSiblingIds].filter(id => !newSelectedIds.has(id))
+
+  if (toAdd.length === 0 && toRemove.length === 0) {
+    showMembersModal.value = false
+    return
+  }
+
   try {
-    await api.assignRoot(assigningFriend.value.id, parseInt(selectedRootId.value))
-    showAssignModal.value = false
+    const promises = []
+    if (toAdd.length > 0) {
+      promises.push(api.batchAssignRoot(toAdd, rootId))
+    }
+    if (toRemove.length > 0) {
+      promises.push(api.batchAssignRoot(toRemove, null))
+    }
+    await Promise.all(promises)
+    showMembersModal.value = false
     await loadGroups()
   } catch (e) {
     error.value = e.message
@@ -100,11 +142,6 @@ async function confirmAddRoot() {
     error.value = e.message
   }
 }
-
-// All non-root friends for assignment dropdown
-const assignableToRoot = computed(() => {
-  return unassigned.value.filter(f => f.id !== assigningFriend.value?.id)
-})
 
 // Candidates for new root: unassigned friends
 const rootCandidates = computed(() => {
@@ -159,7 +196,8 @@ const rootCandidates = computed(() => {
             <CardHeader class="pb-3">
               <div class="flex justify-between items-center">
                 <CardTitle class="text-lg flex items-center gap-2">
-                  {{ group.rootFriend.displayName || group.rootFriend.name }}
+                  {{ group.rootFriend.name }}
+                  <span v-if="group.rootFriend.display_name && group.rootFriend.display_name !== group.rootFriend.name" class="text-sm font-normal text-muted-foreground">({{ group.rootFriend.display_name }})</span>
                   <Badge variant="outline" class="text-xs">Hlavný</Badge>
                 </CardTitle>
                 <div class="flex items-center gap-2">
@@ -178,7 +216,7 @@ const rootCandidates = computed(() => {
                   variant="secondary"
                   class="pl-3 pr-1 py-1 flex items-center gap-1"
                 >
-                  {{ sibling.displayName || sibling.name }}
+                  {{ sibling.name }}<template v-if="sibling.display_name && sibling.display_name !== sibling.name"> <span class="text-muted-foreground">({{ sibling.display_name }})</span></template>
                   <button
                     @click="removeSibling(sibling.id)"
                     class="ml-1 rounded-full hover:bg-muted p-0.5"
@@ -190,11 +228,10 @@ const rootCandidates = computed(() => {
                   </button>
                 </Badge>
                 <button
-                  v-if="unassigned.length > 0"
-                  @click="openAssignModal({ _targetRootId: group.rootFriend.id })"
+                  @click="openMembersModal(group.rootFriend.id)"
                   class="border border-dashed border-muted-foreground/30 rounded-md px-3 py-1 text-sm text-muted-foreground hover:border-primary hover:text-primary transition-colors"
                 >
-                  + Pridať člena
+                  + Upraviť členov
                 </button>
               </div>
               <p v-if="group.siblings.length === 0 && unassigned.length === 0" class="text-sm text-muted-foreground">
@@ -218,13 +255,9 @@ const rootCandidates = computed(() => {
                 v-for="friend in unassigned"
                 :key="friend.id"
                 variant="secondary"
-                class="pl-3 pr-1 py-1 flex items-center gap-1 cursor-pointer hover:bg-muted"
-                @click="openAssignModal(friend)"
+                class="px-3 py-1"
               >
-                {{ friend.displayName || friend.name }}
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 ml-1 text-muted-foreground" viewBox="0 0 20 20" fill="currentColor">
-                  <path fill-rule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clip-rule="evenodd" />
-                </svg>
+                {{ friend.name }}<template v-if="friend.display_name && friend.display_name !== friend.name"> <span class="text-muted-foreground text-xs">({{ friend.display_name }})</span></template>
               </Badge>
             </div>
           </CardContent>
@@ -237,55 +270,44 @@ const rootCandidates = computed(() => {
       </template>
     </main>
 
-    <!-- Assign to root modal -->
-    <Dialog :open="showAssignModal" @update:open="showAssignModal = $event">
+    <!-- Members multi-select modal -->
+    <Dialog :open="showMembersModal" @update:open="showMembersModal = $event">
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>
-            <template v-if="assigningFriend?._targetRootId">Pridať člena do skupiny</template>
-            <template v-else>Priradiť do skupiny</template>
-          </DialogTitle>
+          <DialogTitle>Upraviť členov skupiny</DialogTitle>
         </DialogHeader>
-        <div class="space-y-4 py-4">
-          <!-- If assigning from unassigned list, show root picker -->
-          <template v-if="!assigningFriend?._targetRootId">
-            <p class="text-sm text-muted-foreground">
-              Priradiť <strong>{{ assigningFriend?.displayName || assigningFriend?.name }}</strong> do skupiny:
-            </p>
-            <Select v-model="selectedRootId">
-              <SelectTrigger>
-                <SelectValue placeholder="Vyberte hlavného priateľa" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem v-for="group in groups" :key="group.rootFriend.id" :value="String(group.rootFriend.id)">
-                  {{ group.rootFriend.displayName || group.rootFriend.name }}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </template>
-          <!-- If adding member to specific group, show friend picker -->
-          <template v-else>
-            <Select v-model="selectedRootId">
-              <SelectTrigger>
-                <SelectValue placeholder="Vyberte priateľa" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem v-for="friend in unassigned" :key="friend.id" :value="String(friend.id)">
-                  {{ friend.displayName || friend.name }}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </template>
+        <div class="py-4">
+          <p v-if="membersModalFriends.length === 0" class="text-sm text-muted-foreground">
+            Žiadni priatelia na priradenie.
+          </p>
+          <div v-else class="space-y-1 max-h-80 overflow-y-auto">
+            <label
+              v-for="friend in membersModalFriends"
+              :key="friend.id"
+              class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted cursor-pointer transition-colors"
+            >
+              <div
+                class="h-5 w-5 rounded border-2 flex items-center justify-center shrink-0 transition-colors"
+                :class="selectedFriendIds.has(friend.id) ? 'bg-primary border-primary' : 'border-muted-foreground/40'"
+              >
+                <svg v-if="selectedFriendIds.has(friend.id)" xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-primary-foreground" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                </svg>
+              </div>
+              <input
+                type="checkbox"
+                class="sr-only"
+                :checked="selectedFriendIds.has(friend.id)"
+                @change="toggleFriend(friend.id)"
+              />
+              <span class="text-sm">{{ friend.name }}<span v-if="friend.display_name && friend.display_name !== friend.name" class="text-muted-foreground ml-1">({{ friend.display_name }})</span></span>
+            </label>
+          </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" @click="showAssignModal = false">Zrušiť</Button>
-          <Button
-            @click="assigningFriend?._targetRootId
-              ? api.assignRoot(parseInt(selectedRootId), assigningFriend._targetRootId).then(loadGroups).then(() => showAssignModal = false).catch(e => error = e.message)
-              : confirmAssign()"
-            :disabled="!selectedRootId"
-          >
-            Priradiť
+          <Button variant="outline" @click="showMembersModal = false">Zrušiť</Button>
+          <Button @click="confirmMembers">
+            Uložiť
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -305,7 +327,7 @@ const rootCandidates = computed(() => {
             </SelectTrigger>
             <SelectContent>
               <SelectItem v-for="friend in rootCandidates" :key="friend.id" :value="String(friend.id)">
-                {{ friend.displayName || friend.name }}
+                {{ friend.name }}<template v-if="friend.display_name && friend.display_name !== friend.name"> ({{ friend.display_name }})</template>
               </SelectItem>
             </SelectContent>
           </Select>

@@ -238,6 +238,9 @@ export const api = {
   assignRoot: (id, rootFriendId) => adminRequest(`/friend-groups/${id}/assign-root`, {
     method: 'PATCH', body: { rootFriendId }
   }),
+  batchAssignRoot: (friendIds, rootFriendId) => adminRequest('/friend-groups/batch-assign', {
+    method: 'PATCH', body: { friendIds, rootFriendId }
+  }),
 
   // Rewards report
   getRewardsReport: (limit) => adminRequest(`/analytics/rewards${limit ? `?limit=${limit}` : ''}`),
@@ -254,6 +257,18 @@ export const api = {
   getVoucherCycleFriends: (cycleId) => adminRequest(`/vouchers/cycle/${cycleId}/friends`),
   getPendingVouchers: (friendId) => request(`/vouchers/pending${friendId ? `?friendId=${friendId}` : ''}`),
   resolveVoucher: (id, action) => request(`/vouchers/${id}/resolve`, { method: 'POST', body: { action } }),
+
+  // Invitations (public)
+  validateInviteCode: (code) => request(`/invitations/code/${code}`),
+  submitInvitation: (data) => request('/invitations/register', { method: 'POST', body: data }),
+
+  // Invitations (friend auth - Bearer token auto-included, friendId as fallback)
+  getMyInviteCode: (friendId) => request(`/invitations/my-code${friendId ? `?friendId=${friendId}` : ''}`),
+
+  // Invitations (admin)
+  getInvitations: (status) => adminRequest(`/invitations${status ? `?status=${status}` : ''}`),
+  updateInvitation: (id, data) => adminRequest(`/invitations/${id}`, { method: 'PATCH', body: data }),
+  deleteInvitation: (id) => adminRequest(`/invitations/${id}`, { method: 'DELETE' }),
 }
 
 export default api

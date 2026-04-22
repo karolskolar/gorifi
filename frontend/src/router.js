@@ -12,6 +12,11 @@ const routes = [
     component: () => import('./views/FriendOrder.vue')
   },
   {
+    path: '/invite/:code',
+    name: 'invite-register',
+    component: () => import('./views/InviteRegister.vue')
+  },
+  {
     path: '/admin',
     name: 'admin-login',
     component: () => import('./views/AdminLogin.vue')
@@ -65,6 +70,11 @@ const routes = [
     path: '/admin/friends',
     name: 'admin-friends',
     component: () => import('./views/AdminFriends.vue')
+  },
+  {
+    path: '/admin/invitations',
+    name: 'admin-invitations',
+    component: () => import('./views/AdminInvitations.vue')
   },
   {
     path: '/admin/friends/:id',

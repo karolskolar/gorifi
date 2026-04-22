@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
-import db, { generateUid } from '../db/schema.js';
+import db, { generateUid, generateInviteCode } from '../db/schema.js';
 import { validateFriendAuth, createFriendSession, invalidateFriendSessions, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
 
 const router = Router();
@@ -392,9 +392,14 @@ router.post('/', (req, res) => {
 
   // Generate unique UID (8 alphanumeric characters)
   let uid = generateUid();
-  // Ensure uniqueness (unlikely to collide, but check anyway)
   while (db.prepare('SELECT id FROM friends WHERE uid = ?').get(uid)) {
     uid = generateUid();
+  }
+
+  // Generate unique invite code (5 characters)
+  let invite_code = generateInviteCode();
+  while (db.prepare('SELECT id FROM friends WHERE invite_code = ?').get(invite_code)) {
+    invite_code = generateInviteCode();
   }
 
   // cycle_id column still has foreign key constraint, so we need a valid cycle_id
@@ -406,9 +411,9 @@ router.post('/', (req, res) => {
   }
 
   const result = db.prepare(`
-    INSERT INTO friends (cycle_id, name, display_name, uid, access_token, active)
-    VALUES (?, ?, ?, ?, ?, 1)
-  `).run(cycle.id, name, display_name || null, uid, access_token);
+    INSERT INTO friends (cycle_id, name, display_name, uid, access_token, invite_code, active)
+    VALUES (?, ?, ?, ?, ?, ?, 1)
+  `).run(cycle.id, name, display_name || null, uid, access_token, invite_code);
 
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(friend);

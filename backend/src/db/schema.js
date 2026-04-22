@@ -18,6 +18,16 @@ function generateUid() {
   return uid;
 }
 
+// Generate a 5-character invite code
+function generateInviteCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 5; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
+}
+
 let db = null;
 let inTransaction = false;
 
@@ -508,6 +518,57 @@ async function initDb() {
     db.run('ALTER TABLE friends ADD COLUMN root_friend_id INTEGER');
   } catch (e) {}
 
+  // Migration: Add invite_code column for invitation/referral system
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN invite_code TEXT');
+  } catch (e) {}
+
+  // Generate invite codes for existing friends that don't have one
+  try {
+    const friendsWithoutCode = db.exec("SELECT id FROM friends WHERE invite_code IS NULL");
+    if (friendsWithoutCode.length > 0 && friendsWithoutCode[0].values.length > 0) {
+      for (const row of friendsWithoutCode[0].values) {
+        const friendId = row[0];
+        let code = generateInviteCode();
+        let existing = db.exec(`SELECT id FROM friends WHERE invite_code = '${code}'`);
+        while (existing.length > 0 && existing[0].values.length > 0) {
+          code = generateInviteCode();
+          existing = db.exec(`SELECT id FROM friends WHERE invite_code = '${code}'`);
+        }
+        db.run(`UPDATE friends SET invite_code = '${code}' WHERE id = ${friendId}`);
+      }
+    }
+  } catch (e) {
+    console.error('Migration error (generating invite codes):', e.message);
+  }
+
+  // Unique index on invite_code
+  try {
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_friends_invite_code ON friends(invite_code) WHERE invite_code IS NOT NULL');
+  } catch (e) {}
+
+  // Create invitations table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS invitations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      invite_code TEXT NOT NULL,
+      invited_by_friend_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      email TEXT,
+      status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'processed', 'rejected')),
+      admin_note TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      processed_at DATETIME,
+      FOREIGN KEY (invited_by_friend_id) REFERENCES friends(id)
+    )
+  `);
+
+  // Partial unique index: prevent duplicate pending registrations for same phone
+  try {
+    db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_invitations_phone_pending ON invitations(phone) WHERE status = 'pending'");
+  } catch (e) {}
+
   // Initialize rewards_threshold_kg setting if not exists
   const rewardsThreshold = db.exec("SELECT * FROM settings WHERE key = 'rewards_threshold_kg'");
   if (!rewardsThreshold.length || !rewardsThreshold[0].values.length) {
@@ -621,4 +682,4 @@ const dbHelpers = {
 await initDb();
 
 export default dbHelpers;
-export { saveDb, generateUid };
+export { saveDb, generateUid, generateInviteCode };

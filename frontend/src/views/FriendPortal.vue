@@ -83,6 +83,12 @@ const changePasswordError = ref('')
 const changePasswordSaving = ref(false)
 const changePasswordSuccess = ref('')
 
+// Invite modal
+const showInviteModal = ref(false)
+const inviteCode = ref('')
+const inviteLoading = ref(false)
+const inviteCopied = ref(false)
+
 const STORAGE_KEY = 'gorifi_friend_auth'
 
 onMounted(async () => {
@@ -372,6 +378,7 @@ function switchUser() {
   password.value = ''
   loginUsername.value = ''
   loginPassword.value = ''
+  inviteCode.value = ''
   authState.value = 'login'
   cycles.value = []
 }
@@ -627,6 +634,43 @@ function formatKilos(kilos) {
   if (!kilos || kilos === 0) return '0 kg'
   return `${kilos.toFixed(2)} kg`
 }
+
+async function openInviteModal() {
+  showInviteModal.value = true
+  inviteCopied.value = false
+  inviteLoading.value = true
+  try {
+    const friendId = getFriendsAuthInfo()?.friendId
+    const data = await api.getMyInviteCode(friendId)
+    inviteCode.value = data.inviteCode
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    inviteLoading.value = false
+  }
+}
+
+function getInviteUrl() {
+  return `${window.location.origin}/invite/${inviteCode.value}`
+}
+
+async function copyInviteLink() {
+  try {
+    await navigator.clipboard.writeText(getInviteUrl())
+    inviteCopied.value = true
+    setTimeout(() => { inviteCopied.value = false }, 2000)
+  } catch (e) {
+    // Fallback for older browsers
+    const input = document.createElement('input')
+    input.value = getInviteUrl()
+    document.body.appendChild(input)
+    input.select()
+    document.execCommand('copy')
+    document.body.removeChild(input)
+    inviteCopied.value = true
+    setTimeout(() => { inviteCopied.value = false }, 2000)
+  }
+}
 </script>
 
 <template>
@@ -650,6 +694,18 @@ function formatKilos(kilos) {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
             </svg>
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            @click="openInviteModal"
+            class="text-primary-foreground/50 hover:text-primary-foreground hover:bg-primary-foreground/10 gap-1"
+            title="Pozvi priateľa"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+            </svg>
+            <span class="text-xs">Pozvať</span>
+          </Button>
         </div>
         <div v-else class="flex-1 flex justify-center">
           <img
@@ -661,10 +717,14 @@ function formatKilos(kilos) {
         <Button
           v-if="authState === 'authenticated'"
           variant="ghost"
+          size="icon"
           @click="switchUser"
           class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10"
+          title="Odhlásiť sa"
         >
-          Zmeniť používateľa
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+          </svg>
         </Button>
       </div>
     </header>
@@ -1149,6 +1209,34 @@ function formatKilos(kilos) {
           >
             {{ setupSaving ? 'Ukladám...' : 'Nastaviť' }}
           </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Invite modal -->
+    <Dialog :open="showInviteModal" @update:open="showInviteModal = $event">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Pozvi priateľa</DialogTitle>
+        </DialogHeader>
+        <div class="space-y-4 py-4">
+          <p class="text-sm text-muted-foreground">
+            Pošli tento odkaz priateľovi. Po registrácii ho admin pridá do skupiny.
+          </p>
+          <div v-if="inviteLoading" class="text-center py-4 text-muted-foreground">
+            Načítavam...
+          </div>
+          <div v-else-if="inviteCode" class="space-y-3">
+            <div class="flex items-center gap-2">
+              <Input :model-value="getInviteUrl()" readonly class="font-mono text-sm" />
+              <Button @click="copyInviteLink" variant="outline" size="sm" class="shrink-0">
+                {{ inviteCopied ? 'Skopírované!' : 'Kopírovať' }}
+              </Button>
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="showInviteModal = false">Zavrieť</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

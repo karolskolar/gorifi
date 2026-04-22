@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watchEffect } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import api from '../api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,7 @@ import { Switch } from '@/components/ui/switch'
 import BalanceBadge from '@/components/BalanceBadge.vue'
 
 const router = useRouter()
+const route = useRoute()
 const friends = ref([])
 const loading = ref(true)
 const error = ref('')
@@ -46,6 +47,16 @@ function handleClickOutside(e) {
 onMounted(async () => {
   document.addEventListener('click', handleClickOutside)
   await loadFriends()
+
+  // Pre-fill friend creation from invitation page
+  if (route.query.create === '1' && route.query.name) {
+    friendName.value = route.query.name
+    friendDisplayName.value = ''
+    editingFriend.value = null
+    showModal.value = true
+    // Clean up the URL
+    router.replace({ path: route.path })
+  }
 })
 
 onUnmounted(() => {
