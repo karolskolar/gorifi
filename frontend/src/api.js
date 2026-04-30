@@ -114,7 +114,7 @@ export const api = {
   createCycle: (data) => request('/cycles', { method: 'POST', body: typeof data === 'string' ? { name: data } : data }),
   updateCycle: (id, data) => request(`/cycles/${id}`, { method: 'PATCH', body: data }),
   deleteCycle: (id) => request(`/cycles/${id}`, { method: 'DELETE' }),
-  getCycleSummary: (id) => request(`/cycles/${id}/summary`),
+  getCycleSummary: (id, roastery) => request(`/cycles/${id}/summary${roastery ? `?roastery=${encodeURIComponent(roastery)}` : ''}`),
   getCycleDistribution: (id) => request(`/cycles/${id}/distribution`),
 
   // Cycle public endpoints (for friend ordering - legacy)
@@ -156,8 +156,8 @@ export const api = {
   updateProduct: (id, data) => request(`/products/${id}`, { method: 'PATCH', body: data }),
   deleteProduct: (id) => request(`/products/${id}`, { method: 'DELETE' }),
   importProducts: (cycleId, formData) => request(`/products/import/${cycleId}`, { method: 'POST', body: formData }),
-  importFromGoogleSheets: (cycleId, url) => request(`/products/import-gsheet/${cycleId}`, { method: 'POST', body: { url } }),
-  importFromGoogleSheetsMultirow: (cycleId, url) => request(`/products/import-gsheet-multirow/${cycleId}`, { method: 'POST', body: { url } }),
+  importFromGoogleSheets: (cycleId, url, roastery) => request(`/products/import-gsheet/${cycleId}`, { method: 'POST', body: { url, roastery: roastery || null } }),
+  importFromGoogleSheetsMultirow: (cycleId, url, roastery) => request(`/products/import-gsheet-multirow/${cycleId}`, { method: 'POST', body: { url, roastery: roastery || null } }),
   uploadProductImage: (id, formData) => request(`/products/${id}/image`, { method: 'POST', body: formData }),
   uploadProductImageFromUrl: (id, imageUrl) => request(`/products/${id}/image-from-url`, { method: 'POST', body: { url: imageUrl } }),
 
@@ -269,6 +269,15 @@ export const api = {
   getInvitations: (status) => adminRequest(`/invitations${status ? `?status=${status}` : ''}`),
   updateInvitation: (id, data) => adminRequest(`/invitations/${id}`, { method: 'PATCH', body: data }),
   deleteInvitation: (id) => adminRequest(`/invitations/${id}`, { method: 'DELETE' }),
+
+  // Roasteries
+  getRoasteries: () => request('/roasteries'),
+  createRoastery: (data) => request('/roasteries', { method: 'POST', body: data }),
+  updateRoastery: (id, data) => request(`/roasteries/${id}`, { method: 'PATCH', body: data }),
+  deleteRoastery: (id) => request(`/roasteries/${id}`, { method: 'DELETE' }),
+
+  // Product availability (stock limits)
+  getProductAvailability: (cycleId, excludeFriendId) => request(`/products/cycle/${cycleId}/availability${excludeFriendId ? `?excludeFriendId=${excludeFriendId}` : ''}`),
 }
 
 export default api

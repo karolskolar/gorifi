@@ -32,6 +32,12 @@ const editingLocationName = ref('')
 const editingLocationAddress = ref('')
 const openMenuId = ref(null)
 
+// Roasteries
+const roasteries = ref([])
+const newRoasteryName = ref('')
+const editingRoasteryId = ref(null)
+const editingRoasteryName = ref('')
+
 function closeMenuOnOutsideClick(e) {
   if (openMenuId.value && !e.target.closest('.relative')) {
     openMenuId.value = null
@@ -57,19 +63,66 @@ async function loadSettings() {
   error.value = ''
 
   try {
-    const [settings, locations] = await Promise.all([
+    const [settings, locations, roasteriesData] = await Promise.all([
       api.getAdminSettings(),
-      api.getAllPickupLocations()
+      api.getAllPickupLocations(),
+      api.getRoasteries()
     ])
     friendsPassword.value = settings.friendsPassword || ''
     paymentIban.value = settings.paymentIban || ''
     paymentRevolutUsername.value = settings.paymentRevolutUsername || ''
     authMode.value = settings.authMode || 'legacy'
     pickupLocations.value = locations
+    roasteries.value = roasteriesData
   } catch (e) {
     error.value = e.message
   } finally {
     loading.value = false
+  }
+}
+
+// Roastery functions
+async function addRoastery() {
+  if (!newRoasteryName.value.trim()) return
+  error.value = ''
+  try {
+    await api.createRoastery({ name: newRoasteryName.value.trim() })
+    newRoasteryName.value = ''
+    roasteries.value = await api.getRoasteries()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+function startEditRoastery(r) {
+  editingRoasteryId.value = r.id
+  editingRoasteryName.value = r.name
+}
+
+async function saveRoastery(id) {
+  if (!editingRoasteryName.value.trim()) return
+  error.value = ''
+  try {
+    await api.updateRoastery(id, { name: editingRoasteryName.value.trim() })
+    editingRoasteryId.value = null
+    roasteries.value = await api.getRoasteries()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+function cancelEditRoastery() {
+  editingRoasteryId.value = null
+}
+
+async function deleteRoastery(id) {
+  if (!confirm('Naozaj vymazať túto pražiareň?')) return
+  error.value = ''
+  try {
+    await api.deleteRoastery(id)
+    roasteries.value = await api.getRoasteries()
+  } catch (e) {
+    error.value = e.message
   }
 }
 
@@ -428,6 +481,54 @@ async function savePaymentSettings() {
               <Input v-model="newLocationName" placeholder="Názov" class="flex-1" />
               <Input v-model="newLocationAddress" placeholder="Adresa (voliteľné)" class="flex-1" />
               <Button @click="addLocation" :disabled="!newLocationName.trim()">Pridať</Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- Roasteries -->
+      <Card v-if="!loading" class="mt-6">
+        <CardHeader>
+          <CardTitle>Pražiarne</CardTitle>
+          <CardDescription>
+            Zoznam pražiarní, z ktorých objednávate kávu. Pražiareň označená ako predvolená je hlavná pražiareň pre výpočet zliav.
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-4">
+          <!-- Existing roasteries -->
+          <div v-if="roasteries.length > 0" class="space-y-2">
+            <div
+              v-for="r in roasteries"
+              :key="r.id"
+              class="flex items-center gap-3 px-3 py-2 rounded-lg border"
+            >
+              <template v-if="editingRoasteryId === r.id">
+                <div class="flex-1 flex gap-2 items-center">
+                  <Input v-model="editingRoasteryName" placeholder="Názov" class="flex-1" />
+                  <Button size="sm" @click="saveRoastery(r.id)">Uložiť</Button>
+                  <Button size="sm" variant="outline" @click="cancelEditRoastery">Zrušiť</Button>
+                </div>
+              </template>
+              <template v-else>
+                <div class="flex-1 min-w-0 flex items-center gap-2">
+                  <span class="font-medium">{{ r.name }}</span>
+                  <span v-if="r.is_default" class="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full">Predvolená</span>
+                </div>
+                <Button v-if="!r.is_default" size="sm" variant="ghost" @click="startEditRoastery(r)">Upraviť</Button>
+                <Button v-if="!r.is_default" size="sm" variant="ghost" class="text-destructive" @click="deleteRoastery(r.id)">Vymazať</Button>
+              </template>
+            </div>
+          </div>
+          <div v-else class="text-sm text-muted-foreground py-2">
+            Zatiaľ žiadne pražiarne.
+          </div>
+
+          <!-- Add new roastery -->
+          <div class="pt-4 border-t space-y-2">
+            <Label>Pridať novú pražiareň</Label>
+            <div class="flex gap-2">
+              <Input v-model="newRoasteryName" placeholder="Názov pražiarne" class="flex-1" />
+              <Button @click="addRoastery" :disabled="!newRoasteryName.trim()">Pridať</Button>
             </div>
           </div>
         </CardContent>

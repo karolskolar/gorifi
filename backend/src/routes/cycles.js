@@ -202,13 +202,26 @@ router.get('/:id/summary', (req, res) => {
     return res.status(404).json({ error: 'Cyklus nebol najdeny' });
   }
 
-  const summary = db.prepare(`
-    SELECT p.name, p.purpose, p.description1, p.roast_type, p.variant_label, oi.variant, SUM(oi.quantity) as total_quantity,
+  const roasteryFilter = req.query.roastery;
+
+  let summaryQuery = `
+    SELECT p.name, p.purpose, p.description1, p.roast_type, p.variant_label, p.roastery, oi.variant, SUM(oi.quantity) as total_quantity,
            SUM(oi.quantity * oi.price) as total_price
     FROM order_items oi
     JOIN orders o ON o.id = oi.order_id
     JOIN products p ON p.id = oi.product_id
     WHERE o.cycle_id = ? AND o.status = 'submitted'
+  `;
+  const summaryParams = [req.params.id];
+
+  if (roasteryFilter === '_default') {
+    summaryQuery += ' AND (p.roastery IS NULL OR p.roastery = "")';
+  } else if (roasteryFilter) {
+    summaryQuery += ' AND p.roastery = ?';
+    summaryParams.push(roasteryFilter);
+  }
+
+  summaryQuery += `
     GROUP BY p.id, oi.variant
     ORDER BY
       CASE p.purpose
@@ -218,16 +231,24 @@ router.get('/:id/summary', (req, res) => {
         ELSE 4
       END,
       p.name, oi.variant
-  `).all(req.params.id);
+  `;
+
+  const summary = db.prepare(summaryQuery).all(...summaryParams);
 
   const totalItems = summary.reduce((acc, item) => acc + item.total_quantity, 0);
   const totalPrice = summary.reduce((acc, item) => acc + item.total_price, 0);
+
+  // Get distinct roasteries used in this cycle
+  const cycleRoasteries = db.prepare(`
+    SELECT DISTINCT p.roastery FROM products p WHERE p.cycle_id = ? AND p.active = 1 AND p.roastery IS NOT NULL AND p.roastery != ''
+  `).all(req.params.id).map(r => r.roastery);
 
   res.json({
     cycle,
     items: summary,
     totalItems,
-    totalPrice
+    totalPrice,
+    roasteries: cycleRoasteries
   });
 });
 

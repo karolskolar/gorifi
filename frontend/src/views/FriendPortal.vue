@@ -707,13 +707,7 @@ async function copyInviteLink() {
             <span class="text-xs">Pozvať</span>
           </Button>
         </div>
-        <div v-else class="flex-1 flex justify-center">
-          <img
-            src="https://www.goriffee.com/wp-content/uploads/2024/02/01-GORIFFEE-Logo-RGB-400x110.png"
-            alt="Goriffee"
-            class="h-10 object-contain"
-          />
-        </div>
+        <div v-else class="flex-1"></div>
         <Button
           v-if="authState === 'authenticated'"
           variant="ghost"
@@ -760,12 +754,12 @@ async function copyInviteLink() {
 
     <!-- Login Form -->
     <div v-else-if="authState === 'login'" class="max-w-md mx-auto px-4 py-8">
-      <!-- Three friends image -->
+      <!-- Coffee cup image -->
       <div class="flex justify-center mb-6">
         <img
-          src="https://www.goriffee.com/wp-content/uploads/2025/01/goriffee_three_friends-1.png"
-          alt="Goriffee Friends"
-          class="h-32 object-contain"
+          src="/coffee-cup.png"
+          alt="Coffee Cup"
+          class="h-48 object-contain"
         />
       </div>
       <Card>

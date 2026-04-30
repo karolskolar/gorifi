@@ -122,6 +122,59 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
   // Get markup ratio for price calculation (default to 1.0 if not set)
   const markupRatio = cycle.markup_ratio || 1.0;
 
+  // Stock limit validation
+  const variantGrams = {
+    '150g': 150, '200g': 200, '250g': 250, '500g': 500, '1kg': 1000, '20pc5g': 100
+  };
+
+  // Group incoming items by product_id to compute total grams per product
+  const newGramsByProduct = {};
+  for (const item of items) {
+    if (item.quantity > 0 && variantGrams[item.variant]) {
+      if (!newGramsByProduct[item.product_id]) newGramsByProduct[item.product_id] = 0;
+      newGramsByProduct[item.product_id] += variantGrams[item.variant] * item.quantity;
+    }
+  }
+
+  // Check stock limits for affected products
+  const limitedProductIds = Object.keys(newGramsByProduct).map(Number);
+  if (limitedProductIds.length > 0) {
+    const placeholders = limitedProductIds.map(() => '?').join(',');
+    const limitedProducts = db.prepare(
+      `SELECT id, name, stock_limit_g FROM products WHERE id IN (${placeholders}) AND stock_limit_g IS NOT NULL`
+    ).all(...limitedProductIds);
+
+    const violations = [];
+    for (const lp of limitedProducts) {
+      // Get current ordered grams from OTHER friends' submitted orders
+      const currentOrdered = db.prepare(`
+        SELECT oi.variant, SUM(oi.quantity) as total_qty
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        WHERE oi.product_id = ? AND o.cycle_id = ? AND o.status = 'submitted' AND o.friend_id != ?
+        GROUP BY oi.variant
+      `).all(lp.id, cycleId, friendId);
+
+      let existingGrams = 0;
+      for (const row of currentOrdered) {
+        existingGrams += (variantGrams[row.variant] || 0) * row.total_qty;
+      }
+
+      const requestedGrams = newGramsByProduct[lp.id] || 0;
+      if (existingGrams + requestedGrams > lp.stock_limit_g) {
+        const remainingG = Math.max(0, lp.stock_limit_g - existingGrams);
+        violations.push(`${lp.name}: zostáva ${remainingG}g z ${lp.stock_limit_g}g`);
+      }
+    }
+
+    if (violations.length > 0) {
+      return res.status(400).json({
+        error: 'Prekročený limit zásob',
+        details: violations
+      });
+    }
+  }
+
   // Update items in a transaction
   const updateItems = db.transaction((orderItems) => {
     // Clear existing items
@@ -138,6 +191,7 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
 
       let basePrice;
       if (item.variant === '1kg') basePrice = product.price_1kg;
+      else if (item.variant === '500g') basePrice = product.price_500g;
       else if (item.variant === '20pc5g') basePrice = product.price_20pc5g;
       else if (item.variant === '150g') basePrice = product.price_150g;
       else if (item.variant === '200g') basePrice = product.price_200g;
@@ -229,6 +283,55 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
   const itemCount = db.prepare('SELECT COUNT(*) as count FROM order_items WHERE order_id = ?').get(order.id);
   if (itemCount.count === 0) {
     return res.status(400).json({ error: 'Objednavka je prazdna' });
+  }
+
+  // Stock limit validation on submit
+  const submitVariantGrams = {
+    '150g': 150, '200g': 200, '250g': 250, '500g': 500, '1kg': 1000, '20pc5g': 100
+  };
+
+  const orderItems = db.prepare('SELECT product_id, variant, quantity FROM order_items WHERE order_id = ?').all(order.id);
+  const submitGramsByProduct = {};
+  for (const item of orderItems) {
+    if (!submitGramsByProduct[item.product_id]) submitGramsByProduct[item.product_id] = 0;
+    submitGramsByProduct[item.product_id] += (submitVariantGrams[item.variant] || 0) * item.quantity;
+  }
+
+  const submitProductIds = Object.keys(submitGramsByProduct).map(Number);
+  if (submitProductIds.length > 0) {
+    const ph = submitProductIds.map(() => '?').join(',');
+    const limitedProds = db.prepare(
+      `SELECT id, name, stock_limit_g FROM products WHERE id IN (${ph}) AND stock_limit_g IS NOT NULL`
+    ).all(...submitProductIds);
+
+    const submitViolations = [];
+    for (const lp of limitedProds) {
+      const currentOrdered = db.prepare(`
+        SELECT oi.variant, SUM(oi.quantity) as total_qty
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        WHERE oi.product_id = ? AND o.cycle_id = ? AND o.status = 'submitted' AND o.friend_id != ?
+        GROUP BY oi.variant
+      `).all(lp.id, cycleId, friendId);
+
+      let existingGrams = 0;
+      for (const row of currentOrdered) {
+        existingGrams += (submitVariantGrams[row.variant] || 0) * row.total_qty;
+      }
+
+      const requestedGrams = submitGramsByProduct[lp.id] || 0;
+      if (existingGrams + requestedGrams > lp.stock_limit_g) {
+        const remainingG = Math.max(0, lp.stock_limit_g - existingGrams);
+        submitViolations.push(`${lp.name}: zostáva ${remainingG}g z ${lp.stock_limit_g}g`);
+      }
+    }
+
+    if (submitViolations.length > 0) {
+      return res.status(400).json({
+        error: 'Prekročený limit zásob',
+        details: submitViolations
+      });
+    }
   }
 
   // Handle pickup location
@@ -436,6 +539,9 @@ router.get('/cycle/:cycleId', (req, res) => {
     order.count_250g = order.items
       .filter(i => i.variant === '250g')
       .reduce((sum, i) => sum + i.quantity, 0);
+    order.count_500g = order.items
+      .filter(i => i.variant === '500g')
+      .reduce((sum, i) => sum + i.quantity, 0);
     order.count_1kg = order.items
       .filter(i => i.variant === '1kg')
       .reduce((sum, i) => sum + i.quantity, 0);
@@ -468,6 +574,7 @@ router.get('/cycle/:cycleId', (req, res) => {
         count_150g: 0,
         count_200g: 0,
         count_250g: 0,
+        count_500g: 0,
         count_1kg: 0,
         count_20pc5g: 0,
         count_unit: 0

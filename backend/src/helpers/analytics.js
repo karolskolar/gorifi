@@ -14,6 +14,7 @@ export const BUYER_DISCOUNT = 0.30;
 export function variantToKg(variant, quantity) {
   const map = {
     '250g':   0.250,
+    '500g':   0.500,
     '1kg':    1.000,
     '150g':   0.150,
     '200g':   0.200,

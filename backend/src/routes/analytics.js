@@ -48,15 +48,16 @@ router.get('/coffee', (req, res) => {
       cycleIds
     );
 
-    // 3. Get all order items for those orders
+    // 3. Get all order items for those orders (with roastery from products)
     const orderIds = orders.map(o => o.id);
     let items = [];
     if (orderIds.length > 0) {
       const itemPlaceholders = orderIds.map(() => '?').join(',');
       items = db.all(
-        `SELECT oi.*, o.cycle_id, o.friend_id
+        `SELECT oi.*, o.cycle_id, o.friend_id, p.roastery
          FROM order_items oi
          JOIN orders o ON oi.order_id = o.id
+         JOIN products p ON oi.product_id = p.id
          WHERE oi.order_id IN (${itemPlaceholders})`,
         orderIds
       );
@@ -96,15 +97,28 @@ router.get('/coffee', (req, res) => {
       const currentFriendSet = friendsByCycle[cycle.id] || new Set();
       const numFriends = currentFriendSet.size;
 
-      // Compute total kg and total value
+      // Compute total kg and total value (only default roastery for tier calculations)
       let totalKg = 0;
       let totalValue = 0;
+      let otherRoasteryKg = 0;
+      let otherRoasteryValue = 0;
       for (const order of cycleOrders) {
-        totalValue += order.order_value || 0;
         const orderItems = itemsByOrder[order.id] || [];
+        let orderDefaultValue = 0;
+        let orderOtherValue = 0;
         for (const item of orderItems) {
-          totalKg += variantToKg(item.variant, item.quantity);
+          const kg = variantToKg(item.variant, item.quantity);
+          const itemValue = item.price * item.quantity;
+          if (item.roastery) {
+            otherRoasteryKg += kg;
+            orderOtherValue += itemValue;
+          } else {
+            totalKg += kg;
+            orderDefaultValue += itemValue;
+          }
         }
+        totalValue += orderDefaultValue;
+        otherRoasteryValue += orderOtherValue;
       }
 
       totalKg = roundKg(totalKg);
@@ -138,6 +152,8 @@ router.get('/coffee', (req, res) => {
         new_friends: newFriends,
         returning_friends: returningFriends,
         churned_friends: churnedFriends,
+        other_roastery_kg: roundKg(otherRoasteryKg),
+        other_roastery_value: Math.round(otherRoasteryValue * 100) / 100,
       };
     });
 

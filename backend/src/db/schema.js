@@ -456,6 +456,21 @@ async function initDb() {
     db.run('ALTER TABLE products ADD COLUMN source_variant_id INTEGER');
   } catch (e) {}
 
+  // Migration: Add roastery column for multi-roastery support
+  try {
+    db.run('ALTER TABLE products ADD COLUMN roastery TEXT');
+  } catch (e) {}
+
+  // Migration: Add price_500g column for 500g variant
+  try {
+    db.run('ALTER TABLE products ADD COLUMN price_500g REAL');
+  } catch (e) {}
+
+  // Migration: Add stock_limit_g column for per-product stock limits (in grams)
+  try {
+    db.run('ALTER TABLE products ADD COLUMN stock_limit_g INTEGER');
+  } catch (e) {}
+
   // Migration: Add username column for per-user authentication
   try {
     db.run('ALTER TABLE friends ADD COLUMN username TEXT');
@@ -585,6 +600,22 @@ async function initDb() {
   const authModeCheck = db.exec("SELECT * FROM settings WHERE key = 'auth_mode'");
   if (!authModeCheck.length || !authModeCheck[0].values.length) {
     db.run("INSERT INTO settings (key, value) VALUES ('auth_mode', 'legacy')");
+  }
+
+  // Roasteries table for multi-roastery support
+  db.run(`
+    CREATE TABLE IF NOT EXISTS roasteries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      is_default INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Seed default roastery if table is empty
+  const roasteryCount = db.exec("SELECT COUNT(*) FROM roasteries");
+  if (!roasteryCount.length || !roasteryCount[0].values.length || roasteryCount[0].values[0][0] === 0) {
+    db.run("INSERT INTO roasteries (name, is_default) VALUES ('Goriffee', 1)");
   }
 
   saveDb();

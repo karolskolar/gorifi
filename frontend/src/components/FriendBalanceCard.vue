@@ -79,35 +79,15 @@ function formatAmount(amount) {
 
       <div v-if="error" class="text-red-500 text-sm mb-2">{{ error }}</div>
 
-      <div v-else-if="!loading && transactions.length > 0">
-        <div class="text-sm text-muted-foreground mb-2">Posledné transakcie:</div>
-        <div class="space-y-1">
-          <div
-            v-for="tx in transactions"
-            :key="tx.id"
-            class="flex items-center text-sm py-1"
-          >
-            <span class="text-muted-foreground w-20 shrink-0">{{ formatDate(tx.created_at) }}</span>
-            <span class="w-20 shrink-0">{{ getTransactionTypeLabel(tx.type) }}</span>
-            <span class="flex-1 text-muted-foreground text-xs truncate">{{ tx.cycle_name || tx.note || '' }}</span>
-            <span :class="['text-right shrink-0 ml-2', tx.amount > 0 ? 'text-green-600' : 'text-red-600']">
-              {{ formatAmount(tx.amount) }}
-            </span>
-          </div>
-        </div>
-
+      <div v-else-if="!loading">
         <Button
-          variant="link"
+          variant="outline"
           size="sm"
-          class="mt-2 p-0 h-auto text-primary"
+          class="w-full mt-1"
           @click="showModal = true"
         >
-          Zobraziť všetky
+          Zobraziť transakcie
         </Button>
-      </div>
-
-      <div v-else-if="!loading" class="text-sm text-muted-foreground">
-        Žiadne transakcie
       </div>
     </CardContent>
   </Card>

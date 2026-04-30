@@ -26,9 +26,62 @@ router.get('/:id', (req, res) => {
   res.json(product);
 });
 
+// Get product availability for stock-limited products in a cycle
+router.get('/cycle/:cycleId/availability', (req, res) => {
+  const cycleId = req.params.cycleId;
+  const excludeFriendId = req.query.excludeFriendId;
+
+  // Get all products with stock limits in this cycle
+  const limitedProducts = db.prepare(
+    'SELECT id, stock_limit_g FROM products WHERE cycle_id = ? AND active = 1 AND stock_limit_g IS NOT NULL'
+  ).all(cycleId);
+
+  if (limitedProducts.length === 0) {
+    return res.json([]);
+  }
+
+  const variantGrams = {
+    '150g': 150, '200g': 200, '250g': 250, '500g': 500, '1kg': 1000, '20pc5g': 100
+  };
+
+  const result = limitedProducts.map(product => {
+    // Get total ordered grams for this product across all submitted orders
+    let query = `
+      SELECT oi.variant, SUM(oi.quantity) as total_qty
+      FROM order_items oi
+      JOIN orders o ON o.id = oi.order_id
+      WHERE oi.product_id = ? AND o.cycle_id = ? AND o.status = 'submitted'
+    `;
+    const params = [product.id, cycleId];
+
+    if (excludeFriendId) {
+      query += ' AND o.friend_id != ?';
+      params.push(excludeFriendId);
+    }
+
+    query += ' GROUP BY oi.variant';
+
+    const items = db.prepare(query).all(...params);
+
+    let orderedGrams = 0;
+    for (const item of items) {
+      orderedGrams += (variantGrams[item.variant] || 0) * item.total_qty;
+    }
+
+    return {
+      product_id: product.id,
+      stock_limit_g: product.stock_limit_g,
+      ordered_g: orderedGrams,
+      remaining_g: Math.max(0, product.stock_limit_g - orderedGrams)
+    };
+  });
+
+  res.json(result);
+});
+
 // Create single product (manual entry) - with optional image
 router.post('/', upload.single('image'), (req, res) => {
-  const { cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_1kg, price_20pc5g } = req.body;
+  const { cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, roastery, stock_limit_g } = req.body;
 
   if (!cycle_id || !name) {
     return res.status(400).json({ error: 'cycle_id a nazov su povinne' });
@@ -45,9 +98,9 @@ router.post('/', upload.single('image'), (req, res) => {
   }
 
   const result = db.prepare(`
-    INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_1kg, price_20pc5g, image)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_1kg, price_20pc5g, image);
+    INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, image, roastery, stock_limit_g)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g || null, price_1kg, price_20pc5g, image, roastery || null, stock_limit_g ? parseInt(stock_limit_g) : null);
 
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(product);
@@ -56,6 +109,7 @@ router.post('/', upload.single('image'), (req, res) => {
 // Import products from CSV
 router.post('/import/:cycleId', upload.single('file'), (req, res) => {
   const cycleId = req.params.cycleId;
+  const roastery = req.body.roastery || null;
 
   // Check cycle exists
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
@@ -78,8 +132,8 @@ router.post('/import/:cycleId', upload.single('file'), (req, res) => {
 
     // Map CSV columns to database fields
     const insertStmt = db.prepare(`
-      INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, roastery)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const insertMany = db.transaction((products) => {
@@ -104,7 +158,7 @@ router.post('/import/:cycleId', upload.single('file'), (req, res) => {
         const price1kg = parsePrice(p.Price1kg || p.price1kg || p.Cena1kg || p.cena1kg || p['1kg']);
 
         if (name) {
-          const result = insertStmt.run(cycleId, name, desc1, desc2, roast, purpose, price250g, price1kg);
+          const result = insertStmt.run(cycleId, name, desc1, desc2, roast, purpose, price250g, price1kg, roastery);
           results.push(result.lastInsertRowid);
         }
       }
@@ -193,7 +247,7 @@ router.post('/:id/image-from-url', async (req, res) => {
 
 // Update product
 router.patch('/:id', (req, res) => {
-  const { name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_1kg, price_20pc5g, image, active } = req.body;
+  const { name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, image, active, roastery, stock_limit_g } = req.body;
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
 
   if (!product) {
@@ -211,10 +265,13 @@ router.patch('/:id', (req, res) => {
   if (price_150g !== undefined) { updates.push('price_150g = ?'); values.push(price_150g); }
   if (price_200g !== undefined) { updates.push('price_200g = ?'); values.push(price_200g); }
   if (price_250g !== undefined) { updates.push('price_250g = ?'); values.push(price_250g); }
+  if (price_500g !== undefined) { updates.push('price_500g = ?'); values.push(price_500g); }
   if (price_1kg !== undefined) { updates.push('price_1kg = ?'); values.push(price_1kg); }
   if (price_20pc5g !== undefined) { updates.push('price_20pc5g = ?'); values.push(price_20pc5g); }
   if (image !== undefined) { updates.push('image = ?'); values.push(image); }
   if (active !== undefined) { updates.push('active = ?'); values.push(active ? 1 : 0); }
+  if (roastery !== undefined) { updates.push('roastery = ?'); values.push(roastery || null); }
+  if (stock_limit_g !== undefined) { updates.push('stock_limit_g = ?'); values.push(stock_limit_g ? parseInt(stock_limit_g) : null); }
 
   if (updates.length > 0) {
     values.push(req.params.id);
@@ -237,7 +294,7 @@ router.delete('/:id', (req, res) => {
 // Import products from Google Sheets URL
 router.post('/import-gsheet/:cycleId', async (req, res) => {
   const cycleId = req.params.cycleId;
-  const { url } = req.body;
+  const { url, roastery } = req.body;
 
   // Check cycle exists
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
@@ -285,8 +342,8 @@ router.post('/import-gsheet/:cycleId', async (req, res) => {
 
     // Map CSV columns to database fields
     const insertStmt = db.prepare(`
-      INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, roastery)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const insertMany = db.transaction((products) => {
@@ -311,7 +368,7 @@ router.post('/import-gsheet/:cycleId', async (req, res) => {
         const price1kg = parsePrice(p.Price1kg || p.price1kg || p.Cena1kg || p.cena1kg || p['1kg']);
 
         if (name) {
-          const result = insertStmt.run(cycleId, name, desc1, desc2, roast, purpose, price250g, price1kg);
+          const result = insertStmt.run(cycleId, name, desc1, desc2, roast, purpose, price250g, price1kg, roastery || null);
           results.push(result.lastInsertRowid);
         }
       }
@@ -541,7 +598,7 @@ function parseMultiRowProducts(csvContent) {
 // Import products from Google Sheets with multi-row format (3 rows per product)
 router.post('/import-gsheet-multirow/:cycleId', async (req, res) => {
   const cycleId = req.params.cycleId;
-  const { url } = req.body;
+  const { url, roastery } = req.body;
 
   // Check cycle exists
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
@@ -591,9 +648,9 @@ router.post('/import-gsheet-multirow/:cycleId', async (req, res) => {
     for (const p of products) {
       if (p.name) {
         const result = db.prepare(`
-          INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_1kg)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(cycleId, p.name, p.description1, p.description2, p.roast_type, p.purpose, p.price_150g, p.price_200g, p.price_250g, p.price_1kg);
+          INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_1kg, roastery)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(cycleId, p.name, p.description1, p.description2, p.roast_type, p.purpose, p.price_150g, p.price_200g, p.price_250g, p.price_1kg, roastery || null);
         insertedIds.push(result.lastInsertRowid);
       }
     }

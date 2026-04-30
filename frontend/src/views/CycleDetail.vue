@@ -29,10 +29,13 @@ const error = ref('')
 const showProductModal = ref(false)
 const editingProduct = ref(null)
 const productForm = ref({
-  name: '', description1: '', description2: '', roast_type: '', purpose: '', price_150g: '', price_200g: '', price_250g: '', price_1kg: '', price_20pc5g: '', image: ''
+  name: '', description1: '', description2: '', roast_type: '', purpose: '', price_150g: '', price_200g: '', price_250g: '', price_500g: '', price_1kg: '', price_20pc5g: '', image: '', roastery: '', stock_limit_g: ''
 })
 const imagePreview = ref(null)
 const isDragging = ref(false)
+
+// Roasteries
+const roasteries = ref([])
 
 // Drag & drop for product list
 const dragOverProductId = ref(null)
@@ -45,6 +48,10 @@ const csvFile = ref(null)
 const gsheetUrl = ref('')
 const gsheetLoading = ref(false)
 const gsheetFormat = ref('multirow')  // 'simple' or 'multirow'
+const importRoastery = ref('')  // roastery to assign to imported products
+
+// Summary roastery filter
+const summaryRoasteryFilter = ref('')  // '' = all, '_default' = no roastery, or roastery name
 
 // Markup ratio
 const markupPercent = ref(0)
@@ -140,6 +147,7 @@ const orderTotals = computed(() => ({
   count_150g: submittedOrders.value.reduce((sum, o) => sum + (o.count_150g || 0), 0),
   count_200g: submittedOrders.value.reduce((sum, o) => sum + (o.count_200g || 0), 0),
   count_250g: submittedOrders.value.reduce((sum, o) => sum + (o.count_250g || 0), 0),
+  count_500g: submittedOrders.value.reduce((sum, o) => sum + (o.count_500g || 0), 0),
   count_1kg: submittedOrders.value.reduce((sum, o) => sum + (o.count_1kg || 0), 0),
   count_20pc5g: submittedOrders.value.reduce((sum, o) => sum + (o.count_20pc5g || 0), 0),
   count_unit: submittedOrders.value.reduce((sum, o) => sum + (o.count_unit || 0), 0),
@@ -158,16 +166,18 @@ watchEffect(() => {
 async function loadAll() {
   loading.value = true
   try {
-    const [cycleData, productsData, ordersData, summaryData] = await Promise.all([
+    const [cycleData, productsData, ordersData, summaryData, roasteriesData] = await Promise.all([
       api.getCycle(cycleId.value),
       api.getProducts(cycleId.value),
       api.getOrders(cycleId.value),
-      api.getCycleSummary(cycleId.value)
+      api.getCycleSummary(cycleId.value),
+      api.getRoasteries()
     ])
     cycle.value = cycleData
     products.value = productsData
     orders.value = ordersData
     summary.value = summaryData
+    roasteries.value = roasteriesData
     // Initialize markup percentage from cycle data (ratio 1.19 = 19%)
     markupPercent.value = Math.round(((cycleData.markup_ratio || 1.0) - 1) * 100)
     // Initialize expected date
@@ -268,13 +278,16 @@ function openProductModal(product = null) {
       price_150g: product.price_150g || '',
       price_200g: product.price_200g || '',
       price_250g: product.price_250g || '',
+      price_500g: product.price_500g || '',
       price_1kg: product.price_1kg || '',
       price_20pc5g: product.price_20pc5g || '',
-      image: product.image || ''
+      image: product.image || '',
+      roastery: product.roastery || '',
+      stock_limit_g: product.stock_limit_g || ''
     }
     imagePreview.value = product.image || null
   } else {
-    productForm.value = { name: '', description1: '', description2: '', roast_type: '', purpose: '', price_150g: '', price_200g: '', price_250g: '', price_1kg: '', price_20pc5g: '', image: '' }
+    productForm.value = { name: '', description1: '', description2: '', roast_type: '', purpose: '', price_150g: '', price_200g: '', price_250g: '', price_500g: '', price_1kg: '', price_20pc5g: '', image: '', roastery: '', stock_limit_g: '' }
     imagePreview.value = null
   }
   showProductModal.value = true
@@ -287,9 +300,12 @@ async function saveProduct() {
     price_150g: productForm.value.price_150g ? parseFloat(productForm.value.price_150g) : null,
     price_200g: productForm.value.price_200g ? parseFloat(productForm.value.price_200g) : null,
     price_250g: productForm.value.price_250g ? parseFloat(productForm.value.price_250g) : null,
+    price_500g: productForm.value.price_500g ? parseFloat(productForm.value.price_500g) : null,
     price_1kg: productForm.value.price_1kg ? parseFloat(productForm.value.price_1kg) : null,
     price_20pc5g: productForm.value.price_20pc5g ? parseFloat(productForm.value.price_20pc5g) : null,
-    image: productForm.value.image || null
+    image: productForm.value.image || null,
+    roastery: productForm.value.roastery || null,
+    stock_limit_g: productForm.value.stock_limit_g ? parseInt(productForm.value.stock_limit_g) : null
   }
 
   if (editingProduct.value) {
@@ -310,9 +326,12 @@ function duplicateProduct(product) {
     price_150g: product.price_150g || '',
     price_200g: product.price_200g || '',
     price_250g: product.price_250g || '',
+    price_500g: product.price_500g || '',
     price_1kg: product.price_1kg || '',
     price_20pc5g: product.price_20pc5g || '',
-    image: product.image || ''
+    image: product.image || '',
+    roastery: product.roastery || '',
+    stock_limit_g: product.stock_limit_g || ''
   }
   imagePreview.value = product.image || null
   showProductModal.value = true
@@ -329,6 +348,9 @@ async function importCSV() {
 
   const formData = new FormData()
   formData.append('file', csvFile.value)
+  if (importRoastery.value) {
+    formData.append('roastery', importRoastery.value)
+  }
 
   try {
     await api.importProducts(cycleId.value, formData)
@@ -351,8 +373,8 @@ async function importGoogleSheets() {
 
   try {
     const result = gsheetFormat.value === 'multirow'
-      ? await api.importFromGoogleSheetsMultirow(cycleId.value, gsheetUrl.value)
-      : await api.importFromGoogleSheets(cycleId.value, gsheetUrl.value)
+      ? await api.importFromGoogleSheetsMultirow(cycleId.value, gsheetUrl.value, importRoastery.value)
+      : await api.importFromGoogleSheets(cycleId.value, gsheetUrl.value, importRoastery.value)
 
     gsheetUrl.value = ''
     await loadAll()
@@ -487,10 +509,22 @@ async function togglePaid(order) {
 }
 
 // Summary
+async function loadSummaryForRoastery(roasteryFilter) {
+  summaryRoasteryFilter.value = roasteryFilter
+  try {
+    summary.value = await api.getCycleSummary(cycleId.value, roasteryFilter || undefined)
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
 function copySummary() {
   if (!summary.value) return
 
-  let text = `Objednávka - ${cycle.value.name}\n`
+  const roasteryLabel = summaryRoasteryFilter.value && summaryRoasteryFilter.value !== '_default'
+    ? ` (${summaryRoasteryFilter.value})`
+    : summaryRoasteryFilter.value === '_default' ? ' (hlavná pražiareň)' : ''
+  let text = `Objednávka - ${cycle.value.name}${roasteryLabel}\n`
   text += '='.repeat(30) + '\n\n'
 
   // Group items by purpose
@@ -714,6 +748,14 @@ function getStatusVariant(status) {
           <Card v-if="!isBakery" class="mb-4">
             <CardContent class="p-4">
               <h3 class="text-sm font-medium text-foreground mb-3">Import produktov</h3>
+              <!-- Roastery selector for import -->
+              <div v-if="roasteries.length > 0" class="mb-3">
+                <Label class="text-xs text-muted-foreground mb-1">Pražiareň pre importované produkty</Label>
+                <select v-model="importRoastery" class="flex h-9 w-full max-w-xs rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                  <option value="">— Žiadna —</option>
+                  <option v-for="r in roasteries" :key="r.id" :value="r.name">{{ r.name }}</option>
+                </select>
+              </div>
               <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <!-- Google Sheets import -->
                 <div>
@@ -783,6 +825,7 @@ function getStatusVariant(status) {
                     <TableHead class="text-right">150g</TableHead>
                     <TableHead class="text-right">200g</TableHead>
                     <TableHead class="text-right">250g</TableHead>
+                    <TableHead class="text-right">500g</TableHead>
                     <TableHead class="text-right">1kg</TableHead>
                     <TableHead class="text-right">20ks×5g</TableHead>
                   </template>
@@ -820,7 +863,11 @@ function getStatusVariant(status) {
                     </div>
                   </TableCell>
                   <TableCell>
-                    <div class="font-medium">{{ product.name }}</div>
+                    <div class="flex items-center gap-2">
+                      <span class="font-medium">{{ product.name }}</span>
+                      <span v-if="product.roastery" class="text-xs bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roastery }}</span>
+                      <span v-if="product.stock_limit_g" class="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full whitespace-nowrap">max {{ product.stock_limit_g >= 1000 ? (product.stock_limit_g / 1000) + ' kg' : product.stock_limit_g + 'g' }}</span>
+                    </div>
                     <div v-if="product.description1" class="text-sm text-muted-foreground">{{ product.description1 }}</div>
                   </TableCell>
                   <template v-if="isBakery">
@@ -843,6 +890,7 @@ function getStatusVariant(status) {
                     <TableCell class="text-sm text-right">{{ formatPrice(product.price_150g) }}</TableCell>
                     <TableCell class="text-sm text-right">{{ formatPrice(product.price_200g) }}</TableCell>
                     <TableCell class="text-sm text-right">{{ formatPrice(product.price_250g) }}</TableCell>
+                    <TableCell class="text-sm text-right">{{ formatPrice(product.price_500g) }}</TableCell>
                     <TableCell class="text-sm text-right">{{ formatPrice(product.price_1kg) }}</TableCell>
                     <TableCell class="text-sm text-right">{{ formatPrice(product.price_20pc5g) }}</TableCell>
                   </template>
@@ -969,6 +1017,7 @@ function getStatusVariant(status) {
                     <TableHead class="text-center">150g</TableHead>
                     <TableHead class="text-center">200g</TableHead>
                     <TableHead class="text-center">250g</TableHead>
+                    <TableHead class="text-center">500g</TableHead>
                     <TableHead class="text-center">1kg</TableHead>
                     <TableHead class="text-center">20ks</TableHead>
                   </template>
@@ -1008,6 +1057,7 @@ function getStatusVariant(status) {
                       <TableCell class="text-center">{{ order.count_150g || 0 }}</TableCell>
                       <TableCell class="text-center">{{ order.count_200g || 0 }}</TableCell>
                       <TableCell class="text-center">{{ order.count_250g || 0 }}</TableCell>
+                      <TableCell class="text-center">{{ order.count_500g || 0 }}</TableCell>
                       <TableCell class="text-center">{{ order.count_1kg || 0 }}</TableCell>
                       <TableCell class="text-center">{{ order.count_20pc5g || 0 }}</TableCell>
                     </template>
@@ -1090,6 +1140,7 @@ function getStatusVariant(status) {
                     <TableCell class="text-center">{{ orderTotals.count_150g }}</TableCell>
                     <TableCell class="text-center">{{ orderTotals.count_200g }}</TableCell>
                     <TableCell class="text-center">{{ orderTotals.count_250g }}</TableCell>
+                    <TableCell class="text-center">{{ orderTotals.count_500g }}</TableCell>
                     <TableCell class="text-center">{{ orderTotals.count_1kg }}</TableCell>
                     <TableCell class="text-center">{{ orderTotals.count_20pc5g }}</TableCell>
                   </template>
@@ -1109,6 +1160,27 @@ function getStatusVariant(status) {
             <Button @click="copySummary">
               Kopírovať do schranky
             </Button>
+          </div>
+
+          <!-- Roastery filter -->
+          <div v-if="summary?.roasteries?.length > 0" class="flex gap-2 mb-4 flex-wrap">
+            <Button
+              size="sm"
+              :variant="summaryRoasteryFilter === '' ? 'default' : 'outline'"
+              @click="loadSummaryForRoastery('')"
+            >Všetky</Button>
+            <Button
+              size="sm"
+              :variant="summaryRoasteryFilter === '_default' ? 'default' : 'outline'"
+              @click="loadSummaryForRoastery('_default')"
+            >Hlavná pražiareň</Button>
+            <Button
+              v-for="r in summary.roasteries"
+              :key="r"
+              size="sm"
+              :variant="summaryRoasteryFilter === r ? 'default' : 'outline'"
+              @click="loadSummaryForRoastery(r)"
+            >{{ r }}</Button>
           </div>
 
           <Card>
@@ -1236,6 +1308,19 @@ function getStatusVariant(status) {
                 <Input v-model="productForm.purpose" />
               </div>
             </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="space-y-1">
+                <Label>Pražiareň</Label>
+                <select v-model="productForm.roastery" class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                  <option value="">— Žiadna —</option>
+                  <option v-for="r in roasteries" :key="r.id" :value="r.name">{{ r.name }}</option>
+                </select>
+              </div>
+              <div class="space-y-1">
+                <Label>Limit zásob (g)</Label>
+                <Input v-model="productForm.stock_limit_g" type="number" placeholder="Napr. 1000 = max 1 kg" />
+              </div>
+            </div>
             <div class="grid grid-cols-3 gap-3">
               <div class="space-y-1">
                 <Label>150g (EUR)</Label>
@@ -1248,6 +1333,10 @@ function getStatusVariant(status) {
               <div class="space-y-1">
                 <Label>250g (EUR)</Label>
                 <Input v-model="productForm.price_250g" type="number" step="0.01" />
+              </div>
+              <div class="space-y-1">
+                <Label>500g (EUR)</Label>
+                <Input v-model="productForm.price_500g" type="number" step="0.01" />
               </div>
               <div class="space-y-1">
                 <Label>1kg (EUR)</Label>

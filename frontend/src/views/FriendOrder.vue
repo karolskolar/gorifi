@@ -45,6 +45,12 @@ const pendingNavigation = ref(null) // Store pending navigation path
 const leaveConfirmed = ref(false) // Flag to bypass navigation guard after confirming leave
 const changesNotificationDismissed = ref(false) // Track if "changes not saved" notification was dismissed
 
+// Stock availability state
+const availability = ref({}) // { productId: { stock_limit_g, ordered_g, remaining_g } }
+
+// Variant weight map in grams
+const variantGrams = { '150g': 150, '200g': 200, '250g': 250, '500g': 500, '1kg': 1000, '20pc5g': 100 }
+
 // Pickup location state
 const pickupLocations = ref([])
 const showPickupModal = ref(false)
@@ -116,6 +122,7 @@ const cartItems = computed(() => {
         let basePrice
         if (variant === 'unit') basePrice = product.price_unit
         else if (variant === '1kg') basePrice = product.price_1kg
+        else if (variant === '500g') basePrice = product.price_500g
         else if (variant === '20pc5g') basePrice = product.price_20pc5g
         else if (variant === '150g') basePrice = product.price_150g
         else if (variant === '200g') basePrice = product.price_200g
@@ -327,8 +334,9 @@ async function loadOrderData() {
     cycle.value = orderData.cycle
     friend.value = orderData.friend
 
-    // Get products
+    // Get products and availability
     products.value = await api.getProducts(cycleId.value)
+    await loadAvailability(friendId)
 
     // Populate cart from existing order items
     cart.value = {}
@@ -357,6 +365,48 @@ async function loadOrderData() {
   } finally {
     loading.value = false
   }
+}
+
+async function loadAvailability(friendId) {
+  try {
+    const data = await api.getProductAvailability(cycleId.value, friendId)
+    const map = {}
+    for (const item of data) {
+      map[item.product_id] = item
+    }
+    availability.value = map
+  } catch (e) {
+    // Non-critical, proceed without availability data
+  }
+}
+
+// Get grams of a product currently in the friend's cart
+function getCartGramsForProduct(productId) {
+  let grams = 0
+  for (const [key, qty] of Object.entries(cart.value)) {
+    if (qty <= 0) continue
+    const [pid, variant] = key.split('-')
+    if (parseInt(pid) === productId) {
+      grams += (variantGrams[variant] || 0) * qty
+    }
+  }
+  return grams
+}
+
+// Check if adding one more of this variant would exceed stock limit
+function canIncrement(productId, variant) {
+  const avail = availability.value[productId]
+  if (!avail) return true // No stock limit
+  const cartGrams = getCartGramsForProduct(productId)
+  const addGrams = variantGrams[variant] || 0
+  return (avail.remaining_g - cartGrams - addGrams) >= 0
+}
+
+// Get remaining grams available for a product (accounting for cart)
+function getRemainingGrams(productId) {
+  const avail = availability.value[productId]
+  if (!avail) return null
+  return Math.max(0, avail.remaining_g - getCartGramsForProduct(productId))
 }
 
 function goBack() {
@@ -418,6 +468,7 @@ function setQuantity(productId, variant, quantity) {
 
 function increment(productId, variant) {
   if (isLocked.value) return
+  if (!canIncrement(productId, variant)) return
   const current = getQuantity(productId, variant)
   setQuantity(productId, variant, current + 1)
 }
@@ -791,6 +842,7 @@ function applyMarkup(price) {
                     <div class="flex items-center gap-2">
                       <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
                       <span v-if="product.roast_type" class="text-xs text-muted-foreground/70 bg-muted px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roast_type }}</span>
+                      <span v-if="product.roastery" class="text-xs bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roastery }}</span>
                     </div>
                     <p v-if="product.description1" class="text-sm text-muted-foreground">{{ product.description1 }}</p>
                     <p v-if="product.description2" class="text-sm text-muted-foreground/70 mt-1 line-clamp-2">{{ product.description2 }}</p>
@@ -826,7 +878,7 @@ function applyMarkup(price) {
                         variant="outline"
                         size="icon"
                         @click="increment(product.id, '20pc5g')"
-                        :disabled="isLocked"
+                        :disabled="isLocked || !canIncrement(product.id, '20pc5g')"
                         class="h-8 w-8 rounded-full"
                       >
                         +
@@ -835,8 +887,23 @@ function applyMarkup(price) {
                   </div>
                 </div>
 
-                <!-- Weight variants (150g / 200g / 250g / 1kg) -->
-                <div v-else class="grid grid-cols-2 gap-4">
+                <!-- Stock limit indicator -->
+                <div v-if="availability[product.id]" class="mb-2">
+                  <div class="flex items-center gap-2 text-xs">
+                    <div class="flex-1 bg-muted rounded-full h-1.5 overflow-hidden">
+                      <div
+                        class="h-full rounded-full transition-all"
+                        :class="getRemainingGrams(product.id) === 0 ? 'bg-destructive' : getRemainingGrams(product.id) < availability[product.id].stock_limit_g * 0.25 ? 'bg-amber-500' : 'bg-primary'"
+                        :style="{ width: Math.min(100, ((availability[product.id].stock_limit_g - availability[product.id].remaining_g + getCartGramsForProduct(product.id)) / availability[product.id].stock_limit_g) * 100) + '%' }"
+                      />
+                    </div>
+                    <span v-if="getRemainingGrams(product.id) === 0" class="text-destructive font-medium whitespace-nowrap">Vypredané</span>
+                    <span v-else class="text-muted-foreground whitespace-nowrap">Zostáva: {{ getRemainingGrams(product.id) }}g z {{ availability[product.id].stock_limit_g }}g</span>
+                  </div>
+                </div>
+
+                <!-- Weight variants (150g / 200g / 250g / 500g / 1kg) -->
+                <div v-if="!product.price_20pc5g" class="grid grid-cols-2 gap-4">
                   <!-- 150g variant -->
                   <div
                     v-if="product.price_150g"
@@ -866,7 +933,7 @@ function applyMarkup(price) {
                         variant="outline"
                         size="icon"
                         @click="increment(product.id, '150g')"
-                        :disabled="isLocked"
+                        :disabled="isLocked || !canIncrement(product.id, '150g')"
                         class="h-8 w-8 rounded-full"
                       >
                         +
@@ -903,7 +970,7 @@ function applyMarkup(price) {
                         variant="outline"
                         size="icon"
                         @click="increment(product.id, '200g')"
-                        :disabled="isLocked"
+                        :disabled="isLocked || !canIncrement(product.id, '200g')"
                         class="h-8 w-8 rounded-full"
                       >
                         +
@@ -940,7 +1007,44 @@ function applyMarkup(price) {
                         variant="outline"
                         size="icon"
                         @click="increment(product.id, '250g')"
-                        :disabled="isLocked"
+                        :disabled="isLocked || !canIncrement(product.id, '250g')"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        +
+                      </Button>
+                    </div>
+                  </div>
+
+                  <!-- 500g variant -->
+                  <div
+                    v-if="product.price_500g"
+                    :class="[
+                      'rounded-lg p-2 transition-colors',
+                      getQuantity(product.id, '500g') > 0
+                        ? 'bg-primary/10 border-2 border-primary'
+                        : 'border bg-card'
+                    ]"
+                  >
+                    <div class="flex justify-between items-center mb-1">
+                      <span class="text-sm font-medium">500g</span>
+                      <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_500g)) }}</span>
+                    </div>
+                    <div class="flex items-center justify-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="decrement(product.id, '500g')"
+                        :disabled="isLocked || getQuantity(product.id, '500g') === 0"
+                        class="h-8 w-8 rounded-full"
+                      >
+                        -
+                      </Button>
+                      <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '500g') }}</span>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        @click="increment(product.id, '500g')"
+                        :disabled="isLocked || !canIncrement(product.id, '500g')"
                         class="h-8 w-8 rounded-full"
                       >
                         +
@@ -977,7 +1081,7 @@ function applyMarkup(price) {
                         variant="outline"
                         size="icon"
                         @click="increment(product.id, '1kg')"
-                        :disabled="isLocked"
+                        :disabled="isLocked || !canIncrement(product.id, '1kg')"
                         class="h-8 w-8 rounded-full"
                       >
                         +

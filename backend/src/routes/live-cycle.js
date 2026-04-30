@@ -46,24 +46,34 @@ router.get('/', (req, res) => {
     if (orderIds.length > 0) {
       const placeholders = orderIds.map(() => '?').join(',');
       items = db.all(
-        `SELECT oi.order_id, oi.variant, oi.quantity
+        `SELECT oi.order_id, oi.variant, oi.quantity, oi.price, p.roastery
          FROM order_items oi
+         JOIN products p ON oi.product_id = p.id
          WHERE oi.order_id IN (${placeholders})`,
         orderIds
       );
     }
 
-    // Compute totals
+    // Compute totals (only default roastery for tier calculations)
     let totalKg = 0;
     let totalValue = 0;
+    let otherRoasteryKg = 0;
+    let otherRoasteryValue = 0;
     const orderedFriendIds = new Set();
 
     for (const order of orders) {
-      totalValue += order.total || 0;
       orderedFriendIds.add(order.friend_id);
     }
     for (const item of items) {
-      totalKg += variantToKg(item.variant, item.quantity);
+      const kg = variantToKg(item.variant, item.quantity);
+      const itemValue = item.price * item.quantity;
+      if (item.roastery) {
+        otherRoasteryKg += kg;
+        otherRoasteryValue += itemValue;
+      } else {
+        totalKg += kg;
+        totalValue += itemValue;
+      }
     }
 
     totalKg = roundKg(totalKg);
@@ -207,6 +217,8 @@ router.get('/', (req, res) => {
         distance_to_next_tier: distanceToNextTier,
         friends_needed: friendsNeeded,
         operator_margin: operatorMargin,
+        other_roastery_kg: roundKg(otherRoasteryKg),
+        other_roastery_value: roundEur(otherRoasteryValue),
       },
       previous,
       not_ordered: notOrdered,
