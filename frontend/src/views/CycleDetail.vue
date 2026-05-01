@@ -57,6 +57,11 @@ const summaryRoasteryFilter = ref('')  // '' = all, '_default' = no roastery, or
 const markupPercent = ref(0)
 const markupSaving = ref(false)
 
+// Parcel delivery
+const parcelEnabled = ref(false)
+const parcelFee = ref(0)
+const parcelSaving = ref(false)
+
 // Expected date
 const expectedDate = ref('')
 const expectedDateSaving = ref(false)
@@ -183,6 +188,8 @@ async function loadAll() {
     // Initialize expected date
     expectedDate.value = cycleData.expected_date || ''
     planNote.value = cycleData.plan_note || ''
+    parcelEnabled.value = !!cycleData.parcel_enabled
+    parcelFee.value = cycleData.parcel_fee || 0
   } catch (e) {
     error.value = e.message
   } finally {
@@ -235,6 +242,22 @@ async function saveMarkup() {
     error.value = e.message
   } finally {
     markupSaving.value = false
+  }
+}
+
+async function saveParcel() {
+  parcelSaving.value = true
+  error.value = ''
+  try {
+    await api.updateCycle(cycleId.value, {
+      parcel_enabled: parcelEnabled.value,
+      parcel_fee: parcelEnabled.value ? parcelFee.value : 0
+    })
+    await loadAll()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    parcelSaving.value = false
   }
 }
 
@@ -739,6 +762,35 @@ function getStatusVariant(status) {
                   <span v-if="cycle?.markup_ratio && cycle.markup_ratio !== 1.0" class="text-sm text-muted-foreground">
                     (cena × {{ cycle.markup_ratio.toFixed(2) }})
                   </span>
+                </div>
+              </div>
+              <!-- Parcel delivery -->
+              <div class="space-y-1">
+                <Label class="text-sm font-medium">Doručenie Packetou:</Label>
+                <div class="flex items-center gap-2">
+                  <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" v-model="parcelEnabled" class="rounded" :disabled="parcelSaving" />
+                    <span class="text-sm">Povoliť</span>
+                  </label>
+                  <template v-if="parcelEnabled">
+                    <Input
+                      v-model.number="parcelFee"
+                      type="number"
+                      step="0.5"
+                      min="0"
+                      class="w-24 text-center"
+                      :disabled="parcelSaving"
+                      placeholder="Cena"
+                    />
+                    <span class="text-muted-foreground">EUR</span>
+                  </template>
+                  <Button
+                    @click="saveParcel"
+                    :disabled="parcelSaving"
+                    size="sm"
+                  >
+                    {{ parcelSaving ? 'Ukladám...' : 'Uložiť' }}
+                  </Button>
                 </div>
               </div>
             </CardContent>
