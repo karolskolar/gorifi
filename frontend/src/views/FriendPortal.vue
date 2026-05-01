@@ -951,6 +951,14 @@ async function copyInviteLink() {
                     <span v-if="cycle.type === 'bakery'">🥐 {{ cycle.orderItemCount }} ks</span>
                     <span v-else>☕ {{ formatKilos(cycle.orderKilos) }}</span>
                   </div>
+                  <div v-if="cycle.hasOrder && (cycle.orderPacketa || cycle.orderPickupName)" class="mt-1.5">
+                    <Badge v-if="cycle.orderPacketa" variant="outline" class="border-red-400 text-red-600 bg-red-50 text-xs">
+                      📦 Packeta
+                    </Badge>
+                    <Badge v-else-if="cycle.orderPickupName" variant="outline" class="border-blue-400 text-blue-600 bg-blue-50 text-xs">
+                      {{ cycle.orderPickupName }}
+                    </Badge>
+                  </div>
                 </div>
                 <div v-if="cycle.status !== 'planned'" class="text-right">
                   <span v-if="cycle.hasOrder" class="text-sm font-medium text-foreground">
@@ -1013,6 +1021,14 @@ async function copyInviteLink() {
                     <div v-if="cycle.hasOrder" class="flex items-center gap-3 mt-2 text-sm text-muted-foreground">
                       <span v-if="cycle.type === 'bakery'">🥐 {{ cycle.orderItemCount }} ks</span>
                       <span v-else>☕ {{ formatKilos(cycle.orderKilos) }}</span>
+                    </div>
+                    <div v-if="cycle.hasOrder && (cycle.orderPacketa || cycle.orderPickupName)" class="mt-1.5">
+                      <Badge v-if="cycle.orderPacketa" variant="outline" class="border-red-400 text-red-600 bg-red-50 text-xs">
+                        📦 Packeta
+                      </Badge>
+                      <Badge v-else-if="cycle.orderPickupName" variant="outline" class="border-blue-400 text-blue-600 bg-blue-50 text-xs">
+                        {{ cycle.orderPickupName }}
+                      </Badge>
                     </div>
                   </div>
                   <div class="text-right">

@@ -193,8 +193,10 @@ router.get('/cycles', (req, res) => {
 
     if (friendId) {
       const order = db.prepare(`
-        SELECT o.id, o.status, o.total, o.delivery_fee
+        SELECT o.id, o.status, o.total, o.delivery_fee, o.packeta_address,
+               o.pickup_location_id, o.pickup_location_note, pl.name as pickup_location_name
         FROM orders o
+        LEFT JOIN pickup_locations pl ON pl.id = o.pickup_location_id
         WHERE o.cycle_id = ? AND o.friend_id = ? AND o.status = 'submitted'
       `).get(cycle.id, friendId);
 
@@ -238,7 +240,9 @@ router.get('/cycles', (req, res) => {
       orderTotal,
       orderStatus,
       orderKilos,
-      orderItemCount
+      orderItemCount,
+      orderPickupName: order?.pickup_location_name || order?.pickup_location_note || null,
+      orderPacketa: order?.packeta_address ? true : false
     };
   });
 
