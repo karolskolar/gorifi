@@ -57,6 +57,11 @@ const showPickupModal = ref(false)
 const selectedPickupLocationId = ref(null) // null = "Iné"
 const pickupLocationNote = ref('')
 
+// Parcel delivery state
+const deliveryMethod = ref('pickup') // 'pickup' or 'packeta'
+const packetaAddress = ref('')
+const savePacketaAsDefault = ref(false)
+
 // Payment state
 const paymentIban = ref('')
 const paymentRevolutUsername = ref('')
@@ -574,25 +579,39 @@ async function submitOrder() {
     return
   }
 
-  // If pickup locations exist, show the modal first
-  if (pickupLocations.value.length > 0) {
-    // Pre-select previous choice when updating a submitted order
-    if (order.value?.pickup_location_id) {
-      selectedPickupLocationId.value = order.value.pickup_location_id
-      pickupLocationNote.value = ''
-    } else if (order.value?.pickup_location_note) {
-      selectedPickupLocationId.value = null
-      pickupLocationNote.value = order.value.pickup_location_note
-    } else {
-      selectedPickupLocationId.value = null
-      pickupLocationNote.value = ''
-    }
-    showPickupModal.value = true
+  const hasPickupLocations = pickupLocations.value.length > 0
+  const hasParcel = cycle.value?.parcel_enabled
+
+  if (!hasPickupLocations && !hasParcel) {
+    // No modal needed, submit directly
+    await doSubmitOrder()
     return
   }
 
-  // No locations configured, submit directly
-  await doSubmitOrder()
+  // Pre-select based on existing order state
+  if (order.value?.packeta_address) {
+    deliveryMethod.value = 'packeta'
+    packetaAddress.value = order.value.packeta_address
+    savePacketaAsDefault.value = false
+  } else if (order.value?.pickup_location_id) {
+    deliveryMethod.value = 'pickup'
+    selectedPickupLocationId.value = order.value.pickup_location_id
+    pickupLocationNote.value = ''
+  } else if (order.value?.pickup_location_note) {
+    deliveryMethod.value = 'pickup'
+    selectedPickupLocationId.value = null
+    pickupLocationNote.value = order.value.pickup_location_note
+  } else {
+    // Default: pickup if locations exist, otherwise packeta
+    deliveryMethod.value = hasPickupLocations ? 'pickup' : 'packeta'
+    selectedPickupLocationId.value = null
+    pickupLocationNote.value = ''
+    // Pre-fill Packeta address from friend profile
+    packetaAddress.value = friend.value?.packeta_address || ''
+    savePacketaAsDefault.value = false
+  }
+
+  showPickupModal.value = true
 }
 
 async function doSubmitOrder() {
@@ -606,10 +625,18 @@ async function doSubmitOrder() {
   error.value = ''
 
   try {
-    const pickupData = {
-      pickup_location_id: selectedPickupLocationId.value || null,
-      pickup_location_note: selectedPickupLocationId.value ? null : (pickupLocationNote.value || null)
-    }
+    const pickupData = deliveryMethod.value === 'packeta'
+      ? {
+          use_parcel_delivery: true,
+          packeta_address: packetaAddress.value.trim(),
+          pickup_location_id: null,
+          pickup_location_note: null
+        }
+      : {
+          use_parcel_delivery: false,
+          pickup_location_id: selectedPickupLocationId.value || null,
+          pickup_location_note: selectedPickupLocationId.value ? null : (pickupLocationNote.value || null)
+        }
     const result = await api.submitOrderByFriend(cycleId.value, friend.value.id, pickupData)
     order.value = result.order
     // Store snapshot of submitted cart for change detection
@@ -656,7 +683,17 @@ async function generateSuccessQr() {
   }
 }
 
-function confirmPickupAndSubmit() {
+async function confirmPickupAndSubmit() {
+  // Optionally save Packeta address to profile
+  if (deliveryMethod.value === 'packeta' && savePacketaAsDefault.value && packetaAddress.value.trim()) {
+    try {
+      await api.updateFriendProfile(friend.value.id, {
+        packeta_address: packetaAddress.value.trim()
+      })
+    } catch (e) {
+      // Non-critical, proceed with order
+    }
+  }
   showPickupModal.value = false
   doSubmitOrder()
 }
@@ -1586,65 +1623,129 @@ function applyMarkup(price) {
       </DialogContent>
     </Dialog>
 
-    <!-- Pickup Location Modal -->
+    <!-- Delivery Method Modal -->
     <Dialog :open="showPickupModal" @update:open="showPickupModal = $event">
       <DialogContent class="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Miesto vyzdvihnutia</DialogTitle>
+          <DialogTitle>Spôsob prevzatia</DialogTitle>
           <DialogDescription class="text-base">
-            Vyberte, kde si chcete vyzdvihnúť objednávku.
+            Vyberte, ako chcete dostať objednávku.
           </DialogDescription>
         </DialogHeader>
-        <div class="space-y-2 py-2">
-          <label
-            v-for="loc in pickupLocations"
-            :key="loc.id"
-            :class="[
-              'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
-              selectedPickupLocationId === loc.id ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
-            ]"
-          >
-            <input
-              type="radio"
-              :value="loc.id"
-              v-model="selectedPickupLocationId"
-              class="mt-0.5"
-            />
-            <div>
-              <div class="font-medium">{{ loc.name }}</div>
-              <div v-if="loc.address" class="text-sm text-muted-foreground">{{ loc.address }}</div>
-            </div>
-          </label>
-          <!-- "Iné" option -->
-          <label
-            :class="[
-              'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
-              selectedPickupLocationId === null ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
-            ]"
-          >
-            <input
-              type="radio"
-              :value="null"
-              v-model="selectedPickupLocationId"
-              class="mt-0.5"
-            />
-            <div class="flex-1">
-              <div class="font-medium">Iné</div>
+        <div class="space-y-3 py-2">
+          <!-- Top-level choice: pickup vs packeta -->
+          <div v-if="pickupLocations.length > 0 && cycle?.parcel_enabled" class="space-y-2">
+            <label
+              :class="[
+                'flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                deliveryMethod === 'pickup' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
+              ]"
+            >
+              <input type="radio" value="pickup" v-model="deliveryMethod" />
+              <div class="font-medium">Osobný odber</div>
+            </label>
+            <label
+              :class="[
+                'flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                deliveryMethod === 'packeta' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
+              ]"
+            >
+              <input type="radio" value="packeta" v-model="deliveryMethod" />
+              <div>
+                <span class="font-medium">Doručenie Packetou</span>
+                <span v-if="cycle?.parcel_fee" class="text-sm text-muted-foreground ml-1">(+{{ formatPrice(cycle.parcel_fee) }})</span>
+              </div>
+            </label>
+          </div>
+
+          <!-- Packeta-only header (no pickup locations configured) -->
+          <div v-else-if="cycle?.parcel_enabled && pickupLocations.length === 0" class="space-y-2">
+            <label
+              :class="[
+                'flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                deliveryMethod === 'packeta' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
+              ]"
+            >
+              <input type="radio" value="packeta" v-model="deliveryMethod" />
+              <div>
+                <span class="font-medium">Doručenie Packetou</span>
+                <span v-if="cycle?.parcel_fee" class="text-sm text-muted-foreground ml-1">(+{{ formatPrice(cycle.parcel_fee) }})</span>
+              </div>
+            </label>
+            <label
+              :class="[
+                'flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                deliveryMethod === 'pickup' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
+              ]"
+            >
+              <input type="radio" value="pickup" v-model="deliveryMethod" />
+              <div class="font-medium">Bez doručenia (vyzdvihnem osobne)</div>
+            </label>
+          </div>
+
+          <!-- Pickup locations section -->
+          <div v-if="deliveryMethod === 'pickup' && pickupLocations.length > 0" class="space-y-2 border-t pt-3">
+            <label
+              v-for="loc in pickupLocations"
+              :key="loc.id"
+              :class="[
+                'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                selectedPickupLocationId === loc.id ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
+              ]"
+            >
+              <input type="radio" :value="loc.id" v-model="selectedPickupLocationId" class="mt-0.5" />
+              <div>
+                <div class="font-medium">{{ loc.name }}</div>
+                <div v-if="loc.address" class="text-sm text-muted-foreground">{{ loc.address }}</div>
+              </div>
+            </label>
+            <!-- "Iné" option -->
+            <label
+              :class="[
+                'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                selectedPickupLocationId === null ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
+              ]"
+            >
+              <input type="radio" :value="null" v-model="selectedPickupLocationId" class="mt-0.5" />
+              <div class="flex-1">
+                <div class="font-medium">Iné</div>
+                <input
+                  v-if="selectedPickupLocationId === null"
+                  v-model="pickupLocationNote"
+                  type="text"
+                  placeholder="Poznámka (voliteľné)"
+                  class="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                />
+              </div>
+            </label>
+          </div>
+
+          <!-- Packeta section -->
+          <div v-if="deliveryMethod === 'packeta'" class="space-y-3 border-t pt-3">
+            <div class="space-y-1">
+              <label class="text-sm font-medium">Adresa výdajného miesta *</label>
               <input
-                v-if="selectedPickupLocationId === null"
-                v-model="pickupLocationNote"
+                v-model="packetaAddress"
                 type="text"
-                placeholder="Poznámka (voliteľné)"
-                class="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                placeholder="napr. Z-BOX Hlavná 15, Bratislava"
+                class="w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               />
             </div>
-          </label>
+            <label class="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" v-model="savePacketaAsDefault" class="rounded" />
+              Uložiť ako predvolenú adresu
+            </label>
+          </div>
         </div>
         <DialogFooter class="flex gap-2">
           <Button variant="outline" @click="showPickupModal = false" class="flex-1">
             Zrušiť
           </Button>
-          <Button @click="confirmPickupAndSubmit" class="flex-1">
+          <Button
+            @click="confirmPickupAndSubmit"
+            class="flex-1"
+            :disabled="deliveryMethod === 'packeta' && !packetaAddress.trim()"
+          >
             Potvrdiť a odoslať
           </Button>
         </DialogFooter>
