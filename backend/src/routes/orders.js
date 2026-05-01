@@ -334,27 +334,44 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
     }
   }
 
-  // Handle pickup location
-  const { pickup_location_id, pickup_location_note } = req.body || {};
+  // Handle pickup location / parcel delivery
+  const { pickup_location_id, pickup_location_note, use_parcel_delivery, packeta_address } = req.body || {};
 
-  if (pickup_location_id !== undefined && pickup_location_id !== null) {
-    // Validate location exists and is active
-    const location = db.prepare('SELECT * FROM pickup_locations WHERE id = ? AND active = 1').get(pickup_location_id);
-    if (!location) {
-      return res.status(400).json({ error: 'Vybrané miesto vyzdvihnutia neexistuje alebo nie je aktívne' });
+  if (use_parcel_delivery) {
+    // Validate parcel is enabled for this cycle
+    if (!cycle.parcel_enabled) {
+      return res.status(400).json({ error: 'Doručenie Packetou nie je pre tento cyklus dostupné' });
     }
-  }
+    if (!packeta_address?.trim()) {
+      return res.status(400).json({ error: 'Adresa výdajného miesta je povinná' });
+    }
+    // Submit with parcel delivery — clear pickup fields
+    db.prepare(`
+      UPDATE orders SET status = 'submitted', submitted_at = CURRENT_TIMESTAMP,
+        delivery_fee = ?, packeta_address = ?,
+        pickup_location_id = NULL, pickup_location_note = NULL
+      WHERE id = ?
+    `).run(cycle.parcel_fee || 0, packeta_address.trim(), order.id);
+  } else {
+    // Standard pickup — clear parcel fields
+    if (pickup_location_id !== undefined && pickup_location_id !== null) {
+      const location = db.prepare('SELECT * FROM pickup_locations WHERE id = ? AND active = 1').get(pickup_location_id);
+      if (!location) {
+        return res.status(400).json({ error: 'Vybrané miesto vyzdvihnutia neexistuje alebo nie je aktívne' });
+      }
+    }
 
-  // Submit order with pickup location
-  db.prepare(`
-    UPDATE orders SET status = 'submitted', submitted_at = CURRENT_TIMESTAMP,
-      pickup_location_id = ?, pickup_location_note = ?
-    WHERE id = ?
-  `).run(
-    pickup_location_id || null,
-    pickup_location_id ? null : (pickup_location_note || null),
-    order.id
-  );
+    db.prepare(`
+      UPDATE orders SET status = 'submitted', submitted_at = CURRENT_TIMESTAMP,
+        pickup_location_id = ?, pickup_location_note = ?,
+        delivery_fee = 0, packeta_address = NULL
+      WHERE id = ?
+    `).run(
+      pickup_location_id || null,
+      pickup_location_id ? null : (pickup_location_note || null),
+      order.id
+    );
+  }
 
   const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
   const items = db.prepare(`

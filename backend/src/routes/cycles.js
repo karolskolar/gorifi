@@ -272,6 +272,7 @@ router.get('/:id/distribution', (req, res) => {
   const friendsWithOrders = db.prepare(`
     SELECT f.id, f.name, o.id as order_id, o.status, o.paid, o.total, o.packed, o.packed_at,
            o.pickup_location_id, o.pickup_location_note, pl.name as pickup_location_name,
+           o.delivery_fee, o.packeta_address,
            COALESCE((SELECT SUM(amount) FROM transactions WHERE friend_id = f.id), 0) as balance
     FROM orders o
     JOIN friends f ON f.id = o.friend_id
