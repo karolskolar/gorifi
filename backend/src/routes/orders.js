@@ -76,7 +76,7 @@ router.get('/cycle/:cycleId/friend/:friendId', (req, res) => {
   res.json({
     order: order || null,
     items,
-    friend: { id: friend.id, name: friend.name },
+    friend: { id: friend.id, name: friend.name, packeta_address: friend.packeta_address || null },
     cycle: validation.cycle
   });
 });

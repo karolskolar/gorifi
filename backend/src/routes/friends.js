@@ -465,7 +465,7 @@ router.patch('/:id/profile', (req, res) => {
     return res.status(validation.status).json({ error: validation.error });
   }
 
-  const { name } = req.body;
+  const { name, packeta_address } = req.body;
   const friendId = req.params.id;
 
   // If authenticated via token, verify the token owner matches
@@ -485,7 +485,12 @@ router.patch('/:id/profile', (req, res) => {
     db.prepare('UPDATE friends SET name = ? WHERE id = ?').run(name.trim(), friendId);
   }
 
-  const updated = db.prepare('SELECT id, name, uid FROM friends WHERE id = ?').get(friendId);
+  if (packeta_address !== undefined) {
+    db.prepare('UPDATE friends SET packeta_address = ? WHERE id = ?')
+      .run(packeta_address?.trim() || null, friendId);
+  }
+
+  const updated = db.prepare('SELECT id, name, uid, packeta_address FROM friends WHERE id = ?').get(friendId);
   res.json(updated);
 });
 
