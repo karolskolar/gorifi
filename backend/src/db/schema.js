@@ -92,6 +92,14 @@ async function initDb() {
     // Column already exists, ignore
   }
 
+  // Migration: Add parcel delivery columns to order_cycles
+  try {
+    db.run('ALTER TABLE order_cycles ADD COLUMN parcel_enabled INTEGER DEFAULT 0');
+  } catch (e) {}
+  try {
+    db.run('ALTER TABLE order_cycles ADD COLUMN parcel_fee REAL DEFAULT 0');
+  } catch (e) {}
+
   // Migration: Update CHECK constraint to allow 'planned' status
   // SQLite can't ALTER CHECK constraints, so recreate table if needed
   try {
@@ -221,6 +229,13 @@ async function initDb() {
     // Index already exists or other error, ignore
   }
 
+  // Migration: Add packeta_address for default Packeta pickup point
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN packeta_address TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -335,6 +350,14 @@ async function initDb() {
   } catch (e) {
     // Column already exists, ignore
   }
+
+  // Migration: Add parcel delivery columns to orders
+  try {
+    db.run('ALTER TABLE orders ADD COLUMN delivery_fee REAL DEFAULT 0');
+  } catch (e) {}
+  try {
+    db.run('ALTER TABLE orders ADD COLUMN packeta_address TEXT');
+  } catch (e) {}
 
   // Create transactions table for balance tracking
   db.run(`
