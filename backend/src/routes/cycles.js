@@ -27,7 +27,7 @@ router.get('/:id', (req, res) => {
 
 // Get public cycle info (no auth required) - for friend ordering page
 router.get('/:id/public', (req, res) => {
-  const cycle = db.prepare('SELECT id, name, status, markup_ratio, expected_date, type, plan_note FROM order_cycles WHERE id = ?').get(req.params.id);
+  const cycle = db.prepare('SELECT id, name, status, markup_ratio, expected_date, type, plan_note, parcel_enabled, parcel_fee FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
     return res.status(404).json({ error: 'Cyklus nebol nájdený' });
   }
@@ -130,7 +130,7 @@ router.post('/', (req, res) => {
 
 // Update cycle (lock/unlock/complete/password/markup_ratio/expected_date)
 router.patch('/:id', (req, res) => {
-  const { status, name, shared_password, markup_ratio, expected_date, plan_note } = req.body;
+  const { status, name, shared_password, markup_ratio, expected_date, plan_note, parcel_enabled, parcel_fee } = req.body;
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
 
   if (!cycle) {
@@ -167,6 +167,14 @@ router.patch('/:id', (req, res) => {
   if (plan_note !== undefined) {
     updates.push('plan_note = ?');
     values.push(plan_note || null);
+  }
+  if (parcel_enabled !== undefined) {
+    updates.push('parcel_enabled = ?');
+    values.push(parcel_enabled ? 1 : 0);
+  }
+  if (parcel_fee !== undefined) {
+    updates.push('parcel_fee = ?');
+    values.push(parcel_fee || 0);
   }
 
   if (updates.length > 0) {
