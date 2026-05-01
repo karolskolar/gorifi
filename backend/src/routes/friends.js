@@ -190,6 +190,8 @@ router.get('/cycles', (req, res) => {
     let orderStatus = null;
     let orderKilos = 0;
     let orderItemCount = 0;
+    let orderPickupName = null;
+    let orderPacketa = false;
 
     if (friendId) {
       const order = db.prepare(`
@@ -231,6 +233,8 @@ router.get('/cycles', (req, res) => {
           WHERE oi.order_id = ?
         `).get(order.id);
         orderItemCount = itemCountResult.itemCount;
+        orderPickupName = order.pickup_location_name || order.pickup_location_note || null;
+        orderPacketa = !!order.packeta_address;
       }
     }
 
@@ -241,8 +245,8 @@ router.get('/cycles', (req, res) => {
       orderStatus,
       orderKilos,
       orderItemCount,
-      orderPickupName: order?.pickup_location_name || order?.pickup_location_note || null,
-      orderPacketa: order?.packeta_address ? true : false
+      orderPickupName,
+      orderPacketa
     };
   });
 
