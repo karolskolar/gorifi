@@ -174,6 +174,12 @@ const cartTotal = computed(() => {
   return cartItems.value.reduce((sum, item) => sum + item.total, 0)
 })
 
+// Total including delivery fee (for payment)
+const paymentTotal = computed(() => {
+  const deliveryFee = order.value?.delivery_fee || 0
+  return cartTotal.value + deliveryFee
+})
+
 const groupedProducts = computed(() => {
   const groups = {}
   for (const product of products.value) {
@@ -665,7 +671,7 @@ async function generateSuccessQr() {
       invoiceId: '',
       payments: [{
         type: PaymentOptions.PaymentOrder,
-        amount: cartTotal.value,
+        amount: paymentTotal.value,
         currencyCode: CurrencyCode.EUR,
         paymentDueDate: dateStr,
         variableSymbol: '',
@@ -1444,6 +1450,7 @@ function applyMarkup(price) {
               <span class="text-xs text-muted-foreground">Položiek: {{ cartItems.length }}</span>
               <span class="mx-1 text-xs">|</span>
               <span class="font-semibold text-sm">Celkom: {{ formatPrice(cartTotal) }}</span>
+              <span v-if="order?.delivery_fee" class="text-xs text-muted-foreground">(+ {{ formatPrice(order.delivery_fee) }} doručenie)</span>
               <span v-if="autoSaving" class="text-xs text-muted-foreground animate-pulse">Ukladám...</span>
             </div>
           </div>
@@ -1528,7 +1535,12 @@ function applyMarkup(price) {
 
         <!-- Inline payment details -->
         <div v-if="hasPaymentSettings" class="space-y-3 pt-2">
-          <p class="text-sm font-medium text-center">Suma na úhradu: <strong>{{ formatPrice(cartTotal) }}</strong></p>
+          <p class="text-sm font-medium text-center">
+            Suma na úhradu: <strong>{{ formatPrice(paymentTotal) }}</strong>
+            <span v-if="order?.delivery_fee" class="block text-xs text-muted-foreground mt-0.5">
+              ({{ formatPrice(cartTotal) }} + {{ formatPrice(order.delivery_fee) }} doručenie)
+            </span>
+          </p>
 
           <a
             v-if="paymentRevolutUsername"
@@ -1566,7 +1578,7 @@ function applyMarkup(price) {
     <!-- Payment Modal (for footer button) -->
     <PaymentModal
       :open="showPaymentModal"
-      :amount="cartTotal"
+      :amount="paymentTotal"
       :reference="paymentReference"
       :iban="paymentIban"
       :revolut-username="paymentRevolutUsername"
