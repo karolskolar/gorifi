@@ -135,7 +135,17 @@ function printDistribution() {
                   >
                     {{ friend.pickup_location_name || friend.pickup_location_note }}
                   </Badge>
+                  <Badge
+                    v-if="friend.packeta_address"
+                    variant="outline"
+                    class="border-red-400 text-red-600 bg-red-50"
+                  >
+                    Packeta
+                  </Badge>
                   <span v-if="!friend.packed && friend.items.length > 0" class="text-xs">· {{ checkedCount(friend) }}/{{ friend.items.length }} ✓</span>
+                </div>
+                <div v-if="friend.packeta_address" class="text-sm text-muted-foreground mt-1">
+                  📦 {{ friend.packeta_address }}
                 </div>
               </div>
               <Button

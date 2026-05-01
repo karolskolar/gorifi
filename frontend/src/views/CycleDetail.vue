@@ -1135,9 +1135,21 @@ function getStatusVariant(status) {
                         >
                           {{ order.pickup_location_note }}
                         </Badge>
+                        <Badge
+                          v-if="order.packeta_address"
+                          variant="outline"
+                          class="border-red-400 text-red-600 bg-red-50"
+                        >
+                          Packeta
+                        </Badge>
                       </div>
                     </TableCell>
-                    <TableCell class="text-right">{{ formatPrice(order.total) }}</TableCell>
+                    <TableCell class="text-right">
+                      {{ formatPrice((order.total || 0) + (order.delivery_fee || 0)) }}
+                      <div v-if="order.delivery_fee" class="text-xs text-muted-foreground">
+                        ({{ formatPrice(order.total) }} + {{ formatPrice(order.delivery_fee) }} doručenie)
+                      </div>
+                    </TableCell>
                     <TableCell class="text-center">
                       <button
                         v-if="order.status !== 'none'"
