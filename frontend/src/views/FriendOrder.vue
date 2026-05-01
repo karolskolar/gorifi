@@ -594,27 +594,29 @@ async function submitOrder() {
     return
   }
 
+  // Always pre-fill Packeta address from profile (used when user switches to Packeta)
+  savePacketaAsDefault.value = false
+
   // Pre-select based on existing order state
   if (order.value?.packeta_address) {
     deliveryMethod.value = 'packeta'
     packetaAddress.value = order.value.packeta_address
-    savePacketaAsDefault.value = false
   } else if (order.value?.pickup_location_id) {
     deliveryMethod.value = 'pickup'
     selectedPickupLocationId.value = order.value.pickup_location_id
     pickupLocationNote.value = ''
+    packetaAddress.value = friend.value?.packeta_address || ''
   } else if (order.value?.pickup_location_note) {
     deliveryMethod.value = 'pickup'
     selectedPickupLocationId.value = null
     pickupLocationNote.value = order.value.pickup_location_note
+    packetaAddress.value = friend.value?.packeta_address || ''
   } else {
     // Default: pickup if locations exist, otherwise packeta
     deliveryMethod.value = hasPickupLocations ? 'pickup' : 'packeta'
     selectedPickupLocationId.value = null
     pickupLocationNote.value = ''
-    // Pre-fill Packeta address from friend profile
     packetaAddress.value = friend.value?.packeta_address || ''
-    savePacketaAsDefault.value = false
   }
 
   showPickupModal.value = true
