@@ -36,6 +36,7 @@ const authError = ref('')
 // Profile editing
 const showProfileModal = ref(false)
 const profileName = ref('')
+const profilePacketaAddress = ref('')
 const profileSaving = ref(false)
 
 // Archive
@@ -426,6 +427,7 @@ function getCurrentFriendUid() {
 
 function openProfileModal() {
   profileName.value = currentFriend.value?.name || savedAuth.value?.friendName || ''
+  profilePacketaAddress.value = currentFriend.value?.packeta_address || ''
   showProfileModal.value = true
 }
 
@@ -436,7 +438,8 @@ async function saveProfile() {
   try {
     const friendId = selectedFriendId.value
     const updated = await api.updateFriendProfile(friendId, {
-      name: profileName.value.trim()
+      name: profileName.value.trim(),
+      packeta_address: profilePacketaAddress.value.trim() || null
     })
 
     // Update local state
@@ -1081,6 +1084,15 @@ async function copyInviteLink() {
               :disabled="profileSaving"
             />
             <p class="text-xs text-muted-foreground">Toto meno sa zobrazuje pri prihlasovaní</p>
+          </div>
+          <div class="space-y-2">
+            <Label>Adresa Packeta výdajného miesta</Label>
+            <Input
+              v-model="profilePacketaAddress"
+              placeholder="napr. Z-BOX Hlavná 15, Bratislava"
+              :disabled="profileSaving"
+            />
+            <p class="text-xs text-muted-foreground">Adresa výdajného miesta pre doručenie Packetou (voliteľné)</p>
           </div>
 
           <!-- Password change section (only if user has credentials) -->
