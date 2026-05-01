@@ -193,14 +193,14 @@ router.get('/cycles', (req, res) => {
 
     if (friendId) {
       const order = db.prepare(`
-        SELECT o.id, o.status, o.total
+        SELECT o.id, o.status, o.total, o.delivery_fee
         FROM orders o
         WHERE o.cycle_id = ? AND o.friend_id = ? AND o.status = 'submitted'
       `).get(cycle.id, friendId);
 
       if (order) {
         hasOrder = true;
-        orderTotal = order.total;
+        orderTotal = (order.total || 0) + (order.delivery_fee || 0);
         orderStatus = order.status;
 
         // Calculate kilos for this friend's order only

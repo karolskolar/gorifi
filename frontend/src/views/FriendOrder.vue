@@ -1449,8 +1449,7 @@ function applyMarkup(price) {
             <div class="flex items-center gap-1.5">
               <span class="text-xs text-muted-foreground">Položiek: {{ cartItems.length }}</span>
               <span class="mx-1 text-xs">|</span>
-              <span class="font-semibold text-sm">Celkom: {{ formatPrice(cartTotal) }}</span>
-              <span v-if="order?.delivery_fee" class="text-xs text-muted-foreground">(+ {{ formatPrice(order.delivery_fee) }} doručenie)</span>
+              <span class="font-semibold text-sm">Celkom: {{ formatPrice(paymentTotal) }}</span>
               <span v-if="autoSaving" class="text-xs text-muted-foreground animate-pulse">Ukladám...</span>
             </div>
           </div>
@@ -1509,6 +1508,11 @@ function applyMarkup(price) {
                   <span>{{ formatPrice(item.total) }}</span>
                 </div>
               </template>
+              <!-- Delivery fee line item -->
+              <div v-if="order?.delivery_fee" class="flex justify-between py-1 border-b border-border mt-2 text-red-600">
+                <span>📦 Doručenie Packetou</span>
+                <span>{{ formatPrice(order.delivery_fee) }}</span>
+              </div>
             </div>
           </details>
         </div>
