@@ -502,30 +502,8 @@ router.patch('/:id/profile', (req, res) => {
   res.json(updated);
 });
 
-// Helper: Verify admin token
-function requireAdmin(req, res) {
-  const token = req.headers['x-admin-token'];
-  if (!token) {
-    res.status(401).json({ error: 'Neautorizovaný prístup' });
-    return false;
-  }
-  const setting = db.prepare("SELECT value FROM settings WHERE key = 'admin_token'").get();
-  if (!setting) {
-    res.status(401).json({ error: 'Neautorizovaný prístup' });
-    return false;
-  }
-  try {
-    const { token: stored, expiry } = JSON.parse(setting.value);
-    if (token === stored && Date.now() < expiry) return true;
-  } catch {}
-  res.status(401).json({ error: 'Neautorizovaný prístup' });
-  return false;
-}
-
 // Admin: Reset friend password
 router.put('/:id/reset-password', (req, res) => {
-  if (!requireAdmin(req, res)) return;
-
   const { password } = req.body;
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
 
@@ -545,8 +523,6 @@ router.put('/:id/reset-password', (req, res) => {
 
 // Admin: Set/change friend username
 router.put('/:id/admin-username', (req, res) => {
-  if (!requireAdmin(req, res)) return;
-
   const { username } = req.body;
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
 
