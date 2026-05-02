@@ -1652,87 +1652,81 @@ function applyMarkup(price) {
         </DialogHeader>
         <div class="space-y-3 py-2">
           <!-- Top-level choice: pickup vs packeta -->
-          <div v-if="pickupLocations.length > 0 && cycle?.parcel_enabled" class="space-y-2">
+          <div v-if="pickupLocations.length > 0 && cycle?.parcel_enabled" class="space-y-1.5">
             <label
               :class="[
-                'flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors text-sm',
                 deliveryMethod === 'pickup' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
               ]"
             >
               <input type="radio" value="pickup" v-model="deliveryMethod" />
-              <div class="font-medium">Osobný odber</div>
+              <span class="font-medium">Osobný odber</span>
             </label>
             <label
               :class="[
-                'flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors text-sm',
                 deliveryMethod === 'packeta' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
               ]"
             >
               <input type="radio" value="packeta" v-model="deliveryMethod" />
-              <div>
-                <span class="font-medium">Doručenie Packetou</span>
-                <span v-if="cycle?.parcel_fee" class="text-sm text-muted-foreground ml-1">(+{{ formatPrice(cycle.parcel_fee) }})</span>
-              </div>
+              <span class="font-medium">Doručenie Packetou</span>
+              <span v-if="cycle?.parcel_fee" class="text-muted-foreground">(+{{ formatPrice(cycle.parcel_fee) }})</span>
             </label>
           </div>
 
           <!-- Packeta-only header (no pickup locations configured) -->
-          <div v-else-if="cycle?.parcel_enabled && pickupLocations.length === 0" class="space-y-2">
+          <div v-else-if="cycle?.parcel_enabled && pickupLocations.length === 0" class="space-y-1.5">
             <label
               :class="[
-                'flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors text-sm',
                 deliveryMethod === 'packeta' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
               ]"
             >
               <input type="radio" value="packeta" v-model="deliveryMethod" />
-              <div>
-                <span class="font-medium">Doručenie Packetou</span>
-                <span v-if="cycle?.parcel_fee" class="text-sm text-muted-foreground ml-1">(+{{ formatPrice(cycle.parcel_fee) }})</span>
-              </div>
+              <span class="font-medium">Doručenie Packetou</span>
+              <span v-if="cycle?.parcel_fee" class="text-muted-foreground">(+{{ formatPrice(cycle.parcel_fee) }})</span>
             </label>
             <label
               :class="[
-                'flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors text-sm',
                 deliveryMethod === 'pickup' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
               ]"
             >
               <input type="radio" value="pickup" v-model="deliveryMethod" />
-              <div class="font-medium">Bez doručenia (vyzdvihnem osobne)</div>
+              <span class="font-medium">Bez doručenia (vyzdvihnem osobne)</span>
             </label>
           </div>
 
           <!-- Pickup locations section -->
-          <div v-if="deliveryMethod === 'pickup' && pickupLocations.length > 0" class="space-y-2 border-t pt-3">
+          <div v-if="deliveryMethod === 'pickup' && pickupLocations.length > 0" class="space-y-1.5 border-t pt-2">
             <label
               v-for="loc in pickupLocations"
               :key="loc.id"
               :class="[
-                'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors text-sm',
                 selectedPickupLocationId === loc.id ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
               ]"
             >
-              <input type="radio" :value="loc.id" v-model="selectedPickupLocationId" class="mt-0.5" />
-              <div>
-                <div class="font-medium">{{ loc.name }}</div>
-                <div v-if="loc.address" class="text-sm text-muted-foreground">{{ loc.address }}</div>
-              </div>
+              <input type="radio" :value="loc.id" v-model="selectedPickupLocationId" />
+              <span class="font-medium">{{ loc.name }}</span>
+              <span v-if="loc.address" class="text-muted-foreground truncate">{{ loc.address }}</span>
             </label>
             <!-- "Iné" option -->
             <label
               :class="[
-                'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                'flex items-start gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors text-sm',
                 selectedPickupLocationId === null ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
               ]"
             >
               <input type="radio" :value="null" v-model="selectedPickupLocationId" class="mt-0.5" />
               <div class="flex-1">
-                <div class="font-medium">Iné</div>
+                <span class="font-medium">Iné</span>
                 <input
                   v-if="selectedPickupLocationId === null"
                   v-model="pickupLocationNote"
                   type="text"
                   placeholder="Poznámka (voliteľné)"
-                  class="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  class="mt-1.5 w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 />
               </div>
             </label>
