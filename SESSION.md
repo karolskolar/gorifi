@@ -1,45 +1,44 @@
 # Session Summary
 
-**Date:** 2026-04-19
+**Date:** 2026-05-01
 **Branch:** `main`
 
 ## Summary
 
-Implemented bakery product variants feature — bakery products now support multiple weight/price variants (e.g. 1ks, 1/2, 1/4). Also added product subtitle field and ensured variant labels appear in all cart/report views. Committed and pushed friend groups & rewards report feature that was previously uncommitted.
+Designed, planned, and implemented the Packeta parcel delivery feature end-to-end. Friends can now choose between admin-managed pickup locations and Packeta parcel delivery when submitting coffee orders. The feature includes per-cycle configuration, profile-level default address, delivery fee handling, and admin visibility with red badges. Deployed to staging and resolved several testing issues.
 
 ## Files Changed
-- `backend/src/db/schema.js` — New `bakery_product_variants` table + migrations + subtitle column
-- `backend/src/routes/bakery-products.js` — CRUD with variants in request/response
-- `backend/src/routes/cycles.js` — Snapshot variants, subtitle as description2, variant_label in distribution/summary queries
-- `backend/src/routes/orders.js` — Added variant_label to all order item queries
-- `frontend/src/views/AdminBakeryProducts.vue` — Variant rows in modal, subtitle field, variants column in table
-- `frontend/src/views/FriendOrder.vue` — Grouped variant cards, subtitle display, variant label in cart
-- `frontend/src/views/CycleDetail.vue` — Variant label in orders tab, summary tab, clipboard copy
-- `frontend/src/views/Distribution.vue` — Variant label in badges and print table
-- `docs/superpowers/specs/2026-04-19-bakery-product-variants-design.md` — Design spec
-- `docs/superpowers/plans/2026-04-19-bakery-product-variants.md` — Implementation plan
-- `CLAUDE.md` — Updated with bakery variants learnings
+- `backend/src/db/schema.js` — 5 new migration columns (friends, order_cycles, orders)
+- `backend/src/routes/friends.js` — Profile endpoint accepts packeta_address, cycles endpoint returns delivery method
+- `backend/src/routes/cycles.js` — Parcel config in public/PATCH endpoints, delivery fields in distribution query
+- `backend/src/routes/orders.js` — Submit handles parcel delivery, friend response includes packeta_address
+- `frontend/src/views/FriendOrder.vue` — Unified delivery modal, payment total includes delivery fee, cart line item
+- `frontend/src/views/FriendPortal.vue` — Profile modal Packeta field, delivery badge on cycle cards
+- `frontend/src/views/CycleDetail.vue` — Admin parcel config, red Packeta badge, delivery fee in totals
+- `frontend/src/views/Distribution.vue` — Red Packeta badge + address row
+- `docs/superpowers/specs/2026-05-01-packeta-parcel-delivery-design.md` — Feature spec
+- `docs/superpowers/plans/2026-05-01-packeta-parcel-delivery.md` — Implementation plan
+- `CLAUDE.md` — Added Packeta feature learnings
 
 ## Current State
 
-- All code committed on `main`, 11 commits ahead of origin (not pushed)
-- Dev servers running on ports 3000, 5173, 3001
-- Feature deployed and tested on staging (gorifi-dev.skolar.sk)
+- Feature fully implemented and deployed to staging
+- All testing issues resolved (payment total, cart line item, portal total, login crash, address pre-fill, modal sizing)
+- Pushed to GitHub (1 remaining commit: CLAUDE.md + SESSION.md update)
 
 ## Next Steps
-- Push to origin: `git push`
-- Deploy to production: `./deploy/deploy.sh production`
-- Friend groups & rewards report feature is ~70-80% done (threshold indicators, expandable rows, progress bars missing from spec)
-- Bakery analytics dashboard not yet implemented
+
+- Deploy to production when ready
+- Consider adding Packeta API integration for pickup point search (currently free text)
 
 ## How to Test
 ```bash
 cd backend && npm run dev    # Port 3000
 cd frontend && npm run dev   # Port 5173
 ```
-1. Admin > Pekáreň: Create/edit product with multiple variants (label + weight + price)
-2. Create bakery cycle with multi-variant product
-3. Friend order: verify grouped card with per-variant +/- controls
-4. Check cart items show variant label (e.g. "Makovník (1/2) x1")
-5. Admin cycle detail: verify orders tab, summary tab, clipboard copy show variant labels
-6. Distribution view: verify variant labels in badges
+1. Admin: Open cycle detail → toggle "Doručenie Packetou" → set fee → save
+2. Friend: Edit profile → set Packeta address → save
+3. Friend: Submit order → choose "Doručenie Packetou" in modal → verify address pre-filled → submit
+4. Friend: Verify payment modal shows total with delivery fee
+5. Friend: Check dashboard for red "Packeta" badge on cycle card
+6. Admin: Check Orders tab + Distribution view for red badges and address

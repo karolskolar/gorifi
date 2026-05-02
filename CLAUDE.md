@@ -199,3 +199,18 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 - Bakery products also have a `subtitle` column — shown next to product name in friend order (lighter, smaller text)
 - Subtitle snapshotted as `description2` in products table (coffee already uses description2 for its own purpose)
 - Spec: `docs/superpowers/specs/2026-04-19-bakery-product-variants-design.md`
+
+### Packeta Parcel Delivery Feature (2026-05-01)
+- Optional Packeta parcel delivery as alternative to admin-managed pickup locations
+- Per-cycle config: `order_cycles.parcel_enabled` (boolean) + `order_cycles.parcel_fee` (EUR amount)
+- Friend profile: `friends.packeta_address` stores default pickup point address (editable in "Upraviť profil" modal)
+- Order storage: `orders.delivery_fee` (separate from product total) + `orders.packeta_address` (address for this order)
+- `delivery_fee` is NOT in `order_items` — it's a field on the order. `paymentTotal = total + delivery_fee`
+- Submit endpoint: `use_parcel_delivery` boolean in body triggers parcel path, clears pickup fields (and vice versa)
+- Unified delivery modal in FriendOrder.vue: radio choice "Osobný odber" vs "Doručenie Packetou", then appropriate sub-section
+- 4 modal scenarios: (1) no pickup + no parcel = no modal, (2) pickup only = pickup section, (3) parcel only = packeta + "bez doručenia", (4) both = radio choice
+- Admin views: red badge `border-red-400 text-red-600 bg-red-50` for Packeta (vs blue for pickup locations)
+- Distribution view shows full Packeta address below order header
+- Friend portal shows delivery method badge (red Packeta / blue pickup) on cycle cards
+- `friends/cycles` endpoint returns `orderPickupName` and `orderPacketa` fields (scoped inside `if (friendId)` block — variable scoping matters)
+- Spec: `docs/superpowers/specs/2026-05-01-packeta-parcel-delivery-design.md`
