@@ -54,6 +54,9 @@ router.get('/', (req, res) => {
       );
     }
 
+    const defaultRoastery = db.get('SELECT name FROM roasteries WHERE is_default = 1');
+    const defaultRoasteryName = defaultRoastery ? defaultRoastery.name : null;
+
     // Compute totals (only default roastery for tier calculations)
     let totalKg = 0;
     let totalValue = 0;
@@ -67,12 +70,13 @@ router.get('/', (req, res) => {
     for (const item of items) {
       const kg = variantToKg(item.variant, item.quantity);
       const itemValue = item.price * item.quantity;
-      if (item.roastery) {
-        otherRoasteryKg += kg;
-        otherRoasteryValue += itemValue;
-      } else {
+      const isDefault = !item.roastery || item.roastery === defaultRoasteryName;
+      if (isDefault) {
         totalKg += kg;
         totalValue += itemValue;
+      } else {
+        otherRoasteryKg += kg;
+        otherRoasteryValue += itemValue;
       }
     }
 

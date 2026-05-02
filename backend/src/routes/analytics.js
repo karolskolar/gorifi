@@ -63,6 +63,9 @@ router.get('/coffee', (req, res) => {
       );
     }
 
+    const defaultRoastery = db.get('SELECT name FROM roasteries WHERE is_default = 1');
+    const defaultRoasteryName = defaultRoastery ? defaultRoastery.name : null;
+
     // Build lookup maps
     const ordersByCycle = {};
     const ordersByFriend = {};
@@ -109,12 +112,13 @@ router.get('/coffee', (req, res) => {
         for (const item of orderItems) {
           const kg = variantToKg(item.variant, item.quantity);
           const itemValue = item.price * item.quantity;
-          if (item.roastery) {
-            otherRoasteryKg += kg;
-            orderOtherValue += itemValue;
-          } else {
+          const isDefault = !item.roastery || item.roastery === defaultRoasteryName;
+          if (isDefault) {
             totalKg += kg;
             orderDefaultValue += itemValue;
+          } else {
+            otherRoasteryKg += kg;
+            orderOtherValue += itemValue;
           }
         }
         totalValue += orderDefaultValue;
