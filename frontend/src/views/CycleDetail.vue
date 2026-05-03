@@ -159,6 +159,19 @@ const orderTotals = computed(() => ({
   total: submittedOrders.value.reduce((sum, o) => sum + (o.total || 0), 0)
 }))
 
+const COFFEE_VARIANT_COLUMNS = [
+  { label: '150g', countField: 'count_150g' },
+  { label: '200g', countField: 'count_200g' },
+  { label: '250g', countField: 'count_250g' },
+  { label: '500g', countField: 'count_500g' },
+  { label: '1kg',  countField: 'count_1kg' },
+  { label: '20ks', countField: 'count_20pc5g' },
+]
+
+const visibleVariantColumns = computed(() =>
+  COFFEE_VARIANT_COLUMNS.filter(col => (orderTotals.value[col.countField] || 0) > 0)
+)
+
 onMounted(async () => {
   await loadAll()
 })
@@ -1066,12 +1079,11 @@ function getStatusVariant(status) {
                     <TableHead class="text-center">Ks</TableHead>
                   </template>
                   <template v-else>
-                    <TableHead class="text-center">150g</TableHead>
-                    <TableHead class="text-center">200g</TableHead>
-                    <TableHead class="text-center">250g</TableHead>
-                    <TableHead class="text-center">500g</TableHead>
-                    <TableHead class="text-center">1kg</TableHead>
-                    <TableHead class="text-center">20ks</TableHead>
+                    <TableHead
+                      v-for="col in visibleVariantColumns"
+                      :key="col.label"
+                      class="text-center"
+                    >{{ col.label }}</TableHead>
                   </template>
                   <TableHead>Status</TableHead>
                   <TableHead class="text-right">Suma</TableHead>
@@ -1106,12 +1118,11 @@ function getStatusVariant(status) {
                       <TableCell class="text-center">{{ order.count_unit || 0 }}</TableCell>
                     </template>
                     <template v-else>
-                      <TableCell class="text-center">{{ order.count_150g || 0 }}</TableCell>
-                      <TableCell class="text-center">{{ order.count_200g || 0 }}</TableCell>
-                      <TableCell class="text-center">{{ order.count_250g || 0 }}</TableCell>
-                      <TableCell class="text-center">{{ order.count_500g || 0 }}</TableCell>
-                      <TableCell class="text-center">{{ order.count_1kg || 0 }}</TableCell>
-                      <TableCell class="text-center">{{ order.count_20pc5g || 0 }}</TableCell>
+                      <TableCell
+                        v-for="col in visibleVariantColumns"
+                        :key="col.label"
+                        class="text-center"
+                      >{{ order[col.countField] || 0 }}</TableCell>
                     </template>
                     <TableCell>
                       <div class="flex flex-wrap gap-1">
@@ -1165,7 +1176,7 @@ function getStatusVariant(status) {
                   </TableRow>
                   <!-- Expanded items row -->
                   <TableRow v-if="order.status !== 'none' && expandedOrders.has(order.id)">
-                    <TableCell :colspan="isBakery ? 7 : 11" class="bg-muted/50 p-4">
+                    <TableCell :colspan="6 + (isBakery ? 1 : visibleVariantColumns.length)" class="bg-muted/50 p-4">
                       <div v-if="order.items && order.items.length > 0" class="space-y-1">
                         <div v-for="item in order.items" :key="`${item.product_id}-${item.variant}`" class="flex justify-between py-1 text-sm">
                           <span>
@@ -1201,12 +1212,11 @@ function getStatusVariant(status) {
                     <TableCell class="text-center">{{ orderTotals.count_unit }}</TableCell>
                   </template>
                   <template v-else>
-                    <TableCell class="text-center">{{ orderTotals.count_150g }}</TableCell>
-                    <TableCell class="text-center">{{ orderTotals.count_200g }}</TableCell>
-                    <TableCell class="text-center">{{ orderTotals.count_250g }}</TableCell>
-                    <TableCell class="text-center">{{ orderTotals.count_500g }}</TableCell>
-                    <TableCell class="text-center">{{ orderTotals.count_1kg }}</TableCell>
-                    <TableCell class="text-center">{{ orderTotals.count_20pc5g }}</TableCell>
+                    <TableCell
+                      v-for="col in visibleVariantColumns"
+                      :key="col.label"
+                      class="text-center"
+                    >{{ orderTotals[col.countField] }}</TableCell>
                   </template>
                   <TableCell></TableCell>
                   <TableCell class="text-right">{{ formatPrice(orderTotals.total) }}</TableCell>
