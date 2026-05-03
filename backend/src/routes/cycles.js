@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
+import { variantToKg } from '../helpers/analytics.js';
 
 const router = Router();
 
@@ -13,6 +14,50 @@ router.get('/', (req, res) => {
     GROUP BY c.id
     ORDER BY c.created_at DESC
   `).all();
+
+  // Per-cycle roastery breakdown (coffee cycles only).
+  // NULL/empty roastery is bucketed under the default roastery name.
+  const defaultRoastery = db.prepare("SELECT name FROM roasteries WHERE is_default = 1").get();
+  const defaultName = defaultRoastery ? defaultRoastery.name : 'Default';
+
+  const items = db.prepare(`
+    SELECT o.cycle_id, p.roastery, oi.variant, oi.quantity, oi.price
+    FROM orders o
+    JOIN order_items oi ON oi.order_id = o.id
+    JOIN products p ON oi.product_id = p.id
+    WHERE o.status = 'submitted'
+  `).all();
+
+  const breakdownByCycle = {};
+  for (const it of items) {
+    const roastery = it.roastery && it.roastery.trim() ? it.roastery : defaultName;
+    if (!breakdownByCycle[it.cycle_id]) breakdownByCycle[it.cycle_id] = {};
+    if (!breakdownByCycle[it.cycle_id][roastery]) {
+      breakdownByCycle[it.cycle_id][roastery] = { name: roastery, total_kg: 0, total_value: 0 };
+    }
+    breakdownByCycle[it.cycle_id][roastery].total_kg += variantToKg(it.variant, it.quantity);
+    breakdownByCycle[it.cycle_id][roastery].total_value += (it.price || 0) * it.quantity;
+  }
+
+  for (const cycle of cycles) {
+    if (cycle.type !== 'coffee') {
+      cycle.roastery_breakdown = [];
+      continue;
+    }
+    const map = breakdownByCycle[cycle.id] || {};
+    cycle.roastery_breakdown = Object.values(map)
+      .map(r => ({
+        name: r.name,
+        total_kg: Math.round(r.total_kg * 10) / 10,
+        total_value: Math.round(r.total_value * 100) / 100,
+      }))
+      .sort((a, b) => {
+        if (a.name === defaultName) return -1;
+        if (b.name === defaultName) return 1;
+        return a.name.localeCompare(b.name);
+      });
+  }
+
   res.json(cycles);
 });
 

@@ -234,11 +234,25 @@ function getStatusText(status) {
         >
           <CardContent class="p-6">
             <div class="flex justify-between items-start">
-              <div>
+              <div class="min-w-0 flex-1">
                 <h3 class="text-lg font-semibold text-foreground">{{ cycle.name }}</h3>
                 <p class="text-sm text-muted-foreground mt-1">
                   {{ cycle.orders_count }} objednávok
                 </p>
+                <div
+                  v-if="cycle.type === 'coffee' && cycle.roastery_breakdown && cycle.roastery_breakdown.length > 0"
+                  class="mt-2 space-y-0.5 text-sm"
+                >
+                  <div
+                    v-for="r in cycle.roastery_breakdown"
+                    :key="r.name"
+                    class="grid grid-cols-[1fr_auto_auto] gap-x-4 max-w-sm"
+                  >
+                    <span class="text-muted-foreground">{{ r.name }}</span>
+                    <span class="text-right tabular-nums">{{ r.total_kg.toFixed(1) }} kg</span>
+                    <span class="text-right tabular-nums w-20">{{ r.total_value.toFixed(2) }} €</span>
+                  </div>
+                </div>
               </div>
               <div class="flex items-center gap-2">
                 <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
