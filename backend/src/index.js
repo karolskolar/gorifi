@@ -22,6 +22,7 @@ import friendGroupsRouter from './routes/friend-groups.js';
 import rewardsRouter from './routes/rewards.js';
 import invitationsRouter from './routes/invitations.js';
 import roasteriesRouter from './routes/roasteries.js';
+import onboardingRouter from './routes/onboarding.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -47,6 +48,7 @@ app.use('/api/friend-groups', friendGroupsRouter);
 app.use('/api/analytics/rewards', rewardsRouter);
 app.use('/api/invitations', invitationsRouter);
 app.use('/api/roasteries', roasteriesRouter);
+app.use('/api', onboardingRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {
