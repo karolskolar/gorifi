@@ -1219,9 +1219,9 @@ function getStatusVariant(status) {
 
         <!-- Summary Tab -->
         <TabsContent value="summary">
-          <div class="flex justify-between items-center mb-4">
+          <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-4">
             <h2 class="text-lg font-semibold">Sumár objednávky</h2>
-            <Button @click="copySummary">
+            <Button size="sm" @click="copySummary" class="self-start sm:self-auto">
               Kopírovať do schranky
             </Button>
           </div>
@@ -1248,47 +1248,79 @@ function getStatusVariant(status) {
           </div>
 
           <Card>
-            <CardContent class="p-6">
+            <CardContent class="p-3 sm:p-6">
               <div v-if="summary?.items.length === 0" class="text-center text-muted-foreground py-8">
                 Zatiaľ žiadne objednávky
               </div>
               <div v-else>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Účel</TableHead>
-                      <TableHead>Produkt</TableHead>
-                      <TableHead>Varianta</TableHead>
-                      <TableHead class="text-right">Počet</TableHead>
-                      <TableHead class="text-right">Suma</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    <TableRow v-for="(item, i) in summary.items" :key="i">
-                      <TableCell>
-                        <Badge
-                          v-if="item.purpose"
-                          variant="outline"
-                          :class="{
-                            'border-stone-400 text-stone-600 bg-stone-50': item.purpose === 'Espresso',
-                            'border-sky-400 text-sky-600 bg-sky-50': item.purpose === 'Filter',
-                            'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule' || item.purpose === 'Slané',
-                                'border-pink-400 text-pink-600 bg-pink-50': item.purpose === 'Sladké'
-                          }"
-                        >
-                          {{ item.purpose }}
-                        </Badge>
-                        <span v-else class="text-muted-foreground">-</span>
-                      </TableCell>
-                      <TableCell>{{ item.name }}<span v-if="item.description1 || item.roast_type" class="text-muted-foreground"> - {{ [item.description1, item.roast_type].filter(Boolean).join(', ') }}</span></TableCell>
-                      <TableCell>{{ item.variant_label ? item.variant_label : (item.variant === 'unit' ? 'ks' : item.variant) }}</TableCell>
-                      <TableCell class="text-right">{{ item.total_quantity }}x</TableCell>
-                      <TableCell class="text-right">{{ formatPrice(item.total_price) }}</TableCell>
-                    </TableRow>
-                  </TableBody>
-                </Table>
+                <div class="hidden md:block">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Účel</TableHead>
+                        <TableHead>Produkt</TableHead>
+                        <TableHead>Varianta</TableHead>
+                        <TableHead class="text-right">Počet</TableHead>
+                        <TableHead class="text-right">Suma</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      <TableRow v-for="(item, i) in summary.items" :key="i">
+                        <TableCell>
+                          <Badge
+                            v-if="item.purpose"
+                            variant="outline"
+                            :class="{
+                              'border-stone-400 text-stone-600 bg-stone-50': item.purpose === 'Espresso',
+                              'border-sky-400 text-sky-600 bg-sky-50': item.purpose === 'Filter',
+                              'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule' || item.purpose === 'Slané',
+                                  'border-pink-400 text-pink-600 bg-pink-50': item.purpose === 'Sladké'
+                            }"
+                          >
+                            {{ item.purpose }}
+                          </Badge>
+                          <span v-else class="text-muted-foreground">-</span>
+                        </TableCell>
+                        <TableCell>{{ item.name }}<span v-if="item.description1 || item.roast_type" class="text-muted-foreground"> - {{ [item.description1, item.roast_type].filter(Boolean).join(', ') }}</span></TableCell>
+                        <TableCell>{{ item.variant_label ? item.variant_label : (item.variant === 'unit' ? 'ks' : item.variant) }}</TableCell>
+                        <TableCell class="text-right">{{ item.total_quantity }}x</TableCell>
+                        <TableCell class="text-right">{{ formatPrice(item.total_price) }}</TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
+                </div>
 
-                <div class="border-t pt-4 mt-4 flex justify-between text-lg font-semibold">
+                <div class="md:hidden divide-y">
+                  <div v-for="(item, i) in summary.items" :key="i" class="py-3 first:pt-0 last:pb-0">
+                    <div class="flex items-start justify-between gap-2">
+                      <div class="min-w-0 flex-1">
+                        <div class="flex items-center gap-2 flex-wrap">
+                          <span
+                            v-if="item.purpose"
+                            class="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+                            :class="{
+                              'bg-stone-500': item.purpose === 'Espresso',
+                              'bg-sky-500': item.purpose === 'Filter',
+                              'bg-amber-500': item.purpose === 'Kapsule' || item.purpose === 'Slané',
+                              'bg-pink-500': item.purpose === 'Sladké'
+                            }"
+                            :title="item.purpose"
+                          ></span>
+                          <span class="font-medium text-sm">{{ item.name }}</span>
+                        </div>
+                        <div v-if="item.description1 || item.roast_type" class="text-xs text-muted-foreground mt-0.5">
+                          {{ [item.description1, item.roast_type].filter(Boolean).join(', ') }}
+                        </div>
+                        <div class="text-xs text-muted-foreground mt-1">
+                          {{ item.total_quantity }}× {{ item.variant_label ? item.variant_label : (item.variant === 'unit' ? 'ks' : item.variant) }}
+                        </div>
+                      </div>
+                      <div class="text-sm font-semibold whitespace-nowrap">{{ formatPrice(item.total_price) }}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="border-t pt-4 mt-4 flex flex-col sm:flex-row sm:justify-between gap-1 text-base sm:text-lg font-semibold">
                   <span>Celkom položiek: {{ summary.totalItems }}</span>
                   <span>Celková suma: {{ formatPrice(summary.totalPrice) }}</span>
                 </div>
