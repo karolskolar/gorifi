@@ -20,7 +20,7 @@ const onboardingLoading = ref(true)
 const onboardingError = ref('')
 const newLinkNote = ref('')
 const showNewLinkInput = ref(false)
-const authMode = ref('legacy')
+const authMode = ref(null)
 
 const baseUrl = computed(() => window.location.origin)
 
@@ -61,7 +61,7 @@ async function toggleOnboardingLink(link) {
     await api.updateOnboardingLink(link.id, { active: !link.active })
     await loadOnboardingLinks()
   } catch (e) {
-    alert(e.message)
+    alert(e.message || 'Chyba pri zmene stavu')
   }
 }
 
@@ -71,7 +71,7 @@ async function regenerateOnboardingLink(link) {
     await api.regenerateOnboardingLink(link.id)
     await loadOnboardingLinks()
   } catch (e) {
-    alert(e.message)
+    alert(e.message || 'Chyba pri regenerácii tokenu')
   }
 }
 
@@ -82,14 +82,14 @@ async function deleteOnboardingLink(link) {
     await api.deleteOnboardingLink(link.id)
     await loadOnboardingLinks()
   } catch (e) {
-    alert(e.message)
+    alert(e.message || 'Chyba pri mazaní linku')
   }
 }
 
 function copyLink(token) {
   const url = `${baseUrl.value}/onboard/${token}`
-  navigator.clipboard.writeText(url).then(() => {
-    // Optional: show a toast
+  navigator.clipboard.writeText(url).catch(() => {
+    alert('Nepodarilo sa skopírovať URL')
   })
 }
 
@@ -205,6 +205,7 @@ const pendingCount = computed(() => {
         </div>
 
         <div v-if="onboardingLoading" class="text-muted-foreground py-4">Načítavam…</div>
+        <div v-else-if="onboardingError" class="text-destructive py-4">{{ onboardingError }}</div>
         <div v-else-if="onboardingLinks.length === 0" class="text-muted-foreground py-4">
           Zatiaľ žiadne onboarding linky.
         </div>
