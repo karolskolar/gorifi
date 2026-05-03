@@ -243,27 +243,29 @@ router.post('/onboarding/:token', (req, res) => {
   const accessToken = nanoid(12);
   const cycleId = getPlaceholderCycleId();
 
-  const result = db.prepare(`
-    INSERT INTO friends
-      (cycle_id, name, uid, access_token, invite_code, active,
-       phone, email, onboarding_source, username, password_hash)
-    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
-  `).run(
-    cycleId, name, uid, accessToken, inviteCode,
-    phone, email || null, link.note, usernameRaw, hashPassword(password)
-  );
-  const friendId = result.lastInsertRowid;
-
-  // Subscribe to bakery only.
-  db.prepare(
-    "INSERT INTO friend_subscriptions (friend_id, type) VALUES (?, 'bakery')"
-  ).run(friendId);
+  const insertFriendWithBakerySubscription = db.transaction(() => {
+    const result = db.prepare(`
+      INSERT INTO friends
+        (cycle_id, name, uid, access_token, invite_code, active,
+         phone, email, onboarding_source, username, password_hash)
+      VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+    `).run(
+      cycleId, name, uid, accessToken, inviteCode,
+      phone, email || null, link.note, usernameRaw, hashPassword(password)
+    );
+    const newId = result.lastInsertRowid;
+    db.prepare(
+      "INSERT INTO friend_subscriptions (friend_id, type) VALUES (?, 'bakery')"
+    ).run(newId);
+    return newId;
+  });
+  const friendId = insertFriendWithBakerySubscription();
 
   // Mint session for auto-login.
   const session = createFriendSession(friendId);
 
   res.status(201).json({
-    sessionToken: session.token,
+    token: session.token,
     expiresAt: session.expiresAt,
     friendId,
     friendName: name,
