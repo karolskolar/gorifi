@@ -118,41 +118,43 @@ async function submit() {
             <AlertDescription>{{ submitError }}</AlertDescription>
           </Alert>
 
-          <div class="space-y-2">
-            <Label for="ob-name">Meno</Label>
-            <Input id="ob-name" v-model="form.name" />
-            <p v-if="fieldErrors.name" class="text-sm text-destructive">{{ fieldErrors.name }}</p>
-          </div>
+          <form @submit.prevent="submit" class="space-y-4">
+            <div class="space-y-2">
+              <Label for="ob-name">Meno</Label>
+              <Input id="ob-name" v-model="form.name" />
+              <p v-if="fieldErrors.name" class="text-sm text-destructive">{{ fieldErrors.name }}</p>
+            </div>
 
-          <div class="space-y-2">
-            <Label for="ob-phone">Mobil</Label>
-            <Input id="ob-phone" v-model="form.phone" type="tel" autocomplete="tel" />
-            <p v-if="fieldErrors.phone" class="text-sm text-destructive">{{ fieldErrors.phone }}</p>
-          </div>
+            <div class="space-y-2">
+              <Label for="ob-phone">Mobil</Label>
+              <Input id="ob-phone" v-model="form.phone" type="tel" autocomplete="tel" />
+              <p v-if="fieldErrors.phone" class="text-sm text-destructive">{{ fieldErrors.phone }}</p>
+            </div>
 
-          <div class="space-y-2">
-            <Label for="ob-email">Email <span class="text-muted-foreground text-xs">(nepovinné)</span></Label>
-            <Input id="ob-email" v-model="form.email" type="email" autocomplete="email" />
-            <p v-if="fieldErrors.email" class="text-sm text-destructive">{{ fieldErrors.email }}</p>
-          </div>
+            <div class="space-y-2">
+              <Label for="ob-email">Email <span class="text-muted-foreground text-xs">(nepovinné)</span></Label>
+              <Input id="ob-email" v-model="form.email" type="email" autocomplete="email" />
+              <p v-if="fieldErrors.email" class="text-sm text-destructive">{{ fieldErrors.email }}</p>
+            </div>
 
-          <div class="space-y-2">
-            <Label for="ob-username">Užívateľské meno</Label>
-            <Input id="ob-username" v-model="form.username" autocomplete="username" />
-            <p v-if="usernameStatus === 'available'" class="text-sm text-emerald-600">Voľné</p>
-            <p v-else-if="fieldErrors.username" class="text-sm text-destructive">{{ fieldErrors.username }}</p>
-            <p v-else-if="usernameStatus === 'checking'" class="text-sm text-muted-foreground">Kontrolujem…</p>
-          </div>
+            <div class="space-y-2">
+              <Label for="ob-username">Užívateľské meno</Label>
+              <Input id="ob-username" v-model="form.username" autocomplete="username" />
+              <p v-if="usernameStatus === 'available'" class="text-sm text-emerald-600">Voľné</p>
+              <p v-else-if="fieldErrors.username" class="text-sm text-destructive">{{ fieldErrors.username }}</p>
+              <p v-else-if="usernameStatus === 'checking'" class="text-sm text-muted-foreground">Kontrolujem…</p>
+            </div>
 
-          <div class="space-y-2">
-            <Label for="ob-password">Heslo</Label>
-            <Input id="ob-password" v-model="form.password" type="password" autocomplete="new-password" />
-            <p v-if="fieldErrors.password" class="text-sm text-destructive">{{ fieldErrors.password }}</p>
-          </div>
+            <div class="space-y-2">
+              <Label for="ob-password">Heslo</Label>
+              <Input id="ob-password" v-model="form.password" type="password" autocomplete="new-password" />
+              <p v-if="fieldErrors.password" class="text-sm text-destructive">{{ fieldErrors.password }}</p>
+            </div>
 
-          <Button class="w-full" :disabled="submitting" @click="submit">
-            {{ submitting ? 'Posielam…' : 'Vytvoriť účet' }}
-          </Button>
+            <Button type="submit" class="w-full" :disabled="submitting">
+              {{ submitting ? 'Posielam…' : 'Vytvoriť účet' }}
+            </Button>
+          </form>
         </CardContent>
       </Card>
     </div>
