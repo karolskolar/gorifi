@@ -94,12 +94,17 @@ router.patch('/onboarding-links/:id', (req, res) => {
     params.push(req.body.active ? 1 : 0);
   }
   if (req.body.note !== undefined) {
-    const note = String(req.body.note).trim();
-    if (!note) {
+    const newNote = String(req.body.note).trim();
+    if (!newNote) {
       return res.status(400).json({ error: 'Popis nemôže byť prázdny' });
     }
+    if (newNote !== link.note && getRegistrationCount(link.note) > 0) {
+      return res.status(400).json({
+        error: 'Link má registrácie, popis nemôže byť zmenený — audit pôvodu by bol narušený.',
+      });
+    }
     updates.push('note = ?');
-    params.push(note);
+    params.push(newNote);
   }
 
   if (updates.length === 0) {
