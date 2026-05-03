@@ -262,6 +262,13 @@ export const api = {
   validateInviteCode: (code) => request(`/invitations/code/${code}`),
   submitInvitation: (data) => request('/invitations/register', { method: 'POST', body: data }),
 
+  // Public onboarding (bakery self-signup)
+  getOnboardingLink: (token) => request(`/onboarding/${token}`),
+  checkOnboardingUsername: (token, username) =>
+    request(`/onboarding/${token}/check-username?u=${encodeURIComponent(username)}`),
+  submitOnboarding: (token, data) =>
+    request(`/onboarding/${token}`, { method: 'POST', body: data }),
+
   // Invitations (friend auth - Bearer token auto-included, friendId as fallback)
   getMyInviteCode: (friendId) => request(`/invitations/my-code${friendId ? `?friendId=${friendId}` : ''}`),
 
@@ -269,6 +276,17 @@ export const api = {
   getInvitations: (status) => adminRequest(`/invitations${status ? `?status=${status}` : ''}`),
   updateInvitation: (id, data) => adminRequest(`/invitations/${id}`, { method: 'PATCH', body: data }),
   deleteInvitation: (id) => adminRequest(`/invitations/${id}`, { method: 'DELETE' }),
+
+  // Admin onboarding links
+  getOnboardingLinks: () => adminRequest('/onboarding-links'),
+  createOnboardingLink: (note) =>
+    adminRequest('/onboarding-links', { method: 'POST', body: { note } }),
+  updateOnboardingLink: (id, data) =>
+    adminRequest(`/onboarding-links/${id}`, { method: 'PATCH', body: data }),
+  regenerateOnboardingLink: (id) =>
+    adminRequest(`/onboarding-links/${id}/regenerate`, { method: 'POST' }),
+  deleteOnboardingLink: (id) =>
+    adminRequest(`/onboarding-links/${id}`, { method: 'DELETE' }),
 
   // Roasteries
   getRoasteries: () => request('/roasteries'),
