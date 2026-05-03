@@ -159,4 +159,116 @@ router.delete('/onboarding-links/:id', (req, res) => {
   res.status(204).send();
 });
 
+// =====================================================================
+// PUBLIC ROUTES — mounted at /api/onboarding
+// =====================================================================
+
+// Get info about an onboarding link (used by the public page on mount).
+router.get('/onboarding/:token', (req, res) => {
+  const link = db.prepare(
+    'SELECT note, active FROM onboarding_links WHERE token = ?'
+  ).get(req.params.token);
+
+  if (!link) {
+    return res.status(404).json({ error: 'Odkaz neexistuje' });
+  }
+  res.json({ active: !!link.active, note: link.note });
+});
+
+// Username availability check, gated by an active onboarding token so it
+// can't be used as a general user enumeration endpoint.
+router.get('/onboarding/:token/check-username', (req, res) => {
+  const link = db.prepare('SELECT active FROM onboarding_links WHERE token = ?').get(req.params.token);
+  if (!link) {
+    return res.status(404).json({ error: 'Odkaz neexistuje' });
+  }
+  if (!link.active) {
+    return res.status(403).json({ error: 'Tento odkaz už nie je aktívny' });
+  }
+
+  const username = (req.query.u || '').toString().toLowerCase();
+  const formatError = validateUsername(username);
+  if (formatError) {
+    return res.json({ available: false, reason: formatError });
+  }
+
+  return res.json({ available: !isUsernameTaken(username) });
+});
+
+// Submit the onboarding form. Creates a friend, subscribes them to bakery,
+// mints a session token, and returns it for auto-login.
+router.post('/onboarding/:token', (req, res) => {
+  const link = db.prepare(
+    'SELECT id, note, active FROM onboarding_links WHERE token = ?'
+  ).get(req.params.token);
+  if (!link) {
+    return res.status(404).json({ error: 'Neplatný odkaz' });
+  }
+  if (!link.active) {
+    return res.status(403).json({ error: 'Tento odkaz už nie je aktívny' });
+  }
+
+  const name = (req.body.name || '').trim();
+  const phone = (req.body.phone || '').trim();
+  const email = (req.body.email || '').trim();
+  const usernameRaw = (req.body.username || '').toLowerCase().trim();
+  const password = req.body.password || '';
+
+  if (!name) return res.status(400).json({ error: 'Meno je povinné', field: 'name' });
+  if (!phone) return res.status(400).json({ error: 'Mobil je povinný', field: 'phone' });
+  if (email && !email.includes('@')) {
+    return res.status(400).json({ error: 'Neplatný email', field: 'email' });
+  }
+
+  const usernameError = validateUsername(usernameRaw);
+  if (usernameError) {
+    return res.status(400).json({ error: usernameError, field: 'username' });
+  }
+  if (!password || password.length < 4) {
+    return res.status(400).json({ error: 'Heslo musí mať aspoň 4 znaky', field: 'password' });
+  }
+  if (isUsernameTaken(usernameRaw)) {
+    return res.status(409).json({ error: 'Užívateľské meno je už obsadené', field: 'username' });
+  }
+
+  // Generate unique uid + invite_code (collision-retry, mirrors friends.js).
+  let uid = generateUid();
+  while (db.prepare('SELECT id FROM friends WHERE uid = ?').get(uid)) {
+    uid = generateUid();
+  }
+  let inviteCode = generateInviteCode();
+  while (db.prepare('SELECT id FROM friends WHERE invite_code = ?').get(inviteCode)) {
+    inviteCode = generateInviteCode();
+  }
+  const accessToken = nanoid(12);
+  const cycleId = getPlaceholderCycleId();
+
+  const result = db.prepare(`
+    INSERT INTO friends
+      (cycle_id, name, uid, access_token, invite_code, active,
+       phone, email, onboarding_source, username, password_hash)
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+  `).run(
+    cycleId, name, uid, accessToken, inviteCode,
+    phone, email || null, link.note, usernameRaw, hashPassword(password)
+  );
+  const friendId = result.lastInsertRowid;
+
+  // Subscribe to bakery only.
+  db.prepare(
+    "INSERT INTO friend_subscriptions (friend_id, type) VALUES (?, 'bakery')"
+  ).run(friendId);
+
+  // Mint session for auto-login.
+  const session = createFriendSession(friendId);
+
+  res.status(201).json({
+    sessionToken: session.token,
+    expiresAt: session.expiresAt,
+    friendId,
+    friendName: name,
+  });
+});
+
 export default router;
+
