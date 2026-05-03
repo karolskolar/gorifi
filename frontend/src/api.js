@@ -82,7 +82,9 @@ async function request(endpoint, options = {}) {
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Chyba servera' }))
-    throw new Error(error.error || 'Chyba servera')
+    const err = new Error(error.error || 'Chyba servera')
+    if (error.field) err.field = error.field
+    throw err
   }
 
   if (response.status === 204) {

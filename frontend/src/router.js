@@ -17,6 +17,11 @@ const routes = [
     component: () => import('./views/InviteRegister.vue')
   },
   {
+    path: '/onboard/:token',
+    name: 'onboarding',
+    component: () => import('./views/OnboardingPage.vue')
+  },
+  {
     path: '/admin',
     name: 'admin-login',
     component: () => import('./views/AdminLogin.vue')
