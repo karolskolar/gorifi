@@ -15,6 +15,7 @@ const mobileMenuOpen = ref(false)
 const cycles = ref([])
 const loading = ref(true)
 const error = ref('')
+const showArchive = ref(false)
 const showNewCycleModal = ref(false)
 const newCycleName = ref('')
 const newCycleType = ref('coffee')
@@ -23,6 +24,9 @@ const selectedBakeryProductIds = ref([])
 const bakeryProductSearch = ref('')
 const newCycleStatus = ref('open')
 const newCyclePlanNote = ref('')
+
+const activeCycles = computed(() => cycles.value.filter(c => c.status !== 'completed'))
+const archivedCycles = computed(() => cycles.value.filter(c => c.status === 'completed'))
 
 // Delete confirmation
 const showDeleteModal = ref(false)
@@ -225,56 +229,126 @@ function getStatusText(status) {
         </Button>
       </div>
 
-      <div v-else class="grid gap-4">
-        <Card
-          v-for="cycle in cycles"
-          :key="cycle.id"
-          class="hover:shadow-md transition-shadow cursor-pointer"
-          @click="router.push(`/admin/cycle/${cycle.id}`)"
-        >
-          <CardContent class="p-6">
-            <div class="flex justify-between items-start">
-              <div class="min-w-0 flex-1">
-                <h3 class="text-lg font-semibold text-foreground">{{ cycle.name }}</h3>
-                <p class="text-sm text-muted-foreground mt-1">
-                  {{ cycle.orders_count }} objednávok
-                </p>
-                <div
-                  v-if="cycle.type === 'coffee' && cycle.roastery_breakdown && cycle.roastery_breakdown.length > 0"
-                  class="mt-2 space-y-0.5 text-sm"
-                >
+      <div v-else>
+        <div class="grid gap-4">
+          <Card
+            v-for="cycle in activeCycles"
+            :key="cycle.id"
+            class="hover:shadow-md transition-shadow cursor-pointer"
+            @click="router.push(`/admin/cycle/${cycle.id}`)"
+          >
+            <CardContent class="p-6">
+              <div class="flex justify-between items-start gap-3">
+                <div class="min-w-0 flex-1">
+                  <h3 class="text-lg font-semibold text-foreground">{{ cycle.name }}</h3>
+                  <p class="text-sm text-muted-foreground mt-1">
+                    {{ cycle.orders_count }} objednávok
+                  </p>
                   <div
-                    v-for="r in cycle.roastery_breakdown"
-                    :key="r.name"
-                    class="grid grid-cols-[1fr_auto_auto] gap-x-4 max-w-sm"
+                    v-if="cycle.type === 'coffee' && cycle.roastery_breakdown && cycle.roastery_breakdown.length > 0"
+                    class="mt-2 space-y-0.5 text-sm"
                   >
-                    <span class="text-muted-foreground">{{ r.name }}</span>
-                    <span class="text-right tabular-nums">{{ r.total_kg.toFixed(1) }} kg</span>
-                    <span class="text-right tabular-nums w-20">{{ r.total_value.toFixed(2) }} €</span>
+                    <div
+                      v-for="r in cycle.roastery_breakdown"
+                      :key="r.name"
+                      class="flex items-baseline gap-x-3 whitespace-nowrap"
+                    >
+                      <span class="text-muted-foreground truncate">{{ r.name }}</span>
+                      <span class="tabular-nums ml-auto">{{ r.total_kg.toFixed(1) }} kg</span>
+                      <span class="tabular-nums">{{ r.total_value.toFixed(2) }} €</span>
+                    </div>
                   </div>
                 </div>
+                <div class="flex flex-col sm:flex-row sm:items-center items-end gap-2 shrink-0">
+                  <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
+                    Pekáreň
+                  </Badge>
+                  <Badge :variant="getStatusVariant(cycle.status)">
+                    {{ getStatusText(cycle.status) }}
+                  </Badge>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    @click.stop="confirmDeleteCycle(cycle)"
+                    class="text-destructive hover:text-destructive hover:bg-destructive/10"
+                  >
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </Button>
+                </div>
               </div>
-              <div class="flex items-center gap-2">
-                <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
-                  Pekáreň
-                </Badge>
-                <Badge :variant="getStatusVariant(cycle.status)">
-                  {{ getStatusText(cycle.status) }}
-                </Badge>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  @click.stop="confirmDeleteCycle(cycle)"
-                  class="text-destructive hover:text-destructive hover:bg-destructive/10"
-                >
-                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </div>
+
+        <div v-if="archivedCycles.length > 0" class="mt-6">
+          <button
+            @click="showArchive = !showArchive"
+            class="flex items-center gap-2 w-full text-left py-2 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <svg
+              class="w-4 h-4 transition-transform"
+              :class="showArchive ? 'rotate-90' : ''"
+              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
+            <span class="text-sm font-medium">Archív ({{ archivedCycles.length }})</span>
+          </button>
+
+          <div v-if="showArchive" class="grid gap-4 mt-3">
+            <Card
+              v-for="cycle in archivedCycles"
+              :key="cycle.id"
+              class="hover:shadow-md transition-shadow cursor-pointer opacity-75"
+              @click="router.push(`/admin/cycle/${cycle.id}`)"
+            >
+              <CardContent class="p-6">
+                <div class="flex justify-between items-start gap-3">
+                  <div class="min-w-0 flex-1">
+                    <h3 class="text-lg font-semibold text-foreground">{{ cycle.name }}</h3>
+                    <p class="text-sm text-muted-foreground mt-1">
+                      {{ cycle.orders_count }} objednávok
+                    </p>
+                    <div
+                      v-if="cycle.type === 'coffee' && cycle.roastery_breakdown && cycle.roastery_breakdown.length > 0"
+                      class="mt-2 space-y-0.5 text-sm"
+                    >
+                      <div
+                        v-for="r in cycle.roastery_breakdown"
+                        :key="r.name"
+                        class="flex items-baseline gap-x-3 whitespace-nowrap"
+                      >
+                        <span class="text-muted-foreground truncate">{{ r.name }}</span>
+                        <span class="tabular-nums ml-auto">{{ r.total_kg.toFixed(1) }} kg</span>
+                        <span class="tabular-nums">{{ r.total_value.toFixed(2) }} €</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="flex flex-col sm:flex-row sm:items-center items-end gap-2 shrink-0">
+                    <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
+                      Pekáreň
+                    </Badge>
+                    <Badge :variant="getStatusVariant(cycle.status)">
+                      {{ getStatusText(cycle.status) }}
+                    </Badge>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      @click.stop="confirmDeleteCycle(cycle)"
+                      class="text-destructive hover:text-destructive hover:bg-destructive/10"
+                    >
+                      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
       </div>
     </main>
 
