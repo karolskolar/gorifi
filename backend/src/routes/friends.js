@@ -389,10 +389,15 @@ router.get('/:id/detail', (req, res) => {
 
 // Create new friend (global, no cycle_id required)
 router.post('/', (req, res) => {
-  const { name, display_name } = req.body;
+  const { name, display_name, phone, email } = req.body;
 
   if (!name) {
     return res.status(400).json({ error: 'Prihlasovacie meno je povinné' });
+  }
+
+  const trimmedEmail = email ? email.trim() : null;
+  if (trimmedEmail && !trimmedEmail.includes('@')) {
+    return res.status(400).json({ error: 'Neplatný email' });
   }
 
   // Generate unique access token (kept for backwards compatibility)
@@ -419,9 +424,9 @@ router.post('/', (req, res) => {
   }
 
   const result = db.prepare(`
-    INSERT INTO friends (cycle_id, name, display_name, uid, access_token, invite_code, active)
-    VALUES (?, ?, ?, ?, ?, ?, 1)
-  `).run(cycle.id, name, display_name || null, uid, access_token, invite_code);
+    INSERT INTO friends (cycle_id, name, display_name, uid, access_token, invite_code, active, phone, email)
+    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+  `).run(cycle.id, name, display_name || null, uid, access_token, invite_code, phone || null, trimmedEmail);
 
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(friend);
@@ -429,7 +434,7 @@ router.post('/', (req, res) => {
 
 // Update friend (name, display_name, and/or active status) - Admin endpoint
 router.patch('/:id', (req, res) => {
-  const { name, display_name, active } = req.body;
+  const { name, display_name, active, phone, email } = req.body;
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
 
   if (!friend) {
@@ -454,6 +459,18 @@ router.patch('/:id', (req, res) => {
     if (!active) {
       invalidateFriendSessions(req.params.id);
     }
+  }
+  if (phone !== undefined) {
+    updates.push('phone = ?');
+    values.push(phone || null);
+  }
+  if (email !== undefined) {
+    const trimmed = email ? email.trim() : null;
+    if (trimmed && !trimmed.includes('@')) {
+      return res.status(400).json({ error: 'Neplatný email' });
+    }
+    updates.push('email = ?');
+    values.push(trimmed);
   }
 
   if (updates.length > 0) {

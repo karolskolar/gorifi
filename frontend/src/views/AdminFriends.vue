@@ -24,6 +24,8 @@ const showModal = ref(false)
 const editingFriend = ref(null)
 const friendName = ref('')      // login name
 const friendDisplayName = ref('') // display name (Meno)
+const friendPhone = ref('')
+const friendEmail = ref('')
 
 // Credential management
 const showResetPasswordModal = ref(false)
@@ -52,6 +54,8 @@ onMounted(async () => {
   if (route.query.create === '1' && route.query.name) {
     friendName.value = route.query.name
     friendDisplayName.value = ''
+    friendPhone.value = ''
+    friendEmail.value = ''
     editingFriend.value = null
     showModal.value = true
     // Clean up the URL
@@ -83,6 +87,8 @@ function openModal(friend = null) {
   editingFriend.value = friend
   friendName.value = friend ? friend.name : ''
   friendDisplayName.value = friend ? (friend.display_name || '') : ''
+  friendPhone.value = friend ? (friend.phone || '') : ''
+  friendEmail.value = friend ? (friend.email || '') : ''
   showModal.value = true
 }
 
@@ -92,7 +98,9 @@ async function saveFriend() {
   try {
     const data = {
       name: friendName.value.trim(),
-      display_name: friendDisplayName.value.trim() || null
+      display_name: friendDisplayName.value.trim() || null,
+      phone: friendPhone.value.trim() || null,
+      email: friendEmail.value.trim() || null
     }
     if (editingFriend.value) {
       await api.updateFriend(editingFriend.value.id, data)
@@ -102,6 +110,8 @@ async function saveFriend() {
     showModal.value = false
     friendName.value = ''
     friendDisplayName.value = ''
+    friendPhone.value = ''
+    friendEmail.value = ''
     editingFriend.value = null
     await loadFriends()
   } catch (e) {
@@ -289,7 +299,16 @@ async function logout() {
           <TableBody>
             <TableRow v-for="friend in friends" :key="friend.id">
               <TableCell class="text-muted-foreground font-mono text-sm">{{ friend.uid || '-' }}</TableCell>
-              <TableCell class="font-medium">{{ friend.name }}</TableCell>
+              <TableCell class="font-medium">
+                {{ friend.name }}
+                <Badge
+                  v-if="friend.onboarding_source"
+                  variant="outline"
+                  class="border-gray-400 text-gray-600 bg-gray-50 ml-2 text-xs"
+                >
+                  {{ friend.onboarding_source }}
+                </Badge>
+              </TableCell>
               <TableCell class="text-muted-foreground">{{ friend.display_name || '-' }}</TableCell>
               <TableCell class="text-right">
                 <BalanceBadge :balance="friend.balance || 0" />
@@ -418,6 +437,27 @@ async function logout() {
               @keyup.enter="saveFriend"
             />
             <p class="text-xs text-muted-foreground">Interná poznámka pre admina (nezobrazuje sa priateľovi)</p>
+          </div>
+          <div class="space-y-2">
+            <Label>Telefón</Label>
+            <Input
+              v-model="friendPhone"
+              placeholder="napr. +421 900 000 000"
+              @keyup.enter="saveFriend"
+            />
+          </div>
+          <div class="space-y-2">
+            <Label>Email</Label>
+            <Input
+              v-model="friendEmail"
+              type="email"
+              placeholder="napr. priatel@example.sk"
+              @keyup.enter="saveFriend"
+            />
+          </div>
+          <div v-if="editingFriend?.onboarding_source" class="space-y-1">
+            <Label class="text-muted-foreground">Pôvod onboardingu</Label>
+            <div class="text-sm font-medium">{{ editingFriend.onboarding_source }}</div>
           </div>
         </div>
         <DialogFooter>

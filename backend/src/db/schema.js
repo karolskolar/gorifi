@@ -236,6 +236,27 @@ async function initDb() {
     // Column already exists, ignore
   }
 
+  // Migration: Add phone column for onboarding-captured contact info
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN phone TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Migration: Add email column for onboarding-captured contact info
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN email TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Migration: Add onboarding_source column to tag friends with the onboarding link's note
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN onboarding_source TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -624,6 +645,19 @@ async function initDb() {
   if (!authModeCheck.length || !authModeCheck[0].values.length) {
     db.run("INSERT INTO settings (key, value) VALUES ('auth_mode', 'legacy')");
   }
+
+  // Onboarding links table — shareable, campaign-tagged URLs that let new
+  // bakery customers self-register. Each successful submit creates a friend
+  // with onboarding_source = link.note.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS onboarding_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token TEXT UNIQUE NOT NULL,
+      note TEXT NOT NULL,
+      active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
 
   // Roasteries table for multi-roastery support
   db.run(`
