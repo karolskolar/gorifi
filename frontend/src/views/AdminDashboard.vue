@@ -260,6 +260,9 @@ function getStatusText(status) {
                   </div>
                 </div>
                 <div class="flex flex-col sm:flex-row sm:items-center items-end gap-2 shrink-0">
+                  <Badge v-if="cycle.unpaid_count > 0" variant="outline" class="border-red-400 text-red-600 bg-red-50">
+                    {{ cycle.unpaid_count }} nezaplatených
+                  </Badge>
                   <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
                     Pekáreň
                   </Badge>
@@ -327,6 +330,9 @@ function getStatusText(status) {
                     </div>
                   </div>
                   <div class="flex flex-col sm:flex-row sm:items-center items-end gap-2 shrink-0">
+                    <Badge v-if="cycle.unpaid_count > 0" variant="outline" class="border-red-400 text-red-600 bg-red-50">
+                      {{ cycle.unpaid_count }} nezaplatených
+                    </Badge>
                     <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
                       Pekáreň
                     </Badge>

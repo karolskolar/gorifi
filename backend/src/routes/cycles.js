@@ -8,7 +8,8 @@ const router = Router();
 router.get('/', (req, res) => {
   const cycles = db.prepare(`
     SELECT c.*,
-           COUNT(DISTINCT CASE WHEN o.status = 'submitted' THEN o.id END) as orders_count
+           COUNT(DISTINCT CASE WHEN o.status = 'submitted' THEN o.id END) as orders_count,
+           COUNT(DISTINCT CASE WHEN o.status = 'submitted' AND o.paid = 0 THEN o.id END) as unpaid_count
     FROM order_cycles c
     LEFT JOIN orders o ON o.cycle_id = c.id
     GROUP BY c.id
