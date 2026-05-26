@@ -1,44 +1,45 @@
-# Session Summary
+# Session — Guest roastery feedback survey design
 
-**Date:** 2026-05-01
+**Date:** 2026-05-26
 **Branch:** `main`
 
 ## Summary
 
-Designed, planned, and implemented the Packeta parcel delivery feature end-to-end. Friends can now choose between admin-managed pickup locations and Packeta parcel delivery when submitting coffee orders. The feature includes per-cycle configuration, profile-level default address, delivery fee handling, and admin visibility with red badges. Deployed to staging and resolved several testing issues.
+Non-code session. Designed a follow-up survey for friends about the guest coffee roastery that was offered alongside Gorifi in the last cycle. Goal: inform three decisions at once — keep/drop the guest roastery, adjust the offering (taste profile, brand positioning), and learn buyer vs non-buyer behavior. Output is a 5-question survey with branching, intended for an external tool (Google Forms / Typeform), to be translated to Slovak before sending.
 
 ## Files Changed
-- `backend/src/db/schema.js` — 5 new migration columns (friends, order_cycles, orders)
-- `backend/src/routes/friends.js` — Profile endpoint accepts packeta_address, cycles endpoint returns delivery method
-- `backend/src/routes/cycles.js` — Parcel config in public/PATCH endpoints, delivery fields in distribution query
-- `backend/src/routes/orders.js` — Submit handles parcel delivery, friend response includes packeta_address
-- `frontend/src/views/FriendOrder.vue` — Unified delivery modal, payment total includes delivery fee, cart line item
-- `frontend/src/views/FriendPortal.vue` — Profile modal Packeta field, delivery badge on cycle cards
-- `frontend/src/views/CycleDetail.vue` — Admin parcel config, red Packeta badge, delivery fee in totals
-- `frontend/src/views/Distribution.vue` — Red Packeta badge + address row
-- `docs/superpowers/specs/2026-05-01-packeta-parcel-delivery-design.md` — Feature spec
-- `docs/superpowers/plans/2026-05-01-packeta-parcel-delivery.md` — Implementation plan
-- `CLAUDE.md` — Added Packeta feature learnings
+
+- `SESSION.md` — this file (session log refresh).
+
+No repo code was modified. The survey draft was delivered inline in the conversation; the user is sending it manually.
 
 ## Current State
 
-- Feature fully implemented and deployed to staging
-- All testing issues resolved (payment total, cart line item, portal total, login crash, address pre-fill, modal sizing)
-- Pushed to GitHub (1 remaining commit: CLAUDE.md + SESSION.md update)
+- No code changes pending in the working tree beyond `SESSION.md`.
+- Untracked files (`.superpowers/`, `deploy/.windsurf/`, `deploy/WARP.md`, `docs/brand/`) were present at session start and are unrelated to today's work — leaving them untouched.
+- Previous session's feature (`unpaid_count` badge on admin cycle cards) is already committed as `dfa711f` and presumably deployed.
+
+## Survey draft (for reference)
+
+5 questions with branching. Most respondents see ~4.
+
+- **Q1.** Did you order coffee from the new roastery in the last cycle? (Yes / No, noticed it / No, didn't realize)
+- **Q2** [if Yes]. How did it compare to your usual Gorifi pick? (5-point scale + "can't compare")
+- **Q3a** [if Yes]. Would you order from this roastery again? (regularly / occasionally / only if profile changes / probably not)
+- **Q3b** [if No]. Main reasons you didn't order? (up to 2 from: trust/loyalty, taste mismatch, already had Gorifi, description didn't sell me, didn't get around to it, other)
+- **Q4** [everyone]. If we match your preferred taste profile, would you try it? Multi-select profiles (fruity, chocolatey, floral, dark, decaf, happy-with-Gorifi).
+- **Q5** [optional]. Free-text catch-all.
+
+All required except Q5. Translate to Slovak before sending. Pilot with 2–3 friends before broad send.
 
 ## Next Steps
 
-- Deploy to production when ready
-- Consider adding Packeta API integration for pickup point search (currently free text)
+1. Translate the 5 questions to Slovak.
+2. Build the form in Google Forms or Typeform with the branching logic.
+3. Pilot with 2–3 friends (one buyer, one non-buyer) to verify branching and clarity.
+4. Send to the whole friend pool; keep open ~1 week with one mid-week reminder.
+5. After responses come in, cross-check Q1 "Yes" answers against actual order data for the cycle as a sanity check.
 
 ## How to Test
-```bash
-cd backend && npm run dev    # Port 3000
-cd frontend && npm run dev   # Port 5173
-```
-1. Admin: Open cycle detail → toggle "Doručenie Packetou" → set fee → save
-2. Friend: Edit profile → set Packeta address → save
-3. Friend: Submit order → choose "Doručenie Packetou" in modal → verify address pre-filled → submit
-4. Friend: Verify payment modal shows total with delivery fee
-5. Friend: Check dashboard for red "Packeta" badge on cycle card
-6. Admin: Check Orders tab + Distribution view for red badges and address
+
+N/A — no code changes. Verification is on the survey content itself (pilot run with 2–3 friends).
