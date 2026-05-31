@@ -1195,7 +1195,7 @@ function getStatusVariant(status) {
                             </Badge>
                             {{ item.product_name }} ({{ item.variant_label ? item.variant_label : (item.variant === 'unit' ? 'ks' : item.variant) }})
                           </span>
-                          <span class="text-muted-foreground">{{ item.quantity }}x - {{ formatPrice(item.price * item.quantity) }}</span>
+                          <span class="text-muted-foreground">{{ item.quantity }} × {{ formatPrice(item.price) }} = {{ formatPrice(item.price * item.quantity) }}</span>
                         </div>
                       </div>
                       <div v-else class="text-sm text-muted-foreground">Žiadne položky</div>
