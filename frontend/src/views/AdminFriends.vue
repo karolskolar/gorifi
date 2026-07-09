@@ -54,8 +54,8 @@ onMounted(async () => {
   if (route.query.create === '1' && route.query.name) {
     friendName.value = route.query.name
     friendDisplayName.value = ''
-    friendPhone.value = ''
-    friendEmail.value = ''
+    friendPhone.value = route.query.phone || ''
+    friendEmail.value = route.query.email || ''
     editingFriend.value = null
     showModal.value = true
     // Clean up the URL

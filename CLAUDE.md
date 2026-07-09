@@ -214,3 +214,9 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 - Friend portal shows delivery method badge (red Packeta / blue pickup) on cycle cards
 - `friends/cycles` endpoint returns `orderPickupName` and `orderPacketa` fields (scoped inside `if (friendId)` block — variable scoping matters)
 - Spec: `docs/superpowers/specs/2026-05-01-packeta-parcel-delivery-design.md`
+
+### Pending Invitations Dashboard Alert + Prefill (2026-07-07)
+- AdminDashboard shows a clickable amber banner when pending invitations exist; fetches count via `api.getInvitations('pending')` on mount (non-blocking, swallows errors), navigates to `/admin/invitations` on click
+- Slovak pluralization inline: 1 → "čakajúca pozvánka", 2-4 → "čakajúce pozvánky", 5+ → "čakajúcich pozvánok"
+- Invitation → new friend flow: "Vytvoriť" in AdminInvitations passes `create=1&name=&phone=&email=` query params to `/admin/friends`; AdminFriends `onMounted` reads them to prefill the modal (previously only `name` was passed, phone/email were blanked)
+- Modal field mapping in AdminFriends: friendName=Prihlasovacie meno (login), friendDisplayName=Poznámka (internal admin note), friendPhone=Telefón, friendEmail=Email. Invitations table has only name/phone/email (no user note field)

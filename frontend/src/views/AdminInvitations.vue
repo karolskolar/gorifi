@@ -139,6 +139,8 @@ async function deleteInvitation(id) {
 
 function createFriendFromInvitation(invitation) {
   const params = new URLSearchParams({ create: '1', name: invitation.name })
+  if (invitation.phone) params.set('phone', invitation.phone)
+  if (invitation.email) params.set('email', invitation.email)
   router.push(`/admin/friends?${params.toString()}`)
 }
 

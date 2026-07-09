@@ -25,6 +25,8 @@ const bakeryProductSearch = ref('')
 const newCycleStatus = ref('open')
 const newCyclePlanNote = ref('')
 
+const pendingInvitationsCount = ref(0)
+
 const activeCycles = computed(() => cycles.value.filter(c => c.status !== 'completed'))
 const archivedCycles = computed(() => cycles.value.filter(c => c.status === 'completed'))
 
@@ -35,7 +37,17 @@ const deletingCycleName = ref('')
 
 onMounted(async () => {
   await loadCycles()
+  await loadPendingInvitations()
 })
+
+async function loadPendingInvitations() {
+  try {
+    const pending = await api.getInvitations('pending')
+    pendingInvitationsCount.value = Array.isArray(pending) ? pending.length : 0
+  } catch (e) {
+    // Non-critical — don't block the dashboard on this
+  }
+}
 
 // Set page title
 watchEffect(() => {
@@ -207,6 +219,28 @@ function getStatusText(status) {
 
     <!-- Main content -->
     <main class="max-w-7xl mx-auto px-4 py-8">
+      <!-- Pending invitations callout -->
+      <button
+        v-if="pendingInvitationsCount > 0"
+        @click="router.push('/admin/invitations')"
+        class="w-full mb-6 flex items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-left transition-colors hover:bg-amber-100"
+      >
+        <svg class="w-5 h-5 shrink-0 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+        </svg>
+        <div class="min-w-0 flex-1">
+          <p class="text-sm font-semibold text-amber-900">
+            {{ pendingInvitationsCount }}
+            {{ pendingInvitationsCount === 1 ? 'čakajúca pozvánka' : (pendingInvitationsCount < 5 ? 'čakajúce pozvánky' : 'čakajúcich pozvánok') }}
+            na spracovanie
+          </p>
+          <p class="text-xs text-amber-700">Kliknite pre zobrazenie a spracovanie pozvánok</p>
+        </div>
+        <svg class="w-5 h-5 shrink-0 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+
       <div class="flex justify-between items-center mb-6">
         <h2 class="text-2xl font-bold text-foreground">Objednávkové cykly</h2>
         <Button @click="openNewCycleModal()">
