@@ -4,3 +4,8 @@ dist/
 *.log
 .env
 *.sqlite
+
+# Local tooling scratch/artifacts
+.superpowers/
+.windsurf/
+WARP.md
