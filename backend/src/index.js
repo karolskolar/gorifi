@@ -3,6 +3,7 @@ import cors from 'cors';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import db from './db/schema.js';
+import { requireAdmin } from './middleware/admin-auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -28,10 +29,30 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(cors());
+// Lock CORS to an explicit allowlist. In production the SPA is served
+// same-origin by this same Express process (express.static below), so CORS is
+// only really needed for the local dev flow (Vite on :5173 → API on :3000) and
+// the staging domain. Override with CORS_ORIGIN (comma-separated) if needed.
+const allowedOrigins = (process.env.CORS_ORIGIN
+  || 'https://gorifi.skolar.sk,https://gorifi-dev.skolar.sk,http://localhost:5173')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+app.use(cors({
+  origin(origin, callback) {
+    // Allow same-origin / non-browser requests (curl, health checks) that send no Origin header
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+}));
 app.use(express.json({ limit: '10mb' }));
 
 // Routes
+// Routers with a mix of public/friend/admin routes gate admin routes
+// individually with requireAdmin (applied inside each route file).
 app.use('/api/cycles', cyclesRouter);
 app.use('/api/products', productsRouter);
 app.use('/api/friends', friendsRouter);
@@ -39,16 +60,18 @@ app.use('/api/orders', ordersRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/transactions', transactionsRouter);
 app.use('/api/pickup-locations', pickupLocationsRouter);
-app.use('/api/bakery-products', bakeryProductsRouter);
 app.use('/api/subscriptions', subscriptionsRouter);
-app.use('/api/analytics', analyticsRouter);
-app.use('/api/analytics/live-cycle', liveCycleRouter);
 app.use('/api/vouchers', vouchersRouter);
-app.use('/api/friend-groups', friendGroupsRouter);
-app.use('/api/analytics/rewards', rewardsRouter);
 app.use('/api/invitations', invitationsRouter);
-app.use('/api/roasteries', roasteriesRouter);
 app.use('/api', onboardingRouter);
+
+// Fully-admin routers: every route is privileged, so gate the whole mount.
+app.use('/api/bakery-products', requireAdmin, bakeryProductsRouter);
+app.use('/api/analytics', requireAdmin, analyticsRouter);
+app.use('/api/analytics/live-cycle', requireAdmin, liveCycleRouter);
+app.use('/api/friend-groups', requireAdmin, friendGroupsRouter);
+app.use('/api/analytics/rewards', requireAdmin, rewardsRouter);
+app.use('/api/roasteries', requireAdmin, roasteriesRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {

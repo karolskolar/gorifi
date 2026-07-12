@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
 import { validateFriendAuth } from '../middleware/friend-auth.js';
+import { requireAdmin } from '../middleware/admin-auth.js';
 
 const router = Router();
 
@@ -92,7 +93,7 @@ router.get('/my-code', (req, res) => {
 });
 
 // GET / — List invitations (admin)
-router.get('/', (req, res) => {
+router.get('/', requireAdmin, (req, res) => {
   try {
     const { status } = req.query;
 
@@ -119,7 +120,7 @@ router.get('/', (req, res) => {
 });
 
 // PATCH /:id — Update invitation status (admin)
-router.patch('/:id', (req, res) => {
+router.patch('/:id', requireAdmin, (req, res) => {
   try {
     const { id } = req.params;
     const { status, admin_note } = req.body;
@@ -160,7 +161,7 @@ router.patch('/:id', (req, res) => {
 });
 
 // DELETE /:id — Delete invitation (admin)
-router.delete('/:id', (req, res) => {
+router.delete('/:id', requireAdmin, (req, res) => {
   try {
     const { id } = req.params;
     const invitation = db.get('SELECT id FROM invitations WHERE id = ?', [id]);

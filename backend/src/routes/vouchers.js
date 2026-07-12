@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
 import { validateFriendAuth } from '../middleware/friend-auth.js';
+import { requireAdmin } from '../middleware/admin-auth.js';
 
 const router = Router();
 
-// POST /vouchers/generate — Create vouchers for selected friends from a cycle
-router.post('/generate', (req, res) => {
+// POST /vouchers/generate — Create vouchers for selected friends from a cycle (admin only)
+router.post('/generate', requireAdmin, (req, res) => {
   const { source_cycle_id, supplier_discount, applied_discount, friend_ids } = req.body;
 
   // Validate required fields
@@ -62,8 +63,8 @@ router.post('/generate', (req, res) => {
   res.status(201).json({ vouchers: createdVouchers, count: createdVouchers.length });
 });
 
-// GET / — List all vouchers with friend name and cycle name
-router.get('/', (req, res) => {
+// GET / — List all vouchers with friend name and cycle name (admin only)
+router.get('/', requireAdmin, (req, res) => {
   const { status, source_cycle_id } = req.query;
 
   let sql = `
@@ -91,8 +92,8 @@ router.get('/', (req, res) => {
   res.json(vouchers);
 });
 
-// GET /cycle/:cycleId/friends — Get friends with submitted orders in a cycle
-router.get('/cycle/:cycleId/friends', (req, res) => {
+// GET /cycle/:cycleId/friends — Get friends with submitted orders in a cycle (admin only)
+router.get('/cycle/:cycleId/friends', requireAdmin, (req, res) => {
   const { cycleId } = req.params;
 
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);

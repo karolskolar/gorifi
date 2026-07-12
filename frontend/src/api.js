@@ -64,9 +64,14 @@ async function request(endpoint, options = {}) {
     config.headers['X-Friends-Password'] = friendsPassword
   }
 
-  // Add admin token if provided (from adminRequest helper)
-  if (options.adminToken) {
-    config.headers['X-Admin-Token'] = options.adminToken
+  // Attach the admin token whenever one is present in storage. The backend now
+  // enforces admin auth server-side (requireAdmin), and many admin calls go
+  // through the plain request() path, so the token must ride along on every
+  // request. It only exists in storage on admin pages; friend/public endpoints
+  // simply ignore the header. An explicit options.adminToken still overrides.
+  const adminToken = options.adminToken || (typeof localStorage !== 'undefined' && localStorage.getItem('adminToken'))
+  if (adminToken) {
+    config.headers['X-Admin-Token'] = adminToken
     delete config.adminToken
   }
 

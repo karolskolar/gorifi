@@ -2,8 +2,21 @@ import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import db, { generateUid, generateInviteCode } from '../db/schema.js';
 import { validateFriendAuth, createFriendSession, invalidateFriendSessions, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
+import { requireAdmin } from '../middleware/admin-auth.js';
 
 const router = Router();
+
+// Remove credential material from a friend row before returning it to any
+// client. access_token is a live auth credential; password_hash enables
+// offline cracking; invite_code is a shareable secret. None are consumed by
+// the frontend from these endpoints. Mutates and returns the object.
+function sanitizeFriend(friend) {
+  if (!friend) return friend;
+  delete friend.password_hash;
+  delete friend.access_token;
+  delete friend.invite_code;
+  return friend;
+}
 
 // GET /friends/auth-mode - Public endpoint to get current auth mode
 router.get('/auth-mode', (req, res) => {
@@ -268,8 +281,8 @@ router.get('/cycles', (req, res) => {
   res.json(filteredCycles);
 });
 
-// Get all friends (global, optionally filter by active status) with balance
-router.get('/', (req, res) => {
+// Get all friends (global, optionally filter by active status) with balance (admin)
+router.get('/', requireAdmin, (req, res) => {
   const activeOnly = req.query.active === 'true';
   const sql = activeOnly
     ? `SELECT f.*, COALESCE(SUM(t.amount), 0) as balance
@@ -295,8 +308,8 @@ router.get('/', (req, res) => {
   for (const f of friends) {
     f.subscriptions = subsMap[f.id] || [];
     f.hasCredentials = !!f.password_hash;
-    // Don't expose password_hash to clients
-    delete f.password_hash;
+    // Don't expose credential material to clients
+    sanitizeFriend(f);
   }
 
   res.json(friends);
@@ -345,8 +358,8 @@ router.get('/:id/balance', (req, res) => {
   });
 });
 
-// Get friend detail with balance, transactions, and orders
-router.get('/:id/detail', (req, res) => {
+// Get friend detail with balance, transactions, and orders (admin)
+router.get('/:id/detail', requireAdmin, (req, res) => {
   const friendId = req.params.id;
 
   const friend = db.prepare(`
@@ -381,14 +394,14 @@ router.get('/:id/detail', (req, res) => {
   `).all(friendId);
 
   res.json({
-    friend,
+    friend: sanitizeFriend(friend),
     transactions,
     orders
   });
 });
 
-// Create new friend (global, no cycle_id required)
-router.post('/', (req, res) => {
+// Create new friend (global, no cycle_id required) (admin)
+router.post('/', requireAdmin, (req, res) => {
   const { name, display_name, phone, email } = req.body;
 
   if (!name) {
@@ -429,11 +442,11 @@ router.post('/', (req, res) => {
   `).run(cycle.id, name, display_name || null, uid, access_token, invite_code, phone || null, trimmedEmail);
 
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(result.lastInsertRowid);
-  res.status(201).json(friend);
+  res.status(201).json(sanitizeFriend(friend));
 });
 
 // Update friend (name, display_name, and/or active status) - Admin endpoint
-router.patch('/:id', (req, res) => {
+router.patch('/:id', requireAdmin, (req, res) => {
   const { name, display_name, active, phone, email } = req.body;
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
 
@@ -479,7 +492,7 @@ router.patch('/:id', (req, res) => {
   }
 
   const updated = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
-  res.json(updated);
+  res.json(sanitizeFriend(updated));
 });
 
 // Update own profile (friend can update their login name only) - requires friends password
@@ -520,7 +533,7 @@ router.patch('/:id/profile', (req, res) => {
 });
 
 // Admin: Reset friend password
-router.put('/:id/reset-password', (req, res) => {
+router.put('/:id/reset-password', requireAdmin, (req, res) => {
   const { password } = req.body;
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
 
@@ -539,7 +552,7 @@ router.put('/:id/reset-password', (req, res) => {
 });
 
 // Admin: Set/change friend username
-router.put('/:id/admin-username', (req, res) => {
+router.put('/:id/admin-username', requireAdmin, (req, res) => {
   const { username } = req.body;
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
 
@@ -559,12 +572,11 @@ router.put('/:id/admin-username', (req, res) => {
   db.prepare('UPDATE friends SET username = ? WHERE id = ?').run(username.toLowerCase(), req.params.id);
   invalidateFriendSessions(req.params.id);
   const updated = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
-  delete updated.password_hash;
-  res.json(updated);
+  res.json(sanitizeFriend(updated));
 });
 
-// Delete friend (blocked if balance is non-zero)
-router.delete('/:id', (req, res) => {
+// Delete friend (blocked if balance is non-zero) (admin)
+router.delete('/:id', requireAdmin, (req, res) => {
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
   if (!friend) {
     return res.status(404).json({ error: 'Priateľ nebol nájdený' });
