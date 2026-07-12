@@ -1,0 +1,14 @@
+{
+  "name": "gorifi-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Playwright end-to-end tests for Gorifi (target-agnostic via BASE_URL)",
+  "scripts": {
+    "seed": "node seed.mjs",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  }
+}
