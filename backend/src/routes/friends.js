@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import db, { generateUid, generateInviteCode } from '../db/schema.js';
-import { validateFriendAuth, createFriendSession, invalidateFriendSessions, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
+import { validateFriendAuth, requireFriendOwner, createFriendSession, invalidateFriendSessions, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 
 const router = Router();
@@ -44,7 +44,9 @@ router.post('/auth', (req, res) => {
       success: true,
       friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username },
       token: session.token,
-      hasCredentials: true
+      hasCredentials: true,
+      // Forced-change: set when an admin reset this friend's password.
+      mustChangePassword: !!friend.must_change_password
     });
   }
 
@@ -73,7 +75,10 @@ router.post('/auth', (req, res) => {
       success: true,
       friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username },
       token: session.token,
-      hasCredentials: !!friend.password_hash
+      hasCredentials: !!friend.password_hash,
+      // Forced-change: set when an admin reset this friend's password. In the
+      // shared-password window the frontend routes this to "set your own login".
+      mustChangePassword: !!friend.must_change_password
     });
   }
 
@@ -120,7 +125,7 @@ router.post('/:id/setup-credentials', (req, res) => {
     return res.status(400).json({ error: 'Heslo musí mať aspoň 4 znaky' });
   }
 
-  db.prepare('UPDATE friends SET username = ?, password_hash = ? WHERE id = ?')
+  db.prepare('UPDATE friends SET username = ?, password_hash = ?, must_change_password = 0 WHERE id = ?')
     .run(username.toLowerCase(), hashPassword(password), friendId);
 
   // Create new session with credentials
@@ -151,15 +156,21 @@ router.put('/:id/change-password', (req, res) => {
     return res.status(400).json({ error: 'Nemáte nastavené osobné heslo' });
   }
 
-  if (!comparePassword(currentPassword, friend.password_hash)) {
-    return res.status(401).json({ error: 'Aktuálne heslo nie je správne' });
+  // Normal change requires the current password. But when an admin reset the
+  // password (must_change_password), the valid session token already proves the
+  // friend just authenticated with the admin-issued password, so skip the
+  // re-entry and let them pick their own password directly (forced-change #3).
+  if (!friend.must_change_password) {
+    if (!comparePassword(currentPassword, friend.password_hash)) {
+      return res.status(401).json({ error: 'Aktuálne heslo nie je správne' });
+    }
   }
 
   if (!newPassword || newPassword.length < 4) {
     return res.status(400).json({ error: 'Nové heslo musí mať aspoň 4 znaky' });
   }
 
-  db.prepare('UPDATE friends SET password_hash = ? WHERE id = ?').run(hashPassword(newPassword), friendId);
+  db.prepare('UPDATE friends SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(hashPassword(newPassword), friendId);
 
   // Invalidate all sessions and create a new one
   invalidateFriendSessions(friendId);
@@ -317,17 +328,12 @@ router.get('/', requireAdmin, (req, res) => {
 
 // Get friend balance and recent transactions (for friend portal, requires friend auth)
 router.get('/:id/balance', (req, res) => {
-  const validation = validateFriendAuth(req);
-  if (validation.error) {
-    return res.status(validation.status).json({ error: validation.error });
+  const owner = requireFriendOwner(req, req.params.id);
+  if (owner.error) {
+    return res.status(owner.status).json({ error: owner.error });
   }
 
   const friendId = req.params.id;
-
-  // If authenticated via token, verify the token owner matches
-  if (validation.friendId && String(validation.friendId) !== String(friendId)) {
-    return res.status(403).json({ error: 'Nemáte oprávnenie zobrazovať údaje iného používateľa' });
-  }
 
   const friend = db.prepare(`
     SELECT f.id, f.name, COALESCE(SUM(t.amount), 0) as balance
@@ -498,18 +504,13 @@ router.patch('/:id', requireAdmin, (req, res) => {
 // Update own profile (friend can update their login name only) - requires friends password
 // Note: display_name is admin-only and cannot be changed by friends
 router.patch('/:id/profile', (req, res) => {
-  const validation = validateFriendAuth(req);
-  if (validation.error) {
-    return res.status(validation.status).json({ error: validation.error });
+  const owner = requireFriendOwner(req, req.params.id);
+  if (owner.error) {
+    return res.status(owner.status).json({ error: owner.error });
   }
 
   const { name, packeta_address } = req.body;
   const friendId = req.params.id;
-
-  // If authenticated via token, verify the token owner matches
-  if (validation.friendId && String(validation.friendId) !== String(friendId)) {
-    return res.status(403).json({ error: 'Nemáte oprávnenie upravovať iného používateľa' });
-  }
 
   const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(friendId);
   if (!friend) {
@@ -545,7 +546,9 @@ router.put('/:id/reset-password', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Heslo musí mať aspoň 4 znaky' });
   }
 
-  db.prepare('UPDATE friends SET password_hash = ? WHERE id = ?').run(hashPassword(password), req.params.id);
+  // Set the password AND flag it must be changed: on next login the friend is
+  // forced to choose their own password (SEC-A3 migration + forced-change #3).
+  db.prepare('UPDATE friends SET password_hash = ?, must_change_password = 1 WHERE id = ?').run(hashPassword(password), req.params.id);
   invalidateFriendSessions(req.params.id);
 
   res.json({ success: true });

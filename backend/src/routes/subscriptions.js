@@ -1,15 +1,15 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
-import { validateFriendAuth } from '../middleware/friend-auth.js';
+import { requireFriendOwner } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 
 const router = Router();
 
 // GET /friend/:friendId - Get friend's active subscriptions
 router.get('/friend/:friendId', (req, res) => {
-  const validation = validateFriendAuth(req);
-  if (validation.error) {
-    return res.status(validation.status).json({ error: validation.error });
+  const owner = requireFriendOwner(req, req.params.friendId);
+  if (owner.error) {
+    return res.status(owner.status).json({ error: owner.error });
   }
 
   const subs = db.prepare('SELECT type FROM friend_subscriptions WHERE friend_id = ?').all(req.params.friendId);
@@ -18,9 +18,9 @@ router.get('/friend/:friendId', (req, res) => {
 
 // PUT /friend/:friendId - Set subscriptions
 router.put('/friend/:friendId', (req, res) => {
-  const validation = validateFriendAuth(req);
-  if (validation.error) {
-    return res.status(validation.status).json({ error: validation.error });
+  const owner = requireFriendOwner(req, req.params.friendId);
+  if (owner.error) {
+    return res.status(owner.status).json({ error: owner.error });
   }
 
   const { types } = req.body; // ['coffee', 'bakery']

@@ -47,6 +47,25 @@ function validateCyclePassword(req, cycleId) {
   return { error: 'Nespravne heslo', status: 401 };
 }
 
+// SEC-A3: bind an order operation to the authenticated friend. When a Bearer
+// token is present its friendId must equal the :friendId in the URL (closes the
+// friend-vs-friend IDOR). Shared/cycle-password auth carries no identity and is
+// permitted only in legacy mode as a migration window; in 'modern' mode a token
+// is required. validateCyclePassword still validates the password itself.
+function enforceOrderOwnership(req, friendId) {
+  const auth = validateFriendAuth(req);
+  if (auth.friendId != null) {
+    if (String(auth.friendId) !== String(friendId)) {
+      return { error: 'Nemáte oprávnenie na túto objednávku', status: 403 };
+    }
+    return {};
+  }
+  if (getAuthMode() === 'modern') {
+    return { error: 'Prihláste sa svojím menom a heslom', status: 401 };
+  }
+  return {};
+}
+
 // Get order by cycle and friend (password protected)
 router.get('/cycle/:cycleId/friend/:friendId', (req, res) => {
   const { cycleId, friendId } = req.params;
@@ -55,6 +74,12 @@ router.get('/cycle/:cycleId/friend/:friendId', (req, res) => {
   const validation = validateCyclePassword(req, cycleId);
   if (validation.error) {
     return res.status(validation.status).json({ error: validation.error });
+  }
+
+  // SEC-A3: the authenticated friend may only act on their own order
+  const ownership = enforceOrderOwnership(req, friendId);
+  if (ownership.error) {
+    return res.status(ownership.status).json({ error: ownership.error });
   }
 
   // Validate friend exists and is active (global, no cycle check)
@@ -90,6 +115,12 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
   const validation = validateCyclePassword(req, cycleId);
   if (validation.error) {
     return res.status(validation.status).json({ error: validation.error });
+  }
+
+  // SEC-A3: the authenticated friend may only act on their own order
+  const ownership = enforceOrderOwnership(req, friendId);
+  if (ownership.error) {
+    return res.status(ownership.status).json({ error: ownership.error });
   }
   const cycle = validation.cycle;
 
@@ -260,6 +291,12 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
   const validation = validateCyclePassword(req, cycleId);
   if (validation.error) {
     return res.status(validation.status).json({ error: validation.error });
+  }
+
+  // SEC-A3: the authenticated friend may only act on their own order
+  const ownership = enforceOrderOwnership(req, friendId);
+  if (ownership.error) {
+    return res.status(ownership.status).json({ error: ownership.error });
   }
   const cycle = validation.cycle;
 
