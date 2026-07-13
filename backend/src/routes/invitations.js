@@ -2,11 +2,12 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { validateFriendAuth } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
+import { abuseLimiter } from '../middleware/rate-limit.js';
 
 const router = Router();
 
-// GET /code/:code — Validate invite code (public)
-router.get('/code/:code', (req, res) => {
+// GET /code/:code — Validate invite code (public, rate-limited against enumeration)
+router.get('/code/:code', abuseLimiter, (req, res) => {
   try {
     const { code } = req.params;
     const friend = db.get(
@@ -25,8 +26,8 @@ router.get('/code/:code', (req, res) => {
   }
 });
 
-// POST /register — Submit invitation registration (public)
-router.post('/register', (req, res) => {
+// POST /register — Submit invitation registration (public, rate-limited)
+router.post('/register', abuseLimiter, (req, res) => {
   try {
     const { invite_code, name, phone, email } = req.body;
 

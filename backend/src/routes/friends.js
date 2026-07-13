@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import db, { generateUid, generateInviteCode } from '../db/schema.js';
 import { validateFriendAuth, requireFriendOwner, createFriendSession, invalidateFriendSessions, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
+import { authLimiter } from '../middleware/rate-limit.js';
 
 const router = Router();
 
@@ -24,7 +25,7 @@ router.get('/auth-mode', (req, res) => {
 });
 
 // POST /friends/auth - Authentication for friends (shared password or personal credentials)
-router.post('/auth', (req, res) => {
+router.post('/auth', authLimiter, (req, res) => {
   const { password, friendId, username } = req.body;
   const authMode = getAuthMode();
 
