@@ -2,30 +2,36 @@ import initSqlJs from 'sql.js';
 import { readFileSync, writeFileSync, existsSync, openSync, fsyncSync, closeSync, renameSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const dbPath = process.env.DB_PATH || join(__dirname, 'database.sqlite');
 
-// Generate a unique 8-character alphanumeric ID
-function generateUid() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Removed confusing chars: 0, O, I, 1
-  let uid = '';
-  for (let i = 0; i < 8; i++) {
-    uid += chars.charAt(Math.floor(Math.random() * chars.length));
+// Unambiguous alphabet (no 0/O/I/1). Codes are generated with a CSPRNG
+// (crypto.randomInt) rather than Math.random so UIDs and invite codes are not
+// predictable (SEC-S2).
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function randomCode(length) {
+  let out = '';
+  for (let i = 0; i < length; i++) {
+    out += CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)];
   }
-  return uid;
+  return out;
 }
 
-// Generate a 5-character invite code
+// Generate a unique 8-character alphanumeric ID
+function generateUid() {
+  return randomCode(8);
+}
+
+// Generate an invite code. Lengthened from 5 to 8 chars (SEC-S2) — ~40 bits of
+// entropy, no longer brute-forceable. Existing 5-char codes stay valid (lookup
+// is an exact match, length-agnostic).
 function generateInviteCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 5; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return code;
+  return randomCode(8);
 }
 
 let db = null;
