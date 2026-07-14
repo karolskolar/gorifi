@@ -176,8 +176,8 @@ function openResetPassword(friend) {
 }
 
 async function resetPassword() {
-  if (!resetPasswordValue.value || resetPasswordValue.value.length < 4) {
-    credentialError.value = 'Heslo musí mať aspoň 4 znaky'
+  if (!resetPasswordValue.value || resetPasswordValue.value.length < 8) {
+    credentialError.value = 'Heslo musí mať aspoň 8 znakov'
     return
   }
   credentialSaving.value = true

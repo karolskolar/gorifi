@@ -60,7 +60,7 @@ async function submit() {
   if (!form.value.name.trim()) { fieldErrors.value.name = 'Meno je povinné'; return }
   if (!form.value.phone.trim()) { fieldErrors.value.phone = 'Mobil je povinný'; return }
   if (!form.value.username.trim()) { fieldErrors.value.username = 'Užívateľské meno je povinné'; return }
-  if (form.value.password.length < 4) { fieldErrors.value.password = 'Heslo musí mať aspoň 4 znaky'; return }
+  if (form.value.password.length < 8) { fieldErrors.value.password = 'Heslo musí mať aspoň 8 znakov'; return }
 
   submitting.value = true
   try {
