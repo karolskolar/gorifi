@@ -3,6 +3,7 @@ import multer from 'multer';
 import { parse } from 'csv-parse/sync';
 import db from '../db/schema.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
+import { safeFetch } from '../helpers/safe-fetch.js';
 
 const router = Router();
 const upload = multer({
@@ -206,8 +207,8 @@ router.post('/:id/image', requireAdmin, upload.single('image'), (req, res) => {
 });
 
 // Upload image from URL (for drag & drop from external sites) (admin)
-// NOTE: server-side fetch of a client URL is an SSRF vector — Phase 2 adds a
-// host allowlist + private-IP blocking. Phase 1 restricts it to admins.
+// SSRF-guarded (SEC-H1): safeFetch rejects private/loopback/link-local targets,
+// refuses redirects, and caps time + size.
 router.post('/:id/image-from-url', requireAdmin, async (req, res) => {
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
 
@@ -221,8 +222,8 @@ router.post('/:id/image-from-url', requireAdmin, async (req, res) => {
   }
 
   try {
-    // Fetch image from URL
-    const response = await fetch(url);
+    // Fetch image from URL (SSRF-guarded)
+    const response = await safeFetch(url);
     if (!response.ok) {
       return res.status(400).json({ error: 'Nepodarilo sa stiahnut obrazok z URL' });
     }
@@ -327,7 +328,7 @@ router.post('/import-gsheet/:cycleId', requireAdmin, async (req, res) => {
 
     // Fetch CSV from Google Sheets
     const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv${gidParam}`;
-    const response = await fetch(csvUrl);
+    const response = await safeFetch(csvUrl, { allowRedirects: true });
 
     if (!response.ok) {
       return res.status(400).json({ error: 'Nepodarilo sa nacitat Google Sheet. Skontrolujte ci je sheet verejny.' });
@@ -627,7 +628,7 @@ router.post('/import-gsheet-multirow/:cycleId', requireAdmin, async (req, res) =
 
     // Fetch CSV from Google Sheets
     const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv${gidParam}`;
-    const response = await fetch(csvUrl);
+    const response = await safeFetch(csvUrl, { allowRedirects: true });
 
     if (!response.ok) {
       return res.status(400).json({
