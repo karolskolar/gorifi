@@ -18,6 +18,18 @@ router.post('/generate', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'friend_ids musí byť neprázdne pole' });
   }
 
+  // Bounds: discounts are percentages. applied_discount must stay < 100 or the
+  // retailTotal calculation below divides by zero; both must be non-negative and
+  // supplier_discount cannot exceed 100 (SEC-H3).
+  if (
+    typeof supplier_discount !== 'number' || typeof applied_discount !== 'number' ||
+    !Number.isFinite(supplier_discount) || !Number.isFinite(applied_discount) ||
+    supplier_discount < 0 || supplier_discount > 100 ||
+    applied_discount < 0 || applied_discount >= 100
+  ) {
+    return res.status(400).json({ error: 'Zľavy musia byť čísla v rozsahu 0–100 (applied_discount < 100)' });
+  }
+
   if (supplier_discount <= applied_discount) {
     return res.status(400).json({ error: 'supplier_discount musí byť väčší ako applied_discount' });
   }
