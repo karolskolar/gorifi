@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import db from '../db/schema.js';
+import { imageFromUpload, imageFromBody } from '../helpers/image-upload.js';
 
 const router = Router();
 const upload = multer({
@@ -69,11 +70,13 @@ router.post('/', upload.single('image'), (req, res) => {
 
   let image = null;
   if (req.file) {
-    const mimeType = req.file.mimetype;
-    const base64 = req.file.buffer.toString('base64');
-    image = `data:${mimeType};base64,${base64}`;
+    const built = imageFromUpload(req.file);
+    if (built.error) return res.status(400).json({ error: built.error });
+    image = built.image;
   } else if (req.body.image) {
-    image = req.body.image;
+    const built = imageFromBody(req.body.image);
+    if (built.error) return res.status(400).json({ error: built.error });
+    image = built.image;
   }
 
   const result = db.run(
@@ -193,11 +196,13 @@ router.post('/:id/image', upload.single('image'), (req, res) => {
 
   let image = null;
   if (req.file) {
-    const mimeType = req.file.mimetype;
-    const base64 = req.file.buffer.toString('base64');
-    image = `data:${mimeType};base64,${base64}`;
+    const built = imageFromUpload(req.file);
+    if (built.error) return res.status(400).json({ error: built.error });
+    image = built.image;
   } else if (req.body.image) {
-    image = req.body.image;
+    const built = imageFromBody(req.body.image);
+    if (built.error) return res.status(400).json({ error: built.error });
+    image = built.image;
   }
 
   db.prepare('UPDATE bakery_products SET image = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(image, req.params.id);

@@ -4,6 +4,7 @@ import { parse } from 'csv-parse/sync';
 import db from '../db/schema.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { safeFetch } from '../helpers/safe-fetch.js';
+import { imageFromUpload, imageFromBody, detectImageMime } from '../helpers/image-upload.js';
 
 const router = Router();
 const upload = multer({
@@ -92,11 +93,13 @@ router.post('/', requireAdmin, upload.single('image'), (req, res) => {
   // Handle image - either from file upload or base64 in body
   let image = null;
   if (req.file) {
-    const mimeType = req.file.mimetype;
-    const base64 = req.file.buffer.toString('base64');
-    image = `data:${mimeType};base64,${base64}`;
+    const built = imageFromUpload(req.file);
+    if (built.error) return res.status(400).json({ error: built.error });
+    image = built.image;
   } else if (req.body.image) {
-    image = req.body.image;
+    const built = imageFromBody(req.body.image);
+    if (built.error) return res.status(400).json({ error: built.error });
+    image = built.image;
   }
 
   const result = db.prepare(`
@@ -193,11 +196,13 @@ router.post('/:id/image', requireAdmin, upload.single('image'), (req, res) => {
 
   let image = null;
   if (req.file) {
-    const mimeType = req.file.mimetype;
-    const base64 = req.file.buffer.toString('base64');
-    image = `data:${mimeType};base64,${base64}`;
+    const built = imageFromUpload(req.file);
+    if (built.error) return res.status(400).json({ error: built.error });
+    image = built.image;
   } else if (req.body.image) {
-    image = req.body.image;
+    const built = imageFromBody(req.body.image);
+    if (built.error) return res.status(400).json({ error: built.error });
+    image = built.image;
   }
 
   db.prepare('UPDATE products SET image = ? WHERE id = ?').run(image, req.params.id);
@@ -228,15 +233,15 @@ router.post('/:id/image-from-url', requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Nepodarilo sa stiahnut obrazok z URL' });
     }
 
-    const contentType = response.headers.get('content-type') || 'image/jpeg';
-
-    // Validate it's an image
-    if (!contentType.startsWith('image/')) {
-      return res.status(400).json({ error: 'URL neobsahuje obrazok' });
+    // Determine the type from the actual bytes, not the (untrusted) remote
+    // Content-Type header — a server could label HTML/SVG as an image.
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const contentType = detectImageMime(buffer);
+    if (!contentType) {
+      return res.status(400).json({ error: 'URL neobsahuje platný obrázok (PNG, JPEG, GIF, WebP)' });
     }
 
-    const buffer = await response.arrayBuffer();
-    const base64 = Buffer.from(buffer).toString('base64');
+    const base64 = buffer.toString('base64');
     const image = `data:${contentType};base64,${base64}`;
 
     db.prepare('UPDATE products SET image = ? WHERE id = ?').run(image, req.params.id);
