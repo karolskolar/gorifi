@@ -227,8 +227,8 @@ router.post('/onboarding/:token', abuseLimiter, (req, res) => {
   if (usernameError) {
     return res.status(400).json({ error: usernameError, field: 'username' });
   }
-  if (!password || password.length < 4) {
-    return res.status(400).json({ error: 'Heslo musí mať aspoň 4 znaky', field: 'password' });
+  if (!password || password.length < 8) {
+    return res.status(400).json({ error: 'Heslo musí mať aspoň 8 znakov', field: 'password' });
   }
   if (isUsernameTaken(usernameRaw)) {
     return res.status(409).json({ error: 'Užívateľské meno je už obsadené', field: 'username' });

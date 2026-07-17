@@ -544,8 +544,8 @@ async function saveCredentials() {
     return
   }
 
-  if (!setupPassword.value || setupPassword.value.length < 4) {
-    setupError.value = 'Heslo musí mať aspoň 4 znaky'
+  if (!setupPassword.value || setupPassword.value.length < 8) {
+    setupError.value = 'Heslo musí mať aspoň 8 znakov'
     return
   }
 
@@ -598,8 +598,8 @@ async function changePassword() {
     return
   }
 
-  if (!changeNewPassword.value || changeNewPassword.value.length < 4) {
-    changePasswordError.value = 'Nové heslo musí mať aspoň 4 znaky'
+  if (!changeNewPassword.value || changeNewPassword.value.length < 8) {
+    changePasswordError.value = 'Nové heslo musí mať aspoň 8 znakov'
     return
   }
 
@@ -644,8 +644,8 @@ async function changePassword() {
 // the new password here.
 async function submitForcedPasswordChange() {
   forcedError.value = ''
-  if (!forcedNewPassword.value || forcedNewPassword.value.length < 4) {
-    forcedError.value = 'Nové heslo musí mať aspoň 4 znaky'
+  if (!forcedNewPassword.value || forcedNewPassword.value.length < 8) {
+    forcedError.value = 'Nové heslo musí mať aspoň 8 znakov'
     return
   }
   if (forcedNewPassword.value !== forcedNewPasswordConfirm.value) {

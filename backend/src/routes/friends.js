@@ -122,8 +122,8 @@ router.post('/:id/setup-credentials', (req, res) => {
     return res.status(409).json({ error: 'Užívateľské meno je už obsadené' });
   }
 
-  if (!password || password.length < 4) {
-    return res.status(400).json({ error: 'Heslo musí mať aspoň 4 znaky' });
+  if (!password || password.length < 8) {
+    return res.status(400).json({ error: 'Heslo musí mať aspoň 8 znakov' });
   }
 
   db.prepare('UPDATE friends SET username = ?, password_hash = ?, must_change_password = 0 WHERE id = ?')
@@ -167,8 +167,8 @@ router.put('/:id/change-password', (req, res) => {
     }
   }
 
-  if (!newPassword || newPassword.length < 4) {
-    return res.status(400).json({ error: 'Nové heslo musí mať aspoň 4 znaky' });
+  if (!newPassword || newPassword.length < 8) {
+    return res.status(400).json({ error: 'Nové heslo musí mať aspoň 8 znakov' });
   }
 
   db.prepare('UPDATE friends SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(hashPassword(newPassword), friendId);
@@ -543,8 +543,8 @@ router.put('/:id/reset-password', requireAdmin, (req, res) => {
     return res.status(404).json({ error: 'Priateľ nebol nájdený' });
   }
 
-  if (!password || password.length < 4) {
-    return res.status(400).json({ error: 'Heslo musí mať aspoň 4 znaky' });
+  if (!password || password.length < 8) {
+    return res.status(400).json({ error: 'Heslo musí mať aspoň 8 znakov' });
   }
 
   // Set the password AND flag it must be changed: on next login the friend is
