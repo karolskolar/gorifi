@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import crypto from 'crypto';
 import { requireAdmin } from '../middleware/admin-auth.js';
+import { authLimiter } from '../middleware/rate-limit.js';
 
 const router = Router();
 
@@ -36,8 +37,8 @@ router.post('/setup', (req, res) => {
   res.json({ success: true, message: 'Admin heslo bolo nastavene' });
 });
 
-// Login
-router.post('/login', (req, res) => {
+// Login (rate-limited against brute force)
+router.post('/login', authLimiter, (req, res) => {
   const { password } = req.body;
 
   if (!password) {

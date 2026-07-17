@@ -28,6 +28,11 @@ import onboardingRouter from './routes/onboarding.js';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Behind nginx/PM2: trust the first proxy hop so express-rate-limit and any
+// IP-based logic see the real client IP, not the proxy's. Use a specific hop
+// count (not `true`) to avoid the permissive trust-proxy validation warning.
+app.set('trust proxy', 1);
+
 // Middleware
 // Lock CORS to an explicit allowlist. In production the SPA is served
 // same-origin by this same Express process (express.static below), so CORS is

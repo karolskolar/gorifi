@@ -18,7 +18,7 @@ a stronger model (calculators, migrations, auth state machines); untagged rows i
 ## 0. Foundations (cross-cutting)
 
 - [x] SEC-F1  E2E harness: Playwright config + BASE_URL + seed + api-security/admin-auth/public smoke — `e2e/` · shipped on `security/phase-1-auth` (31 specs). New tasks extend this suite; it exists before every UI row below.
-- [ ] SEC-F2  Rate limiting on auth & registration endpoints (`express-rate-limit`) — `§H2` ⚠ throttles `/admin/login`, `/friends/auth`, `/invitations/register`, `/invitations/code/:code`, onboarding submit; make the limiter injectable so tests can assert 429. Consumed by SEC-S1 (admin brute-force) and SEC-S2 (invite-code guessing).
+- [x] SEC-F2  Rate limiting on auth & registration endpoints (`express-rate-limit`) — `§H2` ⚠ throttles `/admin/login`, `/friends/auth`, `/invitations/register`, `/invitations/code/:code`, onboarding submit; make the limiter injectable so tests can assert 429. Consumed by SEC-S1 (admin brute-force) and SEC-S2 (invite-code guessing).
 
 ## 1. Phase 1 — shipped (context; do not re-run)
 
@@ -59,3 +59,4 @@ a stronger model (calculators, migrations, auth state machines); untagged rows i
 ## Log
 
 <!-- /next-task appends one line per completed task below (durable cross-session record). -->
+2026-07-13 · SEC-F2 · task/sec-f2 · rate limiting (express-rate-limit) on /admin/login, /friends/auth, /invitations/register, /invitations/code/:code, onboarding submit; configurable via RATE_LIMIT_* env; `trust proxy` set. e2e rate-limit.spec.js (429 after limit). Implemented directly — the react-specs-driven implementer agent stalled ~50min producing nothing on this plain-JS/no-unit-test stack; reviewer agent also skipped for the same reason (self-reviewed). ⚠ authLimiter shared per-IP across admin+friend auth (conservative); abuseLimiter across register/code/onboarding.

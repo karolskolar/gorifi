@@ -9,6 +9,7 @@ import {
   hashPassword,
 } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
+import { abuseLimiter } from '../middleware/rate-limit.js';
 
 const router = Router();
 
@@ -197,8 +198,9 @@ router.get('/onboarding/:token/check-username', (req, res) => {
 });
 
 // Submit the onboarding form. Creates a friend, subscribes them to bakery,
-// mints a session token, and returns it for auto-login.
-router.post('/onboarding/:token', (req, res) => {
+// mints a session token, and returns it for auto-login. Rate-limited against
+// automated mass account creation.
+router.post('/onboarding/:token', abuseLimiter, (req, res) => {
   const link = db.prepare(
     'SELECT id, note, active FROM onboarding_links WHERE token = ?'
   ).get(req.params.token);
