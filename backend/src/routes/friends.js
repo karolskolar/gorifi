@@ -45,6 +45,7 @@ router.post('/auth', authLimiter, (req, res) => {
       success: true,
       friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username },
       token: session.token,
+      expiresAt: session.expiresAt,
       hasCredentials: true,
       // Forced-change: set when an admin reset this friend's password.
       mustChangePassword: !!friend.must_change_password
@@ -76,6 +77,7 @@ router.post('/auth', authLimiter, (req, res) => {
       success: true,
       friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username },
       token: session.token,
+      expiresAt: session.expiresAt,
       hasCredentials: !!friend.password_hash,
       // Forced-change: set when an admin reset this friend's password. In the
       // shared-password window the frontend routes this to "set your own login".
@@ -134,7 +136,7 @@ router.post('/:id/setup-credentials', (req, res) => {
   const session = createFriendSession(friendId);
 
   const updated = db.prepare('SELECT id, name, uid, username FROM friends WHERE id = ?').get(friendId);
-  res.json({ success: true, friend: updated, token: session.token });
+  res.json({ success: true, friend: updated, token: session.token, expiresAt: session.expiresAt });
 });
 
 // PUT /friends/:id/change-password - Change own password (requires token auth)
@@ -177,7 +179,7 @@ router.put('/:id/change-password', (req, res) => {
   invalidateFriendSessions(friendId);
   const session = createFriendSession(friendId);
 
-  res.json({ success: true, token: session.token });
+  res.json({ success: true, token: session.token, expiresAt: session.expiresAt });
 });
 
 // GET /friends/check-username/:username - Public check if username is available

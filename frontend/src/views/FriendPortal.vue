@@ -136,8 +136,9 @@ async function loadInitialData() {
         const parsed = JSON.parse(stored)
         const friendExists = friends.value.find(f => f.id === parsed.friendId)
 
-        // Token-based restore (new format)
-        if (friendExists && parsed.token) {
+        // Token-based restore. Expired tokens are dropped locally (no server
+        // round-trip); old plaintext-password entries fall through to login.
+        if (friendExists && parsed.token && (!parsed.expiresAt || Date.now() < parsed.expiresAt)) {
           savedAuth.value = parsed
           currentFriend.value = friendExists
           selectedFriendId.value = String(parsed.friendId)
@@ -151,7 +152,7 @@ async function loadInitialData() {
             await loadCycles()
             await checkPendingVouchers()
             authState.value = 'authenticated'
-    window.scrollTo(0, 0)
+            window.scrollTo(0, 0)
             return
           } catch {
             // Token expired or invalid, clear and show login
@@ -159,15 +160,6 @@ async function loadInitialData() {
             clearFriendsPassword()
             authState.value = 'login'
           }
-        }
-        // Password-based restore (old format, backward compat)
-        else if (friendExists && parsed.password) {
-          savedAuth.value = parsed
-          currentFriend.value = friendExists
-          selectedFriendId.value = String(parsed.friendId)
-          password.value = parsed.password
-          await authenticate(true)
-          return
         } else {
           localStorage.removeItem(STORAGE_KEY)
           authState.value = 'login'
@@ -221,12 +213,10 @@ async function authenticate(silent = false) {
     // Validate password with server
     const result = await api.authenticateFriends(password.value, selectedFriendId.value)
 
-    // Set token for subsequent requests (new system)
+    // Token-only auth: never store or replay the plaintext password (SEC-A1)
     if (result.token) {
       setFriendsToken(result.token)
     }
-    // Also set password as fallback
-    setFriendsPassword(password.value)
 
     // Get full friend data
     const selectedFriend = friends.value.find(f => f.id === parseInt(selectedFriendId.value))
@@ -239,18 +229,14 @@ async function authenticate(silent = false) {
       friendUid: selectedFriend.uid
     })
 
-    // Save to localStorage if remember me is checked
-    if (rememberMe.value && selectedFriend) {
+    // Save to localStorage if remember me is checked (token + expiry only)
+    if (rememberMe.value && selectedFriend && result.token) {
       const storageData = {
         friendId: parseInt(selectedFriendId.value),
         friendName: selectedFriend.name,
         friendUid: selectedFriend.uid,
-      }
-      // Save token if available, otherwise password (backward compat)
-      if (result.token) {
-        storageData.token = result.token
-      } else {
-        storageData.password = password.value
+        token: result.token,
+        expiresAt: result.expiresAt,
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(storageData))
       savedAuth.value = storageData
@@ -318,7 +304,8 @@ async function authenticatePersonal() {
         friendId: result.friend.id,
         friendName: result.friend.name,
         friendUid: result.friend.uid,
-        token: result.token
+        token: result.token,
+        expiresAt: result.expiresAt
       }))
     }
 
@@ -573,6 +560,7 @@ async function saveCredentials() {
     if (stored) {
       const parsed = JSON.parse(stored)
       if (result.token) parsed.token = result.token
+      if (result.expiresAt) parsed.expiresAt = result.expiresAt
       delete parsed.password // Remove old password
       localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
     }
@@ -620,6 +608,7 @@ async function changePassword() {
       if (stored) {
         const parsed = JSON.parse(stored)
         parsed.token = result.token
+        if (result.expiresAt) parsed.expiresAt = result.expiresAt
         delete parsed.password
         localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
       }
@@ -666,6 +655,7 @@ async function submitForcedPasswordChange() {
       if (stored) {
         const parsed = JSON.parse(stored)
         parsed.token = result.token
+        if (result.expiresAt) parsed.expiresAt = result.expiresAt
         delete parsed.password
         localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
       }
