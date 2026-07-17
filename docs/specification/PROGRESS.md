@@ -35,7 +35,7 @@ a stronger model (calculators, migrations, auth state machines); untagged rows i
 
 ## 3. Secrets & credential storage (Phase 2)
 
-- [ ] SEC-S1  Admin password → bcrypt: migrate the SHA-256 hash on next successful login / change-password, raise admin minimum length to ≥10 — `§H3` · depends: SEC-F2 ⚠ Phase 1 kept the unsalted `crypto.createHash('sha256')` in `admin.js`; friend auth already uses bcrypt — reuse `friend-auth.js` `hashPassword/comparePassword`.
+- [x] SEC-S1  Admin password → bcrypt: migrate the SHA-256 hash on next successful login / change-password, raise admin minimum length to ≥10 — `§H3` · depends: SEC-F2 ⚠ Phase 1 kept the unsalted `crypto.createHash('sha256')` in `admin.js`; friend auth already uses bcrypt — reuse `friend-auth.js` `hashPassword/comparePassword`.
 - [ ] SEC-S2  CSPRNG identifiers: replace `Math.random()` in `generateUid`/`generateInviteCode` with `crypto.randomInt`, lengthen new invite codes to ≥8 chars (existing codes stay valid) — `§H3/M6` · depends: SEC-F2 ⚠ 5-char `Math.random()` invite codes are brute-forceable; SEC-F2 rate-limits `/invitations/code/:code` lookups, this removes the weak generation.
 - [ ] SEC-S3  Password policy: raise friend minimum to ≥8 and admin to ≥10 in backend validators + all frontend forms (currently 4) — `§H3/M4` · has_ui · depends: SEC-A1 (friend flows), SEC-S1 (admin flow).
 
@@ -59,4 +59,5 @@ a stronger model (calculators, migrations, auth state machines); untagged rows i
 ## Log
 
 <!-- /next-task appends one line per completed task below (durable cross-session record). -->
+2026-07-14 · SEC-S1 · task/sec-s1 · admin password → bcrypt (reuses friend-auth hashPassword/comparePassword); legacy SHA-256 hashes migrate transparently on next login (verified: legacy login succeeds → hash becomes $2b$); min length raised 4→10 on setup + change-password; frontend placeholder updated. e2e admin-password.spec.js (rejects <10-char new password). Full suite 35 passed / 2 skipped. Implemented directly (this session predates the agents-framework 1.1.0 fix; self-reviewed).
 2026-07-13 · SEC-F2 · task/sec-f2 · rate limiting (express-rate-limit) on /admin/login, /friends/auth, /invitations/register, /invitations/code/:code, onboarding submit; configurable via RATE_LIMIT_* env; `trust proxy` set. e2e rate-limit.spec.js (429 after limit). Implemented directly — the react-specs-driven implementer agent stalled ~50min producing nothing on this plain-JS/no-unit-test stack; reviewer agent also skipped for the same reason (self-reviewed). ⚠ authLimiter shared per-IP across admin+friend auth (conservative); abuseLimiter across register/code/onboarding.

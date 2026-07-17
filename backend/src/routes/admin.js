@@ -3,13 +3,30 @@ import db from '../db/schema.js';
 import crypto from 'crypto';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { authLimiter } from '../middleware/rate-limit.js';
+import { hashPassword as bcryptHash, comparePassword as bcryptCompare } from '../middleware/friend-auth.js';
 
 const router = Router();
 
-// Hash password with SHA-256
-const hashPassword = (password) => {
-  return crypto.createHash('sha256').update(password).digest('hex');
-};
+// Admin passwords are stored as bcrypt (SEC-S1). Pre-existing passwords hashed
+// with unsalted SHA-256 are transparently re-hashed to bcrypt on next login.
+const ADMIN_MIN_LENGTH = 10;
+
+// Legacy unsalted SHA-256 — only used to verify (and then migrate) old hashes.
+const legacySha256 = (password) => crypto.createHash('sha256').update(password).digest('hex');
+
+// True if a stored hash is bcrypt (vs the legacy SHA-256 hex).
+const isBcryptHash = (hash) => typeof hash === 'string' && hash.startsWith('$2');
+
+// Verify a plaintext admin password against a stored hash (bcrypt or legacy).
+function verifyAdminPassword(password, storedHash) {
+  if (isBcryptHash(storedHash)) {
+    return bcryptCompare(password, storedHash);
+  }
+  // Legacy SHA-256: constant-time compare of the hex digests.
+  const a = Buffer.from(legacySha256(password));
+  const b = Buffer.from(String(storedHash));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 // Check if admin password is set
 router.get('/setup-status', (req, res) => {
@@ -21,8 +38,8 @@ router.get('/setup-status', (req, res) => {
 router.post('/setup', (req, res) => {
   const { password } = req.body;
 
-  if (!password || password.length < 4) {
-    return res.status(400).json({ error: 'Heslo musi mat aspon 4 znaky' });
+  if (!password || password.length < ADMIN_MIN_LENGTH) {
+    return res.status(400).json({ error: `Heslo musí mať aspoň ${ADMIN_MIN_LENGTH} znakov` });
   }
 
   // Check if already set up
@@ -31,7 +48,7 @@ router.post('/setup', (req, res) => {
     return res.status(400).json({ error: 'Admin uz je nastaveny' });
   }
 
-  const hashedPassword = hashPassword(password);
+  const hashedPassword = bcryptHash(password);
   db.prepare("INSERT INTO settings (key, value) VALUES ('admin_password', ?)").run(hashedPassword);
 
   res.json({ success: true, message: 'Admin heslo bolo nastavene' });
@@ -51,10 +68,13 @@ router.post('/login', authLimiter, (req, res) => {
     return res.status(400).json({ error: 'Admin nie je nastaveny' });
   }
 
-  const hashedPassword = hashPassword(password);
-
-  if (hashedPassword !== setting.value) {
+  if (!verifyAdminPassword(password, setting.value)) {
     return res.status(401).json({ error: 'Nespravne heslo' });
+  }
+
+  // Transparent migration: upgrade a legacy SHA-256 hash to bcrypt on success.
+  if (!isBcryptHash(setting.value)) {
+    db.prepare("UPDATE settings SET value = ? WHERE key = 'admin_password'").run(bcryptHash(password));
   }
 
   // Generate a simple session token
@@ -170,8 +190,8 @@ router.post('/change-password', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Obe hesla su povinne' });
   }
 
-  if (newPassword.length < 4) {
-    return res.status(400).json({ error: 'Nove heslo musi mat aspon 4 znaky' });
+  if (newPassword.length < ADMIN_MIN_LENGTH) {
+    return res.status(400).json({ error: `Nové heslo musí mať aspoň ${ADMIN_MIN_LENGTH} znakov` });
   }
 
   const setting = db.prepare("SELECT * FROM settings WHERE key = 'admin_password'").get();
@@ -180,13 +200,11 @@ router.post('/change-password', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Admin nie je nastaveny' });
   }
 
-  const hashedCurrent = hashPassword(currentPassword);
-
-  if (hashedCurrent !== setting.value) {
+  if (!verifyAdminPassword(currentPassword, setting.value)) {
     return res.status(401).json({ error: 'Nespravne aktualne heslo' });
   }
 
-  const hashedNew = hashPassword(newPassword);
+  const hashedNew = bcryptHash(newPassword);
   db.prepare("UPDATE settings SET value = ? WHERE key = 'admin_password'").run(hashedNew);
 
   // Invalidate token

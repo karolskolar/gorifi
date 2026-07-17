@@ -87,7 +87,7 @@ async function handleSubmit() {
               id="password"
               v-model="password"
               type="password"
-              :placeholder="isSetup ? 'Zadajte heslo' : 'Zvoľte heslo (min. 4 znaky)'"
+              :placeholder="isSetup ? 'Zadajte heslo' : 'Zvoľte heslo (min. 10 znakov)'"
             />
           </div>
 
