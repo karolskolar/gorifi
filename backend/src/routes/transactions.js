@@ -1,18 +1,17 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
-import { validateFriendAuth } from '../middleware/friend-auth.js';
+import { requireFriendOwner } from '../middleware/friend-auth.js';
 
 const router = Router();
 
 // GET /transactions/friend/:friendId - Get all transactions for a friend
-// Friend-facing: shown in the friend portal's balance card. Requires friend
-// auth (blocks anonymous access). Per-friend ownership binding is Phase 2,
-// pending the token-only auth migration.
+// Friend-facing: shown in the friend portal's balance card. Enforces per-friend
+// ownership (SEC-A2) — a friend's token may only read their own history.
 router.get('/friend/:friendId', (req, res) => {
-  const validation = validateFriendAuth(req);
-  if (validation.error) {
-    return res.status(validation.status).json({ error: validation.error });
+  const owner = requireFriendOwner(req, req.params.friendId);
+  if (owner.error) {
+    return res.status(owner.status).json({ error: owner.error });
   }
 
   const { friendId } = req.params;

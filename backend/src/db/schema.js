@@ -529,6 +529,14 @@ async function initDb() {
     // Column already exists, ignore
   }
 
+  // Migration: Add must_change_password flag. Set to 1 when an admin resets a
+  // friend's password so the friend is forced to choose their own on next login.
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN must_change_password INTEGER DEFAULT 0');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   // Add UNIQUE index on username if not exists
   try {
     db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_friends_username ON friends(username) WHERE username IS NOT NULL');

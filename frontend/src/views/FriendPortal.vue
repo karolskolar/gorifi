@@ -84,6 +84,15 @@ const changePasswordError = ref('')
 const changePasswordSaving = ref(false)
 const changePasswordSuccess = ref('')
 
+// Forced password change: admin reset this friend's password, so on login they
+// must choose their own before continuing (non-dismissable). The current
+// password is prefilled with the one they just logged in with.
+const forcedPasswordChange = ref(false)
+const forcedNewPassword = ref('')
+const forcedNewPasswordConfirm = ref('')
+const forcedError = ref('')
+const forcedSaving = ref(false)
+
 // Invite modal
 const showInviteModal = ref(false)
 const inviteCode = ref('')
@@ -257,6 +266,12 @@ async function authenticate(silent = false) {
     if (authMode.value === 'transition' && result.hasCredentials === false) {
       showCredentialSetup.value = true
     }
+
+    // Admin reset this friend's password → force them to set a new one now.
+    if (result.mustChangePassword) {
+      changeCurrentPassword.value = password.value
+      forcedPasswordChange.value = true
+    }
   } catch (e) {
     if (!silent) {
       authError.value = e.message
@@ -311,6 +326,12 @@ async function authenticatePersonal() {
     await checkPendingVouchers()
     authState.value = 'authenticated'
     window.scrollTo(0, 0)
+
+    // Admin reset this friend's password → force them to set a new one now.
+    if (result.mustChangePassword) {
+      changeCurrentPassword.value = loginPassword.value
+      forcedPasswordChange.value = true
+    }
   } catch (e) {
     authError.value = e.message
   } finally {
@@ -614,6 +635,49 @@ async function changePassword() {
     changePasswordError.value = e.message
   } finally {
     changePasswordSaving.value = false
+  }
+}
+
+// Forced password change (after an admin reset). Non-dismissable: the friend
+// must set their own password before using the app. The backend skips the
+// current-password check when must_change_password is set, so we only collect
+// the new password here.
+async function submitForcedPasswordChange() {
+  forcedError.value = ''
+  if (!forcedNewPassword.value || forcedNewPassword.value.length < 4) {
+    forcedError.value = 'Nové heslo musí mať aspoň 4 znaky'
+    return
+  }
+  if (forcedNewPassword.value !== forcedNewPasswordConfirm.value) {
+    forcedError.value = 'Heslá sa nezhodujú'
+    return
+  }
+
+  forcedSaving.value = true
+  try {
+    const result = await api.changeFriendPassword(
+      selectedFriendId.value,
+      changeCurrentPassword.value,
+      forcedNewPassword.value
+    )
+    if (result.token) {
+      setFriendsToken(result.token)
+      const stored = localStorage.getItem(STORAGE_KEY)
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        parsed.token = result.token
+        delete parsed.password
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+      }
+    }
+    forcedNewPassword.value = ''
+    forcedNewPasswordConfirm.value = ''
+    changeCurrentPassword.value = ''
+    forcedPasswordChange.value = false
+  } catch (e) {
+    forcedError.value = e.message
+  } finally {
+    forcedSaving.value = false
   }
 }
 
@@ -1163,6 +1227,47 @@ async function copyInviteLink() {
           </Button>
           <Button @click="saveProfile" :disabled="!profileName.trim() || profileSaving">
             {{ profileSaving ? 'Ukladám...' : 'Uložiť' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Forced password change (after admin reset) — non-dismissable -->
+    <Dialog :open="forcedPasswordChange">
+      <DialogContent data-testid="forced-password-change">
+        <DialogHeader>
+          <DialogTitle>Nastavte si nové heslo</DialogTitle>
+        </DialogHeader>
+        <div class="space-y-4 py-4">
+          <p class="text-sm text-muted-foreground">
+            Administrátor vám resetoval heslo. Pred pokračovaním si prosím nastavte vlastné nové heslo.
+          </p>
+
+          <Alert v-if="forcedError" variant="destructive">
+            <AlertDescription>{{ forcedError }}</AlertDescription>
+          </Alert>
+
+          <div class="space-y-2">
+            <Label>Nové heslo</Label>
+            <Input v-model="forcedNewPassword" type="password" :disabled="forcedSaving" />
+          </div>
+          <div class="space-y-2">
+            <Label>Potvrdiť nové heslo</Label>
+            <Input
+              v-model="forcedNewPasswordConfirm"
+              type="password"
+              :disabled="forcedSaving"
+              @keyup.enter="submitForcedPasswordChange()"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            @click="submitForcedPasswordChange()"
+            :disabled="forcedSaving || !forcedNewPassword || !forcedNewPasswordConfirm"
+            class="w-full"
+          >
+            {{ forcedSaving ? 'Ukladám...' : 'Nastaviť heslo a pokračovať' }}
           </Button>
         </DialogFooter>
       </DialogContent>

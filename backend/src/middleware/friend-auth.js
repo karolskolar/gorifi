@@ -65,6 +65,33 @@ export function validateFriendAuth(req) {
   return { valid: true };
 }
 
+// Require an authenticated friend who OWNS the target resource.
+// - Token (Bearer) auth resolves a concrete friendId → it must equal targetId,
+//   otherwise 403. This closes friend-vs-friend IDOR for logged-in friends.
+// - Shared-password auth (no friendId) is allowed ONLY in legacy mode, as a
+//   migration window; in 'modern' mode it is rejected (401) so callers must use
+//   their own token. Once the admin flips auth_mode to 'modern' the IDOR is
+//   fully closed.
+// Returns { friendId } on success (friendId may be null in the legacy window),
+// or { error, status } on failure.
+export function requireFriendOwner(req, targetId) {
+  const v = validateFriendAuth(req);
+  if (v.error) return { error: v.error, status: v.status };
+
+  if (v.friendId != null) {
+    if (String(v.friendId) !== String(targetId)) {
+      return { error: 'Nemáte oprávnenie na tento účet', status: 403 };
+    }
+    return { friendId: v.friendId };
+  }
+
+  // No per-friend identity (shared password).
+  if (getAuthMode() === 'modern') {
+    return { error: 'Prihláste sa svojím menom a heslom', status: 401 };
+  }
+  return { friendId: null };
+}
+
 // Validate username format
 export function validateUsername(username) {
   if (!username || typeof username !== 'string') {
