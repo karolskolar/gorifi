@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
+import { requireAdmin } from '../middleware/admin-auth.js';
 
 const router = Router();
 
@@ -19,13 +20,13 @@ router.get('/', (req, res) => {
 });
 
 // GET /pickup-locations/all - List all locations including inactive (admin)
-router.get('/all', (req, res) => {
+router.get('/all', requireAdmin, (req, res) => {
   const locations = db.prepare('SELECT * FROM pickup_locations ORDER BY name').all();
   res.json(locations);
 });
 
 // POST /pickup-locations - Create location (admin)
-router.post('/', (req, res) => {
+router.post('/', requireAdmin, (req, res) => {
   const { name, address, for_coffee, for_bakery } = req.body;
 
   if (!name || !name.trim()) {
@@ -41,7 +42,7 @@ router.post('/', (req, res) => {
 });
 
 // PATCH /pickup-locations/:id - Update location (admin)
-router.patch('/:id', (req, res) => {
+router.patch('/:id', requireAdmin, (req, res) => {
   const location = db.prepare('SELECT * FROM pickup_locations WHERE id = ?').get(req.params.id);
   if (!location) {
     return res.status(404).json({ error: 'Miesto nebolo nájdené' });
@@ -71,7 +72,7 @@ router.patch('/:id', (req, res) => {
 });
 
 // DELETE /pickup-locations/:id - Delete or soft-delete (admin)
-router.delete('/:id', (req, res) => {
+router.delete('/:id', requireAdmin, (req, res) => {
   const location = db.prepare('SELECT * FROM pickup_locations WHERE id = ?').get(req.params.id);
   if (!location) {
     return res.status(404).json({ error: 'Miesto nebolo nájdené' });

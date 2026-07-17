@@ -8,6 +8,7 @@ import {
   isUsernameTaken,
   hashPassword,
 } from '../middleware/friend-auth.js';
+import { requireAdmin } from '../middleware/admin-auth.js';
 
 const router = Router();
 
@@ -40,11 +41,11 @@ function getRegistrationCount(note) {
 
 // =====================================================================
 // ADMIN ROUTES — mounted at /api/onboarding-links
-// (admin auth is client-side only, per project convention)
+// Gated with requireAdmin (server-side admin token enforcement).
 // =====================================================================
 
 // List all onboarding links with registration counts.
-router.get('/onboarding-links', (req, res) => {
+router.get('/onboarding-links', requireAdmin, (req, res) => {
   const links = db.prepare(
     'SELECT id, token, note, active, created_at FROM onboarding_links ORDER BY created_at DESC'
   ).all();
@@ -56,7 +57,7 @@ router.get('/onboarding-links', (req, res) => {
 });
 
 // Create a new onboarding link. Body: { note }.
-router.post('/onboarding-links', (req, res) => {
+router.post('/onboarding-links', requireAdmin, (req, res) => {
   const note = (req.body?.note || '').trim();
   if (!note) {
     return res.status(400).json({ error: 'Popis je povinný' });
@@ -80,7 +81,7 @@ router.post('/onboarding-links', (req, res) => {
 });
 
 // Update an onboarding link's active flag and/or note. Body: { active?, note? }.
-router.patch('/onboarding-links/:id', (req, res) => {
+router.patch('/onboarding-links/:id', requireAdmin, (req, res) => {
   const link = db.prepare('SELECT * FROM onboarding_links WHERE id = ?').get(req.params.id);
   if (!link) {
     return res.status(404).json({ error: 'Link nenájdený' });
@@ -121,7 +122,7 @@ router.patch('/onboarding-links/:id', (req, res) => {
 });
 
 // Regenerate the token (kills the old URL immediately).
-router.post('/onboarding-links/:id/regenerate', (req, res) => {
+router.post('/onboarding-links/:id/regenerate', requireAdmin, (req, res) => {
   const link = db.prepare('SELECT * FROM onboarding_links WHERE id = ?').get(req.params.id);
   if (!link) {
     return res.status(404).json({ error: 'Link nenájdený' });
@@ -142,7 +143,7 @@ router.post('/onboarding-links/:id/regenerate', (req, res) => {
 // Delete a link. Blocked if it has any registrations — admin should
 // deactivate instead so the audit trail (onboarding_source on friends) stays
 // understandable.
-router.delete('/onboarding-links/:id', (req, res) => {
+router.delete('/onboarding-links/:id', requireAdmin, (req, res) => {
   const link = db.prepare('SELECT * FROM onboarding_links WHERE id = ?').get(req.params.id);
   if (!link) {
     return res.status(404).json({ error: 'Link nenájdený' });

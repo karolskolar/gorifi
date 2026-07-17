@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
 import { validateFriendAuth, getAuthMode } from '../middleware/friend-auth.js';
+import { requireAdmin } from '../middleware/admin-auth.js';
 
 const router = Router();
 
@@ -390,7 +391,7 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
 });
 
 // Admin: Mark order as paid/unpaid (creates payment transaction)
-router.patch('/:id/paid', (req, res) => {
+router.patch('/:id/paid', requireAdmin, (req, res) => {
   const { paid } = req.body;
   const order = db.prepare(`
     SELECT o.*, c.name as cycle_name
@@ -438,7 +439,7 @@ router.patch('/:id/paid', (req, res) => {
 });
 
 // Admin: Toggle order packed status (creates charge/reversal transaction)
-router.patch('/:id/packed', (req, res) => {
+router.patch('/:id/packed', requireAdmin, (req, res) => {
   const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
 
   if (!order) {
@@ -493,7 +494,7 @@ router.patch('/:id/packed', (req, res) => {
 });
 
 // Admin: Get all orders for a cycle (includes all active friends)
-router.get('/cycle/:cycleId', (req, res) => {
+router.get('/cycle/:cycleId', requireAdmin, (req, res) => {
   const cycleId = req.params.cycleId;
 
   // Get all active friends with balance

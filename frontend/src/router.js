@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import api from './api'
 
 const routes = [
   {
@@ -106,6 +107,31 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(),
   routes
+})
+
+// Guard every /admin/* route (except the login page at /admin). Requires a
+// valid admin token, verified server-side. This is defence-in-depth: the API
+// now enforces admin auth on its own, but the guard stops unauthenticated
+// users from loading admin views and gives a clean redirect when a token is
+// missing or expired.
+router.beforeEach(async (to) => {
+  const needsAdmin = to.path.startsWith('/admin') && to.name !== 'admin-login'
+  if (!needsAdmin) return true
+
+  const token = typeof localStorage !== 'undefined' && localStorage.getItem('adminToken')
+  if (!token) {
+    return { name: 'admin-login' }
+  }
+
+  try {
+    const result = await api.verify(token)
+    if (result && result.valid) return true
+  } catch (e) {
+    // verify() throws on 401 / network error — treat as unauthenticated
+  }
+
+  localStorage.removeItem('adminToken')
+  return { name: 'admin-login' }
 })
 
 export default router

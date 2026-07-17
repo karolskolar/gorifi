@@ -1,5 +1,5 @@
 import initSqlJs from 'sql.js';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, openSync, fsyncSync, closeSync, renameSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -679,12 +679,24 @@ async function initDb() {
   return db;
 }
 
-// Save database to file
+// Save database to file.
+// Written atomically: dump to a temp file, fsync it to durable storage, then
+// rename() over the live file. rename() is atomic on POSIX, so a crash or OOM
+// kill mid-write can never leave a truncated/corrupt database — the old file
+// stays intact until the fully-written new one replaces it in one step.
 function saveDb() {
   if (db) {
     const data = db.export();
     const buffer = Buffer.from(data);
-    writeFileSync(dbPath, buffer);
+    const tmpPath = `${dbPath}.tmp`;
+    const fd = openSync(tmpPath, 'w');
+    try {
+      writeFileSync(fd, buffer);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmpPath, dbPath);
   }
 }
 

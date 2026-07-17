@@ -1,10 +1,20 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
+import { requireAdmin } from '../middleware/admin-auth.js';
+import { validateFriendAuth } from '../middleware/friend-auth.js';
 
 const router = Router();
 
 // GET /transactions/friend/:friendId - Get all transactions for a friend
+// Friend-facing: shown in the friend portal's balance card. Requires friend
+// auth (blocks anonymous access). Per-friend ownership binding is Phase 2,
+// pending the token-only auth migration.
 router.get('/friend/:friendId', (req, res) => {
+  const validation = validateFriendAuth(req);
+  if (validation.error) {
+    return res.status(validation.status).json({ error: validation.error });
+  }
+
   const { friendId } = req.params;
 
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(friendId);
@@ -24,8 +34,8 @@ router.get('/friend/:friendId', (req, res) => {
   res.json(transactions);
 });
 
-// POST /transactions/payment - Record a payment from friend
-router.post('/payment', (req, res) => {
+// POST /transactions/payment - Record a payment from friend (admin only)
+router.post('/payment', requireAdmin, (req, res) => {
   const { friend_id, order_id, amount, note, date } = req.body;
 
   if (!friend_id) {
@@ -73,8 +83,8 @@ router.post('/payment', (req, res) => {
   });
 });
 
-// POST /transactions/adjustment - Add credit/adjustment for a friend
-router.post('/adjustment', (req, res) => {
+// POST /transactions/adjustment - Add credit/adjustment for a friend (admin only)
+router.post('/adjustment', requireAdmin, (req, res) => {
   const { friend_id, order_id, amount, note } = req.body;
 
   if (!friend_id) {
@@ -123,8 +133,8 @@ router.post('/adjustment', (req, res) => {
   });
 });
 
-// PATCH /transactions/:id - Update a transaction
-router.patch('/:id', (req, res) => {
+// PATCH /transactions/:id - Update a transaction (admin only)
+router.patch('/:id', requireAdmin, (req, res) => {
   const { id } = req.params;
   const { amount, note, date } = req.body;
 
@@ -182,8 +192,8 @@ router.patch('/:id', (req, res) => {
   });
 });
 
-// DELETE /transactions/:id - Delete a transaction
-router.delete('/:id', (req, res) => {
+// DELETE /transactions/:id - Delete a transaction (admin only)
+router.delete('/:id', requireAdmin, (req, res) => {
   const { id } = req.params;
 
   const transaction = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);

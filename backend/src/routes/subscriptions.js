@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
 import { validateFriendAuth } from '../middleware/friend-auth.js';
+import { requireAdmin } from '../middleware/admin-auth.js';
 
 const router = Router();
 
@@ -43,7 +44,7 @@ router.put('/friend/:friendId', (req, res) => {
 });
 
 // PUT /admin/:friendId - Admin update subscriptions (no friend password needed)
-router.put('/admin/:friendId', (req, res) => {
+router.put('/admin/:friendId', requireAdmin, (req, res) => {
   const { types } = req.body; // ['coffee', 'bakery']
   if (!Array.isArray(types)) {
     return res.status(400).json({ error: 'types musi byt pole' });

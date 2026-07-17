@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
 import { variantToKg } from '../helpers/analytics.js';
+import { requireAdmin } from '../middleware/admin-auth.js';
 
 const router = Router();
 
-// Get all order cycles
-router.get('/', (req, res) => {
+// Get all order cycles (admin)
+router.get('/', requireAdmin, (req, res) => {
   const cycles = db.prepare(`
     SELECT c.*,
            COUNT(DISTINCT CASE WHEN o.status = 'submitted' THEN o.id END) as orders_count,
@@ -62,8 +63,8 @@ router.get('/', (req, res) => {
   res.json(cycles);
 });
 
-// Get single cycle
-router.get('/:id', (req, res) => {
+// Get single cycle (admin — returns full row incl. shared_password)
+router.get('/:id', requireAdmin, (req, res) => {
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
     return res.status(404).json({ error: 'Cyklus nebol najdeny' });
@@ -117,8 +118,8 @@ router.post('/:id/auth', (req, res) => {
   });
 });
 
-// Create new order cycle
-router.post('/', (req, res) => {
+// Create new order cycle (admin)
+router.post('/', requireAdmin, (req, res) => {
   const { name, expected_date, type, bakery_product_ids, plan_note, status } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Nazov je povinny' });
@@ -174,8 +175,8 @@ router.post('/', (req, res) => {
   res.status(201).json(cycle);
 });
 
-// Update cycle (lock/unlock/complete/password/markup_ratio/expected_date)
-router.patch('/:id', (req, res) => {
+// Update cycle (lock/unlock/complete/password/markup_ratio/expected_date) (admin)
+router.patch('/:id', requireAdmin, (req, res) => {
   const { status, name, shared_password, markup_ratio, expected_date, plan_note, parcel_enabled, parcel_fee } = req.body;
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
 
@@ -232,8 +233,8 @@ router.patch('/:id', (req, res) => {
   res.json(updated);
 });
 
-// Delete cycle
-router.delete('/:id', (req, res) => {
+// Delete cycle (admin)
+router.delete('/:id', requireAdmin, (req, res) => {
   try {
     // Clear voucher references first (FK without CASCADE)
     db.prepare('DELETE FROM vouchers WHERE source_cycle_id = ?').run(req.params.id);
@@ -249,8 +250,8 @@ router.delete('/:id', (req, res) => {
   }
 });
 
-// Get order summary for cycle (for email to company)
-router.get('/:id/summary', (req, res) => {
+// Get order summary for cycle (for email to company) (admin)
+router.get('/:id/summary', requireAdmin, (req, res) => {
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
     return res.status(404).json({ error: 'Cyklus nebol najdeny' });
@@ -306,8 +307,8 @@ router.get('/:id/summary', (req, res) => {
   });
 });
 
-// Get distribution list (per-friend orders for packing)
-router.get('/:id/distribution', (req, res) => {
+// Get distribution list (per-friend orders for packing) (admin)
+router.get('/:id/distribution', requireAdmin, (req, res) => {
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
     return res.status(404).json({ error: 'Cyklus nebol nájdený' });

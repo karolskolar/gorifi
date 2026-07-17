@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
 import crypto from 'crypto';
+import { requireAdmin } from '../middleware/admin-auth.js';
 
 const router = Router();
 
@@ -100,8 +101,8 @@ router.post('/logout', (req, res) => {
   res.json({ success: true });
 });
 
-// Get admin settings (friends_password, etc.)
-router.get('/settings', (req, res) => {
+// Get admin settings (friends_password, etc.) — admin only (returns secrets)
+router.get('/settings', requireAdmin, (req, res) => {
   const friendsPassword = db.prepare("SELECT value FROM settings WHERE key = 'friends_password'").get();
   const paymentIban = db.prepare("SELECT value FROM settings WHERE key = 'payment_iban'").get();
   const paymentRevolutUsername = db.prepare("SELECT value FROM settings WHERE key = 'payment_revolut_username'").get();
@@ -126,8 +127,8 @@ router.get('/payment-settings', (req, res) => {
   });
 });
 
-// Update admin settings
-router.put('/settings', (req, res) => {
+// Update admin settings — admin only (can change friends password + payment IBAN)
+router.put('/settings', requireAdmin, (req, res) => {
   const { friendsPassword, paymentIban, paymentRevolutUsername } = req.body;
 
   if (friendsPassword !== undefined) {
@@ -160,8 +161,8 @@ router.put('/settings', (req, res) => {
   });
 });
 
-// Change password (requires current password)
-router.post('/change-password', (req, res) => {
+// Change password (requires valid admin session AND current password)
+router.post('/change-password', requireAdmin, (req, res) => {
   const { currentPassword, newPassword } = req.body;
 
   if (!currentPassword || !newPassword) {

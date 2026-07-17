@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { parse } from 'csv-parse/sync';
 import db from '../db/schema.js';
+import { requireAdmin } from '../middleware/admin-auth.js';
 
 const router = Router();
 const upload = multer({
@@ -79,8 +80,8 @@ router.get('/cycle/:cycleId/availability', (req, res) => {
   res.json(result);
 });
 
-// Create single product (manual entry) - with optional image
-router.post('/', upload.single('image'), (req, res) => {
+// Create single product (manual entry) - with optional image (admin)
+router.post('/', requireAdmin, upload.single('image'), (req, res) => {
   const { cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, roastery, stock_limit_g } = req.body;
 
   if (!cycle_id || !name) {
@@ -106,8 +107,8 @@ router.post('/', upload.single('image'), (req, res) => {
   res.status(201).json(product);
 });
 
-// Import products from CSV
-router.post('/import/:cycleId', upload.single('file'), (req, res) => {
+// Import products from CSV (admin)
+router.post('/import/:cycleId', requireAdmin, upload.single('file'), (req, res) => {
   const cycleId = req.params.cycleId;
   const roastery = req.body.roastery || null;
 
@@ -181,8 +182,8 @@ router.post('/import/:cycleId', upload.single('file'), (req, res) => {
   }
 });
 
-// Upload image for existing product
-router.post('/:id/image', upload.single('image'), (req, res) => {
+// Upload image for existing product (admin)
+router.post('/:id/image', requireAdmin, upload.single('image'), (req, res) => {
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
 
   if (!product) {
@@ -204,8 +205,10 @@ router.post('/:id/image', upload.single('image'), (req, res) => {
   res.json(updated);
 });
 
-// Upload image from URL (for drag & drop from external sites)
-router.post('/:id/image-from-url', async (req, res) => {
+// Upload image from URL (for drag & drop from external sites) (admin)
+// NOTE: server-side fetch of a client URL is an SSRF vector — Phase 2 adds a
+// host allowlist + private-IP blocking. Phase 1 restricts it to admins.
+router.post('/:id/image-from-url', requireAdmin, async (req, res) => {
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
 
   if (!product) {
@@ -245,8 +248,8 @@ router.post('/:id/image-from-url', async (req, res) => {
   }
 });
 
-// Update product
-router.patch('/:id', (req, res) => {
+// Update product (admin)
+router.patch('/:id', requireAdmin, (req, res) => {
   const { name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, image, active, roastery, stock_limit_g } = req.body;
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
 
@@ -282,8 +285,8 @@ router.patch('/:id', (req, res) => {
   res.json(updated);
 });
 
-// Delete product (soft delete - set active = 0)
-router.delete('/:id', (req, res) => {
+// Delete product (soft delete - set active = 0) (admin)
+router.delete('/:id', requireAdmin, (req, res) => {
   const result = db.prepare('UPDATE products SET active = 0 WHERE id = ?').run(req.params.id);
   if (result.changes === 0) {
     return res.status(404).json({ error: 'Produkt nebol najdeny' });
@@ -291,8 +294,8 @@ router.delete('/:id', (req, res) => {
   res.status(204).send();
 });
 
-// Import products from Google Sheets URL
-router.post('/import-gsheet/:cycleId', async (req, res) => {
+// Import products from Google Sheets URL (admin)
+router.post('/import-gsheet/:cycleId', requireAdmin, async (req, res) => {
   const cycleId = req.params.cycleId;
   const { url, roastery } = req.body;
 
@@ -595,8 +598,8 @@ function parseMultiRowProducts(csvContent) {
   return { products, warnings };
 }
 
-// Import products from Google Sheets with multi-row format (3 rows per product)
-router.post('/import-gsheet-multirow/:cycleId', async (req, res) => {
+// Import products from Google Sheets with multi-row format (3 rows per product) (admin)
+router.post('/import-gsheet-multirow/:cycleId', requireAdmin, async (req, res) => {
   const cycleId = req.params.cycleId;
   const { url, roastery } = req.body;
 
