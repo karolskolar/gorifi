@@ -2,7 +2,7 @@
 
 ## Storage
 
-**SQLite** via sql.js (SQLite compiled to WebAssembly), in-memory with file persistence to `database.sqlite`. Query helpers (`all`, `get`, `run`, `prepare`, `transaction`) mimic the better-sqlite3 API.
+**SQLite** via better-sqlite3 (file-backed, WAL) at `database.sqlite`. Query helpers (`all`, `get`, `run`, `prepare`, `transaction`) mimic the better-sqlite3 API.
 
 ---
 

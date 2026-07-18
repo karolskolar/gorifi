@@ -4,7 +4,7 @@ Coffee order management application for coordinating group coffee orders among f
 
 ## Tech Stack
 
-- **Backend:** Node.js + Express + sql.js (SQLite in-memory with file persistence)
+- **Backend:** Node.js + Express + better-sqlite3 (file-backed SQLite, WAL)
 - **Frontend:** Vue 3 + Vite + Tailwind CSS
 - **Language:** Slovak (UI text is in Slovak)
 
@@ -36,7 +36,7 @@ cd frontend && npm run dev
 ## Key Patterns
 
 ### Database
-- Uses sql.js (SQLite compiled to WebAssembly)
+- Uses better-sqlite3 (file-backed SQLite, WAL mode). Migrated from sql.js in SEC-D1; `dbHelpers` API (`all/get/run/prepare/transaction/exec`) is unchanged, so route code is unaffected. A thin `db` shim in `schema.js` keeps the try/catch `ALTER TABLE` migration blocks working verbatim.
 - Schema defined in `backend/src/db/schema.js`
 - Migrations handled via try/catch ALTER TABLE (column already exists = ignore)
 - `dbHelpers` provides `all()`, `get()`, `run()`, `prepare()`, `transaction()` methods

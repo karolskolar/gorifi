@@ -1,5 +1,4 @@
-import initSqlJs from 'sql.js';
-import { readFileSync, writeFileSync, existsSync, openSync, fsyncSync, closeSync, renameSync } from 'fs';
+import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import crypto from 'crypto';
@@ -34,23 +33,45 @@ function generateInviteCode() {
   return randomCode(8);
 }
 
+// `bdb` is the real better-sqlite3 (file-backed, WAL) connection used by the
+// query helpers. `db` is a thin shim exposing the sql.js-style methods the
+// migration code in initDb was written against, so that migration logic stays
+// unchanged — it still runs verbatim on the existing SQLite file.
+let bdb = null;
 let db = null;
-let inTransaction = false;
 
-// Initialize database
-async function initDb() {
-  const SQL = await initSqlJs();
+function initDb() {
+  bdb = new Database(dbPath);
+  bdb.pragma('journal_mode = WAL');   // durable incremental writes; no whole-file rewrite
+  bdb.pragma('foreign_keys = ON');
 
-  // Load existing database or create new
-  if (existsSync(dbPath)) {
-    const buffer = readFileSync(dbPath);
-    db = new SQL.Database(buffer);
-  } else {
-    db = new SQL.Database();
-  }
-
-  // Enable foreign keys
-  db.run('PRAGMA foreign_keys = ON');
+  db = {
+    // no params  → DDL / PRAGMA via exec; with params → prepared statement
+    run(sql, params) {
+      if (params && params.length) bdb.prepare(sql).run(...params);
+      else bdb.exec(sql);
+    },
+    // Emulates sql.js's exec: SELECTs return [{ columns, values }] (or [] if empty).
+    exec(sql) {
+      const stmt = bdb.prepare(sql);
+      if (stmt.reader) {
+        const rows = stmt.all();
+        if (rows.length === 0) return [];
+        const columns = Object.keys(rows[0]);
+        return [{ columns, values: rows.map((r) => columns.map((c) => r[c])) }];
+      }
+      bdb.exec(sql);
+      return [];
+    },
+    prepare(sql) {
+      const stmt = bdb.prepare(sql);
+      return {
+        get: (...p) => stmt.get(...p),
+        run: (...p) => stmt.run(...p),
+        all: (...p) => stmt.all(...p),
+      };
+    },
+  };
 
   // Create tables
   db.run(`
@@ -689,111 +710,53 @@ async function initDb() {
     db.run("INSERT INTO roasteries (name, is_default) VALUES ('Goriffee', 1)");
   }
 
-  saveDb();
-  return db;
 }
 
-// Save database to file.
-// Written atomically: dump to a temp file, fsync it to durable storage, then
-// rename() over the live file. rename() is atomic on POSIX, so a crash or OOM
-// kill mid-write can never leave a truncated/corrupt database — the old file
-// stays intact until the fully-written new one replaces it in one step.
-function saveDb() {
-  if (db) {
-    const data = db.export();
-    const buffer = Buffer.from(data);
-    const tmpPath = `${dbPath}.tmp`;
-    const fd = openSync(tmpPath, 'w');
-    try {
-      writeFileSync(fd, buffer);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    renameSync(tmpPath, dbPath);
-  }
-}
+// Retained as a no-op for backward compatibility. better-sqlite3 persists every
+// statement to the WAL immediately, so there is no explicit whole-file save.
+function saveDb() {}
 
-// Query helpers that mimic better-sqlite3 API
+// Query helpers (same external API as before, now backed by better-sqlite3).
+// Params arrive as an array from db.all/get/run(sql, params) and are spread into
+// the prepared statement; prepare(sql).run/get/all(...params) pass through.
 const dbHelpers = {
-  // Run query and return all results as array of objects
   all(sql, params = []) {
-    const stmt = db.prepare(sql);
-    if (params.length > 0) {
-      stmt.bind(params);
-    }
-    const results = [];
-    while (stmt.step()) {
-      results.push(stmt.getAsObject());
-    }
-    stmt.free();
-    return results;
+    return bdb.prepare(sql).all(...params);
   },
 
-  // Run query and return first result as object
   get(sql, params = []) {
-    const results = this.all(sql, params);
-    return results[0] || null;
+    return bdb.prepare(sql).get(...params) ?? null;
   },
 
-  // Run insert/update/delete and return changes info
   run(sql, params = []) {
-    const stmt = db.prepare(sql);
-    if (params.length > 0) {
-      stmt.bind(params);
-    }
-    stmt.step();
-    stmt.free();
-
-    // Get changes BEFORE any other operations that might reset the value
-    const changes = db.getRowsModified();
-    const lastIdResult = db.exec('SELECT last_insert_rowid() as id');
-    const lastId = lastIdResult[0]?.values[0][0];
-
-    // Only save if not in a transaction (transaction will save on commit)
-    if (!inTransaction) {
-      saveDb();
-    }
-    return { lastInsertRowid: lastId, changes };
+    const r = bdb.prepare(sql).run(...params);
+    return { lastInsertRowid: r.lastInsertRowid, changes: r.changes };
   },
 
-  // Prepare statement (returns object with run, get, and all methods)
   prepare(sql) {
+    const stmt = bdb.prepare(sql);
     return {
-      run: (...params) => dbHelpers.run(sql, params),
-      get: (...params) => dbHelpers.get(sql, params),
-      all: (...params) => dbHelpers.all(sql, params)
+      run: (...params) => {
+        const r = stmt.run(...params);
+        return { lastInsertRowid: r.lastInsertRowid, changes: r.changes };
+      },
+      get: (...params) => stmt.get(...params) ?? null,
+      all: (...params) => stmt.all(...params),
     };
   },
 
-  // Transaction helper
+  // better-sqlite3 transactions are synchronous and roll back on throw.
   transaction(fn) {
-    return (...args) => {
-      inTransaction = true;
-      db.run('BEGIN TRANSACTION');
-      try {
-        const result = fn(...args);
-        db.run('COMMIT');
-        inTransaction = false;
-        saveDb();
-        return result;
-      } catch (e) {
-        db.run('ROLLBACK');
-        inTransaction = false;
-        throw e;
-      }
-    };
+    return bdb.transaction(fn);
   },
 
-  // Direct exec for multi-statement queries
   exec(sql) {
-    db.exec(sql);
-    saveDb();
-  }
+    bdb.exec(sql);
+  },
 };
 
 // Initialize and export
-await initDb();
+initDb();
 
 export default dbHelpers;
 export { saveDb, generateUid, generateInviteCode };
