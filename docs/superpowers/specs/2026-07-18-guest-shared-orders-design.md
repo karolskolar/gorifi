@@ -7,10 +7,12 @@
 
 Let a registered friend (the **host**) share a unique link with unregistered people
 (**guests** — typically colleagues). A guest can browse the products of the current
-open cycle, build a cart, submit a **guest sub-order**, and settle payment — all
-without registering. The guest sub-order lives *under* the host's account: the host
-sees it, tracks whether it is paid, and marks it as delivered (the host is
-responsible for handing the coffee over to the guest).
+open cycle, build a cart, submit a **guest sub-order**, and pay the admin directly
+(Revolut / Pay by Square QR) — all without registering. The guest sub-order lives
+*under* the host's account: the host sees it (including its payment status) and
+marks it as delivered (the host is responsible for handing the coffee over to the
+guest). The **admin** owns payment tracking per sub-order — marks it paid when the
+money arrives and can see at a glance which guests haven't paid.
 
 Business goal: more kilos per cycle (tier thresholds) + captured guest contacts as
 warm leads for the existing invitations pipeline.
@@ -61,20 +63,21 @@ flowchart TD
         A2 --> A3[Lock cycle]
         A3 --> A4[Order from roastery]
         A4 --> A5[Distribution: pack per order<br/>guest items grouped under host,<br/>sub-packed per guest]
-        A5 --> A6[Mark host order paid<br/>host total INCLUDES guest sub-orders]
+        A5 --> A6[Mark host order paid<br/>own items only]
         A6 --> A7[Complete cycle]
+        AP[Match incoming payment<br/>by reference ➜ mark<br/>guest sub-order paid] --> AU[Unpaid overview:<br/>which guests have not paid<br/>+ which host they belong to]
+        AU --> A7
     end
 
     subgraph HOST [Registered friend — host]
         F1[Log in to portal] --> F2[Order page: own cart]
         F2 --> FS[Share order<br/>generate unique guest link<br/>send via WhatsApp / Slack / email]
         F2 --> F4[Submit own order<br/>delivery modal]
-        F5[My order view:<br/>own items + guest sub-orders<br/>each with paid / delivered state]
+        F5[My order view:<br/>own items + guest sub-orders<br/>paid status read-only,<br/>delivered toggle per guest]
         F4 --> F5
         F5 --> F6[Pick up combined package]
         F6 --> F7[Hand over to guest] --> F8[Mark guest sub-order delivered]
-        F5 --> F9[Guest money received<br/>mark guest sub-order paid]
-        F6 --> F10[Pay admin full total<br/>own + guest items]
+        F6 --> F10[Pay admin<br/>own items only]
     end
 
     subgraph GUEST [Unregistered guest]
@@ -82,7 +85,7 @@ flowchart TD
         G2 --> G3[Add products to cart]
         G3 --> G4[Checkout: enter name<br/>+ optional phone/email]
         G4 --> G5[Submit guest sub-order]
-        G5 --> G6[Confirmation + payment instructions<br/>pay the host directly]
+        G5 --> G6[Payment modal: Revolut link +<br/>Pay by Square QR, admin IBAN,<br/>reference with sub-order code]
         G6 --> G7[Personal status URL<br/>view / edit until cycle locks]
         G7 --> G8[Receive coffee from host]
     end
@@ -91,7 +94,8 @@ flowchart TD
     G5 -. sub-order appears under host order .-> F5
     A2 -. link valid only while cycle open .-> G1
     A3 -. guest edits + new guest orders blocked .-> G7
-    G6 -. payment outside app .-> F9
+    G6 -. pays ADMIN directly .-> AP
+    AP -. paid flag visible to host .-> F5
     F10 -. money received .-> A6
     G4 -. contact captured as lead ➜ invitations pipeline .-> A7
 ```
@@ -104,36 +108,49 @@ stateDiagram-v2
     submitted --> submitted : guest edits via status URL (cycle open)
     submitted --> cancelled : guest empties cart / host removes sub-order (cycle open)
     submitted --> locked : cycle locked
-    locked --> paid : host marks paid (money received)
+    locked --> paid : admin marks paid (payment matched by reference)
     locked --> delivered : host marks delivered
     paid --> delivered
     delivered --> paid
     delivered --> [*] : cycle completed
     cancelled --> [*]
     note right of locked
-        paid and delivered are independent flags,
-        both toggled by the host (either order)
+        paid and delivered are independent flags —
+        paid is toggled by the admin (money recipient),
+        delivered by the host (hand-over); either can
+        happen first
     end note
 ```
 
 ## Key Design Decisions
 
-### 1. Payment stays outside the app (v1)
+### 1. Guests pay the admin directly — same Revolut + Pay by Square flow as friends
 
-There is no payment gateway anywhere in Gorifi today — friends pay the admin by
-bank transfer or cash and the admin toggles `paid`. Guest sub-orders follow the
-same honor-system pattern one level down:
+Friends already pay the admin directly through `PaymentModal.vue`: a
+`revolut.me/<username>` link plus a Pay by Square QR generated from the admin's
+IBAN (both from settings: `paymentIban`, `paymentRevolutUsername`), with payment
+note `FriendName / CycleName`. Guest sub-orders reuse this exact flow:
 
-- Guest checkout confirmation shows **payment instructions for paying the host**
-  (free-text note the host can configure — e.g. IBAN, "pay by Revolut", "cash at
-  the office"; optional QR code generated from IBAN + amount is a nice-to-have).
-- The **host** toggles `paid` on each guest sub-order when the money arrives.
-- The **admin** still marks the *host's* order paid as one unit — the host owes
-  the admin the full total (own items + all guest items). Guest `paid` flags are
-  host-facing bookkeeping, they do not create `transactions` rows.
+- After submitting, the guest sees the **same payment modal**: Revolut link +
+  Pay by Square QR with the exact sub-order amount and a payment reference of the
+  form **`G<id> / GuestName / CycleName`** (e.g. `G12 / Marek / Máj 2026`). The
+  `G<id>` code makes the incoming payment unambiguous even with duplicate first
+  names. The Revolut path can't pre-fill a note, so the confirmation screen
+  explicitly tells the guest to paste the reference into the Revolut note. The
+  modal is also re-openable from the guest's status URL ("Zaplatiť").
+- The **admin** matches incoming payments by reference and toggles `paid` on the
+  sub-order (admin cycle view, nested under the host order). An **unpaid
+  overview** — guest name, amount, host, contact — makes it obvious who hasn't
+  paid; the existing `unpaid_count` per cycle includes guest sub-orders.
+- The **host** sees the paid status of their guests read-only; their own payable
+  total to the admin covers **their own items only**. Guest sub-orders are the
+  admin's receivables, not the host's — the host's responsibility is delivery,
+  not settlement.
+- Guest `paid` flags do not create `transactions` rows (guests have no balance
+  account); `paid`/`paid_at` on `guest_orders` is the whole bookkeeping.
 
-A real payment gateway (Stripe/GoPay) is explicitly out of scope for v1; the
-schema below doesn't preclude adding `payment_ref` later.
+A real payment gateway (Stripe/GoPay) remains out of scope for v1; payment is
+still confirmed manually by the admin, exactly as with friend orders today.
 
 ### 2. Separate tables, not rows in `orders`
 
@@ -151,9 +168,9 @@ instead of reusing `orders` with a `parent_order_id`:
 
 ### 3. Host gets the kilos credit
 
-Guest kilos count toward the host's rewards/voucher volume (they already carry
-the settlement risk and do the delivery). This doubles as the host's incentive to
-share the link. Mirrors the existing `is_root`/`root_friend_id` grouping concept.
+Guest kilos count toward the host's rewards/voucher volume (they recruited the
+guests and do the delivery). This doubles as the host's incentive to share the
+link. Mirrors the existing `is_root`/`root_friend_id` grouping concept.
 
 ### 4. Link + edit-token model
 
@@ -173,9 +190,10 @@ share the link. Mirrors the existing `is_root`/`root_friend_id` grouping concept
   **remove a whole sub-order** while the cycle is open (typo, prank, colleague
   changed their mind offline).
 - Host submitting their own order does **not** block further guest sub-orders;
-  only the cycle lock does. The host's payable total is therefore final only at
-  lock time — the order view must show "own total + guest total = payable total"
-  live.
+  only the cycle lock does. The host's own payable total is unaffected by guest
+  activity (guests settle directly with the admin), but the order view shows the
+  guest sub-orders and their running total live so the host knows what they'll
+  be handing over.
 
 ## Data Model
 
@@ -185,7 +203,6 @@ CREATE TABLE guest_order_links (
   token TEXT UNIQUE NOT NULL,            -- URL token, generateUid()-style
   host_friend_id INTEGER NOT NULL,
   cycle_id INTEGER NOT NULL,
-  payment_note TEXT,                     -- host's payment instructions for guests
   active INTEGER DEFAULT 1,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(host_friend_id, cycle_id),      -- one live link per host per cycle
@@ -229,38 +246,51 @@ Public (token-authenticated by URL, no session):
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/guest/:token` | Cycle info + host first name + active products with prices; 410 if link inactive or cycle not open |
-| POST | `/api/guest/:token/orders` | Submit guest sub-order `{guest_name, guest_phone?, guest_email?, items[]}` → returns `order_token` |
-| GET | `/api/guest/:token/orders/:orderToken` | Status page data (items, total, paid/delivered, payment note, cycle status) |
+| POST | `/api/guest/:token/orders` | Submit guest sub-order `{guest_name, guest_phone?, guest_email?, items[]}` → returns `order_token` + payment info (IBAN, Revolut username, reference `G<id> / name / cycle`, amount) |
+| GET | `/api/guest/:token/orders/:orderToken` | Status page data (items, total, paid/delivered, payment info for re-opening the payment modal, cycle status) |
 | PUT | `/api/guest/:token/orders/:orderToken` | Edit items while cycle open; empty cart ⇒ status `cancelled` |
 
 Friend (existing `X-Friends-Password` / session auth):
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/guest-links/cycle/:cycleId` | Create or regenerate own link (`{payment_note?}`) |
-| GET | `/api/guest-links/cycle/:cycleId` | Own link + all guest sub-orders for this cycle |
-| PATCH | `/api/guest-links/:id` | Deactivate / update payment note |
-| PATCH | `/api/guest-orders/:id/paid` | Toggle paid (host only) |
+| POST | `/api/guest-links/cycle/:cycleId` | Create or regenerate own link |
+| GET | `/api/guest-links/cycle/:cycleId` | Own link + all guest sub-orders for this cycle (incl. read-only paid status) |
+| PATCH | `/api/guest-links/:id` | Deactivate link |
 | PATCH | `/api/guest-orders/:id/delivered` | Toggle delivered (host only) |
 | DELETE | `/api/guest-orders/:id` | Remove sub-order (host only, cycle open) |
 
-Admin: extend existing cycle detail / distribution / live-cycle endpoints to JOIN
-guest tables — orders tab shows guest sub-orders nested under host order; kilos
-and tier progress include guest items.
+Admin:
+
+| Method | Path | Purpose |
+|---|---|---|
+| PATCH | `/api/guest-orders/:id/paid` | Toggle paid (admin; sets `paid_at`, no `transactions` row) |
+| GET | `/api/guest-orders/cycle/:cycleId/unpaid` | Unpaid overview: guest name, amount, reference, host, contact |
+
+Plus: extend existing cycle detail / distribution / live-cycle endpoints to JOIN
+guest tables — orders tab shows guest sub-orders nested under host order with a
+paid toggle each; kilos, tier progress, and per-cycle `unpaid_count` include
+guest sub-orders.
 
 ## Frontend
 
 - **`GuestOrder.vue`** — public route `/g/:token` (+ `/g/:token/o/:orderToken`).
   Reuses the FriendOrder product-card layout (incl. bakery variant grouping) but
   stripped: no login, no delivery modal, no drafts. Checkout = name + contact +
-  submit. Confirmation screen = payment note + status URL. Slovak UI.
+  submit. Confirmation screen opens the existing **`PaymentModal.vue`** (Revolut
+  link + Pay by Square QR, amount + `G<id>` reference pre-filled) and shows the
+  personal status URL; the status page has a "Zaplatiť" button to re-open the
+  modal until the admin marks the sub-order paid. Slovak UI.
 - **FriendOrder.vue / FriendPortal.vue** — "Zdieľať objednávku s kolegami" action
   (share link + copy button + native share sheet on mobile); section
-  "Objednávky kolegov" listing sub-orders with per-row paid/delivered toggles and
-  live payable total (own + guests).
+  "Objednávky kolegov" listing sub-orders with read-only paid badge, a delivered
+  toggle per row, and the host's own payable total (own items only, guest totals
+  shown separately for context).
 - **Admin CycleDetail / Distribution** — guest sub-orders rendered nested under
-  the host with a distinct badge (e.g. gray "Hosť • pozval Peťo"); packing
-  checkboxes per guest sub-order so the host receives pre-separated bags.
+  the host with a distinct badge (e.g. gray "Hosť • pozval Peťo") and a paid
+  toggle each; an unpaid-guests summary (name, amount, reference, host, contact)
+  on the cycle detail; packing checkboxes per guest sub-order so the host
+  receives pre-separated bags.
 
 ## Lead Capture
 
@@ -296,9 +326,9 @@ tag (reuse `onboarding_source` pattern).
 
 1. Should guest sub-order kilos count toward the **host's voucher volume**
    (recommended, see Decision 3) or be excluded from rewards?
-2. Payment note per link vs. a per-friend default stored on `friends` (reusable
-   across cycles)? Per-link is simpler; per-friend is less repetitive.
-3. Should the admin be able to toggle guest `paid`/`delivered` too (support
-   scenario), or host-only?
-4. Cap on sub-orders per link (spam guard) — is a soft cap of e.g. 20 needed at
+2. Should the **host** also be able to toggle `paid` for the cash case (colleague
+   hands cash to the host, host forwards it to the admin)? v1 says no — admin
+   only — but if cash payments turn out to be common, a host toggle that flags
+   the sub-order as "cash via host" may be worth adding.
+3. Cap on sub-orders per link (spam guard) — is a soft cap of e.g. 20 needed at
    this scale, or skip entirely?
