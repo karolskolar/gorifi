@@ -28,10 +28,9 @@ a stronger model (calculators, migrations, auth state machines); untagged rows i
 
 ## 2. Friend authentication — close the deferred IDOR (Phase 2)
 
-- [ ] SEC-A1  Frontend token-only sessions: use the Bearer token returned at login, stop persisting the plaintext friend password in `localStorage`, enforce `expiresAt` on restore, redirect to login on 401 — `§H4/H3/L2` · has_ui ⚠ Phase 1 left the legacy `{friendId,friendName,password}` localStorage shape and unused `expiresAt` in place (`FriendPortal.vue:244`, `OnboardingPage.vue:80`); this row removes password persistence and starts honoring expiry. Backend still accepts `X-Friends-Password` until SEC-A3.
+- [x] SEC-A1  Frontend token-only sessions: uses the Bearer token, stopped persisting the plaintext friend password in `localStorage`, honors `expiresAt` on restore — `§H4/H3/L2` · has_ui · shipped (PR #8, `task/sec-a1`); backend `/friends/auth` returns `expiresAt`.
 - [x] SEC-A2  Backend object-level ownership on friend-scoped routes — `requireFriendOwner`/`enforceOrderOwnership`: token auth must match the target friendId (403); shared-password allowed only in legacy mode, rejected in modern. Applied to friends balance/profile, subscriptions, transactions history, orders get/update/submit. Closes the friend-vs-friend IDOR — `§C3` · shipped on `security/phase-2-auth` (e2e auth-ownership.spec.js).
 - [x] SEC-A3  Shared-password deprecation path enforced in code: in `modern` mode all friend-scoped routes reject shared/cycle-password auth and require a per-friend token (SEC-A2 helpers). Forced password change added (must_change_password): admin reset flags it, login reports it, friend must set their own password before continuing (requirement #3). User greenlit; flip `auth_mode` to `modern` after resetting all friend passwords — `§H3/L2` · shipped on `security/phase-2-auth`. ⚠ deploy phase-2 + reset friend passwords, then set auth_mode=modern in admin settings to fully close the legacy window.
-- [x] SEC-A1  Frontend token-only cleanup: stop persisting the plaintext friend password in `localStorage`, honor `expiresAt` on restore, drop the legacy password aliases — `§H4/H3/L2` · has_ui ⚠ partially addressed by phase-2 (forced-change writes token-only), but the legacy `password` storage path in `FriendPortal.vue` restore still exists; finish removing it once all friends are on individual credentials.
 
 ## 3. Secrets & credential storage (Phase 2)
 
@@ -53,7 +52,12 @@ a stronger model (calculators, migrations, auth state machines); untagged rows i
 ## 6. Data layer & operations (Phase 3 — structural)
 
 - [x] SEC-D1  Migrate `sql.js` → `better-sqlite3`: swap the engine behind the existing `dbHelpers` API, enable WAL, remove the whole-file `saveDb()` rewrite, add native build deps to the Dockerfile/host — `§C6/H7` · model=heavy ⚠ Phase 1 added a temp-file+fsync+rename atomic-write shim to `saveDb()`; this removes that shim entirely (WAL + atomic commits replace it) and removes the single-writer footgun. Highest-effort row; land after Phase 2 stabilizes.
-- [ ] SEC-D2  Encrypted, scheduled, off-host backups: use the SQLite `.backup` API (WAL-safe), encrypt at rest (age/gpg), `chmod 600`, ship off-host, install the cron entry in `setup-server.sh` — `§M4/M5` · depends: SEC-D1 ⚠ backup method changes once the DB is `better-sqlite3`/WAL — a raw `cp` of a live WAL DB is unsafe.
+- [ ] SEC-D2  Encrypted off-host backups to **Google Drive** — `§M4/M5` · depends: SEC-D1 · **NEXT TASK (do in a fresh session)**. Requirements from the user:
+    - **Off-host destination = Google Drive** (via `rclone` on the LXC). Needs the user to provide credentials (rclone OAuth token or a Google service-account JSON) — flag this and pause for it; the server currently has none.
+    - **Back up on every PROD deploy**: add a backup step to `deploy/deploy.sh` in the `production` path, running **before** the rsync/restart. Keep the existing on-host copy AND push the encrypted copy to Drive.
+    - **WAL-safe snapshot**: do NOT raw-`cp` the live WAL DB. Use `sqlite3 <db> ".backup <tmp>"` or better-sqlite3's `db.backup()` / `VACUUM INTO`, then encrypt (age or gpg, `chmod 600`), then `rclone copy` to Drive.
+    - Also add a **scheduled** backup (daily cron) + retention/rotation, and document restore. Server already has on-host backups at `.../database.sqlite.bak-*` and `.pre-d1-*`.
+    - See memory [[gorifi-backups-sec-d2]] and [[deploy-requires-user-ssh]] (SSH via Tailscale needs periodic re-approval).
 - [ ] SEC-D3  Build reproducibility & runtime: Node 20+ everywhere (`setup-server.sh` is EOL Node 18, Dockerfile pins by tag), pin base image by digest, `npm ci` in Dockerfile + `deploy.sh` — `§L3/L4`.
 
 ## Log
