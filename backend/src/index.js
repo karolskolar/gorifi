@@ -96,6 +96,10 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Nieco sa pokazilo' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server bezi na porte ${PORT}`);
+// Bind to loopback by default so the app is only reachable via the in-container
+// nginx (which proxies to 127.0.0.1) and never directly on the LAN. Override
+// with HOST=0.0.0.0 if a deployment genuinely needs external binding. Keep this
+// in sync with the hardened server (SEC-I2).
+app.listen(PORT, process.env.HOST || '127.0.0.1', () => {
+  console.log(`Server bezi na porte ${PORT} (${process.env.HOST || '127.0.0.1'})`);
 });
