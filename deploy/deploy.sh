@@ -7,6 +7,9 @@ set -e
 # Configuration - Update these values
 SERVER_USER="root"
 SERVER_HOST="gorifi"
+# The app runs as this non-root user (SEC-I2). npm + pm2 run as it via runuser,
+# and synced files are chowned to it. root's pm2 is intentionally empty.
+APP_USER="gorifi"
 
 # Colors for output
 RED='\033[0;31m'
@@ -132,6 +135,16 @@ if [ "$ENVIRONMENT" = "production" ]; then
   echo ""
 fi
 
+# Back up the production DB BEFORE touching anything (SEC-D2). Aborts the deploy
+# if the backup fails (set -e) — never deploy without a fresh off-host backup.
+if [ "$ENVIRONMENT" = "production" ]; then
+  echo -e "${YELLOW}Backing up production DB (encrypted → Google Drive)...${NC}"
+  ssh "$SERVER_USER@$SERVER_HOST" "mkdir -p $REMOTE_PATH/deploy && chown $APP_USER:$APP_USER $REMOTE_PATH/deploy"
+  scp "$SCRIPT_DIR/backup-db.sh" "$SERVER_USER@$SERVER_HOST:$REMOTE_PATH/deploy/backup-db.sh"
+  ssh "$SERVER_USER@$SERVER_HOST" "chown $APP_USER:$APP_USER $REMOTE_PATH/deploy/backup-db.sh && chmod +x $REMOTE_PATH/deploy/backup-db.sh && runuser -u $APP_USER -- bash $REMOTE_PATH/deploy/backup-db.sh deploy"
+  echo -e "${GREEN}Pre-deploy backup complete.${NC}"
+fi
+
 # Deploy backend
 if [ "$DEPLOY_BACKEND" = true ]; then
   echo -e "${YELLOW}Deploying backend to $ENVIRONMENT...${NC}"
@@ -141,16 +154,19 @@ if [ "$DEPLOY_BACKEND" = true ]; then
 
   # Copy ecosystem config first (needed for PM2 start on first deploy)
   scp "$SCRIPT_DIR/ecosystem.config.cjs" "$SERVER_USER@$SERVER_HOST:$REMOTE_PATH/"
+  ssh "$SERVER_USER@$SERVER_HOST" "chown $APP_USER:$APP_USER $REMOTE_PATH/ecosystem.config.cjs"
 
-  # Sync backend files (excluding node_modules and database)
+  # Sync backend files. Exclude node_modules and the DB glob (database.sqlite +
+  # -wal + -shm — deleting a live WAL file risks data loss). Chown to the app user.
   rsync -avz --delete \
+    --chown="$APP_USER:$APP_USER" \
     --exclude 'node_modules' \
-    --exclude 'src/db/database.sqlite' \
+    --exclude 'src/db/database.sqlite*' \
     "$PROJECT_DIR/backend/" \
     "$SERVER_USER@$SERVER_HOST:$REMOTE_PATH/backend/"
 
-  # Install dependencies and restart
-  ssh "$SERVER_USER@$SERVER_HOST" "cd $REMOTE_PATH/backend && npm install --production && pm2 restart $PM2_APP || pm2 start $REMOTE_PATH/ecosystem.config.cjs --only $PM2_APP"
+  # Install deps and restart AS the app user (apps live in the gorifi pm2 daemon).
+  ssh "$SERVER_USER@$SERVER_HOST" "runuser -u $APP_USER -- bash -lc 'cd $REMOTE_PATH/backend && npm install --production && (pm2 restart $PM2_APP || pm2 start $REMOTE_PATH/ecosystem.config.cjs --only $PM2_APP) && pm2 save'"
 
   echo -e "${GREEN}Backend deployed to $ENVIRONMENT!${NC}"
 fi
@@ -169,6 +185,7 @@ if [ "$DEPLOY_FRONTEND" = true ]; then
 
   echo -e "${YELLOW}Deploying frontend to $ENVIRONMENT...${NC}"
   rsync -avz --delete \
+    --chown="$APP_USER:$APP_USER" \
     "$PROJECT_DIR/frontend/dist/" \
     "$SERVER_USER@$SERVER_HOST:$REMOTE_PATH/frontend/dist/"
 
