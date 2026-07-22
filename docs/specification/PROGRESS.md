@@ -58,7 +58,7 @@ a stronger model (calculators, migrations, auth state machines); untagged rows i
     - **WAL-safe snapshot**: do NOT raw-`cp` the live WAL DB. Use `sqlite3 <db> ".backup <tmp>"` or better-sqlite3's `db.backup()` / `VACUUM INTO`, then encrypt (age or gpg, `chmod 600`), then `rclone copy` to Drive.
     - Also add a **scheduled** backup (daily cron) + retention/rotation, and document restore. Server already has on-host backups at `.../database.sqlite.bak-*` and `.pre-d1-*`.
     - See memory [[gorifi-backups-sec-d2]] and [[deploy-requires-user-ssh]] (SSH via Tailscale needs periodic re-approval).
-- [ ] SEC-D3  Build reproducibility & runtime: Node 20+ everywhere (`setup-server.sh` is EOL Node 18, Dockerfile pins by tag), pin base image by digest, `npm ci` in Dockerfile + `deploy.sh` — `§L3/L4`.
+- [x] SEC-D3  Build reproducibility & runtime — `§L3/L4`. `deploy.sh` + `setup-server.sh`: `npm install` → `npm ci --omit=dev`; setup-server.sh now installs Node 20 (was EOL 18) + build-essential/python3 (better-sqlite3) + sqlite3/age/rclone (SEC-D2). Dockerfile: base pinned by **digest** (`node:20-bookworm-slim@sha256:2cf067…`; slim/glibc so better-sqlite3 uses a prebuilt binary), `npm ci`, non-root `USER node`, HEALTHCHECK. `npm ci` validated locally (backend+frontend, better-sqlite3 loads). ⚠ server-side validation of `npm ci` + completing staging's interrupted `npm ci` pending an SSH re-approval (staging serves 200 from the in-memory process but its node_modules is incomplete on disk).
 
 ## Log
 
