@@ -166,7 +166,7 @@ if [ "$DEPLOY_BACKEND" = true ]; then
     "$SERVER_USER@$SERVER_HOST:$REMOTE_PATH/backend/"
 
   # Install deps and restart AS the app user (apps live in the gorifi pm2 daemon).
-  ssh "$SERVER_USER@$SERVER_HOST" "runuser -u $APP_USER -- bash -lc 'cd $REMOTE_PATH/backend && npm install --production && (pm2 restart $PM2_APP || pm2 start $REMOTE_PATH/ecosystem.config.cjs --only $PM2_APP) && pm2 save'"
+  ssh "$SERVER_USER@$SERVER_HOST" "runuser -u $APP_USER -- bash -lc 'cd $REMOTE_PATH/backend && npm ci --omit=dev && (pm2 restart $PM2_APP || pm2 start $REMOTE_PATH/ecosystem.config.cjs --only $PM2_APP) && pm2 save'"
 
   echo -e "${GREEN}Backend deployed to $ENVIRONMENT!${NC}"
 fi

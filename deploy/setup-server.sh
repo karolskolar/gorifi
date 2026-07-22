@@ -15,9 +15,14 @@ fi
 echo "Step 1: Updating system..."
 apt update && apt upgrade -y
 
-echo "Step 2: Installing Node.js 18..."
-curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+echo "Step 2: Installing Node.js 20 (LTS)..."
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt install -y nodejs
+
+echo "Step 2b: Installing build toolchain (better-sqlite3 native module) and backup tools..."
+# build-essential + python3: compile better-sqlite3 if no prebuilt binary is available.
+# sqlite3 + age + rclone: WAL-safe encrypted backups to Google Drive (deploy/backup-db.sh).
+apt install -y build-essential python3 sqlite3 age rclone
 
 echo "Step 3: Installing nginx..."
 apt install -y nginx
@@ -42,7 +47,7 @@ echo "1. Copy your backend files to /var/www/gorifi/backend/"
 echo "2. Copy your frontend dist to /var/www/gorifi/frontend/dist/"
 echo "3. Copy nginx-gorifi.conf to /etc/nginx/sites-available/gorifi"
 echo "4. Run: ln -s /etc/nginx/sites-available/gorifi /etc/nginx/sites-enabled/"
-echo "5. Run: cd /var/www/gorifi/backend && npm install --production"
+echo "5. Run: cd /var/www/gorifi/backend && npm ci --omit=dev"
 echo "6. Copy ecosystem.config.cjs to /var/www/gorifi/"
 echo "7. Run: pm2 start /var/www/gorifi/ecosystem.config.cjs"
 echo "8. Run: pm2 save && pm2 startup"
