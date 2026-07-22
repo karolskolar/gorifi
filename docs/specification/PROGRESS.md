@@ -60,6 +60,16 @@ a stronger model (calculators, migrations, auth state machines); untagged rows i
     - See memory [[gorifi-backups-sec-d2]] and [[deploy-requires-user-ssh]] (SSH via Tailscale needs periodic re-approval).
 - [x] SEC-D3  Build reproducibility & runtime — `§L3/L4`. `deploy.sh` + `setup-server.sh`: `npm install` → `npm ci --omit=dev`; setup-server.sh now installs Node 20 (was EOL 18) + build-essential/python3 (better-sqlite3) + sqlite3/age/rclone (SEC-D2). Dockerfile: base pinned by **digest** (`node:20-bookworm-slim@sha256:2cf067…`; slim/glibc so better-sqlite3 uses a prebuilt binary), `npm ci`, non-root `USER node`, HEALTHCHECK. `npm ci` validated locally (backend+frontend, better-sqlite3 loads). ⚠ server-side validation of `npm ci` + completing staging's interrupted `npm ci` pending an SSH re-approval (staging serves 200 from the in-memory process but its node_modules is incomplete on disk).
 
+## 7. Follow-ups (optional, user-side — post-remediation)
+
+Not blocking; the core remediation is complete and live on staging + prod. Applying the
+NPM config (SEC-I1) is already done. These are tracked so they're not forgotten:
+
+- [ ] FUP-1  **Tailscale ACL** — set the `ssh` rule for the `gorifi` node to `"action": "accept"` (or a longer `checkPeriod`) in Access Controls, so deploys/backups stop hitting the ~12h SSH-check re-approval. (User, admin console.)
+- [ ] FUP-2  **Off-server backup key** — copy the age private key off the box for disaster recovery: `ssh root@gorifi 'cat /var/www/gorifi/secrets/backup-age-key.txt'` → store in a password manager. Required to decrypt the Drive backups if the LXC is ever lost. (User.)
+- [ ] FUP-3  **Retire the shared friends password** — migrate active friends to individual credentials (admin reset → forced change, or friends self-set), then set `auth_mode = modern` in Admin → Settings. Fully closes the last friend-vs-friend IDOR path (completes SEC-A3). (User decides + resets passwords; I flip `auth_mode` / assist.)
+- [ ] FUP-4  **Enforce CSP** — once the NPM `Content-Security-Policy-Report-Only` console log is clean, rename the header to `Content-Security-Policy` to enforce it. See `docs/deploy/nginx-proxy-manager.md`. (User.)
+
 ## Log
 
 <!-- /next-task appends one line per completed task below (durable cross-session record). -->
