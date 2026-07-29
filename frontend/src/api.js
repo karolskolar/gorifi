@@ -170,6 +170,10 @@ export const api = {
 
   // Friends (global)
   getFriends: (activeOnly = false) => request(`/friends${activeOnly ? '?active=true' : ''}`),
+  // Public minimal list (id + name + hasCredentials) for the legacy/transition login dropdown
+  getFriendsLoginList: () => request('/friends/login-list'),
+  // Own profile (owner token required) — hydrates the portal after login/restore
+  getFriendProfile: (friendId) => request(`/friends/${friendId}/profile`),
   createFriend: (data) => request('/friends', { method: 'POST', body: data }),
   updateFriend: (id, data) => request(`/friends/${id}`, { method: 'PATCH', body: data }),
   deleteFriend: (id) => request(`/friends/${id}`, { method: 'DELETE' }),
@@ -192,6 +196,7 @@ export const api = {
   getOrders: (cycleId) => request(`/orders/cycle/${cycleId}`),
   markPaid: (id, paid) => request(`/orders/${id}/paid`, { method: 'PATCH', body: { paid } }),
   togglePacked: (id) => request(`/orders/${id}/packed`, { method: 'PATCH' }),
+  toggleItemPacked: (itemId) => request(`/order-items/${itemId}/packed`, { method: 'PATCH' }),
 
   // Friends detail
   getFriendDetail: (id) => request(`/friends/${id}/detail`),
