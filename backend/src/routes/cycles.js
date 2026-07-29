@@ -330,7 +330,7 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
 
   const distribution = friendsWithOrders.map(friend => {
     const items = db.prepare(`
-      SELECT p.name as product_name, p.purpose, p.roast_type, p.variant_label, oi.variant, oi.quantity, oi.price
+      SELECT oi.id, oi.packed, p.name as product_name, p.purpose, p.roast_type, p.variant_label, oi.variant, oi.quantity, oi.price
       FROM order_items oi
       JOIN products p ON p.id = oi.product_id
       WHERE oi.order_id = ?

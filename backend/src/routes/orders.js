@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { validateFriendAuth, getAuthMode } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
+import { packOrder, unpackOrder } from '../helpers/packing.js';
 
 const router = Router();
 
@@ -489,24 +490,25 @@ router.patch('/:id/packed', requireAdmin, (req, res) => {
 
   const newPackedStatus = order.packed ? 0 : 1;
 
+  // Gate: an order may only be marked packed once every one of its items has
+  // been individually checked off in the Distribution view (persisted
+  // order_items.packed). This makes the "Zabaliť" button a deliberate final
+  // step and matches the server-side rule in the spec (Decision 3 / UC-GSO-011).
+  if (newPackedStatus === 1) {
+    const unpackedItems = db.prepare(
+      'SELECT COUNT(*) as count FROM order_items WHERE order_id = ? AND (packed IS NULL OR packed = 0)'
+    ).get(order.id);
+    if (unpackedItems.count > 0) {
+      return res.status(409).json({ error: 'Najprv označ všetky položky ako zabalené' });
+    }
+  }
+
   // Use transaction to ensure consistency
   const togglePacked = db.transaction(() => {
     if (newPackedStatus === 1) {
-      // Marking as packed - create charge transaction (negative amount)
-      db.prepare(`
-        INSERT INTO transactions (friend_id, order_id, type, amount, note)
-        VALUES (?, ?, 'charge', ?, NULL)
-      `).run(order.friend_id, order.id, -order.total);
-
-      db.prepare('UPDATE orders SET packed = 1, packed_at = CURRENT_TIMESTAMP WHERE id = ?').run(order.id);
+      packOrder(order);
     } else {
-      // Unpacking - create reversal transaction (positive amount to cancel the charge)
-      db.prepare(`
-        INSERT INTO transactions (friend_id, order_id, type, amount, note)
-        VALUES (?, ?, 'charge', ?, 'Stornované')
-      `).run(order.friend_id, order.id, order.total);
-
-      db.prepare('UPDATE orders SET packed = 0, packed_at = NULL WHERE id = ?').run(order.id);
+      unpackOrder(order);
     }
   });
 

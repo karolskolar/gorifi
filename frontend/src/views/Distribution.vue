@@ -16,7 +16,7 @@ const distribution = ref([])
 const loading = ref(true)
 const error = ref('')
 const packingOrderId = ref(null)
-const checkedItems = ref({}) // { `${friendId}-${itemIndex}`: true }
+const togglingItemId = ref(null)
 
 const cycleId = route.params.id
 
@@ -60,17 +60,34 @@ function formatPrice(price) {
   return price ? `${price.toFixed(2)} EUR` : '-'
 }
 
-function toggleItem(friendId, index) {
-  const key = `${friendId}-${index}`
-  checkedItems.value = { ...checkedItems.value, [key]: !checkedItems.value[key] }
+// Persisted per-item packing state: toggle on the server (order_items.packed)
+// and reload so the "X/Y ✓" counter, the un-pack-on-uncheck behaviour and the
+// "Zabaliť" gating all reflect durable state (survives refresh / other device).
+async function toggleItem(item) {
+  if (togglingItemId.value || packingOrderId.value) return
+
+  togglingItemId.value = item.id
+  error.value = ''
+  try {
+    await api.toggleItemPacked(item.id)
+    await loadData()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    togglingItemId.value = null
+  }
 }
 
-function isItemChecked(friendId, index) {
-  return !!checkedItems.value[`${friendId}-${index}`]
+function isItemChecked(item) {
+  return !!item.packed
 }
 
 function checkedCount(friend) {
-  return friend.items.reduce((sum, _, i) => sum + (isItemChecked(friend.id, i) ? 1 : 0), 0)
+  return friend.items.reduce((sum, item) => sum + (item.packed ? 1 : 0), 0)
+}
+
+function allItemsChecked(friend) {
+  return friend.items.length > 0 && friend.items.every(item => item.packed)
 }
 
 function printDistribution() {
@@ -151,7 +168,7 @@ function printDistribution() {
               <Button
                 @click="togglePacked(friend)"
                 :variant="friend.packed ? 'default' : 'outline'"
-                :disabled="packingOrderId === friend.order_id"
+                :disabled="packingOrderId === friend.order_id || (!friend.packed && !allItemsChecked(friend))"
                 size="sm"
                 :class="[
                   'print:hidden shrink-0',
@@ -168,20 +185,20 @@ function printDistribution() {
               </div>
               <div v-else class="flex flex-col gap-1.5">
                 <div
-                  v-for="(item, i) in friend.items"
-                  :key="i"
-                  @click="toggleItem(friend.id, i)"
+                  v-for="item in friend.items"
+                  :key="item.id"
+                  @click="toggleItem(item)"
                   class="flex items-center gap-2.5 border rounded-lg px-3 py-2.5 cursor-pointer transition-all select-none print:border-gray-300"
-                  :class="isItemChecked(friend.id, i)
+                  :class="isItemChecked(item)
                     ? 'bg-green-50 border-green-200 opacity-50 dark:bg-green-950/20 dark:border-green-800'
                     : 'bg-card border-border hover:border-muted-foreground/30'"
                 >
                   <input
                     type="checkbox"
-                    :checked="isItemChecked(friend.id, i)"
+                    :checked="isItemChecked(item)"
                     class="w-5 h-5 accent-green-500 shrink-0 pointer-events-none print:hidden"
                   />
-                  <div class="flex-1 min-w-0" :class="isItemChecked(friend.id, i) ? 'line-through' : ''">
+                  <div class="flex-1 min-w-0" :class="isItemChecked(item) ? 'line-through' : ''">
                     <div class="font-semibold text-sm">{{ item.product_name }}<span v-if="item.variant_label" class="font-normal text-muted-foreground"> — {{ item.variant_label }}</span></div>
                     <div class="flex gap-1 mt-1 flex-wrap">
                       <Badge
