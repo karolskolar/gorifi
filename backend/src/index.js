@@ -11,6 +11,7 @@ import cyclesRouter from './routes/cycles.js';
 import productsRouter from './routes/products.js';
 import friendsRouter from './routes/friends.js';
 import ordersRouter from './routes/orders.js';
+import orderItemsRouter from './routes/order-items.js';
 import adminRouter from './routes/admin.js';
 import transactionsRouter from './routes/transactions.js';
 import pickupLocationsRouter from './routes/pickup-locations.js';
@@ -77,6 +78,7 @@ app.use('/api/analytics/live-cycle', requireAdmin, liveCycleRouter);
 app.use('/api/friend-groups', requireAdmin, friendGroupsRouter);
 app.use('/api/analytics/rewards', requireAdmin, rewardsRouter);
 app.use('/api/roasteries', requireAdmin, roasteriesRouter);
+app.use('/api/order-items', requireAdmin, orderItemsRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {

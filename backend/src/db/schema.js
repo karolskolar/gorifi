@@ -368,6 +368,15 @@ function initDb() {
     // Column already exists, ignore
   }
 
+  // Migration: Persist per-item Distribution packing checkboxes (GSO-T1).
+  // Previously the checkbox state lived only in Distribution.vue and evaporated
+  // on refresh; this column makes partial-delivery state durable.
+  try {
+    db.run('ALTER TABLE order_items ADD COLUMN packed INTEGER DEFAULT 0');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   // Create pickup_locations table
   db.run(`
     CREATE TABLE IF NOT EXISTS pickup_locations (
