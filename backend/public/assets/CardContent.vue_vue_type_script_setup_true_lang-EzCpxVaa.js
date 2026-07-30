@@ -1,1 +1,0 @@
-import{c as t}from"./index-wB2HLBW9.js";import{C as n,x as r,o as c,g as l,n as p,u as m,D as d}from"./index-BGPd78dx.js";const f=n({__name:"CardContent",props:{class:{}},setup(o){const s=o;return r(()=>{const{class:e,...a}=s;return a}),(e,a)=>(c(),l("div",{class:p(m(t)("p-6 pt-0",s.class))},[d(e.$slots,"default")],2))}});export{f as _};
