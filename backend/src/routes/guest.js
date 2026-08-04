@@ -88,6 +88,60 @@ function asQuantity(value) {
   return 0;
 }
 
+// Decision 7's identity rule, in ONE place: non-empty name, phone with at least 9
+// digits, e-mail optional — plus the bounds above, because every caller here is an
+// unauthenticated write.
+//
+// `fields` maps the logical field to the body key, because the two surfaces that
+// capture the same contact details name them differently: checkout carries
+// `guest_name/guest_phone/guest_email` (the columns it writes), while the
+// lead-capture CTA carries `name/phone/email` (the invitations flow it feeds).
+// One rule, two vocabularies — the alternative is two copies that drift, and the
+// second one is the one that stops validating.
+//
+// Returns `{ error, field }` (a ready 400 payload) or `{ identity: { name, phone, email } }`.
+function validateIdentity(body, fields) {
+  // asString() (not String()) because the body is attacker-controlled: an object
+  // with a non-callable `toString` makes String()/parseInt() throw, which would
+  // answer this endpoint's 400-with-field contract with a 500 and a stack trace.
+  // `null` (an object where text was expected) and `''` are both falsy here, so
+  // one check covers "not text" and "not filled in".
+  const name = asString(body?.[fields.name]);
+  if (!name) {
+    return { error: 'Zadajte meno', field: fields.name };
+  }
+  if (name.length > MAX_NAME_LENGTH) {
+    return { error: `Meno je príliš dlhé (najviac ${MAX_NAME_LENGTH} znakov)`, field: fields.name };
+  }
+
+  const phone = asString(body?.[fields.phone]);
+  if (!phone) {
+    return { error: 'Zadajte telefónne číslo (aspoň 9 číslic)', field: fields.phone };
+  }
+  if (phone.length > MAX_PHONE_LENGTH) {
+    return { error: `Telefónne číslo je príliš dlhé (najviac ${MAX_PHONE_LENGTH} znakov)`, field: fields.phone };
+  }
+  if (phone.replace(/\D/g, '').length < 9) {
+    return { error: 'Zadajte telefónne číslo (aspoň 9 číslic)', field: fields.phone };
+  }
+
+  // E-mail is optional, so '' is fine — but `null` means "present and not text",
+  // which is invalid input rather than an omitted field.
+  const emailInput = asString(body?.[fields.email]);
+  if (emailInput === null) {
+    return { error: 'Neplatný e-mail', field: fields.email };
+  }
+  const email = emailInput || null;
+  if (email && email.length > MAX_EMAIL_LENGTH) {
+    return { error: `E-mail je príliš dlhý (najviac ${MAX_EMAIL_LENGTH} znakov)`, field: fields.email };
+  }
+
+  return { identity: { name, phone, email } };
+}
+
+const CHECKOUT_IDENTITY_FIELDS = { name: 'guest_name', phone: 'guest_phone', email: 'guest_email' };
+const INVITE_IDENTITY_FIELDS = { name: 'name', phone: 'phone', email: 'email' };
+
 // Only the host's first name is published to strangers — the guest needs to know
 // whose order they are joining, not the host's contact details.
 function firstName(name) {
@@ -274,6 +328,21 @@ function resolveGuestOrder(token, orderToken) {
   return { link, cycle, order };
 }
 
+// GSO-T10 (§Lead Capture): the value stored in `invitations.source` for a lead that
+// came from a guest sub-order. Server-owned — the admin's invitations view keys its
+// "prišiel cez hosťovskú objednávku" tag on exactly this string.
+const INVITE_SOURCE_GUEST_ORDER = 'guest_order';
+
+// The invitations pipeline keys on phone: one PENDING registration per number
+// (`idx_invitations_phone_pending`, a partial unique index — so this is a DB
+// constraint as well as an app check). Used both to answer a duplicate CTA with a
+// clean 409 and to tell the status page not to offer a second submission.
+function pendingInvitationByPhone(phone) {
+  return db.prepare(
+    "SELECT id FROM invitations WHERE phone = ? AND status = 'pending'"
+  ).get(String(phone || ''));
+}
+
 // Everything the status page needs, and the response of both GET and PUT (so an
 // edit needs no follow-up round trip — these endpoints share ONE abuseLimiter
 // bucket with the invite-code lookup, so halving the calls matters).
@@ -315,6 +384,24 @@ function statusPayload(link, cycle, order) {
     },
     editable,
     items_editable: itemsEditable,
+    // GSO-T10 (§Lead Capture): the low-key "ask for your own account" CTA. The
+    // BACKEND decides whether it is offered, exactly as it does for `editable` — an
+    // affordance the server would refuse must never be on screen, and the page
+    // cannot tell a locked cycle from a dead link on its own (both only make
+    // `editable` false).
+    //
+    // `available` deliberately ignores the cycle lock AND the cancelled state: a
+    // guest asks for an account precisely when the coffee has just arrived, and a
+    // guest whose sub-order was called off is still a lead. A dead link or a
+    // deactivated host DOES withdraw it — see the endpoint below.
+    //
+    // `requested` is keyed on the sub-order's OWN phone, so a guest who edits the
+    // number in the CTA form still gets the endpoint's 409; this flag only stops the
+    // pointless second submission on the common path (e.g. after a reload).
+    invite_request: {
+      available: !!link.active && !!link.host_active,
+      requested: !!pendingInvitationByPhone(order.guest_phone),
+    },
   };
 
   if (editable) {
@@ -376,41 +463,13 @@ router.post('/:token/orders', abuseLimiter, (req, res) => {
   const markupRatio = cycle.markup_ratio || 1.0;
 
   // Identity (Decision 7): name + mobile required, email optional, no SMS
-  // verification. Every guest is thereby a contactable lead.
-  //
-  // asString() (not String()) because the body is attacker-controlled: an object
-  // with a non-callable `toString` makes String()/parseInt() throw, which would
-  // answer this endpoint's 400-with-field contract with a 500 and a stack trace.
-  // `null` (an object where text was expected) and `''` are both falsy here, so
-  // one check covers "not text" and "not filled in".
-  const guestName = asString(req.body?.guest_name);
-  if (!guestName) {
-    return res.status(400).json({ error: 'Zadajte meno', field: 'guest_name' });
+  // verification. Every guest is thereby a contactable lead — which is what
+  // GSO-T10's CTA promotes to an invitation, through the same validateIdentity().
+  const validated = validateIdentity(req.body, CHECKOUT_IDENTITY_FIELDS);
+  if (validated.error) {
+    return res.status(400).json({ error: validated.error, field: validated.field });
   }
-  if (guestName.length > MAX_NAME_LENGTH) {
-    return res.status(400).json({ error: `Meno je príliš dlhé (najviac ${MAX_NAME_LENGTH} znakov)`, field: 'guest_name' });
-  }
-  const guestPhone = asString(req.body?.guest_phone);
-  if (!guestPhone) {
-    return res.status(400).json({ error: 'Zadajte telefónne číslo (aspoň 9 číslic)', field: 'guest_phone' });
-  }
-  if (guestPhone.length > MAX_PHONE_LENGTH) {
-    return res.status(400).json({ error: `Telefónne číslo je príliš dlhé (najviac ${MAX_PHONE_LENGTH} znakov)`, field: 'guest_phone' });
-  }
-  const phoneDigits = guestPhone.replace(/\s/g, '').replace(/\D/g, '');
-  if (phoneDigits.length < 9) {
-    return res.status(400).json({ error: 'Zadajte telefónne číslo (aspoň 9 číslic)', field: 'guest_phone' });
-  }
-  // E-mail is optional, so '' is fine — but `null` means "present and not text",
-  // which is invalid input rather than an omitted field.
-  const emailInput = asString(req.body?.guest_email);
-  if (emailInput === null) {
-    return res.status(400).json({ error: 'Neplatný e-mail', field: 'guest_email' });
-  }
-  const guestEmail = emailInput || null;
-  if (guestEmail && guestEmail.length > MAX_EMAIL_LENGTH) {
-    return res.status(400).json({ error: `E-mail je príliš dlhý (najviac ${MAX_EMAIL_LENGTH} znakov)`, field: 'guest_email' });
-  }
+  const { name: guestName, phone: guestPhone, email: guestEmail } = validated.identity;
 
   // Bounds + snapshot pricing, shared with the edit (PUT) below.
   const priced = priceRequestedItems(req.body, cycle, markupRatio);
@@ -684,6 +743,101 @@ router.put('/:token/orders/:orderToken', abuseLimiter, (req, res) => {
   }
 
   res.json(statusPayload(link, cycle, loadOrder(order.id)));
+});
+
+// POST /guest/:token/orders/:orderToken/invite-request — "Chcete si nabudúce
+// objednať sami?" (§UC-GSO-015, §Lead Capture). Creates a row in the EXISTING
+// `invitations` table so the lead lands in the queue the admin already works,
+// attributed to the host and tagged with its source.
+//
+// WHY A DEDICATED ENDPOINT rather than reusing the public POST
+// /invitations/register: that route resolves the inviter from the host's
+// `friends.invite_code`, so reusing it would mean publishing the host's referral
+// code into a page any stranger holding the link can read (`friends.js` strips
+// `invite_code` from every friend response for exactly that reason). The guest
+// already holds a credential that identifies the host server-side — the link token —
+// so the code never has to leave the server. Everything else here IS the register
+// route's logic: same table, same pending-phone rule, same 409.
+//
+// WHY THE (link, order) TOKEN PAIR and not just :token: the link token is shared
+// with a whole office, the pair is the individual guest's. Requiring the pair means
+// only somebody who actually placed a sub-order can create a lead, and it lets the
+// contact details be prefilled from that sub-order.
+//
+// GATING — deliberately the READ half's asymmetry (resolveGuestOrder, 404-only),
+// not the write half's:
+//   404 — the (link token, order token) pair does not resolve
+//   410 — the link or the host is deactivated: the invitation would be credited to
+//         a host who can no longer log in, and every other write on this surface
+//         treats that as a closed door
+//   409 — this phone already has a PENDING invitation
+//   400 — identity validation / bounds
+// A LOCKED cycle and a CANCELLED sub-order both still succeed: those are the moments
+// a guest is most likely to want an account, and neither makes the lead less real.
+//
+// Nothing but name/phone/email is read from the body. `status`, `source`,
+// `invited_by_friend_id`, `invite_code`, `admin_note` and `processed_at` are all
+// server-owned — this is an unauthenticated write into an admin-facing queue.
+router.post('/:token/orders/:orderToken/invite-request', abuseLimiter, (req, res) => {
+  const resolved = resolveGuestOrder(req.params.token, req.params.orderToken);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  const { link } = resolved;
+
+  if (!link.active || !link.host_active) {
+    return res.status(410).json({
+      error: 'Tento odkaz už nie je aktívny. Požiadajte kolegu o nový.',
+      reason: 'inactive',
+    });
+  }
+
+  // Same rule as checkout (Decision 7), different body vocabulary: this payload is
+  // an invitations-flow one (name/phone/email), and the guest may correct what was
+  // prefilled from their sub-order.
+  const validated = validateIdentity(req.body, INVITE_IDENTITY_FIELDS);
+  if (validated.error) {
+    return res.status(400).json({ error: validated.error, field: validated.field });
+  }
+  const { name, phone, email } = validated.identity;
+
+  if (pendingInvitationByPhone(phone)) {
+    return res.status(409).json({
+      error: 'Žiadosť o účet s týmto telefónnym číslom už evidujeme. Správca sa vám ozve.',
+      reason: 'exists',
+    });
+  }
+
+  // The host's referral code, read from the friends row — never from the body, and
+  // never published to the guest. `invitations.invite_code` is NOT NULL and the
+  // legacy flow stores the code the registration came through, so the host's own is
+  // the faithful value; a friend row without one (only possible for a row that
+  // escaped the invite-code backfill) must not turn this into a 500.
+  const host = db.prepare('SELECT invite_code FROM friends WHERE id = ?').get(link.host_friend_id);
+
+  try {
+    db.prepare(`
+      INSERT INTO invitations (invite_code, invited_by_friend_id, name, phone, email, status, source)
+      VALUES (?, ?, ?, ?, ?, 'pending', ?)
+    `).run(host?.invite_code || '', link.host_friend_id, name, phone, email, INVITE_SOURCE_GUEST_ORDER);
+  } catch (e) {
+    // The pending-phone rule is ALSO a partial unique index, and the check above
+    // loses a race (two taps, two guests with one number). That is still a plain
+    // conflict for the caller, so it must not surface as a 500 — and the SQLite
+    // message must not surface at all.
+    if (/UNIQUE/i.test(e.message || '')) {
+      return res.status(409).json({
+        error: 'Žiadosť o účet s týmto telefónnym číslom už evidujeme. Správca sa vám ozve.',
+        reason: 'exists',
+      });
+    }
+    console.error('Error creating guest invite request:', e.message);
+    return res.status(500).json({ error: 'Žiadosť sa nepodarilo odoslať. Skúste to znova.' });
+  }
+
+  // A bare acknowledgement: this is an anonymous write, so the response carries no
+  // ids, no host details and nothing about the invitations queue.
+  res.status(201).json({ success: true });
 });
 
 export default router;

@@ -338,6 +338,18 @@ const pendingCount = computed(() => {
                 <TableCell>
                   <span>{{ inv.inviter_name }}</span>
                   <span class="text-xs text-muted-foreground ml-1">({{ inv.inviter_uid }})</span>
+                  <!-- GSO-T10 (§Lead Capture): where the lead came from. Sits in the
+                       "Pozval/a" cell because that is the provenance column — the
+                       inviting friend is the host of the guest link. `source` is set
+                       server-side; NULL means the classic invite-code registration,
+                       which needs no tag. -->
+                  <div
+                    v-if="inv.source === 'guest_order'"
+                    class="text-xs text-violet-700"
+                    data-testid="invitation-source-guest"
+                  >
+                    Prišiel cez hosťovskú objednávku
+                  </div>
                 </TableCell>
                 <TableCell class="hidden sm:table-cell text-muted-foreground text-sm">
                   {{ formatDate(inv.created_at) }}

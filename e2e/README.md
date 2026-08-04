@@ -188,6 +188,39 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   pass on `/admin/analytics/rewards` for the guest-share line. ⚠ Its cycles/hosts/
   groups are created per test, and the "Ostatní" bucket is global — so only its
   per-cycle column is asserted, never its cumulative total.
+- `tests/guest-lead-capture.spec.js` — GSO-T10: the lead-capture CTA (§UC-GSO-015,
+  §Lead Capture). `POST /api/guest/:token/orders/:orderToken/invite-request` is a
+  DEDICATED endpoint rather than a reuse of the public `POST /invitations/register`,
+  because that one resolves the inviter from the host's `friends.invite_code` and
+  reusing it would mean publishing the host's referral code into a page any stranger
+  holding the link can read — the link token already identifies the host server-side.
+  It takes the (link, order) token PAIR, so only somebody who actually placed a
+  sub-order can create a lead. The three properties the spec hammers on: the
+  **attribution** (`invited_by_friend_id` = the host of the link, taken from the link,
+  never from the body), the **source tag** (`invitations.source = 'guest_order'`, set
+  server-side, rendered as "Prišiel cez hosťovskú objednávku" in the admin list), and
+  a duplicate pending phone answering a **clean 409, never a 500** — the pending-phone
+  rule is `idx_invitations_phone_pending`, a partial unique index, so the app check
+  alone loses the race and the constraint has to be translated too (verified: removing
+  either half turns both duplicate tests into 500s). Also covers the deliberate
+  gating asymmetry (a **locked** cycle and a **cancelled** sub-order still succeed —
+  that is exactly when a guest asks for an account — while a dead link or a
+  deactivated host 410s, because the lead would be credited to a host who can no
+  longer log in), the GSO-T3 bounds re-applied through the SHARED `validateIdentity()`
+  the checkout now also uses, mass assignment (`status`/`invited_by_friend_id`/
+  `source`/`admin_note`/`invite_code`/`id` all refused, re-read through the ADMIN api),
+  the 404-only resolution (unknown link, unknown order token, and a real order token
+  under a FOREIGN link token — same message, no oracle), the pending-only nature of
+  the phone guard (a rejected lead frees the number), and that the endpoint is
+  **anonymous by design** with a response that is a bare `{ success: true }` — it is
+  not in `ADMIN_ENDPOINTS` because it is deliberately not admin-gated. UI pass on all
+  three surfaces: the confirmation screen's CTA (prefilled from the checkout, submits,
+  and then offers no second submission), the status screen's (same component — one
+  `GuestInviteRequest.vue`, incl. the already-requested state served by
+  `invite_request.requested` after a reload, so the page never offers an action the
+  server would 409), a **cancelled** sub-order still offering it, and the admin
+  invitations list showing the tag while the invitation → new-friend prefill
+  (`create=1&name=&phone=&email=`) still fills the modal.
 - `seed.mjs` — seeds a backend with an admin password, legacy friends password,
   one cycle, one friend (idempotent; NOT for production). Also fills the payment
   settings (IBAN / Revolut username) **only if they are empty**, because guest
