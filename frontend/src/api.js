@@ -99,6 +99,36 @@ async function request(endpoint, options = {}) {
   return response.json()
 }
 
+// Public guest ordering (`/g/:token`). Deliberately NOT `request()`: the URL
+// token is the whole credential, so these calls must carry no Authorization, no
+// X-Friends-Password and no X-Admin-Token — a token left in localStorage by a
+// previous admin session must not change what a guest sees or can do.
+// The HTTP status is attached to the thrown error because the guest page has to
+// tell 404 (no such link) from 410 (closed) from 409 (locked while shopping).
+async function guestRequest(endpoint, options = {}) {
+  const config = {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  }
+  if (options.body && typeof options.body === 'object') {
+    config.body = JSON.stringify(options.body)
+  }
+
+  const response = await fetch(`${API_BASE}${endpoint}`, config)
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}))
+    const err = new Error(payload.error || 'Chyba servera')
+    err.status = response.status
+    if (payload.reason) err.reason = payload.reason
+    if (payload.field) err.field = payload.field
+    if (payload.details) err.details = payload.details
+    throw err
+  }
+
+  return response.json()
+}
+
 function adminRequest(endpoint, options = {}) {
   const adminToken = localStorage.getItem('adminToken')
   if (adminToken) {
@@ -295,6 +325,13 @@ export const api = {
     adminRequest(`/onboarding-links/${id}/regenerate`, { method: 'POST' }),
   deleteOnboardingLink: (id) =>
     adminRequest(`/onboarding-links/${id}`, { method: 'DELETE' }),
+
+  // Public guest ordering (no auth headers — the URL token is the credential)
+  getGuestOrderPage: (token) => guestRequest(`/guest/${encodeURIComponent(token)}`),
+  submitGuestOrder: (token, data) => guestRequest(`/guest/${encodeURIComponent(token)}/orders`, {
+    method: 'POST',
+    body: data
+  }),
 
   // Guest share links (host = the authenticated friend; Bearer token required)
   getGuestLink: (cycleId) => request(`/guest-links/cycle/${cycleId}`),

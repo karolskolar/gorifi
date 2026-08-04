@@ -4,6 +4,7 @@ import { parse } from 'csv-parse/sync';
 import db from '../db/schema.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { safeFetch } from '../helpers/safe-fetch.js';
+import { cycleAvailability } from '../helpers/stock.js';
 import { imageFromUpload, imageFromBody, detectImageMime } from '../helpers/image-upload.js';
 
 const router = Router();
@@ -29,57 +30,13 @@ router.get('/:id', (req, res) => {
   res.json(product);
 });
 
-// Get product availability for stock-limited products in a cycle
+// Get product availability for stock-limited products in a cycle.
+// Counts friend orders AND guest sub-orders (see helpers/stock.js).
 router.get('/cycle/:cycleId/availability', (req, res) => {
-  const cycleId = req.params.cycleId;
-  const excludeFriendId = req.query.excludeFriendId;
-
-  // Get all products with stock limits in this cycle
-  const limitedProducts = db.prepare(
-    'SELECT id, stock_limit_g FROM products WHERE cycle_id = ? AND active = 1 AND stock_limit_g IS NOT NULL'
-  ).all(cycleId);
-
-  if (limitedProducts.length === 0) {
-    return res.json([]);
-  }
-
-  const variantGrams = {
-    '150g': 150, '200g': 200, '250g': 250, '500g': 500, '1kg': 1000, '20pc5g': 100
-  };
-
-  const result = limitedProducts.map(product => {
-    // Get total ordered grams for this product across all submitted orders
-    let query = `
-      SELECT oi.variant, SUM(oi.quantity) as total_qty
-      FROM order_items oi
-      JOIN orders o ON o.id = oi.order_id
-      WHERE oi.product_id = ? AND o.cycle_id = ? AND o.status = 'submitted'
-    `;
-    const params = [product.id, cycleId];
-
-    if (excludeFriendId) {
-      query += ' AND o.friend_id != ?';
-      params.push(excludeFriendId);
-    }
-
-    query += ' GROUP BY oi.variant';
-
-    const items = db.prepare(query).all(...params);
-
-    let orderedGrams = 0;
-    for (const item of items) {
-      orderedGrams += (variantGrams[item.variant] || 0) * item.total_qty;
-    }
-
-    return {
-      product_id: product.id,
-      stock_limit_g: product.stock_limit_g,
-      ordered_g: orderedGrams,
-      remaining_g: Math.max(0, product.stock_limit_g - orderedGrams)
-    };
-  });
-
-  res.json(result);
+  // No excludeGuestOrderId here on purpose: this endpoint is public, and a guest
+  // editing their own sub-order (GSO-T4) reads availability through their own
+  // token-scoped payload, not through an id anyone could pass in a query string.
+  res.json(cycleAvailability(req.params.cycleId, { excludeFriendId: req.query.excludeFriendId }));
 });
 
 // Create single product (manual entry) - with optional image (admin)

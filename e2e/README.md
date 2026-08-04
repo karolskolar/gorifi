@@ -25,8 +25,21 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   must not navigate into the cycle when clicked), incl. a stale-response race
   test: one dialog is reused across cycles, so a `page.route`-delayed GET for a
   closed cycle must not swap in its link (and its buttons must not act on it).
+- `tests/guest-order.spec.js` — GSO-T3: the public guest ordering surface
+  (`GET /api/guest/:token`, `POST /api/guest/:token/orders`) — link resolution
+  (200 / 410 deactivated / 410 non-open cycle / 404 unknown token), identity
+  validation (name + mobile required, ≥9 digits), a successful submit with
+  frozen marked-up prices + `order_token` + payment info, the 409 lock race,
+  and the **stock-limit UNION in both directions** (a guest order shrinks the
+  friend-side availability and cart/submit gates; a friend order shrinks what a
+  guest can submit). Plus a UI pass on `/g/:token` — which needs **no** auth
+  workaround at all, since the page is genuinely public: cart, blocked submit,
+  confirmation (payment reference + personal status URL + localStorage), bakery
+  variant grouping, and the dead-link page.
 - `seed.mjs` — seeds a backend with an admin password, legacy friends password,
-  one cycle, one friend (idempotent; NOT for production).
+  one cycle, one friend (idempotent; NOT for production). Also fills the payment
+  settings (IBAN / Revolut username) **only if they are empty**, because guest
+  confirmation needs them — a real environment's values are never overwritten.
 - `fixtures.js` — credentials/constants, overridable via env.
 
 ## Run against a local prod-like backend
@@ -90,6 +103,17 @@ Mitigations:
   with a generous budget, e.g. `RATE_LIMIT_AUTH_MAX=1000`, to get a true
   pass/fail signal (`rate-limit.spec.js` still self-skips above 10, so this
   doesn't weaken that check).
+
+The same applies to `abuseLimiter` (`RATE_LIMIT_ABUSE_MAX`, default 40 per IP per
+window), which is ONE bucket shared by the public invite-code lookup, onboarding
+submit and — since GSO-T3 — every `/api/guest/:token` call. `guest-order.spec.js`
+alone makes ~35 of them, so a full-suite run against the default budget can 429
+in unrelated-looking places. Run the suite with a generous budget:
+
+```bash
+DB_PATH=/tmp/gorifi-e2e.sqlite PORT=3997 CORS_ORIGIN=http://localhost:3997 \
+  RATE_LIMIT_AUTH_MAX=1000 RATE_LIMIT_ABUSE_MAX=2000 node backend/src/index.js &
+```
 
 ## Run against staging
 

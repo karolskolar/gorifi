@@ -26,6 +26,7 @@ import invitationsRouter from './routes/invitations.js';
 import roasteriesRouter from './routes/roasteries.js';
 import onboardingRouter from './routes/onboarding.js';
 import guestLinksRouter from './routes/guest-links.js';
+import guestRouter from './routes/guest.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -74,6 +75,9 @@ app.use('/api', onboardingRouter);
 // Friend-authenticated (host) surface — NOT admin. Auth is enforced per route
 // inside the router, which requires a resolved per-friend identity.
 app.use('/api/guest-links', guestLinksRouter);
+// Public guest ordering — the URL token is the whole credential, so this mount
+// stays bare (no admin, no friend auth). Every route inside is abuse-rate-limited.
+app.use('/api/guest', guestRouter);
 
 // Fully-admin routers: every route is privileged, so gate the whole mount.
 app.use('/api/bakery-products', requireAdmin, bakeryProductsRouter);

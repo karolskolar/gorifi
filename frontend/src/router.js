@@ -12,6 +12,14 @@ const routes = [
     name: 'friend-order',
     component: () => import('./views/FriendOrder.vue')
   },
+  // Public guest ordering — no auth guard by design: the URL token is the whole
+  // credential (a colleague with the link has no account). The personal status
+  // page `/g/:token/o/:orderToken` arrives with GSO-T4.
+  {
+    path: '/g/:token',
+    name: 'guest-order',
+    component: () => import('./views/GuestOrder.vue')
+  },
   {
     path: '/invite/:code',
     name: 'invite-register',
