@@ -5,6 +5,7 @@ import { requireAdmin } from '../middleware/admin-auth.js';
 import { packOrder, unpackOrder } from '../helpers/packing.js';
 import { gramsByProductFromItems, stockViolations } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup } from '../helpers/pricing.js';
+import { cycleSubOrdersByHost } from '../helpers/guest-orders.js';
 
 const router = Router();
 
@@ -568,6 +569,49 @@ router.get('/cycle/:cycleId', requireAdmin, (req, res) => {
         count_unit: 0
       });
     }
+  }
+
+  // GSO-T6 (§UC-GSO-009): the guest sub-orders placed through each host's share
+  // link, NESTED under that host's row — the admin sees them where the money and
+  // the bags are, not in a separate list. Each carries its items plus both
+  // single-owner flags: `paid` (the admin toggles it via
+  // `PATCH /api/guest-orders/:id/paid`) and `delivered` (the HOST's hand-over tick,
+  // read-only here).
+  //
+  // Always an array, never undefined, so the client has one shape to render.
+  const subOrdersByHost = cycleSubOrdersByHost(cycleId);
+  for (const order of orders) {
+    order.guest_orders = subOrdersByHost.get(order.friend_id) || [];
+  }
+
+  // §Edge Cases, "host has no own order at lock time": a host whose colleagues
+  // ordered but who ordered nothing themselves must still appear, or their guests
+  // (and the guests' money) would be invisible on this screen. The placeholder loop
+  // above only covers ACTIVE friends, so a deactivated host — whose link 410s for
+  // new guests while the existing sub-orders live on — needs one built here.
+  const listedFriends = new Set(orders.map(o => o.friend_id));
+  for (const [hostFriendId, subOrders] of subOrdersByHost) {
+    if (listedFriends.has(hostFriendId)) continue;
+    orders.push({
+      id: null,
+      friend_id: hostFriendId,
+      friend_name: subOrders[0].host_name,
+      friend_balance: balanceByFriend[hostFriendId] ?? 0,
+      cycle_id: parseInt(cycleId),
+      status: 'none',
+      paid: 0,
+      packed: 0,
+      total: 0,
+      items: [],
+      count_150g: 0,
+      count_200g: 0,
+      count_250g: 0,
+      count_500g: 0,
+      count_1kg: 0,
+      count_20pc5g: 0,
+      count_unit: 0,
+      guest_orders: subOrders
+    });
   }
 
   // Sort: submitted first, then draft, then none (by name within each group)

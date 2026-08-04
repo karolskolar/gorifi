@@ -356,6 +356,17 @@ export const api = {
     request(`/guest-orders/${id}/delivered`, { method: 'PATCH', body: { delivered } }),
   deleteGuestOrder: (id) => request(`/guest-orders/${id}`, { method: 'DELETE' }),
 
+  // Guest sub-orders, ADMIN side (same `/guest-orders` prefix, requireAdmin-gated
+  // server-side — the router is mixed-auth on purpose). `paid` is the admin's flag:
+  // the admin is the money recipient, so this is the only place it is written, and
+  // it creates NO balance transaction (guests have no balance account).
+  // `delivered` is the host's tick and the admin only reads it.
+  markGuestOrderPaid: (id, paid) =>
+    adminRequest(`/guest-orders/${id}/paid`, { method: 'PATCH', body: { paid } }),
+  // Who still owes for this cycle — name, amount, payment reference, host, contact
+  // — plus the refund queue (paid but cancelled).
+  getGuestUnpaid: (cycleId) => adminRequest(`/guest-orders/cycle/${cycleId}/unpaid`),
+
   // Roasteries
   getRoasteries: () => request('/roasteries'),
   createRoastery: (data) => request('/roasteries', { method: 'POST', body: data }),

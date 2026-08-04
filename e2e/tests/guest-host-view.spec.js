@@ -1,5 +1,4 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
-import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
 // GSO-T5: the host's "Objednávky kolegov" view — the enriched
@@ -32,48 +31,18 @@ let ctx
 let adminToken
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
-// `paid` is the ADMIN's flag and its toggle arrives with GSO-T6, so there is no
-// HTTP way to set it yet — but the rule "a host may not remove a sub-order the
-// admin already marked paid" has to hold from the moment the removal exists, or
-// GSO-T6 makes real money disappear. So the flag is pre-set straight in the
-// SQLite file the server under test is using.
+// Mark a sub-order paid — through the ADMIN's real endpoint (GSO-T6).
 //
-// Local runs point at it with the same DB_PATH the recipe exports for the server
-// (see e2e/README.md); a remote target (staging) has no reachable file, so the one
-// describe that needs it self-skips, exactly as rate-limit.spec.js does for its
-// low-limit precondition.
-//
-// ⚠ NO default path. Guessing one (e.g. the README's /tmp/gorifi-e2e.sqlite) can
-// open a leftover database from an earlier session that is NOT the one the server
-// under test is using — the write then lands nowhere visible and the test fails
-// for a reason that has nothing to do with the code. Explicit or skipped.
-const DB_PATH = process.env.DB_PATH || ''
-
-function openDb(options = {}) {
-  return new DatabaseSync(DB_PATH, options)
-}
-
-function dbReachable() {
-  if (!DB_PATH) return false
-  try {
-    openDb({ readOnly: true }).close()
-    return true
-  } catch {
-    return false
-  }
-}
-
-// Mark a sub-order paid the way GSO-T6's admin toggle will (flag + timestamp).
-function markPaidInDb(guestOrderId) {
-  const db = openDb()
-  try {
-    const result = db.prepare(
-      'UPDATE guest_orders SET paid = 1, paid_at = CURRENT_TIMESTAMP WHERE id = ?'
-    ).run(guestOrderId)
-    expect(Number(result.changes), 'the sub-order must exist in the DB under test').toBe(1)
-  } finally {
-    db.close()
-  }
+// This used to write the server's SQLite file directly, because `paid` is the
+// admin's flag and had no HTTP setter while GSO-T5 was the newest task; the one
+// describe that needed it therefore self-skipped without a reachable DB_PATH. The
+// endpoint exists now, so the guard below is exercised exactly as production will
+// exercise it — and this spec needs no database file, which also means it runs in
+// full against staging.
+async function markPaid(guestOrderId) {
+  const res = await admin(`/api/guest-orders/${guestOrderId}/paid`, { method: 'patch', data: { paid: true } })
+  expect(res.status(), 'admin marks the sub-order paid').toBe(200)
+  expect((await res.json()).guest_order.paid).toBe(1)
 }
 
 async function admin(path, opts = {}) {
@@ -530,10 +499,6 @@ test.describe('DELETE — the host removes a sub-order (UC-GSO-008)', () => {
 })
 
 test.describe('DELETE — a PAID sub-order is the admin\'s business', () => {
-  // Needs to reach the server's SQLite file to pre-set `paid` (GSO-T6 owns the
-  // only legitimate toggle and does not exist yet).
-  test.skip(!dbReachable(), 'export DB_PATH (the server\'s own SQLite file) so the admin-only paid flag can be pre-set')
-
   test('a host cannot remove a sub-order the admin already marked paid (409)', async () => {
     // Soft-cancelling zeroes `total`, and every "not cancelled" aggregate then
     // drops the row — so money the colleague really sent would become invisible,
@@ -544,7 +509,7 @@ test.describe('DELETE — a PAID sub-order is the admin\'s business', () => {
       productData: { stock_limit_g: 1000 },
     })
     const created = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 2 }])
-    markPaidInDb(created.order.id)
+    await markPaid(created.order.id)
 
     const res = await removeSubOrder(host, created.order.id)
     expect(res.status(), 'a paid sub-order cannot be removed by the host').toBe(409)

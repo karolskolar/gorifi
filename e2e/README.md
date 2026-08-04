@@ -82,11 +82,47 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   One describe (`DELETE — a PAID sub-order is the admin's business`) pins the rule
   that a host may **not** soft-cancel a sub-order the admin already marked paid
   (409 `reason: 'paid'`) — cancelling zeroes the total and drops the row from every
-  "not cancelled" aggregate, so paid money would go invisible. `paid` has no HTTP
-  setter until GSO-T6, so that test pre-sets the flag directly in the server's
-  SQLite file via `node:sqlite` and therefore needs **`DB_PATH` exported for the
-  Playwright process too** (same value as the server's — see the recipe below); it
-  self-skips when the file is unreachable, e.g. against staging.
+  "not cancelled" aggregate, so paid money would go invisible. Since GSO-T6 it sets
+  the flag through the admin endpoint, so this spec needs no database file and runs
+  in full against any target.
+- `tests/guest-admin-view.spec.js` — GSO-T6: the ADMIN side of guest sub-orders.
+  `PATCH /api/guest-orders/:id/paid` (paid on/off with `paid_at` set and CLEARED,
+  and **no `transactions` row** — guests have no balance account, so the friend
+  endpoint's payment/reversal logic must NOT be copied; asserted by the host's
+  transaction count and balance standing still, plus a global row count when
+  `DB_PATH` happens to be exported), `GET /api/guest-orders/cycle/:id/unpaid` (the
+  receivables list: amount, the **same** `G<id> / Name / Cycle` reference the guest
+  is shown, host, contact — paid and cancelled excluded, and a `paid + cancelled`
+  refund queue whose amount is recomputed from the kept item rows because
+  cancelling zeroes `total`), and both new routes' auth boundaries (anonymous 401,
+  and a **host token rejected** — the mirror of GSO-T5's "an admin token is not host
+  identity"). Decision 2 is pinned from the admin side for the first time: the admin
+  cannot write `delivered`/`status`/`total` through the paid body (verified by
+  re-reading the row). `unpaid_count` in `GET /api/cycles` is asserted to include
+  guest sub-orders **while `orders_count` and the roastery breakdown stay
+  unchanged** — the guest tables join in as a correlated subquery precisely because
+  a second `LEFT JOIN` would multiply the friend-order aggregate. Plus a UI pass on
+  the admin cycle detail: sub-orders nested under their host with the
+  "Hosť • pozval X" badge, the paid toggle persisting across a reload, `delivered`
+  shown read-only (no control offered), and the unpaid overview reacting to the
+  toggle. One describe (`A PAID sub-order is frozen against item edits`) pins the
+  sibling of GSO-T5's DELETE guard: a **non-empty** `PUT` on a paid sub-order is
+  409 `reason: 'paid'` (what is owed cannot change once the payment was recorded —
+  otherwise the difference shows on no admin surface, and the refund amount drifts),
+  while a literal `items: []` **still cancels**; clearing `paid` unfreezes it, and the
+  guest's status page offers no edit affordance while paid, only the cancel the server
+  accepts. A deactivated host's placeholder row (their guests must not vanish from the
+  admin's orders tab) is pinned too. A separate describe pins the Orders tab's rendering across the three
+  states its v-if/v-else-if/v-else chain (empty scaffold / product view / friend
+  view) can be in — nothing submitted yet, orders with no guest sub-orders, and
+  orders with an unpaid guest sub-order (i.e. the guest-unpaid Card visible) — and
+  toggles BOTH the "Podľa priateľa" and "Podľa produktu" views in the last one.
+  This is the regression an API test cannot see: the implementer's fix keeps the
+  card as a sibling ABOVE the chain rather than an extra link inside it, and a
+  temporary revert-to-buggy-placement check (Card re-inserted as a chain link,
+  reverted byte-identical afterwards) confirmed the "card visible" test fails on
+  the old placement while the other two states stay green, exactly matching the
+  bug's conditional nature.
 - `seed.mjs` — seeds a backend with an admin password, legacy friends password,
   one cycle, one friend (idempotent; NOT for production). Also fills the payment
   settings (IBAN / Revolut username) **only if they are empty**, because guest
@@ -103,8 +139,10 @@ DB_PATH=/tmp/gorifi-e2e.sqlite PORT=3997 CORS_ORIGIN=http://localhost:3997 node 
 cd e2e
 npm install && npx playwright install --with-deps chromium
 BASE_URL=http://localhost:3997 node seed.mjs
-# DB_PATH is the same file the server was started with; guest-host-view.spec.js
-# needs it to pre-set the admin-only `paid` flag (it self-skips without it).
+# DB_PATH is optional: no spec requires it any more. When it points at the same
+# file the server was started with, guest-admin-view.spec.js adds one extra
+# assertion (a GLOBAL `transactions` row count around the guest paid toggle,
+# which also catches a row written with a NULL friend_id).
 DB_PATH=/tmp/gorifi-e2e.sqlite BASE_URL=http://localhost:3997 npm test
 ```
 

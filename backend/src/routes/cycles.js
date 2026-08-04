@@ -7,10 +7,33 @@ const router = Router();
 
 // Get all order cycles (admin)
 router.get('/', requireAdmin, (req, res) => {
+  // ⚠ The guest sub-orders join in as a CORRELATED SUBQUERY, never as a second
+  // LEFT JOIN. This query aggregates over `LEFT JOIN orders`, so a second join onto
+  // guest_orders would multiply every friend-order row by the number of guest
+  // sub-orders in the cycle — `orders_count` and the `unpaid_count` friend term
+  // would both inflate (the DISTINCT saves the id counts only if every CASE is
+  // wrapped in it, and nothing would save a SUM). The subquery is evaluated once
+  // per group and cannot touch the friend aggregate at all.
+  //
+  // §UC-GSO-010: guests owe the admin directly, so an unpaid guest sub-order is an
+  // outstanding payment for the cycle exactly as an unpaid friend order is.
+  // Cancelled sub-orders owe nothing — the same
+  // `COALESCE(status,'submitted') <> 'cancelled'` predicate helpers/stock.js uses,
+  // because `status` is nullable with a DEFAULT.
+  const GUEST_UNPAID = `
+    SELECT COUNT(*) FROM guest_orders gord
+    JOIN guest_order_links glink ON glink.id = gord.link_id
+    WHERE glink.cycle_id = c.id
+      AND COALESCE(gord.status, 'submitted') <> 'cancelled'
+      AND gord.paid = 0
+  `;
+
   const cycles = db.prepare(`
     SELECT c.*,
            COUNT(DISTINCT CASE WHEN o.status = 'submitted' THEN o.id END) as orders_count,
-           COUNT(DISTINCT CASE WHEN o.status = 'submitted' AND o.paid = 0 THEN o.id END) as unpaid_count
+           COUNT(DISTINCT CASE WHEN o.status = 'submitted' AND o.paid = 0 THEN o.id END)
+             + (${GUEST_UNPAID}) as unpaid_count,
+           (${GUEST_UNPAID}) as guest_unpaid_count
     FROM order_cycles c
     LEFT JOIN orders o ON o.cycle_id = c.id
     GROUP BY c.id

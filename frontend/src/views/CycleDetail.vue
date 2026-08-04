@@ -102,7 +102,13 @@ function toggleExpandProduct(key) {
   expandedProducts.value = new Set(expandedProducts.value)
 }
 
-const submittedOrders = computed(() => orders.value.filter(o => o.status === 'submitted' || o.status === 'draft'))
+// A host whose colleagues ordered is listed even when they ordered NOTHING
+// themselves (§Edge Cases: "host has no own order at lock time") — otherwise the
+// guest sub-orders nested under them, and the money owed for them, would be
+// invisible on this screen. Such a row contributes 0 to every total below.
+const submittedOrders = computed(() => orders.value.filter(
+  o => o.status === 'submitted' || o.status === 'draft' || (o.guest_orders && o.guest_orders.length > 0)
+))
 
 // Group by product: { productKey: { product_name, purpose, variant, total_quantity, total_price, friends: [{ friend_name, quantity, price }] } }
 const ordersByProduct = computed(() => {
@@ -203,10 +209,86 @@ async function loadAll() {
     planNote.value = cycleData.plan_note || ''
     parcelEnabled.value = !!cycleData.parcel_enabled
     parcelFee.value = cycleData.parcel_fee || 0
+    // Non-blocking: the orders tab still renders (with the nested sub-orders that
+    // came with `ordersData`) if only the money overview fails.
+    await loadGuestUnpaid()
   } catch (e) {
     error.value = e.message
   } finally {
     loading.value = false
+  }
+}
+
+// Guest sub-orders, admin side (§UC-GSO-009..010) ----------------------------
+//
+// `paid` is the ADMIN's flag: this view is the only place it is written, and doing
+// so creates NO balance transaction — guests pay the admin directly and have no
+// balance account (Decision 1). `delivered` is the HOST's hand-over tick and is
+// rendered read-only here (Decision 2), which is why no handler below touches it.
+
+const guestUnpaid = ref({ unpaid: [], totals: { count: 0, total: 0 }, refunds: [], refund_totals: { count: 0, total: 0 } })
+// Pending state is PER SUB-ORDER, so one slow request never blocks another row.
+const guestPaidPending = ref({})
+const guestUnpaidError = ref('')
+
+// ⚠ SEQUENCE GUARD (the repo's `loadSeq` convention). `guestPaidPending` is per
+// sub-order on purpose, so two rows can be toggled concurrently — and each toggle
+// refetches this overview, so two responses can resolve out of order and leave a
+// SUPERSEDED receivables list on screen. On a money screen that is a wrong answer,
+// not a cosmetic flicker.
+let unpaidSeq = 0
+
+async function loadGuestUnpaid() {
+  const seq = ++unpaidSeq
+  try {
+    const data = await api.getGuestUnpaid(cycleId.value)
+    if (seq !== unpaidSeq) return
+    guestUnpaid.value = data
+    guestUnpaidError.value = ''
+  } catch (e) {
+    if (seq !== unpaidSeq) return
+    // Reported inline next to the overview, never silently swallowed: an empty list
+    // and a failed load look identical, and "nobody owes anything" is exactly the
+    // wrong conclusion to draw from a network error.
+    guestUnpaidError.value = e.message
+  }
+}
+
+// The first name of the host who invited this guest — what the nested badge says
+// ("Hosť • pozval Peťo"), so a sub-order is never mistaken for the host's own.
+function firstName(name) {
+  return String(name || '').trim().split(/\s+/)[0] || ''
+}
+
+function isGuestCancelled(subOrder) {
+  return (subOrder.status || 'submitted') === 'cancelled'
+}
+
+async function toggleGuestPaid(subOrder) {
+  const id = subOrder.id
+  if (guestPaidPending.value[id]) return
+  guestPaidPending.value = { ...guestPaidPending.value, [id]: true }
+  const previous = { paid: subOrder.paid, paid_at: subOrder.paid_at }
+  const next = subOrder.paid ? 0 : 1
+  // Optimistic, so the toggle stays where it was clicked while the request runs.
+  subOrder.paid = next
+  try {
+    const data = await api.markGuestOrderPaid(id, !!next)
+    if (data.guest_order) {
+      subOrder.paid = data.guest_order.paid
+      subOrder.paid_at = data.guest_order.paid_at
+    }
+    // The overview is derived from the same flag, so it has to follow.
+    await loadGuestUnpaid()
+  } catch (e) {
+    // A refused toggle must never leave the UI claiming money arrived.
+    subOrder.paid = previous.paid
+    subOrder.paid_at = previous.paid_at
+    error.value = e.message
+  } finally {
+    const pending = { ...guestPaidPending.value }
+    delete pending[id]
+    guestPaidPending.value = pending
   }
 }
 
@@ -992,6 +1074,90 @@ function getStatusVariant(status) {
             </div>
           </div>
 
+          <!-- Guest money overview (§UC-GSO-010). Guests pay the admin directly, so
+               this is the receivables list: the payment reference is what matches an
+               incoming bank transfer to one sub-order.
+               ⚠ Placed ABOVE the empty-state div on purpose: that div opens the
+               v-if / v-else-if / v-else chain of the two order tables, and an
+               independent v-if slipped between its links breaks the chain — the
+               tables then silently stop rendering whenever this card shows. -->
+          <Card
+            v-if="guestUnpaid.unpaid.length > 0 || guestUnpaid.refunds.length > 0 || guestUnpaidError"
+            class="mb-4"
+            data-testid="guest-unpaid-overview"
+          >
+            <CardContent class="p-4">
+              <div v-if="guestUnpaidError" class="text-sm text-destructive">
+                Prehľad platieb hostí sa nepodarilo načítať: {{ guestUnpaidError }}
+              </div>
+
+              <template v-if="guestUnpaid.unpaid.length > 0">
+                <h3 class="text-sm font-medium mb-1">
+                  Nezaplatené objednávky hostí ({{ guestUnpaid.totals.count }})
+                </h3>
+                <p class="text-xs text-muted-foreground mb-3">
+                  Spolu {{ formatPrice(guestUnpaid.totals.total) }}. Hostia platia priamo správcovi —
+                  platbu spárujte podľa referencie.
+                </p>
+                <div class="space-y-2">
+                  <div
+                    v-for="row in guestUnpaid.unpaid"
+                    :key="`unpaid-${row.id}`"
+                    class="flex flex-wrap items-center justify-between gap-2 rounded-md border p-2 text-sm"
+                    :data-testid="`guest-unpaid-row-${row.id}`"
+                  >
+                    <div class="min-w-0">
+                      <div class="font-medium">
+                        {{ row.guest_name }}
+                        <span class="text-xs font-normal text-muted-foreground">
+                          — hosť, pozval {{ row.host.name }}
+                        </span>
+                      </div>
+                      <div class="text-xs text-muted-foreground">
+                        {{ row.guest_phone }}<span v-if="row.guest_email"> · {{ row.guest_email }}</span>
+                      </div>
+                      <div class="text-xs font-mono text-muted-foreground">{{ row.reference }}</div>
+                    </div>
+                    <div class="font-semibold">{{ formatPrice(row.amount) }}</div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Money received for a sub-order that was later cancelled: it has to
+                   go back. Unticking "zaplatené" on the row takes it off this list. -->
+              <template v-if="guestUnpaid.refunds.length > 0">
+                <h3 class="text-sm font-medium mt-4 mb-1">
+                  Na vrátenie ({{ guestUnpaid.refund_totals.count }})
+                </h3>
+                <p class="text-xs text-muted-foreground mb-2">
+                  Zaplatené, no zrušené objednávky — spolu {{ formatPrice(guestUnpaid.refund_totals.total) }}.
+                </p>
+                <div class="space-y-2">
+                  <div
+                    v-for="row in guestUnpaid.refunds"
+                    :key="`refund-${row.id}`"
+                    class="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-sm"
+                    :data-testid="`guest-refund-row-${row.id}`"
+                  >
+                    <div class="min-w-0">
+                      <div class="font-medium">
+                        {{ row.guest_name }}
+                        <span class="text-xs font-normal text-muted-foreground">
+                          — hosť, pozval {{ row.host.name }}
+                        </span>
+                      </div>
+                      <div class="text-xs text-muted-foreground">
+                        {{ row.guest_phone }}<span v-if="row.guest_email"> · {{ row.guest_email }}</span>
+                      </div>
+                      <div class="text-xs font-mono text-muted-foreground">{{ row.reference }}</div>
+                    </div>
+                    <div class="font-semibold">{{ formatPrice(row.amount) }}</div>
+                  </div>
+                </div>
+              </template>
+            </CardContent>
+          </Card>
+
           <div v-if="orders.length === 0" class="text-center py-12 text-muted-foreground">
             Zatiaľ žiadne objednávky
           </div>
@@ -1199,6 +1365,80 @@ function getStatusVariant(status) {
                         </div>
                       </div>
                       <div v-else class="text-sm text-muted-foreground">Žiadne položky</div>
+                    </TableCell>
+                  </TableRow>
+
+                  <!-- Guest sub-orders (§UC-GSO-009), NESTED under their host: the
+                       colleagues who ordered through this friend's share link.
+                       The admin owns `paid` (toggle) and only READS the host's
+                       `delivered` tick — Decision 2, single owner per flag. -->
+                  <TableRow
+                    v-for="sub in (order.guest_orders || [])"
+                    :key="`guest-${sub.id}`"
+                    class="bg-violet-50/40"
+                    :class="isGuestCancelled(sub) ? 'opacity-60' : ''"
+                    :data-testid="`guest-suborder-${sub.id}`"
+                  >
+                    <TableCell></TableCell>
+                    <TableCell :colspan="2 + (isBakery ? 1 : visibleVariantColumns.length)">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <!-- Violet, so a sub-order can never be mistaken for the
+                             host's own order or for a delivery badge (pickup blue,
+                             Packeta red, paid green, unpaid amber, cancelled stone). -->
+                        <Badge
+                          variant="outline"
+                          class="text-xs border-violet-400 text-violet-700 bg-violet-50"
+                        >
+                          Hosť • pozval {{ firstName(order.friend_name) }}
+                        </Badge>
+                        <span class="font-medium text-sm">{{ sub.guest_name }}</span>
+                        <span class="text-xs text-muted-foreground">{{ sub.guest_phone }}</span>
+                        <span v-if="sub.guest_email" class="text-xs text-muted-foreground">{{ sub.guest_email }}</span>
+                      </div>
+                      <div v-if="sub.items && sub.items.length > 0" class="mt-1 text-xs text-muted-foreground">
+                        <span v-for="(item, i) in sub.items" :key="item.id">
+                          <span v-if="i > 0"> · </span>{{ item.quantity }}× {{ item.product_name }}<!--
+                          -->{{ item.variant_label ? ` (${item.variant_label})` : (item.variant && item.variant !== 'unit' ? ` (${item.variant})` : '') }}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div class="flex flex-wrap items-center gap-1">
+                        <Badge
+                          v-if="isGuestCancelled(sub)"
+                          variant="outline"
+                          class="text-xs border-stone-400 text-stone-600 bg-stone-50"
+                        >
+                          Zrušené
+                        </Badge>
+                        <!-- READ-ONLY: `delivered` belongs to the host (their
+                             hand-over checklist). No control is offered here — the
+                             admin's own delivery tracking is the Distribution
+                             packing flow, a separate concept. -->
+                        <span
+                          class="text-xs"
+                          :class="sub.delivered ? 'text-green-700' : 'text-muted-foreground'"
+                          :data-testid="`guest-delivered-state-${sub.id}`"
+                          title="Odovzdanie eviduje hostiteľ"
+                        >
+                          {{ sub.delivered ? 'Odovzdané' : 'Neodovzdané' }}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell class="text-right text-sm">{{ formatPrice(sub.total) }}</TableCell>
+                    <TableCell class="text-center">
+                      <button
+                        @click="toggleGuestPaid(sub)"
+                        :disabled="!!guestPaidPending[sub.id]"
+                        :aria-pressed="sub.paid ? 'true' : 'false'"
+                        :title="sub.paid ? 'Označiť ako nezaplatené' : 'Označiť ako zaplatené'"
+                        :data-testid="`guest-paid-toggle-${sub.id}`"
+                        :class="['w-6 h-6 rounded border-2 flex items-center justify-center mx-auto', sub.paid ? 'bg-green-500 border-green-500 text-white' : 'border-border']"
+                      >
+                        <svg v-if="sub.paid" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                        </svg>
+                      </button>
                     </TableCell>
                   </TableRow>
                 </template>

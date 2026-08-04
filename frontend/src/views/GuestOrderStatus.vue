@@ -35,6 +35,10 @@ import {
 //   - editable  — the cycle is open, the link is alive, the sub-order is live:
 //                 items can be changed through the same grid as `/g/:token`, and
 //                 emptying the cart cancels the sub-order.
+//   - paid      — the admin has recorded the payment: the ITEMS are frozen (the
+//                 server 409s a non-empty edit, because what is owed cannot change
+//                 after the money arrived), but the sub-order can still be
+//                 CANCELLED, so the page offers exactly that and nothing more.
 //   - read-only — the cycle has locked (or the host deactivated the link). The
 //                 order and the payment reference stay on screen, because the
 //                 guest still owes the money; only the edit affordances go.
@@ -43,8 +47,8 @@ import {
 //                 produces the same state.
 //
 // `paid` (toggled by the ADMIN, GSO-T6) and `delivered` (by the HOST, GSO-T5) are
-// displayed read-only; both stay 0 until those tasks ship their toggles. "Zaplatiť"
-// re-opens the shared PaymentModal and disappears once `paid` is set.
+// displayed read-only. "Zaplatiť" re-opens the shared PaymentModal and disappears
+// once `paid` is set.
 
 const route = useRoute()
 const token = computed(() => route.params.token)
@@ -60,6 +64,11 @@ const order = ref(null)
 const items = ref([])
 const payment = ref(null)
 const editable = ref(false)
+// A SECOND, finer flag from the server (GSO-T6): once the admin records the payment,
+// the ITEMS are frozen — what is owed may not be rewritten after the money arrived —
+// while cancelling the whole sub-order stays allowed. Both come from the backend so
+// this page can still never offer an action the backend would refuse.
+const itemsEditable = ref(false)
 const products = ref([])
 const availability = ref({})
 
@@ -157,6 +166,9 @@ function applyStatus(data) {
   items.value = data.items || []
   payment.value = data.payment
   editable.value = !!data.editable
+  // Older payloads (before the paid freeze) carried only `editable`; fall back to it
+  // rather than silently locking every edit.
+  itemsEditable.value = data.items_editable === undefined ? !!data.editable : !!data.items_editable
   products.value = data.products || []
   availability.value = availabilityMap(data.availability)
   refreshStoredEntry()
@@ -392,12 +404,38 @@ async function copyReference() {
             </p>
           </template>
 
+          <!-- An error from a cancel started OUTSIDE edit mode (the paid case below)
+               has no other place to appear — the edit screen's alert is not mounted. -->
+          <Alert v-if="editError && !editing" variant="destructive">
+            <AlertDescription data-testid="status-error">{{ editError }}</AlertDescription>
+          </Alert>
+
           <!-- Edit affordance, only while the server says an edit would be accepted -->
-          <div v-if="editable && !editing" class="pt-1">
+          <div v-if="itemsEditable && !editing" class="pt-1">
             <Button variant="outline" class="w-full" data-testid="start-edit" @click="startEditing">
               Upraviť objednávku
             </Button>
           </div>
+          <!-- Paid: the items are frozen server-side, so no edit button is offered —
+               but cancelling is still the guest's own call, and it is the only thing
+               the backend would accept here. -->
+          <template v-else-if="editable && isPaid && !isCancelled && !editing">
+            <Alert data-testid="paid-locked">
+              <AlertDescription>
+                Platba je zaevidovaná, obsah objednávky už nie je možné zmeniť.
+                Zmenu vyriešte so správcom. Objednávku môžete zrušiť.
+              </AlertDescription>
+            </Alert>
+            <Button
+              variant="ghost"
+              class="w-full text-destructive hover:text-destructive"
+              data-testid="cancel-order"
+              :disabled="saving"
+              @click="requestCancel"
+            >
+              {{ saving ? 'Ruším…' : 'Zrušiť objednávku' }}
+            </Button>
+          </template>
           <Alert v-else-if="!editable && !isCancelled" data-testid="status-readonly">
             <AlertDescription>{{ readOnlyReason }}</AlertDescription>
           </Alert>

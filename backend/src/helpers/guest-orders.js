@@ -15,15 +15,40 @@ import db from '../db/schema.js';
 // it (GSO-T2 rule). Only routes/guest.js — where the token IS the credential —
 // selects it.
 
-const GUEST_ORDER_COLUMNS = `
-  id, link_id, guest_name, guest_phone, guest_email, status, total,
-  paid, paid_at, delivered, delivered_at, created_at
-`;
+const GUEST_ORDER_FIELDS = [
+  'id', 'link_id', 'guest_name', 'guest_phone', 'guest_email', 'status', 'total',
+  'paid', 'paid_at', 'delivered', 'delivered_at', 'created_at',
+];
+
+const GUEST_ORDER_COLUMNS = GUEST_ORDER_FIELDS.join(', ');
+
+// The same field list qualified with a table alias, for the joined reads (a
+// sub-order plus its host / cycle). One list, so a column can never be published
+// on one surface and missing on another.
+function guestOrderColumns(alias) {
+  return GUEST_ORDER_FIELDS.map((field) => `${alias}.${field}`).join(', ');
+}
 
 // `guest_orders.status` is nullable with a 'submitted' DEFAULT, so never compare
 // it bare — same reason helpers/stock.js wraps it in COALESCE.
+//
+// ⚠ ONE HOME. routes/guest.js carried an identical private `orderStatus()` until
+// GSO-T6; both callers now import this. Two copies of the "nullable status"
+// rule is exactly how one of them ends up comparing the raw column.
 export function guestOrderStatus(order) {
   return order?.status || 'submitted';
+}
+
+// The payment reference the guest is told to put on their transfer, and the ONLY
+// thing that ties an incoming bank payment to a sub-order (Decision 1).
+//
+// `G<id>` is what makes it unambiguous — duplicate first names are the norm in a
+// group order. It is produced in three places (the guest's confirmation screen,
+// their status page, and the admin's unpaid overview) and every one of them MUST
+// render the identical string, so it is built here once. A second, drifting
+// formatter would mean the admin chasing a reference the guest was never given.
+export function guestPaymentReference(order, cycleName) {
+  return `G${order.id} / ${order.guest_name} / ${cycleName}`;
 }
 
 // The line items of the given sub-orders, attached in place as `items`.
@@ -93,6 +118,42 @@ export function loadSubOrder(id) {
   if (!order) return null;
   attachItems([order]);
   return order;
+}
+
+// Every sub-order of a whole CYCLE (not of one link), each with its items and its
+// host, in one query — the admin's cycle-wide reads.
+//
+// Deliberately NOT filtered:
+//   - by status: a cancelled sub-order is part of the record and the admin views
+//     mark it as such (same rule as the host view). Callers that mean "owed for"
+//     or "counts towards kilos" filter on `guestOrderStatus()` themselves.
+//   - by `friends.active`: a deactivated host stops taking NEW sub-orders
+//     (routes/guest.js 410s their link), but the ones already placed still have to
+//     be handed over and paid for. Dropping them here would make real money
+//     invisible on the admin's screens.
+export function cycleSubOrders(cycleId) {
+  if (!cycleId) return [];
+  const rows = db.prepare(`
+    SELECT ${guestOrderColumns('gord')},
+           glink.host_friend_id, f.name AS host_name, f.active AS host_active
+    FROM guest_orders gord
+    JOIN guest_order_links glink ON glink.id = gord.link_id
+    JOIN friends f ON f.id = glink.host_friend_id
+    WHERE glink.cycle_id = ?
+    ORDER BY gord.created_at, gord.id
+  `).all(cycleId);
+  return attachItems(rows);
+}
+
+// The same set grouped by host, for nesting sub-orders under their host's order in
+// the admin cycle detail (§UC-GSO-009). Keys are `host_friend_id`.
+export function cycleSubOrdersByHost(cycleId) {
+  const byHost = new Map();
+  for (const row of cycleSubOrders(cycleId)) {
+    if (!byHost.has(row.host_friend_id)) byHost.set(row.host_friend_id, []);
+    byHost.get(row.host_friend_id).push(row);
+  }
+  return byHost;
 }
 
 // A sub-order together with everything needed to authorize a host action on it:

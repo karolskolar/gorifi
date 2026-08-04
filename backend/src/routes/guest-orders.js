@@ -1,9 +1,12 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
 import { requireHost } from '../middleware/friend-auth.js';
+import { requireAdmin } from '../middleware/admin-auth.js';
 import {
+  cycleSubOrders,
   findSubOrderWithLink,
   guestOrderStatus,
+  guestPaymentReference,
   linkTotals,
   loadSubOrder,
 } from '../helpers/guest-orders.js';
@@ -12,13 +15,16 @@ const router = Router();
 
 // Mutations on a single guest sub-order.
 //
-// ⚠ MIXED-AUTH ROUTER — mounted BARE in index.js and gated PER ROUTE. The two
-// routes here are the HOST's (§UC-GSO-007/008, friend Bearer identity), while
-// GSO-T6 adds ADMIN routes on this same prefix (`PATCH /:id/paid` and
-// `GET /cycle/:cycleId/unpaid`, each with `requireAdmin`). Wrapping the mount in
-// either guard would therefore be wrong in both directions — T6 would have to
-// unpick a `requireAdmin` mount, and an admin route cannot live under a host
-// guard. Every route added here MUST state its own guard on its first lines.
+// ⚠ MIXED-AUTH ROUTER — mounted BARE in index.js and gated PER ROUTE:
+//   HOST-only  (friend Bearer identity, §UC-GSO-007/008)
+//     PATCH  /:id/delivered
+//     DELETE /:id
+//   ADMIN-only (`requireAdmin`, §UC-GSO-009/010)
+//     PATCH  /:id/paid
+//     GET    /cycle/:cycleId/unpaid
+// Wrapping the mount in either guard would be wrong in both directions — an admin
+// route cannot live under a host guard, and vice versa. Every route added here
+// MUST state its own guard on its first lines.
 //
 // Decision 2, "single-owner flags", is what this file is about:
 //   - `delivered` is HOST-only — the hand-over checklist. The host ticks it when
@@ -215,6 +221,132 @@ router.delete('/:id', (req, res) => {
   }
 
   res.json(mutationPayload(row));
+});
+
+// ---------------------------------------------------------------------------
+// ADMIN routes (§UC-GSO-009..010). From here down every handler is
+// `requireAdmin`-gated: the admin is the money recipient (Decision 1), and under
+// Decision 2 `paid` is theirs alone — a host Bearer token, the shared friends
+// password and an anonymous request are all 401 here, exactly as an admin token is
+// not host identity on the two routes above.
+// ---------------------------------------------------------------------------
+
+// PATCH /guest-orders/:id/paid — the admin matched an incoming payment to the
+// sub-order's `G<id>` reference (§UC-GSO-009). ADMIN-only.
+// Body: { paid? } — an explicit boolean sets the state, an absent field toggles.
+//
+// ⚠ NO `transactions` ROW. The friend equivalent (`PATCH /api/orders/:id/paid`)
+// inserts a `payment` transaction (and a negative reversal when unticked) because
+// friends have a running balance keyed on `friend_id`. A guest is not a friend:
+// `guest_orders` has no `friend_id`, guests have no balance account, and Decision 1
+// says they pay the admin directly. `paid` + `paid_at` on the row IS the whole
+// bookkeeping. Copying the friend handler's transaction logic would move a REAL
+// friend's balance (the host's — the only friend anywhere near this row) for money
+// that never went through it, or write a row keyed on NULL that no balance query
+// can ever see again. The host's payable total stays own-items-only; guest money is
+// the admin's receivable (§UC-GSO-006).
+//
+// NOT gated on the sub-order's status, unlike the delivered tick above. That
+// asymmetry is deliberate: `delivered` asserts a hand-over, which cannot have
+// happened for a cancelled order — whereas money genuinely can arrive for an order
+// that was then called off, and the refund workflow needs to CLEAR the flag
+// afterwards. `paid = 1 AND status = 'cancelled'` is precisely the refund queue the
+// unpaid overview below surfaces.
+router.patch('/:id/paid', requireAdmin, (req, res) => {
+  const row = findSubOrderWithLink(req.params.id);
+  if (!row) {
+    return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
+  }
+
+  const requested = req.body?.paid;
+  const paid = requested === undefined ? !row.paid : !!requested;
+
+  // Two literal statements, for the same two reasons as the delivered toggle: the
+  // timestamp rule ("set on tick, CLEARED on untick") cannot be got half-right,
+  // and NOTHING outside these two columns can be written from here. The request
+  // body is never spread into SQL, so a `delivered: 1` (the HOST's flag), a
+  // `status`, `total`, `guest_name` or `link_id` smuggled into this body lands
+  // nowhere. `paid_at` is server time, never the caller's.
+  if (paid) {
+    db.prepare('UPDATE guest_orders SET paid = 1, paid_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(row.id);
+  } else {
+    db.prepare('UPDATE guest_orders SET paid = 0, paid_at = NULL WHERE id = ?')
+      .run(row.id);
+  }
+
+  res.json(mutationPayload(row));
+});
+
+// GET /guest-orders/cycle/:cycleId/unpaid — the admin's money overview for a cycle
+// (§UC-GSO-010): who has not paid yet, how much, under which reference, through
+// which host, and how to reach them. ADMIN-only.
+//
+// Two lists, because two different actions are needed:
+//   `unpaid`  — live sub-orders with `paid = 0`: money still owed. Cancelled ones
+//               are excluded (nothing is owed for them), consistent with
+//               helpers/stock.js and the host's own totals.
+//   `refunds` — `paid = 1 AND status = 'cancelled'`: money received for an order
+//               that no longer exists, so it has to go back. GSO-T5's DELETE guard
+//               stops a HOST creating this state, but a guest can still empty their
+//               own cart after paying, and the admin may cancel after refunding —
+//               and no other screen in the app shows it at all. Clearing `paid`
+//               (above) takes a row off this queue.
+//
+// The `reference` is built by the SHARED formatter, so it is byte-identical to the
+// string the guest was shown on their confirmation and status pages — matching a
+// bank transfer to a sub-order is the entire purpose of this screen.
+router.get('/cycle/:cycleId/unpaid', requireAdmin, (req, res) => {
+  const cycle = db.prepare('SELECT id, name, status, type FROM order_cycles WHERE id = ?')
+    .get(req.params.cycleId);
+  if (!cycle) {
+    return res.status(404).json({ error: 'Cyklus nebol nájdený' });
+  }
+
+  // ⚠ `amount` is the figure the admin acts on, and it is NOT always `total`.
+  // Cancelling a sub-order ZEROES `total` (GSO-T4/T5) while keeping the item rows,
+  // so a refund row's stored total says 0 — the money to give back is recoverable
+  // only by recomputing price × quantity from those kept items. (That is exactly
+  // why T4 and T5 keep them.) For a live sub-order the two are the same.
+  const itemsAmount = (row) => Math.round(
+    (row.items || []).reduce((acc, item) => acc + (item.price || 0) * (item.quantity || 0), 0) * 100
+  ) / 100;
+
+  // `order_token` is not in these rows (the shared column list omits it): it is the
+  // guest's private edit credential, and the admin has no use for it.
+  const rows = cycleSubOrders(cycle.id).map((row) => {
+    const status = guestOrderStatus(row);
+    return {
+      id: row.id,
+      guest_name: row.guest_name,
+      guest_phone: row.guest_phone,
+      guest_email: row.guest_email,
+      total: row.total,
+      amount: status === 'cancelled' ? itemsAmount(row) : row.total,
+      status,
+      paid: row.paid,
+      delivered: row.delivered,
+      created_at: row.created_at,
+      reference: guestPaymentReference(row, cycle.name),
+      host: { id: row.host_friend_id, name: row.host_name, active: row.host_active },
+    };
+  });
+
+  const sum = (list) => ({
+    count: list.length,
+    total: Math.round(list.reduce((acc, row) => acc + (row.amount || 0), 0) * 100) / 100,
+  });
+
+  const unpaid = rows.filter((row) => row.status !== 'cancelled' && !row.paid);
+  const refunds = rows.filter((row) => row.status === 'cancelled' && !!row.paid);
+
+  res.json({
+    cycle: { id: cycle.id, name: cycle.name, status: cycle.status, type: cycle.type },
+    unpaid,
+    totals: sum(unpaid),
+    refunds,
+    refund_totals: sum(refunds),
+  });
 });
 
 export default router;

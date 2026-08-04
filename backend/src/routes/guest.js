@@ -3,6 +3,7 @@ import db, { generateGuestToken } from '../db/schema.js';
 import { abuseLimiter } from '../middleware/rate-limit.js';
 import { gramsByProductFromItems, stockViolations, cycleAvailability } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup, VARIANT_PRICE_COLUMNS } from '../helpers/pricing.js';
+import { guestOrderStatus, guestPaymentReference } from '../helpers/guest-orders.js';
 
 const router = Router();
 
@@ -176,12 +177,6 @@ function loadItems(guestOrderId) {
   `).all(guestOrderId);
 }
 
-// `guest_orders.status` is nullable with a 'submitted' DEFAULT, so never compare
-// it bare — same reason helpers/stock.js wraps it in COALESCE.
-function orderStatus(order) {
-  return order?.status || 'submitted';
-}
-
 // Bounds + pricing for a client-supplied `items` array, shared by the submit and
 // the edit: an edit is the SAME unauthenticated write surface, so it must apply
 // the same caps and the same "price from the DB snapshot" rule. Returns either
@@ -289,7 +284,13 @@ function statusPayload(link, cycle, order) {
   // shut the write half — see the PUT below, which enforces exactly this.
   const editable = cycle.status === 'open'
     && !!link.active && !!link.host_active
-    && orderStatus(order) !== 'cancelled';
+    && guestOrderStatus(order) !== 'cancelled';
+  // ITEM changes stop once the admin records the payment (see the PUT's paid guard):
+  // what is owed may not be rewritten after the money arrived. `editable` itself is
+  // deliberately NOT narrowed — the cancel path stays open, and the status page needs
+  // it to keep offering that — so the client gets a second, finer flag. An affordance
+  // the server would refuse must never be on screen.
+  const itemsEditable = editable && !order.paid;
 
   const payload = {
     cycle: {
@@ -308,11 +309,12 @@ function statusPayload(link, cycle, order) {
     // Same reference as the confirmation screen so one payment matches one order.
     payment: {
       amount: order.total,
-      reference: `G${order.id} / ${order.guest_name} / ${cycle.name}`,
+      reference: guestPaymentReference(order, cycle.name),
       iban: settings.iban,
       revolut_username: settings.revolut_username,
     },
     editable,
+    items_editable: itemsEditable,
   };
 
   if (editable) {
@@ -468,7 +470,7 @@ router.post('/:token/orders', abuseLimiter, (req, res) => {
     // duplicate first names when the admin matches incoming payments.
     payment: {
       amount: order.total,
-      reference: `G${order.id} / ${order.guest_name} / ${cycle.name}`,
+      reference: guestPaymentReference(order, cycle.name),
       iban: settings.iban,
       revolut_username: settings.revolut_username,
     },
@@ -537,7 +539,7 @@ router.put('/:token/orders/:orderToken', abuseLimiter, (req, res) => {
   // the resource's current state) rather than 410 — the sub-order is still
   // readable, it just cannot change any more. GSO-T5's host-delete produces the
   // same state, so this is also what protects a sub-order the host removed.
-  if (orderStatus(order) === 'cancelled') {
+  if (guestOrderStatus(order) === 'cancelled') {
     return res.status(409).json({
       error: 'Táto objednávka bola zrušená a už ju nie je možné upraviť.',
       reason: 'cancelled',
@@ -562,6 +564,32 @@ router.put('/:token/orders/:orderToken', abuseLimiter, (req, res) => {
     });
   }
   const requestedCount = req.body.items.length;
+
+  // ⚠ A PAID sub-order is FROZEN against item changes (GSO-T6). `paid` records that
+  // an amount arrived, and there is nowhere to record a DIFFERENT amount — so an
+  // edit after the admin matched the payment would leave the guest owing (or being
+  // owed) a difference that appears on NO surface: the sub-order is already excluded
+  // from `unpaid_count` and from the unpaid overview, and the admin's nested row
+  // would simply read the new total next to a paid tick. Same money-visibility class
+  // as the guard on the host's DELETE, and it also keeps the refund amount honest —
+  // a refund is recomputed from the item rows, so a post-payment edit would silently
+  // rewrite how much is owed back.
+  //
+  // Deliberately NARROW: only a NON-EMPTY edit is refused. The literal `items: []`
+  // CANCEL stays open — it is the guest's own money, this surface has no account to
+  // escalate from, and a cancellation does leave a trace (the refund queue), which is
+  // exactly what the host's DELETE case lacked. So: the whole thing may be called
+  // off, but what is owed may not be quietly changed.
+  //
+  // State-based, not terminal: the admin clearing `paid` (a mis-matched payment)
+  // unfreezes the order. Re-checked inside the write transaction below, because the
+  // admin may mark it paid mid-request.
+  if (order.paid && requestedCount > 0) {
+    return res.status(409).json({
+      error: 'Objednávka je už zaplatená, jej obsah už nie je možné zmeniť. Zmenu vyriešte so správcom.',
+      reason: 'paid',
+    });
+  }
 
   const markupRatio = cycle.markup_ratio || 1.0;
   const priced = priceRequestedItems(req.body, cycle, markupRatio);
@@ -604,9 +632,13 @@ router.put('/:token/orders/:orderToken', abuseLimiter, (req, res) => {
     // validated.
     const current = db.prepare('SELECT status FROM order_cycles WHERE id = ?').get(cycle.id);
     if (current?.status !== 'open') return { conflict: 'closed' };
-    const currentOrder = db.prepare('SELECT status FROM guest_orders WHERE id = ?').get(order.id);
+    const currentOrder = db.prepare('SELECT status, paid FROM guest_orders WHERE id = ?').get(order.id);
     if (!currentOrder) return { conflict: 'gone' };
-    if (orderStatus(currentOrder) === 'cancelled') return { conflict: 'cancelled' };
+    if (guestOrderStatus(currentOrder) === 'cancelled') return { conflict: 'cancelled' };
+    // The admin may have matched an incoming payment while this request was being
+    // validated — the same re-read GSO-T5's DELETE does for exactly the same reason.
+    // Only a non-empty edit is affected; a cancellation stays allowed.
+    if (!cancelling && currentOrder.paid) return { conflict: 'paid' };
 
     // An empty cart cancels (task row + lifecycle diagram): status flips and the
     // total goes to 0, but the ITEM ROWS ARE KEPT.
@@ -642,6 +674,12 @@ router.put('/:token/orders/:orderToken', abuseLimiter, (req, res) => {
     return res.status(409).json({
       error: 'Táto objednávka bola zrušená a už ju nie je možné upraviť.',
       reason: 'cancelled',
+    });
+  }
+  if (applied.conflict === 'paid') {
+    return res.status(409).json({
+      error: 'Objednávka bola práve označená ako zaplatená, jej obsah už nie je možné zmeniť. Zmenu vyriešte so správcom.',
+      reason: 'paid',
     });
   }
 
