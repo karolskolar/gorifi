@@ -200,6 +200,10 @@ export const api = {
 
   // Friends (global)
   getFriends: (activeOnly = false) => request(`/friends${activeOnly ? '?active=true' : ''}`),
+  // Public minimal list (id + name + hasCredentials) for the legacy/transition login dropdown
+  getFriendsLoginList: () => request('/friends/login-list'),
+  // Own profile (owner token required) — hydrates the portal after login/restore
+  getFriendProfile: (friendId) => request(`/friends/${friendId}/profile`),
   createFriend: (data) => request('/friends', { method: 'POST', body: data }),
   updateFriend: (id, data) => request(`/friends/${id}`, { method: 'PATCH', body: data }),
   deleteFriend: (id) => request(`/friends/${id}`, { method: 'DELETE' }),
