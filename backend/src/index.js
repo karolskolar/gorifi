@@ -12,6 +12,7 @@ import productsRouter from './routes/products.js';
 import friendsRouter from './routes/friends.js';
 import ordersRouter from './routes/orders.js';
 import orderItemsRouter from './routes/order-items.js';
+import guestOrderItemsRouter from './routes/guest-order-items.js';
 import adminRouter from './routes/admin.js';
 import transactionsRouter from './routes/transactions.js';
 import pickupLocationsRouter from './routes/pickup-locations.js';
@@ -93,6 +94,10 @@ app.use('/api/friend-groups', requireAdmin, friendGroupsRouter);
 app.use('/api/analytics/rewards', requireAdmin, rewardsRouter);
 app.use('/api/roasteries', requireAdmin, roasteriesRouter);
 app.use('/api/order-items', requireAdmin, orderItemsRouter);
+// GSO-T7: the guest half of the per-item Distribution checkbox. Admin-only, unlike
+// the MIXED-auth /api/guest-orders router next door — nothing a host or a guest
+// does touches this flag.
+app.use('/api/guest-order-items', requireAdmin, guestOrderItemsRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {

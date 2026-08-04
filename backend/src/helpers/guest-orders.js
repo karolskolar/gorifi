@@ -54,12 +54,17 @@ export function guestPaymentReference(order, cycleName) {
 // The line items of the given sub-orders, attached in place as `items`.
 // One query for the whole set (the host view renders every sub-order of a link,
 // so a per-row query would be an N+1).
+//
+// GSO-T7 added `gi.packed` (the admin's persisted Distribution checkbox) and
+// `p.roast_type` — the bag label needs the same fields a friend item shows, so the
+// Distribution view can render both kinds of row through one template. Additive, as
+// always here: this list is EXTENDED, never reshaped, so no surface loses a column.
 function attachItems(orders) {
   if (orders.length === 0) return orders;
   const placeholders = orders.map(() => '?').join(',');
   const rows = db.prepare(`
-    SELECT gi.id, gi.guest_order_id, gi.product_id, gi.variant, gi.quantity, gi.price,
-           p.name AS product_name, p.variant_label, p.purpose
+    SELECT gi.id, gi.guest_order_id, gi.product_id, gi.variant, gi.quantity, gi.price, gi.packed,
+           p.name AS product_name, p.variant_label, p.purpose, p.roast_type
     FROM guest_order_items gi
     JOIN products p ON p.id = gi.product_id
     WHERE gi.guest_order_id IN (${placeholders})

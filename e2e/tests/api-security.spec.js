@@ -21,6 +21,8 @@ const ADMIN_ENDPOINTS = [
   { method: 'post', path: '/api/transactions/payment', data: { friend_id: 1, amount: 99999 } },
   { method: 'patch', path: '/api/orders/1/paid', data: { paid: true } },
   { method: 'patch', path: '/api/order-items/1/packed' },
+  // GSO-T7: the guest half of the per-item Distribution checkbox.
+  { method: 'patch', path: '/api/guest-order-items/1/packed' },
   // GSO-T6: the admin half of the MIXED-auth /api/guest-orders router (the host
   // half is gated by friend identity instead — see guest-host-view.spec.js).
   { method: 'patch', path: '/api/guest-orders/1/paid', data: { paid: true } },
