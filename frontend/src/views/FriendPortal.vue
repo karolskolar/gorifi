@@ -120,13 +120,24 @@ async function loadInitialData() {
   error.value = ''
 
   try {
-    // Fetch auth mode and friends list in parallel
-    const [modeResult, friendsList] = await Promise.all([
-      api.getAuthMode(),
-      api.getFriends(true)
-    ])
-    authMode.value = modeResult.authMode
-    friends.value = friendsList
+    // Auth mode decides which login UI renders — fetch it on its own so a
+    // failing friends-list call can never poison it back to the 'legacy'
+    // default (that regression showed anonymous users an empty name dropdown).
+    try {
+      authMode.value = (await api.getAuthMode()).authMode
+    } catch {
+      // keep the 'legacy' default
+    }
+
+    // The name dropdown only exists in legacy/transition mode. Modern login
+    // needs no list at all; failure is non-fatal.
+    if (authMode.value !== 'modern') {
+      try {
+        friends.value = await api.getFriendsLoginList()
+      } catch {
+        friends.value = []
+      }
+    }
 
     // Set default login tab based on auth mode
     if (authMode.value === 'modern') {
@@ -138,13 +149,12 @@ async function loadInitialData() {
     if (stored) {
       try {
         const parsed = JSON.parse(stored)
-        const friendExists = friends.value.find(f => f.id === parsed.friendId)
 
         // Token-based restore. Expired tokens are dropped locally (no server
         // round-trip); old plaintext-password entries fall through to login.
-        if (friendExists && parsed.token && (!parsed.expiresAt || Date.now() < parsed.expiresAt)) {
+        if (parsed.friendId && parsed.token && (!parsed.expiresAt || Date.now() < parsed.expiresAt)) {
           savedAuth.value = parsed
-          currentFriend.value = friendExists
+          currentFriend.value = { id: parsed.friendId, name: parsed.friendName, uid: parsed.friendUid }
           selectedFriendId.value = String(parsed.friendId)
           setFriendsToken(parsed.token)
           setFriendsAuthInfo({
@@ -157,6 +167,7 @@ async function loadInitialData() {
             await checkPendingVouchers()
             authState.value = 'authenticated'
             window.scrollTo(0, 0)
+            hydrateCurrentFriend(parsed.friendId)
             return
           } catch {
             // Token expired or invalid, clear and show login
@@ -178,20 +189,18 @@ async function loadInitialData() {
       const memoryPassword = getFriendsPassword()
       const memoryAuthInfo = getFriendsAuthInfo()
       if ((memoryToken || memoryPassword) && memoryAuthInfo) {
-        const friendExists = friends.value.find(f => f.id === memoryAuthInfo.friendId)
-        if (friendExists) {
-          currentFriend.value = friendExists
-          selectedFriendId.value = String(memoryAuthInfo.friendId)
-          try {
-            await loadCycles()
-            await checkPendingVouchers()
-            authState.value = 'authenticated'
-    window.scrollTo(0, 0)
-            return
-          } catch {
-            clearFriendsPassword()
-            authState.value = 'login'
-          }
+        currentFriend.value = { id: memoryAuthInfo.friendId, name: memoryAuthInfo.friendName, uid: memoryAuthInfo.friendUid }
+        selectedFriendId.value = String(memoryAuthInfo.friendId)
+        try {
+          await loadCycles()
+          await checkPendingVouchers()
+          authState.value = 'authenticated'
+          window.scrollTo(0, 0)
+          hydrateCurrentFriend(memoryAuthInfo.friendId)
+          return
+        } catch {
+          clearFriendsPassword()
+          authState.value = 'login'
         }
       }
       authState.value = 'login'
@@ -201,6 +210,18 @@ async function loadInitialData() {
     authState.value = 'login'
   } finally {
     loading.value = false
+  }
+}
+
+// Fill in the fields the login/restore payloads don't carry (packeta_address,
+// username, hasCredentials, display_name) from the owner-scoped profile
+// endpoint. Fire-and-forget: the portal works without it.
+async function hydrateCurrentFriend(friendId) {
+  try {
+    const full = await api.getFriendProfile(friendId)
+    currentFriend.value = { ...currentFriend.value, ...full }
+  } catch {
+    // non-fatal — keep the minimal object
   }
 }
 
@@ -222,23 +243,25 @@ async function authenticate(silent = false) {
       setFriendsToken(result.token)
     }
 
-    // Get full friend data
-    const selectedFriend = friends.value.find(f => f.id === parseInt(selectedFriendId.value))
-    currentFriend.value = selectedFriend
+    // Full friend data comes from the auth response — the public login list
+    // only carries id + name + hasCredentials.
+    const listEntry = friends.value.find(f => f.id === parseInt(selectedFriendId.value))
+    const friendData = { ...(listEntry || {}), ...(result.friend || {}), hasCredentials: result.hasCredentials }
+    currentFriend.value = friendData
 
     // Set auth info in memory
     setFriendsAuthInfo({
-      friendId: parseInt(selectedFriendId.value),
-      friendName: selectedFriend.name,
-      friendUid: selectedFriend.uid
+      friendId: friendData.id,
+      friendName: friendData.name,
+      friendUid: friendData.uid
     })
 
     // Save to localStorage if remember me is checked (token + expiry only)
-    if (rememberMe.value && selectedFriend && result.token) {
+    if (rememberMe.value && result.token) {
       const storageData = {
-        friendId: parseInt(selectedFriendId.value),
-        friendName: selectedFriend.name,
-        friendUid: selectedFriend.uid,
+        friendId: friendData.id,
+        friendName: friendData.name,
+        friendUid: friendData.uid,
         token: result.token,
         expiresAt: result.expiresAt,
       }
@@ -291,10 +314,9 @@ async function authenticatePersonal() {
     // Set token for subsequent requests
     setFriendsToken(result.token)
 
-    // Refresh friends list to find full friend data
-    friends.value = await api.getFriends(true)
-    const friend = friends.value.find(f => f.id === result.friend.id)
-    currentFriend.value = friend || result.friend
+    // The auth response carries the friend data — no admin-only list fetch
+    // here (GET /friends is requireAdmin and 401s for friends).
+    currentFriend.value = { ...result.friend, hasCredentials: true }
     selectedFriendId.value = String(result.friend.id)
 
     setFriendsAuthInfo({
