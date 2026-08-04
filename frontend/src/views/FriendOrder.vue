@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
+import GuestSubOrders from '@/components/GuestSubOrders.vue'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -796,6 +797,16 @@ function applyMarkup(price) {
           </Button>
         </CardContent>
       </Card>
+
+      <!-- Sub-orders the colleagues placed through the share link. Rendered
+           regardless of the lock: removal ends at the lock, but the "odovzdané"
+           hand-over checklist is used exactly AFTER it. The guest total inside is
+           context only — the host's own payable total below is own items only
+           (§UC-GSO-006). -->
+      <!-- `ready` waits for an authenticated load: this view restores the friend
+           session in onMounted, which runs AFTER a child's setup, so fetching any
+           earlier would 401 on a fresh load of /cycle/:id. -->
+      <GuestSubOrders :cycle-id="cycleId" :cycle-locked="isLocked" :ready="!!friend" />
 
       <!-- Messages -->
       <Alert v-if="error" variant="destructive" class="mb-4">

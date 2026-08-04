@@ -55,6 +55,38 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   editing through the shared `GuestProductGrid` — incl. bakery variant grouping,
   since this is the grid's second consumer — the cancel confirmation, and
   read-only when locked).
+- `tests/guest-host-view.spec.js` — GSO-T5: the host's "Objednávky kolegov" view.
+  The enriched `GET /api/guest-links/cycle/:cycleId` (each sub-order now carries
+  its `items`, plus `paid` read-only and `delivered`, with `order_token` still
+  unexposed), and the two HOST-owned mutations on
+  `/api/guest-orders/:id` — `PATCH .../delivered` and `DELETE`. Pins down
+  Decision 2's single ownership from both sides: `delivered` toggles on/off
+  (setting and CLEARING `delivered_at`, and still available after the lock,
+  because the hand-over happens after distribution), while a host token cannot
+  write `paid` — nor `status`/`total`/`link_id` — through the delivered body, and
+  an **admin token is not a substitute for host identity** on either route
+  (anonymous 401, shared-password-without-identity 401, foreign friend 403,
+  missing row 404 before any 403). `DELETE` is a **soft cancel**: status
+  `cancelled`, total 0, item rows KEPT, stock genuinely released
+  (`remaining_g` recovers and is buyable again), refused with 409 once the cycle
+  is not open, and idempotent on an already-cancelled sub-order. The T4↔T5
+  handshake is asserted end to end — after a host removal the guest's own status
+  URL renders cancelled and a `PUT` cannot revive it. Also covers the case
+  GSO-T4 left open: a **regenerated** link (new token, same row id) still
+  resolves an existing sub-order's status URL while the retired token 404s. UI
+  pass on the section in FriendOrder: sub-orders with their items, a read-only
+  paid badge (and no paid control), the delivered checkbox toggling and
+  surviving a fresh load, and a removal rendering as "Zrušené". Note: the
+  durability step re-enters through the portal rather than `page.reload()`,
+  because a hard load of `/cycle/:id` bounces to the portal by design.
+  One describe (`DELETE — a PAID sub-order is the admin's business`) pins the rule
+  that a host may **not** soft-cancel a sub-order the admin already marked paid
+  (409 `reason: 'paid'`) — cancelling zeroes the total and drops the row from every
+  "not cancelled" aggregate, so paid money would go invisible. `paid` has no HTTP
+  setter until GSO-T6, so that test pre-sets the flag directly in the server's
+  SQLite file via `node:sqlite` and therefore needs **`DB_PATH` exported for the
+  Playwright process too** (same value as the server's — see the recipe below); it
+  self-skips when the file is unreachable, e.g. against staging.
 - `seed.mjs` — seeds a backend with an admin password, legacy friends password,
   one cycle, one friend (idempotent; NOT for production). Also fills the payment
   settings (IBAN / Revolut username) **only if they are empty**, because guest
@@ -71,7 +103,9 @@ DB_PATH=/tmp/gorifi-e2e.sqlite PORT=3997 CORS_ORIGIN=http://localhost:3997 node 
 cd e2e
 npm install && npx playwright install --with-deps chromium
 BASE_URL=http://localhost:3997 node seed.mjs
-BASE_URL=http://localhost:3997 npm test
+# DB_PATH is the same file the server was started with; guest-host-view.spec.js
+# needs it to pre-set the admin-only `paid` flag (it self-skips without it).
+DB_PATH=/tmp/gorifi-e2e.sqlite BASE_URL=http://localhost:3997 npm test
 ```
 
 Two gotchas in that recipe that look like app bugs when you skip them:

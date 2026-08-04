@@ -1,30 +1,9 @@
 import { Router } from 'express';
 import db, { generateGuestToken } from '../db/schema.js';
-import { validateFriendAuth } from '../middleware/friend-auth.js';
+import { requireHost } from '../middleware/friend-auth.js';
+import { loadSubOrders } from '../helpers/guest-orders.js';
 
 const router = Router();
-
-// Require an authenticated friend with a RESOLVED per-friend identity.
-//
-// Unlike requireFriendOwner (middleware/friend-auth.js) there is no target id to
-// compare against here: these endpoints are keyed on /cycle/:cycleId and the
-// host is simply whoever is authenticated. So:
-// - Bearer (friend_sessions) auth resolves a concrete friendId → that friend is
-//   the host.
-// - Bare shared-password auth resolves no friendId, so there would be no host to
-//   attribute the link to. Taking a friend_id from the request body instead
-//   would reintroduce exactly the friend-vs-friend IDOR that SEC-A1 closed, so
-//   this is rejected with 401 even in legacy mode. POST /friends/auth issues a
-//   per-friend session token in BOTH login modes (personal username login and
-//   legacy shared password + friend selection), so every real user has a token.
-function requireHost(req) {
-  const v = validateFriendAuth(req);
-  if (v.error) return { error: v.error, status: v.status };
-  if (v.friendId == null) {
-    return { error: 'Prihláste sa svojím menom, aby sme vedeli, koho odkaz to je', status: 401 };
-  }
-  return { friendId: v.friendId };
-}
 
 const LINK_COLUMNS = 'id, token, host_friend_id, cycle_id, active, created_at';
 
@@ -41,33 +20,16 @@ function uniqueToken() {
   return token;
 }
 
-// The host's sub-orders under a link, plus their running total. Empty until the
-// guest ordering endpoints land, but the shape is returned from the start so the
-// host view can be enriched without reshaping the response.
-// `order_token` is deliberately NOT exposed: it is the guest's private
-// status/edit URL, and the host never needs it.
-function loadSubOrders(linkId) {
-  const guestOrders = linkId
-    ? db.prepare(`
-        SELECT id, guest_name, guest_phone, guest_email, status, total,
-               paid, paid_at, delivered, delivered_at, created_at
-        FROM guest_orders
-        WHERE link_id = ?
-        ORDER BY created_at, id
-      `).all(linkId)
-    : [];
-
-  const live = guestOrders.filter((o) => o.status !== 'cancelled');
-  const total = live.reduce((sum, o) => sum + (o.total || 0), 0);
-
-  return {
-    guest_orders: guestOrders,
-    totals: {
-      count: live.length,
-      total: Math.round(total * 100) / 100,
-    },
-  };
-}
+// The host's sub-orders under a link, plus their running total, live in
+// helpers/guest-orders.js — GSO-T5 enriched each row with its `items` (the
+// "Objednávky kolegov" view lists what every colleague ordered, §UC-GSO-006) and
+// the host's delivered/remove mutations in routes/guest-orders.js answer with the
+// same row shape, so the loaders are shared rather than duplicated.
+//
+// The GSO-T2 response shape is EXTENDED, never reshaped: `{ link, guest_orders,
+// totals }` still holds, `guest_orders[i].items` is new. `order_token` remains
+// unexposed — it is the guest's private status/edit URL and the host never needs
+// it.
 
 function getCycle(cycleId) {
   return db.prepare('SELECT id FROM order_cycles WHERE id = ?').get(cycleId);

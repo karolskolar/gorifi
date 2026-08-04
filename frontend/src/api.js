@@ -347,6 +347,15 @@ export const api = {
   createGuestLink: (cycleId) => request(`/guest-links/cycle/${cycleId}`, { method: 'POST' }),
   setGuestLinkActive: (id, active) => request(`/guest-links/${id}`, { method: 'PATCH', body: { active } }),
 
+  // Guest sub-orders, host side. `delivered` is the HOST's flag (the hand-over
+  // checklist); `paid` is the ADMIN's and the host only ever reads it, so there
+  // is deliberately no client method for it here.
+  // "Deleting" a sub-order is a soft cancel server-side: the guest's status URL
+  // then shows it as cancelled and its stock is released.
+  setGuestOrderDelivered: (id, delivered) =>
+    request(`/guest-orders/${id}/delivered`, { method: 'PATCH', body: { delivered } }),
+  deleteGuestOrder: (id) => request(`/guest-orders/${id}`, { method: 'DELETE' }),
+
   // Roasteries
   getRoasteries: () => request('/roasteries'),
   createRoastery: (data) => request('/roasteries', { method: 'POST', body: data }),

@@ -92,6 +92,34 @@ export function requireFriendOwner(req, targetId) {
   return { friendId: null };
 }
 
+// Require an authenticated friend with a RESOLVED per-friend identity — the
+// "host" of a guest share link and of the sub-orders hanging off it.
+//
+// Unlike requireFriendOwner there is no target id in the URL to compare against
+// (the guest-link endpoints are keyed on /cycle/:cycleId, and the host is simply
+// whoever is authenticated), so:
+// - Bearer (friend_sessions) auth resolves a concrete friendId → that friend is
+//   the host.
+// - Bare shared-password auth resolves no friendId, so there would be no host to
+//   attribute the link to. Taking a friend_id from the request body instead
+//   would reintroduce exactly the friend-vs-friend IDOR that SEC-A1 closed, so
+//   this is rejected with 401 even in legacy mode. POST /friends/auth issues a
+//   per-friend session token in BOTH login modes (personal username login and
+//   legacy shared password + friend selection), so every real user has a token.
+//
+// Callers then compare the resolved friendId against the row's ownership
+// (`guest_order_links.host_friend_id`) and answer 403 for anybody else.
+// Shared by routes/guest-links.js (GSO-T2) and routes/guest-orders.js (GSO-T5) —
+// there must only ever be one of these.
+export function requireHost(req) {
+  const v = validateFriendAuth(req);
+  if (v.error) return { error: v.error, status: v.status };
+  if (v.friendId == null) {
+    return { error: 'Prihláste sa svojím menom, aby sme vedeli, koho odkaz to je', status: 401 };
+  }
+  return { friendId: v.friendId };
+}
+
 // Validate username format
 export function validateUsername(username) {
   if (!username || typeof username !== 'string') {
