@@ -149,4 +149,20 @@ router.beforeEach(async (to) => {
   return { name: 'admin-login' }
 })
 
+// After a deploy the old hashed chunk files are gone (rsync --delete), so a
+// tab loaded before the deploy fails its next lazy route import and the click
+// appears dead. Recover by hard-navigating to the target URL — the fresh
+// index.html references chunks that exist. sessionStorage guards a loop if
+// the target genuinely can't load.
+router.onError((error, to) => {
+  const msg = String(error?.message || '')
+  if (msg.includes('Failed to fetch dynamically imported module') || msg.includes('Importing a module script failed')) {
+    const key = `chunk-reload:${to.fullPath}`
+    if (!sessionStorage.getItem(key)) {
+      sessionStorage.setItem(key, '1')
+      window.location.assign(to.fullPath)
+    }
+  }
+})
+
 export default router
