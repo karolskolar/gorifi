@@ -293,16 +293,32 @@ Mitigations:
   pass/fail signal (`rate-limit.spec.js` still self-skips above 10, so this
   doesn't weaken that check).
 
-The same applies to `abuseLimiter` (`RATE_LIMIT_ABUSE_MAX`, default 40 per IP per
-window), which is ONE bucket shared by the public invite-code lookup, onboarding
-submit and — since GSO-T3 — every `/api/guest/:token` call. `guest-order.spec.js`
-alone makes ~35 of them, so a full-suite run against the default budget can 429
-in unrelated-looking places. Run the suite with a generous budget:
+The same applies to the other limiters, each of which is its **own** bucket:
+
+- `abuseLimiter` (`RATE_LIMIT_ABUSE_MAX`, default 40) — invite-code lookup and
+  onboarding submit.
+- `guestReadLimiter` (`RATE_LIMIT_GUEST_READ_MAX`, default 300) — guest page loads.
+- `guestWriteLimiter` (`RATE_LIMIT_GUEST_WRITE_MAX`, default 60) — guest submits,
+  edits and invite requests.
+
+The guest surface has its own buckets on purpose (a whole office shares one NAT'd
+IP, so it must not compete with registrations), but the suite still drives far more
+guest traffic than a real office does — `guest-order.spec.js` alone makes ~35 calls
+— so a full run against the defaults can 429 in unrelated-looking places. Give every
+limiter a generous budget:
 
 ```bash
 DB_PATH=/tmp/gorifi-e2e.sqlite PORT=3997 CORS_ORIGIN=http://localhost:3997 \
-  RATE_LIMIT_AUTH_MAX=1000 RATE_LIMIT_ABUSE_MAX=2000 node backend/src/index.js &
+  RATE_LIMIT_AUTH_MAX=1000 RATE_LIMIT_ABUSE_MAX=2000 \
+  RATE_LIMIT_GUEST_READ_MAX=5000 RATE_LIMIT_GUEST_WRITE_MAX=5000 \
+  node backend/src/index.js &
 ```
+
+**`backend/public` is git-ignored build output** — the build step in the recipe
+above is mandatory, not a convenience. Production never uses it (nginx serves
+`frontend/dist`), and if it is missing the backend answers non-API routes with a
+503 telling you to build. It used to be committed, which silently served a
+months-old frontend against current API code.
 
 ## Run against staging
 

@@ -244,7 +244,7 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 - Guest prices are marked up server-side and the FE never multiplies; `guest_order_items.price` is the frozen marked-up unit price. (`markup_ratio` is already public via `/cycles/:id/public`, so not publishing it to guests is layering, not secrecy.)
 - Payment info (IBAN / Revolut / reference `G<id> / Name / Cycle`) is returned ONLY by the submit response, never by the public listing. `PaymentModal.vue` is reused as-is.
 - `api.js` `guestRequest()` sends **no** auth headers and attaches `err.status`; `GuestOrder.vue` stores the status URL in `localStorage.gorifi_guest_orders` keyed by link token.
-- `abuseLimiter` is ONE 40/window/IP bucket shared by invite-code lookup, onboarding submit and every guest page load — an office behind one NAT can exhaust it. Fix would be a separate limiter instance, not a higher global max.
+- ~~`abuseLimiter` is ONE bucket shared with the guest surface~~ — **resolved (2026-08-04)**: the guest routes moved to their own `guestReadLimiter` / `guestWriteLimiter`. See "Rate-limit buckets" below.
 - Spec: same design doc (§UC-GSO-001..003, Decisions 1 & 7, §Edge Cases)
 
 ### Guest status/edit URL + the shared guest UI seam (GSO-T4, 2026-08-04)
@@ -321,3 +321,15 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 - Accepted risk, recorded: the request phone need not match the sub-order's, so a token-pair holder can occupy someone else's single pending slot and use 201-vs-409 as an "is this number queued" oracle. Bounded by `abuseLimiter`, every probe leaves an admin-visible row, and `POST /invitations/register` has the identical property with a friend's invite code. If ever tightened, compare **digit-normalised**, not exact — a guest may legitimately have typed an office landline at checkout.
 - Follow-ups (not done): a guest-sourced lead converted via "Vytvoriť" writes **no** `friends.onboarding_source`, so provenance dies with the invitation row the admin later deletes; and `POST /invitations/register` is now the weaker twin of this endpoint (no length bounds, `{name: 123}` → 500).
 - Spec: same design doc (§UC-GSO-015, §Lead Capture)
+
+### Rate-limit buckets, and `backend/public` (follow-ups, 2026-08-04)
+
+**Rate-limit buckets — `middleware/rate-limit.js` exports FOUR, each a SEPARATE bucket. Do not collapse them.**
+- `authLimiter` (`RATE_LIMIT_AUTH_MAX`, 20) — admin login, friend auth.
+- `abuseLimiter` (`RATE_LIMIT_ABUSE_MAX`, 40) — invite-code lookup, onboarding submit.
+- `guestReadLimiter` (`RATE_LIMIT_GUEST_READ_MAX`, 300) — guest page loads.
+- `guestWriteLimiter` (`RATE_LIMIT_GUEST_WRITE_MAX`, 60) — guest submits, edits, invite requests.
+
+⚠ The guest split exists because a guest link is shared privately **at office scale**, so a whole team usually arrives behind **one NAT'd IP**. While the guest routes sat on `abuseLimiter`, a busy order could exhaust the shared 40 and lock colleagues out of **registering** — and vice versa. Reads are generous because a page load is cheap and repeats (every colleague opening the link, every refresh); writes stay moderate and are additionally bounded by the T3 input caps. Pinned by `e2e/tests/rate-limit-isolation.spec.js`, which exhausts the guest **write** bucket and asserts guest reads, the invite-code lookup and registration all still reach their handlers. It self-skips unless started with a low `RATE_LIMIT_GUEST_WRITE_MAX` (the `rate-limit.spec.js` precedent), so a normal full-suite run reads **231 passed / 3 skipped**.
+
+**`backend/public` is git-ignored build output.** Production never uses it — nginx serves `/var/www/gorifi/frontend/dist` with its own SPA fallback and only proxies `/api` to the backend (`deploy/nginx-gorifi.conf`), and `deploy.sh` rsyncs `frontend/dist`. It exists only for running the app as one prod-like process locally, which is what the e2e recipe does. It **used to be committed**, and by the end was a 2026-03-08 build with zero guest code — so a fresh clone silently served a months-old frontend against current API code, and it broke UI specs until someone rebuilt. Absent beats stale: when `index.html` is missing, non-API routes answer **503 with the build command** rather than an opaque 500 from `sendFile`.

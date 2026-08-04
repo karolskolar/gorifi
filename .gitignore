@@ -5,6 +5,13 @@ dist/
 .env
 *.sqlite
 
+# Build output. Production never uses this — nginx serves frontend/dist and only
+# proxies /api to the backend (deploy/nginx-gorifi.conf), and deploy.sh rsyncs
+# frontend/dist. It is only for running the app as one prod-like process locally
+# (see e2e/README.md). It used to be committed, so a fresh clone silently served
+# a months-old frontend against current API code.
+backend/public/
+
 # Local tooling scratch/artifacts
 .superpowers/
 .windsurf/
