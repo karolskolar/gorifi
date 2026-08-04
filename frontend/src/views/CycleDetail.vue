@@ -1074,6 +1074,7 @@ function getStatusVariant(status) {
                 <TableRow>
                   <TableHead class="w-10"></TableHead>
                   <TableHead>Priateľ</TableHead>
+                  <TableHead class="text-right">Suma</TableHead>
                   <TableHead class="text-right">Zostatok</TableHead>
                   <template v-if="isBakery">
                     <TableHead class="text-center">Ks</TableHead>
@@ -1086,7 +1087,6 @@ function getStatusVariant(status) {
                     >{{ col.label }}</TableHead>
                   </template>
                   <TableHead>Status</TableHead>
-                  <TableHead class="text-right">Suma</TableHead>
                   <TableHead class="text-center">Zaplatené</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1111,6 +1111,12 @@ function getStatusVariant(status) {
                       </button>
                     </TableCell>
                     <TableCell class="font-medium">{{ order.friend_name }}</TableCell>
+                    <TableCell class="text-right">
+                      {{ formatPrice((order.total || 0) + (order.delivery_fee || 0)) }}
+                      <div v-if="order.delivery_fee" class="text-xs text-muted-foreground">
+                        ({{ formatPrice(order.total) }} + {{ formatPrice(order.delivery_fee) }} doručenie)
+                      </div>
+                    </TableCell>
                     <TableCell class="text-right">
                       <BalanceBadge :balance="order.friend_balance || 0" />
                     </TableCell>
@@ -1153,12 +1159,6 @@ function getStatusVariant(status) {
                         >
                           Packeta
                         </Badge>
-                      </div>
-                    </TableCell>
-                    <TableCell class="text-right">
-                      {{ formatPrice((order.total || 0) + (order.delivery_fee || 0)) }}
-                      <div v-if="order.delivery_fee" class="text-xs text-muted-foreground">
-                        ({{ formatPrice(order.total) }} + {{ formatPrice(order.delivery_fee) }} doručenie)
                       </div>
                     </TableCell>
                     <TableCell class="text-center">
@@ -1207,6 +1207,7 @@ function getStatusVariant(status) {
                 <TableRow class="font-semibold bg-muted">
                   <TableCell></TableCell>
                   <TableCell>Celkom</TableCell>
+                  <TableCell class="text-right">{{ formatPrice(orderTotals.total) }}</TableCell>
                   <TableCell></TableCell>
                   <template v-if="isBakery">
                     <TableCell class="text-center">{{ orderTotals.count_unit }}</TableCell>
@@ -1219,7 +1220,6 @@ function getStatusVariant(status) {
                     >{{ orderTotals[col.countField] }}</TableCell>
                   </template>
                   <TableCell></TableCell>
-                  <TableCell class="text-right">{{ formatPrice(orderTotals.total) }}</TableCell>
                   <TableCell></TableCell>
                 </TableRow>
               </tfoot>

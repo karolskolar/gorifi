@@ -43,7 +43,7 @@ router.post('/auth', authLimiter, (req, res) => {
     const session = createFriendSession(friend.id);
     return res.json({
       success: true,
-      friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username },
+      friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username, packeta_address: friend.packeta_address },
       token: session.token,
       expiresAt: session.expiresAt,
       hasCredentials: true,
@@ -75,7 +75,7 @@ router.post('/auth', authLimiter, (req, res) => {
     const session = createFriendSession(friend.id);
     return res.json({
       success: true,
-      friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username },
+      friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username, packeta_address: friend.packeta_address },
       token: session.token,
       expiresAt: session.expiresAt,
       hasCredentials: !!friend.password_hash,
@@ -86,6 +86,35 @@ router.post('/auth', authLimiter, (req, res) => {
   }
 
   res.json({ success: true });
+});
+
+// GET /friends/login-list - Public minimal list for the legacy/transition login
+// dropdown: id + name + hasCredentials only (no contact data, balances or
+// usernames — the full list at GET / stays admin-only, SEC-P1). In modern mode
+// the dropdown doesn't exist, so don't expose names at all.
+router.get('/login-list', (req, res) => {
+  if (getAuthMode() === 'modern') {
+    return res.json([]);
+  }
+  const rows = db.prepare('SELECT id, name, password_hash FROM friends WHERE active = 1 ORDER BY name').all();
+  res.json(rows.map(f => ({ id: f.id, name: f.name, hasCredentials: !!f.password_hash })));
+});
+
+// GET /friends/:id/profile - Own full profile (owner token required). Used to
+// hydrate the portal after login/session-restore now that the login page no
+// longer receives the admin-only friends list.
+router.get('/:id/profile', (req, res) => {
+  const owner = requireFriendOwner(req, req.params.id);
+  if (owner.error) {
+    return res.status(owner.status).json({ error: owner.error });
+  }
+
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(req.params.id);
+  if (!friend) {
+    return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
+  }
+  friend.hasCredentials = !!friend.password_hash;
+  res.json(sanitizeFriend(friend));
 });
 
 // POST /friends/:id/setup-credentials - Set username + password for first time
