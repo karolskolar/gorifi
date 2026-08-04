@@ -513,12 +513,19 @@ test.describe('unpaid_count in GET /api/cycles includes guest sub-orders (UC-GSO
     expect(row.guest_unpaid_count).toBe(0)
     expect(row.orders_count, 'still exactly the one friend order').toBe(1)
 
-    // And the roastery breakdown (the same endpoint's other aggregate) is unharmed:
-    // 1 × 250g of friend coffee — 0.25 kg, rounded to one decimal by cycles.js — and
-    // not multiplied by the number of guest sub-orders (two guests would show 0.5+).
-    // Guest kilos joining the totals is GSO-T8, not this task.
+    // And the roastery breakdown (the same endpoint's other aggregate): as of GSO-T8
+    // it INCLUDES guest bags, because they are bought from the same roastery and this
+    // is a figure the admin orders by. Here that is 1 × 250g of friend coffee plus
+    // g1's still-active 1 × 250g = 0.5 kg; g2 is cancelled and contributes nothing.
+    //
+    // ⚠ It must be a SUM, never a MULTIPLICATION. Pulling the guest tables into this
+    // endpoint's `LEFT JOIN orders` aggregate would multiply the friend line by the
+    // number of guest sub-order rows (2 here, the cancelled one included) and read
+    // 0.75+; GSO-T8 therefore merges the guest half in JavaScript instead of adding a
+    // join. guest-aggregation.spec.js pins the unambiguous case (1 friend + 2 × 1
+    // guest kg = 3.0, where a multiplied friend line would read 4.0).
     const coffee = row.roastery_breakdown.reduce((sum, r) => sum + r.total_kg, 0)
-    expect(coffee, 'friend kilos are not multiplied by the guest join').toBe(0.3)
+    expect(coffee, 'friend 0.25 + active guest 0.25 — summed, not multiplied').toBe(0.5)
   })
 })
 
