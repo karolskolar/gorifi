@@ -3,8 +3,47 @@ import db from '../db/schema.js';
 import { variantToKg } from '../helpers/analytics.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { cycleSubOrdersByHost, guestOrderStatus } from '../helpers/guest-orders.js';
+import { guestCycleItems } from '../helpers/guest-aggregation.js';
 
 const router = Router();
+
+// The admin's ordering surfaces below (`roastery_breakdown` here, the "Podľa
+// produktu" sheet in GET /:id/summary) count guest bags as well as friend ones
+// (§UC-GSO-013). They have to: the bags are physically handed to guests at
+// distribution (GSO-T7), so anything they leave out is coffee that was never bought.
+//
+// ⚠ Both merge the guest side IN JAVASCRIPT, from `guestCycleItems()`, and never by
+// adding a JOIN to the SQL. That is not a style choice: these queries aggregate over
+// `LEFT JOIN orders`, and a second join onto the guest tables multiplies every
+// friend row by the number of guest sub-orders in the cycle (the GSO-T6 trap —
+// `orders_count` and every SUM would inflate). Keeping the guest half out of the SQL
+// makes multiplication impossible by construction.
+
+// SQLite's `ORDER BY` on the summary sheet, reproduced for the merged array:
+// purpose rank, then name, then variant — BINARY collation, NULLs first.
+const SUMMARY_PURPOSE_RANK = { Espresso: 1, Filter: 2, Kapsule: 3 };
+
+function purposeRank(purpose) {
+  if (typeof purpose !== 'string') return 4;
+  if (!Object.prototype.hasOwnProperty.call(SUMMARY_PURPOSE_RANK, purpose)) return 4;
+  return SUMMARY_PURPOSE_RANK[purpose];
+}
+
+function compareSqlText(a, b) {
+  if (a === b) return 0;
+  if (a === null || a === undefined) return -1;
+  if (b === null || b === undefined) return 1;
+  return a < b ? -1 : 1;
+}
+
+// True when this line belongs on the sheet the caller asked for. Mirrors the SQL
+// WHERE the friend half applies: '_default' = no roastery set, a name = exact match,
+// absent = everything.
+function matchesRoasteryFilter(roastery, roasteryFilter) {
+  if (!roasteryFilter) return true;
+  if (roasteryFilter === '_default') return roastery === null || roastery === undefined || roastery === '';
+  return roastery === roasteryFilter;
+}
 
 // Get all order cycles (admin)
 router.get('/', requireAdmin, (req, res) => {
@@ -55,7 +94,7 @@ router.get('/', requireAdmin, (req, res) => {
   `).all();
 
   const breakdownByCycle = {};
-  for (const it of items) {
+  const addToBreakdown = (it) => {
     const roastery = it.roastery && it.roastery.trim() ? it.roastery : defaultName;
     if (!breakdownByCycle[it.cycle_id]) breakdownByCycle[it.cycle_id] = {};
     if (!breakdownByCycle[it.cycle_id][roastery]) {
@@ -63,6 +102,16 @@ router.get('/', requireAdmin, (req, res) => {
     }
     breakdownByCycle[it.cycle_id][roastery].total_kg += variantToKg(it.variant, it.quantity);
     breakdownByCycle[it.cycle_id][roastery].total_value += (it.price || 0) * it.quantity;
+  };
+  for (const it of items) {
+    addToBreakdown(it);
+  }
+  // §UC-GSO-013: guest bags are bought from the same roastery as the friends' — this
+  // breakdown is what the admin orders by. Added as a SECOND PASS over the same
+  // accumulator (never as a JOIN — see the note at the top of this file), so the
+  // friend rows above cannot be multiplied.
+  for (const it of guestCycleItems(cycles.map((c) => c.id))) {
+    addToBreakdown(it);
   }
 
   for (const cycle of cycles) {
@@ -284,7 +333,7 @@ router.get('/:id/summary', requireAdmin, (req, res) => {
   const roasteryFilter = req.query.roastery;
 
   let summaryQuery = `
-    SELECT p.name, p.purpose, p.description1, p.roast_type, p.variant_label, p.roastery, oi.variant, SUM(oi.quantity) as total_quantity,
+    SELECT p.id as product_id, p.name, p.purpose, p.description1, p.roast_type, p.variant_label, p.roastery, oi.variant, SUM(oi.quantity) as total_quantity,
            SUM(oi.quantity * oi.price) as total_price
     FROM order_items oi
     JOIN orders o ON o.id = oi.order_id
@@ -294,7 +343,13 @@ router.get('/:id/summary', requireAdmin, (req, res) => {
   const summaryParams = [req.params.id];
 
   if (roasteryFilter === '_default') {
-    summaryQuery += ' AND (p.roastery IS NULL OR p.roastery = "")';
+    // ⚠ SINGLE quotes. `""` is a QUOTED IDENTIFIER in SQLite, and unlike `"abc"`
+    // (which falls back to a string literal) an empty one has no fallback: this
+    // branch threw `no such column: ""` and 500'd the endpoint for every admin who
+    // clicked the "hlavná pražiareň" filter chip. Pre-existing since the filter
+    // shipped; found by GSO-T8's summary tests and fixed here because this row has to
+    // honour the same filter for guest lines.
+    summaryQuery += " AND (p.roastery IS NULL OR p.roastery = '')";
   } else if (roasteryFilter) {
     summaryQuery += ' AND p.roastery = ?';
     summaryParams.push(roasteryFilter);
@@ -313,6 +368,54 @@ router.get('/:id/summary', requireAdmin, (req, res) => {
   `;
 
   const summary = db.prepare(summaryQuery).all(...summaryParams);
+
+  // §UC-GSO-013 — guest bags belong on the sheet the admin orders with, MERGED into
+  // the friend line for the same product + variant (a guest's 250g of X is not a
+  // separate thing to buy). A variant no friend ordered becomes its own line, built
+  // from the same `products` metadata the friend half selects.
+  //
+  // Cancelled sub-orders are excluded by `guestCycleItems()` — their item rows
+  // survive the cancel (GSO-T4), and buying a called-off bag costs real money.
+  const lineByKey = new Map();
+  for (const item of summary) {
+    lineByKey.set(`${item.product_id}|${item.variant}`, item);
+  }
+  let guestLinesAdded = false;
+  for (const item of guestCycleItems([req.params.id])) {
+    if (!matchesRoasteryFilter(item.roastery, roasteryFilter)) continue;
+    const key = `${item.product_id}|${item.variant}`;
+    const existing = lineByKey.get(key);
+    if (existing) {
+      existing.total_quantity += item.quantity;
+      existing.total_price += item.quantity * (item.price || 0);
+      continue;
+    }
+    const line = {
+      product_id: item.product_id,
+      name: item.name,
+      purpose: item.purpose,
+      description1: item.description1,
+      roast_type: item.roast_type,
+      variant_label: item.variant_label,
+      roastery: item.roastery,
+      variant: item.variant,
+      total_quantity: item.quantity,
+      total_price: item.quantity * (item.price || 0),
+    };
+    lineByKey.set(key, line);
+    summary.push(line);
+    guestLinesAdded = true;
+  }
+  // Only a NEW line can be out of place; merging into an existing one keeps the SQL
+  // order intact. Sorting only when needed also keeps the guest-free response
+  // byte-identical to what this endpoint returned before this task.
+  if (guestLinesAdded) {
+    summary.sort((a, b) =>
+      purposeRank(a.purpose) - purposeRank(b.purpose)
+      || compareSqlText(a.name, b.name)
+      || compareSqlText(a.variant, b.variant)
+    );
+  }
 
   const totalItems = summary.reduce((acc, item) => acc + item.total_quantity, 0);
   const totalPrice = summary.reduce((acc, item) => acc + item.total_price, 0);

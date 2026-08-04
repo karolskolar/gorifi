@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
+import { guestCycleItems } from '../helpers/guest-aggregation.js';
 import {
   variantToKg,
   getTier,
@@ -24,9 +25,15 @@ const SEGMENT_PRIORITY = { core: 0, regular: 1, occasional: 2, new: 3, inactive:
 
 router.get('/', (req, res) => {
   try {
-    // 1. Find current open or locked coffee cycle (most recent)
+    // 1. Find current open or locked coffee cycle (most recent).
+    //
+    // ⚠ `, id DESC` is the TIEBREAK, not decoration: `created_at` is a DATETIME with
+    // SECOND resolution, so two cycles created in the same second left this pick
+    // arbitrary — "the current live cycle" could flip between two rows from one
+    // request to the next. The highest id is the newest row, so ties now resolve to
+    // the same cycle every time.
     const cycle = db.get(
-      "SELECT id, name, status, created_at, expected_date, markup_ratio FROM order_cycles WHERE type = 'coffee' AND status IN ('open', 'locked') ORDER BY created_at DESC LIMIT 1"
+      "SELECT id, name, status, created_at, expected_date, markup_ratio FROM order_cycles WHERE type = 'coffee' AND status IN ('open', 'locked') ORDER BY created_at DESC, id DESC LIMIT 1"
     );
 
     if (!cycle) {
@@ -54,12 +61,25 @@ router.get('/', (req, res) => {
       );
     }
 
+    // Guest sub-orders placed through this cycle's share links (§UC-GSO-013).
+    // CYCLE-LEVEL only — see helpers/guest-aggregation.js and Decision 4: the
+    // friend-shaped figures below (num_friends, the averages, the nudge list,
+    // segmentation) must never see a guest.
+    const guestItems = guestCycleItems([cycle.id]);
+
     const defaultRoastery = db.get('SELECT name FROM roasteries WHERE is_default = 1');
     const defaultRoasteryName = defaultRoastery ? defaultRoastery.name : null;
+    // Only default-roastery kilos count toward the tier, for guests exactly as for
+    // friends — guest items join the same cycle-snapshot `products` row, so they
+    // carry the same `roastery`.
+    const isDefaultRoastery = (roastery) => !roastery || roastery === defaultRoasteryName;
 
-    // Compute totals (only default roastery for tier calculations)
-    let totalKg = 0;
-    let totalValue = 0;
+    // Kept apart on purpose: `friend*` feeds the PER-FRIEND averages, `guest*` is
+    // reported on its own, and the two are summed for the CYCLE-LEVEL totals.
+    let friendKg = 0;
+    let friendValue = 0;
+    let guestKg = 0;
+    let guestValue = 0;
     let otherRoasteryKg = 0;
     let otherRoasteryValue = 0;
     const orderedFriendIds = new Set();
@@ -70,21 +90,36 @@ router.get('/', (req, res) => {
     for (const item of items) {
       const kg = variantToKg(item.variant, item.quantity);
       const itemValue = item.price * item.quantity;
-      const isDefault = !item.roastery || item.roastery === defaultRoasteryName;
-      if (isDefault) {
-        totalKg += kg;
-        totalValue += itemValue;
+      if (isDefaultRoastery(item.roastery)) {
+        friendKg += kg;
+        friendValue += itemValue;
+      } else {
+        otherRoasteryKg += kg;
+        otherRoasteryValue += itemValue;
+      }
+    }
+    for (const item of guestItems) {
+      const kg = variantToKg(item.variant, item.quantity);
+      const itemValue = item.price * item.quantity;
+      if (isDefaultRoastery(item.roastery)) {
+        guestKg += kg;
+        guestValue += itemValue;
       } else {
         otherRoasteryKg += kg;
         otherRoasteryValue += itemValue;
       }
     }
 
-    totalKg = roundKg(totalKg);
-    totalValue = roundEur(totalValue);
+    const friendKgRounded = roundKg(friendKg);
+    const friendValueRounded = roundEur(friendValue);
+    const totalKg = roundKg(friendKg + guestKg);
+    const totalValue = roundEur(friendValue + guestValue);
     const numFriends = orderedFriendIds.size;
-    const avgKgPerPerson = numFriends > 0 ? roundKg(totalKg / numFriends) : 0;
-    const avgValuePerPerson = numFriends > 0 ? roundEur(totalValue / numFriends) : 0;
+    // PER-FRIEND: "how much does one friend bring?" — the basis stays FRIEND kilos,
+    // or the nudge maths below ("how many more friends do we need for the next
+    // tier?") would credit each missing friend with the guests' coffee too.
+    const avgKgPerPerson = numFriends > 0 ? roundKg(friendKgRounded / numFriends) : 0;
+    const avgValuePerPerson = numFriends > 0 ? roundEur(friendValueRounded / numFriends) : 0;
 
     const tier = getTier(totalKg);
     const nextTier = getNextTier(totalKg);
@@ -106,7 +141,10 @@ router.get('/', (req, res) => {
 
     // 4. Get previous completed coffee cycle for comparison
     const prevCycle = db.get(
-      "SELECT id, name, created_at FROM order_cycles WHERE type = 'coffee' AND status = 'completed' ORDER BY created_at DESC LIMIT 1"
+      // Same second-resolution tiebreak as the current-cycle pick above: without
+      // `, id DESC` the cycle this whole comparison block is "previous" TO could
+      // change between requests.
+      "SELECT id, name, created_at FROM order_cycles WHERE type = 'coffee' AND status = 'completed' ORDER BY created_at DESC, id DESC LIMIT 1"
     );
 
     let previous = null;
@@ -129,18 +167,31 @@ router.get('/', (req, res) => {
         );
       }
 
-      let prevTotalKg = 0;
-      let prevTotalValue = 0;
+      let prevFriendKg = 0;
+      let prevFriendValue = 0;
       for (const o of prevOrders) {
-        prevTotalValue += o.total || 0;
+        prevFriendValue += o.total || 0;
         prevFriendIds.add(o.friend_id);
       }
       for (const item of prevItems) {
-        prevTotalKg += variantToKg(item.variant, item.quantity);
+        prevFriendKg += variantToKg(item.variant, item.quantity);
       }
 
-      prevTotalKg = roundKg(prevTotalKg);
-      prevTotalValue = roundEur(prevTotalValue);
+      // The comparison is cycle-vs-cycle, so the previous cycle's totals count its
+      // guest sub-orders too — otherwise "we are up 3 kg" would compare a
+      // guest-inclusive present against a friend-only past. No roastery split here
+      // (there is none on this block for friend orders either).
+      let prevGuestKg = 0;
+      let prevGuestValue = 0;
+      for (const item of guestCycleItems([prevCycle.id])) {
+        prevGuestKg += variantToKg(item.variant, item.quantity);
+        prevGuestValue += item.price * item.quantity;
+      }
+
+      const prevFriendKgRounded = roundKg(prevFriendKg);
+      const prevFriendValueRounded = roundEur(prevFriendValue);
+      const prevTotalKg = roundKg(prevFriendKg + prevGuestKg);
+      const prevTotalValue = roundEur(prevFriendValue + prevGuestValue);
       const prevNumFriends = prevFriendIds.size;
 
       previous = {
@@ -148,9 +199,12 @@ router.get('/', (req, res) => {
         name: prevCycle.name,
         total_kg: prevTotalKg,
         total_value: prevTotalValue,
+        guest_kg: roundKg(prevGuestKg),
+        guest_value: roundEur(prevGuestValue),
+        // PER-FRIEND, friend basis (same rule as the current cycle above).
         num_friends: prevNumFriends,
-        avg_kg_per_person: prevNumFriends > 0 ? roundKg(prevTotalKg / prevNumFriends) : 0,
-        avg_value_per_person: prevNumFriends > 0 ? roundEur(prevTotalValue / prevNumFriends) : 0,
+        avg_kg_per_person: prevNumFriends > 0 ? roundKg(prevFriendKgRounded / prevNumFriends) : 0,
+        avg_value_per_person: prevNumFriends > 0 ? roundEur(prevFriendValueRounded / prevNumFriends) : 0,
         friend_ids: [...prevFriendIds],
       };
     }
@@ -209,8 +263,15 @@ router.get('/', (req, res) => {
         markup_ratio: cycle.markup_ratio,
       },
       totals: {
+        // CYCLE-LEVEL: friend + guest kilos/value. `guest_kg`/`guest_value` are the
+        // guest share OF those figures (default roastery, i.e. the tier basis); a
+        // guest kilo from another roastery sits in `other_roastery_kg` like a
+        // friend's would.
         total_kg: totalKg,
         total_value: totalValue,
+        guest_kg: roundKg(guestKg),
+        guest_value: roundEur(guestValue),
+        // PER-FRIEND from here down — guests are invisible (Decision 4).
         num_friends: numFriends,
         total_eligible: eligibleFriends.length,
         avg_kg_per_person: avgKgPerPerson,

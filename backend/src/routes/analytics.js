@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
+import { guestCycleItems } from '../helpers/guest-aggregation.js';
 import {
   variantToKg,
   getTier,
@@ -63,8 +64,23 @@ router.get('/coffee', (req, res) => {
       );
     }
 
+    // 3b. Guest sub-orders of those cycles, grouped by cycle (§UC-GSO-013).
+    // CYCLE-LEVEL ONLY (helpers/guest-aggregation.js / Decision 4): these rows feed
+    // the per-cycle kilos, value, tier and margin below and NOTHING else. Section 5
+    // (the per-friend table, segmentation, streaks, trends) and the summary's
+    // top-5/concentration figures stay keyed on `orders` — a guest is not a friend.
+    const guestItemsByCycle = {};
+    for (const item of guestCycleItems(cycleIds)) {
+      if (!guestItemsByCycle[item.cycle_id]) guestItemsByCycle[item.cycle_id] = [];
+      guestItemsByCycle[item.cycle_id].push(item);
+    }
+
     const defaultRoastery = db.get('SELECT name FROM roasteries WHERE is_default = 1');
     const defaultRoasteryName = defaultRoastery ? defaultRoastery.name : null;
+    // Guest items join the same cycle-snapshot `products` row a friend item does, so
+    // the default-vs-other split (which decides what counts toward the tier)
+    // classifies both identically.
+    const isDefaultRoastery = (roastery) => !roastery || roastery === defaultRoasteryName;
 
     // Build lookup maps
     const ordersByCycle = {};
@@ -100,36 +116,50 @@ router.get('/coffee', (req, res) => {
       const currentFriendSet = friendsByCycle[cycle.id] || new Set();
       const numFriends = currentFriendSet.size;
 
-      // Compute total kg and total value (only default roastery for tier calculations)
-      let totalKg = 0;
-      let totalValue = 0;
+      // Compute total kg and total value (only default roastery for tier calculations).
+      // `friend*` and `guest*` are kept apart so the CYCLE-LEVEL totals can include
+      // guests while the PER-FRIEND averages below stay on friend kilos.
+      let friendKg = 0;
+      let friendValue = 0;
+      let guestKg = 0;
+      let guestValue = 0;
       let otherRoasteryKg = 0;
       let otherRoasteryValue = 0;
       for (const order of cycleOrders) {
         const orderItems = itemsByOrder[order.id] || [];
-        let orderDefaultValue = 0;
-        let orderOtherValue = 0;
         for (const item of orderItems) {
           const kg = variantToKg(item.variant, item.quantity);
           const itemValue = item.price * item.quantity;
-          const isDefault = !item.roastery || item.roastery === defaultRoasteryName;
-          if (isDefault) {
-            totalKg += kg;
-            orderDefaultValue += itemValue;
+          if (isDefaultRoastery(item.roastery)) {
+            friendKg += kg;
+            friendValue += itemValue;
           } else {
             otherRoasteryKg += kg;
-            orderOtherValue += itemValue;
+            otherRoasteryValue += itemValue;
           }
         }
-        totalValue += orderDefaultValue;
-        otherRoasteryValue += orderOtherValue;
+      }
+      for (const item of guestItemsByCycle[cycle.id] || []) {
+        const kg = variantToKg(item.variant, item.quantity);
+        const itemValue = item.price * item.quantity;
+        if (isDefaultRoastery(item.roastery)) {
+          guestKg += kg;
+          guestValue += itemValue;
+        } else {
+          otherRoasteryKg += kg;
+          otherRoasteryValue += itemValue;
+        }
       }
 
-      totalKg = roundKg(totalKg);
-      totalValue = Math.round(totalValue * 100) / 100;
+      const friendKgRounded = roundKg(friendKg);
+      const friendValueRounded = Math.round(friendValue * 100) / 100;
+      const totalKg = roundKg(friendKg + guestKg);
+      const totalValue = Math.round((friendValue + guestValue) * 100) / 100;
 
-      const avgKgPerPerson = numFriends > 0 ? roundKg(totalKg / numFriends) : 0;
-      const avgValuePerPerson = numFriends > 0 ? Math.round((totalValue / numFriends) * 100) / 100 : 0;
+      // PER-FRIEND: friend basis, so "avg kg per person" keeps meaning kilos per
+      // friend (it drives friends_needed_for_next_tier / min_viable_base below).
+      const avgKgPerPerson = numFriends > 0 ? roundKg(friendKgRounded / numFriends) : 0;
+      const avgValuePerPerson = numFriends > 0 ? Math.round((friendValueRounded / numFriends) * 100) / 100 : 0;
 
       const tier = getTier(totalKg);
       const operator_margin = Math.round(computeMargin(totalValue, totalKg) * 100) / 100;
@@ -146,9 +176,13 @@ router.get('/coffee', (req, res) => {
         name: cycle.name,
         status: cycle.status,
         created_at: cycle.created_at,
+        // CYCLE-LEVEL: friend + guest. PER-FRIEND (num_friends, the averages, the
+        // new/returning/churned counts) stays keyed on `orders`.
         num_friends: numFriends,
         total_kg: totalKg,
         total_value: totalValue,
+        guest_kg: roundKg(guestKg),
+        guest_value: Math.round(guestValue * 100) / 100,
         avg_kg_per_person: avgKgPerPerson,
         avg_value_per_person: avgValuePerPerson,
         tier: tier ? { discount: tier.discount, label: tier.label, minKg: tier.minKg } : null,
