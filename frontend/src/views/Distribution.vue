@@ -16,7 +16,10 @@ const distribution = ref([])
 const loading = ref(true)
 const error = ref('')
 const packingOrderId = ref(null)
-const togglingItemId = ref(null)
+// Per-item in-flight map (item id -> true). Keyed per item on purpose: tapping
+// item B while item A's PATCH is still in flight must work — an admin ticking
+// off a 30-friend list on a phone taps faster than the round trips complete.
+const pendingItems = ref({})
 
 const cycleId = route.params.id
 
@@ -60,21 +63,38 @@ function formatPrice(price) {
   return price ? `${price.toFixed(2)} EUR` : '-'
 }
 
-// Persisted per-item packing state: toggle on the server (order_items.packed)
-// and reload so the "X/Y ✓" counter, the un-pack-on-uncheck behaviour and the
-// "Zabaliť" gating all reflect durable state (survives refresh / other device).
-async function toggleItem(item) {
-  if (togglingItemId.value || packingOrderId.value) return
+function isItemPending(item) {
+  return !!pendingItems.value[item.id]
+}
 
-  togglingItemId.value = item.id
+function setItemPending(itemId, value) {
+  const next = { ...pendingItems.value }
+  if (value) next[itemId] = true
+  else delete next[itemId]
+  pendingItems.value = next
+}
+
+// Persisted per-item packing state: toggle on the server (order_items.packed)
+// so the "X/Y ✓" counter, the un-pack-on-uncheck behaviour and the "Zabaliť"
+// gating all reflect durable state (survives refresh / other device).
+// The response carries the updated item plus the parent order's packed flag,
+// so we patch just those two values locally instead of re-fetching the whole
+// distribution (1 + N queries and a full re-render) on every tap.
+async function toggleItem(friend, item) {
+  if (isItemPending(item) || packingOrderId.value === friend.order_id) return
+
+  setItemPending(item.id, true)
   error.value = ''
   try {
-    await api.toggleItemPacked(item.id)
-    await loadData()
+    const updated = await api.toggleItemPacked(item.id)
+    item.packed = updated.packed ? 1 : 0
+    friend.packed = updated.order_packed ? 1 : 0
   } catch (e) {
     error.value = e.message
+    // Never leave the UI claiming a state that was not persisted.
+    await loadData()
   } finally {
-    togglingItemId.value = null
+    setItemPending(item.id, false)
   }
 }
 
@@ -187,11 +207,15 @@ function printDistribution() {
                 <div
                   v-for="item in friend.items"
                   :key="item.id"
-                  @click="toggleItem(item)"
+                  @click="toggleItem(friend, item)"
+                  :aria-busy="isItemPending(item)"
                   class="flex items-center gap-2.5 border rounded-lg px-3 py-2.5 cursor-pointer transition-all select-none print:border-gray-300"
-                  :class="isItemChecked(item)
-                    ? 'bg-green-50 border-green-200 opacity-50 dark:bg-green-950/20 dark:border-green-800'
-                    : 'bg-card border-border hover:border-muted-foreground/30'"
+                  :class="[
+                    isItemChecked(item)
+                      ? 'bg-green-50 border-green-200 opacity-50 dark:bg-green-950/20 dark:border-green-800'
+                      : 'bg-card border-border hover:border-muted-foreground/30',
+                    isItemPending(item) ? 'animate-pulse ring-2 ring-primary/40 print:ring-0 print:animate-none' : ''
+                  ]"
                 >
                   <input
                     type="checkbox"
@@ -226,6 +250,17 @@ function printDistribution() {
                       </Badge>
                     </div>
                   </div>
+                  <!-- Immediate feedback that this tap is being saved -->
+                  <svg
+                    v-if="isItemPending(item)"
+                    class="w-4 h-4 shrink-0 animate-spin text-muted-foreground print:hidden"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                  </svg>
                 </div>
               </div>
             </template>

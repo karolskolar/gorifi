@@ -494,11 +494,21 @@ router.patch('/:id/packed', requireAdmin, (req, res) => {
   // been individually checked off in the Distribution view (persisted
   // order_items.packed). This makes the "Zabaliť" button a deliberate final
   // step and matches the server-side rule in the spec (Decision 3 / UC-GSO-011).
+  // An order with zero items has nothing to check off, so it is NOT packable —
+  // this mirrors the frontend (Distribution.vue `allItemsChecked()` requires
+  // items.length > 0 and keeps the button disabled).
+  //
+  // GSO-T7 extension point: guest items live in `guest_order_items` and must be
+  // UNIONed into this check. At that point a host order may legitimately have
+  // zero own `order_items` while having guest items — the "at least one item"
+  // requirement must then count guest items too, not just friend items.
   if (newPackedStatus === 1) {
-    const unpackedItems = db.prepare(
-      'SELECT COUNT(*) as count FROM order_items WHERE order_id = ? AND (packed IS NULL OR packed = 0)'
-    ).get(order.id);
-    if (unpackedItems.count > 0) {
+    const itemStats = db.prepare(`
+      SELECT COUNT(*) as total,
+             SUM(CASE WHEN packed = 1 THEN 1 ELSE 0 END) as packed_count
+      FROM order_items WHERE order_id = ?
+    `).get(order.id);
+    if (itemStats.total === 0 || (itemStats.packed_count || 0) < itemStats.total) {
       return res.status(409).json({ error: 'Najprv označ všetky položky ako zabalené' });
     }
   }

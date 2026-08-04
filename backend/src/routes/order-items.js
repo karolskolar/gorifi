@@ -19,6 +19,16 @@ router.patch('/:id/packed', (req, res) => {
     return res.status(404).json({ error: 'Položka objednávky neexistuje' });
   }
 
+  const parentOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(item.order_id);
+
+  // Same rule as the whole-order toggle in orders.js: only submitted orders can
+  // be packed. Without this, a draft order's items could be pre-checked and the
+  // order would show up in Distribution with "Zabaliť" already unlocked
+  // (submit never touches order_items), defeating the deliberate final step.
+  if (!parentOrder || parentOrder.status !== 'submitted') {
+    return res.status(400).json({ error: 'Len odoslané objednávky môžu byť označené ako zabalené' });
+  }
+
   const newPacked = item.packed ? 0 : 1;
 
   const toggle = db.transaction(() => {
@@ -26,11 +36,8 @@ router.patch('/:id/packed', (req, res) => {
 
     // Unchecking an item on an already-packed order un-packs the whole order
     // and posts the reversal transaction (same as the orders.js unpack path).
-    if (newPacked === 0) {
-      const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(item.order_id);
-      if (order && order.packed) {
-        unpackOrder(order);
-      }
+    if (newPacked === 0 && parentOrder.packed) {
+      unpackOrder(parentOrder);
     }
   });
 

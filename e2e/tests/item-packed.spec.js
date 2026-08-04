@@ -120,3 +120,113 @@ test.describe('Order item packed — persistence & gating', () => {
     }
   })
 })
+
+// UI-level coverage on the Distribution page: the per-item checkbox persists
+// across a reload and the "Zabaliť" button stays disabled until every item on
+// the order is checked, then flips to "Zabalené" once packed. Uses its own
+// friend/order (independent of the API-level describe block above) so the two
+// can run in either order without interfering with each other.
+test.describe('Order item packed — UI (Distribution page)', () => {
+  let uiCycleId
+  let uiFriendName
+
+  test.beforeAll(async ({ request }) => {
+    const login = await request.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+    expect(login.status()).toBe(200)
+    const token = (await login.json()).token
+    const admin = { 'X-Admin-Token': token }
+
+    const cyclesRes = await request.get('/api/cycles', { headers: admin })
+    uiCycleId = (await cyclesRes.json()).find((c) => c.name === CYCLE_NAME).id
+
+    const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
+    uiFriendName = `GSO-T1 UI Pack ${uniq}`
+    const friend = await (await request.post('/api/friends', { headers: admin, data: { name: uiFriendName } })).json()
+
+    const p1 = await (await request.post('/api/products', {
+      headers: admin,
+      data: { cycle_id: uiCycleId, name: 'GSO-T1 UI Coffee A', purpose: 'Espresso', price_250g: 10, price_1kg: 30 },
+    })).json()
+    const p2 = await (await request.post('/api/products', {
+      headers: admin,
+      data: { cycle_id: uiCycleId, name: 'GSO-T1 UI Coffee B', purpose: 'Filter', price_250g: 12, price_1kg: 36 },
+    })).json()
+
+    const fp = { 'X-Friends-Password': FRIENDS_PASSWORD }
+    const put = await request.put(`/api/orders/cycle/${uiCycleId}/friend/${friend.id}`, {
+      headers: fp,
+      data: {
+        items: [
+          { product_id: p1.id, variant: '250g', quantity: 1 },
+          { product_id: p2.id, variant: '250g', quantity: 1 },
+        ],
+      },
+    })
+    expect(put.status()).toBe(200)
+    const submit = await request.post(`/api/orders/cycle/${uiCycleId}/friend/${friend.id}/submit`, {
+      headers: fp,
+      data: {},
+    })
+    expect(submit.status()).toBe(200)
+  })
+
+  test('checkbox persists across reload; Zabaliť is gated until all items are checked', async ({ page }) => {
+    // No addInitScript(localStorage.clear) here: it would rerun on every
+    // subsequent navigation in this test (the goto to the distribution page,
+    // then the reload used to prove persistence) and wipe the just-stored
+    // admin token before the app can read it. A fresh test context already
+    // starts with empty storage, so it isn't needed anyway.
+    await page.goto('/admin')
+    await page.locator('#password').fill(ADMIN_PASSWORD)
+    await page.getByRole('button', { name: /Prihlásiť sa/ }).click()
+    await expect(page).toHaveURL(/\/admin\/dashboard/)
+
+    await page.goto(`/admin/cycle/${uiCycleId}/distribution`)
+
+    const card = () => page.locator('div.p-4', { has: page.getByRole('heading', { name: uiFriendName, exact: true }) })
+    await expect(card()).toBeVisible()
+
+    const rows = () => card().locator('div.cursor-pointer')
+    await expect(rows()).toHaveCount(2)
+
+    // Nothing checked yet — the whole-order toggle must be disabled.
+    await expect(card().getByRole('button', { name: 'Zabaliť' })).toBeDisabled()
+
+    // Rapid taps must not be dropped. Hold the PATCH open so the second tap
+    // provably happens while the first request is still in flight — the
+    // in-flight guard is per item, not global.
+    await page.route('**/api/order-items/*/packed', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      await route.continue()
+    })
+    await rows().nth(0).click()
+    await rows().nth(1).click()
+    await expect(rows().nth(0).locator('input[type="checkbox"]')).toBeChecked()
+    await expect(rows().nth(1).locator('input[type="checkbox"]')).toBeChecked()
+    await page.unroute('**/api/order-items/*/packed')
+
+    // Back to "first item only" for the gating assertions below.
+    await rows().nth(1).click()
+    await expect(rows().nth(1).locator('input[type="checkbox"]')).not.toBeChecked()
+    await expect(rows().nth(0).locator('input[type="checkbox"]')).toBeChecked()
+    await expect(card().getByRole('button', { name: 'Zabaliť' })).toBeDisabled()
+
+    // Reload — the persisted (server-side) state survives, unlike the old
+    // local-ref implementation.
+    await page.reload()
+    await expect(rows().nth(0).locator('input[type="checkbox"]')).toBeChecked()
+    await expect(rows().nth(1).locator('input[type="checkbox"]')).not.toBeChecked()
+    await expect(card().getByRole('button', { name: 'Zabaliť' })).toBeDisabled()
+
+    // Check the second item — now every item is checked, so Zabaliť unlocks.
+    await rows().nth(1).click()
+    await expect(rows().nth(1).locator('input[type="checkbox"]')).toBeChecked()
+    await expect(card().getByRole('button', { name: 'Zabaliť' })).toBeEnabled()
+
+    // Pack the order via the UI.
+    await card().getByRole('button', { name: 'Zabaliť' }).click()
+    await expect(card().getByRole('button', { name: 'Zabalené' })).toBeVisible()
+    // The per-item checklist is hidden once the order is packed.
+    await expect(rows()).toHaveCount(0)
+  })
+})
