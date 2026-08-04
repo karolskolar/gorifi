@@ -51,6 +51,21 @@ async function main() {
   if (settings.status !== 200) throw new Error(`settings update failed (${settings.status}) ${settings.text}`)
   console.log('  settings: legacy mode + friends password set')
 
+  // 3b. Payment settings — guests pay the admin directly (GSO-T3), so the
+  // confirmation screen needs an IBAN / Revolut username. Only filled in when
+  // BOTH are empty, so a real environment's values are never overwritten.
+  const payment = await api('/api/admin/payment-settings')
+  if (!payment.json?.paymentIban && !payment.json?.paymentRevolutUsername) {
+    const set = await api('/api/admin/settings', {
+      method: 'PUT', token,
+      body: { paymentIban: 'SK3112000000198742637541', paymentRevolutUsername: 'e2egorifi' },
+    })
+    if (set.status !== 200) throw new Error(`payment settings update failed (${set.status}) ${set.text}`)
+    console.log('  settings: payment IBAN + Revolut username set')
+  } else {
+    console.log('  settings: payment details already present, left untouched')
+  }
+
   // 4. Ensure a cycle exists
   const cycles = await api('/api/cycles', { token })
   let cycle = (cycles.json || []).find((c) => c.name === CYCLE_NAME)

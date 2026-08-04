@@ -99,6 +99,36 @@ async function request(endpoint, options = {}) {
   return response.json()
 }
 
+// Public guest ordering (`/g/:token`). Deliberately NOT `request()`: the URL
+// token is the whole credential, so these calls must carry no Authorization, no
+// X-Friends-Password and no X-Admin-Token — a token left in localStorage by a
+// previous admin session must not change what a guest sees or can do.
+// The HTTP status is attached to the thrown error because the guest page has to
+// tell 404 (no such link) from 410 (closed) from 409 (locked while shopping).
+async function guestRequest(endpoint, options = {}) {
+  const config = {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  }
+  if (options.body && typeof options.body === 'object') {
+    config.body = JSON.stringify(options.body)
+  }
+
+  const response = await fetch(`${API_BASE}${endpoint}`, config)
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}))
+    const err = new Error(payload.error || 'Chyba servera')
+    err.status = response.status
+    if (payload.reason) err.reason = payload.reason
+    if (payload.field) err.field = payload.field
+    if (payload.details) err.details = payload.details
+    throw err
+  }
+
+  return response.json()
+}
+
 function adminRequest(endpoint, options = {}) {
   const adminToken = localStorage.getItem('adminToken')
   if (adminToken) {
@@ -299,6 +329,47 @@ export const api = {
     adminRequest(`/onboarding-links/${id}/regenerate`, { method: 'POST' }),
   deleteOnboardingLink: (id) =>
     adminRequest(`/onboarding-links/${id}`, { method: 'DELETE' }),
+
+  // Public guest ordering (no auth headers — the URL token is the credential)
+  getGuestOrderPage: (token) => guestRequest(`/guest/${encodeURIComponent(token)}`),
+  submitGuestOrder: (token, data) => guestRequest(`/guest/${encodeURIComponent(token)}/orders`, {
+    method: 'POST',
+    body: data
+  }),
+  // The guest's personal status/edit URL. The PAIR of tokens is the credential, so
+  // both are path segments and neither is ever sent as a header.
+  getGuestOrderStatus: (token, orderToken) =>
+    guestRequest(`/guest/${encodeURIComponent(token)}/orders/${encodeURIComponent(orderToken)}`),
+  updateGuestOrder: (token, orderToken, data) =>
+    guestRequest(`/guest/${encodeURIComponent(token)}/orders/${encodeURIComponent(orderToken)}`, {
+      method: 'PUT',
+      body: data
+    }),
+
+  // Guest share links (host = the authenticated friend; Bearer token required)
+  getGuestLink: (cycleId) => request(`/guest-links/cycle/${cycleId}`),
+  createGuestLink: (cycleId) => request(`/guest-links/cycle/${cycleId}`, { method: 'POST' }),
+  setGuestLinkActive: (id, active) => request(`/guest-links/${id}`, { method: 'PATCH', body: { active } }),
+
+  // Guest sub-orders, host side. `delivered` is the HOST's flag (the hand-over
+  // checklist); `paid` is the ADMIN's and the host only ever reads it, so there
+  // is deliberately no client method for it here.
+  // "Deleting" a sub-order is a soft cancel server-side: the guest's status URL
+  // then shows it as cancelled and its stock is released.
+  setGuestOrderDelivered: (id, delivered) =>
+    request(`/guest-orders/${id}/delivered`, { method: 'PATCH', body: { delivered } }),
+  deleteGuestOrder: (id) => request(`/guest-orders/${id}`, { method: 'DELETE' }),
+
+  // Guest sub-orders, ADMIN side (same `/guest-orders` prefix, requireAdmin-gated
+  // server-side — the router is mixed-auth on purpose). `paid` is the admin's flag:
+  // the admin is the money recipient, so this is the only place it is written, and
+  // it creates NO balance transaction (guests have no balance account).
+  // `delivered` is the host's tick and the admin only reads it.
+  markGuestOrderPaid: (id, paid) =>
+    adminRequest(`/guest-orders/${id}/paid`, { method: 'PATCH', body: { paid } }),
+  // Who still owes for this cycle — name, amount, payment reference, host, contact
+  // — plus the refund queue (paid but cancelled).
+  getGuestUnpaid: (cycleId) => adminRequest(`/guest-orders/cycle/${cycleId}/unpaid`),
 
   // Roasteries
   getRoasteries: () => request('/roasteries'),

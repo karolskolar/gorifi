@@ -25,6 +25,9 @@ import rewardsRouter from './routes/rewards.js';
 import invitationsRouter from './routes/invitations.js';
 import roasteriesRouter from './routes/roasteries.js';
 import onboardingRouter from './routes/onboarding.js';
+import guestLinksRouter from './routes/guest-links.js';
+import guestOrdersRouter from './routes/guest-orders.js';
+import guestRouter from './routes/guest.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -70,6 +73,17 @@ app.use('/api/subscriptions', subscriptionsRouter);
 app.use('/api/vouchers', vouchersRouter);
 app.use('/api/invitations', invitationsRouter);
 app.use('/api', onboardingRouter);
+// Friend-authenticated (host) surface — NOT admin. Auth is enforced per route
+// inside the router, which requires a resolved per-friend identity.
+app.use('/api/guest-links', guestLinksRouter);
+// Guest sub-order mutations. MIXED host + admin router, so the mount stays bare
+// and each route states its own guard: the host owns `delivered` and the removal
+// (GSO-T5), while GSO-T6 adds the admin's `paid` toggle and unpaid overview here
+// with requireAdmin. Wrapping this mount in either guard would break the other.
+app.use('/api/guest-orders', guestOrdersRouter);
+// Public guest ordering — the URL token is the whole credential, so this mount
+// stays bare (no admin, no friend auth). Every route inside is abuse-rate-limited.
+app.use('/api/guest', guestRouter);
 
 // Fully-admin routers: every route is privileged, so gate the whole mount.
 app.use('/api/bakery-products', requireAdmin, bakeryProductsRouter);

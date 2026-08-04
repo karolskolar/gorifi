@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
+import GuestShareDialog from '@/components/GuestShareDialog.vue'
 
 const router = useRouter()
 
@@ -98,6 +99,9 @@ const showInviteModal = ref(false)
 const inviteCode = ref('')
 const inviteLoading = ref(false)
 const inviteCopied = ref(false)
+
+// Guest share dialog — the cycle whose link is being shared (null = closed)
+const shareCycle = ref(null)
 
 const STORAGE_KEY = 'gorifi_friend_auth'
 
@@ -733,6 +737,12 @@ function getInviteUrl() {
   return `${window.location.origin}/invite/${inviteCode.value}`
 }
 
+// Guest share link straight from the cycle list, so the host does not have to
+// open a cycle first. Same dialog (and logic) as FriendOrder.vue.
+function openShareDialog(cycle) {
+  shareCycle.value = cycle
+}
+
 async function copyInviteLink() {
   try {
     await navigator.clipboard.writeText(getInviteUrl())
@@ -1035,6 +1045,20 @@ async function copyInviteLink() {
                       {{ cycle.orderPickupName }}
                     </Badge>
                   </div>
+                  <!-- Share this cycle with colleagues (guest orders). Only
+                       while the cycle is open — same rule as FriendOrder. -->
+                  <Button
+                    v-if="cycle.status === 'open'"
+                    variant="ghost"
+                    size="sm"
+                    class="h-7 px-2 -ml-2 mt-1.5 gap-1.5 text-muted-foreground hover:text-foreground"
+                    @click.stop="openShareDialog(cycle)"
+                  >
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342A3 3 0 106.316 10.658m0 2.684l8.632 4.316m-8.632-7l8.632-4.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                    </svg>
+                    <span class="text-xs">Zdieľať s kolegami</span>
+                  </Button>
                 </div>
                 <div v-if="cycle.status !== 'planned'" class="text-right">
                   <span v-if="cycle.hasOrder" class="text-sm font-medium text-foreground">
@@ -1379,6 +1403,14 @@ async function copyInviteLink() {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <!-- Share with colleagues (guest link) — shared with FriendOrder -->
+    <GuestShareDialog
+      :open="!!shareCycle"
+      :cycle-id="shareCycle?.id"
+      :cycle-name="shareCycle?.name || ''"
+      @update:open="val => !val && (shareCycle = null)"
+    />
 
     <div v-if="showVoucherModal && currentVoucher" class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
       <div class="bg-card rounded-2xl p-7 max-w-sm w-full shadow-2xl">

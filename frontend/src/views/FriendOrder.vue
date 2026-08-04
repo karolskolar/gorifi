@@ -6,6 +6,8 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/com
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
+import GuestShareDialog from '@/components/GuestShareDialog.vue'
+import GuestSubOrders from '@/components/GuestSubOrders.vue'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -73,6 +75,10 @@ const paymentReference = computed(() => {
   const cycleName = cycle.value?.name || ''
   return `${friendName} / ${cycleName}`
 })
+
+// Guest share link — all state/logic lives in GuestShareDialog, shared with
+// FriendPortal's cycle list so both entry points behave identically.
+const showShareModal = ref(false)
 
 const cycleId = computed(() => route.params.cycleId)
 
@@ -773,6 +779,34 @@ function applyMarkup(price) {
           <strong>Vaša objednávka bola odoslaná!</strong> Stále ju môžete upraviť až do uzamknutia.
         </AlertDescription>
       </Alert>
+
+      <!-- Share with colleagues (guest sub-orders) -->
+      <Card v-if="!isLocked" class="mb-4">
+        <CardContent class="p-4 flex flex-wrap items-center justify-between gap-3">
+          <div class="min-w-0">
+            <div class="font-medium text-sm text-foreground">Objednávate aj pre kolegov?</div>
+            <p class="text-xs text-muted-foreground mt-0.5">
+              Pošlite im odkaz — objednajú si sami a vy im tovar odovzdáte.
+            </p>
+          </div>
+          <Button variant="outline" size="sm" class="shrink-0 gap-1.5" @click="showShareModal = true">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342A3 3 0 106.316 10.658m0 2.684l8.632 4.316m-8.632-7l8.632-4.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+            </svg>
+            Zdieľať objednávku s kolegami
+          </Button>
+        </CardContent>
+      </Card>
+
+      <!-- Sub-orders the colleagues placed through the share link. Rendered
+           regardless of the lock: removal ends at the lock, but the "odovzdané"
+           hand-over checklist is used exactly AFTER it. The guest total inside is
+           context only — the host's own payable total below is own items only
+           (§UC-GSO-006). -->
+      <!-- `ready` waits for an authenticated load: this view restores the friend
+           session in onMounted, which runs AFTER a child's setup, so fetching any
+           earlier would 401 on a fresh load of /cycle/:id. -->
+      <GuestSubOrders :cycle-id="cycleId" :cycle-locked="isLocked" :ready="!!friend" />
 
       <!-- Messages -->
       <Alert v-if="error" variant="destructive" class="mb-4">
@@ -1589,6 +1623,14 @@ function applyMarkup(price) {
       :iban="paymentIban"
       :revolut-username="paymentRevolutUsername"
       @close="showPaymentModal = false"
+    />
+
+    <!-- Share with colleagues (guest link) — shared with FriendPortal -->
+    <GuestShareDialog
+      :open="showShareModal"
+      :cycle-id="cycleId"
+      :cycle-name="cycle?.name || ''"
+      @update:open="showShareModal = $event"
     />
 
     <!-- Cancel Order Confirmation Modal -->
