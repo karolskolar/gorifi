@@ -64,6 +64,29 @@ test.describe('API security — admin authorization', () => {
   })
 })
 
+// Friend-authenticated (non-admin) surfaces. They are NOT in ADMIN_ENDPOINTS
+// because an admin token must not unlock them either: they need a per-friend
+// session identity. Asserted separately so the two boundaries stay distinct.
+const FRIEND_IDENTITY_ENDPOINTS = [
+  { method: 'get', path: '/api/guest-links/cycle/1' },
+  { method: 'post', path: '/api/guest-links/cycle/1' },
+  { method: 'patch', path: '/api/guest-links/1' },
+]
+
+test.describe('API security — friend-identity authorization', () => {
+  for (const ep of FRIEND_IDENTITY_ENDPOINTS) {
+    test(`${ep.method.toUpperCase()} ${ep.path} needs a friend session (401 anonymously and with an admin token)`, async ({ request }) => {
+      const anon = await request[ep.method](ep.path)
+      expect(anon.status(), `${ep.path} must not be reachable anonymously`).toBe(401)
+
+      const login = await request.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+      const { token } = await login.json()
+      const asAdmin = await request[ep.method](ep.path, { headers: { 'X-Admin-Token': token } })
+      expect(asAdmin.status(), `${ep.path} is a friend surface, not an admin one`).toBe(401)
+    })
+  }
+})
+
 test.describe('API security — no credential leakage', () => {
   test('friend responses never expose access_token / password_hash / invite_code', async ({ request }) => {
     const login = await request.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })

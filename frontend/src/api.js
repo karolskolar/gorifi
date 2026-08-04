@@ -296,6 +296,11 @@ export const api = {
   deleteOnboardingLink: (id) =>
     adminRequest(`/onboarding-links/${id}`, { method: 'DELETE' }),
 
+  // Guest share links (host = the authenticated friend; Bearer token required)
+  getGuestLink: (cycleId) => request(`/guest-links/cycle/${cycleId}`),
+  createGuestLink: (cycleId) => request(`/guest-links/cycle/${cycleId}`, { method: 'POST' }),
+  setGuestLinkActive: (id, active) => request(`/guest-links/${id}`, { method: 'PATCH', body: { active } }),
+
   // Roasteries
   getRoasteries: () => request('/roasteries'),
   createRoastery: (data) => request('/roasteries', { method: 'POST', body: data }),

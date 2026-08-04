@@ -16,6 +16,15 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   (`order_items.packed`) and the whole-order "Zabaliť" gate (API-level, plus a
   UI-level pass on the Distribution page: checkbox persists across reload,
   button disabled until every item is checked).
+- `tests/guest-link.spec.js` — GSO-T2: the host's guest share link
+  (`guest_order_links`) — create, regenerate (new token, same row id, so
+  sub-orders survive), deactivate/reactivate, unknown cycle 404 — plus the auth
+  boundaries (anonymous 401, shared-password-without-identity 401, foreign
+  friend 403) and a UI pass on BOTH share entry points — the FriendOrder card
+  and the FriendPortal cycle card (which must not appear on a locked cycle, and
+  must not navigate into the cycle when clicked), incl. a stale-response race
+  test: one dialog is reused across cycles, so a `page.route`-delayed GET for a
+  closed cycle must not swap in its link (and its buttons must not act on it).
 - `seed.mjs` — seeds a backend with an admin password, legacy friends password,
   one cycle, one friend (idempotent; NOT for production).
 - `fixtures.js` — credentials/constants, overridable via env.
@@ -43,6 +52,21 @@ Two gotchas in that recipe that look like app bugs when you skip them:
   serving from a `backend/public` whose hashed asset files have since been
   replaced under it (`rm -rf` + rebuild), so `express.static` 500s and the UI
   specs fail for reasons that have nothing to do with your diff.
+
+### Friend-portal UI specs need the friend list stubbed
+
+`FriendPortal.loadInitialData()` resolves a stored friend session against
+`GET /api/friends?active=true`, which is `requireAdmin`-gated (SEC-A*) — an
+anonymous browser gets 401, the call throws, and the portal falls back to the
+login card with an empty name dropdown. So a browser cannot reach any
+friend-authenticated page (`/cycle/:id` bounces to `/` unless auth is already in
+memory) purely through the UI. This is a **pre-existing app-side gap**, not a
+test-harness one, and it is why `forced-change-ui.spec.js` is `test.fixme`.
+
+Until it is fixed, friend-UI specs seed `localStorage.gorifi_friend_auth` with a
+real session token and `page.route`-stub only that one friends-list response —
+see `guest-link.spec.js`. Everything actually under test still talks to the real
+backend with the real Bearer token.
 
 ### Full-suite runs and the shared auth-limiter budget
 

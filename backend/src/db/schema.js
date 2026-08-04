@@ -33,6 +33,13 @@ function generateInviteCode() {
   return randomCode(8);
 }
 
+// Generate a guest share-link token. 14 chars over the same CSPRNG alphabet
+// (~70 bits) — comfortably above the 12-char floor the guest-orders design
+// sets, because the token is the only thing protecting the link (SEC-S2).
+function generateGuestToken() {
+  return randomCode(14);
+}
+
 // `bdb` is the real better-sqlite3 (file-backed, WAL) connection used by the
 // query helpers. `db` is a thin shim exposing the sql.js-style methods the
 // migration code in initDb was written against, so that migration logic stays
@@ -719,6 +726,68 @@ function initDb() {
     db.run("INSERT INTO roasteries (name, is_default) VALUES ('Goriffee', 1)");
   }
 
+  // ===================================================================
+  // Guest shared orders — a host friend shares ONE link per cycle
+  // (`/g/:token`) and their colleagues submit their own sub-orders through
+  // it, without an account. All three tables are created together so the
+  // guest features that build on them never have to touch migrations.
+  // ===================================================================
+
+  // One live share link per (host, cycle). Regeneration UPDATEs the token on
+  // this row rather than replacing it, so the sub-orders below survive.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS guest_order_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token TEXT UNIQUE NOT NULL,
+      host_friend_id INTEGER NOT NULL,
+      cycle_id INTEGER NOT NULL,
+      active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(host_friend_id, cycle_id),
+      FOREIGN KEY (host_friend_id) REFERENCES friends(id) ON DELETE CASCADE,
+      FOREIGN KEY (cycle_id) REFERENCES order_cycles(id) ON DELETE CASCADE
+    )
+  `);
+
+  // A colleague's sub-order. `link_id` carries both host and cycle.
+  // `paid` is admin-only (host sees it read-only); `delivered` is host-only
+  // (admin sees it read-only). `order_token` is the guest's personal
+  // status/edit URL — no account, no password.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS guest_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      link_id INTEGER NOT NULL,
+      order_token TEXT UNIQUE NOT NULL,
+      guest_name TEXT NOT NULL,
+      guest_phone TEXT NOT NULL,
+      guest_email TEXT,
+      status TEXT DEFAULT 'submitted' CHECK (status IN ('submitted', 'cancelled')),
+      total REAL DEFAULT 0,
+      paid INTEGER DEFAULT 0,
+      paid_at DATETIME,
+      delivered INTEGER DEFAULT 0,
+      delivered_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (link_id) REFERENCES guest_order_links(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Guest line items. `packed` mirrors order_items.packed — the persisted
+  // per-item distribution checkbox.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS guest_order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guest_order_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      variant TEXT NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 1,
+      price REAL NOT NULL,
+      packed INTEGER DEFAULT 0,
+      FOREIGN KEY (guest_order_id) REFERENCES guest_orders(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    )
+  `);
+
 }
 
 // Retained as a no-op for backward compatibility. better-sqlite3 persists every
@@ -768,4 +837,4 @@ const dbHelpers = {
 initDb();
 
 export default dbHelpers;
-export { saveDb, generateUid, generateInviteCode };
+export { saveDb, generateUid, generateInviteCode, generateGuestToken };
