@@ -629,7 +629,21 @@ router.delete('/:id', requireAdmin, (req, res) => {
     });
   }
 
-  const result = db.prepare('DELETE FROM friends WHERE id = ?').run(req.params.id);
+  // ⚠ `friends.root_friend_id` was added by a bare ALTER TABLE, so it has NO foreign
+  // key: deleting a group's root used to leave every member pointing at a row that no
+  // longer exists. Such a member belongs to no group and is not unassigned either, so
+  // they dropped out of the rewards report entirely — a routine delete silently zeroed
+  // their whole reward volume (own kilos and the guest kilos GSO-T9 credits them).
+  // `rewards.js` now treats an unresolvable pointer as unassigned as well; this clears
+  // the pointer so the broken state is not created in the first place. One
+  // transaction: a half-applied delete would leave exactly the dangling rows this
+  // prevents.
+  const removeFriend = db.transaction(() => {
+    db.run('UPDATE friends SET root_friend_id = NULL WHERE root_friend_id = ?', [req.params.id]);
+    db.run('DELETE FROM friends WHERE id = ?', [req.params.id]);
+  });
+  removeFriend();
+
   res.status(204).send();
 });
 

@@ -158,6 +158,36 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   key) while every other guest-distribution test stays green — an API-only test
   cannot see this because the bug is purely in the frontend's per-item in-flight
   bookkeeping.
+- `tests/guest-rewards.spec.js` — GSO-T9: `GET /api/analytics/rewards` credits guest
+  kilos to the **host** (§UC-GSO-014, Decision 5). Every figure is exact, because both
+  failure modes here are money errors that survive a "greater than" check: the credit
+  landing nowhere, and a kilo counted twice. Covers a host with no own submitted order
+  (and an unsubmitted draft that must stay out), own + guest kilos summing to a total
+  cross-checked against independently-sourced halves from a different route
+  (`/api/analytics/coffee`: its per-friend table is own-orders-only, its per-cycle row
+  counts the cycle's guests once — so this row is also proven not to have doubled
+  GSO-T8's numbers), a cancelled sub-order contributing zero, guest kilos landing in
+  the cycle they were ordered in, and the three buckets `rewards.js` mirrors — a host
+  who is a group ROOT, a group MEMBER and one who is UNASSIGNED ("Ostatní") — each
+  credited once, plus no leak into another group. Each read also sums the per-cycle
+  column of EVERY bucket, which is what proves "exactly once" rather than "present".
+  Two member lists are pinned separately and asserted disjoint: `orderedMembers` is
+  own-submitted-orders only (it answers "who ordered", the per-friend question
+  Decision 4 fences off — naming a guest-only host there would be a false claim on a
+  money screen), while `guestOnlyMembers` names the hosts whose whole contribution is
+  their guests' kilos, so the group's total stays accounted for; the MIXED group (one
+  member ordered, one only hosted) is the case that needs both. A deactivated host
+  keeps the credit (the report is history), and **deleting a group root** no longer
+  makes its ex-members' volume disappear — `friends.root_friend_id` has no FK, so a
+  member used to be left pointing at a deleted row, in neither the group nor the
+  unassigned filter, silently zeroing their whole reward volume. Fixed at both ends
+  (the delete route clears the pointers; the report treats an unresolvable pointer as
+  unassigned) and tested at both: through the API, and — since no API call can create a
+  dangling pointer any more, while existing databases already contain them — one
+  DB_PATH-gated test that manufactures one directly and self-skips without it. One UI
+  pass on `/admin/analytics/rewards` for the guest-share line. ⚠ Its cycles/hosts/
+  groups are created per test, and the "Ostatní" bucket is global — so only its
+  per-cycle column is asserted, never its cumulative total.
 - `seed.mjs` — seeds a backend with an admin password, legacy friends password,
   one cycle, one friend (idempotent; NOT for production). Also fills the payment
   settings (IBAN / Revolut username) **only if they are empty**, because guest
