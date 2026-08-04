@@ -332,6 +332,15 @@ export const api = {
     method: 'POST',
     body: data
   }),
+  // The guest's personal status/edit URL. The PAIR of tokens is the credential, so
+  // both are path segments and neither is ever sent as a header.
+  getGuestOrderStatus: (token, orderToken) =>
+    guestRequest(`/guest/${encodeURIComponent(token)}/orders/${encodeURIComponent(orderToken)}`),
+  updateGuestOrder: (token, orderToken, data) =>
+    guestRequest(`/guest/${encodeURIComponent(token)}/orders/${encodeURIComponent(orderToken)}`, {
+      method: 'PUT',
+      body: data
+    }),
 
   // Guest share links (host = the authenticated friend; Bearer token required)
   getGuestLink: (cycleId) => request(`/guest-links/cycle/${cycleId}`),

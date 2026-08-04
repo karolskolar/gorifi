@@ -36,6 +36,25 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   workaround at all, since the page is genuinely public: cart, blocked submit,
   confirmation (payment reference + personal status URL + localStorage), bakery
   variant grouping, and the dead-link page.
+- `tests/guest-status.spec.js` — GSO-T4: the guest's personal status/edit URL
+  (`GET/PUT /api/guest/:token/orders/:orderToken`). The PAIR of tokens is the
+  credential, so a real order token under a **different** link token must 404
+  (same message as an unknown one — no existence oracle). Covers the three
+  lifecycle decisions: `cancelled` is terminal (a PUT gets 409, it is not
+  revived), an **explicit** empty cart ⇒ `cancelled` + total 0 + **stock
+  released** while the item rows are KEPT (so the release is proven to come from
+  the `<> 'cancelled'` status predicate in `helpers/stock.js`, not from deletion),
+  and a locked cycle makes the page read-only — `GET` still 200s while the
+  product listing 410s, `PUT` 409s. Because cancelling is irreversible, one test
+  pins down that **only** a literal `items: []` triggers it: `PUT {}`, a bodyless
+  `PUT`, a non-array `items`, and a non-empty `items` in which nothing prices are
+  all non-destructive 400s. Plus the `excludeGuestOrderId` seam (a re-save at the
+  stock limit must not block itself, while another guest's grams still count),
+  the GSO-T3 bounds re-applied to the edit, and a UI pass on
+  `/g/:token/o/:orderToken` (items/total/flags, "Zaplatiť" → PaymentModal,
+  editing through the shared `GuestProductGrid` — incl. bakery variant grouping,
+  since this is the grid's second consumer — the cancel confirmation, and
+  read-only when locked).
 - `seed.mjs` — seeds a backend with an admin password, legacy friends password,
   one cycle, one friend (idempotent; NOT for production). Also fills the payment
   settings (IBAN / Revolut username) **only if they are empty**, because guest

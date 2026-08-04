@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watch, watchEffect } from 'vue'
+import { ref, computed, onMounted, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../api'
 import { Card, CardContent } from '@/components/ui/card'
@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import {
   Dialog,
   DialogContent,
@@ -17,6 +16,15 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import PaymentModal from '@/components/PaymentModal.vue'
+import GuestProductGrid from '@/components/GuestProductGrid.vue'
+import {
+  availabilityMap,
+  cartLines,
+  formatPrice,
+  itemsPayload,
+  linesTotal,
+  variantText
+} from '@/lib/guest-cart'
 
 // Public guest ordering page — route `/g/:token` (§UC-GSO-001..003).
 //
@@ -24,6 +32,11 @@ import PaymentModal from '@/components/PaymentModal.vue'
 // stripped of everything that needs an account: no login, no delivery/pickup
 // modal, no drafts, no auto-save. Checkout is name + mobile (+ optional email)
 // and one submit; the sub-order is created only by that submit.
+//
+// The grid itself lives in `components/GuestProductGrid.vue` and the cart maths in
+// `lib/guest-cart.js` (GSO-T4), shared with the status/edit screen at
+// `/g/:token/o/:orderToken` — this page owns only the cycle header, the cart
+// footer and checkout.
 //
 // Prices arrive from the server with the cycle markup already applied, so this
 // page never multiplies by markup_ratio itself — what the guest sees is exactly
@@ -55,180 +68,10 @@ const guestEmail = ref('')
 const confirmation = ref(null) // { order, items, payment, status_url }
 const showPaymentModal = ref(false)
 
-const variantGrams = { '150g': 150, '200g': 200, '250g': 250, '500g': 500, '1kg': 1000, '20pc5g': 100 }
-
-// Coffee weight variants, in display order. Data-driven so the five near-identical
-// price boxes of FriendOrder.vue stay one template block here.
-const COFFEE_VARIANTS = [
-  { variant: '150g', label: '150g', priceKey: 'price_150g' },
-  { variant: '200g', label: '200g', priceKey: 'price_200g' },
-  { variant: '250g', label: '250g', priceKey: 'price_250g' },
-  { variant: '500g', label: '500g', priceKey: 'price_500g' },
-  { variant: '1kg', label: '1kg', priceKey: 'price_1kg' },
-  { variant: '20pc5g', label: '20 ks × 5g', priceKey: 'price_20pc5g' }
-]
-
 const isBakery = computed(() => cycle.value?.type === 'bakery')
 
-function coffeeVariantsFor(product) {
-  return COFFEE_VARIANTS.filter((v) => product[v.priceKey])
-}
-
-const groupedProducts = computed(() => {
-  const groups = {}
-  for (const product of products.value) {
-    const purpose = product.purpose || 'Ostatné'
-    if (!groups[purpose]) groups[purpose] = []
-    groups[purpose].push(product)
-  }
-  return groups
-})
-
-// Bakery products are snapshotted one products row per variant; the card shows
-// one product with a row per variant, grouped by source_bakery_product_id.
-const groupedBakeryProducts = computed(() => {
-  if (!isBakery.value) return groupedProducts.value
-
-  const result = {}
-  for (const [purpose, purposeProducts] of Object.entries(groupedProducts.value)) {
-    const groups = []
-    const seen = new Set()
-    for (const product of purposeProducts) {
-      const groupKey = product.source_bakery_product_id || product.id
-      if (seen.has(groupKey)) continue
-      seen.add(groupKey)
-
-      const variants = purposeProducts.filter((p) =>
-        p.source_bakery_product_id && p.source_bakery_product_id === product.source_bakery_product_id
-      )
-      groups.push(variants.length > 1 ? { ...variants[0], _variants: variants } : { ...product, _variants: [product] })
-    }
-    result[purpose] = groups
-  }
-  return result
-})
-
-const displayedProducts = computed(() => (isBakery.value ? groupedBakeryProducts.value : groupedProducts.value))
-
-const availablePurposes = computed(() => {
-  const order = ['Espresso', 'Filter', 'Kapsule']
-  const purposes = Object.keys(groupedProducts.value)
-  const sorted = []
-  for (const p of order) {
-    if (purposes.includes(p)) sorted.push(p)
-  }
-  for (const p of purposes) {
-    if (!order.includes(p)) sorted.push(p)
-  }
-  return sorted
-})
-
-watch(availablePurposes, (purposes) => {
-  if (purposes.length > 0 && !purposes.includes(activeTab.value)) {
-    activeTab.value = purposes[0]
-  }
-}, { immediate: true })
-
-function priceFor(product, variant) {
-  if (variant === 'unit') return product.price_unit
-  const def = COFFEE_VARIANTS.find((v) => v.variant === variant)
-  return def ? product[def.priceKey] : null
-}
-
-const cartItems = computed(() => {
-  const items = []
-  for (const [key, quantity] of Object.entries(cart.value)) {
-    if (quantity <= 0) continue
-    const separator = key.lastIndexOf('-')
-    const productId = parseInt(key.slice(0, separator), 10)
-    const variant = key.slice(separator + 1)
-    const product = products.value.find((p) => p.id === productId)
-    if (!product) continue
-    const price = priceFor(product, variant)
-    if (!price) continue
-    items.push({
-      key,
-      product_id: productId,
-      product_name: product.name,
-      variant_label: product.variant_label || null,
-      variant,
-      quantity,
-      price,
-      total: price * quantity
-    })
-  }
-  return items
-})
-
-const cartTotal = computed(() =>
-  Math.round(cartItems.value.reduce((sum, item) => sum + item.total, 0) * 100) / 100
-)
-
-function getCartKey(productId, variant) {
-  return `${productId}-${variant}`
-}
-
-function getQuantity(productId, variant) {
-  return cart.value[getCartKey(productId, variant)] || 0
-}
-
-function getGroupQuantityTotal(variants) {
-  return variants.reduce((sum, v) => sum + getQuantity(v.id, 'unit'), 0)
-}
-
-// Grams of a product already in this guest's cart.
-function getCartGramsForProduct(productId) {
-  let grams = 0
-  for (const [key, quantity] of Object.entries(cart.value)) {
-    if (quantity <= 0) continue
-    const separator = key.lastIndexOf('-')
-    if (parseInt(key.slice(0, separator), 10) !== productId) continue
-    grams += (variantGrams[key.slice(separator + 1)] || 0) * quantity
-  }
-  return grams
-}
-
-// The server counts friend orders AND other guests' sub-orders; this only keeps
-// the counter honest while the cart is being built.
-function canIncrement(productId, variant) {
-  const avail = availability.value[productId]
-  if (!avail) return true
-  return (avail.remaining_g - getCartGramsForProduct(productId) - (variantGrams[variant] || 0)) >= 0
-}
-
-function getRemainingGrams(productId) {
-  const avail = availability.value[productId]
-  if (!avail) return null
-  return Math.max(0, avail.remaining_g - getCartGramsForProduct(productId))
-}
-
-function setQuantity(productId, variant, quantity) {
-  const key = getCartKey(productId, variant)
-  if (quantity <= 0) delete cart.value[key]
-  else cart.value[key] = quantity
-  cart.value = { ...cart.value }
-}
-
-function increment(productId, variant) {
-  if (!canIncrement(productId, variant)) return
-  setQuantity(productId, variant, getQuantity(productId, variant) + 1)
-}
-
-function decrement(productId, variant) {
-  const current = getQuantity(productId, variant)
-  if (current > 0) setQuantity(productId, variant, current - 1)
-}
-
-function formatPrice(price) {
-  return `${Number(price || 0).toFixed(2)} EUR`
-}
-
-function variantText(item) {
-  if (item.variant_label) return item.variant_label
-  if (item.variant === 'unit') return 'ks'
-  if (item.variant === '20pc5g') return '20 ks × 5g'
-  return item.variant
-}
+const cartItems = computed(() => cartLines(cart.value, products.value))
+const cartTotal = computed(() => linesTotal(cartItems.value))
 
 const backgroundClass = computed(() => {
   if (isBakery.value) {
@@ -241,16 +84,6 @@ const backgroundClass = computed(() => {
   if (activeTab.value === 'Kapsule') return 'bg-amber-100'
   return 'bg-background'
 })
-
-function getTabTriggerClass(purpose) {
-  if (activeTab.value !== purpose) return ''
-  if (purpose === 'Slané') return 'bg-amber-600 text-white data-[state=active]:bg-amber-600 data-[state=active]:text-white'
-  if (purpose === 'Sladké') return 'bg-pink-600 text-white data-[state=active]:bg-pink-600 data-[state=active]:text-white'
-  if (purpose === 'Espresso') return 'bg-stone-600 text-white data-[state=active]:bg-stone-600 data-[state=active]:text-white'
-  if (purpose === 'Filter') return 'bg-sky-600 text-white data-[state=active]:bg-sky-600 data-[state=active]:text-white'
-  if (purpose === 'Kapsule') return 'bg-amber-600 text-white data-[state=active]:bg-amber-600 data-[state=active]:text-white'
-  return ''
-}
 
 watchEffect(() => {
   document.title = cycle.value?.name ? `${cycle.value.name} - Objednávka` : 'Objednávka'
@@ -266,11 +99,7 @@ async function load() {
     cycle.value = data.cycle
     host.value = data.host
     products.value = data.products || []
-    const map = {}
-    for (const entry of data.availability || []) {
-      map[entry.product_id] = entry
-    }
-    availability.value = map
+    availability.value = availabilityMap(data.availability)
   } catch (e) {
     // 404 = no such link, 410 = deactivated or cycle closed. Both dead ends, but
     // they need different wording.
@@ -323,11 +152,7 @@ async function submitOrder() {
     const payload = {
       guest_name: guestName.value.trim(),
       guest_phone: guestPhone.value.trim(),
-      items: cartItems.value.map((item) => ({
-        product_id: item.product_id,
-        variant: item.variant,
-        quantity: item.quantity
-      }))
+      items: itemsPayload(cartItems.value)
     }
     const email = guestEmail.value.trim()
     if (email) payload.guest_email = email
@@ -511,143 +336,14 @@ async function copyText(text, target) {
         </CardContent>
       </Card>
 
-      <Alert v-if="products.length === 0" class="mb-4">
-        <AlertDescription>V tomto cykle zatiaľ nie sú žiadne produkty.</AlertDescription>
-      </Alert>
+      <GuestProductGrid
+        v-model="cart"
+        v-model:active-tab="activeTab"
+        :products="products"
+        :availability="availability"
+        :is-bakery="isBakery"
+      />
 
-      <!-- One block for every cycle shape: the tab bar only appears when there is
-           more than one purpose to switch between. -->
-      <Tabs v-if="availablePurposes.length > 0" v-model="activeTab" class="w-full">
-        <TabsList v-if="availablePurposes.length > 1" class="w-full justify-start bg-card/95 backdrop-blur">
-          <TabsTrigger
-            v-for="purpose in availablePurposes"
-            :key="purpose"
-            :value="purpose"
-            :class="['flex-1', getTabTriggerClass(purpose)]"
-          >
-            {{ purpose }}
-          </TabsTrigger>
-        </TabsList>
-        <TabsContent v-for="purpose in availablePurposes" :key="purpose" :value="purpose" class="mt-4">
-          <div class="space-y-3">
-            <Card v-for="product in displayedProducts[purpose]" :key="product.id" :data-testid="`product-${product.id}`">
-              <CardContent class="p-0">
-                <!-- Bakery card: one card per product, one row per variant -->
-                <div v-if="isBakery && product.price_unit" :class="['flex rounded-lg overflow-hidden', getGroupQuantityTotal(product._variants) > 0 ? 'ring-2 ring-primary' : '']">
-                  <div class="w-28 flex-shrink-0 bg-muted flex items-center justify-center">
-                    <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
-                  </div>
-                  <div class="flex-1 min-w-0 p-3 flex flex-col">
-                    <div class="flex items-baseline gap-2">
-                      <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
-                      <span v-if="product.description2" class="text-sm text-muted-foreground">{{ product.description2 }}</span>
-                    </div>
-                    <p v-if="product.description1" class="text-sm text-muted-foreground mt-0.5">{{ product.description1 }}</p>
-                    <details v-if="product.composition" class="mt-1">
-                      <summary class="text-xs text-muted-foreground/70 cursor-pointer select-none">Zloženie</summary>
-                      <p class="text-xs text-muted-foreground/70 mt-0.5">{{ product.composition }}</p>
-                    </details>
-                    <div class="mt-auto pt-2 space-y-1.5">
-                      <div v-for="v in product._variants" :key="v.id" class="flex items-center justify-between">
-                        <div class="text-sm">
-                          <span class="font-semibold text-primary">{{ formatPrice(v.price_unit) }}</span>
-                          <span v-if="v.variant_label" class="text-muted-foreground ml-1">/ {{ v.variant_label }}</span>
-                        </div>
-                        <div class="flex items-center gap-1.5">
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            class="h-8 w-8 rounded-full"
-                            :data-testid="`dec-unit-${v.id}`"
-                            :disabled="getQuantity(v.id, 'unit') === 0"
-                            @click="decrement(v.id, 'unit')"
-                          >-</Button>
-                          <span class="w-6 text-center font-semibold text-sm">{{ getQuantity(v.id, 'unit') }}</span>
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            class="h-8 w-8 rounded-full"
-                            :data-testid="`inc-unit-${v.id}`"
-                            @click="increment(v.id, 'unit')"
-                          >+</Button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Coffee card -->
-                <div v-else class="p-4">
-                  <div class="flex gap-4 mb-3">
-                    <div class="w-20 h-20 flex-shrink-0 bg-muted rounded-lg overflow-hidden flex items-center justify-center">
-                      <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
-                    </div>
-                    <div class="flex-1 min-w-0">
-                      <div class="flex items-center gap-2 flex-wrap">
-                        <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
-                        <span v-if="product.roast_type" class="text-xs text-muted-foreground/70 bg-muted px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roast_type }}</span>
-                        <span v-if="product.roastery" class="text-xs bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roastery }}</span>
-                      </div>
-                      <p v-if="product.description1" class="text-sm text-muted-foreground">{{ product.description1 }}</p>
-                      <p v-if="product.description2" class="text-sm text-muted-foreground/70 mt-1 line-clamp-2">{{ product.description2 }}</p>
-                    </div>
-                  </div>
-
-                  <!-- Stock limit indicator (counts friend + other guests' items) -->
-                  <div v-if="availability[product.id]" class="mb-2">
-                    <div class="flex items-center gap-2 text-xs">
-                      <div class="flex-1 bg-muted rounded-full h-1.5 overflow-hidden">
-                        <div
-                          class="h-full rounded-full transition-all"
-                          :class="getRemainingGrams(product.id) === 0 ? 'bg-destructive' : getRemainingGrams(product.id) < availability[product.id].stock_limit_g * 0.25 ? 'bg-amber-500' : 'bg-primary'"
-                          :style="{ width: Math.min(100, ((availability[product.id].stock_limit_g - availability[product.id].remaining_g + getCartGramsForProduct(product.id)) / availability[product.id].stock_limit_g) * 100) + '%' }"
-                        />
-                      </div>
-                      <span v-if="getRemainingGrams(product.id) === 0" class="text-destructive font-medium whitespace-nowrap">Vypredané</span>
-                      <span v-else class="text-muted-foreground whitespace-nowrap">Zostáva: {{ getRemainingGrams(product.id) }}g z {{ availability[product.id].stock_limit_g }}g</span>
-                    </div>
-                  </div>
-
-                  <div class="grid grid-cols-2 gap-4">
-                    <div
-                      v-for="def in coffeeVariantsFor(product)"
-                      :key="def.variant"
-                      :class="[
-                        'rounded-lg p-2 transition-colors',
-                        getQuantity(product.id, def.variant) > 0 ? 'bg-primary/10 border-2 border-primary' : 'border bg-card'
-                      ]"
-                    >
-                      <div class="flex justify-between items-center mb-1">
-                        <span class="text-sm font-medium">{{ def.label }}</span>
-                        <span class="text-sm text-primary font-semibold">{{ formatPrice(product[def.priceKey]) }}</span>
-                      </div>
-                      <div class="flex items-center justify-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          class="h-8 w-8 rounded-full"
-                          :data-testid="`dec-${def.variant}`"
-                          :disabled="getQuantity(product.id, def.variant) === 0"
-                          @click="decrement(product.id, def.variant)"
-                        >-</Button>
-                        <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, def.variant) }}</span>
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          class="h-8 w-8 rounded-full"
-                          :data-testid="`inc-${def.variant}`"
-                          :disabled="!canIncrement(product.id, def.variant)"
-                          @click="increment(product.id, def.variant)"
-                        >+</Button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-      </Tabs>
 
       <!-- Sticky cart footer -->
       <div class="fixed bottom-0 left-0 right-0 bg-card shadow-lg border-t z-50">

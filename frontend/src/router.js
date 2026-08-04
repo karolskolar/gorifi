@@ -13,12 +13,19 @@ const routes = [
     component: () => import('./views/FriendOrder.vue')
   },
   // Public guest ordering — no auth guard by design: the URL token is the whole
-  // credential (a colleague with the link has no account). The personal status
-  // page `/g/:token/o/:orderToken` arrives with GSO-T4.
+  // credential (a colleague with the link has no account).
   {
     path: '/g/:token',
     name: 'guest-order',
     component: () => import('./views/GuestOrder.vue')
+  },
+  // The guest's personal status/edit page. Public for the same reason, with the
+  // PAIR of tokens as the credential — the order token only resolves under its own
+  // link token (§UC-GSO-004).
+  {
+    path: '/g/:token/o/:orderToken',
+    name: 'guest-order-status',
+    component: () => import('./views/GuestOrderStatus.vue')
   },
   {
     path: '/invite/:code',

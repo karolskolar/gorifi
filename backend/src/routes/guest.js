@@ -176,6 +176,161 @@ function loadItems(guestOrderId) {
   `).all(guestOrderId);
 }
 
+// `guest_orders.status` is nullable with a 'submitted' DEFAULT, so never compare
+// it bare — same reason helpers/stock.js wraps it in COALESCE.
+function orderStatus(order) {
+  return order?.status || 'submitted';
+}
+
+// Bounds + pricing for a client-supplied `items` array, shared by the submit and
+// the edit: an edit is the SAME unauthenticated write surface, so it must apply
+// the same caps and the same "price from the DB snapshot" rule. Returns either
+// `{ error, field }` (a ready 400 payload) or `{ lines }` — deliberately NOT a
+// verdict on emptiness, because the two callers disagree about what an empty cart
+// means (submit: 400, edit: cancel).
+function priceRequestedItems(body, cycle, markupRatio) {
+  // Cap the row count BEFORE any per-line work: the pricing loop does one SELECT
+  // per line.
+  const requestedItems = Array.isArray(body?.items) ? body.items : [];
+  if (requestedItems.length > MAX_ITEM_LINES) {
+    return {
+      error: `Objednávka obsahuje priveľa položiek (najviac ${MAX_ITEM_LINES})`,
+      field: 'items',
+    };
+  }
+
+  // Cap the per-line quantity too. Products with a stock_limit_g are protected by
+  // the stock check, but an UNLIMITED product would otherwise accept
+  // `quantity: 1e9` and persist a billions-of-euro total that then feeds the
+  // admin cycle views and (per GSO-T8) kilos and tier progress. Decision 6's
+  // "no cap" is about sub-orders per link, not units per line.
+  if (requestedItems.some((item) => asQuantity(item?.quantity) > MAX_ITEM_QUANTITY)) {
+    return {
+      error: `Množstvo je príliš vysoké (najviac ${MAX_ITEM_QUANTITY} na položku)`,
+      field: 'items',
+    };
+  }
+
+  // Price every line from the cycle's own snapshot products, marked up here and
+  // then FROZEN on the row (same contract as order_items.price). An edit
+  // re-freezes at edit-time prices, exactly as the friend cart PUT does.
+  const lines = [];
+  for (const item of requestedItems) {
+    const quantity = asQuantity(item?.quantity);
+    if (quantity <= 0) continue;
+    // Scoped to this cycle: a token for cycle A can never order a product from B.
+    const product = db.prepare(
+      'SELECT * FROM products WHERE id = ? AND cycle_id = ? AND active = 1'
+    ).get(item?.product_id, cycle.id);
+    if (!product) continue;
+    const basePrice = basePriceForVariant(product, item?.variant);
+    if (!basePrice) continue;
+    lines.push({
+      product_id: product.id,
+      variant: item.variant,
+      quantity,
+      price: applyMarkup(basePrice, markupRatio),
+    });
+  }
+  return { lines };
+}
+
+// Write `lines` as THE items of an existing sub-order and return the new total.
+// Replace-in-full (delete + insert), like the friend cart PUT: the request
+// carries the whole cart, not a delta.
+function replaceItems(guestOrderId, lines) {
+  db.prepare('DELETE FROM guest_order_items WHERE guest_order_id = ?').run(guestOrderId);
+  const insertItem = db.prepare(`
+    INSERT INTO guest_order_items (guest_order_id, product_id, variant, quantity, price)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  let total = 0;
+  for (const line of lines) {
+    insertItem.run(guestOrderId, line.product_id, line.variant, line.quantity, line.price);
+    total += line.price * line.quantity;
+  }
+  return Math.round(total * 100) / 100;
+}
+
+// Resolve the (link token, order token) PAIR to a sub-order — WITHOUT any of the
+// open/active gating `resolveLink` applies.
+//
+// That asymmetry is the point of §UC-GSO-004: the product listing is 410 once the
+// cycle closes or the host deactivates the link, but the guest must still be able
+// to open their own status URL and see what they ordered, what it costs and the
+// payment reference. Read stays open; the write half re-applies the gates.
+//
+// The order is looked up by `order_token AND link_id`, so a real order token under
+// somebody else's link token does not resolve — the pair is the credential, not
+// either half. Both misses answer the same 404 with the same message, so the
+// endpoint is not an oracle for "this order token exists somewhere".
+function resolveGuestOrder(token, orderToken) {
+  const notFound = { status: 404, error: 'Táto objednávka neexistuje' };
+  const link = findLink(token);
+  if (!link) return notFound;
+  const order = db.prepare(`
+    SELECT id, link_id, order_token, guest_name, guest_phone, guest_email, status, total,
+           paid, paid_at, delivered, delivered_at, created_at
+    FROM guest_orders WHERE order_token = ? AND link_id = ?
+  `).get(String(orderToken || ''), link.id);
+  if (!order) return notFound;
+  const cycle = findCycle(link.cycle_id);
+  if (!cycle) return notFound;
+  return { link, cycle, order };
+}
+
+// Everything the status page needs, and the response of both GET and PUT (so an
+// edit needs no follow-up round trip — these endpoints share ONE abuseLimiter
+// bucket with the invite-code lookup, so halving the calls matters).
+function statusPayload(link, cycle, order) {
+  const items = loadItems(order.id);
+  const settings = paymentSettings();
+  // A cancelled sub-order is terminal, and a closed cycle or a dead link both
+  // shut the write half — see the PUT below, which enforces exactly this.
+  const editable = cycle.status === 'open'
+    && !!link.active && !!link.host_active
+    && orderStatus(order) !== 'cancelled';
+
+  const payload = {
+    cycle: {
+      id: cycle.id,
+      name: cycle.name,
+      status: cycle.status,
+      type: cycle.type,
+      expected_date: cycle.expected_date,
+      plan_note: cycle.plan_note,
+    },
+    host: { first_name: firstName(link.host_name) },
+    order,
+    items,
+    // Decision 1: the guest pays the ADMIN directly, and the "Zaplatiť" button
+    // re-opens the same PaymentModal until `paid` is set (by the admin, GSO-T6).
+    // Same reference as the confirmation screen so one payment matches one order.
+    payment: {
+      amount: order.total,
+      reference: `G${order.id} / ${order.guest_name} / ${cycle.name}`,
+      iban: settings.iban,
+      revolut_username: settings.revolut_username,
+    },
+    editable,
+  };
+
+  if (editable) {
+    // The edit screen reuses the ordering grid, so it needs the same product +
+    // availability data — but only while editing is actually possible. A locked
+    // cycle publishes no orderable product list (its listing endpoint is 410).
+    const markupRatio = cycle.markup_ratio || 1.0;
+    payload.products = db.prepare(
+      `SELECT ${PRODUCT_COLUMNS} FROM products WHERE cycle_id = ? AND active = 1 ORDER BY purpose, name`
+    ).all(cycle.id).map((product) => withMarkup(product, markupRatio));
+    // ⚠ excludeGuestOrderId: the grams THIS sub-order already holds must not be
+    // shown as taken, or the guest cannot even re-pick what they already have.
+    payload.availability = cycleAvailability(cycle.id, { excludeGuestOrderId: order.id });
+  }
+
+  return payload;
+}
+
 // GET /guest/:token — everything the public order page needs.
 // No payment details here: Decision 1 gives the guest the IBAN, but only once
 // they have a sub-order to pay for (see the submit response). An anonymous
@@ -255,50 +410,15 @@ router.post('/:token/orders', abuseLimiter, (req, res) => {
     return res.status(400).json({ error: `E-mail je príliš dlhý (najviac ${MAX_EMAIL_LENGTH} znakov)`, field: 'guest_email' });
   }
 
-  // Cap the row count BEFORE any per-line work: this is an unauthenticated write,
-  // and the pricing loop does one SELECT per line.
-  const requestedItems = Array.isArray(req.body?.items) ? req.body.items : [];
-  if (requestedItems.length > MAX_ITEM_LINES) {
-    return res.status(400).json({
-      error: `Objednávka obsahuje priveľa položiek (najviac ${MAX_ITEM_LINES})`,
-      field: 'items',
-    });
+  // Bounds + snapshot pricing, shared with the edit (PUT) below.
+  const priced = priceRequestedItems(req.body, cycle, markupRatio);
+  if (priced.error) {
+    return res.status(400).json({ error: priced.error, field: priced.field });
   }
+  const { lines } = priced;
 
-  // Cap the per-line quantity too. Products with a stock_limit_g are protected by
-  // the check below, but an UNLIMITED product would otherwise accept
-  // `quantity: 1e9` and persist a sub-order with a billions-of-euro total, which
-  // then feeds the admin cycle views and (per GSO-T8) kilos and tier progress —
-  // with no host/admin delete UI before GSO-T5. Decision 6's "no cap" is about
-  // sub-orders per link, not units per line.
-  if (requestedItems.some((item) => asQuantity(item?.quantity) > MAX_ITEM_QUANTITY)) {
-    return res.status(400).json({
-      error: `Množstvo je príliš vysoké (najviac ${MAX_ITEM_QUANTITY} na položku)`,
-      field: 'items',
-    });
-  }
-
-  // Price every line from the cycle's own snapshot products, marked up here and
-  // then FROZEN on the row (same contract as order_items.price).
-  const lines = [];
-  for (const item of requestedItems) {
-    const quantity = asQuantity(item?.quantity);
-    if (quantity <= 0) continue;
-    // Scoped to this cycle: a token for cycle A can never order a product from B.
-    const product = db.prepare(
-      'SELECT * FROM products WHERE id = ? AND cycle_id = ? AND active = 1'
-    ).get(item?.product_id, cycle.id);
-    if (!product) continue;
-    const basePrice = basePriceForVariant(product, item?.variant);
-    if (!basePrice) continue;
-    lines.push({
-      product_id: product.id,
-      variant: item.variant,
-      quantity,
-      price: applyMarkup(basePrice, markupRatio),
-    });
-  }
-
+  // On the SUBMIT an empty cart is a 400 — a phantom sub-order with no items is
+  // worse than no sub-order. (On an edit the same input means "cancel"; see PUT.)
   if (lines.length === 0) {
     return res.status(400).json({ error: 'Košík je prázdny' });
   }
@@ -324,16 +444,7 @@ router.post('/:token/orders', abuseLimiter, (req, res) => {
     `).run(link.id, uniqueOrderToken(), guestName, guestPhone, guestEmail);
     const guestOrderId = result.lastInsertRowid;
 
-    let total = 0;
-    const insertItem = db.prepare(`
-      INSERT INTO guest_order_items (guest_order_id, product_id, variant, quantity, price)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-    for (const line of lines) {
-      insertItem.run(guestOrderId, line.product_id, line.variant, line.quantity, line.price);
-      total += line.price * line.quantity;
-    }
-    total = Math.round(total * 100) / 100;
+    const total = replaceItems(guestOrderId, lines);
     db.prepare('UPDATE guest_orders SET total = ? WHERE id = ?').run(total, guestOrderId);
 
     return { guestOrderId };
@@ -361,9 +472,180 @@ router.post('/:token/orders', abuseLimiter, (req, res) => {
       iban: settings.iban,
       revolut_username: settings.revolut_username,
     },
-    // The guest's personal status/edit page (served by GSO-T4).
+    // The guest's personal status/edit page.
     status_path: `/g/${link.token}/o/${order.order_token}`,
   });
+});
+
+// GET /guest/:token/orders/:orderToken — the guest's personal status page
+// (§UC-GSO-004). Items, total, the paid/delivered flags, the cycle status and the
+// payment info needed to re-open the payment modal.
+//
+// Deliberately NOT gated on the cycle being open or the link being active: this
+// is the guest's only record of what they ordered and what they owe. See
+// resolveGuestOrder for why that differs from the product listing.
+router.get('/:token/orders/:orderToken', abuseLimiter, (req, res) => {
+  const resolved = resolveGuestOrder(req.params.token, req.params.orderToken);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  const { link, cycle, order } = resolved;
+  res.json(statusPayload(link, cycle, order));
+});
+
+// PUT /guest/:token/orders/:orderToken — edit the sub-order's items while the
+// cycle is open (§UC-GSO-004). Replace-in-full: the body carries the whole cart.
+//
+// Items only. Identity (name/phone/email) is FROZEN at submit time — it is the
+// contact lead Decision 7 captures and GSO-T10 promotes to an invitation, and this
+// endpoint is unauthenticated, so anyone holding the URL could otherwise rewrite
+// somebody else's name and phone number. `paid` (admin, GSO-T6), `delivered`
+// (host, GSO-T5), `status`, `total` and `order_token` are all server-owned too.
+//
+// Status codes:
+//   404 — the (link token, order token) pair does not resolve
+//   410 — the link or the host is deactivated: same closed door the submit sees
+//   409 — the cycle is not open (edits end at the lock), or the sub-order is
+//         already cancelled
+//   400 — bounds or stock limits
+router.put('/:token/orders/:orderToken', abuseLimiter, (req, res) => {
+  const resolved = resolveGuestOrder(req.params.token, req.params.orderToken);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  const { link, cycle, order } = resolved;
+
+  // A dead link or a deactivated host closes writes exactly as it closes the
+  // submit — the host is the person who hands the goods over. Reading stays open.
+  if (!link.active || !link.host_active) {
+    return res.status(410).json({
+      error: 'Tento odkaz už nie je aktívny, objednávku už nie je možné upraviť.',
+      reason: 'inactive',
+    });
+  }
+  // Decision 6 / §Edge Cases: locked cycle ⇒ read-only status page. 409 rather
+  // than 410 because the sub-order itself is very much still there (the GET above
+  // renders it) — it is the request that conflicts with the cycle's state.
+  if (cycle.status !== 'open') {
+    return res.status(409).json({
+      error: 'Cyklus je už uzavretý, objednávku už nie je možné upraviť.',
+      reason: 'closed',
+    });
+  }
+  // `cancelled` is TERMINAL: the lifecycle diagram has submitted → cancelled →
+  // [*] and no edge back, so an edit must not resurrect it. 409 (a conflict with
+  // the resource's current state) rather than 410 — the sub-order is still
+  // readable, it just cannot change any more. GSO-T5's host-delete produces the
+  // same state, so this is also what protects a sub-order the host removed.
+  if (orderStatus(order) === 'cancelled') {
+    return res.status(409).json({
+      error: 'Táto objednávka bola zrušená a už ju nie je možné upraviť.',
+      reason: 'cancelled',
+    });
+  }
+
+  // ⚠ Cancelling is IRREVERSIBLE (`cancelled` is terminal above), so only an
+  // EXPRESSED intent to empty the cart may trigger it — never a malformed request.
+  //
+  // A missing `items`, a non-array `items`, or no body at all used to fall through
+  // `priceRequestedItems` as "zero lines" and destroy the sub-order with a 200. On
+  // the app's only unauthenticated write, a client bug, a proxy that strips the
+  // body or a wrong content-type would have been enough. The sibling POST answers
+  // exactly these inputs with a non-destructive 400, and the spec's rule is
+  // "*empty cart* ⇒ cancelled", not "malformed body ⇒ destroy".
+  //
+  // So: `items` must be an array, and only a literal `items: []` cancels.
+  if (!Array.isArray(req.body?.items)) {
+    return res.status(400).json({
+      error: 'Chýba zoznam položiek objednávky. Ak chcete objednávku zrušiť, pošlite prázdny zoznam.',
+      field: 'items',
+    });
+  }
+  const requestedCount = req.body.items.length;
+
+  const markupRatio = cycle.markup_ratio || 1.0;
+  const priced = priceRequestedItems(req.body, cycle, markupRatio);
+  if (priced.error) {
+    return res.status(400).json({ error: priced.error, field: priced.field });
+  }
+  const { lines } = priced;
+
+  // Lines were sent but none of them could be priced (a product went inactive, or
+  // every variant/quantity was unusable). "I sent you lines and you deleted my
+  // order" is never what the caller meant — refuse instead, non-destructively.
+  if (lines.length === 0 && requestedCount > 0) {
+    return res.status(400).json({
+      error: 'Žiadnu z položiek sa nepodarilo spracovať. Obnovte stránku a skúste to znova.',
+      field: 'items',
+    });
+  }
+
+  const cancelling = lines.length === 0; // ⇒ requestedCount === 0: an explicit empty cart
+
+  // Stock limits count friend orders AND other guests' sub-orders — but NOT the
+  // sub-order being edited, or it would block itself (a re-save of an unchanged
+  // cart that already sits at the limit would be refused). Cancelling needs no
+  // check at all: it only ever releases grams.
+  //
+  // NOTE: like every other caller, this check sits outside the write transaction
+  // below — safe only while the app is single-process, see helpers/stock.js.
+  if (!cancelling) {
+    const violations = stockViolations(cycle.id, gramsByProductFromItems(lines), {
+      excludeGuestOrderId: order.id,
+    });
+    if (violations.length > 0) {
+      return res.status(400).json({ error: 'Prekročený limit zásob', details: violations });
+    }
+  }
+
+  const apply = db.transaction(() => {
+    // Re-read inside the transaction: the admin may have locked the cycle, or the
+    // host may have deleted the sub-order (GSO-T5), while this request was being
+    // validated.
+    const current = db.prepare('SELECT status FROM order_cycles WHERE id = ?').get(cycle.id);
+    if (current?.status !== 'open') return { conflict: 'closed' };
+    const currentOrder = db.prepare('SELECT status FROM guest_orders WHERE id = ?').get(order.id);
+    if (!currentOrder) return { conflict: 'gone' };
+    if (orderStatus(currentOrder) === 'cancelled') return { conflict: 'cancelled' };
+
+    // An empty cart cancels (task row + lifecycle diagram): status flips and the
+    // total goes to 0, but the ITEM ROWS ARE KEPT.
+    //
+    // The status predicate is the mechanism, not row deletion. `helpers/stock.js`
+    // already releases the grams via `COALESCE(status,'submitted') <> 'cancelled'`,
+    // and GSO-T7/T8/T9 have to filter on that status anyway — a cancelled
+    // sub-order must not appear as a distribution party, in the unpaid overview or
+    // as a rewards contributor, and no amount of row deletion achieves that.
+    // Deleting would therefore buy nothing beyond belt-and-braces, at the price of
+    // permanently destroying the host's and the admin's record of what was ordered
+    // and then called off — on an endpoint nobody has to authenticate to.
+    if (cancelling) {
+      db.prepare("UPDATE guest_orders SET total = 0, status = 'cancelled' WHERE id = ?").run(order.id);
+    } else {
+      const total = replaceItems(order.id, lines);
+      db.prepare("UPDATE guest_orders SET total = ?, status = 'submitted' WHERE id = ?").run(total, order.id);
+    }
+    return {};
+  });
+
+  const applied = apply();
+  if (applied.conflict === 'gone') {
+    return res.status(404).json({ error: 'Táto objednávka neexistuje' });
+  }
+  if (applied.conflict === 'closed') {
+    return res.status(409).json({
+      error: 'Cyklus bol práve uzavretý, zmenu už nie je možné uložiť.',
+      reason: 'closed',
+    });
+  }
+  if (applied.conflict === 'cancelled') {
+    return res.status(409).json({
+      error: 'Táto objednávka bola zrušená a už ju nie je možné upraviť.',
+      reason: 'cancelled',
+    });
+  }
+
+  res.json(statusPayload(link, cycle, loadOrder(order.id)));
 });
 
 export default router;
