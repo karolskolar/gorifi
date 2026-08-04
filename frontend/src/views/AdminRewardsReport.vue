@@ -147,18 +147,31 @@ const chartOptions = computed(() => ({
           const cycleId = visibleCycles.value[cycleIndex]?.id
           if (!cycleId) return ''
 
-          // Show members who ordered
-          const lines = []
+          // TWO sections, because they answer two different questions and only one of
+          // them is "who ordered". `orderedMembers` are members with an own submitted
+          // order; guest volume (GSO-T9: the host gets the kilos credit) gets its own
+          // section with the kilos and, when a member's whole contribution is their
+          // guests', that member's name — so a group's bar is fully accounted for
+          // without ever claiming somebody ordered who did not.
+          const orderedLines = []
+          const guestLines = []
           for (const group of groups.value) {
             const pc = group.perCycle.find(p => p.cycleId === cycleId)
-            if (pc && pc.orderedMembers.length > 0) {
-              lines.push(`  ${getGroupName(group)}: ${pc.orderedMembers.join(', ')}`)
+            if (!pc) continue
+            if (pc.orderedMembers.length > 0) {
+              orderedLines.push(`  ${getGroupName(group)}: ${pc.orderedMembers.join(', ')}`)
+            }
+            const guestKg = pc.guestKg || 0
+            if (guestKg > 0) {
+              const guestOnly = pc.guestOnlyMembers || []
+              const who = guestOnly.length > 0 ? ` — ${guestOnly.join(', ')}` : ''
+              guestLines.push(`  ${getGroupName(group)}: ${guestKg.toFixed(2)} kg${who}`)
             }
           }
-          if (lines.length > 0) {
-            return ['\nObjednali:', ...lines]
-          }
-          return ''
+          const out = []
+          if (orderedLines.length > 0) out.push('\nObjednali:', ...orderedLines)
+          if (guestLines.length > 0) out.push('\nObjem od hosti:', ...guestLines)
+          return out.length > 0 ? out : ''
         },
       },
     },
@@ -338,6 +351,15 @@ const totalGroups = computed(() => {
                 ></div>
                 <span class="font-medium flex-1">{{ getGroupName(group) }}</span>
                 <Badge variant="secondary" class="text-xs">{{ group.memberCount }} {{ group.memberCount === 1 ? 'clen' : 'clenov' }}</Badge>
+                <!-- Guest kilos are credited to the host (GSO-T9), so a group's kg
+                     can include volume nobody in it ordered themselves. -->
+                <span
+                  v-if="group.cumulativeGuestKg > 0"
+                  class="text-xs text-muted-foreground whitespace-nowrap"
+                  data-testid="group-guest-kg"
+                >
+                  z toho {{ group.cumulativeGuestKg.toFixed(2) }} kg od hosti
+                </span>
                 <span class="font-bold tabular-nums">{{ group.cumulativeKg.toFixed(2) }} kg</span>
               </div>
             </div>

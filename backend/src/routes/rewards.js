@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
 import { variantToKg } from '../helpers/analytics.js';
+import { guestCycleItems } from '../helpers/guest-aggregation.js';
 
 const router = Router();
 
@@ -43,8 +44,17 @@ router.get('/', (req, res) => {
       }
     }
 
+    // Unassigned = no root of their own AND no root they belong to. ⚠ A DANGLING
+    // `root_friend_id` (pointing at a friend who is no longer a root, or who was
+    // hard-deleted — `friends.js` DELETE is a real `DELETE FROM friends` and
+    // `root_friend_id` was added by a bare ALTER TABLE with no FK) counts as
+    // unassigned too. Before this, such a friend matched neither the group loop above
+    // nor this filter and vanished from the report entirely: deleting a group's root
+    // silently zeroed every ex-member's whole reward volume, own kilos and guest
+    // kilos alike. Volume must never disappear from a report that decides money —
+    // whatever the grouping, every friend lands in exactly one bucket.
     const unassignedIds = friends
-      .filter(f => !f.is_root && !f.root_friend_id)
+      .filter(f => !f.is_root && !(f.root_friend_id && groupMap.has(f.root_friend_id)))
       .map(f => f.id);
 
     // Get all submitted orders with their items for these cycles
@@ -57,12 +67,48 @@ router.get('/', (req, res) => {
       cycleIds
     );
 
-    // Build kg map: friendId -> cycleId -> kg
+    // Build kg map: friendId -> cycleId -> kg (OWN orders only)
     const kgMap = new Map();
     for (const item of orderItems) {
       const key = item.friend_id;
       if (!kgMap.has(key)) kgMap.set(key, new Map());
       const cycleMap = kgMap.get(key);
+      const current = cycleMap.get(item.cycle_id) || 0;
+      cycleMap.set(item.cycle_id, current + variantToKg(item.variant, item.quantity));
+    }
+
+    // GUEST kilos, credited to the HOST (§UC-GSO-014, Decision 5 "Host gets the
+    // kilos credit"): the host recruited the guests and hands their bags over, so
+    // their guests' kilos count toward the host's reward/voucher volume. The
+    // attribution key is `guest_order_links.host_friend_id`, which
+    // `guestCycleItems()` already returns — this row reuses that ONE guest UNION
+    // (GSO-T8) rather than writing another one, so the cycle correlation
+    // (`glink.cycle_id`) and the `COALESCE(gord.status,'submitted') <> 'cancelled'`
+    // predicate can never drift from the other guest aggregates. Cancelled
+    // sub-orders keep their item rows (GSO-T4), so that predicate is the only thing
+    // keeping a called-off bag out of a reward payout.
+    //
+    // ⚠ Kept in a SEPARATE map from own orders, deliberately:
+    //   - each (friend, cycle) pair is summed once per source and added once in
+    //     buildGroupReport, so a host who has BOTH an own order and sub-orders
+    //     accumulates them (addition) instead of being counted twice;
+    //   - `memberIds` are disjoint across buckets (a root is only in its own group,
+    //     a member only under its root, `unassignedIds` is neither), so one bucket
+    //     reads each friend's guest kilos exactly once;
+    //   - it makes the guest share reportable on its own (`guestKg`), which a
+    //     report that decides money should not hide.
+    // Merged in JAVASCRIPT, never as a JOIN (the GSO-T6 trap) — a second join over
+    // the friend-order query would multiply friend lines by the sub-order count.
+    //
+    // A DEACTIVATED host keeps this credit: `friends` is read whole (active or not)
+    // and their own orders keep counting, because the report is history — the coffee
+    // was bought. A hard-deleted host has no guest rows left at all
+    // (`guest_order_links.host_friend_id` is ON DELETE CASCADE).
+    const guestKgMap = new Map();
+    for (const item of guestCycleItems(cycleIds)) {
+      const key = item.host_friend_id;
+      if (!guestKgMap.has(key)) guestKgMap.set(key, new Map());
+      const cycleMap = guestKgMap.get(key);
       const current = cycleMap.get(item.cycle_id) || 0;
       cycleMap.set(item.cycle_id, current + variantToKg(item.variant, item.quantity));
     }
@@ -75,25 +121,53 @@ router.get('/', (req, res) => {
 
     function buildGroupReport(memberIds) {
       let cumulativeKg = 0;
+      let cumulativeGuestKg = 0;
       const perCycle = cycleIds.map(cycleId => {
         let cycleKg = 0;
+        let cycleGuestKg = 0;
+        // TWO lists, deliberately. `orderedMembers` answers "who ordered", so it is
+        // OWN SUBMITTED ORDERS ONLY — the per-friend question Decision 4 / GSO-T8
+        // fence off ("anything answering 'who ordered' must keep querying `orders`
+        // alone"). Naming a guest-only host here would make a false claim on the very
+        // screen that decides reward money, and would silently mislead any future
+        // consumer reading the field as "friends with a submitted order".
+        // `guestOnlyMembers` carries the hosts whose entire contribution is their
+        // guests' kilos — so a group's volume is still fully accounted for, which is
+        // why the group total can exceed what `orderedMembers` explains.
+        // `memberCount` stays the FRIEND count: a guest is never a member.
         const orderedMembers = [];
+        const guestOnlyMembers = [];
         for (const memberId of memberIds) {
-          const memberKg = kgMap.get(memberId)?.get(cycleId) || 0;
+          const ownKg = kgMap.get(memberId)?.get(cycleId) || 0;
+          const guestKg = guestKgMap.get(memberId)?.get(cycleId) || 0;
+          const memberKg = ownKg + guestKg;
           if (memberKg > 0) {
             cycleKg += memberKg;
-            orderedMembers.push(friendNameMap.get(memberId));
+            cycleGuestKg += guestKg;
+            if (ownKg > 0) {
+              orderedMembers.push(friendNameMap.get(memberId));
+            } else {
+              guestOnlyMembers.push(friendNameMap.get(memberId));
+            }
           }
         }
         cumulativeKg += cycleKg;
+        cumulativeGuestKg += cycleGuestKg;
         return {
           cycleId,
           kg: Math.round(cycleKg * 1000) / 1000,
-          orderedMembers
+          guestKg: Math.round(cycleGuestKg * 1000) / 1000,
+          orderedMembers,
+          guestOnlyMembers
         };
       });
 
-      return { memberCount: memberIds.length, perCycle, cumulativeKg: Math.round(cumulativeKg * 1000) / 1000 };
+      return {
+        memberCount: memberIds.length,
+        perCycle,
+        cumulativeKg: Math.round(cumulativeKg * 1000) / 1000,
+        cumulativeGuestKg: Math.round(cumulativeGuestKg * 1000) / 1000
+      };
     }
 
     const groups = [];
