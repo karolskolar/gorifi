@@ -2,7 +2,7 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { validateFriendAuth, getAuthMode } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
-import { packOrder, unpackOrder } from '../helpers/packing.js';
+import { packOrder, unpackOrder, packingItemStats } from '../helpers/packing.js';
 import { gramsByProductFromItems, stockViolations } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup } from '../helpers/pricing.js';
 import { cycleSubOrdersByHost } from '../helpers/guest-orders.js';
@@ -416,20 +416,24 @@ router.patch('/:id/packed', requireAdmin, (req, res) => {
   // been individually checked off in the Distribution view (persisted
   // order_items.packed). This makes the "Zabaliť" button a deliberate final
   // step and matches the server-side rule in the spec (Decision 3 / UC-GSO-011).
-  // An order with zero items has nothing to check off, so it is NOT packable —
-  // this mirrors the frontend (Distribution.vue `allItemsChecked()` requires
-  // items.length > 0 and keeps the button disabled).
   //
-  // GSO-T7 extension point: guest items live in `guest_order_items` and must be
-  // UNIONed into this check. At that point a host order may legitimately have
-  // zero own `order_items` while having guest items — the "at least one item"
-  // requirement must then count guest items too, not just friend items.
+  // GSO-T7 completed the rule: `packingItemStats()` UNIONs the guest items placed
+  // through this host's share link for this cycle (cancelled sub-orders excluded),
+  // so a colleague's untouched bag blocks the pack exactly like an own item does.
+  // The requirement is therefore "at least one item across own + guest, and all of
+  // them packed" — a host with zero own items but guest items IS packable, which is
+  // why the count is no longer taken over `order_items` alone.
+  //
+  // Zero items overall still 409s: there is nothing to check off, so nothing to
+  // confirm. (Unreachable through the API today — emptying a friend's cart deletes
+  // the order row instead of leaving a zero-item one — but it keeps the endpoint
+  // agreeing with the frontend, whose "Zabaliť" is disabled in that state.)
   if (newPackedStatus === 1) {
-    const itemStats = db.prepare(`
-      SELECT COUNT(*) as total,
-             SUM(CASE WHEN packed = 1 THEN 1 ELSE 0 END) as packed_count
-      FROM order_items WHERE order_id = ?
-    `).get(order.id);
+    const itemStats = packingItemStats({
+      orderId: order.id,
+      friendId: order.friend_id,
+      cycleId: order.cycle_id,
+    });
     if (itemStats.total === 0 || (itemStats.packed_count || 0) < itemStats.total) {
       return res.status(409).json({ error: 'Najprv označ všetky položky ako zabalené' });
     }

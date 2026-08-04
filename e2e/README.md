@@ -123,6 +123,41 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   reverted byte-identical afterwards) confirmed the "card visible" test fails on
   the old placement while the other two states stay green, exactly matching the
   bug's conditional nature.
+- `tests/guest-distribution.spec.js` — GSO-T7: the guest leg of the Distribution
+  view. `PATCH /api/guest-order-items/:id/packed` (the per-bag checkbox, the mirror
+  of GSO-T1's friend one: persists, toggles back, 404 unknown, 401 anonymous, and
+  **400 on a cancelled sub-order** — whose item rows survive the cancel, so without
+  the gate they could be ticked for a bag nobody hands over), the now-COMPLETED
+  whole-order gate (every own item checked but a guest bag untouched is still a
+  **409** — asserted to fail on the GSO-T1 gate and pass on the UNION, verified by a
+  temporary revert — and a cancelled sub-order neither appears as a bag nor blocks
+  the pack), and the money rules: a guest checkbox writes **no `transactions` row**
+  and moves nobody's balance (GSO-T6's rule on a second endpoint, plus the global
+  NULL-`friend_id` count when `DB_PATH` is exported), while unchecking a guest bag on
+  a packed order **auto-unpacks the host's order** and posts the reversal of the
+  HOST'S OWN total, so the balance nets back to exactly where it started. The
+  §Edge-Cases host is pinned from three sides: with only guest bags they are still
+  listed as the pickup party (`order_id: null`, `has_own_order: false`, so there is
+  no whole-order flag to write and the UI offers no "Zabaliť"), an unsubmitted draft
+  puts them in the same branch, and once their only sub-order is cancelled they are
+  not a pickup party at all. UI pass on the Distribution page: bags grouped per guest
+  under the host with the violet "Hosť • <name>" badge, taps persisting across a
+  reload, rapid taps on two bags NOT dropped (the in-flight guard is per item — the
+  `own:`/`guest:` key prefix matters, the two id sequences overlap), "Zabaliť"
+  disabled until every own + guest checkbox is checked and then packing through the
+  UI, and a second card for the host with no own order offering no whole-order button
+  at all. One further describe (`The own:/guest: key prefix`) manufactures an actual
+  numeric-id COLLISION between an own `order_items` row and a `guest_order_items` row
+  — the two sequences never collide by chance, so this is the one test in the suite
+  that requires DB_PATH not merely for an extra assertion but to build the scenario
+  at all (a direct `UPDATE ... SET id = ?` after both rows exist; self-skips without
+  DB_PATH). It proves the `own:`/`guest:` prefix the implementer added to
+  `itemKey`/`pendingItems` actually matters: verified with a temporary revert to a
+  bare `item.id` key, which makes this test fail (the second tap's pending guard gets
+  silently swallowed by the first row's in-flight flag sharing the same collided
+  key) while every other guest-distribution test stays green — an API-only test
+  cannot see this because the bug is purely in the frontend's per-item in-flight
+  bookkeeping.
 - `seed.mjs` — seeds a backend with an admin password, legacy friends password,
   one cycle, one friend (idempotent; NOT for production). Also fills the payment
   settings (IBAN / Revolut username) **only if they are empty**, because guest

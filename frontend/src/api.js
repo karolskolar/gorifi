@@ -227,6 +227,10 @@ export const api = {
   markPaid: (id, paid) => request(`/orders/${id}/paid`, { method: 'PATCH', body: { paid } }),
   togglePacked: (id) => request(`/orders/${id}/packed`, { method: 'PATCH' }),
   toggleItemPacked: (itemId) => request(`/order-items/${itemId}/packed`, { method: 'PATCH' }),
+  // GSO-T7: the same per-item Distribution checkbox for a guest bag. Separate
+  // endpoint because the item lives in `guest_order_items`; the response carries the
+  // same `order_packed` field, since unchecking a bag un-packs the HOST's order.
+  toggleGuestItemPacked: (itemId) => request(`/guest-order-items/${itemId}/packed`, { method: 'PATCH' }),
 
   // Friends detail
   getFriendDetail: (id) => request(`/friends/${id}/detail`),

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { variantToKg } from '../helpers/analytics.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
+import { cycleSubOrdersByHost, guestOrderStatus } from '../helpers/guest-orders.js';
 
 const router = Router();
 
@@ -351,6 +352,15 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
     ORDER BY f.name
   `).all(req.params.id);
 
+  // GSO-T7 (§UC-GSO-011): the guest bags. Grouped per guest under their host so the
+  // admin can pre-separate them, and CANCELLED sub-orders are dropped — a called-off
+  // bag is neither handed over nor allowed to block the host's packing gate (the
+  // same status predicate the gate in orders.js and helpers/stock.js use; the item
+  // rows themselves survive a cancellation, GSO-T4).
+  const subOrdersByHost = cycleSubOrdersByHost(req.params.id);
+  const liveSubOrders = (hostFriendId) =>
+    (subOrdersByHost.get(hostFriendId) || []).filter((sub) => guestOrderStatus(sub) !== 'cancelled');
+
   const distribution = friendsWithOrders.map(friend => {
     const items = db.prepare(`
       SELECT oi.id, oi.packed, p.name as product_name, p.purpose, p.roast_type, p.variant_label, oi.variant, oi.quantity, oi.price
@@ -367,8 +377,56 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
         p.name
     `).all(friend.order_id);
 
-    return { ...friend, items };
+    return { ...friend, has_own_order: true, items, guest_orders: liveSubOrders(friend.id) };
   });
+
+  // §Edge Cases, "host has no own order at lock time": the query above starts
+  // `FROM orders`, so a host whose only stake is their colleagues' bags is invisible
+  // to it — yet distribution still shows them as the PICKUP PARTY, because that is
+  // who collects. Synthesised in here, the same way GSO-T6 does on the admin orders
+  // tab (routes/orders.js).
+  //
+  // Such a row deliberately carries `order_id: null` / `has_own_order: false`: the
+  // whole-order `packed` flag lives on `orders`, and there is no row to write it to.
+  // Their packing record is the per-bag checkboxes alone, and the frontend offers no
+  // "Zabaliť" for them (it would PATCH /api/orders/null/packed).
+  //
+  // "No own order" here means no SUBMITTED one — a host sitting on an unsubmitted
+  // draft lands in this branch too, which is correct: a draft is not part of the
+  // distribution and the whole-order endpoint refuses to pack it anyway.
+  const listedFriends = new Set(distribution.map((party) => party.id));
+  for (const hostFriendId of subOrdersByHost.keys()) {
+    if (listedFriends.has(hostFriendId)) continue;
+    const subOrders = liveSubOrders(hostFriendId);
+    // Only cancelled bags left ⇒ nothing to hand over, so not a pickup party.
+    if (subOrders.length === 0) continue;
+
+    const balance = db.prepare(
+      'SELECT COALESCE(SUM(amount), 0) as balance FROM transactions WHERE friend_id = ?'
+    ).get(hostFriendId);
+
+    distribution.push({
+      id: hostFriendId,
+      name: subOrders[0].host_name,
+      order_id: null,
+      has_own_order: false,
+      status: 'none',
+      paid: 0,
+      total: 0,
+      packed: 0,
+      packed_at: null,
+      pickup_location_id: null,
+      pickup_location_note: null,
+      pickup_location_name: null,
+      delivery_fee: 0,
+      packeta_address: null,
+      balance: balance ? balance.balance : 0,
+      items: [],
+      guest_orders: subOrders
+    });
+  }
+
+  distribution.sort((a, b) => a.name.localeCompare(b.name));
 
   res.json({ cycle, distribution });
 });
