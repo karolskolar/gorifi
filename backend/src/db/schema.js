@@ -679,6 +679,17 @@ function initDb() {
     db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_invitations_phone_pending ON invitations(phone) WHERE status = 'pending'");
   } catch (e) {}
 
+  // Migration (GSO-T10, §Lead Capture): tag WHERE a lead came from. Same plain-TEXT,
+  // set-once-by-the-creating-route pattern as friends.onboarding_source; NULL means
+  // the legacy referral flow (POST /invitations/register with an invite code), and
+  // 'guest_order' means the CTA on a guest sub-order's confirmation/status screen.
+  // Never written from a request body — see routes/guest.js.
+  try {
+    db.run('ALTER TABLE invitations ADD COLUMN source TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   // Initialize rewards_threshold_kg setting if not exists
   const rewardsThreshold = db.exec("SELECT * FROM settings WHERE key = 'rewards_threshold_kg'");
   if (!rewardsThreshold.length || !rewardsThreshold[0].values.length) {

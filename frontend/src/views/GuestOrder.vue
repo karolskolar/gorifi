@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/dialog'
 import PaymentModal from '@/components/PaymentModal.vue'
 import GuestProductGrid from '@/components/GuestProductGrid.vue'
+import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
 import {
   availabilityMap,
   cartLines,
@@ -314,6 +315,16 @@ async function copyText(text, target) {
           <p class="text-xs text-muted-foreground text-center">
             Tovar vám odovzdá {{ host?.first_name }}.
           </p>
+
+          <!-- Lead capture (§UC-GSO-015). LAST on the screen, on purpose: the payment
+               information above it is why the guest is here. -->
+          <GuestInviteRequest
+            :token="token"
+            :order-token="confirmation.order.order_token"
+            :name="confirmation.order.guest_name || ''"
+            :phone="confirmation.order.guest_phone || ''"
+            :email="confirmation.order.guest_email || ''"
+          />
         </CardContent>
       </Card>
     </div>

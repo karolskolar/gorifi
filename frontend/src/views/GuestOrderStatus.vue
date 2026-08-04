@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/dialog'
 import PaymentModal from '@/components/PaymentModal.vue'
 import GuestProductGrid from '@/components/GuestProductGrid.vue'
+import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
 import {
   availabilityMap,
   cartFromOrderItems,
@@ -71,6 +72,12 @@ const editable = ref(false)
 const itemsEditable = ref(false)
 const products = ref([])
 const availability = ref({})
+// GSO-T10 (§Lead Capture): whether to offer the "ask for your own account" CTA, and
+// whether this guest's number is already in the invitations queue. Both come from the
+// server — the page cannot tell a locked cycle (CTA still valid) from a dead link
+// (the endpoint 410s) on its own, since both merely clear `editable`. Defaults to
+// "not available", so a payload without the flag offers nothing.
+const inviteRequest = ref({ available: false, requested: false })
 
 const showPaymentModal = ref(false)
 
@@ -171,6 +178,10 @@ function applyStatus(data) {
   itemsEditable.value = data.items_editable === undefined ? !!data.editable : !!data.items_editable
   products.value = data.products || []
   availability.value = availabilityMap(data.availability)
+  inviteRequest.value = {
+    available: !!data.invite_request?.available,
+    requested: !!data.invite_request?.requested
+  }
   refreshStoredEntry()
 }
 
@@ -439,6 +450,22 @@ async function copyReference() {
           <Alert v-else-if="!editable && !isCancelled" data-testid="status-readonly">
             <AlertDescription>{{ readOnlyReason }}</AlertDescription>
           </Alert>
+
+          <!-- Lead capture (§UC-GSO-015). Offered in ALL four states — editable,
+               paid-frozen, read-only after the lock and cancelled — because a guest
+               is a lead in every one of them, and a locked cycle is exactly when they
+               ask. `available` is the server's call, so a dead link (whose endpoint
+               410s) offers nothing. Hidden while editing, where the cart has the
+               screen. -->
+          <GuestInviteRequest
+            v-if="inviteRequest.available && !editing"
+            :token="token"
+            :order-token="orderToken"
+            :name="order?.guest_name || ''"
+            :phone="order?.guest_phone || ''"
+            :email="order?.guest_email || ''"
+            :requested="inviteRequest.requested"
+          />
         </CardContent>
       </Card>
 

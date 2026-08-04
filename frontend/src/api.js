@@ -349,6 +349,15 @@ export const api = {
       method: 'PUT',
       body: data
     }),
+  // GSO-T10 (§Lead Capture): "Chcete si nabudúce objednať sami?" — creates an
+  // `invitations` row credited to the host. Same token pair, same lack of headers;
+  // the host is derived from the link server-side, so no referral code is published
+  // into the guest payload. A 409 means this phone already has a pending request.
+  requestGuestAccount: (token, orderToken, data) =>
+    guestRequest(`/guest/${encodeURIComponent(token)}/orders/${encodeURIComponent(orderToken)}/invite-request`, {
+      method: 'POST',
+      body: data
+    }),
 
   // Guest share links (host = the authenticated friend; Bearer token required)
   getGuestLink: (cycleId) => request(`/guest-links/cycle/${cycleId}`),
