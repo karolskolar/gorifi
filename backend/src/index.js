@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { existsSync } from 'fs';
 import db from './db/schema.js';
 import { requireAdmin } from './middleware/admin-auth.js';
 
@@ -104,11 +105,29 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Serve frontend static files in production
+// Serve the built frontend, when one is present.
+//
+// `backend/public` is BUILD OUTPUT and is git-ignored — production does not use
+// it at all (nginx serves /var/www/gorifi/frontend/dist and only proxies /api
+// here, see deploy/nginx-gorifi.conf). It exists for running the app as a single
+// prod-like process locally, which is what the e2e recipe does:
+//   cd frontend && npm run build && rm -rf ../backend/public && cp -r dist ../backend/public
+// It used to be committed, which meant a fresh clone silently served a months-old
+// frontend against current API code. Absent is better than stale — but say so
+// clearly rather than throwing an opaque 500 from sendFile.
 const publicPath = join(__dirname, '..', 'public');
+const indexHtml = join(publicPath, 'index.html');
 app.use(express.static(publicPath));
 app.get(/^\/(?!api).*/, (req, res) => {
-  res.sendFile(join(publicPath, 'index.html'));
+  if (!existsSync(indexHtml)) {
+    return res.status(503).type('text/plain').send(
+      'No frontend build found in backend/public.\n\n'
+      + 'The API is running — this only affects serving the UI from this process.\n'
+      + 'Build it with:\n'
+      + '  cd frontend && npm run build && rm -rf ../backend/public && cp -r dist ../backend/public\n'
+    );
+  }
+  res.sendFile(indexHtml);
 });
 
 // Error handler

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import db, { generateGuestToken } from '../db/schema.js';
-import { abuseLimiter } from '../middleware/rate-limit.js';
+import { guestReadLimiter, guestWriteLimiter } from '../middleware/rate-limit.js';
 import { gramsByProductFromItems, stockViolations, cycleAvailability } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup, VARIANT_PRICE_COLUMNS } from '../helpers/pricing.js';
 import { guestOrderStatus, guestPaymentReference } from '../helpers/guest-orders.js';
@@ -11,15 +11,17 @@ const router = Router();
 // no session, no password, no account — a colleague follows the host's link,
 // picks products and pays the admin directly (Decision 1).
 //
-// Mounted BARE (no requireAdmin, no friend auth) but behind the shared
-// `abuseLimiter` (Decision 6, same family as /invitations/code/:code), because
-// these are unauthenticated write/lookup surfaces.
+// Mounted BARE (no requireAdmin, no friend auth) but rate-limited, because these
+// are unauthenticated write/lookup surfaces (Decision 6).
 //
-// ⚠ That limiter is ONE bucket (default 40 per IP per window) now shared by the
-// public invite-code lookup, the onboarding submit and every `/g/:token` page
-// load. A whole office behind a single NAT address therefore shares one budget
-// and can exhaust it for each other. Spec-mandated for v1; if it bites, the fix
-// is a separate limiter instance for the guest routes, not a higher global max.
+// ⚠ These routes use their OWN buckets — `guestReadLimiter` for page loads and
+// `guestWriteLimiter` for submits/edits — deliberately NOT the shared
+// `abuseLimiter` that guards the invite-code lookup and onboarding submit. This
+// link is shared privately at office scale, so a whole team usually arrives
+// behind ONE NAT'd IP; on the shared bucket a busy order could lock colleagues
+// out of registering, and vice versa. Reads get the generous limit because a page
+// load is cheap and repeats (every colleague opening the link, every refresh);
+// writes stay moderate. Do not collapse these back onto one limiter.
 //
 // Because the body of a POST here is entirely attacker-controlled (the URL token
 // is the only credential), NOTHING from it is trusted: identity strings go
@@ -344,8 +346,8 @@ function pendingInvitationByPhone(phone) {
 }
 
 // Everything the status page needs, and the response of both GET and PUT (so an
-// edit needs no follow-up round trip — these endpoints share ONE abuseLimiter
-// bucket with the invite-code lookup, so halving the calls matters).
+// edit needs no follow-up round trip — fewer calls also means less of the guest
+// write budget spent per interaction).
 function statusPayload(link, cycle, order) {
   const items = loadItems(order.id);
   const settings = paymentSettings();
@@ -424,7 +426,7 @@ function statusPayload(link, cycle, order) {
 // No payment details here: Decision 1 gives the guest the IBAN, but only once
 // they have a sub-order to pay for (see the submit response). An anonymous
 // product listing must not carry it.
-router.get('/:token', abuseLimiter, (req, res) => {
+router.get('/:token', guestReadLimiter, (req, res) => {
   const resolved = resolveLink(req.params.token, 410);
   if (resolved.error) {
     return res.status(resolved.status).json({ error: resolved.error, reason: resolved.reason });
@@ -453,7 +455,7 @@ router.get('/:token', abuseLimiter, (req, res) => {
 });
 
 // POST /guest/:token/orders — submit a guest sub-order.
-router.post('/:token/orders', abuseLimiter, (req, res) => {
+router.post('/:token/orders', guestWriteLimiter, (req, res) => {
   // A submit into a closed cycle is the lock race → 409 (not 410).
   const resolved = resolveLink(req.params.token, 409);
   if (resolved.error) {
@@ -545,7 +547,7 @@ router.post('/:token/orders', abuseLimiter, (req, res) => {
 // Deliberately NOT gated on the cycle being open or the link being active: this
 // is the guest's only record of what they ordered and what they owe. See
 // resolveGuestOrder for why that differs from the product listing.
-router.get('/:token/orders/:orderToken', abuseLimiter, (req, res) => {
+router.get('/:token/orders/:orderToken', guestReadLimiter, (req, res) => {
   const resolved = resolveGuestOrder(req.params.token, req.params.orderToken);
   if (resolved.error) {
     return res.status(resolved.status).json({ error: resolved.error });
@@ -569,7 +571,7 @@ router.get('/:token/orders/:orderToken', abuseLimiter, (req, res) => {
 //   409 — the cycle is not open (edits end at the lock), or the sub-order is
 //         already cancelled
 //   400 — bounds or stock limits
-router.put('/:token/orders/:orderToken', abuseLimiter, (req, res) => {
+router.put('/:token/orders/:orderToken', guestWriteLimiter, (req, res) => {
   const resolved = resolveGuestOrder(req.params.token, req.params.orderToken);
   if (resolved.error) {
     return res.status(resolved.status).json({ error: resolved.error });
@@ -778,7 +780,7 @@ router.put('/:token/orders/:orderToken', abuseLimiter, (req, res) => {
 // Nothing but name/phone/email is read from the body. `status`, `source`,
 // `invited_by_friend_id`, `invite_code`, `admin_note` and `processed_at` are all
 // server-owned — this is an unauthenticated write into an admin-facing queue.
-router.post('/:token/orders/:orderToken/invite-request', abuseLimiter, (req, res) => {
+router.post('/:token/orders/:orderToken/invite-request', guestWriteLimiter, (req, res) => {
   const resolved = resolveGuestOrder(req.params.token, req.params.orderToken);
   if (resolved.error) {
     return res.status(resolved.status).json({ error: resolved.error });
