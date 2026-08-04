@@ -172,7 +172,7 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 - Tier thresholds: 5kg→30%, 26kg→35%, 51kg→40% — stored as constants in helpers
 - Margin formula: `totalOrderValue × (1 - (1 - tierDiscount) / (1 - 0.30))`
 - Friend segmentation: core/regular/occasional/new/inactive based on last 3 coffee cycles
-- Admin routes in this project do NOT validate tokens server-side — frontend handles auth via localStorage + dashboard token verify. Don't add server-side admin auth checks to new routes.
+- ~~Admin routes in this project do NOT validate tokens server-side.~~ **Superseded (SEC-A*/GSO-T1):** admin routers ARE now guarded server-side — `index.js` mounts them with `requireAdmin` (`middleware/admin-auth.js`), e.g. `app.use('/api/order-items', requireAdmin, orderItemsRouter)`. New admin routes MUST be guarded, and added to the canonical anonymous-401 list `ADMIN_ENDPOINTS` in `e2e/tests/api-security.spec.js`. The frontend localStorage + dashboard token verify is UX only, not the boundary.
 - Weight from order_items: variant → kg mapping in `variantToKg()` helper
 - Spec: `docs/coffee-analytics-spec.md`, Plan: `docs/superpowers/plans/2026-04-03-coffee-analytics.md`
 

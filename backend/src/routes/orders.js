@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { validateFriendAuth, getAuthMode } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
+import { packOrder, unpackOrder } from '../helpers/packing.js';
 
 const router = Router();
 
@@ -489,24 +490,35 @@ router.patch('/:id/packed', requireAdmin, (req, res) => {
 
   const newPackedStatus = order.packed ? 0 : 1;
 
+  // Gate: an order may only be marked packed once every one of its items has
+  // been individually checked off in the Distribution view (persisted
+  // order_items.packed). This makes the "Zabaliť" button a deliberate final
+  // step and matches the server-side rule in the spec (Decision 3 / UC-GSO-011).
+  // An order with zero items has nothing to check off, so it is NOT packable —
+  // this mirrors the frontend (Distribution.vue `allItemsChecked()` requires
+  // items.length > 0 and keeps the button disabled).
+  //
+  // GSO-T7 extension point: guest items live in `guest_order_items` and must be
+  // UNIONed into this check. At that point a host order may legitimately have
+  // zero own `order_items` while having guest items — the "at least one item"
+  // requirement must then count guest items too, not just friend items.
+  if (newPackedStatus === 1) {
+    const itemStats = db.prepare(`
+      SELECT COUNT(*) as total,
+             SUM(CASE WHEN packed = 1 THEN 1 ELSE 0 END) as packed_count
+      FROM order_items WHERE order_id = ?
+    `).get(order.id);
+    if (itemStats.total === 0 || (itemStats.packed_count || 0) < itemStats.total) {
+      return res.status(409).json({ error: 'Najprv označ všetky položky ako zabalené' });
+    }
+  }
+
   // Use transaction to ensure consistency
   const togglePacked = db.transaction(() => {
     if (newPackedStatus === 1) {
-      // Marking as packed - create charge transaction (negative amount)
-      db.prepare(`
-        INSERT INTO transactions (friend_id, order_id, type, amount, note)
-        VALUES (?, ?, 'charge', ?, NULL)
-      `).run(order.friend_id, order.id, -order.total);
-
-      db.prepare('UPDATE orders SET packed = 1, packed_at = CURRENT_TIMESTAMP WHERE id = ?').run(order.id);
+      packOrder(order);
     } else {
-      // Unpacking - create reversal transaction (positive amount to cancel the charge)
-      db.prepare(`
-        INSERT INTO transactions (friend_id, order_id, type, amount, note)
-        VALUES (?, ?, 'charge', ?, 'Stornované')
-      `).run(order.friend_id, order.id, order.total);
-
-      db.prepare('UPDATE orders SET packed = 0, packed_at = NULL WHERE id = ?').run(order.id);
+      unpackOrder(order);
     }
   });
 

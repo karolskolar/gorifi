@@ -192,6 +192,7 @@ export const api = {
   getOrders: (cycleId) => request(`/orders/cycle/${cycleId}`),
   markPaid: (id, paid) => request(`/orders/${id}/paid`, { method: 'PATCH', body: { paid } }),
   togglePacked: (id) => request(`/orders/${id}/packed`, { method: 'PATCH' }),
+  toggleItemPacked: (itemId) => request(`/order-items/${itemId}/packed`, { method: 'PATCH' }),
 
   // Friends detail
   getFriendDetail: (id) => request(`/friends/${id}/detail`),

@@ -20,6 +20,7 @@ const ADMIN_ENDPOINTS = [
   { method: 'post', path: '/api/transactions/adjustment', data: { friend_id: 1, amount: 99999, note: 'e2e' } },
   { method: 'post', path: '/api/transactions/payment', data: { friend_id: 1, amount: 99999 } },
   { method: 'patch', path: '/api/orders/1/paid', data: { paid: true } },
+  { method: 'patch', path: '/api/order-items/1/packed' },
   { method: 'post', path: '/api/cycles', data: { name: 'evil' } },
 ]
 
