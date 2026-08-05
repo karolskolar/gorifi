@@ -31,10 +31,9 @@ add_header Referrer-Policy          "strict-origin-when-cross-origin" always;
 add_header Permissions-Policy       "geolocation=(), microphone=(), camera=(), interest-cohort=()" always;
 
 # Content-Security-Policy. Gorifi is a Vue SPA served same-origin by the backend.
-# It renders product images as data: URIs and generates QR codes, so img-src and
-# font-src allow data:. Start in REPORT-ONLY, watch the browser console for a day,
-# then switch the header name to Content-Security-Policy once clean.
-add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'" always;
+# Policy below is derived from a live browser audit (2026-08-05), not a template —
+# see "CSP: audited findings" after this block before changing it.
+add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" always;
 
 # --- Request size cap (matches the backend's 10mb JSON limit; images ≤ 5 MB) ---
 client_max_body_size 10m;
@@ -53,7 +52,77 @@ Notes:
   `location` block** and rely on the app-level limiter (SEC-F2) — the headers and
   `client_max_body_size` above are the important part.
 - Once the CSP report-only log is clean, rename `Content-Security-Policy-Report-Only`
-  → `Content-Security-Policy`.
+  → `Content-Security-Policy`. **Read the audited findings below first** — as of
+  2026-08-05 the report-only stage had never actually been armed.
+
+## 2b. CSP: audited findings (2026-08-05)
+
+A live browser audit of production, plus header probes, found:
+
+**⚠ No CSP header is being sent at all — there is nothing to rename.** The
+report-only stage this doc describes as the safety net was never armed, so no
+violation data was ever collected. A "clean console" was therefore guaranteed
+regardless of the app's real compliance: a false all-clear, not a green light.
+
+**Which headers ARE live tells you why.** Production sends
+`Strict-Transport-Security`, `X-Frame-Options: SAMEORIGIN` and
+`X-Content-Type-Options: nosniff`, but **neither `Content-Security-Policy` nor
+`Referrer-Policy`**. HSTS is an NPM toggle and XFO + nosniff are what NPM's "Block
+Common Exploits" checkbox adds — while CSP and Referrer-Policy exist *only* in the
+custom Advanced block above. So the Advanced block was **never applied or never
+saved**; the checkboxes were. Verify with:
+
+```bash
+curl -sI https://gorifi.skolar.sk | grep -iE 'content-security|referrer-policy'
+```
+
+Both lines must appear before you trust anything about CSP.
+
+**What a naive `default-src 'self'` would have broken immediately:**
+- **Every product image.** They are `data:` URIs, and `img-src 'self'` does not
+  permit the `data:` scheme — hence `img-src 'self' data:`.
+- **Inline styling on almost every route** — one `<style>` block plus 5–21 `style`
+  attributes per page; on `/admin/analytics/coffee` those drive the progress bars
+  and scenario sliders. Hence `'unsafe-inline'` in `style-src`. Worth stating
+  plainly: `'unsafe-inline'` on *style* is a far smaller concession than on
+  *script* — it permits styling tricks, not code execution.
+
+Note the friend portal root `/` is completely clean (no inline anything, no
+images), so **checking only the entry URL finds nothing** — the breakage is one
+click deep.
+
+**`script-src 'self'` with no exceptions is achievable.** Zero inline `<script>`
+was found on any route, and the current build likewise contains exactly one
+`<script>` (with `src`) and no inline bodies. That is where most of the XSS
+protection lives, so don't weaken it.
+
+**`unsafe-eval` is deliberately omitted.** Whether the bundled charting library
+needs it is unknown, because `eval` is currently unrestricted so nothing
+complains. Report-only mode on `/admin/analytics/*` will answer that.
+
+**Routes still to walk through before enforcing:**
+- **`/g/:token` and `/g/:token/o/:orderToken`** (guest ordering) — these were NOT
+  auditable, because the guest feature is on `main` but **not yet deployed**
+  (`routes/guest.js` absent from prod, no `guest*` tables in the live DB). Their
+  QR codes and product images are `data:` URIs, so `img-src 'self' data:` should
+  cover them, but confirm after that deploy.
+- **`/onboard/:token`** — public, unauthenticated, and carries a
+  credential-collecting form. This is exactly why `form-action 'self'` matters.
+- Admin sub-pages not yet inspected: Priatelia, Pekáreň, Vouchery, Skupiny,
+  Nastavenia. The pattern held across six routes (same-origin only, inline styles,
+  no inline scripts), so surprises are unlikely — but check Nastavenia if it grows
+  image upload, which could require `blob:`.
+
+**Correct sequencing** (step 1 is the one that was skipped, not one to skip again):
+1. Add the policy above as `Content-Security-Policy-Report-Only`.
+2. **Prove it is actually being sent** with the `curl` above.
+3. Collect a few days of real traffic, watching `/admin/analytics/*` for
+   `unsafe-eval` and the guest routes once deployed.
+4. Only then drop `-Report-Only`.
+
+Optional hardening later: move the inline `<style>` block into a stylesheet and
+convert `style` attributes to classes, which would let `'unsafe-inline'` be dropped
+from `style-src` entirely.
 
 ## 3. http-level rate-limit zone (only if you kept the `limit_req` in step 2)
 
