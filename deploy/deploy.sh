@@ -44,7 +44,7 @@ show_usage() {
   echo "Components:"
   echo "  backend    - Deploy only backend"
   echo "  frontend   - Build and deploy only frontend"
-  echo "  full       - Deploy both (default)"
+  echo "  full       - Deploy backend + frontend + nginx config (default)"
   echo ""
   echo "Examples:"
   echo "  $0 production          # Full deploy to production"
@@ -65,12 +65,16 @@ case "$1" in
     REMOTE_PATH="/var/www/gorifi"
     PM2_APP="gorifi-backend"
     PORT=3000
+    NGINX_SITE="gorifi"
+    NGINX_SRC="nginx-gorifi.conf"
     ;;
   staging)
     ENVIRONMENT="staging"
     REMOTE_PATH="/var/www/gorifi-staging"
     PM2_APP="gorifi-staging"
     PORT=3001
+    NGINX_SITE="gorifi-staging"
+    NGINX_SRC="nginx-gorifi-staging.conf"
     ;;
   *)
     echo -e "${RED}Error: First argument must be 'production' or 'staging'${NC}"
@@ -101,9 +105,11 @@ else
   esac
 fi
 
+DEPLOY_NGINX=false
 if [ "$DEPLOY_FULL" = true ]; then
   DEPLOY_BACKEND=true
   DEPLOY_FRONTEND=true
+  DEPLOY_NGINX=true
 fi
 
 # Display deployment info
@@ -115,6 +121,7 @@ echo -e "PM2 app:           $PM2_APP"
 echo -e "Backend port:      $PORT"
 echo -e "Deploy backend:    $DEPLOY_BACKEND"
 echo -e "Deploy frontend:   $DEPLOY_FRONTEND"
+echo -e "Deploy nginx:      $DEPLOY_NGINX ($NGINX_SITE)"
 echo ""
 
 # Staging warning
@@ -190,6 +197,35 @@ if [ "$DEPLOY_FRONTEND" = true ]; then
     "$SERVER_USER@$SERVER_HOST:$REMOTE_PATH/frontend/dist/"
 
   echo -e "${GREEN}Frontend deployed to $ENVIRONMENT!${NC}"
+fi
+
+# Deploy the nginx site config.
+#
+# This exists because the config used to be reference-only and hand-copied, which
+# let production drift from the repo — prod was missing the `location = /index.html`
+# no-cache block for months, so it served a cacheable index.html and deploys did not
+# take effect immediately.
+#
+# Ordered AFTER the frontend sync so a config referring to freshly built files is
+# never live before those files exist. Backs up the current config, validates with
+# `nginx -t` BEFORE reloading, and (via set -e) aborts the deploy rather than
+# reloading a broken config. Only reached on a full deploy.
+if [ "$DEPLOY_NGINX" = true ]; then
+  echo -e "${YELLOW}Deploying nginx config ($NGINX_SITE)...${NC}"
+
+  scp "$SCRIPT_DIR/$NGINX_SRC" "$SERVER_USER@$SERVER_HOST:/tmp/$NGINX_SITE.new"
+
+  ssh "$SERVER_USER@$SERVER_HOST" "
+    set -e
+    TARGET=\$(readlink -f /etc/nginx/sites-enabled/$NGINX_SITE)
+    cp \"\$TARGET\" \"/root/$NGINX_SITE.bak.\$(date +%s)\"
+    cp /tmp/$NGINX_SITE.new \"\$TARGET\"
+    rm -f /tmp/$NGINX_SITE.new
+    nginx -t
+    nginx -s reload
+  "
+
+  echo -e "${GREEN}nginx config deployed and reloaded ($NGINX_SITE).${NC}"
 fi
 
 echo ""
