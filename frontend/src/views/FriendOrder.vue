@@ -918,7 +918,11 @@ function applyMarkup(price) {
                   </div>
                   <!-- Product info -->
                   <div class="flex-1 min-w-0">
-                    <div class="flex items-center gap-2">
+                    <!-- flex-wrap: the two badges below are `whitespace-nowrap`, so
+                         without it a long product name is squeezed to its longest
+                         word while the badges push out of the card. GuestProductGrid
+                         already wraps here; this keeps the friend view in parity. -->
+                    <div class="flex items-center gap-2 flex-wrap">
                       <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
                       <span v-if="product.roast_type" class="text-xs text-muted-foreground/70 bg-muted px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roast_type }}</span>
                       <span v-if="product.roastery" class="text-xs bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roastery }}</span>
