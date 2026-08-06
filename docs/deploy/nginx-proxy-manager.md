@@ -113,12 +113,83 @@ complains. Report-only mode on `/admin/analytics/*` will answer that.
   no inline scripts), so surprises are unlikely — but check Nastavenia if it grows
   image upload, which could require `blob:`.
 
-**Correct sequencing** (step 1 is the one that was skipped, not one to skip again):
-1. Add the policy above as `Content-Security-Policy-Report-Only`.
-2. **Prove it is actually being sent** with the `curl` above.
-3. Collect a few days of real traffic, watching `/admin/analytics/*` for
-   `unsafe-eval` and the guest routes once deployed.
-4. Only then drop `-Report-Only`.
+## 2c. CSP is ENFORCING (2026-08-06)
+
+Report-only was armed on 2026-08-05, walked twice in a live browser, and produced
+**zero app-generated violations**. The suffix was then dropped. What the walkthroughs
+established:
+
+- **`unsafe-eval` is NOT needed.** All four analytics tabs, five chart canvases and
+  both scenario sliders (32→62 friends, 1.1→2.0 kg/person) produced no `script-src`
+  violation of any kind. Do not add it "just in case" — that is where most of the
+  XSS protection lives.
+- **`img-src 'self' data:` and `style-src 'self' 'unsafe-inline'` are load-bearing.**
+  41 `data:` images across three routes; up to **138 inline `style` attributes on a
+  single page** (`/admin/friends`). Remove either and the app breaks.
+- **The guest payment QR is fine** — generated client-side as `data:image/png;base64`
+  and rendered three times (confirmation, re-open, status page) with zero violations.
+- **The "Zaplatiť cez Revolut" control is safe**: it is an `<a href target="_blank">`,
+  i.e. plain navigation. `form-action` does not apply to link navigation and the
+  policy has no `navigate-to`. Recorded so nobody reopens the question.
+- **The Google Sheets import carries no CSP exposure at all.** It is server-side
+  (`POST /api/products/import-gsheet/:cycleId` in `routes/products.js` fetches
+  `docs.google.com`), so the browser never contacts Google and `connect-src 'self'`
+  cannot block it. The only frontend mention is a placeholder string in an input.
+
+**Not observed before enforcing** — accepted risk, recorded deliberately:
+- The **bakery grouped-variant card** on a guest page. A ready-made staging link
+  exists for it if the question ever returns: an open bakery cycle whose "Makovník"
+  has three variants (`1ks`, `1/2`, `1/4`) and real `data:` photos.
+- **Real `data:` product images on a guest page** — the coffee staging cycle has no
+  photos. Same mechanism already proven on friend and admin pages, so this is
+  inference rather than observation.
+- **Load-time violations on the two `/g/…` routes.** Browser-automation tooling can
+  only attach a `securitypolicyviolation` listener *after* load, so a load-time
+  violation there could have been missed. Everything after attachment, including
+  the whole payment path, is covered.
+
+### Rolling back, if enforcement ever breaks something
+
+One command — no app restart, ~1 second:
+
+```bash
+# revert the two config files to Content-Security-Policy-Report-Only, then:
+./deploy/deploy.sh production nginx
+```
+
+Or, straight on the box, restoring the automatic pre-change backup:
+
+```bash
+ssh root@gorifi 'cp /root/gorifi.bak.<timestamp> /etc/nginx/sites-available/gorifi && nginx -t && nginx -s reload'
+```
+
+`deploy.sh` writes a timestamped backup to `/root/<site>.bak.<ts>` before every
+config install, and validates with `nginx -t` before reloading.
+
+### Method notes for any future CSP audit
+
+Three things that are easy to get wrong, learned the hard way here:
+
+1. **Silence has two causes** — a broken capture *or* no header being sent. Do not
+   treat "no violations" as a pass. Read `originalPolicy` and `disposition` off an
+   actual `SecurityPolicyViolationEvent`; that proves the header exists *and* shows
+   what is genuinely deployed rather than what is documented. Conflating the two is
+   exactly what produced the original false all-clear.
+2. **Chrome's native `[Report Only]` console warnings are not readable** by
+   browser-automation tooling — only `console.*` output is. So load-time violations
+   are invisible unless a listener is already attached.
+3. **Attach the listener once, then navigate only via in-app clicks.** This is an
+   SPA, so routing does not reload the document and the listener survives the whole
+   walkthrough. A hard navigation to each route wipes it and silently loses that
+   route's load-time violations.
+
+Also: testing `eval()` from an automation console proves nothing — it runs in an
+isolated world not governed by the page's CSP. Only the app's own bundle can answer
+the `unsafe-eval` question.
+
+Finally: a guest link is created by a **host from their own order page**
+("Zdieľať objednávku s kolegami"), not from admin — `/admin/invitations` holds only
+`/onboard/*` links, so looking there for a `/g/…` URL will always come up empty.
 
 Optional hardening later: move the inline `<style>` block into a stylesheet and
 convert `style` attributes to classes, which would let `'unsafe-inline'` be dropped

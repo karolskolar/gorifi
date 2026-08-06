@@ -44,6 +44,7 @@ show_usage() {
   echo "Components:"
   echo "  backend    - Deploy only backend"
   echo "  frontend   - Build and deploy only frontend"
+  echo "  nginx      - Deploy only the nginx site config (reload, no app restart)"
   echo "  full       - Deploy backend + frontend + nginx config (default)"
   echo ""
   echo "Examples:"
@@ -51,6 +52,7 @@ show_usage() {
   echo "  $0 staging             # Full deploy to staging"
   echo "  $0 staging backend     # Deploy only backend to staging"
   echo "  $0 production frontend # Deploy only frontend to production"
+  echo "  $0 production nginx    # Reload nginx config only (e.g. a header change)"
   exit 1
 }
 
@@ -91,6 +93,9 @@ else
     backend)
       DEPLOY_BACKEND=true
       ;;
+    nginx)
+      DEPLOY_NGINX_ONLY=true
+      ;;
     frontend)
       DEPLOY_FRONTEND=true
       ;;
@@ -106,6 +111,9 @@ else
 fi
 
 DEPLOY_NGINX=false
+if [ "$DEPLOY_NGINX_ONLY" = true ]; then
+  DEPLOY_NGINX=true
+fi
 if [ "$DEPLOY_FULL" = true ]; then
   DEPLOY_BACKEND=true
   DEPLOY_FRONTEND=true
