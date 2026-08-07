@@ -69,7 +69,7 @@ never affect admin views.
    to a view root is each screen module's first step (seam → 03, 04, 05, 06). Until
    then the stylesheet matches nothing.
 
-**Adaptation list (exhaustive — everything else is verbatim):**
+**Adaptation list (exhaustive — everything else is verbatim; A9 added by RD-DS-5):**
 
 | # | theme.css original | Ported form | Why |
 |---|---|---|---|
@@ -81,6 +81,7 @@ never affect admin views.
 | A6 | `.app,.modal-layer{ --nb-ink:… }` token block, `.app{…}`, `.app::before{…}`, `.app>*{…}`, `.modal-layer{…}` | **unprefixed** (they ARE the scope roots) | Tokens must live on the wrappers themselves — `.modal-layer` sits outside `.app` in the DOM (portaled), which is exactly why the token block names both. |
 | A7 | `.app{min-height:100%;…}` | `min-height:100vh` | The prototype runs inside a fixed-height device frame; production is a normal document where `100%` resolves to nothing. |
 | A8 | `.modal-layer{position:absolute;inset:0;…}` | `position:fixed` | Prototype layers inside the device frame; production must cover the viewport regardless of scroll. Everything else in the modal block (z-index 200, pointer-events dance, scrim, `.modal` widths/borders) is verbatim. |
+| A9 | *(not in theme.css)* | **added** at the end of the file: `:where(.app, .modal-layer) .inp, :where(.app, .modal-layer) .btn{line-height:normal}` | **The only ADDITION.** Tailwind preflight ships `button,input,optgroup,select,textarea{line-height:inherit}` on top of `html{line-height:1.5}`; the prototype has neither, so its controls compute the UA default `normal` (~1.2). theme.css's 7 `line-height` declarations govern `.appbar .titles`, `.appbar .titles .t`, `.h-screen`, `.stepper button`, `.cartbar .sum`, `.pimg .lbl`, `.modal .m-title` — **none of them `.inp` or `.btn`**, so the canon is silent and `normal` is what it renders. Without this, `.inp` = 22.5 (1.5×15px) + 24 padding + 6 border = **52.5** vs the canon's 48, and `.btn` = 21 (1.5×14px) + 20 + 6 = **47** vs 44. Scoped to the two classes rather than to `button,input,…` inside `.app`, so shadcn children still rendering in a half-migrated `.app` (UC-DS-002) are untouched; `:where()` keeps the (0,1,0) specificity so `.btn.sm` and every compound variant keep their own cascade. |
 
 **Business rules:**
 
@@ -108,7 +109,11 @@ never affect admin views.
 **Acceptance criteria:**
 
 - `frontend/src/friends-theme.css` exists; diff against the source `theme.css` shows
-  only adaptations A1–A8.
+  only adaptations A1–A9.
+- Measured in a browser against the live prototype served **over HTTP**: `.inp` 48 px,
+  `.btn` 44 px, `.btn.sm` 38 px, all at `line-height: normal` — and every `.btn`
+  variant (`.sm`, `.ghost`, `.accent`, `.ok`, `.dark`, `.danger`, `.block`) still meets
+  UC-DS-005's hit-target minima (`.btn` ≥44, `.btn.sm`/`.btn.ghost` ≥38, inputs ≥46).
 - With the stylesheet imported and **no** `.app` class applied anywhere yet, every
   existing route (admin + friend + guest) renders pixel-identically to before.
 - A scratch element `<div class="app"><div class="card">x</div></div>` mounted anywhere
@@ -329,26 +334,30 @@ branding — README).
 
 **File:** `frontend/src/components/neo/BrandChrome.vue`.
 
-**Field group — props & slots:**
+**Field group — props, slots & events:**
 
 | API | Type / default | Renders |
 |---|---|---|
 | `title` prop | String, required unless `#titles` slot used | `.appbar .titles .t` (display font, 25px, uppercase, ellipsis) |
 | `subtitle` prop | String, optional | `.appbar .titles .s` (12px, letter-spaced uppercase, dim) |
 | `ticker` prop | String, default `"+++ TOVAR POD PULTOM +++ IBA PRE STÁLYCH +++"` | ticker segment text |
+| `titlesAction` prop | String, default `''` (amended RD-DS-5) | **opt-in**: makes the `.titles` block interactive. Non-empty ⇒ `role="button" tabindex="0" aria-label="<value>" style="cursor:pointer"` on `.titles` + click/Enter/Space handlers. Empty ⇒ **nothing at all** is added |
 | `#leading` slot | optional | before `.titles` — e.g. `.back` arrow (`NeoIcon name="back"` in a `span.back`) |
-| `#titles` slot | optional, overrides title/subtitle props | custom titles block (e.g. the wordmark) |
+| `#titles` slot | optional, overrides title/subtitle props | custom titles block (e.g. the wordmark) — **fills** `.titles`, never replaces it |
+| `#after-titles` slot | optional (added RD-DS-5) | **between `.titles` and the `.grow` spacer** — the portal's pencil icon (`friends/portal.jsx:101`) |
 | `#trailing` slot | optional | after the `.grow` spacer — chips (`span.chip`, `span.chip.acc`), icon buttons |
+| `@titles-click` event | emitted only while `titlesAction` is non-empty | fired by click, Enter and Space on the `.titles` block |
 
 **Structure (fixed):**
 
 ```html
 <div class="appbar">
   <slot name="leading" />
-  <div class="titles">
+  <div class="titles" v-bind="titlesAttrs">   <!-- titlesAttrs = {} unless titlesAction -->
     <span class="t">{{ title }}</span>
     <span v-if="subtitle" class="s">{{ subtitle }}</span>
   </div>
+  <slot name="after-titles" />
   <div class="grow"></div>
   <slot name="trailing" />
 </div>
@@ -356,7 +365,45 @@ branding — README).
 <div class="ticker"><span>{{ seg }}&nbsp;&nbsp;{{ seg }}&nbsp;&nbsp;{{ seg }}</span></div>
 ```
 
+**Amendment (RD-DS-5) — why the structure gained a fourth slot and a titles affordance.**
+Both come from the portal's authenticated appbar (§03 UC-FL-004), which the original
+three slots could not express:
+
+- `friends/portal.jsx:97` puts `cursor:pointer` **and an `onClick` on the `.titles` div
+  itself**. `.titles` is component-owned and `#titles` *fills* it, so no consumer could
+  ever reach it → `titlesAction` + `@titles-click`.
+- `friends/portal.jsx:101` puts the pencil **between `.titles` and `.grow`**
+  (`screenshots/02-shot.png`: next to "LEGO", not at the right edge). `#trailing`
+  renders *after* the spacer and would fling it to the edge, `#leading` is the wrong
+  side, and `.titles` is `flex-direction:column` so `#titles` would stack it under the
+  name → `#after-titles`.
+
+Everything else this UC pins is unchanged: the fixed appbar → hazard → ticker stack,
+`inheritAttrs: false`, the static 3× ticker with two `&nbsp;`, and `#titles` filling
+`.titles` rather than replacing it.
+
 **Business rules:**
+
+- **`titlesAction` carries the accessible LABEL, not a boolean.** `.titles` holds the
+  friend's name and code, so a bare `role="button"` would announce "LEGO lego-4821,
+  button" — the person's name, never the action's. One prop meaning both "interactive"
+  and "announced as" makes an unlabelled interactive titles block impossible to ship.
+  A `titlesClass` prop was rejected for the mirror-image reason: a class can paint
+  `cursor:pointer` but cannot attach a handler, so look and behaviour would be
+  separable.
+- **The affordance is strictly opt-in and adds ZERO markup when off.** With
+  `titlesAction` empty, `.titles` carries no `role`, no `tabindex`, no `aria-label`, no
+  `cursor` and no listener — the attributes are bound as one `v-bind` object precisely
+  so the inactive case registers nothing (a static `@click` would always attach a
+  handler). Pinned by an SSR markup diff against the pre-amendment component.
+- **Keyboard operability is the house zero-pixel ARIA enhancement** (as in
+  `NeoCheckbox`, `NeoModal`'s `.m-x`, 03's eye toggle): `role`/`tabindex`/`aria-label`
+  plus Enter **and** Space, both `preventDefault`ed so Space cannot also scroll.
+- The `cursor:pointer` is written **inline**, exactly as the prototype writes it —
+  `.titles` has no cursor rule in the canonical stylesheet and `friends-theme.css` is a
+  byte-for-byte port (UC-DS-001).
+- **No comment may live in `BrandChrome.vue`'s template.** Vue keeps template comments
+  in the DOM in dev builds, and this component's rendered markup is a fidelity contract.
 
 - Ticker text is rendered **exactly 3×** inside one `<span>` separated by two `&nbsp;`
   (the `span` carries `padding-right:24px` from CSS). **Static — no animation**
@@ -382,6 +429,18 @@ branding — README).
   display font 14px, uppercase, letter-spaced.
 - Rotated accent chip in `#trailing` (`chip acc`) shows −2° rotation, accent-ink border
   and `3px 3px 0` accent-ink shadow.
+- `#after-titles` content renders as a sibling **immediately after `.titles` and before
+  `.grow`** (DOM order asserted, not just visual).
+- A consumer supplying neither `#after-titles` nor `titlesAction` renders **every element,
+  attribute, class, text node and computed style identical** to the pre-amendment
+  component — identical **modulo the empty-slot fragment anchors** (two empty text nodes
+  between `.titles` and `.grow`, exactly as `#leading`/`#trailing` already emit for an
+  unused slot). Those anchors form no anonymous flex item and shift no box: verified with
+  `.titles` ending at 170 and `.grow` starting at 184, i.e. the single 14px gap and
+  nothing more. ⚠ State the caveat when re-running this criterion — a strict whole-DOM
+  comparison "fails" on the anchors while nothing is wrong, which would invite either a
+  false regression report or a "fix" that removes the slot. With `titlesAction` set,
+  `.titles` is reachable by Tab and activates on Enter and Space.
 
 ---
 
