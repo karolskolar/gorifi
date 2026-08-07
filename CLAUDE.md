@@ -349,3 +349,28 @@ Four UI-only changes to how guest sub-orders are presented. **No backend, schema
 - Any future child of `FriendOrder` that is friend-authenticated still needs the `ready` auth-ready gate (GSO-T5 rule) — the tab split does not change setup/onMounted ordering.
 
 Full suite after this work: **238 passed / 3 skipped**.
+
+### ⚠ `.app > *` neutralises every Tailwind positioning utility (Podpultovka redesign, 2026-08-07)
+
+`friends-theme.css` (RD-DS-1) declares `.app>*{position:relative;z-index:1}` to keep content above the halftone `.app::before` texture. That rule is specificity `(0,1,0)` — **the same as every Tailwind positioning utility** — and `friends-theme.css` is imported *after* `style.css`, so on a **direct child of `.app`** it wins. Measured live:
+
+| direct child of `.app` | computed |
+|---|---|
+| `class="fixed z-50"` | `relative / 1` ❌ |
+| `class="absolute z-40"` | `relative / 1` ❌ |
+| `class="sticky top-0 z-40"` | `relative / 1` ❌ |
+| `class="relative z-10"` | `relative / 1` ❌ (z-index silently clamped) |
+| theme `.cartbar` / `.cat-tabs` / `.modal-layer` | `sticky 50` / `sticky 40` / `fixed 200` ✓ |
+| the same utilities **nested one level deeper** | survive ✓ |
+
+The theme's own classes survive only because they sit *later in the same stylesheet* than `.app>*`. Secondary effect: every direct child becomes a **stacking context**, so `z-*` inside one can no longer compete across siblings.
+
+**This fails silently** — no build error, no failing spec, just a modal that lays out in page flow or a bar that stops sticking. UC-DS-001 states the rule abstractly but names only the `h-screen` collision; the positioning half is the one that actually bites.
+
+**Rule:** a hand-rolled `position:fixed` overlay that is a direct child of `.app` must either **teleport out of `.app`** (correct when its subtree uses no theme tokens — it then also keeps the old `system-ui` font instead of inheriting `var(--font-body)`, which is what "visually untouched" actually requires) or be **rebuilt on `NeoModal`/`.modal-layer`** (correct when it does want the tokens). Radix-portaled dialogs (all shadcn `Dialog`s, `PaymentModal`, `GuestShareDialog`) and `NeoModal` are immune — the risk is confined to hand-rolled overlays.
+
+Known call sites, enumerated when RD-FL-1 landed the first `.app`:
+- `FriendPortal.vue` voucher overlay — **fixed in RD-FL-1** via `<Teleport to="body">`; the view now has zero exposed direct children.
+- ⚠ `FriendOrder.vue` `<header … sticky top-0 z-40>` is a **direct child** of the root. The moment RD-FO-1 writes `class="app"` there it silently stops being sticky. It is replaced by `BrandChrome` in the same row so the fix is free — but landing `.app` before replacing the header is an invisible regression.
+- ⚠ `FriendOrder.vue` `TabsList data-testid="purpose-tabs" class="sticky top-16 z-30"` is *nested*, so `sticky` survives — but `top-16` (64 px) was calibrated against the sticky header that `BrandChrome` (non-sticky) replaces, so it will pin 64 px below the viewport top. `mobile-no-h-overflow.spec.js` asserts the strip scrolls within itself and will **not** catch a wrong `top`.
+- `FriendOrder.vue` / `GuestOrder.vue` / `GuestOrderStatus.vue` hand-rolled `fixed bottom-0 z-50` cart bars are all *nested* inside their page-column div, so they survive as-is; converting them to the theme's `.cartbar` is safe even at root level. Do not "tidy" them up to root level while they are still on Tailwind utilities.
