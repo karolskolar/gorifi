@@ -256,6 +256,11 @@ test.describe('Guest share link — UI', () => {
     await expect(page).toHaveURL(new RegExp(`/cycle/${cycleId}$`))
 
     const shareButton = page.getByRole('button', { name: 'Zdieľať objednávku s kolegami' })
+
+    // Sharing lives on the "Kolegovia" tab now — it used to sit above the product
+    // list on every load, which is exactly what the tab split removed.
+    await expect(shareButton, 'sharing must not clutter the own-order tab').toBeHidden()
+    await page.getByTestId('main-tab-guests').click()
     await expect(shareButton).toBeVisible()
     await shareButton.click()
 

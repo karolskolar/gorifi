@@ -76,7 +76,12 @@ test.describe('Mobile layout — no horizontal document overflow', () => {
       // The tab strip must actually be rendered, or this would pass vacuously.
       // Scope to the strip: an unscoped role=tab lookup can match more than one
       // element on this page and trip strict mode for reasons unrelated to layout.
-      const strip = page.getByRole('tablist').first()
+      //
+      // Targeted by test id, NOT by `.first()`: the page now opens with the
+      // "Moja objednávka / Kolegovia" switch, which is also a tablist and comes
+      // first in the DOM. The purpose strip is the one that has to scroll within
+      // itself — the switch has exactly two fixed segments and must never scroll.
+      const strip = page.getByTestId('purpose-tabs')
       await expect(strip).toBeVisible()
       // A floor, not an exact count: other specs add purposes to this shared
       // seeded cycle, and more tabs only means MORE overflow pressure — so an
@@ -97,6 +102,13 @@ test.describe('Mobile layout — no horizontal document overflow', () => {
       // And the strip itself is the thing that scrolls, so the tabs stay reachable.
       const scrollable = await strip.evaluate((el) => el.scrollWidth > el.clientWidth)
       expect(scrollable, 'the tab strip should scroll within itself').toBe(true)
+
+      // The own-order / colleagues switch, by contrast, has two fixed segments and
+      // no scroll affordance — if its labels outgrow the viewport they are simply
+      // unreachable, so it must fit at the narrowest width we support.
+      const mainSwitch = page.getByRole('tablist').first()
+      const switchOverflow = await mainSwitch.evaluate((el) => el.scrollWidth - el.clientWidth)
+      expect(switchOverflow, 'the own/colleagues switch must fit without scrolling').toBeLessThanOrEqual(0)
     })
   }
 })

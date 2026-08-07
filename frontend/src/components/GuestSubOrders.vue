@@ -18,7 +18,7 @@
 // The money rule (§UC-GSO-006): the guest total shown here is CONTEXT. The
 // colleagues pay the admin directly, so the host's own payable total (the cart
 // footer) stays own-items-only and is not touched by anything in this component.
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, watchEffect } from 'vue'
 import api from '../api'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -41,6 +41,16 @@ const props = defineProps({
   ready: { type: Boolean, default: false }
 })
 
+// The parent puts the colleagues on their own tab, so it needs the headline numbers
+// WITHOUT having to fetch them a second time: how many colleagues to put on the tab
+// badge, how many are still waiting to be handed over (the only thing this screen
+// ever asks the host to do), and whether the load failed — otherwise the parent
+// would render "nobody has ordered yet" over a failed request.
+//
+// This component stays mounted on both tabs (the parent uses v-show, not v-if)
+// precisely so the badge is right before the host ever opens the tab.
+const emit = defineEmits(['summary'])
+
 const error = ref('')
 const subOrders = ref([])
 const totals = ref({ count: 0, total: 0 })
@@ -48,6 +58,35 @@ const totals = ref({ count: 0, total: 0 })
 // slow request never disables (or unblocks) another row's checkbox.
 const pending = ref({})
 const confirmRemoveId = ref(null)
+
+// Folding one colleague's item list away. A host who shared their link with a whole
+// office gets a card taller than several phone screens, and the lines are reference
+// information — the things the host ACTS on (the delivered tick, "Odstrániť") live
+// in the footer and stay visible when folded, as do the name, the total and both
+// badges.
+//
+// Keyed by `guest_orders.id`, so folding one colleague never touches another; the
+// keys survive `replaceRow()` (which swaps the object, not the id). Expanded by
+// default — this card exists to show what colleagues ordered, so hiding it unasked
+// would defeat it. Screen state only, deliberately not persisted.
+const collapsed = ref({})
+
+function isCollapsed(subOrder) {
+  return !!collapsed.value[subOrder.id]
+}
+
+function toggleCollapsed(subOrder) {
+  collapsed.value = { ...collapsed.value, [subOrder.id]: !isCollapsed(subOrder) }
+}
+
+// Counts LINES, not pieces: it labels the list that is about to unfold, so it has
+// to match the number of rows that appear.
+function itemCountLabel(subOrder) {
+  const n = (subOrder.items || []).length
+  if (n === 1) return '1 položka'
+  if (n >= 2 && n <= 4) return `${n} položky`
+  return `${n} položiek`
+}
 
 // One component instance serves whatever cycle the route currently points at (the
 // router reuses FriendOrder across /cycle/:cycleId changes), so the LOAD is
@@ -68,6 +107,7 @@ watch([() => props.cycleId, () => props.ready], async ([cycleId, ready]) => {
   totals.value = { count: 0, total: 0 }
   confirmRemoveId.value = null
   pending.value = {}
+  collapsed.value = {}
   rowSeq.clear()
   if (!cycleId || !ready) return
 
@@ -100,6 +140,19 @@ const colleagueCount = computed(() => {
   if (count === 1) return '1 kolega'
   if (count >= 2 && count <= 4) return `${count} kolegovia`
   return `${count} kolegov`
+})
+
+// Recomputed from the same rows the list renders, so the badge can never drift from
+// what the tab actually contains. Cancelled sub-orders count for neither number:
+// they owe nothing and there is nothing to hand over.
+watchEffect(() => {
+  const live = subOrders.value.filter((o) => !isCancelled(o))
+  emit('summary', {
+    count: totals.value.count || 0,
+    total: totals.value.total || 0,
+    pendingDelivery: live.reduce((sum, o) => sum + (o.delivered ? 0 : 1), 0),
+    failed: !!error.value,
+  })
 })
 
 function replaceRow(updated) {
@@ -211,10 +264,40 @@ async function removeSubOrder(subOrder) {
         ]"
       >
         <div class="flex flex-wrap items-start justify-between gap-2">
-          <div class="min-w-0">
-            <div class="font-semibold text-sm">{{ subOrder.guest_name }}</div>
-            <div class="text-xs text-muted-foreground">{{ subOrder.guest_phone }}</div>
-          </div>
+          <!-- The whole name block is the fold control — a bare 16px chevron is not
+               a thumb target on the phone this screen is used on. Spans, not divs:
+               a <div> inside a <button> is invalid HTML. -->
+          <button
+            type="button"
+            @click="toggleCollapsed(subOrder)"
+            :aria-expanded="isCollapsed(subOrder) ? 'false' : 'true'"
+            :title="isCollapsed(subOrder) ? 'Zobraziť položky' : 'Skryť položky'"
+            :data-testid="`guest-items-toggle-${subOrder.id}`"
+            class="flex min-w-0 items-start gap-1.5 text-left rounded -m-1 p-1 hover:bg-muted/60 transition-colors"
+          >
+            <svg
+              class="w-4 h-4 mt-0.5 shrink-0 text-muted-foreground transition-transform"
+              :class="{ 'rotate-90': !isCollapsed(subOrder) }"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
+            <span class="min-w-0">
+              <span class="block font-semibold text-sm">{{ subOrder.guest_name }}</span>
+              <span class="block text-xs text-muted-foreground">{{ subOrder.guest_phone }}</span>
+              <!-- Folded, this is the only thing left saying how much is hidden. -->
+              <span
+                v-if="isCollapsed(subOrder) && (subOrder.items || []).length > 0"
+                class="block text-xs text-muted-foreground"
+                :data-testid="`guest-items-summary-${subOrder.id}`"
+              >
+                {{ itemCountLabel(subOrder) }}
+              </span>
+            </span>
+          </button>
           <div class="flex flex-wrap items-center gap-1.5">
             <!-- `paid` is the ADMIN's flag: shown, never toggled here. -->
             <Badge
@@ -238,7 +321,11 @@ async function removeSubOrder(subOrder) {
           </div>
         </div>
 
-        <ul class="mt-2 space-y-0.5 text-xs text-muted-foreground">
+        <ul
+          v-if="!isCollapsed(subOrder)"
+          class="mt-2 space-y-0.5 text-xs text-muted-foreground"
+          :data-testid="`guest-items-${subOrder.id}`"
+        >
           <li v-for="item in subOrder.items" :key="item.id" class="flex justify-between gap-2">
             <span class="min-w-0">
               {{ item.quantity }}× {{ item.product_name }}

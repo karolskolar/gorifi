@@ -110,6 +110,40 @@ function hasGuestBags(friend) {
   return (friend.guest_orders || []).length > 0
 }
 
+// ---- collapsing a guest's bag list -------------------------------------------
+//
+// A host with several colleagues produces a very tall card (the screen that
+// prompted this had 15 bags under one name), so each guest group folds away on
+// demand. Keyed by `group.key` (`guest-<guest_orders.id>`) — globally unique, so
+// two hosts can never share a collapse state.
+//
+// ⚠ DELIBERATELY MANUAL, never automatic on "all bags checked". Auto-folding was
+// tried and rejected: ticking a guest's last bag would hide the very rows the admin
+// needs to UNTICK when they mis-scan one, forcing an expand before every correction
+// (and it dead-locks the existing untick-and-repack flow in guest-distribution's UI
+// spec). The admin folds a guest away when they are done with them.
+//
+// The host's own "Vlastná objednávka" block stays open: it is the one list that is
+// always theirs to pack.
+const guestCollapse = ref({})
+
+function guestGroupChecked(group) {
+  return group.items.reduce((sum, item) => sum + (item.packed ? 1 : 0), 0)
+}
+
+function guestGroupPacked(group) {
+  return group.items.length > 0 && group.items.every(item => item.packed)
+}
+
+function isGuestCollapsed(group) {
+  if (group.kind !== 'guest') return false
+  return !!guestCollapse.value[group.key]
+}
+
+function toggleGuestCollapsed(group) {
+  guestCollapse.value = { ...guestCollapse.value, [group.key]: !isGuestCollapsed(group) }
+}
+
 // Persisted per-item packing state: toggle on the server
 // (`order_items.packed` / `guest_order_items.packed`) so the "X/Y ✓" counter, the
 // un-pack-on-uncheck behaviour and the "Zabaliť" gating all reflect durable state
@@ -277,10 +311,29 @@ function printDistribution() {
                    the bags can be pre-separated during packing (§UC-GSO-011). -->
               <div v-else class="flex flex-col gap-3">
                 <div v-for="group in itemGroups(friend)" :key="group.key" class="flex flex-col gap-1.5">
-                  <div
+                  <!-- The whole guest header is the collapse control: on a phone,
+                       held in one hand over a pile of bags, a 16px chevron is not a
+                       target. `print:hidden` on the chevron only — the header itself
+                       still labels the bags on a printed sheet. -->
+                  <button
                     v-if="group.kind === 'guest'"
-                    class="flex items-center gap-2 flex-wrap text-sm text-muted-foreground"
+                    type="button"
+                    @click="toggleGuestCollapsed(group)"
+                    :aria-expanded="isGuestCollapsed(group) ? 'false' : 'true'"
+                    :title="isGuestCollapsed(group) ? 'Rozbaliť vrecká hosťa' : 'Zbaliť vrecká hosťa'"
+                    :data-testid="`guest-group-toggle-${group.guest.id}`"
+                    class="flex w-full items-center gap-2 flex-wrap text-sm text-muted-foreground text-left rounded hover:bg-muted/60 -mx-1 px-1 py-0.5 transition-colors print:hover:bg-transparent"
                   >
+                    <svg
+                      class="w-4 h-4 shrink-0 transition-transform text-violet-500 print:hidden"
+                      :class="{ 'rotate-90': !isGuestCollapsed(group) }"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                    </svg>
                     <Badge variant="outline" class="text-xs border-violet-400 text-violet-700 bg-violet-50">
                       Hosť • {{ group.guest.guest_name }}
                     </Badge>
@@ -299,12 +352,31 @@ function printDistribution() {
                     >
                       Nezaplatené
                     </Badge>
-                  </div>
+                    <!-- Collapsed, this counter is the only thing left saying whether
+                         these bags are done — so it is always shown when folded. -->
+                    <span
+                      v-if="isGuestCollapsed(group) && group.items.length > 0"
+                      class="text-xs print:hidden"
+                      :class="guestGroupPacked(group) ? 'text-green-700' : ''"
+                      :data-testid="`guest-group-summary-${group.guest.id}`"
+                    >
+                      · {{ guestGroupChecked(group) }}/{{ group.items.length }} ✓
+                    </span>
+                  </button>
                   <!-- Only worth labelling the host's own bag when there are guest
                        bags next to it. -->
                   <div v-else-if="hasGuestBags(friend)" class="text-xs text-muted-foreground">
                     Vlastná objednávka
                   </div>
+                  <!-- Collapsed means hidden ON SCREEN only. A printed picking sheet
+                       must still list every bag, so this folds with `hidden
+                       print:flex` rather than a `v-if` that would drop the rows out
+                       of the DOM entirely. -->
+                  <div
+                    class="flex-col gap-1.5"
+                    :class="isGuestCollapsed(group) ? 'hidden print:flex' : 'flex'"
+                    :data-testid="group.kind === 'guest' ? `guest-group-items-${group.guest.id}` : undefined"
+                  >
                   <div
                     v-for="item in group.items"
                     :key="group.key + '-' + item.id"
@@ -363,6 +435,7 @@ function printDistribution() {
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
                       <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
                     </svg>
+                  </div>
                   </div>
                 </div>
               </div>

@@ -669,9 +669,18 @@ async function gotoCycle(page, cycle) {
   await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
 }
 
+// Everything guest-related now lives behind the "Kolegovia" tab (the page opens on
+// "Moja objednávka"), so every test in this block switches to it first. The switch
+// itself — badge, default tab, sharing having moved — is covered by its own test at
+// the end of the block rather than being re-asserted in all of them.
+async function openColleaguesTab(page) {
+  await page.getByTestId('main-tab-guests').click()
+}
+
 async function openHostOrderPage(page, host, cycle) {
   await signInAsHost(page, host)
   await gotoCycle(page, cycle)
+  await openColleaguesTab(page)
 }
 
 test.describe('Objednávky kolegov — UI', () => {
@@ -720,6 +729,7 @@ test.describe('Objednávky kolegov — UI', () => {
     // Fresh page load: the tick must come back from the server, not from the
     // component's own state.
     await gotoCycle(page, cycle)
+    await openColleaguesTab(page)
     await expect(page.getByTestId(`guest-delivered-${created.order.id}`), 'the tick is durable').toBeChecked()
 
     // And it unticks again.
@@ -753,6 +763,7 @@ test.describe('Objednávky kolegov — UI', () => {
       })
     })
     await gotoCycle(page, cycle)
+    await openColleaguesTab(page)
 
     const section = page.getByTestId('guest-sub-orders')
     const failing = section.getByTestId(`guest-delivered-${first.order.id}`)
@@ -784,6 +795,7 @@ test.describe('Objednávky kolegov — UI', () => {
       body: JSON.stringify({ error: 'Nepodarilo sa načítať objednávky kolegov' }),
     }))
     await gotoCycle(page, cycle)
+    await openColleaguesTab(page)
 
     const section = page.getByTestId('guest-sub-orders')
     await expect(section, 'an empty list and a failed load must not look identical').toBeVisible()
@@ -808,5 +820,129 @@ test.describe('Objednávky kolegov — UI', () => {
     const view = await hostView(host, cycle.id)
     expect(view.guest_orders.find((o) => o.id === created.order.id).status).toBe('cancelled')
     expect(view.totals).toEqual({ count: 0, total: 0 })
+  })
+  // A host who shared their link with a whole office gets a card several phone
+  // screens tall, so each colleague's item list folds away. The controls the host
+  // ACTS on — the delivered tick and "Odstrániť" — must survive the fold, or the
+  // affordance would cost more than the space it saves.
+  test('each colleague’s item list folds away independently, leaving the controls reachable', async ({ page }) => {
+    const { host, cycle, product, link } = await scenario('uifold')
+    const first = await submitGuest(link.token, [
+      { product_id: product.id, variant: '250g', quantity: 2 },
+      { product_id: product.id, variant: '1kg', quantity: 1 },
+    ])
+    const second = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }], {
+      guest_name: 'Jana Kolegyna', guest_phone: '0902 111 222',
+    })
+
+    await openHostOrderPage(page, host, cycle)
+    const section = page.getByTestId('guest-sub-orders')
+
+    const itemsFirst = section.getByTestId(`guest-items-${first.order.id}`)
+    const itemsSecond = section.getByTestId(`guest-items-${second.order.id}`)
+
+    // Expanded by default — this card exists to show what colleagues ordered.
+    await expect(itemsFirst).toBeVisible()
+    await expect(itemsFirst.locator('li')).toHaveCount(2)
+    await expect(itemsSecond).toBeVisible()
+
+    // Fold the first colleague only.
+    await section.getByTestId(`guest-items-toggle-${first.order.id}`).click()
+    await expect(itemsFirst).toHaveCount(0)
+    await expect(itemsSecond, 'folding one colleague must not fold another').toBeVisible()
+
+    // Name, total and both flags survive the fold, plus a count of what is hidden.
+    await expect(section).toContainText(IDENTITY.guest_name)
+    await expect(section.getByTestId(`guest-items-summary-${first.order.id}`)).toContainText('2 položky')
+    await expect(section.getByTestId('guest-paid-badge').first()).toContainText('Nezaplatené')
+
+    // The controls still work while folded — the tick reaches the API and persists.
+    const box = section.getByTestId(`guest-delivered-${first.order.id}`)
+    await expect(box).toBeVisible()
+    await box.click()
+    await expect(box).toBeChecked()
+    const view = await hostView(host, cycle.id)
+    expect(view.guest_orders.find((o) => o.id === first.order.id).delivered).toBe(1)
+
+    // And "Odstrániť" is still reachable on a folded row.
+    await expect(section.getByTestId(`guest-remove-${first.order.id}`)).toBeVisible()
+
+    // Unfold: the same lines come back.
+    await section.getByTestId(`guest-items-toggle-${first.order.id}`).click()
+    await expect(section.getByTestId(`guest-items-${first.order.id}`).locator('li')).toHaveCount(2)
+  })
+  // The tab split itself (§ the "Kolegovia" switch). The point of the change is that
+  // the host's OWN offer is the first thing on the page again, so the assertions run
+  // in both directions: what must be hidden on each tab, not only what is shown.
+  test('the page opens on the own order; the colleagues tab carries the badge, the sharing and the list', async ({ page }) => {
+    const { host, cycle, product, link } = await scenario('uitabs')
+    const a = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+    await submitGuest(link.token, [{ product_id: product.id, variant: '1kg', quantity: 1 }], {
+      guest_name: 'Jana Kolegyna', guest_phone: '0902 111 222',
+    })
+
+    await signInAsHost(page, host)
+    await gotoCycle(page, cycle)
+
+    const own = page.getByTestId('main-tab-own')
+    const guests = page.getByTestId('main-tab-guests')
+    const section = page.getByTestId('guest-sub-orders')
+    const share = page.getByRole('button', { name: /Zdieľať/ })
+
+    // Default is the host's own order — also when the cycle is locked, see below.
+    await expect(own).toHaveAttribute('aria-selected', 'true')
+    await expect(guests).toHaveAttribute('aria-selected', 'false')
+    await expect(page.getByRole('heading', { name: product.name })).toBeVisible()
+    await expect(section, 'colleagues must not occupy the ordering screen').toBeHidden()
+    await expect(share, 'nor must the share card').toBeHidden()
+
+    // The badge counts colleagues WITHOUT the tab ever having been opened — that is
+    // why the panel is v-show and the child stays mounted.
+    const badge = page.getByTestId('guest-tab-badge')
+    await expect(badge).toHaveText('2')
+
+    await guests.click()
+    await expect(guests).toHaveAttribute('aria-selected', 'true')
+    await expect(section).toBeVisible()
+    await expect(section).toContainText(IDENTITY.guest_name)
+    await expect(share).toBeVisible()
+    await expect(page.getByRole('heading', { name: product.name }), 'and the offer steps aside').toBeHidden()
+
+    // The cart footer belongs to neither tab: the host can submit from both.
+    await expect(page.getByText('Celkom:').first()).toBeVisible()
+
+    await own.click()
+    await expect(page.getByRole('heading', { name: product.name })).toBeVisible()
+    await expect(section).toBeHidden()
+
+    // Locked cycle: still opens on the own order (confirmed with the user), and the
+    // badge turns into the hand-over count — the only thing left to do by then.
+    expect((await setDelivered(host, a.order.id, true)).status()).toBe(200)
+    await setCycleStatus(cycle.id, 'locked')
+    await gotoCycle(page, cycle)
+
+    await expect(page.getByTestId('main-tab-own')).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByTestId('guest-tab-badge'), '1 of the 2 colleagues is still waiting').toHaveText('1')
+    await page.getByTestId('main-tab-guests').click()
+    await expect(page.getByTestId('guest-sub-orders')).toBeVisible()
+    await expect(
+      page.getByRole('button', { name: /Zdieľať/ }),
+      'a locked cycle has no sharing left to offer'
+    ).toHaveCount(0)
+  })
+
+  test('the colleagues tab explains itself when nobody has ordered yet', async ({ page }) => {
+    const { host, cycle } = await scenario('uiempty')
+
+    await signInAsHost(page, host)
+    await gotoCycle(page, cycle)
+
+    // No colleagues ⇒ no badge, but the tab stays — otherwise sharing is unfindable.
+    await expect(page.getByTestId('guest-tab-badge')).toHaveCount(0)
+    await page.getByTestId('main-tab-guests').click()
+
+    await expect(page.getByText('Objednávate aj pre kolegov?')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Zdieľať objednávku s kolegami' })).toBeVisible()
+    await expect(page.getByTestId('guest-sub-orders'), 'no list to show yet').toHaveCount(0)
   })
 })
