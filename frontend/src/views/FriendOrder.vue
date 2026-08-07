@@ -80,12 +80,43 @@ const paymentReference = computed(() => {
 // FriendPortal's cycle list so both entry points behave identically.
 const showShareModal = ref(false)
 
+// ---- top-level view switch: own order vs colleagues ---------------------------
+//
+// Everything guest-related used to sit ABOVE the product list, so the host's own
+// offer started ~860px down the page and got worse with every colleague who
+// ordered. The two jobs — ordering for myself, handing goods to colleagues — now
+// live on their own tabs.
+//
+// ⚠ The panels are v-show, NOT v-if: GuestSubOrders must stay mounted on both tabs
+// or its badge count would only appear after the host already opened the tab it is
+// meant to advertise. It also keeps the hand-over ticks from re-fetching on every
+// switch.
+//
+// Deliberately NOT persisted and NOT in the URL: a locked cycle opens on 'own' too,
+// even though hand-over is the only job left then — the host still wants to see
+// what they themselves ordered first (confirmed with the user).
+const mainTab = ref('own')
+
+// Fed by GuestSubOrders (one fetch, one owner) — see its `summary` emit.
+const guestSummary = ref({ count: 0, total: 0, pendingDelivery: 0, failed: false })
+
 const cycleId = computed(() => route.params.cycleId)
 
 const isLocked = computed(() => cycle.value?.status === 'planned' || cycle.value?.status === 'locked' || cycle.value?.status === 'completed')
 const isSubmitted = computed(() => order.value?.status === 'submitted')
 const markupRatio = computed(() => cycle.value?.markup_ratio || 1.0)
 const isBakery = computed(() => cycle.value?.type === 'bakery')
+
+// Amber only when the host actually owes someone an action: the cycle is locked, so
+// the goods have arrived, and somebody has not been handed theirs yet. Violet with
+// the colleague count is the resting state; no badge at all when nobody has ordered.
+// (Declared after isLocked so the dependency reads in source order.)
+const guestBadgeIsPending = computed(
+  () => isLocked.value && guestSummary.value.pendingDelivery > 0
+)
+const guestBadgeCount = computed(
+  () => guestBadgeIsPending.value ? guestSummary.value.pendingDelivery : guestSummary.value.count
+)
 
 // Check if there are unsaved changes that would be lost on leaving:
 // 1. Order is submitted but cart differs from last submission
@@ -780,35 +811,10 @@ function applyMarkup(price) {
         </AlertDescription>
       </Alert>
 
-      <!-- Share with colleagues (guest sub-orders) -->
-      <Card v-if="!isLocked" class="mb-4">
-        <CardContent class="p-4 flex flex-wrap items-center justify-between gap-3">
-          <div class="min-w-0">
-            <div class="font-medium text-sm text-foreground">Objednávate aj pre kolegov?</div>
-            <p class="text-xs text-muted-foreground mt-0.5">
-              Pošlite im odkaz — objednajú si sami a vy im tovar odovzdáte.
-            </p>
-          </div>
-          <Button variant="outline" size="sm" class="shrink-0 gap-1.5" @click="showShareModal = true">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342A3 3 0 106.316 10.658m0 2.684l8.632 4.316m-8.632-7l8.632-4.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-            </svg>
-            Zdieľať objednávku s kolegami
-          </Button>
-        </CardContent>
-      </Card>
-
-      <!-- Sub-orders the colleagues placed through the share link. Rendered
-           regardless of the lock: removal ends at the lock, but the "odovzdané"
-           hand-over checklist is used exactly AFTER it. The guest total inside is
-           context only — the host's own payable total below is own items only
-           (§UC-GSO-006). -->
-      <!-- `ready` waits for an authenticated load: this view restores the friend
-           session in onMounted, which runs AFTER a child's setup, so fetching any
-           earlier would 401 on a fresh load of /cycle/:id. -->
-      <GuestSubOrders :cycle-id="cycleId" :cycle-locked="isLocked" :ready="!!friend" />
-
-      <!-- Messages -->
+      <!-- Messages. Page-level, so they sit ABOVE the switch: the order can be
+           submitted from the sticky footer on either tab, and a failure the host
+           cannot see because they happen to be on the colleagues tab is worse than
+           no message at all. -->
       <Alert v-if="error" variant="destructive" class="mb-4">
         <AlertDescription>{{ error }}</AlertDescription>
       </Alert>
@@ -816,9 +822,128 @@ function applyMarkup(price) {
         <AlertDescription>{{ successMessage }}</AlertDescription>
       </Alert>
 
+      <!-- Own order ⇄ colleagues. Hand-rolled rather than the Tabs component
+           because the panels must stay MOUNTED (v-show) — see mainTab's note — and
+           because only the purpose tabs inside may be sticky: two stacked sticky
+           bars eat a third of a phone screen. -->
+      <div
+        class="mb-4 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1"
+        role="tablist"
+        aria-label="Objednávka alebo kolegovia"
+      >
+        <button
+          type="button"
+          role="tab"
+          id="tab-own"
+          aria-controls="panel-own"
+          :aria-selected="mainTab === 'own' ? 'true' : 'false'"
+          data-testid="main-tab-own"
+          @click="mainTab = 'own'"
+          :class="[
+            'min-w-0 truncate rounded-md px-2 py-1.5 text-[13px] font-medium transition-colors sm:px-3 sm:text-sm',
+            mainTab === 'own' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+          ]"
+        >
+          Moja objednávka
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-guests"
+          aria-controls="panel-guests"
+          :aria-selected="mainTab === 'guests' ? 'true' : 'false'"
+          data-testid="main-tab-guests"
+          @click="mainTab = 'guests'"
+          :class="[
+            'flex min-w-0 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] font-medium transition-colors sm:px-3 sm:text-sm',
+            mainTab === 'guests' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+          ]"
+        >
+          Kolegovia
+          <span
+            v-if="guestBadgeCount > 0"
+            data-testid="guest-tab-badge"
+            :title="guestBadgeIsPending ? 'Toľkým kolegom ste ešte neodovzdali tovar' : 'Toľko kolegov si objednalo cez váš odkaz'"
+            :class="[
+              'inline-flex min-w-[1.25rem] items-center justify-center rounded-full border px-1.5 text-[11px] font-bold tabular-nums',
+              guestBadgeIsPending
+                ? 'border-amber-300 bg-amber-100 text-amber-700'
+                : 'border-violet-200 bg-violet-100 text-violet-700'
+            ]"
+          >
+            {{ guestBadgeCount }}
+          </span>
+        </button>
+      </div>
+
+      <!-- ============ panel: colleagues ============ -->
+      <div v-show="mainTab === 'guests'" id="panel-guests" role="tabpanel" aria-labelledby="tab-guests">
+        <!-- Sharing moved here in full (it used to sit above the product list on
+             every load). With colleagues present it is a one-line action; with none
+             it IS the panel, so it carries the explanation. -->
+        <Card v-if="!isLocked" class="mb-4">
+          <CardContent
+            v-if="guestSummary.count > 0"
+            class="p-4 flex flex-wrap items-center justify-between gap-3"
+          >
+            <p class="text-xs text-muted-foreground min-w-0">
+              Ďalší kolegovia sa môžu pridať cez ten istý odkaz.
+            </p>
+            <Button variant="outline" size="sm" class="shrink-0 gap-1.5" @click="showShareModal = true">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342A3 3 0 106.316 10.658m0 2.684l8.632 4.316m-8.632-7l8.632-4.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+              </svg>
+              Zdieľať odkaz
+            </Button>
+          </CardContent>
+
+          <!-- Empty state. The tab stays visible with nobody in it precisely so the
+               sharing can be found at all — hiding it would bury the feature. -->
+          <CardContent v-else class="p-6 flex flex-col items-center gap-2 text-center">
+            <span class="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
+              Zatiaľ nikto
+            </span>
+            <div class="font-medium text-sm text-foreground">Objednávate aj pre kolegov?</div>
+            <p class="text-xs text-muted-foreground max-w-xs">
+              Pošlite im odkaz — objednajú si sami a vy im tovar odovzdáte.
+            </p>
+            <Button size="sm" class="mt-1 gap-1.5" @click="showShareModal = true">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342A3 3 0 106.316 10.658m0 2.684l8.632 4.316m-8.632-7l8.632-4.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+              </svg>
+              Zdieľať objednávku s kolegami
+            </Button>
+          </CardContent>
+        </Card>
+
+        <!-- A locked cycle has no sharing left to offer, but the panel must not be
+             empty: the hand-over checklist below is the whole point of it by then. -->
+        <p v-else-if="guestSummary.count === 0 && !guestSummary.failed" class="text-sm text-muted-foreground">
+          Cez váš odkaz si nikto neobjednal.
+        </p>
+
+        <!-- Sub-orders the colleagues placed through the share link. Rendered
+             regardless of the lock: removal ends at the lock, but the "odovzdané"
+             hand-over checklist is used exactly AFTER it. The guest total inside is
+             context only — the host's own payable total below is own items only
+             (§UC-GSO-006). -->
+        <!-- `ready` waits for an authenticated load: this view restores the friend
+             session in onMounted, which runs AFTER a child's setup, so fetching any
+             earlier would 401 on a fresh load of /cycle/:id. -->
+        <GuestSubOrders
+          :cycle-id="cycleId"
+          :cycle-locked="isLocked"
+          :ready="!!friend"
+          @summary="guestSummary = $event"
+        />
+      </div>
+
+      <!-- ============ panel: own order ============ -->
+      <div v-show="mainTab === 'own'" id="panel-own" role="tabpanel" aria-labelledby="tab-own">
+
       <!-- Products by purpose with tabs -->
       <Tabs v-if="availablePurposes.length > 1" v-model="activeTab" :default-value="availablePurposes[0]" class="w-full">
-        <TabsList class="sticky top-16 z-30 w-full justify-start bg-card/95 backdrop-blur">
+        <TabsList data-testid="purpose-tabs" class="sticky top-16 z-30 w-full justify-start bg-card/95 backdrop-blur">
           <TabsTrigger
             v-for="purpose in availablePurposes"
             :key="purpose"
@@ -1453,7 +1578,12 @@ function applyMarkup(price) {
           </CardContent>
         </Card>
       </div>
+      </div>
+      <!-- ============ /panel: own order ============ -->
 
+      <!-- Sticky cart footer. Deliberately OUTSIDE both panels and unchanged: it is
+           the host's OWN total, and they must be able to submit without switching
+           back. -->
       <!-- Sticky cart footer -->
       <div class="fixed bottom-0 left-0 right-0 bg-card shadow-lg border-t z-50">
         <div class="max-w-4xl mx-auto px-4 py-2">
