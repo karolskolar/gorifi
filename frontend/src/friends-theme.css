@@ -1,0 +1,221 @@
+/* ============================================================
+   PODPULTOVKA — Friends portal · Theme 09 "Neobrutal PP" (final)
+   Single-theme stylesheet: tokens + every component class.
+   This file IS the design-system deliverable for implementation.
+   ============================================================ */
+:where(.app,.modal-layer) a{color:var(--accent)}:where(.app,.modal-layer) a:hover{color:#0a0a0a}
+
+/* ---------- tokens ---------- */
+.app,.modal-layer{
+  --nb-ink:#0a0a0a;--bg:#fff8f3;--surface:#ffffff;--surface-2:#fff0f6;
+  --ink:#0a0a0a;--ink-dim:rgba(10,10,10,0.66);--ink-faint:rgba(10,10,10,0.45);
+  --accent:#ff2d87;--accent-ink:#fff8f3;--accent-soft:#ffe3ef;--hi:#ffd9e7;
+  --border:#0a0a0a;--border-strong:#0a0a0a;
+  --danger:#d11a5b;--danger-soft:#ffe0ea;--ok:#1f8a5b;--ok-ink:#ffffff;--ok-soft:#dff2e8;--ok-deep:#0f5d3c;
+  --warn:#8a5a00;--warn-soft:#fff1cf;
+  --nav-bg:#0a0a0a;--nav-ink:#ffffff;--nav-ink-dim:rgba(255,255,255,0.72);--nav-ink-soft:rgba(255,255,255,0.45);
+  --radius:10px;
+  --font-body:'Figtree','Inter',sans-serif;--font-display:'Darker Grotesque',sans-serif;--font-mono:'Courier Prime',monospace;
+  color:var(--ink);font-family:var(--font-body);
+}
+.app{min-height:100vh;background:var(--bg);font-size:16px;position:relative}
+.app::before{content:"";position:absolute;inset:0;pointer-events:none;z-index:0;background-image:radial-gradient(circle,rgba(10,10,10,0.55) 0.6px,transparent 1px);background-size:5px 5px;opacity:.06}
+.app>*{position:relative;z-index:1}
+:where(.app, .modal-layer) .mono{font-family:var(--font-mono);letter-spacing:0.01em}
+:where(.app, .modal-layer) .display{font-family:var(--font-display);text-transform:uppercase;font-weight:800}
+
+/* ---------- brand chrome: appbar + hazard tape + ticker ---------- */
+:where(.app, .modal-layer) .appbar{background:var(--nav-bg);color:var(--nav-ink);display:flex;align-items:center;gap:14px;padding:14px 18px;position:relative;border-bottom:4px solid var(--accent)}
+:where(.app, .modal-layer) .appbar .back{cursor:pointer;opacity:.9;display:flex}
+:where(.app, .modal-layer) .appbar .titles{display:flex;flex-direction:column;gap:2px;line-height:1.1;min-width:0}
+:where(.app, .modal-layer) .appbar .titles .t{font-family:var(--font-display);font-weight:800;font-size:25px;line-height:1.3;text-transform:uppercase;color:var(--nav-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:where(.app, .modal-layer) .appbar .titles .s{font-family:var(--font-body);font-size:12px;font-weight:600;letter-spacing:.1em;color:var(--nav-ink-dim);text-transform:uppercase}
+:where(.app, .modal-layer) .appbar .grow{flex:1}
+:where(.app, .modal-layer) .appbar .chip{font-family:var(--font-body);font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;padding:4px 10px;border:2px solid var(--nav-ink-soft);color:var(--nav-ink);border-radius:6px}
+:where(.app, .modal-layer) .appbar .chip.acc{background:var(--accent);color:var(--accent-ink);border-color:var(--accent-ink);box-shadow:3px 3px 0 var(--accent-ink);transform:rotate(-2deg)}
+:where(.app, .modal-layer) .hazard{height:10px;border-bottom:3px solid var(--nb-ink);background:repeating-linear-gradient(90deg,var(--accent) 0 22px,#0a0a0a 22px 44px)}
+:where(.app, .modal-layer) .ticker{background:var(--accent);color:var(--accent-ink);overflow:hidden;white-space:nowrap;font-family:var(--font-display);font-weight:800;font-size:14px;letter-spacing:.1em;text-transform:uppercase;padding:6px 0;border-bottom:3px solid var(--nb-ink)}
+:where(.app, .modal-layer) .ticker span{display:inline-block;padding-right:24px}
+
+/* ---------- headings ---------- */
+:where(.app, .modal-layer) .h-screen{font-family:var(--font-display);font-weight:800;text-transform:uppercase;line-height:.95;letter-spacing:-.005em;margin:0;color:var(--ink)}
+:where(.app, .modal-layer) .h-screen .hl{background:var(--accent);color:var(--accent-ink);box-shadow:0 4px 0 var(--nb-ink);padding:0 8px;-webkit-box-decoration-break:clone;box-decoration-break:clone}
+
+/* ---------- cards ---------- */
+:where(.app, .modal-layer) .card{background:var(--surface);border:3px solid var(--nb-ink);border-radius:14px;box-shadow:5px 5px 0 var(--nb-ink)}
+:where(.app, .modal-layer) .card.hl{background:#fff;box-shadow:6px 6px 0 var(--accent)}
+:where(.app, .modal-layer) .card.flat{box-shadow:none;border-width:2px}
+:where(.app, .modal-layer) .card.dashed{border-style:dashed;box-shadow:none;background:transparent}
+
+/* ---------- buttons ---------- */
+:where(.app, .modal-layer) .btn{font-family:var(--font-body);font-weight:700;font-size:14px;letter-spacing:.02em;border:3px solid var(--nb-ink);border-radius:10px;box-shadow:3px 3px 0 var(--nb-ink);padding:10px 16px;min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:8px;background:var(--surface);color:var(--ink);cursor:pointer;white-space:nowrap;transition:transform .08s ease,box-shadow .08s ease}
+:where(.app, .modal-layer) .btn:hover{transform:translate(1px,1px);box-shadow:2px 2px 0 var(--nb-ink)}
+:where(.app, .modal-layer) .btn:active{transform:translate(3px,3px);box-shadow:0 0 0 var(--nb-ink)}
+:where(.app, .modal-layer) .btn.sm{min-height:38px;padding:8px 12px;font-size:13px}
+:where(.app, .modal-layer) .btn.accent{background:var(--accent);color:var(--accent-ink)}
+:where(.app, .modal-layer) .btn.ok{background:var(--ok);color:var(--ok-ink)}
+:where(.app, .modal-layer) .btn.dark{background:var(--nb-ink);color:#fff}
+:where(.app, .modal-layer) .btn.danger{background:#fff;color:var(--danger);border-color:var(--nb-ink)}
+:where(.app, .modal-layer) .btn.ghost{border-color:transparent;box-shadow:none;background:transparent;color:var(--ink-dim);min-height:38px}
+:where(.app, .modal-layer) .btn.ghost:hover{transform:none;background:var(--surface-2)}
+:where(.app, .modal-layer) .btn:disabled{opacity:.4;pointer-events:none}
+:where(.app, .modal-layer) .btn.block{width:100%}
+
+/* ---------- badges ---------- */
+:where(.app, .modal-layer) .badge{font-family:var(--font-body);font-size:12px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;padding:4px 9px;border-radius:6px;border:2px solid var(--nb-ink);background:#fff;color:var(--ink);white-space:nowrap;display:inline-block}
+:where(.app, .modal-layer) .badge.solid{background:var(--nb-ink);color:#fff}
+:where(.app, .modal-layer) .badge.acc{background:var(--accent);color:var(--accent-ink);font-weight:700;transform:rotate(-1.5deg)}
+:where(.app, .modal-layer) .badge.acc-o{background:var(--hi);color:var(--nb-ink)}
+:where(.app, .modal-layer) .badge.danger{background:var(--danger-soft);color:#a01044}
+:where(.app, .modal-layer) .badge.ok{background:var(--ok-soft);color:var(--ok-deep)}
+:where(.app, .modal-layer) .badge.ok-solid{background:var(--ok);color:var(--ok-ink)}
+:where(.app, .modal-layer) .badge.warn{background:var(--warn-soft);color:var(--warn)}
+:where(.app, .modal-layer) .badge.muted{border-style:dashed;color:var(--ink-faint);background:transparent}
+
+/* ---------- tabs ---------- */
+:where(.app, .modal-layer) .tabs{display:flex;gap:8px;flex-wrap:wrap}
+:where(.app, .modal-layer) .tab{font-family:var(--font-body);font-weight:700;font-size:14px;letter-spacing:.02em;background:#fff;color:var(--nb-ink);border:3px solid var(--nb-ink);border-radius:10px;padding:9px 15px;min-height:42px;display:inline-flex;align-items:center;gap:7px;cursor:pointer;white-space:nowrap}
+:where(.app, .modal-layer) .tab.on{background:var(--accent);color:var(--accent-ink);box-shadow:3px 3px 0 var(--nb-ink)}
+:where(.app, .modal-layer) .tabgroup{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:5px;padding:5px;background:var(--hi);border:3px solid var(--nb-ink);border-radius:12px;box-shadow:3px 3px 0 var(--nb-ink)}
+:where(.app, .modal-layer) .tabgroup .tab{background:transparent;border:2px solid transparent;box-shadow:none;min-height:40px;justify-content:center;padding:8px 10px}
+:where(.app, .modal-layer) .tabgroup .tab.on{background:#fff;color:var(--nb-ink);border-color:var(--nb-ink);box-shadow:none}
+:where(.app, .modal-layer) .tabbadge{display:inline-flex;min-width:22px;height:22px;align-items:center;justify-content:center;border-radius:999px;border:2px solid var(--nb-ink);font-family:var(--font-mono);font-size:12px;font-weight:700;padding:0 5px;background:#fff;color:var(--nb-ink)}
+:where(.app, .modal-layer) .tabbadge.pending{background:var(--warn-soft);color:var(--warn)}
+/* sticky category tabs (mobile) */
+:where(.app, .modal-layer) .cat-tabs{position:sticky;top:0;z-index:40;background:var(--bg);padding:10px 0 12px;margin:0 -2px;display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;scroll-snap-type:x proximity}
+:where(.app, .modal-layer) .cat-tabs::-webkit-scrollbar{display:none}
+:where(.app, .modal-layer) .cat-tabs .tab{min-height:40px;padding:7px 13px;flex-shrink:0;scroll-snap-align:start}
+:where(.app, .modal-layer) .cat-tabs::after{content:"";position:sticky;right:-1px;flex:0 0 28px;margin-left:-28px;background:linear-gradient(90deg,transparent,var(--bg));pointer-events:none}
+
+/* ---------- stepper ---------- */
+:where(.app, .modal-layer) .stepper{display:inline-flex;align-items:center;gap:10px}
+:where(.app, .modal-layer) .stepper button{width:38px;height:38px;font-size:18px;border:3px solid var(--nb-ink);border-radius:10px;background:#fff;color:var(--ink);box-shadow:2px 2px 0 var(--nb-ink);font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1}
+:where(.app, .modal-layer) .stepper button:hover{background:var(--hi)}
+:where(.app, .modal-layer) .stepper button:active{transform:translate(2px,2px);box-shadow:0 0 0 var(--nb-ink)}
+:where(.app, .modal-layer) .stepper .val{font-family:var(--font-display);font-weight:800;font-size:20px;min-width:24px;text-align:center}
+:where(.app, .modal-layer) .stepper.disabled button{opacity:.35;cursor:not-allowed;pointer-events:none}
+
+/* ---------- variant box (product card price+stepper) ---------- */
+:where(.app, .modal-layer) .vbox{border:2px solid rgba(10,10,10,0.25);border-radius:10px;padding:9px 11px;background:#fff;display:flex;flex-direction:column;gap:8px}
+:where(.app, .modal-layer) .vbox .vrow{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+:where(.app, .modal-layer) .vbox .vsize{font-family:var(--font-body);font-weight:700;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-dim)}
+:where(.app, .modal-layer) .vbox .vprice{font-family:var(--font-display);font-weight:800;font-size:18px;white-space:nowrap}
+:where(.app, .modal-layer) .vbox .stepper{justify-content:space-between;width:100%}
+:where(.app, .modal-layer) .vbox.sel{border:3px solid var(--nb-ink);box-shadow:3px 3px 0 var(--accent);padding:8px 10px}
+:where(.app, .modal-layer) .vbox.sel .vprice{color:var(--accent)}
+
+/* ---------- toggle / checkbox ---------- */
+:where(.app, .modal-layer) .toggle{width:54px;height:30px;border-radius:8px;background:var(--ok);position:relative;cursor:pointer;border:3px solid var(--nb-ink);box-shadow:2px 2px 0 var(--nb-ink)}
+:where(.app, .modal-layer) .toggle.off{background:#e8e2dc}
+:where(.app, .modal-layer) .toggle::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:4px;background:#fff;border:2px solid var(--nb-ink);transition:left .12s}
+:where(.app, .modal-layer) .toggle:not(.off)::after{left:27px}
+:where(.app, .modal-layer) .cbox{width:24px;height:24px;border:3px solid var(--nb-ink);border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;background:#fff;flex-shrink:0}
+:where(.app, .modal-layer) .cbox.on{background:var(--accent)}
+:where(.app, .modal-layer) .cbox svg{display:none}
+:where(.app, .modal-layer) .cbox.on svg{display:block}
+:where(.app, .modal-layer) .cbox.big{width:32px;height:32px}
+:where(.app, .modal-layer) .cbox.ok.on{background:var(--ok)}
+
+/* ---------- inputs ---------- */
+:where(.app, .modal-layer) .inp{width:100%;padding:12px 14px;border:3px solid var(--nb-ink);background:#fff;color:var(--ink);font-family:var(--font-body);font-size:15px;border-radius:10px;min-height:46px}
+:where(.app, .modal-layer) .inp:focus{outline:none;box-shadow:3px 3px 0 var(--accent)}
+:where(.app, .modal-layer) .inp::placeholder{color:rgba(10,10,10,0.45)}
+:where(.app, .modal-layer) .inp.mono{font-family:var(--font-mono);font-size:13px}
+:where(.app, .modal-layer) .field-lbl{font-family:var(--font-body);font-weight:700;font-size:12.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--nb-ink);margin-bottom:8px;display:block}
+:where(.app, .modal-layer) .field-help{font-size:13px;color:var(--ink-dim);margin-top:6px}
+
+/* ---------- banners ---------- */
+:where(.app, .modal-layer) .banner{border:3px solid var(--nb-ink);border-radius:12px;background:var(--accent-soft);box-shadow:4px 4px 0 var(--nb-ink);color:var(--ink);padding:14px 16px;font-size:15px;display:flex;align-items:flex-start;gap:12px}
+:where(.app, .modal-layer) .banner .dot{width:12px;height:12px;border:2px solid var(--nb-ink);border-radius:4px;background:var(--accent);flex-shrink:0;margin-top:4px}
+:where(.app, .modal-layer) .banner.ok{background:var(--ok-soft)}
+:where(.app, .modal-layer) .banner.ok .dot{background:var(--ok)}
+:where(.app, .modal-layer) .banner.warn{background:var(--warn-soft)}
+:where(.app, .modal-layer) .banner.warn .dot{background:#f2b705}
+:where(.app, .modal-layer) .banner.danger{background:var(--danger-soft)}
+:where(.app, .modal-layer) .banner.danger .dot{background:var(--danger)}
+:where(.app, .modal-layer) .banner.slim{box-shadow:none;border-width:2px;padding:10px 12px;font-size:13.5px;border-radius:10px}
+
+/* ---------- money ---------- */
+:where(.app, .modal-layer) .neg{color:var(--danger);font-family:var(--font-mono);font-weight:700;white-space:nowrap;font-size:13px}
+:where(.app, .modal-layer) .neg.pill{background:var(--danger-soft);border:2px solid var(--nb-ink);border-radius:6px;padding:3px 9px;display:inline-block}
+:where(.app, .modal-layer) .zero{color:var(--ink-faint);font-family:var(--font-mono);white-space:nowrap;font-size:13px}
+
+/* ---------- copy row (link / reference + button) ---------- */
+:where(.app, .modal-layer) .copyrow{display:flex;gap:8px;align-items:stretch;min-width:0}
+:where(.app, .modal-layer) .copyrow .val{flex:1;min-width:0;border:3px solid var(--nb-ink);border-radius:10px;background:var(--surface-2);padding:11px 12px;font-family:var(--font-mono);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center}
+:where(.app, .modal-layer) .copyrow .btn{flex-shrink:0}
+
+/* ---------- sub-order card (kolegovia) ---------- */
+:where(.app, .modal-layer) .suborder{border:3px solid var(--nb-ink);border-radius:12px;background:#fff;padding:12px 14px;box-shadow:3px 3px 0 var(--nb-ink)}
+:where(.app, .modal-layer) .suborder.cancelled{border-style:dashed;box-shadow:none;opacity:.6}
+:where(.app, .modal-layer) .suborder .items{margin:10px 0 0;padding:0;list-style:none;font-size:13.5px;color:var(--ink-dim);display:flex;flex-direction:column;gap:4px}
+:where(.app, .modal-layer) .suborder .items li{display:flex;justify-content:space-between;gap:10px}
+:where(.app, .modal-layer) .suborder .items li .mono{flex-shrink:0}
+:where(.app, .modal-layer) .suborder .foot{display:flex;align-items:center;justify-content:space-between;gap:10px;border-top:2px solid rgba(10,10,10,0.14);margin-top:10px;padding-top:10px;flex-wrap:wrap}
+:where(.app, .modal-layer) .suborder .total{font-family:var(--font-display);font-weight:800;font-size:20px}
+
+/* ---------- sticky cart footer ---------- */
+:where(.app, .modal-layer) .cartbar{position:sticky;bottom:0;z-index:50;background:var(--surface);border-top:4px solid var(--nb-ink);box-shadow:0 -6px 0 var(--accent);padding:10px 16px 12px}
+:where(.app, .modal-layer) .cartbar .meta{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
+:where(.app, .modal-layer) .cartbar .sum{font-family:var(--font-display);font-weight:800;font-size:22px;line-height:1}
+:where(.app, .modal-layer) .cartbar .deadline{font-family:var(--font-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-dim)}
+:where(.app, .modal-layer) .cartbar .actions{display:flex;gap:8px;margin-top:10px}
+:where(.app, .modal-layer) .cartbar .actions .btn{flex:1;min-height:46px}
+:where(.app, .modal-layer) .cartbar details summary{font-size:13px;font-weight:600;color:var(--ink-dim);cursor:pointer;margin-top:8px;list-style:none;display:inline-flex;align-items:center;gap:6px}
+:where(.app, .modal-layer) .cartbar details summary::before{content:"▸";color:var(--accent)}
+:where(.app, .modal-layer) .cartbar details[open] summary::before{content:"▾"}
+:where(.app, .modal-layer) .cartbar .lines{margin-top:8px;max-height:170px;overflow-y:auto;font-size:13.5px;display:flex;flex-direction:column;gap:5px}
+:where(.app, .modal-layer) .cartbar .lines .ln{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid rgba(10,10,10,0.12);padding-bottom:5px}
+
+/* ---------- tables (desktop) ---------- */
+:where(.app, .modal-layer) .tbl{width:100%;border-collapse:collapse;font-size:14px}
+:where(.app, .modal-layer) .tbl th{background:var(--hi);font-family:var(--font-body);font-weight:700;font-size:12.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--nb-ink);text-align:left;padding:13px 12px;border-bottom:3px solid var(--nb-ink)}
+:where(.app, .modal-layer) .tbl td{padding:14px 12px;border-bottom:2px solid rgba(10,10,10,0.14);vertical-align:middle}
+:where(.app, .modal-layer) .tbl tr:last-child td{border-bottom:none}
+:where(.app, .modal-layer) .tbl tbody tr:hover td{background:#fff5f9}
+:where(.app, .modal-layer) .tbl .r{text-align:right}
+:where(.app, .modal-layer) .sub{color:var(--ink-dim);font-size:13px}
+
+/* ---------- product bag placeholder ---------- */
+:where(.app, .modal-layer) .pimg{border-radius:8px;border:2px solid var(--nb-ink);position:relative;overflow:hidden;flex-shrink:0;background:linear-gradient(155deg,#2a2a2a,#111);display:flex;align-items:flex-end;justify-content:center}
+:where(.app, .modal-layer) .pimg .band{position:absolute;left:0;right:0;top:34%;height:30%}
+:where(.app, .modal-layer) .pimg .cap{position:absolute;top:0;left:20%;right:20%;height:12%;background:#000;border-radius:0 0 6px 6px}
+:where(.app, .modal-layer) .pimg .lbl{position:relative;z-index:2;font-family:'Anton',sans-serif;font-size:8px;color:#fff;text-transform:uppercase;letter-spacing:.04em;padding-bottom:5px;text-align:center;text-shadow:0 1px 2px rgba(0,0,0,0.8);line-height:1}
+
+/* ---------- modal (portaled to frame layer) ---------- */
+.modal-layer{position:fixed;inset:0;z-index:200;pointer-events:none}
+:where(.app, .modal-layer) .modal-scrim{position:absolute;inset:0;background:rgba(10,10,10,0.5);display:flex;align-items:center;justify-content:center;padding:18px;pointer-events:auto;overflow-y:auto}
+:where(.app, .modal-layer) .modal{width:100%;max-width:420px;background:var(--surface,#fff);border:4px solid #0a0a0a;border-radius:16px;box-shadow:8px 8px 0 #0a0a0a;margin:auto}
+:where(.app, .modal-layer) .modal .m-head{display:flex;align-items:flex-start;gap:10px;padding:18px 18px 0}
+:where(.app, .modal-layer) .modal .m-title{font-family:'Darker Grotesque',sans-serif;font-weight:800;font-size:26px;line-height:1;text-transform:uppercase;flex:1}
+:where(.app, .modal-layer) .modal .m-x{cursor:pointer;display:flex;padding:2px;margin:-2px}
+:where(.app, .modal-layer) .modal .m-body{padding:12px 18px 18px;display:flex;flex-direction:column;gap:12px}
+:where(.app, .modal-layer) .modal .m-foot{display:flex;gap:8px;padding:0 18px 18px}
+:where(.app, .modal-layer) .modal .m-foot .btn{flex:1}
+
+/* ---------- QR (Pay by Square placeholder) ---------- */
+:where(.app, .modal-layer) .qr{width:190px;height:190px;border:3px solid var(--nb-ink);border-radius:10px;background:#fff;padding:10px;margin:0 auto}
+:where(.app, .modal-layer) .qr .grid{width:100%;height:100%;display:grid;grid-template-columns:repeat(17,1fr);grid-template-rows:repeat(17,1fr);gap:1px}
+:where(.app, .modal-layer) .qr .grid i{background:transparent}
+:where(.app, .modal-layer) .qr .grid i.on{background:#0a0a0a}
+
+/* ---------- status pills (guest status) ---------- */
+:where(.app, .modal-layer) .statuspill{display:inline-flex;align-items:center;gap:7px;border:3px solid var(--nb-ink);border-radius:10px;padding:7px 12px;font-weight:700;font-size:13.5px;background:#fff}
+:where(.app, .modal-layer) .statuspill .sq{width:12px;height:12px;border:2px solid var(--nb-ink);border-radius:3px;flex-shrink:0}
+:where(.app, .modal-layer) .statuspill.ok{background:var(--ok-soft);color:var(--ok-deep)}
+:where(.app, .modal-layer) .statuspill.ok .sq{background:var(--ok)}
+:where(.app, .modal-layer) .statuspill.warn{background:var(--warn-soft);color:var(--warn)}
+:where(.app, .modal-layer) .statuspill.warn .sq{background:#f2b705}
+:where(.app, .modal-layer) .statuspill.off{background:#f3efe9;color:var(--ink-dim)}
+:where(.app, .modal-layer) .statuspill.off .sq{background:#cfc8bf}
+
+/* ---------- inline confirm box (destructive) ---------- */
+:where(.app, .modal-layer) .confirmbox{border:3px solid var(--nb-ink);border-radius:10px;background:var(--warn-soft);padding:12px;display:flex;flex-direction:column;gap:10px;font-size:13.5px}
+:where(.app, .modal-layer) .confirmbox .row{display:flex;gap:8px}
+
+/* ---------- misc ---------- */
+:where(.app, .modal-layer) .chev{cursor:pointer;color:var(--nb-ink);display:inline-flex;transition:transform .12s}
+:where(.app, .modal-layer) .chev.open{transform:rotate(90deg);color:var(--accent)}
+:where(.app, .modal-layer) .divider{border:none;border-top:2px solid rgba(10,10,10,0.14);margin:0}
+:where(.app, .modal-layer) .stack{display:flex;flex-direction:column}
+:where(.app, .modal-layer) .hstack{display:flex;align-items:center}

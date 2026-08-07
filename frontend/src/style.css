@@ -16,14 +16,14 @@
     --secondary-foreground: 24 10% 10%;
     --muted: 60 5% 96%;
     --muted-foreground: 24 6% 45%;
-    --accent: 60 5% 96%;
-    --accent-foreground: 24 10% 10%;
+    --ui-accent: 60 5% 96%;
+    --ui-accent-foreground: 24 10% 10%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 98%;
-    --border: 20 6% 90%;
+    --ui-border: 20 6% 90%;
     --input: 20 6% 90%;
     --ring: 24 6% 83%;
-    --radius: 0.5rem;
+    --ui-radius: 0.5rem;
   }
 
   .dark {
@@ -39,11 +39,11 @@
     --secondary-foreground: 60 9% 98%;
     --muted: 12 6% 15%;
     --muted-foreground: 24 6% 63%;
-    --accent: 12 6% 15%;
-    --accent-foreground: 60 9% 98%;
+    --ui-accent: 12 6% 15%;
+    --ui-accent-foreground: 60 9% 98%;
     --destructive: 0 62% 30%;
     --destructive-foreground: 60 9% 98%;
-    --border: 12 6% 15%;
+    --ui-border: 12 6% 15%;
     --input: 12 6% 15%;
     --ring: 24 6% 83%;
   }
