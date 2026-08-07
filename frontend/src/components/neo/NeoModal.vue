@@ -62,7 +62,7 @@ function unlockBodyScroll() {
 // off mount/unmount (below), so a modal that is unmounted while open — a route
 // change, a parent teardown — cannot leak its listener or its scroll lock.
 
-import { onBeforeUnmount, onMounted, ref, useId } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import NeoIcon from './NeoIcon.vue'
 
 const props = defineProps({
@@ -73,8 +73,28 @@ const props = defineProps({
   subtitle: { type: String, default: '' },
   // `.modal` max-width 520px instead of the default 420px.
   wide: { type: Boolean, default: false },
-  closable: { type: Boolean, default: true }
+  closable: { type: Boolean, default: true },
+  // Keyboard focus containment. RD-FL-2, additive and opt-in.
+  //
+  // `null` (the default) means DERIVE it from `closable`: a non-closable modal
+  // is a GATE — 03 §UC-FL-012's forced password change has no "later" path — and
+  // a gate Tab can walk out of is not a gate. `aria-modal="true"` already tells
+  // AT the rest of the page is inert, but it does nothing for the Tab key, so
+  // without this the sighted keyboard user simply tabs past the dialog into the
+  // page behind the scrim and uses the app (measured before the fix:
+  // `m-x → inside-btn → … → BODY → opener → …`).
+  //
+  // Ordinary `closable: true` dialogs keep TODAY'S behaviour untouched unless
+  // they ask for the trap explicitly — nothing else in the tree opts in yet, so
+  // this cannot regress an existing consumer.
+  //
+  // ⚠ Declared with `default: null` on purpose: a plain `type: Boolean` prop
+  // would be cast to `false` when absent, and "absent" has to stay
+  // distinguishable from "explicitly off" for the derivation above.
+  trapFocus: { type: Boolean, default: null }
 })
+
+const trapping = computed(() => (props.trapFocus === null ? !props.closable : props.trapFocus))
 
 const emit = defineEmits(['close'])
 
@@ -108,7 +128,128 @@ function requestClose() {
   emit('close')
 }
 
+// Everything the browser will hand a Tab to. `[tabindex]` deliberately matches
+// negative values too, so they can be filtered out below rather than silently
+// treated as reachable — the `.modal` container itself is `tabindex="-1"`.
+//
+// `summary` is in the list because `<details>`/`<summary>` ALREADY ships in this
+// tree (FriendOrder, GuestOrder, GuestProductGrid) and modules 04/06 compose
+// product cards containing a composition disclosure into modal surfaces — a
+// `<summary>` tail is focusable to the browser, so omitting it used to mean Tab
+// walked straight out of the dialog. `details` is listed alongside it as a
+// cheap superset; it is not itself focusable in Chromium, which costs nothing
+// because `focusFirstThatTakes()` below skips any candidate that refuses focus.
+const FOCUSABLE = [
+  'a[href]',
+  'area[href]',
+  'button',
+  'input',
+  'select',
+  'textarea',
+  'iframe',
+  'audio[controls]',
+  'video[controls]',
+  'details',
+  'summary',
+  '[contenteditable]',
+  '[tabindex]'
+].join(',')
+
+function focusablesInside() {
+  const root = modalEl.value
+  if (!root) return []
+  return Array.from(root.querySelectorAll(FOCUSABLE)).filter((el) => {
+    if (el.hasAttribute('disabled')) return false
+    if (el.getAttribute('aria-hidden') === 'true') return false
+    // `inert` makes a whole subtree unfocusable, and the attribute normally sits
+    // on the ANCESTOR — so this must be `closest`, not `hasAttribute`. Counting
+    // an inert element the browser then skips is what un-trapped the dialog.
+    if (el.closest('[inert]')) return false
+    // `getAttribute` is null when the attribute is absent ⇒ Number(null) === 0,
+    // which is exactly the "naturally focusable" case we want to keep.
+    if (Number(el.getAttribute('tabindex')) < 0) return false
+    // ⚠ `getClientRects()` covers `display:none` and a zero-size subtree ONLY.
+    // A `visibility:hidden` element still generates boxes, so it passes this
+    // check while the browser refuses to focus it — hence the explicit
+    // `visibility` test. (`!== 'visible'` also catches `collapse`, and the
+    // property is inherited, so an ancestor's value is already reflected here.)
+    if (el.getClientRects().length === 0) return false
+    return getComputedStyle(el).visibility === 'visible'
+  })
+}
+
+// Focus the first candidate walking outward from `startIdx` in direction `dir`
+// that actually TAKES focus, wrapping around. Returns false if none did.
+//
+// ⚠ The "actually takes focus" re-check is the second half of the containment
+// guarantee. Any element our filters wrongly keep — a `<details>`, something
+// made unfocusable by a mechanism nobody has thought of yet — would otherwise
+// park focus permanently on its predecessor, because the next Tab would compute
+// the same index and re-target the same dead element.
+function focusFirstThatTakes(items, startIdx, dir) {
+  const n = items.length
+  for (let step = 1; step <= n; step++) {
+    const el = items[(((startIdx + dir * step) % n) + n) % n]
+    el.focus()
+    if (document.activeElement === el) return true
+  }
+  return false
+}
+
+// The trap. Reimplementing Tab is the only way: there is no inert() we can rely
+// on, and `aria-modal` is advisory.
+//
+// ⚠ We ALWAYS `preventDefault()` and move focus ourselves — we never let the
+// browser perform the move and only intervene at the two ends. That earlier
+// edge-only design made containment depend on `focusablesInside()` agreeing
+// with the browser's real tab order, and it disagrees in at least four shipped
+// ways: a `<summary>` tail (focusable, absent from the selector), an `[inert]`
+// tail (present in the list, skipped by the browser), a `visibility:hidden`
+// tail (same), and a positive `tabindex` anywhere (reorders the real sequence,
+// so "active === last" never becomes true at the real end). Each one let Tab
+// land on the page behind the scrim — i.e. SILENTLY UN-TRAPPING A GATE.
+//
+// Owning the move inverts the failure mode: containment is now unconditional,
+// and the worst a disagreement can do is land focus on a slightly wrong element
+// INSIDE the dialog. Consequence to keep in mind: the cycle follows DOM order,
+// so a positive `tabindex` inside a trapped modal is not honoured. That is the
+// intended trade (and positive tabindex is an antipattern anyway).
+//
+// Three cases fold into the index walk, and the third is the one that is easy
+// to miss:
+//   · focus outside the dialog (programmatic, browser find bar) → pull it in;
+//   · wrapping at the two ends;
+//   · focus on the CONTAINER itself, which is where `onMounted` puts it. Left
+//     to the browser, Tab from there walks forward into the dialog (fine) but
+//     Shift+Tab walks BACKWARD out of it — i.e. the very first keystroke after
+//     the gate opens would escape it.
+function trapTab(e) {
+  const root = modalEl.value
+  if (!root) return
+  e.preventDefault()
+
+  const items = focusablesInside()
+  if (items.length > 0) {
+    const dir = e.shiftKey ? -1 : 1
+    const idx = items.indexOf(document.activeElement)
+    // Not in the list — the container itself, or something outside the dialog.
+    // Seed the walk so the first step lands on the first (Tab) or last
+    // (Shift+Tab) item, which is where either key should enter the cycle.
+    const start = idx >= 0 ? idx : dir === 1 ? -1 : 0
+    if (focusFirstThatTakes(items, start, dir)) return
+  }
+  // Nothing focusable (or nothing that would accept focus) — fall closed onto
+  // the container rather than leaving focus wherever it was.
+  root.focus()
+}
+
 function onKeydown(e) {
+  if (e.key === 'Tab') {
+    // Read at event time, like `closable` below — a parent may flip either prop
+    // while the modal is open.
+    if (trapping.value) trapTab(e)
+    return
+  }
   if (e.key !== 'Escape') return
   if (!props.closable) return
   // Stops the key also dismissing something underneath (a native <dialog>, a
@@ -151,18 +292,13 @@ onBeforeUnmount(() => {
   if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus()
 })
 
-// ⚠ Two known seams, both deliberately NOT closed here — see the RD-DS-4
-// review notes. Neither is a UC-DS-010 violation; both need a spec amendment
-// or a later row that owns the affected screen.
+// ⚠ Seam 1 (no focus TRAP) is CLOSED as of RD-FL-2 — see the `trapFocus` prop
+// and `trapTab()` above. It is pinned by `e2e/tests/modern-login.spec.js`
+// ("Tab and Shift+Tab cannot escape the gate"), which drives the forced
+// password-change gate 03 §UC-FL-012 composes on this shell.
 //
-// 1. No focus TRAP. Tab can leave the dialog into the page behind it.
-//    ⚠ Do not bolt one on ad hoc: `FriendPortal.vue` currently renders the
-//    forced password-change gate with radix `Dialog`, which DOES trap focus
-//    and mark outside content inert. Porting that gate to NeoModal under
-//    03 §UC-FL-012 (`closable: false`) without a trap would turn Tab into a
-//    functional bypass of a gate. The trap lands in RD-FL-2 as an additive
-//    opt-in prop (likely `trapFocus`, defaulting to `closable === false`),
-//    pinned by the modern-mode e2e that row already owns.
+// ⚠ Seam 2 is still open. It is not a UC-DS-010 violation; it needs a spec
+// amendment or a later row that owns the affected screen.
 //
 // 2. A text-selection drag can close the modal: mousedown inside `.m-body`,
 //    drag out, mouseup over the scrim — the DOM `click` target is then the
