@@ -756,3 +756,92 @@ test.describe('The own:/guest: key prefix (a manufactured id collision)', () => 
     await expect(guestRowReload.locator('input[type="checkbox"]')).not.toBeChecked()
   })
 })
+
+// ---- Folding a guest's bag list away --------------------------------------------
+//
+// A host with several colleagues makes a card taller than a phone screen (the report
+// that prompted this had 15 bags under one name). Each guest group therefore folds
+// on demand, keyed by `guest_orders.id`, so the admin can put a colleague's bags out
+// of the way once they are in the pile.
+//
+// Two properties matter and are both pinned here: folding is INDEPENDENT per guest
+// (a shared key would fold the neighbour too), and it is SCREEN-ONLY — a printed
+// picking sheet must still list every bag, so the rows fold with `hidden print:flex`
+// rather than a `v-if` that would drop them out of the DOM.
+test.describe('Distribution page — a guest bag list folds away (UI)', () => {
+  let cycleId, hostName, guestA, guestB
+
+  test.beforeAll(async () => {
+    await refreshAdminToken()
+    const host = await makeHost('fold')
+    const cycle = await makeCycle('fold')
+    cycleId = cycle.id
+    hostName = host.name
+
+    const product = await addProduct(cycleId, {
+      name: `GSO7 Fold Kava ${uniq}`, purpose: 'Espresso', roast_type: 'Svetlé', price_250g: 10, price_1kg: 30,
+    })
+    const link = await shareLink(host, cycleId)
+
+    await submitOwnOrder(host, cycleId, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+    // Guest A gets TWO lines, so a fold visibly removes more than one row.
+    guestA = (await submitGuest(link.token, [
+      { product_id: product.id, variant: '250g', quantity: 1 },
+      { product_id: product.id, variant: '1kg', quantity: 1 },
+    ], { guest_name: `Foldo A ${uniq}`, guest_phone: '0901 111 222' })).order
+    guestB = (await submitGuest(link.token, [
+      { product_id: product.id, variant: '250g', quantity: 2 },
+    ], { guest_name: `Foldo B ${uniq}`, guest_phone: '0901 111 333' })).order
+  })
+
+  test('each guest folds independently, the host’s own bags never fold, and print keeps every row', async ({ page }) => {
+    await page.goto('/admin')
+    await page.locator('#password').fill(ADMIN_PASSWORD)
+    await page.getByRole('button', { name: /Prihlásiť sa/ }).click()
+    await expect(page).toHaveURL(/\/admin\/dashboard/)
+
+    await page.goto(`/admin/cycle/${cycleId}/distribution`)
+    const card = page.locator('div.p-4', { has: page.getByRole('heading', { name: hostName, exact: true }) })
+    await expect(card).toBeVisible()
+
+    const itemsA = card.getByTestId(`guest-group-items-${guestA.id}`)
+    const itemsB = card.getByTestId(`guest-group-items-${guestB.id}`)
+    const ownRows = card.locator('[data-owner="own"]')
+
+    // Expanded by default — nothing is hidden until the admin asks for it.
+    await expect(itemsA).toBeVisible()
+    await expect(itemsA.locator('[data-owner="guest"]')).toHaveCount(2)
+    await expect(itemsB).toBeVisible()
+    await expect(ownRows).toHaveCount(1)
+
+    // Fold guest A: their two rows go, the neighbour and the host's own bag stay.
+    await card.getByTestId(`guest-group-toggle-${guestA.id}`).click()
+    await expect(itemsA).toBeHidden()
+    await expect(itemsB, 'folding one guest must not fold the other').toBeVisible()
+    await expect(ownRows.first(), 'the host’s own bag is never folded').toBeVisible()
+    // The header stays, so the admin still knows whose bags are hidden…
+    await expect(card.getByText(`Hosť • Foldo A ${uniq}`)).toBeVisible()
+    // …and the counter is the only remaining signal of whether they are done.
+    await expect(card.getByTestId(`guest-group-summary-${guestA.id}`)).toContainText('0/2')
+
+    // The rows are hidden, NOT removed — a printed sheet still carries them.
+    await expect(itemsA.locator('[data-owner="guest"]')).toHaveCount(2)
+    await page.emulateMedia({ media: 'print' })
+    await expect(itemsA, 'a folded guest must still print').toBeVisible()
+    await page.emulateMedia({ media: 'screen' })
+    await expect(itemsA).toBeHidden()
+
+    // Unfold, tick one bag, fold again: the counter reflects real packing state.
+    await card.getByTestId(`guest-group-toggle-${guestA.id}`).click()
+    await expect(itemsA).toBeVisible()
+    await itemsA.locator('[data-owner="guest"]').nth(0).click()
+    await expect(itemsA.locator('[data-owner="guest"]').nth(0).locator('input[type="checkbox"]')).toBeChecked()
+    await card.getByTestId(`guest-group-toggle-${guestA.id}`).click()
+    await expect(card.getByTestId(`guest-group-summary-${guestA.id}`)).toContainText('1/2')
+
+    // A folded bag still holds the Zabaliť gate closed — hiding is not packing.
+    await card.getByTestId(`guest-group-toggle-${guestB.id}`).click()
+    await expect(itemsB).toBeHidden()
+    await expect(card.getByRole('button', { name: 'Zabaliť' })).toBeDisabled()
+  })
+})
