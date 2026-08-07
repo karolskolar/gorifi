@@ -6,7 +6,7 @@ spec, so this documents the **existing** system, not a greenfield design.
 ## Stack
 
 - **Backend:** Node.js (ESM, `"type":"module"`) + Express 4.22. **Plain JavaScript — no TypeScript.** Entry `backend/src/index.js`; routers in `backend/src/routes/*.js`; middleware in `backend/src/middleware/*.js`.
-- **Database:** `sql.js` (SQLite compiled to WASM) held in memory, persisted to a single file via an atomic temp-write+rename in `backend/src/db/schema.js`. `dbHelpers` exposes `all/get/run/prepare/transaction` (mimics better-sqlite3). Migrating to `better-sqlite3` is backlog SEC-D1.
+- **Database:** `better-sqlite3` (file-backed SQLite, WAL) — migrated from sql.js in SEC-D1. `dbHelpers` exposes `all/get/run/prepare/transaction/exec` (unchanged API); a thin `db` shim in `backend/src/db/schema.js` keeps the try/catch `ALTER TABLE` migration blocks working verbatim.
 - **Frontend:** Vue 3 + Vite 7 + Tailwind, plain JS + a little TS in `frontend/src/lib`. API client `frontend/src/api.js`; router `frontend/src/router.js`; views `frontend/src/views`.
 - **UI language:** Slovak.
 
@@ -21,6 +21,66 @@ spec, so this documents the **existing** system, not a greenfield design.
 - **Public:** health, friend login/auth-mode, cycle `/public` + `/auth`, product listing, pickup locations, payment-settings, invite-code lookup, onboarding self-signup.
 - **Friend (token, object-level ownership):** own balance/profile/subscriptions/transactions/orders/vouchers.
 - **Admin (`requireAdmin`):** everything else — cycles, products, friends, transactions, analytics, settings, invitations, onboarding-links, roasteries, bakery products.
+
+## Frontend structure
+
+- `frontend/src/views/*.vue` — one view per route (`router.js`). Friend/guest surfaces:
+  `FriendPortal.vue`, `FriendOrder.vue`, `GuestOrder.vue`, `GuestOrderStatus.vue`.
+- `frontend/src/components/` — shared components (`FriendBalanceCard.vue`, `GuestSubOrders.vue`,
+  `GuestShareDialog.vue`, `GuestProductGrid.vue`, `GuestInviteRequest.vue`, `PaymentModal.vue`, …).
+- `frontend/src/components/ui/` — shadcn-vue-style primitives on `radix-vue`
+  (button, card, dialog, input, tabs, …) styled via Tailwind + `class-variance-authority`;
+  `frontend/src/lib/utils.ts` has `cn()`.
+- `frontend/src/api.js` — single API client (Bearer token for friends, bare `guestRequest()` for guests).
+- `frontend/src/lib/guest-cart.js` — guest cart logic shared by order + status screens.
+- State is per-view `ref`/`computed` (no store). Cart map keyed `productId|variant → qty`.
+- Sequencing conventions that must survive any restyle: `loadSeq` guards on reused
+  dialogs/views, per-row `rowSeq` pending maps on mutation screens, the `ready`
+  auth-gate prop for friend-authenticated children of `FriendOrder`, and `v-show`
+  (not `v-if`) for the Moja objednávka/Kolegovia panels.
+
+## Design system ("09 Neobrutal PP", friend + guest surfaces only)
+
+- **Canonical stylesheet:** `docs/design/friends-portal-redesign/friends/theme.css` —
+  tokens + every component class; maps 1:1 to the prototype
+  (`docs/design/friends-portal-redesign/Podpultovka Friends.html`, screenshots in `screenshots/`).
+  Port it into the Tailwind setup (tokens in `tailwind.config.js` / CSS custom properties
+  + component classes); details in `02-design-system.md`.
+- **Scope rule:** the new language applies ONLY to friend + guest routes. Admin views keep
+  the current shadcn look — tokens are declared on scoped wrappers (`.app`, `.modal-layer`),
+  never on `:root`.
+- Tokens: bg `#fff8f3` (5px halftone dots at 6%), ink `#0a0a0a`, accent magenta `#ff2d87`,
+  ok `#1f8a5b`, danger `#d11a5b`, warn `#8a5a00`/`#fff1cf`. Borders 3px ink (2px badges,
+  4px modals); hard offset shadows (`3px 3px 0` buttons, `5px 5px 0` cards, `8px 8px 0` modals,
+  `6px 6px 0 #ff2d87` highlighted). Radius 6/10/12–16.
+- Fonts (Google Fonts): **Darker Grotesque 800** (display, uppercase), **Figtree** (UI/body),
+  **Courier Prime** (money, counts, IDs, links, payment references ONLY).
+- Hit targets: buttons ≥44px, steppers 38px, checkboxes 24/32px. Button press physics:
+  hover translate(1,1)/shadow 2px, active translate(3,3)/shadow 0.
+- Brand chrome on every friend/guest screen: black appbar → hazard tape → magenta ticker.
+- Phone-first 378 px; desktop = same layout centered at max-width 760 px.
+
+## i18n policy
+
+None — UI copy is hardcoded Slovak. Register for friend/guest surfaces is impersonal
+vy-form; never address the reader with a gendered past participle ("nevytvoril si" ✗).
+Prototype copy is final — transcribe it verbatim, don't rewrite it.
+
+## Shared services, background jobs, integrations
+
+- No background jobs or schedulers.
+- Integrations: Pay by Square QR via `bysquare` + `qrcode` (inside `PaymentModal.vue`),
+  Revolut payment link, Packeta as a manually-entered address (no API). Google Fonts is the
+  only new external resource this effort adds.
+
+## NFRs
+
+- No horizontal page overflow at 320 px (pinned by `mobile-no-h-overflow.spec.js`;
+  the purpose-tab strip must scroll within itself, the main switch must not).
+- Print: Distribution-style listings must survive `emulateMedia({media:'print'})` folding
+  rules (guest surfaces: folded content uses `hidden print:flex`, never `v-if`) — admin
+  screens are untouched by this effort, but the same rule applies to any new fold.
+- Sticky elements (`cat-tabs`, `cartbar`) must not stack more than one bar per edge on phones.
 
 ## Dependencies (pre-approved)
 
@@ -38,6 +98,8 @@ Backend: `express`, `cors`, `express-rate-limit`, `bcryptjs`, `multer`, `sql.js`
    - Rate-limit spec (`rate-limit.spec.js`) only runs when the server is started with a low `RATE_LIMIT_AUTH_MAX` (≤10); it self-skips otherwise.
 
 **Implementer/e2e-tester note:** "tests first" here means adding/extending **Playwright e2e specs**, not unit tests. When the implementer reports `blocked: no test runner`, the resolution is this e2e convention — no need to introduce one.
+
+Baseline before the redesign effort: **238 passed / 3 skipped** (the skips need `DB_PATH` or a low rate-limit env; see CLAUDE.md). Restyling must keep the suite green — existing specs assert behavior and a few structural hooks (e.g. `data-testid="purpose-tabs"`); update selectors in specs only when a task's spec section explicitly says the DOM structure changes. There is no visual-regression tooling: pixel fidelity is verified manually against `docs/design/friends-portal-redesign/screenshots/` (e.g. via Playwright screenshots side-by-side), not asserted in CI.
 
 ## Deployment
 
