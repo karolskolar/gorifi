@@ -751,7 +751,13 @@ test.describe('Admin cycle detail UI — nested sub-orders (UC-GSO-009..010)', (
     expect((await ctx.patch(`/api/guest-orders/${guestB.order.id}/delivered`, {
       headers: built.host.auth, data: { delivered: true },
     })).status()).toBe(200)
-    ui = { ...built, guestA: guestA.order, guestB: guestB.order }
+    // A third guest with TWO product lines — the one that proves the expanded
+    // sub-order renders one row per product rather than a single run-on line.
+    const guestC = await submitGuest(built.link.token, [
+      { product_id: built.product.id, variant: '250g', quantity: 3 },
+      { product_id: built.product.id, variant: '1kg', quantity: 1 },
+    ], { guest_name: 'Zuzka UI', guest_phone: '0903 555 666' })
+    ui = { ...built, guestA: guestA.order, guestB: guestB.order, guestC: guestC.order }
   })
 
   test('sub-orders nest under the host with a guest badge, a paid toggle and a read-only delivered state', async ({ page }) => {
@@ -777,7 +783,11 @@ test.describe('Admin cycle detail UI — nested sub-orders (UC-GSO-009..010)', (
     await expect(rowB.getByTestId(`guest-delivered-state-${ui.guestB.id}`)).toContainText('Odovzdané')
     await expect(rowA.getByTestId(`guest-delivered-state-${ui.guestA.id}`)).toContainText('Neodovzdané')
     await expect(rowA.locator('input[type="checkbox"]'), 'no delivered control on the admin side').toHaveCount(0)
-    await expect(rowA.locator('button'), 'exactly one control per sub-order: the paid toggle').toHaveCount(1)
+    // Exactly two controls: the expand chevron (view-only) and the paid toggle
+    // (the admin's one flag). `delivered` stays a rendered state, never a control.
+    await expect(rowA.locator('button')).toHaveCount(2)
+    await expect(rowA.getByTestId(`guest-expand-${ui.guestA.id}`)).toBeVisible()
+    await expect(rowA.getByTestId(`guest-paid-toggle-${ui.guestA.id}`)).toBeVisible()
 
     // The paid toggle persists across a reload (it is server state, not a ref).
     const paidToggle = rowA.getByTestId(`guest-paid-toggle-${ui.guestA.id}`)
@@ -802,6 +812,46 @@ test.describe('Admin cycle detail UI — nested sub-orders (UC-GSO-009..010)', (
     // Unticking puts them back on it.
     await page.locator(`[data-testid="guest-paid-toggle-${ui.guestA.id}"]`).click()
     await expect(overview).toContainText(IDENTITY.guest_name)
+  })
+
+  // A host can have several colleagues under them, so the admin checks one bag
+  // list at a time — the same collapse/expand affordance the host's own order has.
+  // Independence matters: `expandedGuestOrders` is keyed by `guest_orders.id`, a
+  // sequence of its own, so a shared key with `orders.id` would make one chevron
+  // silently open somebody else's list.
+  test('each guest sub-order expands independently, one product per row', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${ui.cycle.id}`)
+    await page.getByRole('tab', { name: 'Objednávky' }).click()
+
+    const itemsA = page.getByTestId(`guest-suborder-items-${ui.guestA.id}`)
+    const itemsC = page.getByTestId(`guest-suborder-items-${ui.guestC.id}`)
+
+    // Collapsed by default: the header row carries a count, not the products. The
+    // count is of LINES (2 here, from 3 + 1 pieces) — it labels the list about to
+    // be expanded, so it must match the number of rows that appear.
+    await expect(itemsC).toHaveCount(0)
+    await expect(page.getByTestId(`guest-suborder-${ui.guestC.id}`)).toContainText('2 položky')
+
+    await page.getByTestId(`guest-expand-${ui.guestC.id}`).click()
+    await expect(itemsC).toBeVisible()
+
+    // One row per product line, in the same format as the host's own items.
+    const lines = itemsC.locator('div.flex.justify-between')
+    await expect(lines).toHaveCount(2)
+    await expect(lines.nth(0)).toContainText(`${ui.product.name} (250g)`)
+    await expect(lines.nth(0)).toContainText('3 ×')
+    await expect(lines.nth(1)).toContainText(`${ui.product.name} (1kg)`)
+
+    // Expanding one guest neither expands nor collapses their neighbour.
+    await expect(itemsA).toHaveCount(0)
+    await page.getByTestId(`guest-expand-${ui.guestA.id}`).click()
+    await expect(itemsA).toBeVisible()
+    await expect(itemsC, 'the first list stays open').toBeVisible()
+
+    await page.getByTestId(`guest-expand-${ui.guestC.id}`).click()
+    await expect(itemsC, 'and collapses back on its own').toHaveCount(0)
+    await expect(itemsA).toBeVisible()
   })
 })
 

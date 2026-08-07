@@ -88,6 +88,46 @@ function toggleExpand(orderId) {
   expandedOrders.value = new Set(expandedOrders.value) // trigger reactivity
 }
 
+// Guest sub-orders expand independently of their host's own order (§UC-GSO-009):
+// a host can have several colleagues under them and the admin checks one bag list
+// at a time. Keyed by `guest_orders.id`, a SEPARATE sequence from `orders.id` —
+// the same reason Distribution.vue namespaces its pending keys `own:` / `guest:`.
+const expandedGuestOrders = ref(new Set())
+
+function toggleExpandGuest(guestOrderId) {
+  if (expandedGuestOrders.value.has(guestOrderId)) {
+    expandedGuestOrders.value.delete(guestOrderId)
+  } else {
+    expandedGuestOrders.value.add(guestOrderId)
+  }
+  expandedGuestOrders.value = new Set(expandedGuestOrders.value) // trigger reactivity
+}
+
+// Counts LINES, not pieces — it labels a list the admin is about to expand, and
+// that list has one row per line. A piece count would promise rows that are not there.
+function guestItemCountLabel(sub) {
+  const n = (sub.items || []).length
+  if (n === 1) return '1 položka'
+  if (n >= 2 && n <= 4) return `${n} položky`
+  return `${n} položiek`
+}
+
+// The purpose badge colours, shared by the host's own item list and the nested
+// guest one so a bag reads identically wherever it is shown.
+function purposeBadgeClass(purpose) {
+  return {
+    'border-stone-400 text-stone-600 bg-stone-50': purpose === 'Espresso',
+    'border-sky-400 text-sky-600 bg-sky-50': purpose === 'Filter',
+    'border-amber-400 text-amber-600 bg-amber-50': purpose === 'Kapsule' || purpose === 'Slané',
+    'border-pink-400 text-pink-600 bg-pink-50': purpose === 'Sladké'
+  }
+}
+
+function itemVariantLabel(item) {
+  if (item.variant_label) return item.variant_label
+  return item.variant === 'unit' ? 'ks' : item.variant
+}
+
 const isBakery = computed(() => cycle.value?.type === 'bakery')
 
 const ordersView = ref('friend') // 'friend' or 'product'
@@ -1349,17 +1389,12 @@ function getStatusVariant(status) {
                             <Badge
                               v-if="item.purpose"
                               variant="outline"
-                              :class="{
-                                'border-stone-400 text-stone-600 bg-stone-50': item.purpose === 'Espresso',
-                                'border-sky-400 text-sky-600 bg-sky-50': item.purpose === 'Filter',
-                                'border-amber-400 text-amber-600 bg-amber-50': item.purpose === 'Kapsule' || item.purpose === 'Slané',
-                                'border-pink-400 text-pink-600 bg-pink-50': item.purpose === 'Sladké'
-                              }"
+                              :class="purposeBadgeClass(item.purpose)"
                               class="mr-2 text-xs"
                             >
                               {{ item.purpose }}
                             </Badge>
-                            {{ item.product_name }} ({{ item.variant_label ? item.variant_label : (item.variant === 'unit' ? 'ks' : item.variant) }})
+                            {{ item.product_name }} ({{ itemVariantLabel(item) }})
                           </span>
                           <span class="text-muted-foreground">{{ item.quantity }} × {{ formatPrice(item.price) }} = {{ formatPrice(item.price * item.quantity) }}</span>
                         </div>
@@ -1372,34 +1407,56 @@ function getStatusVariant(status) {
                        colleagues who ordered through this friend's share link.
                        The admin owns `paid` (toggle) and only READS the host's
                        `delivered` tick — Decision 2, single owner per flag. -->
+                  <template v-for="sub in (order.guest_orders || [])" :key="`guest-${sub.id}`">
                   <TableRow
-                    v-for="sub in (order.guest_orders || [])"
-                    :key="`guest-${sub.id}`"
                     class="bg-violet-50/40"
                     :class="isGuestCancelled(sub) ? 'opacity-60' : ''"
                     :data-testid="`guest-suborder-${sub.id}`"
                   >
                     <TableCell></TableCell>
                     <TableCell :colspan="2 + (isBakery ? 1 : visibleVariantColumns.length)">
-                      <div class="flex flex-wrap items-center gap-2">
-                        <!-- Violet, so a sub-order can never be mistaken for the
-                             host's own order or for a delivery badge (pickup blue,
-                             Packeta red, paid green, unpaid amber, cancelled stone). -->
-                        <Badge
-                          variant="outline"
-                          class="text-xs border-violet-400 text-violet-700 bg-violet-50"
+                      <!-- Indented behind a violet rule: a sub-order is a subgroup
+                           OF the host above it, not a party of its own. -->
+                      <div class="flex items-start gap-2 pl-4 border-l-2 border-violet-300">
+                        <button
+                          v-if="sub.items && sub.items.length > 0"
+                          @click="toggleExpandGuest(sub.id)"
+                          class="w-7 h-7 shrink-0 flex items-center justify-center rounded hover:bg-violet-100 transition-colors"
+                          :aria-expanded="expandedGuestOrders.has(sub.id) ? 'true' : 'false'"
+                          :title="expandedGuestOrders.has(sub.id) ? 'Zbaliť položky' : 'Rozbaliť položky'"
+                          :data-testid="`guest-expand-${sub.id}`"
                         >
-                          Hosť • pozval {{ firstName(order.friend_name) }}
-                        </Badge>
-                        <span class="font-medium text-sm">{{ sub.guest_name }}</span>
-                        <span class="text-xs text-muted-foreground">{{ sub.guest_phone }}</span>
-                        <span v-if="sub.guest_email" class="text-xs text-muted-foreground">{{ sub.guest_email }}</span>
-                      </div>
-                      <div v-if="sub.items && sub.items.length > 0" class="mt-1 text-xs text-muted-foreground">
-                        <span v-for="(item, i) in sub.items" :key="item.id">
-                          <span v-if="i > 0"> · </span>{{ item.quantity }}× {{ item.product_name }}<!--
-                          -->{{ item.variant_label ? ` (${item.variant_label})` : (item.variant && item.variant !== 'unit' ? ` (${item.variant})` : '') }}
-                        </span>
+                          <svg
+                            class="w-4 h-4 transition-transform"
+                            :class="{ 'rotate-90': expandedGuestOrders.has(sub.id) }"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                          </svg>
+                        </button>
+                        <span v-else class="w-7 h-7 shrink-0"></span>
+                        <div class="min-w-0">
+                          <div class="flex flex-wrap items-center gap-2">
+                            <!-- Violet, so a sub-order can never be mistaken for the
+                                 host's own order or for a delivery badge (pickup blue,
+                                 Packeta red, paid green, unpaid amber, cancelled stone). -->
+                            <Badge
+                              variant="outline"
+                              class="text-xs border-violet-400 text-violet-700 bg-violet-50"
+                            >
+                              Hosť • pozval {{ firstName(order.friend_name) }}
+                            </Badge>
+                            <span class="font-medium text-sm">{{ sub.guest_name }}</span>
+                            <span class="text-xs text-muted-foreground">{{ sub.guest_phone }}</span>
+                            <span v-if="sub.guest_email" class="text-xs text-muted-foreground">{{ sub.guest_email }}</span>
+                          </div>
+                          <div v-if="sub.items && sub.items.length > 0" class="mt-0.5 text-xs text-muted-foreground">
+                            {{ guestItemCountLabel(sub) }}
+                          </div>
+                          <div v-else class="mt-0.5 text-xs text-muted-foreground">Žiadne položky</div>
+                        </div>
                       </div>
                     </TableCell>
                     <TableCell>
@@ -1441,6 +1498,45 @@ function getStatusVariant(status) {
                       </button>
                     </TableCell>
                   </TableRow>
+
+                  <!-- Expanded guest items: one product per row, in the same
+                       format as the host's own items above, still indented behind
+                       the violet rule so the subgroup stays visible. -->
+                  <TableRow
+                    v-if="expandedGuestOrders.has(sub.id)"
+                    class="bg-violet-50/40"
+                    :class="isGuestCancelled(sub) ? 'opacity-60' : ''"
+                    :data-testid="`guest-suborder-items-${sub.id}`"
+                  >
+                    <TableCell></TableCell>
+                    <!-- `py-2` only: the horizontal padding stays at the cell default
+                         so this violet rule lines up exactly with the header row's. -->
+                    <TableCell :colspan="5 + (isBakery ? 1 : visibleVariantColumns.length)" class="py-2">
+                      <div class="border-l-2 border-violet-300 pl-4 space-y-1">
+                        <div
+                          v-for="item in sub.items"
+                          :key="`guest-item-${item.id}`"
+                          class="flex justify-between gap-3 py-1 text-sm"
+                        >
+                          <span>
+                            <Badge
+                              v-if="item.purpose"
+                              variant="outline"
+                              :class="purposeBadgeClass(item.purpose)"
+                              class="mr-2 text-xs"
+                            >
+                              {{ item.purpose }}
+                            </Badge>
+                            {{ item.product_name }} ({{ itemVariantLabel(item) }})
+                          </span>
+                          <span class="text-muted-foreground whitespace-nowrap">
+                            {{ item.quantity }} × {{ formatPrice(item.price) }} = {{ formatPrice(item.price * item.quantity) }}
+                          </span>
+                        </div>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                  </template>
                 </template>
               </TableBody>
               <tfoot>
