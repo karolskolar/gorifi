@@ -59,7 +59,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] RD-FL-6  Profile modal on NeoModal: read-only uid/username row, name/Packeta fields, password-change fold, errors move into modal body — `03 §UC-FL-009` ⚠ `saveProfile` side-effects preserved (appbar name from RD-FL-3 updates immediately).
 - [x] RD-FL-7  Subscription modal (NeoCheckbox rows) + invite modal (NeoCopyRow) — `03 §UC-FL-010,011` ⚠ NeoCopyRow ABSORBS the view's `copyInviteLink()`/`inviteCopied` — delete once unused; never hardcode the prototype's demo host. ⚠ **RD-FL-6's rule applies to both modals: an OPENER must clear `error`.** `error` is one page-level ref shared by `saveProfile`, `saveSubscriptions`, `openInviteModal` and `resolveVoucher`, and once a modal renders it as its own `.banner.danger.slim` (while suppressing the page banner), a message left by any *other* writer opens inside it looking like that modal's own failure — with no `Chyba:` prefix and no dismiss ×. `openProfileModal()` now clears it on open; do the same in `openSubscriptionModal()` (`openInviteModal` already clears). Consequence to keep: opening a modal is treated as abandoning the previous attempt, so it dismisses that message for good. ⚠ **Also do the two cheapest items of the anti-leak plan below** (`portal-session-boundary.spec.js`, and the `sessionRef` factory) — this row touches `switchUser()` anyway, and the class has now bitten **six times in six rows**. Worth considering while you are in here: a dedicated `profileError` ref would remove the need for **both** the page-banner suppression **and** the `openProfileModal` clear, retiring the rule this bullet propagates.
 - [x] RD-FL-8a **Module 03 debt paydown** (split out of RD-FL-8 by the orchestrator, 2026-08-08). UC-FL-013 defines RD-FL-8 as a **verification** row, but four *code* changes had accumulated on it — including a whole-view refactor — which is not a reviewable diff alongside a fidelity audit, and the line-height fix must land **before** the audit re-baselines fidelity. So: fixes here, audit in RD-FL-8b against the fixed state. The four items are listed on RD-FL-8b below.
-- [ ] RD-FL-8b Module 03 closeout: pinned-selector audit, 378/1180 px fidelity vs 01/02/17-shot + live prototype modals, 320 px eyeball, admin invariance re-assert — `03 §UC-FL-013` ⚠ **The four items below are RD-FL-8a's, not this row's — this row VERIFIES them.** (1) **The structural end to the `switchUser()` leak class** (item 4 of the plan below): extract the authenticated surface into `FriendPortalSession.vue`, rendered `v-if="authState === 'authenticated'"` with `:key="friendId"`, so logout destroys the instance and every ref inside is re-created — **there is no list to forget**. The view is ~2000 lines with ~40 top-level refs serving two disjoint lifetimes; the parent keeps only the six login-screen refs, small enough to audit by eye. In-repo proof the pattern works: `GuestShareDialog.vue:55-77` holds session data too and has **never** leaked, because it resets on both edges of its `open` watch. This row already scopes an audit of this view, so the `:key` lands naturally. (2) **The `.field-lbl`/`.field-help`/`.sub` line-height residual** — Tailwind preflight's `html{line-height:1.5}` reaches every plain-text theme class, so labels measure 19/20 px against the canon's 15/15. Same defect RD-DS-5's A9 fixed for `.inp`/`.btn` only; **the reviewer's advice was that it land before module 04 starts**, since 04–06 will write pixel-fidelity assertions against whatever ships and re-baselining costs more than the one-line fix. If it slips past module 04's start it MUST be caught here. (3) **RD-FL-5's count storm** — `loadGuestCounts` `Promise.all`s one `GET` per **open** cycle in a single tick, before `getSubscriptions` is issued. The code comment says "typically 1–2"; the e2e DB has **135**, and the portal's own critical requests then starve behind the browser's 6-connection limit (this really happened — it flaked a test until `muteGuestCounts` was added). Cycles are never auto-closed, so it degrades silently with age. Cap concurrency or fetch only for cycles near the viewport, and drop the "typically 1–2" claim. (4) **Converge the THREE-WAY `error` strategy** now coexisting in one view — page banner / suppressed shared ref (`error && !showProfileModal`) / dedicated ref (`inviteError`). The extraction is the right place: give the profile modal a `profileError` and the subscription modal a `subError`, after which `error && !showProfileModal` collapses to `error` and the suppression pattern retires. ⚠ `subError` is not cosmetic: a failed `saveSubscriptions()` writes the shared `error`, the modal **stays open**, and the page banner renders **behind the scrim** with its dismiss unreachable — measured, and not a regression (radix behaved identically), but it is exactly the condition RD-FL-7's `inviteError` rationale argues against, so the user sees a modal that simply "did nothing".
+- [x] RD-FL-8b Module 03 closeout: pinned-selector audit, 378/1180 px fidelity vs 01/02/17-shot + live prototype modals, 320 px eyeball, admin invariance re-assert — `03 §UC-FL-013` ⚠ **The four items below are RD-FL-8a's, not this row's — this row VERIFIES them.** (1) **The structural end to the `switchUser()` leak class** (item 4 of the plan below): extract the authenticated surface into `FriendPortalSession.vue`, rendered `v-if="authState === 'authenticated'"` with `:key="friendId"`, so logout destroys the instance and every ref inside is re-created — **there is no list to forget**. The view is ~2000 lines with ~40 top-level refs serving two disjoint lifetimes; the parent keeps only the six login-screen refs, small enough to audit by eye. In-repo proof the pattern works: `GuestShareDialog.vue:55-77` holds session data too and has **never** leaked, because it resets on both edges of its `open` watch. This row already scopes an audit of this view, so the `:key` lands naturally. (2) **The `.field-lbl`/`.field-help`/`.sub` line-height residual** — Tailwind preflight's `html{line-height:1.5}` reaches every plain-text theme class, so labels measure 19/20 px against the canon's 15/15. Same defect RD-DS-5's A9 fixed for `.inp`/`.btn` only; **the reviewer's advice was that it land before module 04 starts**, since 04–06 will write pixel-fidelity assertions against whatever ships and re-baselining costs more than the one-line fix. If it slips past module 04's start it MUST be caught here. (3) **RD-FL-5's count storm** — `loadGuestCounts` `Promise.all`s one `GET` per **open** cycle in a single tick, before `getSubscriptions` is issued. The code comment says "typically 1–2"; the e2e DB has **135**, and the portal's own critical requests then starve behind the browser's 6-connection limit (this really happened — it flaked a test until `muteGuestCounts` was added). Cycles are never auto-closed, so it degrades silently with age. Cap concurrency or fetch only for cycles near the viewport, and drop the "typically 1–2" claim. (4) **Converge the THREE-WAY `error` strategy** now coexisting in one view — page banner / suppressed shared ref (`error && !showProfileModal`) / dedicated ref (`inviteError`). The extraction is the right place: give the profile modal a `profileError` and the subscription modal a `subError`, after which `error && !showProfileModal` collapses to `error` and the suppression pattern retires. ⚠ `subError` is not cosmetic: a failed `saveSubscriptions()` writes the shared `error`, the modal **stays open**, and the page banner renders **behind the scrim** with its dismiss unreachable — measured, and not a regression (radix behaved identically), but it is exactly the condition RD-FL-7's `inviteError` rationale argues against, so the user sees a modal that simply "did nothing".
 
 > ### ⚠ Ending the `switchUser()` leak class — a plan, after SIX consecutive rows each found a leak
 >
@@ -105,6 +105,49 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 > each is recomputed on open); `forcedPasswordChange` + fields (`closable:false` + trapped — the deliberate
 > exception). ⚠ **Each is one product decision away from becoming the seventh leak** — e.g. giving the
 > voucher modal a "later" button would immediately expose another friend's euro amount and cycle name.
+
+> ## ✅ MODULES 02 + 03 ARE CLOSED (2026-08-08). What module 04 inherits.
+>
+> Ten rows: RD-DS-1..5 (design system) and RD-FL-1..8b (friend login + portal). Suite
+> **238 → 353 passed / 3 skipped**, **8 spec files added, ZERO pre-existing specs modified**
+> across the whole effort (`git diff --diff-filter=M 7c3f85e..HEAD -- e2e/tests/` is empty).
+> Admin invariance proven against a build of **`7c3f85e`** — the commit *before* RD-DS-1 —
+> across 12 routes and ~20.5 M pixels, which is stronger than any single row's parent-commit
+> check.
+>
+> **Read these five before writing a line of module 04:**
+>
+> 1. ⚠ **`.app>*{position:relative;z-index:1}` neutralises EVERY Tailwind positioning utility
+>    on a direct child** — `fixed`, `absolute`, `sticky`, even `relative z-10`. It fails
+>    **silently**: no build error, no failing spec. `FriendOrder.vue`'s `<header … sticky top-0>`
+>    is a direct child and un-sticks the moment `.app` lands; its `purpose-tabs` strip's
+>    `top-16` was calibrated against that header and will pin 64 px below the viewport once
+>    non-sticky `BrandChrome` replaces it. Full section in CLAUDE.md.
+> 2. ⚠ **A class list cannot reach plain text.** Any element with an inline `font-size` and no
+>    theme class inherits preflight's `line-height:1.5` and renders **4–13 px** taller than the
+>    canon. A10 now covers 26 selectors — do **not** grow it to chase call sites; add
+>    `line-height:normal` at the call site. A10 was written on a screen sweep twice and
+>    **falsified twice**; §UC-DS-001 now carries the reproducible derivation (font-bearing rules
+>    minus line-height-bearing rules) so the next author re-derives instead of trusting.
+> 3. ⚠ **Your primitives were inflated and are now canon-accurate.** `.cartbar .*`,
+>    `.stepper .val`, `.vbox .*`, `.suborder .items` (**+25.5 px**), `.tbl`, `.confirmbox` were
+>    all fixed in RD-FL-8b **specifically so 04–06 baseline against the canon, not against
+>    drift**. Measure against the current build; anything measured before 2026-08-08 is stale.
+> 4. ⚠ **Session-scoped state dies with the session — now by construction.** Six consecutive
+>    rows each found a leak (worst: friend B's dialog auto-opening pre-filled with friend A's
+>    **plaintext password**). Fixed by extracting the authenticated surface into a `v-if`-gated
+>    child keyed on a **handshake sequence, not an identity** — keying on identity leaks the
+>    payload, because it flushes at the first `await` while the payload is seeded once at setup.
+>    If module 04 extracts `FriendOrder` the same way, key on the handshake. A fragment (multi-root)
+>    child silently no-ops any wrapper directive, `v-show` included.
+> 5. ⚠ **Playwright matches `getByRole(…, {name})` as a case-insensitive SUBSTRING** unless
+>    `exact: true`. `NeoModal`'s × is `aria-label="Zatvoriť dialóg"` — a **synonym**, because
+>    "Zavrieť dialóg" still collided with the spec-verbatim "Zavrieť" footer buttons that three
+>    **non-editable** guest specs query unscoped. Don't rename it back.
+>
+> Also settled: the page column is **`mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7`**
+> (16/28 both axes, per the prototype) — four axis utilities, never the `p-4` shorthand, which
+> would collide with `guest-link.spec.js`'s `cardFor()` locator.
 
 ## 2. Friend order (04) — biggest module; tab shell gates module 05
 

@@ -283,20 +283,70 @@
    `.tab` is the sharpest case: at 1.5 the content alone exceeds the canon's `min-height:42px`,
    so the declared minimum stopped governing at all.
 
-   DELIBERATELY EXCLUDED, and the only one:
+   DELIBERATELY EXCLUDED (RD-FL-8a thought this was the only one; the static pass below
+   found it is one of FOUR — the normative list is 02 §UC-DS-001 A10):
      .tabbadge — canon 22, port 22, delta 0. It declares `height:22px` with
      `display:inline-flex;align-items:center`, so the line box is centred inside a fixed
      box and the inherited 1.5 changes nothing measurable. Adding it would be noise.
-   Nothing else in theme.css renders text and is line-height-silent; the sweep that
-   produced this table walked every element on all 16 prototype screens.
+     (Re-measured by RD-FL-8b on the canon: A 22 / B 22 / delta 0 — the exclusion holds.)
+
+   ⚠ THE "nothing else" CLAIM ABOVE WAS WRONG — completed by RD-FL-8b (the module 03
+   closeout that this list existed to protect). A static pass over this stylesheet —
+   every rule declaring `font-size`/`font-family`/`font-weight`, minus every rule
+   declaring `line-height` — turns up THIRTEEN more, four of them shipped by module 03
+   itself. They were then measured exactly as the table above was, A/B/C on the canon
+   prototype over HTTP (`C == A` on every row that a prototype screen renders):
+
+     class                    canon   port(1.5)   delta   first consumer
+     .ticker                    34        36       +2     BrandChrome — EVERY friend/guest screen
+     .display                   24        27       +3     03 cycle-card order total; 04/05 totals
+     .mono                      15        18       +3     03 archive amount; 04/05/06 mono text
+     .neg                       28        34       +6     03 balance pill (02-shot's "-74.24 EUR")
+     .zero                       —         —        —     03 settled balance; `.neg`'s sibling,
+                                                          absent from the prototype (its demo
+                                                          balance is always negative)
+     .stepper .val              27        30       +3     04 quantity stepper
+     .vbox .vsize               15      19.5     +4.5     04 variant box
+     .vbox .vprice              24        27       +3     04 variant box
+     .suborder .items          112     137.5    +25.5     05 colleague sub-order line list
+     .suborder .total           27        30       +3     05 sub-order total
+     .cartbar .deadline         13      16.5     +3.5     04 sticky cart bar
+     .cartbar details summary   16      19.5     +3.5     04 sticky cart bar
+     .cartbar .lines            22     26.25    +4.25     04 sticky cart bar
+     .tbl / .tbl th              —         —        —     reserve (05/06); `.tbl td` was already
+                                                          here, so leaving the table and its
+                                                          header out was an inconsistency
+     .confirmbox                 —         —        —     reserve (06)
+
+   The four dashed rows render on no prototype screen, so they are included on static
+   inspection alone (line-height-silent + text-bearing), on the same basis `.tbl td` and
+   `.statuspill` already were.
+
+   ⚠ WHAT THIS RULE STILL CANNOT REACH, and every later module must know it: a class
+   list only covers elements that CARRY a class. Plain text in a view's own markup —
+   the login dashed-card footnote, the archive toggle label, the archive row name, and
+   the login remember-me label — inherits the 1.5 with nothing to override it, and each
+   was measured 4–13 px taller than the canon. Module 03 fixes all FOUR at the call site
+   (`line-height:normal` in the inline style, cross-referenced to this block); the
+   remember-me one has no visible delta today only because its 24px `.cbox` sibling sets
+   the flex line's height, and it is fixed so the pattern is safe to copy. The
+   structural alternative is
+   `:where(.app,.modal-layer){line-height:normal}` on the ROOT, which needs no list at
+   all — it was NOT taken here because the shadcn subtrees still living inside `.app`
+   (UC-FL-003's untouched legacy login card; the out-of-scope voucher banner) would move
+   with it: measured +5 px per `div.space-y-2` row on the legacy card. It becomes the
+   right shape the moment those two subtrees are gone.
 
    Scoped to an explicit class list rather than to a blanket `line-height:normal` inside
    `.app`, on A9's rationale verbatim: a broad rule would also restyle the shadcn
    children still rendering inside a half-migrated `.app` (UC-DS-002) — the legacy login
    card and the credential-setup dialog are live examples. `:where()` keeps the (0,1,0)
    specificity, so `.mono.sub`, `.badge.acc`, `.banner.slim` and every other compound
-   keeps its own cascade. Admin reach is nil by construction: `.app` is declared only in
-   `FriendPortal.vue` and `.modal-layer` only in `NeoModal.vue`. */
+   keeps its own cascade — and so does every element declaring its own line-height, which
+   is why adding `.mono` cannot disturb the cycle-card plan block (inline `1.7`) and
+   adding `.display` cannot disturb the cycle name (inline `1`) or `.cartbar .sum`.
+   Admin reach is nil by construction: `.app` is declared only in `FriendPortal.vue` and
+   `.modal-layer` only in `NeoModal.vue`. */
 :where(.app, .modal-layer) .field-lbl,
 :where(.app, .modal-layer) .field-help,
 :where(.app, .modal-layer) .sub,
@@ -306,4 +356,21 @@
 :where(.app, .modal-layer) .copyrow .val,
 :where(.app, .modal-layer) .tab,
 :where(.app, .modal-layer) .tbl td,
-:where(.app, .modal-layer) .statuspill{line-height:normal}
+:where(.app, .modal-layer) .statuspill,
+/* --- RD-FL-8b additions (see the table above) --- */
+:where(.app, .modal-layer) .ticker,
+:where(.app, .modal-layer) .display,
+:where(.app, .modal-layer) .mono,
+:where(.app, .modal-layer) .neg,
+:where(.app, .modal-layer) .zero,
+:where(.app, .modal-layer) .stepper .val,
+:where(.app, .modal-layer) .vbox .vsize,
+:where(.app, .modal-layer) .vbox .vprice,
+:where(.app, .modal-layer) .suborder .items,
+:where(.app, .modal-layer) .suborder .total,
+:where(.app, .modal-layer) .cartbar .deadline,
+:where(.app, .modal-layer) .cartbar details summary,
+:where(.app, .modal-layer) .cartbar .lines,
+:where(.app, .modal-layer) .tbl,
+:where(.app, .modal-layer) .tbl th,
+:where(.app, .modal-layer) .confirmbox{line-height:normal}
