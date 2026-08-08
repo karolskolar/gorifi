@@ -110,6 +110,21 @@ const inviteCopied = ref(false)
 // Guest share dialog — the cycle whose link is being shared (null = closed)
 const shareCycle = ref(null)
 
+// Colleague counts for the UC-FL-007 share row, keyed by cycle id. CONTEXT ONLY
+// — nothing on this screen is gated on them; a missing entry simply renders the
+// "Objednávate aj pre kolegov?" fallback, which is also the failure surface (the
+// fetch is non-blocking and error-swallowing, never the `error` banner).
+const guestCounts = ref({})
+
+// ⚠ Sequence guard for that batch — the GSO-T2 `loadSeq` rule, and here it is
+// NOT the cosmetic case: a count is another friend's colleague data. `loadCycles`
+// bumps it (so a refetch's results win over an older in-flight batch) and
+// `switchUser` bumps it too, so a response still in flight when the session ends
+// is DROPPED rather than written onto the next person's screen. Clearing the map
+// in `switchUser` is not enough on its own: the stale response lands AFTER the
+// clear, so the guard is the only thing standing between it and the next session.
+let guestCountSeq = 0
+
 const STORAGE_KEY = 'gorifi_friend_auth'
 
 onMounted(async () => {
@@ -360,7 +375,14 @@ async function authenticatePersonal() {
 }
 
 async function loadCycles() {
+  // Bumped BEFORE the awaits: an older count batch must never outlive the list
+  // it was fetched for (subscription saves re-run this, so it happens in-session
+  // too, not only across logins).
+  const seq = ++guestCountSeq
   cycles.value = await api.getFriendsCycles(selectedFriendId.value)
+  // Fire-and-forget on purpose — the cycle list must render at once, and a
+  // colleague count is decoration on it (UC-FL-007).
+  loadGuestCounts(seq, cycles.value)
   // Load subscriptions
   try {
     const subs = await api.getSubscriptions(selectedFriendId.value)
@@ -368,6 +390,38 @@ async function loadCycles() {
   } catch (e) {
     // Non-critical
   }
+}
+
+// One `GET /api/guest-links/cycle/:id` per OPEN cycle (the only cards that carry
+// the share row — typically 1–2). Existing friend-authenticated endpoint from
+// GSO-T2; `totals.count` already excludes cancelled sub-orders (GSO-T5), which is
+// exactly the prototype's `liveSubs.length` semantics. No API change.
+async function loadGuestCounts(seq, list) {
+  await Promise.all(
+    list
+      .filter(c => c.status === 'open')
+      .map(async (cycle) => {
+        try {
+          const data = await api.getGuestLink(cycle.id)
+          if (seq !== guestCountSeq) return
+          const count = Number(data?.totals?.count)
+          // Written even when 0, so a colleague cancelling is reflected on the
+          // next load instead of leaving a stale badge standing.
+          //
+          // ⚠ That self-healing is SUCCESS-PATH ONLY. `guestCounts` is a merge
+          // map that is never reset per batch, so a refetch that FAILS leaves
+          // the previous count standing rather than falling back to the
+          // "Objednávate aj pre kolegov?" copy — showing last-known-good is the
+          // better UX, but do not read this as "the map heals on error".
+          // It is not a cross-session leak: `switchUser()` is the only
+          // authenticated→login transition and it clears the map outright.
+          guestCounts.value = { ...guestCounts.value, [cycle.id]: Number.isFinite(count) ? count : 0 }
+        } catch {
+          // Swallowed: no link yet, a 404 on a stale cycle id, or an offline
+          // blip all render the "Objednávate aj pre kolegov?" fallback.
+        }
+      })
+  )
 }
 
 async function checkPendingVouchers() {
@@ -443,10 +497,18 @@ function switchUser() {
   //    ("somebody expanded the archive") into the next session. But UC-FL-008
   //    pins the fold as DEFAULT-CLOSED, and a component instance that survives a
   //    logout is the only path on which the next session could open expanded.
+  //  - `guestCounts` (RD-FL-5) is the OPPOSITE end of that scale from
+  //    `showArchive`: it holds another friend's colleague data, so leaving it
+  //    behind would show the next person on a shared device how many colleagues
+  //    the PREVIOUS host had ordering through their link. Bumping the sequence
+  //    counter with it is what stops an in-flight response re-filling the map
+  //    immediately after this clear.
   error.value = ''
   voucherResolved.value = null
   subscriptions.value = []
   showArchive.value = false
+  guestCounts.value = {}
+  guestCountSeq++
   clearFriendsPassword()
   localStorage.removeItem(STORAGE_KEY)
   savedAuth.value = null
@@ -1341,35 +1403,54 @@ async function copyInviteLink() {
               <span v-else-if="cycle.status === 'open'" class="badge warn">Neobjednané</span>
             </div>
 
-            <!-- ⚠ SEAM — RD-FL-5 replaces exactly this element with UC-FL-007's
-                 share ROW: the `border-top: 2px solid rgba(10,10,10,0.12)` /
-                 `padding-top:12px; margin-top:12px` bar carrying the colleague
-                 count on the left ("N kolegovia cez váš odkaz" /
-                 "Objednávate aj pre kolegov?") and a `button.btn.sm` with the
-                 share glyph, visible text "Zdieľať" and
-                 `aria-label="Zdieľať s kolegami"` on the right.
+            <!-- Share row (UC-FL-007) — OPEN cycles only: a locked cycle offers
+                 no share affordance at all (pinned `toHaveCount(0)` in
+                 `guest-link.spec.js`), and a planned one has nothing to order
+                 into yet. This replaced RD-FL-4's transitional shadcn button in
+                 place; it stays the card's LAST child, directly under the badge
+                 row, and keeps the whole affordance inside `div.p-4`.
 
-                 It ships here as the UNCHANGED shadcn button rather than being
-                 removed, because `guest-link.spec.js` — which this row may not
-                 edit — asserts the button's accessible name INSIDE `div.p-4`,
-                 that a locked card has none, and that the click does not
-                 navigate. Dropping it would take the suite below baseline and
-                 leave the `p-4` pin unverifiable. So: same behaviour, same
-                 accessible name, transitional look (UC-DS-002), placed as the
-                 card's LAST child directly under the badge row — which is
-                 exactly where the designed row goes. -->
-            <Button
+                 ⚠ resolved conflict #2 — the VISIBLE label is the prototype's
+                 "Zdieľať", while `aria-label="Zdieľať s kolegami"` carries the
+                 accessible name `guest-link.spec.js` locates the button by. Both
+                 contracts hold with zero spec edits; neither may be dropped in
+                 favour of the other.
+
+                 ⚠ `@click.stop` is mandatory, not stylistic: the card root
+                 navigates on click, so without it the share tap would leave the
+                 portal before the dialog could be seen (pinned — after the click
+                 the URL stays `/`).
+
+                 The left half is context only. `guestCounts` is filled by a
+                 non-blocking batch after `loadCycles`; while it is in flight, has
+                 failed, or the host simply has no colleagues yet, the row reads
+                 "Objednávate aj pre kolegov?" — there is deliberately no loading
+                 or error state, because a missing count costs the host nothing. -->
+            <div
               v-if="cycle.status === 'open'"
-              variant="ghost"
-              size="sm"
-              class="h-7 px-2 -ml-2 mt-3 gap-1.5 text-muted-foreground hover:text-foreground"
-              @click.stop="openShareDialog(cycle)"
+              data-testid="share-row"
+              style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px;border-top:2px solid rgba(10,10,10,0.12);padding-top:12px"
             >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342A3 3 0 106.316 10.658m0 2.684l8.632 4.316m-8.632-7l8.632-4.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-              </svg>
-              <span class="text-xs">Zdieľať s kolegami</span>
-            </Button>
+              <span class="sub" style="display:flex;align-items:center;gap:6px;min-width:0">
+                <!-- The badge appears only when the count is > 0 — a "0" mono
+                     chip next to "kolegovia cez váš odkaz" would read as a
+                     failure rather than as an invitation. -->
+                <template v-if="guestCounts[cycle.id] > 0">
+                  <span class="tabbadge">{{ guestCounts[cycle.id] }}</span>
+                  <span style="overflow-wrap:anywhere">kolegovia cez váš odkaz</span>
+                </template>
+                <span v-else style="overflow-wrap:anywhere">Objednávate aj pre kolegov?</span>
+              </span>
+              <button
+                type="button"
+                class="btn sm"
+                aria-label="Zdieľať s kolegami"
+                style="flex-shrink:0"
+                @click.stop="openShareDialog(cycle)"
+              >
+                <NeoIcon name="share" /> Zdieľať
+              </button>
+            </div>
           </div>
         </div>
 
