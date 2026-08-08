@@ -2,11 +2,20 @@
 import { ref, computed, onMounted, onBeforeUnmount, watchEffect, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import api, { getFriendsPassword, getFriendsAuthInfo, getFriendsToken } from '../api'
-// shadcn leftovers. `Card`/`CardContent` now dress ONLY the Kolegovia share card
-// (RD-KG-1) — RD-FO-2 took the product cards off them onto `.card`; RD-FO-3 took
-// the cart footer off `Button` onto the theme's `.btn`, so `Button` is now ONLY
-// the share card (RD-KG-1) and the modals (RD-FO-4); `Dialog*` is the modals
-// themselves (RD-FO-4). `Alert`, `Badge` and `Tabs*` went with RD-FO-1.
+// shadcn leftovers, and the FINAL inventory for this view.
+//
+// 04 §UC-FO-001 asks for "all shadcn imports removed from this view", and RD-FO-1
+// recorded that only THIS row could satisfy it, because it is the last one that
+// owns any shadcn surface here (the four `Dialog`s). `Dialog*` is now gone — every
+// modal on this screen is `NeoModal` (02 §UC-DS-010).
+//
+// What legitimately REMAINS, and why: `Card`/`CardContent`/`Button` dress the
+// Kolegovia share card ONLY. That card is module 05's (RD-KG-1) and is explicitly
+// out of scope for this row — restyling it here would be an unreviewed change to
+// another module's surface, and 04's own Deliverables table lists module 05's files
+// as "NOT touched here". RD-KG-1 removes these three and closes UC-FO-001.
+// (RD-FO-2 took the product cards off `Card`; RD-FO-3 took the cart footer off
+// `Button`; `Alert`, `Badge` and `Tabs*` went with RD-FO-1.)
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
@@ -14,15 +23,9 @@ import GuestSubOrders from '@/components/GuestSubOrders.vue'
 import BrandChrome from '@/components/neo/BrandChrome.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoStepper from '@/components/neo/NeoStepper.vue'
+import NeoModal from '@/components/neo/NeoModal.vue'
+import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { snapTab } from '@/lib/snap-tab'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
 import PaymentModal from '@/components/PaymentModal.vue'
 import { encode as bysquareEncode, PaymentOptions, CurrencyCode, Version } from 'bysquare'
 import QRCode from 'qrcode'
@@ -54,7 +57,12 @@ const error = ref('')
 // `saveCart`, and the page banner.
 const activeTab = ref('Espresso')
 const showSuccessModal = ref(false)
-const successModalMessage = ref('')
+// ⚠ `successModalMessage` ("Vaša objednávka bola úspešne odoslaná!" /
+// "…bola aktualizovaná!") is RETIRED, for the same reason `successMessage` was one
+// row earlier: 04 resolved conflict #4 gives the success modal ONE subtitle on both
+// paths — "Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia cyklu." —
+// so the ref had a writer, a reader and no remaining variation to carry.
+// `wasAlreadySubmitted` in `doSubmitOrder()` went with it; nothing else read it.
 const showCancelModal = ref(false)
 const initialLoadComplete = ref(false) // Prevents auto-save during initial load
 const showLeaveModal = ref(false) // Confirmation modal when leaving with unsaved changes
@@ -77,7 +85,52 @@ const pickupLocationNote = ref('')
 // Parcel delivery state
 const deliveryMethod = ref('pickup') // 'pickup' or 'packeta'
 const packetaAddress = ref('')
+// ⚠ Default UNCHECKED (04 resolved conflict #11). The prototype renders
+// `<Checkbox checked={true}>`, which is a demo constant, not a rule: silently
+// rewriting the friend's stored profile default from an order-time modal is the
+// wrong default for a persistent setting. `submitOrder()` re-clears it on every
+// open, so a previous tick never carries into the next order.
 const savePacketaAsDefault = ref(false)
+
+// ---- 04 §UC-FO-010, the 4-scenario matrix, named ONCE ------------------------
+//
+// `submitOrder()` decides whether a modal opens at all from exactly these two
+// facts, and the modal's own body decides which sections it shows from them too.
+// They were duplicated as locals in `submitOrder()` and as inline `pickupLocations
+// .length > 0 && cycle?.parcel_enabled` tests in the template, i.e. three copies of
+// one rule; the routing and the rendering are now provably the same predicate.
+//
+//   locations | parcel | modal
+//   ----------+--------+------------------------------------------------------
+//     no      |  no    | NO MODAL — submitOrder() calls doSubmitOrder() directly
+//     yes     |  no    | pickup section only, NO method radios
+//     no      |  yes   | method radios: Packetou / "Bez doručenia…" (repo copy)
+//     yes     |  yes   | method radios: Osobný odber / Doručenie Packetou (+fee)
+const hasPickupLocations = computed(() => pickupLocations.value.length > 0)
+const hasParcelDelivery = computed(() => !!cycle.value?.parcel_enabled)
+
+// The method RadioRows, in the shipped order for each scenario — an empty list IS
+// the "pickup only" row of the matrix, so the template needs no scenario test of
+// its own beyond `v-if="deliveryMethodOptions.length"`.
+//
+// ⚠ The parcel-only pair keeps the REPO's second option, "Bez doručenia (vyzdvihnem
+// osobne)", not the "Osobný odber" of the both-scenario: with no locations
+// configured there is nothing to pick FROM, so the honest label is the opt-out.
+// 04 §UC-FO-010's table pins that copy explicitly.
+const deliveryMethodOptions = computed(() => {
+  if (!hasParcelDelivery.value) return []
+  const packeta = { value: 'packeta', label: 'Doručenie Packetou', fee: true }
+  return hasPickupLocations.value
+    ? [{ value: 'pickup', label: 'Osobný odber', fee: false }, packeta]
+    : [packeta, { value: 'pickup', label: 'Bez doručenia (vyzdvihnem osobne)', fee: false }]
+})
+
+// Locations + the trailing "Iné" (`null`), so the pickup section is ONE `v-for`
+// over one RadioRow markup rather than a loop plus a hand-copied last row.
+const pickupOptions = computed(() => [
+  ...pickupLocations.value.map((loc) => ({ value: loc.id, label: loc.name, sub: loc.address || '' })),
+  { value: null, label: 'Iné', sub: '' }
+])
 
 // Payment state
 const paymentIban = ref('')
@@ -682,16 +735,21 @@ async function submitOrder() {
     return
   }
 
-  const hasPickupLocations = pickupLocations.value.length > 0
-  const hasParcel = cycle.value?.parcel_enabled
-
-  if (!hasPickupLocations && !hasParcel) {
-    // No modal needed, submit directly
+  // Scenario 1 of the matrix: nothing to ask, so nothing is asked.
+  if (!hasPickupLocations.value && !hasParcelDelivery.value) {
     await doSubmitOrder()
     return
   }
 
-  // Always pre-fill Packeta address from profile (used when user switches to Packeta)
+  // ⚠ EVERY other explicit submit opens the modal — the first one AND every
+  // "Aktualizovať" (README §Interactions / 04 §UC-FO-010 Routing). The prototype's
+  // "later submits are direct" means "do not re-ASK what is already answered", and
+  // the pre-selection below is what satisfies it: a re-submit opens with the
+  // previous choice already selected and is one tap. Skipping the modal instead
+  // would make the delivery method un-changeable after the first submit.
+
+  // Re-cleared on every open (04 resolved conflict #11) — a tick on one submit must
+  // not silently persist the NEXT submit's address to the profile.
   savePacketaAsDefault.value = false
 
   // Pre-select based on existing order state
@@ -710,7 +768,7 @@ async function submitOrder() {
     packetaAddress.value = friend.value?.packeta_address || ''
   } else {
     // Default: pickup if locations exist, otherwise packeta
-    deliveryMethod.value = hasPickupLocations ? 'pickup' : 'packeta'
+    deliveryMethod.value = hasPickupLocations.value ? 'pickup' : 'packeta'
     selectedPickupLocationId.value = null
     pickupLocationNote.value = ''
     packetaAddress.value = friend.value?.packeta_address || ''
@@ -720,9 +778,6 @@ async function submitOrder() {
 }
 
 async function doSubmitOrder() {
-  // Capture state before submitting
-  const wasAlreadySubmitted = isSubmitted.value
-
   // First save the cart
   await saveCart()
 
@@ -746,9 +801,6 @@ async function doSubmitOrder() {
     order.value = result.order
     // Store snapshot of submitted cart for change detection
     lastSubmittedCart.value = { ...cart.value }
-    successModalMessage.value = wasAlreadySubmitted
-      ? 'Vaša objednávka bola aktualizovaná!'
-      : 'Vaša objednávka bola úspešne odoslaná!'
     showSuccessModal.value = true
     generateSuccessQr()
   } catch (e) {
@@ -1561,62 +1613,89 @@ function applyMarkup(price) {
       </details>
     </div>
 
-    <!-- Success Modal (with inline payment details) -->
-    <Dialog :open="showSuccessModal" @update:open="val => !val && handleSuccessModalClose()">
-      <DialogContent class="sm:max-w-md max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle class="flex items-center gap-2">
-            <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            Hotovo!
-          </DialogTitle>
-          <DialogDescription class="text-base">
-            {{ successModalMessage }}
-          </DialogDescription>
-        </DialogHeader>
+    <!-- ================= Hotovo! success modal (04 §UC-FO-011) =================
+         ⚠ ONE subtitle on BOTH paths (resolved conflict #4). The shipped view had
+         two — "úspešne odoslaná" / "bola aktualizovaná" — and `successModalMessage`
+         was retired with them (see the script). The distinction the friend actually
+         needs is in the sentence that survived: the order can still be edited until
+         the lock.
 
-        <!-- Inline payment details -->
-        <div v-if="hasPaymentSettings" class="space-y-3 pt-2">
-          <p class="text-sm font-medium text-center">
-            Suma na úhradu: <strong>{{ formatPrice(paymentTotal) }}</strong>
-            <span v-if="order?.delivery_fee" class="block text-xs text-muted-foreground mt-0.5">
-              ({{ formatPrice(cartTotal) }} + {{ formatPrice(order.delivery_fee) }} doručenie)
-            </span>
-          </p>
+         ⚠ NO payment-reference row here. The reference (`Meno / Cyklus`) lives ONLY
+         in the Platba modal (`PaymentModal`, module 06 / RD-GX-2) — README §Screens
+         item 8, applied to the friend side identically. It is deliberately not a
+         copy-row on this screen even though `paymentReference` is computed right
+         above: one home for the string the friend must type into their bank.
 
-          <a
-            v-if="paymentRevolutUsername"
-            :href="`https://revolut.me/${paymentRevolutUsername}`"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="flex items-center justify-center gap-2 w-full px-4 py-3 bg-[#0075EB] hover:bg-[#0066cc] text-white rounded-lg font-medium transition-colors"
-          >
-            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M20.1 6.8c-.3-1.2-1-2.2-2-2.9-.9-.7-2.1-1-3.3-1H6.2L4 20.1h4.1l1-5.5h3.7c1.6 0 3-.5 4.1-1.4 1.1-.9 1.9-2.2 2.2-3.8l.5-2.6zM16 9.2l-.2 1c-.2.9-.6 1.5-1.2 2-.6.5-1.4.7-2.3.7H9.1l1-5.5h3.2c.7 0 1.2.2 1.6.6.4.4.5.9.4 1.5l-.3 1.7z"/>
-            </svg>
-            Zaplatiť cez Revolut
-          </a>
-
-          <div v-if="paymentIban" class="text-center space-y-2">
-            <p class="text-sm text-muted-foreground">Pay by Square (QR kód pre bankovú appku)</p>
-            <div v-if="successQrDataUrl" class="flex justify-center">
-              <img :src="successQrDataUrl" alt="Pay by Square QR" class="w-48 h-48" />
-            </div>
-            <div v-else class="py-4 text-sm text-muted-foreground animate-pulse">
-              Generujem QR kod...
-            </div>
-            <p class="text-xs text-muted-foreground">IBAN: {{ paymentIban }}</p>
-          </div>
+         ⚠ CLOSING BY ANY ROUTE NAVIGATES TO THE PORTAL. `@close` is NeoModal's one
+         event for ×, scrim and Esc, and the OK button calls the same handler, so all
+         four routes go through `handleSuccessModalClose` — which sets
+         `leaveConfirmed` BEFORE `router.push('/')`. That flag is what stops
+         `onBeforeRouteLeave` opening the leave modal on top of a successful submit:
+         the snapshot has just been retaken, so nothing is dirty, but the "cart items
+         with no order" arm of `hasUnsavedChanges` would still be armed on a first
+         submit if the order write had not landed. Belt and braces, and it is the
+         shipped behaviour. -->
+    <NeoModal
+      v-if="showSuccessModal"
+      title="Hotovo!"
+      subtitle="Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia cyklu."
+      @close="handleSuccessModalClose"
+    >
+      <!-- Payment block only when the admin configured payment settings at all;
+           with neither IBAN nor Revolut there is nothing to pay INTO and the modal
+           is the bare confirmation. -->
+      <template v-if="hasPaymentSettings">
+        <!-- `.banner.ok.slim` is in A10's `line-height:normal` list and the property
+             inherits, so the unclassed <span> inside it needs no call-site fix. -->
+        <div class="banner ok slim">
+          <span class="dot"></span>
+          <span style="min-width:0">
+            Suma na úhradu: <b class="mono">{{ paymentTotal.toFixed(2) }} EUR</b>
+            <!-- Repo information the prototype is silent about, kept: the Packeta
+                 fee is a field ON the order, never a cart line, so without this
+                 split the sum looks wrong against the cart. -->
+            <span
+              v-if="order?.delivery_fee"
+              class="sub"
+              style="display:block;font-size:12px"
+            >({{ cartTotal.toFixed(2) }} EUR + {{ order.delivery_fee.toFixed(2) }} EUR doručenie)</span>
+          </span>
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" @click="handleSuccessModalClose" class="w-full">
-            OK
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        <!-- Prototype `RevolutBtn` on the shipped link behaviour: an <a>, because it
+             navigates off-site, wearing `.btn.block`. `fill:currentColor` + the
+             white `color` is what tints the glyph. -->
+        <a
+          v-if="paymentRevolutUsername"
+          class="btn block"
+          style="background:#0075EB;color:#fff;border-color:#0a0a0a"
+          :href="`https://revolut.me/${paymentRevolutUsername}`"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20.1 6.8c-.3-1.2-1-2.2-2-2.9-.9-.7-2.1-1-3.3-1H6.2L4 20.1h4.1l1-5.5h3.7c1.6 0 3-.5 4.1-1.4 1.1-.9 1.9-2.2 2.2-3.8l.5-2.6zM16 9.2l-.2 1c-.2.9-.6 1.5-1.2 2-.6.5-1.4.7-2.3.7H9.1l1-5.5h3.2c.7 0 1.2.2 1.6.6.4.4.5.9.4 1.5l-.3 1.7z"/></svg>
+          Zaplatiť cez Revolut
+        </a>
+
+        <!-- The REAL scannable code inside the neo frame (02 §UC-DS-012): `.qr` is
+             the 190×190 ink frame with 10px padding, and the <img> fills its content
+             box. `QRBox`'s pseudo-QR cell generator is prototype-only and is NOT
+             ported — the generator here is the shipped `generateSuccessQr`
+             (bysquare encode of `paymentTotal`, `paymentReference` as the note). -->
+        <div v-if="paymentIban" style="text-align:center">
+          <div class="sub" style="margin-bottom:10px">Pay by Square (QR kód pre bankovú appku)</div>
+          <div v-if="successQrDataUrl" class="qr">
+            <img :src="successQrDataUrl" alt="Pay by Square QR" style="display:block;width:100%;height:100%" />
+          </div>
+          <div v-else class="sub">Generujem QR kód…</div>
+          <div class="sub mono" style="margin-top:10px;font-size:12px">IBAN: {{ paymentIban }}</div>
+        </div>
+      </template>
+
+      <template #footer>
+        <button type="button" class="btn fo-foot-btn" @click="handleSuccessModalClose">OK</button>
+      </template>
+    </NeoModal>
 
     <!-- Payment Modal (for footer button) -->
     <PaymentModal
@@ -1636,177 +1715,408 @@ function applyMarkup(price) {
       @update:open="showShareModal = $event"
     />
 
-    <!-- Cancel Order Confirmation Modal -->
-    <Dialog :open="showCancelModal" @update:open="showCancelModal = $event">
-      <DialogContent class="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle class="flex items-center gap-2">
-            <svg class="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            Zrušiť objednávku?
-          </DialogTitle>
-          <DialogDescription class="text-base">
-            Naozaj chcete zrušiť objednávku a vymazať všetky položky z košíka?
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter class="flex gap-2">
-          <Button variant="outline" @click="showCancelModal = false" class="flex-1">
-            Nie
-          </Button>
-          <Button @click="confirmCancelOrder" class="flex-1 bg-red-600 hover:bg-red-700">
-            Áno, zrušiť
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <!-- ============ Zrušiť objednávku? confirm (04 §UC-FO-012) ============
+         ⚠ THE BANNER MAKES A PROMISE ABOUT SOMEBODY ELSE'S DATA, and it must stay
+         true: `confirmCancelOrder()` clears THIS friend's cart and, when an order
+         row exists, deletes it through the silent `saveCart` of an empty cart
+         (`PUT /orders/cycle/:id/friend/:id` deletes the row when the total hits 0 —
+         CLAUDE.md 2026-02-01). It touches `orders`/`order_items` only. Guest
+         sub-orders live in `guest_orders`/`guest_order_items` under
+         `guest_order_links`, are keyed on the LINK rather than on the host's order,
+         and are never in that request's path — which is exactly why cancelling does
+         not disturb them. `order-modals.spec.js` asserts a colleague's sub-order is
+         still there, still unpaid and still undelivered, after the host cancels.
 
-    <!-- Leave Confirmation Modal (unsaved changes) -->
-    <Dialog :open="showLeaveModal" @update:open="showLeaveModal = $event">
-      <DialogContent class="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle class="flex items-center gap-2">
-            <svg class="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            Neuložené zmeny
-          </DialogTitle>
-          <DialogDescription class="text-base">
-            Máte neuložené zmeny v objednávke. Naozaj chcete opustiť stránku? Zmeny nebudú uložené.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter class="flex gap-2">
-          <Button variant="outline" @click="cancelLeave" class="flex-1">
-            Zostať
-          </Button>
-          <Button @click="confirmLeave" class="flex-1 bg-orange-600 hover:bg-orange-700">
-            Opustiť
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+         Copy is the prototype's, new to production and in contract. Opening is
+         blocked when locked (`cancelOrder()` returns early) and the cartbar's
+         "Zrušiť" is disabled on an empty cart, so this modal is unreachable in
+         both states rather than reachable-and-inert. -->
+    <NeoModal
+      v-if="showCancelModal"
+      title="Zrušiť objednávku?"
+      subtitle="Naozaj chcete zrušiť objednávku a vymazať všetky položky z košíka?"
+      @close="showCancelModal = false"
+    >
+      <div class="banner danger slim">
+        <span class="dot"></span>
+        <span style="min-width:0">Položky sa vymažú z košíka. Kolegov, ktorí objednali cez váš odkaz, sa to nedotkne.</span>
+      </div>
+      <template #footer>
+        <button type="button" class="btn fo-foot-btn" @click="showCancelModal = false">Nie</button>
+        <button type="button" class="btn danger fo-foot-btn" @click="confirmCancelOrder">Áno, zrušiť</button>
+      </template>
+    </NeoModal>
 
-    <!-- Delivery Method Modal -->
-    <Dialog :open="showPickupModal" @update:open="showPickupModal = $event">
-      <DialogContent class="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Spôsob prevzatia</DialogTitle>
-          <DialogDescription class="text-base">
-            Vyberte, ako chcete dostať objednávku.
-          </DialogDescription>
-        </DialogHeader>
-        <div class="space-y-3 py-2">
-          <!-- Top-level choice: pickup vs packeta -->
-          <div v-if="pickupLocations.length > 0 && cycle?.parcel_enabled" class="space-y-1.5">
-            <label
-              :class="[
-                'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors text-sm',
-                deliveryMethod === 'pickup' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
-              ]"
-            >
-              <input type="radio" value="pickup" v-model="deliveryMethod" />
-              <span class="font-medium">Osobný odber</span>
-            </label>
-            <label
-              :class="[
-                'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors text-sm',
-                deliveryMethod === 'packeta' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
-              ]"
-            >
-              <input type="radio" value="packeta" v-model="deliveryMethod" />
-              <span class="font-medium">Doručenie Packetou</span>
-              <span v-if="cycle?.parcel_fee" class="text-muted-foreground">(+{{ formatPrice(cycle.parcel_fee) }})</span>
-            </label>
-          </div>
+    <!-- ============ Neuložené zmeny leave guard (04 §UC-FO-013) ============
+         Not in the prototype (it navigates silently); the behaviour is
+         repo-canonical and kept in full. Two entry points, one modal: `goBack()`
+         (the appbar chevron) and `onBeforeRouteLeave` (everything else, including
+         the browser Back button), both gated on `hasUnsavedChanges`.
 
-          <!-- Packeta-only header (no pickup locations configured) -->
-          <div v-else-if="cycle?.parcel_enabled && pickupLocations.length === 0" class="space-y-1.5">
-            <label
-              :class="[
-                'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors text-sm',
-                deliveryMethod === 'packeta' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
-              ]"
-            >
-              <input type="radio" value="packeta" v-model="deliveryMethod" />
-              <span class="font-medium">Doručenie Packetou</span>
-              <span v-if="cycle?.parcel_fee" class="text-muted-foreground">(+{{ formatPrice(cycle.parcel_fee) }})</span>
-            </label>
-            <label
-              :class="[
-                'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors text-sm',
-                deliveryMethod === 'pickup' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
-              ]"
-            >
-              <input type="radio" value="pickup" v-model="deliveryMethod" />
-              <span class="font-medium">Bez doručenia (vyzdvihnem osobne)</span>
-            </label>
-          </div>
+         ⚠ `@close` maps ×/scrim/Esc onto `cancelLeave`, i.e. onto STAYING. That is
+         the only safe default: this dialog exists to prevent data loss, so its
+         dismissal must be the non-destructive branch. It also has to CLEAR
+         `pendingNavigation` — leaving a stale target behind would make the next
+         confirm send the friend somewhere they never asked to go.
 
-          <!-- Pickup locations section -->
-          <div v-if="deliveryMethod === 'pickup' && pickupLocations.length > 0" class="space-y-1.5 border-t pt-2">
-            <label
-              v-for="loc in pickupLocations"
-              :key="loc.id"
-              :class="[
-                'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors text-sm',
-                selectedPickupLocationId === loc.id ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
-              ]"
-            >
-              <input type="radio" :value="loc.id" v-model="selectedPickupLocationId" />
-              <span class="font-medium">{{ loc.name }}</span>
-              <span v-if="loc.address" class="text-muted-foreground truncate">{{ loc.address }}</span>
-            </label>
-            <!-- "Iné" option -->
-            <label
-              :class="[
-                'flex items-start gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors text-sm',
-                selectedPickupLocationId === null ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
-              ]"
-            >
-              <input type="radio" :value="null" v-model="selectedPickupLocationId" class="mt-0.5" />
-              <div class="flex-1">
-                <span class="font-medium">Iné</span>
-                <input
-                  v-if="selectedPickupLocationId === null"
-                  v-model="pickupLocationNote"
-                  type="text"
-                  placeholder="Poznámka (voliteľné)"
-                  class="mt-1.5 w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                />
-              </div>
-            </label>
-          </div>
+         Body-less by 04 §UC-FO-013's composition: the whole question is the title
+         and subtitle, and inventing a banner would be copy this row does not own. -->
+    <NeoModal
+      v-if="showLeaveModal"
+      title="Neuložené zmeny"
+      subtitle="Máte neuložené zmeny v objednávke. Naozaj chcete opustiť stránku? Zmeny nebudú uložené."
+      @close="cancelLeave"
+    >
+      <template #footer>
+        <button type="button" class="btn fo-foot-btn" @click="cancelLeave">Zostať</button>
+        <button type="button" class="btn danger fo-foot-btn" @click="confirmLeave">Opustiť</button>
+      </template>
+    </NeoModal>
 
-          <!-- Packeta section -->
-          <div v-if="deliveryMethod === 'packeta'" class="space-y-3 border-t pt-3">
-            <div class="space-y-1">
-              <label class="text-sm font-medium">Adresa výdajného miesta *</label>
-              <input
-                v-model="packetaAddress"
-                type="text"
-                placeholder="napr. Z-BOX Hlavná 15, Bratislava"
-                class="w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-              />
-            </div>
-            <label class="flex items-center gap-2 text-sm cursor-pointer">
-              <input type="checkbox" v-model="savePacketaAsDefault" class="rounded" />
-              Uložiť ako predvolenú adresu
-            </label>
-          </div>
-        </div>
-        <DialogFooter class="flex gap-2">
-          <Button variant="outline" @click="showPickupModal = false" class="flex-1">
-            Zrušiť
-          </Button>
-          <Button
-            @click="confirmPickupAndSubmit"
-            class="flex-1"
-            :disabled="deliveryMethod === 'packeta' && !packetaAddress.trim()"
-          >
-            Potvrdiť a odoslať
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <!-- ============ Spôsob prevzatia (04 §UC-FO-010) ============
+         ⚠ THE RadioRow PATTERN — module 06 / RD-GX-1's guest checkout is told to
+         LIFT this, not re-invent it. The whole recipe, transcribed from
+         `order.jsx:203-208`:
+
+           <label class="radiorow card flat"
+                  style="padding:11px 13px;display:flex;align-items:center;gap:10px;
+                         cursor:pointer;border-color:<ink|30%>;background:<soft|#fff>">
+             <input type="radio" name="<group>" :value v-model  … visually hidden />
+             <span style="width:18px;height:18px;border-radius:50%;
+                          border:3px solid var(--nb-ink);
+                          background:<accent|#fff>;flex-shrink:0"></span>
+             <span style="min-width:0;font-size:14px;line-height:normal"> … </span>
+           </label>
+
+         Four things about it are load-bearing, and each cost something to find:
+
+         1. ⚠ THE NATIVE `<input type="radio">` STAYS IN THE DOM, visually hidden,
+            with the v-model unchanged. It is the entire keyboard/AT path: a
+            same-`name` radio group gives arrow-key traversal and one Tab stop for
+            the whole group, and the label wrapping it is what makes a tap on the
+            row select it — no `@click` handler of our own. Hiding it with
+            `display:none`/`visibility:hidden` would DELETE that path, so it is the
+            clip-rect idiom (1×1, clipped) instead: still focusable, zero pixels.
+         2. ⚠ `line-height:normal` ON THE CONTENT SPAN. A class list cannot reach
+            plain text (friends-theme.css A10's closing note): that span carries no
+            class, `.card`/`.card.flat` declare no line-height, so it would inherit
+            preflight's 1.5 and stand ~4px taller than the canon. Fixed at the call
+            site, exactly as module 03 fixed its four unclassed strings — A10's
+            selector list must NOT grow for this.
+         3. The visible dot is the 18px span; `--accent` filled when checked, white
+            when not. The row itself is `.card.flat` (2px border, no shadow) with an
+            INLINE `border-color`/`background` pair, because both flip on state and
+            an inline style is the only thing that outranks `.card`'s own border.
+         4. `:has(:focus-visible)` (the scoped rules at the end of this file) paints
+            the ring the hidden input can no longer show. Without it a keyboard user
+            moving through the group gets no feedback at all. ⚠ `:focus-visible`,
+            not `:focus-within` — the latter fires on a POINTER tap too, which on a
+            touch-first screen leaves a row ringed permanently after any tap.
+
+         The modal is `closable` (the NeoModal default) and does NOT pass
+         `trap-focus` — nor do the other three on this screen. That matters here
+         specifically: `NeoModal.focusablesInside()` walks the DOM in order and has
+         no radio-group awareness, so a trapped radio group would become N tab stops
+         instead of the native one. Nothing opts in, so nothing is affected; if any
+         modal on this shell ever does, teach `focusablesInside()` about radio groups
+         first (verified separately: focus alone never changes the checked radio, so
+         the trap would be a nuisance, not a data bug). -->
+    <NeoModal
+      v-if="showPickupModal"
+      title="Spôsob prevzatia"
+      subtitle="Vyberte, ako chcete dostať objednávku."
+      @close="showPickupModal = false"
+    >
+      <!-- METHOD RadioRows. An empty `deliveryMethodOptions` IS the "pickup only"
+           row of the matrix — no radios, straight to the locations. `.m-body` is
+           itself a 12px-gap column, so these are bare children with no wrapper. -->
+      <label
+        v-for="opt in deliveryMethodOptions"
+        :key="opt.value"
+        class="radiorow card flat"
+        :style="{
+          padding: '11px 13px',
+          display: 'flex',
+          position: 'relative',
+          alignItems: 'center',
+          gap: '10px',
+          cursor: 'pointer',
+          borderColor: deliveryMethod === opt.value ? 'var(--nb-ink)' : 'rgba(10,10,10,0.3)',
+          background: deliveryMethod === opt.value ? 'var(--accent-soft)' : '#fff'
+        }"
+        :data-testid="`delivery-method-${opt.value}`"
+      >
+        <input
+          v-model="deliveryMethod"
+          class="sr-radio"
+          type="radio"
+          name="fo-delivery-method"
+          :value="opt.value"
+        />
+        <span
+          :style="{
+            width: '18px',
+            height: '18px',
+            borderRadius: '50%',
+            border: '3px solid var(--nb-ink)',
+            background: deliveryMethod === opt.value ? 'var(--accent)' : '#fff',
+            flexShrink: 0
+          }"
+        ></span>
+        <span style="min-width:0;font-size:14px;line-height:normal">
+          <b>{{ opt.label }}</b>
+          <span
+            v-if="opt.fee && cycle?.parcel_fee"
+            class="sub"
+          > (+{{ cycle.parcel_fee.toFixed(2) }} EUR)</span>
+        </span>
+      </label>
+
+      <!-- PICKUP section — the locations plus the trailing "Iné", one `v-for` over
+           `pickupOptions`. Shown when pickup is the chosen method AND there is
+           something to choose; the top rule separates it from the method group
+           above (and is harmless when there is none, since it is then the first
+           child of a padded body). -->
+      <div
+        v-if="deliveryMethod === 'pickup' && hasPickupLocations"
+        style="display:flex;flex-direction:column;gap:8px;border-top:2px solid rgba(10,10,10,0.12);padding-top:12px"
+        data-testid="pickup-section"
+      >
+        <label
+          v-for="opt in pickupOptions"
+          :key="opt.value === null ? 'other' : opt.value"
+          class="radiorow card flat"
+          :style="{
+            padding: '11px 13px',
+            display: 'flex',
+            position: 'relative',
+            alignItems: 'center',
+            gap: '10px',
+            cursor: 'pointer',
+            borderColor: selectedPickupLocationId === opt.value ? 'var(--nb-ink)' : 'rgba(10,10,10,0.3)',
+            background: selectedPickupLocationId === opt.value ? 'var(--accent-soft)' : '#fff'
+          }"
+        >
+          <input
+            v-model="selectedPickupLocationId"
+            class="sr-radio"
+            type="radio"
+            name="fo-pickup-location"
+            :value="opt.value"
+          />
+          <span
+            :style="{
+              width: '18px',
+              height: '18px',
+              borderRadius: '50%',
+              border: '3px solid var(--nb-ink)',
+              background: selectedPickupLocationId === opt.value ? 'var(--accent)' : '#fff',
+              flexShrink: 0
+            }"
+          ></span>
+          <!-- ⚠ `</b> <span` ON ONE LINE. Vue's `condense` whitespace mode DELETES a
+               whitespace-only node between two elements when it contains a newline,
+               and also strips a leading whitespace-only node inside an element — so
+               both the obvious spellings ("</b>\n<span>" and "<span> {{ … }}") render
+               "Lego domaDúbravka". Without a newline the same node condenses to a
+               single space and is KEPT, which is what the prototype's JSX does. -->
+          <span style="min-width:0;font-size:14px;line-height:normal">
+            <b>{{ opt.label }}</b> <span v-if="opt.sub" class="sub">{{ opt.sub }}</span>
+          </span>
+        </label>
+        <!-- The note is a SIBLING of the "Iné" row, not a child of its label
+             (prototype), so typing in it cannot re-fire the label's selection. -->
+        <input
+          v-if="selectedPickupLocationId === null"
+          v-model="pickupLocationNote"
+          class="inp"
+          type="text"
+          placeholder="Poznámka (voliteľné)"
+          data-testid="pickup-note"
+        />
+      </div>
+
+      <!-- PACKETA section. The address is required — the footer's Potvrdiť is
+           disabled while it is blank, which is the only validation this modal
+           does (the server re-checks). -->
+      <div
+        v-if="deliveryMethod === 'packeta'"
+        style="border-top:2px solid rgba(10,10,10,0.12);padding-top:12px"
+        data-testid="packeta-section"
+      >
+        <label class="field-lbl" for="fo-packeta-address">Adresa výdajného miesta *</label>
+        <input
+          id="fo-packeta-address"
+          v-model="packetaAddress"
+          class="inp"
+          type="text"
+          placeholder="napr. Z-BOX Hlavná 15, Bratislava"
+        />
+        <!-- Save-as-default. DEFAULT UNCHECKED (resolved conflict #11) — see the
+             `savePacketaAsDefault` ref.
+
+             ⚠ THREE CLICK ZONES, ONE TOGGLE EACH — module 03's remember-me pattern,
+             lifted verbatim, and for its reason: a `<label>` forwards clicks only to
+             LABELABLE elements and `NeoCheckbox` is a `span[role=checkbox]`, so the
+             wrapper forwards nothing by itself. The box has the component's own
+             handler, the text span its `@click`, and the padding/gap `@click.self` —
+             without `.self` the label would also catch the other two and toggle them
+             straight back. `aria-label` on the control for the same reason: the
+             label cannot name a non-labelable element.
+
+             ⚠ `line-height:normal` — the text here is UNCLASSED, and A10's class
+             list structurally cannot reach plain text (its closing note). Fixed at
+             the call site, exactly as module 03 fixed its four. -->
+        <label
+          style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13.5px;line-height:normal;margin-top:10px"
+          @click.self="savePacketaAsDefault = !savePacketaAsDefault"
+        >
+          <NeoCheckbox
+            v-model="savePacketaAsDefault"
+            aria-label="Uložiť ako predvolenú adresu"
+            data-testid="save-packeta-default"
+          />
+          <span @click="savePacketaAsDefault = !savePacketaAsDefault">Uložiť ako predvolenú adresu</span>
+        </label>
+      </div>
+
+      <template #footer>
+        <button type="button" class="btn fo-foot-btn" @click="showPickupModal = false">Zrušiť</button>
+        <button
+          type="button"
+          class="btn accent fo-foot-btn"
+          :disabled="deliveryMethod === 'packeta' && !packetaAddress.trim()"
+          @click="confirmPickupAndSubmit"
+        >Potvrdiť a odoslať</button>
+      </template>
+    </NeoModal>
   </div>
 </template>
+
+<!-- ⚠ THE ONLY STYLESHEET THIS VIEW OWNS, and it exists solely to make 04
+     §UC-FO-010's "the native radio stays in the DOM, visually hidden" survivable.
+     Both rules are SCOPED — `friends-theme.css` is module 02's file and is not
+     touched by this row, and neither of these belongs in the shared canon: they
+     describe one local pattern, not a design-system class. (Vue's scope attribute
+     lands on slot content authored here even though `NeoModal` teleports it to
+     `body`, so both rules reach the modal.)
+
+     `.sr-radio` is the clip-rect idiom, NOT `display:none`/`visibility:hidden`/
+     `opacity:0;width:0`: the first two remove the control from the tab order and
+     from the accessibility tree — deleting the keyboard/AT path the spec keeps it
+     for — and a genuinely zero-sized element is inconsistently focusable across
+     engines. 1×1 + `clip` is focusable everywhere and paints nothing.
+
+     ⚠ NO `top`/`left`, AND `position:relative` on the row — two declarations, and
+     it takes both to see what either is for. An absolutely positioned box with
+     auto insets sits at its STATIC position (CSS 2.1 §10.3.7), i.e. where it
+     would have flowed inside its row, so focusing it scrolls nothing. Measured
+     in a 378×250 viewport, pickup list scrolled to the bottom, focusing the LAST
+     radio (the FIRST one is at the top of the scroll range and therefore
+     discriminates nothing — every variant scrolls to 0):
+
+       A  relative row, no insets (shipped)   scrollTop 486 → 486   rect 71 → 71
+       B  static   row, no insets             scrollTop 487 → 487   rect 70 → 70
+       C  relative row + `top:0;left:0`       scrollTop 487 → 487   rect 49 → 49
+       D  static   row + `top:0;left:0`       scrollTop 487 →   0   rect −488 → −1
+
+     A ≡ B: with the insets omitted, the containing block is unobservable — so
+     `position:relative` is NOT what makes the shipped code safe, and any note
+     claiming focus would otherwise yank the dialog TODAY is false. The omitted
+     insets are doing that work alone.
+
+     C vs D is why the declaration stays, and it is not mere insurance: adding the
+     classic sr-only `top:0;left:0` yanks the dialog to the top (D) only when the
+     row is unpositioned. With the row positioned the control lands at its OWN
+     row's origin and nothing moves (C). So `position:relative` is precisely what
+     disarms the recipe everyone reaches for — which matters here because RD-GX-1
+     is told to lift this block, and a lift that "restores" the familiar insets
+     would be safe on arrival and broken the moment the row went static.
+
+     `.radiorow:has(:focus-visible)` restores what hiding the input took away —
+     `:focus-visible`, NOT `:focus-within`. ⚠ `:focus-within` also matches POINTER
+     input, and a tap on a radio row leaves focus THERE, so under that spelling one
+     row wore a magenta offset shadow permanently after any tap — on a touch-first
+     surface, i.e. always. `.card.flat` is `box-shadow:none`, so that was a state
+     INVENTION neither the prototype nor 02 specifies, not a restoration. Measured
+     on the row, as shipped:
+
+       at rest        :focus-within false  :has(:focus-visible) false  → none
+       after a TAP    :focus-within TRUE   :has(:focus-visible) false  → none
+       after ArrowDown:focus-within true   :has(:focus-visible) TRUE   → rgb(255,45,135) 3px 3px 0px 0px
+
+     The middle row is the whole fix: focus is genuinely in the row (so
+     `:focus-within` fires) and the ring correctly stays off.
+
+     It reuses `.inp:focus`'s own idiom (`box-shadow:3px 3px 0 var(--accent)`) so
+     the ring reads as the same control language, and it still outranks
+     `.card.flat{box-shadow:none}`: `:has()` contributes the specificity of its
+     most specific argument, so the emitted
+     `.radiorow[data-v-…]:has(:focus-visible)` is (0,3,0) against that rule's
+     (0,2,0) — unchanged by the respelling, because
+     `:focus-visible` and `:focus-within` are both (0,1,0). (`.card.flat` is
+     wrapped in `:where()`, which contributes nothing, so it really is (0,2,0).)
+
+     ⚠ The `@supports not selector(:has(*))` twin is not decoration. `:focus-visible`
+     shipped years before `:has()` (Firefox 85 vs 121, Chrome 86 vs 105), so an
+     engine in that window drops the `:has()` rule WHOLESALE and a keyboard user
+     would get no focus indicator at all — a worse failure than a stray pointer
+     ring, which is why the old spelling survives there and only there. It is
+     inert wherever `:has()` parses, so the two can never both paint. -->
+<style scoped>
+.sr-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.radiorow:has(:focus-visible) {
+  box-shadow: 3px 3px 0 var(--accent);
+}
+
+@supports not selector(:has(*)) {
+  .radiorow:focus-within {
+    box-shadow: 3px 3px 0 var(--accent);
+  }
+}
+
+/* ⚠ THE 320px FOOTER, MEASURED — not assumed to wrap. `.btn` is
+   `white-space:nowrap`, so a `.m-foot` row that does not fit does NOT wrap: the
+   buttons paint outside the modal's 4px border and `.modal-scrim` (whose
+   `overflow-y:auto` computes `overflow-x` to `auto`) grows a horizontal
+   scrollbar. Same class of hazard as the cartbar's actions row, one layer up.
+
+   The arithmetic, at viewport W: the scrim takes 18px a side, `.modal` 4px of
+   border a side, `.m-foot` 18px of padding a side, and the two buttons are
+   separated by an 8px gap — so the row has `W − 80` to spend. Measured on this
+   build at 320px (fallback face, which is the WIDE one here — Figtree is
+   narrower): `Zrušiť` 78.69 + `Potvrdiť a odoslať` 156.05 + 8 = 242.73 against
+   240. It overflows by 2.73px, i.e. every viewport below ~323px. The other three
+   footers (`OK`; `Nie`/`Áno, zrušiť`; `Zostať`/`Opustiť`) land exactly on 240.
+
+   Fixed by spending horizontal PADDING rather than copy: 04 §UC-FO-010 pins the
+   labels verbatim, and shortening one to fit would be the wrong trade. The
+   buttons are `flex:1` (`.m-foot .btn`), so they re-grow to fill the row either
+   way — the padding is only ever their MINIMUM, which is why this is invisible
+   at every width and only ever prevents the overflow.
+
+   400px, not 323px: it costs nothing (nothing above 323 was overflowing anyway,
+   and nothing moves), it stays well below the 420px cap where `.modal` stops
+   being viewport-bound, and it leaves room for a wider face than the one
+   measured here. Scoped to this view's own footer buttons — `.m-foot .btn` is
+   module 02's rule and every other dialog on this shell keeps its canon
+   padding. */
+@media (max-width: 400px) {
+  .fo-foot-btn {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}
+</style>
