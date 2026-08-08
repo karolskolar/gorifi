@@ -302,7 +302,13 @@ transactions modal; admin screens using `BalanceBadge` are pixel-unchanged.
 
 **Page column:** padding **16 px phone / 28 px desktop**, `max-width: 760px`, centered,
 column `gap: 20px` (UC-DS-005 standard column). Order: balance card (UC-FL-005) →
-cycles section.
+cycles section. That horizontal padding **must be expressed with `px-*`**, and the
+column **must never carry the literal class `p-4`** (nor `p-4 sm:p-7`): the cycle card
+below is pinned on that exact class token, so an all-sides `p-4` on the column would
+make `cardFor()` match both the column and the card and trip Playwright strict mode.
+Use UC-DS-005's canonical idiom — `mx-auto w-full max-w-[760px] px-4 sm:px-7` — plus a
+separate vertical utility (`py-6`) where the column needs one; that satisfies the
+prohibition by construction.
 
 **Section header** (`display:flex; justify-content:space-between; align-items:center;
 margin-bottom: 14px`):
@@ -454,10 +460,12 @@ share tap opens the dialog titled with that cycle's name and does not navigate;
   `div.card.flat` (`padding: 14px`, `display:flex; justify-content:space-between;
   align-items:center; gap:10px; opacity:.85`):
   - Left (`min-width:0`): name (`font-weight:700; font-size:15px`); below
-    (`display:flex; gap:6px; margin-top:7px; flex-wrap:wrap`): small type badge
-    (`span.badge` for coffee "Káva" / `span.badge.acc-o`-less plain per prototype —
-    prototype uses plain `.badge` with the type label; `font-size:10.5px;
-    padding:2px 7px`) + `span.badge.muted` "Dokončený" (same small sizing).
+    (`display:flex; gap:6px; margin-top:7px; flex-wrap:wrap`): small type badge —
+    a plain `span.badge` carrying the type label ("Káva" or "Pekáreň") for **both**
+    types, with **no** `acc-o` / `solid` modifier (archive rows are muted, so unlike
+    the active card's badge row above they do not colour-code the type);
+    `font-size:10.5px; padding:2px 7px` + `span.badge.muted` "Dokončený" (same
+    small sizing).
   - Right: when `hasOrder`, `<span class="mono" style="font-size:13px;
     flex-shrink:0">{{ cycle.orderTotal.toFixed(2) }} EUR</span>`; otherwise nothing
     (repo behavior — the prototype's demo data always has totals).

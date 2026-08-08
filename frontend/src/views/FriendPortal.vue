@@ -8,8 +8,8 @@ import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { fmtEur } from '@/lib/money'
 import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
 import BrandChrome from '@/components/neo/BrandChrome.vue'
@@ -437,9 +437,16 @@ function switchUser() {
   //    the modal prefills the PREVIOUS friend's preferences and "Uložiť"
   //    writes them onto the new friend — a cross-account write, not just a
   //    stale read.
+  //  - `showArchive` (RD-FL-4) is the mildest case of the same rule and is reset
+  //    for consistency, not for safety: it holds no data — `cycles` is cleared
+  //    two lines down and refetched per friend — so at worst it carried one bit
+  //    ("somebody expanded the archive") into the next session. But UC-FL-008
+  //    pins the fold as DEFAULT-CLOSED, and a component instance that survives a
+  //    logout is the only path on which the next session could open expanded.
   error.value = ''
   voucherResolved.value = null
   subscriptions.value = []
+  showArchive.value = false
   clearFriendsPassword()
   localStorage.removeItem(STORAGE_KEY)
   savedAuth.value = null
@@ -457,30 +464,13 @@ function goToCycle(cycleId) {
   router.push(`/cycle/${cycleId}`)
 }
 
-function getStatusVariant(status) {
-  switch (status) {
-    case 'planned': return 'outline'
-    case 'open': return 'default'
-    case 'locked': return 'secondary'
-    case 'completed': return 'outline'
-    default: return 'outline'
-  }
-}
-
-function getStatusText(status) {
-  switch (status) {
-    case 'planned': return 'Plánovaný'
-    case 'open': return 'Otvorený'
-    case 'locked': return 'Uzamknutý'
-    case 'completed': return 'Dokončený'
-    default: return status
-  }
-}
-
-function formatPrice(price) {
-  return price ? `${price.toFixed(2)} EUR` : '-'
-}
-
+// ⚠ `getStatusVariant` / `getStatusText` / `formatPrice` were deleted with the
+// shadcn cycle cards they served (RD-FL-4). The status labels are now literal in
+// the badge row — the theme gives each status its OWN badge variant
+// (`muted`/`acc`/plain), so a shared text helper would have had to be paired with
+// a shared class helper anyway, and the prototype writes all three out. Money
+// goes through `fmtEur` (UC-DS-012), which — unlike `formatPrice` — renders
+// `0.00 EUR` instead of `-` and never emits `NaN EUR`.
 function getCurrentFriendName() {
   // Show login name (display_name is admin-only)
   return currentFriend.value?.name || savedAuth.value?.friendName || ''
@@ -755,6 +745,15 @@ function getCycleTypeLabel(type) {
 function formatKilos(kilos) {
   if (!kilos || kilos === 0) return '0 kg'
   return `${kilos.toFixed(2)} kg`
+}
+
+// The quantity that FOLDS INTO the "Objednané ·" badge (03 resolved conflict #6:
+// the separate "☕ 0.25 kg" line is dropped). Bakery counts pieces, coffee counts
+// weight — the same split the dropped line used, so nothing about WHICH number is
+// shown changes, only where it renders.
+function orderQuantityLabel(cycle) {
+  if (cycle.type === 'bakery') return `${cycle.orderItemCount} ks`
+  return formatKilos(cycle.orderKilos)
 }
 
 async function openInviteModal() {
@@ -1209,181 +1208,220 @@ async function copyInviteLink() {
       <!-- Balance Card -->
       <FriendBalanceCard :friend-id="selectedFriendId" />
 
-      <div class="flex justify-between items-center mb-4">
-        <h2 class="text-xl font-semibold text-foreground">Objednávkové cykly</h2>
-        <Button
-          variant="ghost"
-          size="icon"
-          @click="openSubscriptionModal"
+      <!-- Section header (UC-FL-006).
+
+           ⚠ PINNED: `<h2>` with the accessible name "Objednávkové cykly" —
+           FIVE e2e specs locate it with `getByRole('heading', { name:
+           'Objednávkové cykly' })`. The name concatenates across the `.hl`
+           span, so the highlight costs nothing; the space before the span is
+           load-bearing. `h-screen` is the theme's DISPLAY-HEADING class inside
+           `.app` (UC-DS-001), not Tailwind's height utility — it is blocklisted
+           as a Tailwind candidate in `tailwind.config.js` for exactly this. -->
+      <div class="flex justify-between items-center" style="margin-bottom:14px">
+        <h2 class="h-screen text-[28px] sm:text-[34px]">Objednávkové <span class="hl">cykly</span></h2>
+        <!-- The gear is the ONLY route to the subscription modal, so it takes
+             the house zero-pixel ARIA layer (role + tabindex + Enter/Space) —
+             the same enhancement NeoCheckbox, NeoModal's `.m-x` and the login
+             eye toggle make, and the same rule that kept it OFF the appbar
+             pencil (which merely duplicates `.titles`). The prototype's bare
+             span would be unreachable without a mouse. -->
+        <span
+          role="button"
+          tabindex="0"
+          aria-label="Nastavenia odberu"
           title="Nastavenia odberu"
-          class="text-muted-foreground hover:text-foreground"
+          style="color:var(--ink-dim);cursor:pointer;display:flex"
+          @click="openSubscriptionModal"
+          @keydown.enter.prevent="openSubscriptionModal"
+          @keydown.space.prevent="openSubscriptionModal"
         >
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-          </svg>
-        </Button>
+          <NeoIcon name="gear" />
+        </span>
       </div>
 
-      <div v-if="cycles.length === 0" class="text-center py-12 text-muted-foreground">
+      <div v-if="cycles.length === 0" class="sub" style="text-align:center;padding:48px 0">
         Žiadne dostupné cykly
       </div>
 
       <template v-else>
-        <!-- Active cycles -->
-        <div v-if="activeCycles.length === 0" class="text-center py-8 text-muted-foreground">
+        <!-- Active cycles — `status !== 'completed'`, so PLANNED, OPEN and
+             LOCKED all render here, in the order the API returns them. -->
+        <div v-if="activeCycles.length === 0" class="sub" style="text-align:center;padding:32px 0">
           Žiadne aktívne cykly
         </div>
-        <div v-else class="space-y-3">
-          <Card
+        <div v-else style="display:flex;flex-direction:column;gap:16px">
+          <!-- ⚠ PINNED: the card root is a `div` carrying the LITERAL class
+               `p-4` (= the prototype's 16px padding). `guest-link.spec.js`'s
+               `cardFor()` is
+                 page.locator('div.p-4', { has: getByRole('heading', { name, exact: true }) })
+               so this element must hold BOTH the `<h3>` cycle name and the
+               share button. Consequences that must survive future edits:
+                 · nothing else in this view may carry `p-4` while containing a
+                   cycle-name heading — notably the page column above, which is
+                   deliberately `px-4 sm:px-7 py-6` and NOT `p-4`, or the
+                   locator would match column AND card and trip strict mode;
+                 · `p-4` is a Tailwind utility here, not theme CSS. `.card`
+                   itself declares no padding, so it is also the real padding.
+
+               `.card.hl` (open only) is the white card with the 6px magenta
+               shadow; planned cards are inert per UC-FL-006. -->
+          <div
             v-for="cycle in activeCycles"
             :key="cycle.id"
-            :class="[
-              cycle.type === 'bakery' ? 'bg-orange-50/70 border-orange-200' : 'bg-gray-50 border-gray-200',
-              cycle.status !== 'planned' ? 'cursor-pointer hover:shadow-md' : 'opacity-90'
-            ]"
-            class="transition-shadow"
+            class="card p-4"
+            :class="{ hl: cycle.status === 'open' }"
+            :style="{
+              cursor: cycle.status === 'planned' ? 'default' : 'pointer',
+              opacity: cycle.status === 'planned' ? 0.85 : 1
+            }"
             @click="cycle.status !== 'planned' && goToCycle(cycle.id)"
           >
-            <CardContent class="p-4">
-              <div class="flex justify-between items-start">
-                <div class="flex-1">
-                  <h3 class="font-semibold text-foreground">{{ cycle.name }}</h3>
-                  <div v-if="cycle.expected_date" class="text-sm text-primary mt-1">
-                    📅 {{ cycle.expected_date }}
-                  </div>
-                  <div v-if="cycle.plan_note" class="text-sm text-muted-foreground mt-2 whitespace-pre-line">
-                    {{ cycle.plan_note }}
-                  </div>
-                  <div class="flex items-center gap-2 mt-2">
-                    <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
-                      Pekáreň
-                    </Badge>
-                    <Badge v-else variant="outline" class="border-amber-700 text-amber-800 bg-amber-100">
-                      Káva
-                    </Badge>
-                    <Badge v-if="cycle.status === 'planned'" variant="outline" class="border-blue-400 text-blue-700 bg-blue-50">
-                      Plánovaný
-                    </Badge>
-                    <Badge v-else :variant="getStatusVariant(cycle.status)">
-                      {{ getStatusText(cycle.status) }}
-                    </Badge>
-                    <Badge v-if="cycle.hasOrder" variant="outline" class="border-green-500 text-green-700">
-                      Objednané
-                    </Badge>
-                    <Badge v-else-if="cycle.status === 'open'" variant="outline" class="border-yellow-500 text-yellow-700">
-                      Neobjednané
-                    </Badge>
-                  </div>
-                  <div v-if="cycle.hasOrder" class="flex items-center gap-3 mt-2 text-sm text-muted-foreground">
-                    <span v-if="cycle.type === 'bakery'">🥐 {{ cycle.orderItemCount }} ks</span>
-                    <span v-else>☕ {{ formatKilos(cycle.orderKilos) }}</span>
-                  </div>
-                  <div v-if="cycle.hasOrder && (cycle.orderPacketa || cycle.orderPickupName)" class="mt-1.5">
-                    <Badge v-if="cycle.orderPacketa" variant="outline" class="border-red-400 text-red-600 bg-red-50 text-xs">
-                      📦 Packeta
-                    </Badge>
-                    <Badge v-else-if="cycle.orderPickupName" variant="outline" class="border-blue-400 text-blue-600 bg-blue-50 text-xs">
-                      {{ cycle.orderPickupName }}
-                    </Badge>
-                  </div>
-                  <!-- Share this cycle with colleagues (guest orders). Only
-                       while the cycle is open — same rule as FriendOrder. -->
-                  <Button
-                    v-if="cycle.status === 'open'"
-                    variant="ghost"
-                    size="sm"
-                    class="h-7 px-2 -ml-2 mt-1.5 gap-1.5 text-muted-foreground hover:text-foreground"
-                    @click.stop="openShareDialog(cycle)"
-                  >
-                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342A3 3 0 106.316 10.658m0 2.684l8.632 4.316m-8.632-7l8.632-4.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-                    </svg>
-                    <span class="text-xs">Zdieľať s kolegami</span>
-                  </Button>
-                </div>
-                <div v-if="cycle.status !== 'planned'" class="text-right">
-                  <span v-if="cycle.hasOrder" class="text-sm font-medium text-foreground">
-                    {{ formatPrice(cycle.orderTotal) }}
-                  </span>
-                  <svg class="w-5 h-5 text-muted-foreground mt-2 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-                  </svg>
+            <!-- Header row: name + date on the left, order total + chevron on
+                 the right (non-planned only — a planned cycle leads nowhere and
+                 has no order). -->
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+              <div style="min-width:0">
+                <!-- ⚠ PINNED: an `<h3>` whose text content is EXACTLY the cycle
+                     name — no nested spans, no icon, no whitespace-bearing
+                     children. `guest-link.spec.js` matches it with
+                     `{ exact: true }`, and `mobile-no-h-overflow.spec.js:73`
+                     clicks the name text to navigate (the card-level click).
+                     `.display` uppercases via CSS only, so `textContent` and the
+                     accessible name are untouched. -->
+                <h3 class="display" style="font-size:22px;line-height:1;overflow-wrap:anywhere">{{ cycle.name }}</h3>
+                <div
+                  v-if="cycle.expected_date"
+                  class="mono sub"
+                  style="font-size:12px;margin-top:7px;display:flex;align-items:center;gap:6px"
+                >
+                  <NeoIcon name="cal" /> {{ cycle.expected_date }}
                 </div>
               </div>
-            </CardContent>
-          </Card>
+              <div
+                v-if="cycle.status !== 'planned'"
+                style="display:flex;align-items:center;gap:8px;flex-shrink:0"
+              >
+                <!-- `orderTotal` ALREADY includes the delivery fee (the backend
+                     sums `total + delivery_fee`) — never re-add it here. -->
+                <span v-if="cycle.hasOrder" class="display" style="font-size:18px">{{ fmtEur(cycle.orderTotal) }}</span>
+                <span style="color:var(--accent);display:flex"><NeoIcon name="chev" /></span>
+              </div>
+            </div>
+
+            <!-- Plan block — the admin's multiline `plan_note`, one line per row
+                 via `white-space:pre-line` (the prototype renders an array).
+                 ⚠ `overflow-wrap:anywhere` is REQUIRED, not cosmetic, and does a
+                 different job from `pre-line`: pre-line keeps one line per row
+                 but will not break a long unbreakable token. `plan_note` is free
+                 admin text, so a pasted Google Docs/Sheets URL is the obvious
+                 real case — without this the whole DOCUMENT scrolled sideways on
+                 a phone (531px against a 320px viewport). Neither `.card` nor the
+                 page column clips, so the wrap has to happen here. UC-DS-005:
+                 minimum supported width 320px with zero horizontal overflow. -->
+            <div
+              v-if="cycle.plan_note"
+              class="mono"
+              style="font-size:12px;color:var(--ink-faint);margin-top:10px;line-height:1.7;white-space:pre-line;overflow-wrap:anywhere"
+            >{{ cycle.plan_note }}</div>
+
+            <!-- Badge row: type × status × order.
+                 ⚠ resolved conflict #1 — NO delivery-method badge (Packeta /
+                 pickup) on the portal card any more; it lives on the order
+                 screen (module 04) only.
+                 ⚠ resolved conflict #6 — the ordered quantity FOLDS INTO the ok
+                 badge ("Objednané · 0.25 kg" / "Objednané · 3 ks"); the separate
+                 "☕ 0.25 kg" line is dropped.
+                 A locked cycle without an order gets NO third badge. -->
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">
+              <span class="badge" :class="cycle.type === 'bakery' ? 'acc-o' : 'solid'">{{ getCycleTypeLabel(cycle.type) }}</span>
+              <span v-if="cycle.status === 'planned'" class="badge muted">Plánovaný</span>
+              <span v-else-if="cycle.status === 'open'" class="badge acc">Otvorený</span>
+              <span v-else class="badge">Uzamknutý</span>
+              <span v-if="cycle.hasOrder" class="badge ok">Objednané · {{ orderQuantityLabel(cycle) }}</span>
+              <span v-else-if="cycle.status === 'open'" class="badge warn">Neobjednané</span>
+            </div>
+
+            <!-- ⚠ SEAM — RD-FL-5 replaces exactly this element with UC-FL-007's
+                 share ROW: the `border-top: 2px solid rgba(10,10,10,0.12)` /
+                 `padding-top:12px; margin-top:12px` bar carrying the colleague
+                 count on the left ("N kolegovia cez váš odkaz" /
+                 "Objednávate aj pre kolegov?") and a `button.btn.sm` with the
+                 share glyph, visible text "Zdieľať" and
+                 `aria-label="Zdieľať s kolegami"` on the right.
+
+                 It ships here as the UNCHANGED shadcn button rather than being
+                 removed, because `guest-link.spec.js` — which this row may not
+                 edit — asserts the button's accessible name INSIDE `div.p-4`,
+                 that a locked card has none, and that the click does not
+                 navigate. Dropping it would take the suite below baseline and
+                 leave the `p-4` pin unverifiable. So: same behaviour, same
+                 accessible name, transitional look (UC-DS-002), placed as the
+                 card's LAST child directly under the badge row — which is
+                 exactly where the designed row goes. -->
+            <Button
+              v-if="cycle.status === 'open'"
+              variant="ghost"
+              size="sm"
+              class="h-7 px-2 -ml-2 mt-3 gap-1.5 text-muted-foreground hover:text-foreground"
+              @click.stop="openShareDialog(cycle)"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342A3 3 0 106.316 10.658m0 2.684l8.632 4.316m-8.632-7l8.632-4.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+              </svg>
+              <span class="text-xs">Zdieľať s kolegami</span>
+            </Button>
+          </div>
         </div>
 
-        <!-- Archived cycles -->
-        <div v-if="archivedCycles.length > 0" class="mt-6">
-          <button
+        <!-- Archive fold (UC-FL-008). Plain UI state: not persisted, not in the
+             URL, default closed — and cleared by `switchUser` so the next
+             session on a shared device also opens closed. -->
+        <div v-if="archivedCycles.length > 0">
+          <!-- `.chev.open` is the theme's own rotate-90 + accent transition, so
+               the rotation and the colour come from one class, not from
+               Tailwind. Keyboard layer as on the gear: this toggle is the only
+               route to the archived cycles. -->
+          <div
+            role="button"
+            tabindex="0"
+            :aria-expanded="showArchive ? 'true' : 'false'"
+            data-testid="archive-toggle"
+            style="display:flex;align-items:center;gap:8px;margin-top:18px;cursor:pointer;font-weight:600;font-size:14px;color:var(--ink-dim)"
             @click="showArchive = !showArchive"
-            class="flex items-center gap-2 w-full text-left py-2 text-muted-foreground hover:text-foreground transition-colors"
+            @keydown.enter.prevent="showArchive = !showArchive"
+            @keydown.space.prevent="showArchive = !showArchive"
           >
-            <svg
-              class="w-4 h-4 transition-transform"
-              :class="showArchive ? 'rotate-90' : ''"
-              fill="none" stroke="currentColor" viewBox="0 0 24 24"
-            >
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-            </svg>
-            <span class="text-sm font-medium">Archív ({{ archivedCycles.length }})</span>
-          </button>
+            <span class="chev" :class="{ open: showArchive }"><NeoIcon name="chev" /></span>
+            <span>Archív ({{ archivedCycles.length }})</span>
+          </div>
 
-          <div v-if="showArchive" class="space-y-3 mt-3">
-            <Card
+          <div v-if="showArchive" style="display:flex;flex-direction:column;gap:12px;margin-top:12px">
+            <!-- Flat 2px-border rows. ⚠ resolved conflict #4: the prototype's
+                 archive rows are inert, the repo navigates — repo is canonical
+                 for behaviour, so they keep calling `goToCycle`.
+                 The name is a plain bold div, NOT a heading: `guest-link.spec.js`
+                 matches cycle cards by `div.p-4` + heading, and an archived row
+                 must never be able to answer that locator. -->
+            <div
               v-for="cycle in archivedCycles"
               :key="cycle.id"
-              class="cursor-pointer hover:shadow-md transition-shadow opacity-75"
-              :class="cycle.type === 'bakery' ? 'bg-orange-50/70 border-orange-200' : 'bg-gray-50 border-gray-200'"
+              class="card flat"
+              style="padding:14px;display:flex;justify-content:space-between;align-items:center;gap:10px;opacity:.85;cursor:pointer"
               @click="goToCycle(cycle.id)"
             >
-              <CardContent class="p-4">
-                <div class="flex justify-between items-start">
-                  <div class="flex-1">
-                    <h3 class="font-semibold text-foreground">{{ cycle.name }}</h3>
-                    <div v-if="cycle.expected_date" class="text-sm text-primary mt-1">
-                      📅 {{ cycle.expected_date }}
-                    </div>
-                    <div class="flex items-center gap-2 mt-2">
-                      <Badge v-if="cycle.type === 'bakery'" variant="outline" class="border-orange-400 text-orange-600 bg-orange-50">
-                        Pekáreň
-                      </Badge>
-                      <Badge v-else variant="outline" class="border-amber-700 text-amber-800 bg-amber-100">
-                        Káva
-                      </Badge>
-                      <Badge :variant="getStatusVariant(cycle.status)">
-                        {{ getStatusText(cycle.status) }}
-                      </Badge>
-                      <Badge v-if="cycle.hasOrder" variant="outline" class="border-green-500 text-green-700">
-                        Objednané
-                      </Badge>
-                    </div>
-                    <div v-if="cycle.hasOrder" class="flex items-center gap-3 mt-2 text-sm text-muted-foreground">
-                      <span v-if="cycle.type === 'bakery'">🥐 {{ cycle.orderItemCount }} ks</span>
-                      <span v-else>☕ {{ formatKilos(cycle.orderKilos) }}</span>
-                    </div>
-                    <div v-if="cycle.hasOrder && (cycle.orderPacketa || cycle.orderPickupName)" class="mt-1.5">
-                      <Badge v-if="cycle.orderPacketa" variant="outline" class="border-red-400 text-red-600 bg-red-50 text-xs">
-                        📦 Packeta
-                      </Badge>
-                      <Badge v-else-if="cycle.orderPickupName" variant="outline" class="border-blue-400 text-blue-600 bg-blue-50 text-xs">
-                        {{ cycle.orderPickupName }}
-                      </Badge>
-                    </div>
-                  </div>
-                  <div class="text-right">
-                    <span v-if="cycle.hasOrder" class="text-sm font-medium text-foreground">
-                      {{ formatPrice(cycle.orderTotal) }}
-                    </span>
-                    <svg class="w-5 h-5 text-muted-foreground mt-2 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-                    </svg>
-                  </div>
+              <div style="min-width:0">
+                <div style="font-weight:700;font-size:15px;overflow-wrap:anywhere">{{ cycle.name }}</div>
+                <div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap">
+                  <span class="badge" style="font-size:10.5px;padding:2px 7px">{{ getCycleTypeLabel(cycle.type) }}</span>
+                  <span class="badge muted" style="font-size:10.5px;padding:2px 7px">Dokončený</span>
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+              <span
+                v-if="cycle.hasOrder"
+                class="mono"
+                style="font-size:13px;flex-shrink:0"
+              >{{ fmtEur(cycle.orderTotal) }}</span>
+            </div>
           </div>
         </div>
       </template>
