@@ -653,8 +653,32 @@ and cannot be dismissed by Esc/scrim; setting a valid password lands on the cycl
 
 **Procedure:**
 
-1. Full Playwright suite green at baseline **238 passed / 3 skipped**, no spec files
-   modified by this task.
+1. Full Playwright suite green at baseline **238 passed / 3 skipped**.
+
+   **⚠ AMENDMENT (RD-FL-7) — the e2e-immutability rule, reformulated.** As written
+   ("no spec files modified by this task") this clause was self-contradictory: the
+   same document's `UC-FL-011` *mandates* moving the invite-fetch failure into the
+   modal body, which invalidates an assertion RD-FL-3 wrote — so obeying UC-FL-011
+   requires editing a spec, and obeying this line requires not implementing
+   UC-FL-011. The rule it was reaching for is:
+
+   - **Pre-existing specs are immutable.** Everything in the pin table above, and
+     every spec file this redesign pipeline did not author, must pass **unchanged**.
+     If one of them fails, the implementation is wrong — full stop.
+   - **A pipeline-authored spec may be edited in exactly two cases:** (a) a module
+     spec **mandates** the behaviour change that invalidates the assertion, or (b)
+     the assertion is **structurally unsatisfiable** against a primitive the spec
+     mandates (e.g. it queries an `input` in a modal that UC-DS-011 turns into a
+     `div.copyrow`). In both cases the edit must **re-point** the assertion at the
+     mandated structure and protect the same property — never weaken or delete it.
+   - **Every such edit cites the mandating clause in the code comment, and the PR
+     reports the exact count of existing spec files edited.** Zero remains the
+     expected number; a non-zero count is a claim that needs the citation to stand.
+
+   The failure mode this guards against is a row silently re-pointing an assertion
+   at whatever it happened to build. The failure mode the ORIGINAL wording created
+   is worse — it makes a mandated behaviour change unimplementable, and the cheapest
+   way out of that bind is to not implement it.
 2. New e2e coverage this module adds (per 02 §UC-DS-014 item 6 — 03 is the primitives'
    first regression net): modern-mode login happy path + error banner
    (BrandChrome/NeoIcon/NeoCheckbox), portal share-row count rendering, invite modal

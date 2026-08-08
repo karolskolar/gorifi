@@ -432,12 +432,25 @@ defineOptions({
                 <slot name="subtitle">{{ subtitle }}</slot>
               </div>
             </div>
+            <!-- ⚠ The accessible name is "Zatvoriť dialóg", and it MUST NOT
+                 CONTAIN the word "Zavrieť". Every modal specced on this shell
+                 carries a footer button labelled exactly "Zavrieť" (03
+                 §UC-FL-011, 05 §Share dialog, 06 §UC-GX-005), and three shipped,
+                 non-editable guest specs close the payment modal with an
+                 unscoped `getByRole('button', { name: 'Zavrieť' })`. Playwright
+                 matches that name as a case-insensitive SUBSTRING unless
+                 `exact: true`, so "Zavrieť" and even "Zavrieť dialóg" both
+                 resolve to two elements and throw a strict-mode violation
+                 (measured, not assumed — "Zavrieť dialóg" was tried first and
+                 failed exactly this way). A synonym is the only fix available:
+                 the specs cannot be edited and the × must stay named for a11y.
+                 See 02 §UC-DS-010. Do not "simplify" this back. -->
             <span
               v-if="closable"
               class="m-x"
               role="button"
               tabindex="0"
-              aria-label="Zavrieť"
+              aria-label="Zatvoriť dialóg"
               @click="requestClose"
               @keydown.enter.prevent="requestClose"
               @keydown.space.prevent="requestClose"

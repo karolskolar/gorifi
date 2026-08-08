@@ -592,7 +592,9 @@ Slots: default → `.m-body`; `#footer` → `.m-foot` (omitted when empty); `#su
             <div class="m-title" :id="titleId">{{ title }}</div>
             <div v-if="subtitle || $slots.subtitle" class="sub" style="margin-top:4px">…</div>
           </div>
-          <span v-if="closable" class="m-x" @click="$emit('close')">
+          <!-- aria-label NORMATIVE — must not CONTAIN "Zavrieť"; see below. -->
+          <span v-if="closable" class="m-x" aria-label="Zatvoriť dialóg"
+                @click="$emit('close')">
             <NeoIcon name="close" />
           </span>
         </div>
@@ -645,6 +647,40 @@ Slots: default → `.m-body`; `#footer` → `.m-foot` (omitted when empty); `#su
     would LATCH it with nothing to consume it, handing the permission to some
     later click.
   - **Closing consumes the flag**, so it authorizes at most one dismissal.
+- **AMENDMENT (RD-FL-7) — the ×'s accessible name is `"Zatvoriť dialóg"`, and it must
+  not CONTAIN the substring `"Zavrieť"`.** The × takes the house zero-pixel ARIA
+  enhancement (`role="button"` + `tabindex="0"` + `aria-label` + Enter/Space, per the
+  rule above); the *choice of string* is what is normative here.
+
+  Every concrete modal specced on this shell carries a footer `button.btn` labelled
+  **exactly** "Zavrieť" — 03 §UC-FL-011 (invite), 05 (share dialog), 06 §UC-GX-005
+  (Platba) all pin that word verbatim. Three shipped, **non-editable** specs close the
+  payment modal with an unscoped `getByRole('button', { name: 'Zavrieť' })`
+  (`guest-status.spec.js:664`, `guest-order.spec.js:865`,
+  `guest-lead-capture.spec.js:466`), and 06 §UC-GX-005 names
+  `guest-status.spec.js:653–665` as an acceptance criterion **while** mandating that
+  footer — so if the × answers to "Zavrieť" too, 06 requires a state that is a
+  Playwright strict-mode violation, with no legal escape (06's pin list protects the
+  button names). The collision is live today: inside the invite dialog that query
+  resolves to 2 elements.
+
+  ⚠ **Why a mere qualifier is not enough, and this is a substring rule rather than an
+  inequality:** Playwright matches `getByRole(..., { name })` as a **whitespace-trimmed,
+  case-insensitive SUBSTRING** unless the caller passes `exact: true` — and the three
+  specs above do not. `aria-label="Zavrieť dialóg"` was therefore tried first and
+  **still failed**, resolving to `[<span class="m-x" aria-label="Zavrieť dialóg">,
+  <button class="btn">Zavrieť</button>]`. Since those specs cannot be edited to add
+  `exact: true` and the × must keep an accessible name, a **synonym** is the only
+  remedy: `"Zatvoriť"` is ordinary Slovak for the same action and shares no substring
+  with `"Zavrieť"`. Any future rename of either control must preserve that
+  non-containment in both directions.
+
+  Scoping the queries instead (`.m-foot`-prefixed) was rejected: it fixes only the
+  specs this pipeline may edit and leaves modules 04–06 to trip over the same
+  collision. Distinct accessible names for distinct controls is also plainly the
+  better screen-reader outcome — "Zavrieť" twice in one dialog names neither. No spec
+  queries `.m-x` by name; the two that touch it use the class
+  (`portal-profile-modal.spec.js`, `modern-login.spec.js`).
 - While open: `document.body` scroll is locked (`overflow:hidden`), focus moves into the
   modal (container `tabindex="-1"` focus on open) and returns to the opener on close.
   Focus handling must add no visual artifact.
@@ -662,6 +698,10 @@ Slots: default → `.m-body`; `#footer` → `.m-foot` (omitted when empty); `#su
 - Tokens resolve inside the modal (magenta buttons etc.) even though it is outside `.app`.
 - Click inside modal body never closes; scrim click / Esc / × close; `closable:false`
   disables all three; background does not scroll while open.
+- In a modal whose footer is the specced `button.btn` "Zavrieť", an **unscoped,
+  non-exact** `getByRole('button', { name: 'Zavrieť' })` resolves to **exactly one**
+  control (the footer button), and the × is reachable as "Zatvoriť dialóg" and still
+  closes.
 - A text-selection drag that presses inside `.m-body`, moves out and releases over the
   scrim leaves the modal **open** (and its fields untouched); a press-and-release on
   the scrim still closes it.
