@@ -470,7 +470,10 @@ function switchUser() {
   // Clear auth state and go back to login.
   //
   // ⚠ `error` must go with it. `authenticate`/`authenticatePersonal` clear
-  // `authError` and `saveCredentials` clears `setupError` — SIBLING refs;
+  // `authError` on entry — the one sibling that really does heal itself before
+  // it can be re-rendered. (`saveCredentials` clears `setupError` too, but only
+  // when the NEXT person submits, i.e. long after the stale message has been
+  // shown to them; see the credential-setup entry below.)
   // `loadInitialData` is the only other writer that clears `error` itself, and
   // it returns early on a successful session restore (line ~178) without ever
   // reaching its own reset on the re-login path. So a failed profile/
@@ -503,12 +506,80 @@ function switchUser() {
   //    the PREVIOUS host had ordering through their link. Bumping the sequence
   //    counter with it is what stops an in-flight response re-filling the map
   //    immediately after this clear.
+  //  - The PROFILE MODAL's state (RD-FL-6) spans the whole scale at once, so
+  //    all of it goes:
+  //      · `changePasswordSuccess` ("Heslo bolo úspešne zmenené") is a green
+  //        banner that its own 3s timeout may not have cleared yet — it would
+  //        otherwise appear inside the NEXT person's profile modal, telling
+  //        them their password was changed. Exactly the `voucherResolved` class
+  //        of bug, one modal deeper.
+  //      · `changePasswordError` likewise names a failure of a session that
+  //        has ended.
+  //      · `showPasswordChange` is the `showArchive` case: one bit of "somebody
+  //        expanded the fold", and UC-FL-009 specifies the fold as
+  //        default-closed.
+  //      · the three password fields are the SEVERE case and the reason this
+  //        block is not optional. `changeCurrentPassword` holds a plaintext
+  //        password (and is also prefilled at login for the forced-change
+  //        path). A friend who types it, cancels and hands the device over
+  //        would leave it sitting in the next person's "Aktuálne heslo" field
+  //        — recoverable from the DOM, and submitted verbatim on their next
+  //        change attempt.
+  //      · `profileName`/`profilePacketaAddress` are re-prefilled by
+  //        `openProfileModal()` on every open, so they can never RENDER stale;
+  //        they are cleared anyway so no field of a former session survives in
+  //        memory, and so the rule needs no per-ref exception.
+  //  - ⚠ The CREDENTIAL-SETUP modal is the SECOND plaintext credential this
+  //    component holds across a logout, and the WORSE of the two, because it
+  //    needs no action at all from the next person to render:
+  //    `authenticate()` (line ~301) re-raises `showCredentialSetup` for
+  //    ANY transition-mode friend whose `hasCredentials` is false, which on a
+  //    shared device is routinely a different person from the one who just
+  //    dismissed it with "Neskôr". Reproduced in ONE component instance with
+  //    no reload: A types a username + password, presses "Neskôr", logs out;
+  //    B logs in with the shared password and the dialog opens by itself,
+  //    prefilled with A's username and A's plaintext password — and "Nastaviť"
+  //    would write A's password onto B's account. `saveCredentials()` clears
+  //    these on its SUCCESS path only, so every cancel path leaks.
+  //    (`forcedNewPassword`/`forcedNewPasswordConfirm` are NOT in this block
+  //    and must not be: that gate is `closable:false` and focus-trapped, so
+  //    the logout control is unreachable while it holds anything.)
+  //  - `usernameAvailable`/`usernameChecking` are the mild `showArchive` end of
+  //    the same modal: with the field cleared, a leftover "Užívateľské meno je
+  //    voľné" would describe a name that is no longer in the box. The pending
+  //    debounce is cancelled with them — otherwise its 400ms callback lands
+  //    AFTER this clear and re-writes the flag, which is the `guestCountSeq`
+  //    lesson in miniature.
   error.value = ''
   voucherResolved.value = null
   subscriptions.value = []
   showArchive.value = false
   guestCounts.value = {}
   guestCountSeq++
+  showProfileModal.value = false
+  showPasswordChange.value = false
+  changeCurrentPassword.value = ''
+  changeNewPassword.value = ''
+  changeNewPasswordConfirm.value = ''
+  changePasswordError.value = ''
+  changePasswordSuccess.value = ''
+  profileName.value = ''
+  profilePacketaAddress.value = ''
+  showCredentialSetup.value = false
+  setupUsername.value = ''
+  setupPassword.value = ''
+  setupPasswordConfirm.value = ''
+  setupError.value = ''
+  if (usernameCheckTimeout) clearTimeout(usernameCheckTimeout)
+  usernameCheckTimeout = null
+  usernameAvailable.value = null
+  usernameChecking.value = false
+  // The `showArchive` end of the scale — except the bit it carries is "render my
+  // password in cleartext". Left set, the next person's own password field opens
+  // as `type="text"` with no action by them, on a shared device. It exposes no
+  // PRIOR secret, which is why it is the mild case, but it inverts a security
+  // default across a session boundary.
+  showLoginPassword.value = false
   clearFriendsPassword()
   localStorage.removeItem(STORAGE_KEY)
   savedAuth.value = null
@@ -547,6 +618,16 @@ function getCurrentFriendUid() {
 }
 
 function openProfileModal() {
+  // ⚠ `error` is a PAGE-level ref shared with `openInviteModal`,
+  // `saveSubscriptions` and `resolveVoucher`, and the profile modal renders it
+  // as its own `.banner.danger.slim` while suppressing the page banner. So a
+  // message left standing by any of those would open here looking like the
+  // profile save had failed — and without the page banner's `Chyba:` prefix or
+  // its dismiss ×, so it could not be cleared without closing the modal.
+  // UC-FL-009 scopes the in-modal banner to `saveProfile()`'s own errors. Same
+  // "a retry must not leave the previous attempt's banner standing" rule
+  // `saveProfile`/`resolveVoucher` apply, one step earlier.
+  error.value = ''
   profileName.value = currentFriend.value?.name || savedAuth.value?.friendName || ''
   profilePacketaAddress.value = currentFriend.value?.packeta_address || ''
   showProfileModal.value = true
@@ -1252,8 +1333,17 @@ async function copyInviteLink() {
            it. So RD-FL-6/7 must NOT read this as "the banner survives for
            vouchers": whichever row next touches the voucher modal owns giving it
            its own in-modal error surface, and this banner may then be retired
-           with the last writer that can reach it. -->
-      <div v-if="error" class="banner danger mb-5" role="alert">
+           with the last writer that can reach it.
+
+           ⚠ RD-FL-6 took the first of those steps: while the profile modal is
+           open the message renders INSIDE it (`.banner.danger.slim`, UC-FL-009)
+           and this banner stands down, so `error` has exactly ONE surface at
+           any moment — two would have been a strict-mode ambiguity for every
+           `.banner.danger` query as well as a visible duplicate. It is a
+           suppression, not a handover: the moment the modal closes (including
+           "Zrušiť" after a failed save) this banner renders the same message,
+           which is what keeps the failure visible and dismissable. -->
+      <div v-if="error && !showProfileModal" class="banner danger mb-5" role="alert">
         <span class="dot"></span>
         <div style="min-width:0"><strong>Chyba:</strong> {{ error }}</div>
         <button
@@ -1537,97 +1627,174 @@ async function copyInviteLink() {
       </DialogContent>
     </Dialog>
 
-    <!-- Profile Edit Modal -->
-    <Dialog :open="showProfileModal" @update:open="showProfileModal = $event">
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Upraviť profil</DialogTitle>
-        </DialogHeader>
-        <div class="space-y-4 py-4">
-          <div class="space-y-2">
-            <Label class="text-muted-foreground">Jedinečné ID</Label>
-            <div class="font-mono text-sm bg-muted px-3 py-2 rounded">{{ getCurrentFriendUid() }}</div>
-            <p class="text-xs text-muted-foreground">Toto ID sa nedá zmeniť</p>
-          </div>
-          <div v-if="currentFriend?.username" class="space-y-2">
-            <Label class="text-muted-foreground">Užívateľské meno</Label>
-            <div class="font-mono text-sm bg-muted px-3 py-2 rounded">{{ currentFriend.username }}</div>
-          </div>
-          <div class="space-y-2">
-            <Label>Prihlasovacie meno *</Label>
-            <Input
-              v-model="profileName"
-              placeholder="Vaše prihlasovacie meno"
-              :disabled="profileSaving"
-            />
-            <p class="text-xs text-muted-foreground">Toto meno sa zobrazuje pri prihlasovaní</p>
-          </div>
-          <div class="space-y-2">
-            <Label>Adresa Packeta výdajného miesta</Label>
-            <Input
-              v-model="profilePacketaAddress"
-              placeholder="napr. Z-BOX Hlavná 15, Bratislava"
-              :disabled="profileSaving"
-            />
-            <p class="text-xs text-muted-foreground">Adresa výdajného miesta pre doručenie Packetou (voliteľné)</p>
-          </div>
+    <!-- Profile modal (UC-FL-009) — the first CLOSABLE form-bearing NeoModal.
+         Composed from `portal.jsx:176-199`: same nodes, same inline styles.
+         `.m-body` is itself `flex-direction:column; gap:12px`, so every field
+         group is a bare `<div>` — no wrapper spacing of our own.
 
-          <!-- Password change section (only if user has credentials) -->
-          <template v-if="currentFriend?.hasCredentials">
-            <div class="border-t pt-4 mt-4">
-              <button
-                @click="showPasswordChange = !showPasswordChange"
-                class="text-sm font-medium text-primary hover:underline"
-              >
-                {{ showPasswordChange ? 'Skryť zmenu hesla' : 'Zmeniť heslo' }}
-              </button>
-            </div>
+         ⚠ It is also the row that closed NeoModal's scrim-drag seam: releasing
+         a text selection over the scrim used to fire `@click.self` and throw
+         the half-typed form away. See the UC-DS-010 amendment.
 
-            <template v-if="showPasswordChange">
-              <Alert v-if="changePasswordError" variant="destructive">
-                <AlertDescription>{{ changePasswordError }}</AlertDescription>
-              </Alert>
-              <Alert v-if="changePasswordSuccess" class="border-green-200 bg-green-50">
-                <AlertDescription class="text-green-700">{{ changePasswordSuccess }}</AlertDescription>
-              </Alert>
+         Script behavior is UNCHANGED (`saveProfile` / `changePassword` keep
+         their side-effects verbatim); only the rendering moved. -->
+    <NeoModal
+      v-if="showProfileModal"
+      title="Upraviť profil"
+      @close="showProfileModal = false"
+    >
+      <!-- ⚠ The page-level `error` banner is SUPPRESSED while this modal is
+           open (see its `v-if` up in the authenticated column) and the same
+           message renders here instead — UC-FL-009: "render inside the modal
+           body so the user sees it in context". One surface at a time, so
+           there is never a duplicate; the page banner takes over the moment
+           the modal closes, which is what keeps a failed save visible after
+           "Zrušiť". -->
+      <div v-if="error" class="banner danger slim">
+        <span class="dot"></span>
+        <div style="min-width:0">{{ error }}</div>
+      </div>
 
-              <div class="space-y-2">
-                <Label>Aktuálne heslo</Label>
-                <Input v-model="changeCurrentPassword" type="password" :disabled="changePasswordSaving" />
-              </div>
-              <div class="space-y-2">
-                <Label>Nové heslo</Label>
-                <Input v-model="changeNewPassword" type="password" :disabled="changePasswordSaving" />
-              </div>
-              <div class="space-y-2">
-                <Label>Potvrdiť nové heslo</Label>
-                <Input
-                  v-model="changeNewPasswordConfirm"
-                  type="password"
-                  :disabled="changePasswordSaving"
-                  @keyup.enter="changePassword()"
-                />
-              </div>
-              <Button
-                @click="changePassword()"
-                :disabled="changePasswordSaving || !changeCurrentPassword || !changeNewPassword || !changeNewPasswordConfirm"
-                size="sm"
-              >
-                {{ changePasswordSaving ? 'Mením heslo...' : 'Zmeniť heslo' }}
-              </Button>
-            </template>
-          </template>
+      <!-- Read-only identity row. `div.copyrow > div.val` is the prototype's
+           READ-ONLY box style — deliberately WITHOUT NeoCopyRow's button
+           (UC-DS-011 is the copy control; this is just its box). The two
+           boxes are content-sized, exactly as `portal.jsx` renders them: no
+           `flex:1`, so each is as wide as its own label/value and the pair
+           shrinks (`.val` carries `min-width:0`) rather than overflowing.
+
+           ⚠ `<label for=…>` only associates with LABELABLE elements, and a
+           `div` is not one, so the association runs the other way here:
+           the label carries the id and the box points at it with
+           `aria-labelledby`. That is what keeps `getByLabel` resolving on a
+           non-input — plain `for` would silently associate with nothing. -->
+      <div style="display:flex;gap:10px">
+        <div>
+          <label id="pp-profile-uid-lbl" class="field-lbl">Jedinečné ID</label>
+          <div class="copyrow">
+            <div class="val" aria-labelledby="pp-profile-uid-lbl" data-testid="profile-uid">{{ getCurrentFriendUid() }}</div>
+          </div>
         </div>
-        <DialogFooter>
-          <Button variant="outline" @click="showProfileModal = false" :disabled="profileSaving">
-            Zrušiť
-          </Button>
-          <Button @click="saveProfile" :disabled="!profileName.trim() || profileSaving">
-            {{ profileSaving ? 'Ukladám...' : 'Uložiť' }}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        <!-- Username renders only when there IS one: legacy friends have no
+             credentials at all (repo behavior beats the prototype's demo
+             friend, who always does). -->
+        <div v-if="currentFriend?.username">
+          <label id="pp-profile-username-lbl" class="field-lbl">Užívateľské meno</label>
+          <div class="copyrow">
+            <div class="val" aria-labelledby="pp-profile-username-lbl" data-testid="profile-username">{{ currentFriend.username }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <label class="field-lbl" for="pp-profile-name">Prihlasovacie meno *</label>
+        <input
+          id="pp-profile-name"
+          v-model="profileName"
+          class="inp"
+          :disabled="profileSaving"
+        />
+        <div class="field-help">Toto meno vidí správca a kolegovia.</div>
+      </div>
+
+      <div>
+        <label class="field-lbl" for="pp-profile-packeta">Adresa Packeta výdajného miesta</label>
+        <input
+          id="pp-profile-packeta"
+          v-model="profilePacketaAddress"
+          class="inp"
+          placeholder="napr. Z-BOX Hlavná 15, Bratislava"
+          :disabled="profileSaving"
+        />
+        <div class="field-help">Predvolená adresa pre doručenie Packetou (voliteľné).</div>
+      </div>
+
+      <!-- Password-change fold — only for friends who HAVE a password (repo
+           behavior; a legacy shared-password friend has nothing to change). -->
+      <div
+        v-if="currentFriend?.hasCredentials"
+        style="border-top:2px solid rgba(10,10,10,0.12);padding-top:12px"
+      >
+        <button
+          type="button"
+          class="btn ghost sm"
+          style="color:var(--accent);font-weight:700;padding:0"
+          @click="showPasswordChange = !showPasswordChange"
+        >
+          {{ showPasswordChange ? 'Skryť zmenu hesla' : 'Zmeniť heslo' }}
+        </button>
+        <!-- ⚠ The toggle and the submit button share the string "Zmeniť heslo",
+             but never at the same time: the toggle reads "Skryť zmenu hesla"
+             exactly when the submit exists. `getByRole('button', { name:
+             'Zmeniť heslo' })` therefore stays unambiguous in both states. -->
+        <div
+          v-if="showPasswordChange"
+          style="display:flex;flex-direction:column;gap:12px;margin-top:12px"
+        >
+          <div v-if="changePasswordError" class="banner danger slim">
+            <span class="dot"></span>
+            <div style="min-width:0">{{ changePasswordError }}</div>
+          </div>
+          <div v-if="changePasswordSuccess" class="banner ok slim">
+            <span class="dot"></span>
+            <div style="min-width:0">{{ changePasswordSuccess }}</div>
+          </div>
+
+          <div>
+            <label class="field-lbl" for="pp-profile-current-password">Aktuálne heslo</label>
+            <input
+              id="pp-profile-current-password"
+              v-model="changeCurrentPassword"
+              class="inp"
+              type="password"
+              :disabled="changePasswordSaving"
+            />
+          </div>
+          <div>
+            <label class="field-lbl" for="pp-profile-new-password">Nové heslo</label>
+            <input
+              id="pp-profile-new-password"
+              v-model="changeNewPassword"
+              class="inp"
+              type="password"
+              :disabled="changePasswordSaving"
+            />
+          </div>
+          <div>
+            <label class="field-lbl" for="pp-profile-new-password-confirm">Potvrdiť nové heslo</label>
+            <input
+              id="pp-profile-new-password-confirm"
+              v-model="changeNewPasswordConfirm"
+              class="inp"
+              type="password"
+              :disabled="changePasswordSaving"
+              @keyup.enter="changePassword()"
+            />
+          </div>
+          <button
+            type="button"
+            class="btn sm dark"
+            :disabled="changePasswordSaving || !changeCurrentPassword || !changeNewPassword || !changeNewPasswordConfirm"
+            @click="changePassword()"
+          >
+            {{ changePasswordSaving ? 'Mením heslo...' : 'Zmeniť heslo' }}
+          </button>
+        </div>
+      </div>
+
+      <template #footer>
+        <button type="button" class="btn" :disabled="profileSaving" @click="showProfileModal = false">
+          Zrušiť
+        </button>
+        <button
+          type="button"
+          class="btn accent"
+          :disabled="!profileName.trim() || profileSaving"
+          @click="saveProfile"
+        >
+          {{ profileSaving ? 'Ukladám...' : 'Uložiť' }}
+        </button>
+      </template>
+    </NeoModal>
 
     <!-- Forced password change (UC-FL-012) — non-dismissable gate.
          `closable: false` kills ×, scrim-close and Esc (UC-DS-010), and with
