@@ -86,7 +86,7 @@ cd frontend && npm run dev
 - **Auto-save behavior differs based on order existence and status:**
   - No order exists yet: NO auto-save (items stay in cart but not saved to DB until submit)
   - Existing draft orders: Cart changes are auto-saved (debounced 500ms)
-  - Submitted orders: Changes are NOT auto-saved; user must click "Aktualizovať objednávku"
+  - Submitted orders: Changes are NOT auto-saved; user must click "Aktualizovať" (the button has read that since before the redesign; RD-FO-3 made the cartbar warning copy match it)
 - **Order creation:** Orders are only created when user explicitly submits (not by auto-save)
 - **Status notifications in cart footer:**
   - Yellow: "Objednávka ešte nebola odoslaná" - when cart has items but not submitted
@@ -373,7 +373,7 @@ Known call sites, enumerated when RD-FL-1 landed the first `.app`:
 - `FriendPortal.vue` voucher overlay — **fixed in RD-FL-1** via `<Teleport to="body">`; the view now has zero exposed direct children.
 - ~~⚠ `FriendOrder.vue` `<header … sticky top-0 z-40>` is a **direct child** of the root.~~ **Resolved in RD-FO-1**: the header is gone, replaced by the non-sticky `BrandChrome`. `order-shell.spec.js` asserts `header` count 0, `.appbar` computing `position: relative`, and the appbar moving 1:1 with the page.
 - ~~⚠ `FriendOrder.vue` `TabsList … class="sticky top-16 z-30"`~~ **Resolved in RD-FO-1**: it is `.cat-tabs` now, `top: 0` from the theme, which is correct precisely because nothing above it is pinned any more. Pinned by `order-shell.spec.js` (`top`, `z-index`, and the strip's box actually reaching y = 0 after a scroll) — `mobile-no-h-overflow.spec.js` would not have caught a wrong `top`.
-- `FriendOrder.vue` / `GuestOrder.vue` / `GuestOrderStatus.vue` hand-rolled `fixed bottom-0 z-50` cart bars are all *nested* inside their page-column div, so they survive as-is; converting them to the theme's `.cartbar` is safe even at root level. Do not "tidy" them up to root level while they are still on Tailwind utilities.
+- ~~`FriendOrder.vue` /~~ `GuestOrder.vue` / `GuestOrderStatus.vue` hand-rolled `fixed bottom-0 z-50` cart bars are *nested* inside their page-column div, so they survive as-is. Do not "tidy" them up to root level while they are still on Tailwind utilities. **`FriendOrder.vue`'s is resolved (RD-FO-3)**: it is now `.cartbar` and a **direct child of `.app`**, which is safe **only** because the theme's `.cartbar` rule sits *later* in `friends-theme.css` than `.app>*` at equal `(0,1,0)` specificity — proven by counterfactual, live: a plain `<div class="sticky bottom-0 z-50">` appended to `.app` computes `relative`/`z-index:1`, and the same node with `.cartbar` added computes `sticky`/`50` (rule indices 637 vs 741). RD-GX-1 gets the same free pass **only** when it converts to the theme class — not before.
 
 ### FriendOrder shell — the neobrutal chrome, banners, switch and category strip (RD-FO-1, 2026-08-08)
 
@@ -429,14 +429,7 @@ product cards (RD-FO-2), the cartbar (RD-FO-3), the modals (RD-FO-4), the locked
   the headroom stays positive. If an override is ever needed it goes on `.tabgroup .tab` only and
   **cannot be a Tailwind utility** — that selector is `(0,2,0)` and `friends-theme.css` loads after
   Tailwind, so it needs a scoped block.
-- ⚠ **`successMessage` ("Košík bol uložený") is reachable, unreadable, and once actively wrong.**
-  `saveCart(false)` is its only writer and `doSubmitOrder()` its only non-silent caller (auto-save and
-  cancel pass `silent: true` on purpose), so it has **no user-initiated trigger**. After a successful
-  submit it renders behind the success modal, which navigates away on close. After a **failed** submit
-  it is plainly visible **next to the error banner** — "saved" and "failed" side by side for 3 s
-  (reproduced by stubbing the submit endpoint to 500). Pre-existing, not introduced by this row.
-  Recommendation for **RD-FO-3** (which owns the cartbar messaging): retire the banner, or clear
-  `successMessage` at the top of `doSubmitOrder()`'s try. Do **not** give it a trigger.
+- ~~⚠ `successMessage` ("Košík bol uložený")~~ **RETIRED in RD-FO-3.** It was reachable, unreadable, and once actively wrong: `saveCart(false)` was its only writer and `doSubmitOrder()` its only non-silent caller, so it had **no user-initiated trigger** — after a successful submit it rendered behind the success modal, which navigates away on close, and after a **failed** submit it sat plainly **next to the error banner**, "saved" and "failed" side by side for 3 s. Retired rather than cleared, because clearing would have left a ref, a timeout and a banner no reachable state ever shows. Pinned by a test that stubs the submit to 500 and asserts the error banner appears **alone**.
 - The Kolegovia **share card** (RD-KG-1's to restyle) is pinned by TEXT, not structure — the
   accessible names `Zdieľať objednávku s kolegami` (`guest-link.spec.js:259`,
   `guest-host-view.spec.js:945`) and `Zdieľať odkaz`, matched as `/Zdieľať/` when a locked cycle
@@ -471,7 +464,8 @@ Full suite after this work: **367 passed / 3 skipped** (+14, zero pre-existing s
 
 - **One card root, two bodies.** `Card`/`CardContent` are gone from the product list; `.card` IS the
   neo card. `FriendOrder.vue` still imports them for the Kolegovia share card (RD-KG-1), and `Button`
-  for the cartbar/modals — do not "clean up" those imports before RD-FO-3/4/KG-1 land.
+  for the **modals** (RD-FO-4) and that same share card — the cartbar stopped needing it in RD-FO-3.
+  Do not "clean up" those imports before RD-FO-4 and RD-KG-1 both land.
 - ⚠ **`GuestProductGrid.vue` is the guest-side twin and deliberately stays on the OLD skin until
   RD-GX-1.** Its `getGroupQuantityTotal` (the whole-card `ring-2 ring-primary`) still exists there;
   the friend view's copy is gone, because 04 §UC-FO-007 replaces the ring with per-`.vbox` `.sel`.

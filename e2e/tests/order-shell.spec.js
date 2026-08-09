@@ -13,8 +13,10 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 //     without also removing it produces no build error and no failing spec — the
 //     header simply stops sticking. So the header's ABSENCE is asserted, and so is
 //     the fact that the two things that must still be positioned still are: the
-//     `.cat-tabs` strip (sticky, top 0, z 40) and the cart footer (fixed, pinned to
-//     the viewport bottom — it survives only because it is NESTED, not a root child).
+//     `.cat-tabs` strip (sticky, top 0, z 40) and the cart footer, which RD-FO-3
+//     moved to a DIRECT `.app` child on the theme's `.cartbar` (sticky, bottom 0,
+//     z 50) — it survives `.app > *` because the theme rule is declared later at
+//     equal specificity, not because it is nested. See the re-point note below.
 //
 // (B) THE STRIP'S `top` WAS CALIBRATED AGAINST THAT HEADER.
 //     `top-16` (64px) existed because the appbar was sticky. `BrandChrome` is
@@ -266,17 +268,31 @@ test.describe('UC-FO-001 — brand chrome', () => {
     expect(await appbar.evaluate((el) => getComputedStyle(el).position)).toBe('relative')
 
     // 3. `.app > *` did NOT eat the two positions that still have to work.
+    //
+    // ⚠ RE-POINTED BY RD-FO-3, under a MANDATED behaviour change — case (a).
+    // 04 §UC-FO-009 moves the cart footer OUT of the page column to "a direct
+    // child of the `.app` flex column, after the page column" and puts it on the
+    // theme class, whose rule is `position:sticky; bottom:0; z-index:50`
+    // ("replaces the current `fixed` bar and its `h-48` spacer hack"). So the
+    // element this test finds by `position === 'fixed'` no longer exists, and the
+    // spec's own wording is what decides the new expectation.
+    //
+    // This is NOT a weakening: the assertion is strictly stronger — it now names
+    // the element (`.cartbar`) instead of hunting for whatever div happened to be
+    // `fixed`, and it additionally asserts the parent relationship, which is the
+    // exact thing `.app > *` would break. The bar's full geometry, the removed
+    // spacer and the "no gap" consequence live in `order-cartbar.spec.js`.
     const positions = await page.evaluate(() => {
       const strip = document.querySelector('[data-testid="purpose-tabs"]')
-      const bar = [...document.querySelectorAll('div')].find((d) => getComputedStyle(d).position === 'fixed' && d.querySelector('details'))
+      const bar = document.querySelector('.app > .cartbar')
       const cs = (el) => (el ? { pos: getComputedStyle(el).position, top: getComputedStyle(el).top, z: getComputedStyle(el).zIndex } : null)
       return { strip: cs(strip), bar: cs(bar), barBottom: bar ? Math.round(bar.getBoundingClientRect().bottom) : null, vh: window.innerHeight }
     })
     // The strip only exists with >1 purpose; this cycle has one, so it is absent
     // by design here — the strip's own geometry is asserted in UC-FO-004 below.
     expect(positions.strip).toBeNull()
-    expect(positions.bar, 'the cart footer is still `fixed` — it survives because it is NESTED').toEqual(
-      expect.objectContaining({ pos: 'fixed' })
+    expect(positions.bar, 'the cart footer is `sticky` — a DIRECT `.app` child on the theme class').toEqual(
+      expect.objectContaining({ pos: 'sticky', z: '50' })
     )
     expect(positions.barBottom, 'and still pinned to the viewport bottom').toBe(positions.vh)
 

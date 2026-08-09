@@ -3,8 +3,9 @@ import { ref, computed, onMounted, onBeforeUnmount, watchEffect, watch } from 'v
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import api, { getFriendsPassword, getFriendsAuthInfo, getFriendsToken } from '../api'
 // shadcn leftovers. `Card`/`CardContent` now dress ONLY the Kolegovia share card
-// (RD-KG-1) — RD-FO-2 took the product cards off them onto `.card`; `Button` is
-// still the cartbar (RD-FO-3) and every modal (RD-FO-4); `Dialog*` is the modals
+// (RD-KG-1) — RD-FO-2 took the product cards off them onto `.card`; RD-FO-3 took
+// the cart footer off `Button` onto the theme's `.btn`, so `Button` is now ONLY
+// the share card (RD-KG-1) and the modals (RD-FO-4); `Dialog*` is the modals
 // themselves (RD-FO-4). `Alert`, `Badge` and `Tabs*` went with RD-FO-1.
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -41,7 +42,16 @@ const lastSubmittedCart = ref(null) // Snapshot of cart at last submission
 const loading = ref(true)
 const saving = ref(false)
 const error = ref('')
-const successMessage = ref('')
+// ⚠ `successMessage` ("Košík bol uložený") was RETIRED here, not repaired.
+// RD-FO-1 instrumented it and left the choice to this row (04 §UC-FO-009 owns the
+// cartbar's messaging). The facts it recorded: `saveCart(false)` was the ONLY
+// writer, `doSubmitOrder()` its only non-silent caller (auto-save and cancel pass
+// `silent: true` deliberately), so the banner never reported a user-initiated
+// save — and after a FAILED submit it rendered "Košík bol uložený" next to the
+// error banner for 3s. Giving it a trigger was explicitly ruled out; clearing it
+// in `doSubmitOrder()` would have left a ref, a timeout and a banner that no
+// reachable state ever shows. So it is gone: the ref, the two writes in
+// `saveCart`, and the page banner.
 const activeTab = ref('Espresso')
 const showSuccessModal = ref(false)
 const successModalMessage = ref('')
@@ -200,24 +210,21 @@ const cartItems = computed(() => {
   return items
 })
 
-const groupedCartItems = computed(() => {
-  const groups = {}
-  for (const item of cartItems.value) {
-    const purpose = item.purpose
-    if (!groups[purpose]) groups[purpose] = []
-    groups[purpose].push(item)
-  }
-  // Sort by purpose order: Espresso, Filter, Kapsule, then others
-  const order = ['Espresso', 'Filter', 'Kapsule']
-  const sortedGroups = {}
-  for (const p of order) {
-    if (groups[p]) sortedGroups[p] = groups[p]
-  }
-  for (const p of Object.keys(groups)) {
-    if (!order.includes(p)) sortedGroups[p] = groups[p]
-  }
-  return sortedGroups
-})
+// `groupedCartItems` — the purpose-grouped cart lines and their coloured headers —
+// was DELETED here together with its only consumer. 04 resolved conflict #10 drops
+// the grouping in favour of the prototype's flat `.lines` list; RD-FO-1 left both
+// halves standing rather than half-migrate a block it was not rewriting, and the
+// computed then had exactly one reader left. `item.purpose` is still populated in
+// `cartItems` — it costs nothing and is the natural place for a future consumer.
+
+// The cart line's size label — the shipped logic verbatim (04 §UC-FO-009):
+// `variant_label` when the snapshot carries one (bakery variants), 'ks' for the
+// zero-gram `'unit'` variant, else the raw variant key ('250g', '20pc5g', …),
+// which is what the pre-redesign template printed inline.
+function lineSize(item) {
+  if (item.variant_label) return item.variant_label
+  return item.variant === 'unit' ? 'ks' : item.variant
+}
 
 const cartTotal = computed(() => {
   return cartItems.value.reduce((sum, item) => sum + item.total, 0)
@@ -602,7 +609,6 @@ async function saveCart(silent = false) {
   else autoSaving.value = true
 
   error.value = ''
-  if (!silent) successMessage.value = ''
 
   try {
     const items = cartItems.value.map(item => ({
@@ -613,13 +619,6 @@ async function saveCart(silent = false) {
 
     const result = await api.updateOrderByFriend(cycleId.value, friend.value.id, items)
     order.value = result.order
-
-    if (!silent) {
-      successMessage.value = 'Košík bol uložený'
-      setTimeout(() => {
-        successMessage.value = ''
-      }, 3000)
-    }
   } catch (e) {
     error.value = e.message
   } finally {
@@ -832,9 +831,11 @@ function applyMarkup(price) {
          · the purpose strip's old `top-16` was calibrated against that sticky
            header. `.cat-tabs` is `top:0` from the theme, which is now correct
            because nothing above it is pinned any more.
-       The cart footer's `fixed bottom-0 z-50` is NESTED (inside the page column),
-       so it survives — do not hoist it to root level while it is still on Tailwind
-       utilities. RD-FO-3 puts it on `.cartbar`.
+       The cart footer USED to be a nested `fixed bottom-0 z-50` div, kept inside
+       the page column precisely so `.app > *` could not reach it. RD-FO-3 hoisted
+       it to a direct child on the THEME class `.cartbar`, which survives because
+       the theme's rule is declared later than `.app>*` at equal specificity — see
+       the long note on the bar itself, near the end of this template.
 
        `flex flex-col` + the theme's `min-height:100vh` is the prototype's root
        layout, and it is what lets the page column take `flex-1`. -->
@@ -939,30 +940,9 @@ function applyMarkup(price) {
         <span class="dot"></span>
         <div style="min-width:0">{{ error }}</div>
       </div>
-      <!-- ⚠ `successMessage` is REACHABLE — but it has no user-initiated trigger
-           and one state where it actively misleads. Verified live, not reasoned:
-
-             · `saveCart(false)` is the only writer, and `doSubmitOrder()` is its
-               only non-silent caller (the other two — auto-save and cancel — pass
-               `silent: true` deliberately). So "Košík bol uložený" only ever
-               appears as a side effect of SUBMITTING.
-             · After a SUCCESSFUL submit it is in the DOM and laid out, next to
-               the green status banner — merely occluded by the success modal,
-               and closing that modal navigates away.
-             · ⚠ After a FAILED submit it is VISIBLE: `saveCart` has already set
-               it, the catch then sets `error`, and the page renders "Košík bol
-               uložený" and the failure SIDE BY SIDE for the 3s until the timeout
-               fires. Reproduced by stubbing the submit endpoint to 500.
-
-           Identical in the pre-redesign view, so this row introduced none of it.
-           RD-FO-3 owns the cartbar and its messaging: either retire this banner
-           (nothing calls `saveCart(false)` except the submit) or clear
-           `successMessage` at the top of `doSubmitOrder()`'s try. Do not "fix" it
-           by giving it a trigger — there is no user-initiated save to report. -->
-      <div v-if="successMessage" class="banner ok slim">
-        <span class="dot"></span>
-        <div style="min-width:0">{{ successMessage }}</div>
-      </div>
+      <!-- (The "Košík bol uložený" banner that used to sit here is GONE — see the
+           `successMessage` note in the script. It had no user-initiated trigger
+           and, after a FAILED submit, contradicted the error banner above.) -->
 
       <!-- Own order ⇄ colleagues. Hand-rolled rather than the Tabs component
            because the panels must stay MOUNTED (v-show) — see mainTab's note — and
@@ -1438,116 +1418,147 @@ function applyMarkup(price) {
         </div>
       </div>
       <!-- ============ /panel: own order ============ -->
+    </div>
 
-      <!-- Sticky cart footer. Deliberately OUTSIDE both panels and unchanged: it is
-           the host's OWN total, and they must be able to submit without switching
-           back. -->
-      <!-- Sticky cart footer -->
-      <div class="fixed bottom-0 left-0 right-0 bg-card shadow-lg border-t z-50">
-        <div class="max-w-4xl mx-auto px-4 py-2">
-          <div v-if="cycle?.expected_date" class="text-xs text-primary mb-1">
-            📅 Objednávka do: <span class="font-medium">{{ cycle.expected_date }}</span>
-          </div>
+    <!-- ============================ .cartbar (04 §UC-FO-009) ============================
+         ⚠ A DIRECT CHILD OF `.app`, after the page column — and that is the whole
+         reason it can be `sticky` at all.
 
-          <!-- Order status notifications -->
-          <div v-if="!isLocked && cartItems.length > 0 && !isSubmitted" class="mb-1.5 px-2 py-1.5 bg-yellow-50 border border-yellow-300 rounded text-yellow-800 text-xs flex items-center gap-1.5">
-            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            <strong>Objednávka ešte nebola odoslaná.</strong>
-          </div>
+         `.app > * { position:relative; z-index:1 }` (friends-theme.css:23)
+         neutralises every Tailwind positioning utility on a direct child, which is
+         why RD-FO-1 had to leave the old `fixed bottom-0 z-50` bar NESTED inside
+         the page column and warned against hoisting it while it was still on
+         utilities. This row does the hoist correctly, by switching to the THEME
+         class: `:where(.app,.modal-layer) .cartbar` (friends-theme.css:158) has the
+         same (0,1,0) specificity as `.app>*` but is declared LATER, so its
+         `position:sticky; bottom:0; z-index:50` wins the cascade. MEASURED on the
+         shipped build, not assumed — `order-cartbar.spec.js` reads back
+         sticky / 0px / 50 on this element and would fail loudly at `relative` if the
+         two rules ever swapped order.
 
-          <div v-else-if="!isLocked && hasUnsubmittedChanges && !changesNotificationDismissed" class="mb-1.5 px-2 py-1.5 bg-orange-50 border border-orange-300 rounded text-orange-800 text-xs flex items-center gap-1.5">
-            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            <span class="flex-1"><strong>Zmeny neboli odoslané.</strong> Stlačte "Aktualizovať objednávku".</span>
-            <button
-              @click="changesNotificationDismissed = true"
-              class="flex-shrink-0 p-0.5 hover:bg-orange-100 rounded"
-              title="Zavrieť"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
+         Sticky needs no spacer: the bar is the flex column's last child, `.app` is
+         `min-height:100vh` + `flex flex-col`, and the page column takes `flex-1`.
+         The old `<div class="h-48">` spacer is therefore GONE — with `fixed` it was
+         load-bearing (the bar was out of flow and would have covered the last card);
+         with `sticky` it would be 192px of dead space at the end of every page.
 
-          <div class="flex justify-between items-center mb-1.5">
-            <div class="flex items-center gap-1.5">
-              <span class="text-xs text-muted-foreground">Položiek: {{ cartItems.length }}</span>
-              <span class="mx-1 text-xs">|</span>
-              <span class="font-semibold text-sm">Celkom: {{ formatPrice(paymentTotal) }}</span>
-              <span v-if="autoSaving" class="text-xs text-muted-foreground animate-pulse">Ukladám...</span>
-            </div>
-          </div>
+         Rendered under the SAME condition as the page column (neither loading nor
+         the fatal-error branch): a bar with no cycle, no products and no friend has
+         nothing to submit and would only add chrome to a spinner. -->
+    <div v-if="!loading && !(error && !friend)" class="cartbar" data-testid="cartbar">
+      <!-- 1. not-yet-submitted notice, and 2. the dirty warning. At most one of the
+           two, neither when locked — the shipped `v-if`/`v-else-if` priority,
+           unchanged. Both moved INSIDE the bar per the prototype.
 
-          <div v-if="!isLocked" class="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              @click="cancelOrder"
-              :disabled="saving || cartItems.length === 0"
-              class="flex-1 h-8 text-xs border-red-500 text-red-600 hover:bg-red-50 hover:text-red-700"
-            >
-              Zrušiť
-            </Button>
-            <Button
-              v-if="isSubmitted && hasPaymentSettings"
-              variant="outline"
-              size="sm"
-              @click="showPaymentModal = true"
-              class="flex-1 h-8 text-xs border-green-500 text-green-600 hover:bg-green-50 hover:text-green-700"
-            >
-              Zaplatiť
-            </Button>
-            <Button
-              size="sm"
-              @click="submitOrder"
-              :disabled="saving || cartItems.length === 0"
-              class="flex-1 h-8 text-xs"
-            >
-              {{ saving ? 'Odosielám...' : (isSubmitted ? 'Aktualizovať' : 'Odoslať') }}
-            </Button>
-          </div>
+           The ✕ is resolved conflict #5: the prototype's warning has no dismiss,
+           the shipped behaviour does (CLAUDE.md 2026-02-03) and behaviour is
+           repo-canonical, so the dismiss stays and the ✕ is a recorded visual
+           addition. `changesNotificationDismissed` is reset by the `cart` watcher,
+           so a dismissed warning reappears on the NEXT edit — that reset is the
+           behaviour, not the flag.
 
-          <!-- Cart details toggle -->
-          <details class="mt-3">
-            <summary class="text-sm text-muted-foreground cursor-pointer">Zobraziť položky v košíku</summary>
-            <div class="mt-2 text-sm max-h-48 overflow-y-auto">
-              <div v-if="cartItems.length === 0" class="text-muted-foreground py-2 text-center">
-                Košík je prázdny
-              </div>
-              <template v-else v-for="(items, purpose) in groupedCartItems" :key="purpose">
-                <div
-                  class="text-xs font-semibold px-2 py-1 mt-2 first:mt-0 rounded"
-                  :class="{
-                    'bg-stone-200 text-stone-700': purpose === 'Espresso',
-                    'bg-sky-100 text-sky-700': purpose === 'Filter',
-                    'bg-amber-100 text-amber-700': purpose === 'Kapsule' || purpose === 'Slané',
-                    'bg-pink-100 text-pink-700': purpose === 'Sladké',
-                    'bg-muted text-muted-foreground': !['Espresso', 'Filter', 'Kapsule', 'Slané', 'Sladké'].includes(purpose)
-                  }"
-                >
-                  {{ purpose }}
-                </div>
-                <div v-for="item in items" :key="item.key" class="flex justify-between py-1 border-b border-border">
-                  <span>{{ item.product_name }} ({{ item.variant_label ? item.variant_label : (item.variant === 'unit' ? 'ks' : item.variant) }}) x{{ item.quantity }}</span>
-                  <span>{{ formatPrice(item.total) }}</span>
-                </div>
-              </template>
-              <!-- Delivery fee line item -->
-              <div v-if="order?.delivery_fee" class="flex justify-between py-1 border-b border-border mt-2 text-red-600">
-                <span>📦 Doručenie Packetou</span>
-                <span>{{ formatPrice(order.delivery_fee) }}</span>
-              </div>
-            </div>
-          </details>
-        </div>
+           ⚠ The dismiss control was a real `<button>` before this row. 04's markup
+           block writes it as a bare `<span>` (prototype idiom), so it carries the
+           house zero-pixel ARIA layer — `role`/`tabindex`/Enter/Space, exactly as
+           the appbar back chevron does — rather than losing keyboard reach in a
+           re-skin. `aria-label`, because the only child is an SVG. -->
+      <div
+        v-if="!isLocked && cartItems.length > 0 && !isSubmitted"
+        class="banner warn slim"
+        style="margin-bottom:8px"
+        data-testid="cart-warn-unsent"
+      >
+        <span class="dot"></span><span><b>Objednávka ešte nebola odoslaná.</b></span>
+      </div>
+      <div
+        v-else-if="!isLocked && hasUnsubmittedChanges && !changesNotificationDismissed"
+        class="banner warn slim"
+        style="margin-bottom:8px"
+        data-testid="cart-warn-dirty"
+      >
+        <span class="dot"></span>
+        <span style="flex:1"><b>Zmeny neboli odoslané.</b> Stlačte „Aktualizovať“.</span>
+        <span
+          class="hstack"
+          role="button"
+          tabindex="0"
+          aria-label="Zavrieť"
+          title="Zavrieť"
+          data-testid="cart-warn-dismiss"
+          style="cursor:pointer;flex-shrink:0"
+          @click="changesNotificationDismissed = true"
+          @keydown.enter.prevent="changesNotificationDismissed = true"
+          @keydown.space.prevent="changesNotificationDismissed = true"
+        ><NeoIcon name="close" :size="14" /></span>
       </div>
 
-      <!-- Spacer for fixed footer -->
-      <div class="h-48"></div>
+      <!-- Deadline: only when the cycle carries one, and VERBATIM from the API — no
+           reformatting, no 📅 (the design language has no emoji). The count keeps
+           its own place in the row; with no deadline `space-between` simply leaves
+           it at the start. -->
+      <div class="meta">
+        <span v-if="cycle?.expected_date" class="deadline">Objednávka do: {{ cycle.expected_date }}</span>
+        <span class="sub" style="font-size:13px">Položiek: {{ cartItems.length }}</span>
+      </div>
+      <!-- ⚠ `paymentTotal`, not `cartTotal` (resolved conflict #9): it includes
+           `orders.delivery_fee`, which is a field ON the order and never an
+           `order_items` line (CLAUDE.md 2026-05-01), so summing the cart lines
+           alone under-states what the friend owes by exactly the Packeta fee — and
+           the same `paymentTotal` is what the success modal, the QR and
+           `PaymentModal` are already billing.
+           `.sum` is the 22px display style with its own `line-height:1`; only the
+           per-line totals and the fee line below are `.mono`. -->
+      <div class="meta" style="margin-top:2px">
+        <span class="sum">Celkom: {{ paymentTotal.toFixed(2) }} EUR</span>
+        <span v-if="autoSaving" class="sub" style="font-size:12px">Ukladám…</span>
+      </div>
+
+      <!-- Locked ⇒ the actions row is absent ENTIRELY (04 §UC-FO-014); the meta rows
+           and the `<details>` stay. `.cartbar .actions .btn{flex:1;min-height:46px}`
+           comes from the theme — the three buttons share the row equally and their
+           widths are NOT overridden here (the prototype's `flex:0 1 auto` on Zrušiť
+           is not in 04's markup block, and 04's business rules say do not override).
+           Zaplatiť opens `PaymentModal` with its pinned props; the modal's internals
+           belong to module 06 and are untouched by this row. -->
+      <div v-if="!isLocked" class="actions">
+        <button
+          type="button"
+          class="btn danger sm"
+          :disabled="saving || cartItems.length === 0"
+          @click="cancelOrder"
+        >Zrušiť</button>
+        <button
+          v-if="isSubmitted && hasPaymentSettings"
+          type="button"
+          class="btn ok sm"
+          @click="showPaymentModal = true"
+        >Zaplatiť</button>
+        <button
+          type="button"
+          class="btn accent sm"
+          :disabled="saving || cartItems.length === 0"
+          @click="submitOrder"
+        >{{ saving ? 'Odosielam…' : (isSubmitted ? 'Aktualizovať' : 'Odoslať') }}</button>
+      </div>
+
+      <!-- Cart lines: FLAT (resolved conflict #10). The purpose headers and their
+           per-purpose tints died with `groupedCartItems`. `×` is U+00D7, not "x".
+           `.lines` owns the 170px scroll cap and the row rule from the theme. -->
+      <details>
+        <summary>Zobraziť položky v košíku</summary>
+        <div class="lines">
+          <span v-if="cartItems.length === 0" class="sub">Košík je prázdny</span>
+          <div v-else class="ln" v-for="item in cartItems" :key="item.key">
+            <span>{{ item.product_name }} ({{ lineSize(item) }}) ×{{ item.quantity }}</span>
+            <span class="mono">{{ item.total.toFixed(2) }} EUR</span>
+          </div>
+          <!-- The Packeta fee, plain text — the repo's 📦 goes with the emoji ban. -->
+          <div v-if="order?.delivery_fee" class="ln">
+            <span>Doručenie Packetou</span>
+            <span class="mono">{{ order.delivery_fee.toFixed(2) }} EUR</span>
+          </div>
+        </div>
+      </details>
     </div>
 
     <!-- Success Modal (with inline payment details) -->
