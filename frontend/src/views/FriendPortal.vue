@@ -388,6 +388,8 @@ async function checkPendingVouchers() {
 async function resolveVoucher(action) {
   if (!currentVoucher.value || resolvingVoucher.value) return
   resolvingVoucher.value = true
+  // A retry must not leave the previous attempt's banner standing (RD-FL-3).
+  error.value = ''
   try {
     await api.resolveVoucher(currentVoucher.value.id, action)
     const amount = currentVoucher.value.voucher_amount
@@ -411,7 +413,33 @@ async function resolveVoucher(action) {
 }
 
 function switchUser() {
-  // Clear auth state and go back to login
+  // Clear auth state and go back to login.
+  //
+  // ⚠ `error` must go with it. `authenticate`/`authenticatePersonal` clear
+  // `authError` and `saveCredentials` clears `setupError` — SIBLING refs;
+  // `loadInitialData` is the only other writer that clears `error` itself, and
+  // it returns early on a successful session restore (line ~178) without ever
+  // reaching its own reset on the re-login path. So a failed profile/
+  // subscription/invite/voucher write left `error` set, and the banner RD-FL-3
+  // added would re-render it verbatim on the NEXT authenticated session — which
+  // the legacy dropdown lets be a DIFFERENT person on a shared device. Before
+  // the banner the stale ref was merely invisible; surfacing it is what makes
+  // clearing it this row's job.
+  //
+  // The same reasoning covers two siblings found in the same review sweep, so
+  // the rule this row establishes is the general one: SESSION-SCOPED DISPLAY
+  // STATE DIES WITH THE SESSION.
+  //  - `voucherResolved` names money ("Kredit 4.20 € pridaný") and its own
+  //    5s timeout is set at resolve time, so without this it renders on the
+  //    LOGIN screen for whoever logs in next.
+  //  - `subscriptions` prefills the subscription modal. `loadCycles`'s
+  //    subscription GET is a silent catch, so if the next friend's GET fails
+  //    the modal prefills the PREVIOUS friend's preferences and "Uložiť"
+  //    writes them onto the new friend — a cross-account write, not just a
+  //    stale read.
+  error.value = ''
+  voucherResolved.value = null
+  subscriptions.value = []
   clearFriendsPassword()
   localStorage.removeItem(STORAGE_KEY)
   savedAuth.value = null
@@ -476,6 +504,8 @@ async function saveProfile() {
   if (!profileName.value.trim()) return
 
   profileSaving.value = true
+  // A retry must not leave the previous attempt's banner standing (RD-FL-3).
+  error.value = ''
   try {
     const friendId = selectedFriendId.value
     const updated = await api.updateFriendProfile(friendId, {
@@ -516,6 +546,8 @@ function openSubscriptionModal() {
 
 async function saveSubscriptions() {
   subSaving.value = true
+  // A retry must not leave the previous attempt's banner standing (RD-FL-3).
+  error.value = ''
   try {
     const types = []
     if (subCoffee.value) types.push('coffee')
@@ -729,6 +761,8 @@ async function openInviteModal() {
   showInviteModal.value = true
   inviteCopied.value = false
   inviteLoading.value = true
+  // A retry must not leave the previous attempt's banner standing (RD-FL-3).
+  error.value = ''
   try {
     const friendId = getFriendsAuthInfo()?.friendId
     const data = await api.getMyInviteCode(friendId)
@@ -776,16 +810,33 @@ async function copyInviteLink() {
          (UC-DS-005/006). One instance — the state only swaps its slot contents
          and the ticker copy, so the chrome never remounts on login/logout.
 
-         NOTE: the authenticated appbar's CONTENTS are UC-FL-004 (row RD-FL-3).
-         Until then the existing controls are carried through verbatim into the
-         `#trailing` slot so the portal stays usable — no chip, no NeoIcon, no
-         profile-click on the titles block, and the pencil sits on the trailing
-         side rather than between `.titles` and `.grow` (BrandChrome's three
-         fixed slots cannot express that position; RD-FL-3 amends UC-DS-006). -->
+         AUTHENTICATED APPBAR (UC-FL-004, row RD-FL-3): titles block → profile,
+         pencil BETWEEN `.titles` and `.grow` via the `#after-titles` slot that
+         RD-DS-5 added for exactly this, rotated "Pozvať" chip → invite, logout
+         glyph → switchUser(). The tap targets are plain spans in the prototype;
+         `.titles`, the chip and the logout glyph carry the house zero-pixel ARIA
+         layer (role + tabindex + Enter/Space) so the bar is operable without a
+         mouse — same enhancement as NeoCheckbox, NeoModal's `.m-x` and the login
+         eye toggle. The chip's accessible name is its own visible text
+         ("Pozvať"), never an aria-label that would contradict it.
+
+         ⚠ The pencil is the ONE control that does NOT get that layer: it is
+         `aria-hidden`, pointer-only. That enhancement exists for controls that
+         are the ONLY route to their action (NeoCheckbox, `.m-x`, the eye
+         toggle); the pencil is not one — it is an immediately-adjacent
+         duplicate of `.titles`, same handler, and its name would have to be
+         "Upraviť profil" too. Exposing it gave the bar two consecutive tab
+         stops both announcing "Upraviť profil, button" — 50% redundancy on a
+         four-control bar. UC-FL-004 asks for a span with `title` only, and
+         `portal.jsx:101` is a bare span; keyboard users reach the action via
+         `.titles`, and "tapping name or pencil opens the profile modal" still
+         holds literally for pointer input. -->
     <BrandChrome
       :ticker="authState === 'authenticated'
         ? '+++ ČLENSKÝ OKRUH +++ PRE TÝCH, ČO VEDIA +++'
         : '+++ VSTUP LEN PRE SVOJICH +++ HESLO NEDÁVAJ ĎALEJ +++'"
+      :titles-action="authState === 'authenticated' ? 'Upraviť profil' : ''"
+      @titles-click="openProfileModal"
     >
       <template #titles>
         <template v-if="authState === 'authenticated'">
@@ -797,48 +848,52 @@ async function copyInviteLink() {
           <span class="s">Členský vstup</span>
         </template>
       </template>
+      <template #after-titles>
+        <span
+          v-if="authState === 'authenticated'"
+          data-testid="profile-pencil"
+          aria-hidden="true"
+          title="Upraviť profil"
+          style="opacity:.75;display:flex;cursor:pointer"
+          @click="openProfileModal"
+        >
+          <NeoIcon name="pencil" />
+        </span>
+      </template>
       <template #trailing>
         <template v-if="authState === 'authenticated'">
-          <Button
-            variant="ghost"
-            size="icon"
-            @click="openProfileModal"
-            class="text-primary-foreground/50 hover:text-primary-foreground hover:bg-primary-foreground/10"
-            title="Upraviť profil"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-            </svg>
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            @click="openInviteModal"
-            class="text-primary-foreground/50 hover:text-primary-foreground hover:bg-primary-foreground/10 gap-1"
+          <span
+            class="chip acc"
+            role="button"
+            tabindex="0"
             title="Pozvi priateľa"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-            </svg>
-            <span class="text-xs">Pozvať</span>
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            @click="switchUser"
-            class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10"
+            style="display:inline-flex;align-items:center;gap:6px;cursor:pointer"
+            @click="openInviteModal"
+            @keydown.enter.prevent="openInviteModal"
+            @keydown.space.prevent="openInviteModal"
+          ><NeoIcon name="invite" /> Pozvať</span>
+          <span
+            role="button"
+            tabindex="0"
+            aria-label="Odhlásiť sa"
             title="Odhlásiť sa"
+            style="opacity:.85;display:flex;cursor:pointer"
+            @click="switchUser"
+            @keydown.enter.prevent="switchUser"
+            @keydown.space.prevent="switchUser"
           >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-            </svg>
-          </Button>
+            <NeoIcon name="logout" />
+          </span>
         </template>
         <span v-else class="chip acc">Len pre svojich</span>
       </template>
     </BrandChrome>
 
-    <div v-if="voucherResolved && !showVoucherModal" class="max-w-4xl mx-auto px-4 mt-4">
+    <!-- The voucher banner keeps its own (untouched) look per UC-FL-001, but it
+         must sit on the SAME geometry as the page column below it — it used to
+         be `max-w-4xl` (896px) against a 760px column, overhanging 68px a side
+         at 1180px. Alignment only; nothing inside is restyled. -->
+    <div v-if="voucherResolved && !showVoucherModal" class="mx-auto w-full max-w-[760px] px-4 sm:px-7 mt-4">
       <div v-if="voucherResolved.action === 'accept'" class="bg-green-900/30 border border-green-700/50 rounded-lg p-4 flex items-center gap-3">
         <span class="text-2xl">✅</span>
         <div>
@@ -1108,6 +1163,49 @@ async function copyInviteLink() {
     <!-- Standard page column (UC-DS-005): 760px max, centered, 16px phone /
          28px desktop side padding. Contents are restyled by RD-FL-3/4/5. -->
     <div v-else-if="authState === 'authenticated'" class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-6">
+      <!-- ⚠ The authenticated error surface (RD-FL-1 residual). `error` has four
+           writers that ALL run while authenticated — resolveVoucher, saveProfile,
+           saveSubscriptions and openInviteModal — yet the only branch rendering
+           it was keyed on `authState === 'loading'`, which is unreachable (the
+           outer catch in loadInitialData sets `error` and `authState = 'login'`
+           in the same breath). A failed profile save, subscription save, invite
+           fetch or voucher resolve was therefore SILENT. This banner is that
+           missing surface.
+
+           Lifecycle: each of the four writers now clears `error` before it runs,
+           so a successful retry removes a stale message rather than leaving it
+           contradicting the screen; `switchUser` clears it too, so a message
+           never outlives its session; and the × is the escape hatch for the case
+           where the user simply abandons the action (e.g. closes the invite
+           modal).
+
+           ⚠ When UC-FL-009/011 move the profile/subscription/invite messages
+           INTO their modals (RD-FL-6/7), this banner is left with `resolveVoucher`
+           as its only writer — and that is the ONE writer it cannot actually
+           serve. The voucher modal is a hand-rolled `fixed inset-0 z-50
+           bg-black/70` scrim with NO dismiss control, and `resolveVoucher`
+           leaves `showVoucherModal` true on failure, so the banner renders
+           underneath it (verified at 378px: `elementFromPoint` over the banner
+           returns the scrim) and is only reachable once a retry succeeds — which
+           clears it. Pre-existing and silent before RD-FL-3, not a regression of
+           it. So RD-FL-6/7 must NOT read this as "the banner survives for
+           vouchers": whichever row next touches the voucher modal owns giving it
+           its own in-modal error surface, and this banner may then be retired
+           with the last writer that can reach it. -->
+      <div v-if="error" class="banner danger mb-5" role="alert">
+        <span class="dot"></span>
+        <div style="min-width:0"><strong>Chyba:</strong> {{ error }}</div>
+        <button
+          type="button"
+          class="btn ghost sm"
+          aria-label="Zavrieť upozornenie"
+          style="margin-left:auto;flex-shrink:0"
+          @click="error = ''"
+        >
+          <NeoIcon name="close" />
+        </button>
+      </div>
+
       <!-- Balance Card -->
       <FriendBalanceCard :friend-id="selectedFriendId" />
 

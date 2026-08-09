@@ -1,9 +1,15 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+// "Môj účet" — the portal's balance card (03 §UC-FL-005), restyled to the
+// Neobrutal PP language. Data flow is untouched: `api.getFriendBalance` on mount
+// and on every `friendId` change, same refs, same error surface.
+//
+// ⚠ `BalanceBadge.vue` is deliberately NOT imported any more and NOT modified —
+// it is SHARED WITH ADMIN (`AdminFriends.vue`, `FriendDetail.vue`, …), which must
+// stay pixel-identical. This card renders its own three-state span instead, using
+// the theme's money classes (`.neg.pill` / `.zero` / `.mono`).
+import { ref, computed, onMounted, watch } from 'vue'
 import api from '../api'
-import { Card, CardContent } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import BalanceBadge from './BalanceBadge.vue'
+import { fmtEur } from '@/lib/money'
 import FriendTransactionsModal from './FriendTransactionsModal.vue'
 
 const props = defineProps({
@@ -43,54 +49,64 @@ async function loadBalance() {
   }
 }
 
-function formatDate(dateStr) {
-  if (!dateStr) return '-'
-  const date = new Date(dateStr)
-  return date.toLocaleDateString('sk-SK', {
-    day: 'numeric',
-    month: 'numeric',
-    year: 'numeric'
-  })
-}
+// Three money states (UC-FL-005). The thresholds are the spec's: anything below
+// -0.01 owes money, anything within ±0.01 is settled, the rest is credit.
+// A non-finite balance falls into "settled" rather than rendering "NaN EUR" —
+// the same fail-closed reflex `fmtEur` itself uses.
+const balanceState = computed(() => {
+  const n = Number(balance.value)
+  if (!Number.isFinite(n)) return 'zero'
+  if (n < -0.01) return 'neg'
+  if (n <= 0.01) return 'zero'
+  return 'pos'
+})
 
-function getTransactionTypeLabel(type) {
-  switch (type) {
-    case 'payment': return 'Platba'
-    case 'charge': return 'Účtovanie'
-    case 'adjustment': return 'Kredit'
-    default: return type
-  }
-}
-
-function formatAmount(amount) {
-  const sign = amount > 0 ? '+' : ''
-  return `${sign}${amount.toFixed(2)} EUR`
-}
+// OPEN (UC-FL-005): the prototype only ever shows a negative balance and
+// theme.css defines no positive-money class. This is the spec's recorded default
+// — green (`--ok-deep`) = money-good per 02's semantic grammar, and the leading
+// "+" is carried over from `BalanceBadge`'s current behaviour. Still awaiting a
+// design confirmation.
 </script>
 
 <template>
-  <Card class="mb-4">
-    <CardContent class="p-4">
-      <div class="flex items-center justify-between mb-3">
-        <span class="text-sm font-medium text-muted-foreground uppercase tracking-wide">Môj účet</span>
-        <BalanceBadge v-if="!loading" :balance="balance" class="text-base" />
-        <span v-else class="text-muted-foreground text-sm">Načítavam...</span>
-      </div>
+  <div
+    class="card mb-5 flex flex-wrap items-center justify-between gap-3 p-4 sm:p-5"
+  >
+    <div>
+      <div class="field-lbl" style="margin-bottom:4px">Môj účet</div>
+      <span v-if="loading" class="sub">Načítavam...</span>
+      <span
+        v-else-if="balanceState === 'neg'"
+        class="neg pill"
+        style="font-size:16px"
+      >{{ fmtEur(balance) }}</span>
+      <span
+        v-else-if="balanceState === 'zero'"
+        class="zero"
+        style="font-size:16px"
+      >{{ fmtEur(0) }}</span>
+      <span
+        v-else
+        class="mono"
+        style="font-size:16px;color:var(--ok-deep);font-weight:700"
+      >+{{ fmtEur(balance) }}</span>
+    </div>
 
-      <div v-if="error" class="text-red-500 text-sm mb-2">{{ error }}</div>
+    <button
+      v-if="!loading && !error"
+      type="button"
+      class="btn sm"
+      @click="showModal = true"
+    >
+      Transakcie
+    </button>
 
-      <div v-else-if="!loading">
-        <Button
-          variant="outline"
-          size="sm"
-          class="w-full mt-1"
-          @click="showModal = true"
-        >
-          Zobraziť transakcie
-        </Button>
-      </div>
-    </CardContent>
-  </Card>
+    <!-- Full-width third flex item: `flex-wrap` drops it onto its own row. -->
+    <div v-if="error" class="banner danger slim" style="flex-basis:100%">
+      <span class="dot"></span>
+      <div>{{ error }}</div>
+    </div>
+  </div>
 
   <FriendTransactionsModal
     v-model:open="showModal"

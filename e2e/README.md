@@ -255,20 +255,44 @@ Two gotchas in that recipe that look like app bugs when you skip them:
   replaced under it (`rm -rf` + rebuild), so `express.static` 500s and the UI
   specs fail for reasons that have nothing to do with your diff.
 
-### Friend-portal UI specs need the friend list stubbed
+### Friend-portal UI specs and the friends-list stub
 
-`FriendPortal.loadInitialData()` resolves a stored friend session against
-`GET /api/friends?active=true`, which is `requireAdmin`-gated (SEC-A*) — an
-anonymous browser gets 401, the call throws, and the portal falls back to the
-login card with an empty name dropdown. So a browser cannot reach any
-friend-authenticated page (`/cycle/:id` bounces to `/` unless auth is already in
-memory) purely through the UI. This is a **pre-existing app-side gap**, not a
-test-harness one, and it is why `forced-change-ui.spec.js` is `test.fixme`.
+**⚠ The stub is DEAD. Do not copy it into new specs.** This section used to say
+friend-UI specs must `page.route`-stub `GET /api/friends?active=true`, because
+`FriendPortal.loadInitialData()` resolved the stored session against it and that
+endpoint is `requireAdmin`-gated (SEC-A*). **That is no longer what the view
+does**, and hasn't been since the login-list split:
 
-Until it is fixed, friend-UI specs seed `localStorage.gorifi_friend_auth` with a
-real session token and `page.route`-stub only that one friends-list response —
-see `guest-link.spec.js`. Everything actually under test still talks to the real
-backend with the real Bearer token.
+- the legacy name dropdown reads the **public** `GET /api/friends/login-list`
+  (`backend/src/routes/friends.js`) — id + name + `hasCredentials` only, and an
+  empty array in modern mode, so no admin gate is involved;
+- the session restore builds `currentFriend` straight from the stored
+  `gorifi_friend_auth` entry and then hydrates it over
+  `GET /api/friends/:id/profile`, which is **owner-token** gated, not admin;
+- `api.getFriends()` (the admin-only list) now has exactly one caller left,
+  `AdminFriends.vue`.
+
+So the stub matches a request the portal never sends. It is harmless — an
+unmatched `page.route` just never fires — but it advertises a dependency that
+does not exist. `guest-link.spec.js:224` and `guest-host-view.spec.js:637` still
+carry it and its stale comment; they were left untouched rather than edited
+under an unrelated row, so **read them as legacy, not as the pattern**.
+`portal-appbar.spec.js` is the current idiom: seed the session, stub nothing but
+the responses actually under test.
+
+What IS still true, and is why specs seed `localStorage` instead of clicking
+through a login: a **cold deep-link** to `/cycle/:id` bounces to `/` regardless
+of a valid stored session, because `FriendOrder.vue`'s `onMounted` deliberately
+delegates restore to `FriendPortal` rather than doing it itself. Signing in and
+then navigating from the portal works fine.
+
+`forced-change-ui.spec.js` is `test.fixme` for its own unrelated reason (stated
+in the file): the legacy login is a radix-vue `Select` that needs a robust
+interaction, and the flow is already covered at API level in
+`auth-ownership.spec.js`. It is **not** blocked on any friends-list gap — specs
+that need the redesigned username/password card stub `GET /friends/auth-mode`
+per page instead (see `modern-login.spec.js`, which explains at length why
+flipping `auth_mode` for real is unsafe).
 
 ### Full-suite runs and the shared auth-limiter budget
 
