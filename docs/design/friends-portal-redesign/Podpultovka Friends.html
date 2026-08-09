@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+<meta charset="UTF-8" />
+<title>Podpultovka — Friends portal (09 Neobrutal PP)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800;900&family=Darker+Grotesque:wght@600;700;800;900&family=Courier+Prime:ital,wght@0,400;0,700;1,400&family=Anton&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="friends/theme.css">
+<style>
+/* host chrome (control bar + stage + device frames) — not part of the design system */
+#controls{position:fixed;top:0;left:0;right:0;height:52px;z-index:9999;background:#100f0d;color:#e8e6df;display:flex;align-items:center;gap:10px;padding:0 16px;overflow-x:auto;overflow-y:hidden;border-bottom:1px solid #34322c;font-family:'Courier Prime',monospace}
+#controls .brandtag{font-family:'Anton',sans-serif;font-size:18px;letter-spacing:.02em;text-transform:uppercase;color:#fff;margin-right:6px;flex-shrink:0;white-space:nowrap}
+#controls .brandtag b{color:#ff2d87}
+#controls .seg{display:flex;border:1px solid #3a3833;border-radius:2px;overflow:hidden;flex-shrink:0}
+#controls .seg button{background:transparent;color:#b7b4ac;border:none;cursor:pointer;font-family:'Courier Prime',monospace;font-size:11px;letter-spacing:.12em;text-transform:uppercase;padding:7px 12px}
+#controls .seg button.on{background:#e8e6df;color:#100f0d;font-weight:700}
+#controls .lbl{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:#6f6c64;flex-shrink:0;white-space:nowrap}
+#controls select{background:#201f1c;color:#e8e6df;border:1px solid #3a3833;border-radius:2px;font-family:'Courier Prime',monospace;font-size:11px;padding:6px 8px;letter-spacing:.06em;flex-shrink:0;max-width:230px}
+#controls .spacer{flex:1 0 8px}
+#controls .hint{font-size:10px;color:#6f6c64;letter-spacing:.08em;flex-shrink:0;white-space:nowrap}
+#stage{position:fixed;top:52px;left:0;right:0;bottom:0;overflow:auto;display:flex;justify-content:center;align-items:flex-start;padding:28px;background:repeating-linear-gradient(45deg,#232220 0 12px,#201f1c 12px 24px)}
+.frame-wrap{display:flex;flex-direction:column;align-items:center;gap:12px}
+.frame-cap{font-family:'Courier Prime',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#7d7a72}
+.browser{width:1180px;background:#000;border-radius:10px 10px 0 0;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,0.5)}
+.browser-bar{height:40px;background:#171614;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid #2c2a25}
+.browser-bar .dot{width:12px;height:12px;border-radius:50%}
+.browser-bar .u{flex:1;margin-left:12px;height:24px;background:#0c0b0a;border-radius:4px;display:flex;align-items:center;padding:0 10px;font-family:'Courier Prime',monospace;font-size:11px;color:#6f6c64;letter-spacing:.04em}
+.viewport{background:#fff8f3;height:760px;overflow:hidden;position:relative}
+.viewport>.screen-scroll{height:100%;overflow-y:auto;overflow-x:hidden}
+.phone-bezel{width:402px;padding:12px;background:#0a0a0a;border-radius:46px;box-shadow:0 30px 80px rgba(0,0,0,0.5),inset 0 0 0 2px #2a2a2a}
+.phone-screen{width:378px;height:760px;background:#fff8f3;border-radius:34px;overflow:hidden;position:relative}
+.phone-notch{position:absolute;top:0;left:50%;transform:translateX(-50%);width:150px;height:26px;background:#0a0a0a;border-radius:0 0 16px 16px;z-index:60;pointer-events:none}
+.phone-screen>.screen-scroll{height:100%;overflow-y:auto;overflow-x:hidden}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:rgba(128,128,128,0.4);border-radius:6px}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+<script src="friends/data.js"></script>
+<script type="text/babel" src="friends/ui.jsx"></script>
+<script type="text/babel" src="friends/portal.jsx"></script>
+<script type="text/babel" src="friends/order.jsx"></script>
+<script type="text/babel" src="friends/guest.jsx"></script>
+<script type="text/babel" src="friends/app.jsx"></script>
+</body>
+</html>

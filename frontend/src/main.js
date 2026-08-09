@@ -1,5 +1,6 @@
 import { createApp } from 'vue'
 import './style.css'
+import './friends-theme.css'
 import App from './App.vue'
 import router from './router'
 
