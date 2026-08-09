@@ -245,3 +245,65 @@
    keep their own cascade untouched. */
 :where(.app, .modal-layer) .inp,
 :where(.app, .modal-layer) .btn{line-height:normal}
+
+/* ---------- A10: the same preflight counter for every line-height-silent class ----------
+   The SECOND addition (UC-DS-001 adaptation A10, RD-FL-8a); like A9 it is not in the
+   canon, and for exactly the same reason.
+
+   A9 fixed the two CONTROL classes (`.inp`, `.btn`). `html{line-height:1.5}` reaches
+   every OTHER class the canon leaves silent as well: theme.css carries exactly SEVEN
+   `line-height` declarations — `.appbar .titles` (33), `.appbar .titles .t` (34),
+   `.h-screen` (44), `.stepper button` (95), `.cartbar .sum` (163), `.pimg .lbl` (186),
+   `.modal .m-title` (193) — and every class below is absent from that list, so the
+   prototype computes the UA default `normal` for all of them.
+
+   ⚠ A10 originally covered only `.field-lbl` / `.field-help` / `.sub` and handed the
+   rest to "the module-03 audit". That was wrong on its own terms: FOUR of the residual
+   classes are rendered by module 03's OWN shipped surface, and RD-FL-8b — the row that
+   re-baselines fidelity — carries no code. Leaving them would have baselined the
+   appbar chip, the badges, the banners and the copy rows at inflated heights.
+
+   MEASURED — identical markup injected into the canon `.app` (prototype over HTTP) and
+   into the built port's `.app`, so the ONLY variable is the stylesheet. Border-box
+   heights; both sides are `box-sizing:border-box`:
+
+     class              canon (normal)   port before (1.5)   delta   shipped consumer
+     .appbar .chip           25              28.5  (lh 16.5)  +3.5   BrandChrome — EVERY friend/guest screen
+     .badge                  26              30    (lh 18)    +4     cycle cards, archive rows
+     .banner                 52              56.5  (lh 22.5)  +4.5   page banner
+     .banner.slim            40              44.25 (lh 20.25) +4.25  every modal banner
+     .copyrow .val           42              46.75 (lh 18.75) +4.75  profile identity boxes, NeoCopyRow
+     .tab                    42              45    (lh 21)    +3     module 04's category strip (min-height 42 lost)
+     .cat-tabs .tab          40              41               +1     ditto, scoped variant
+     .tabgroup .tab          40              41               +1     the purpose tabs
+     .tbl td               46.5              50.5  (lh 21)    +4     no consumer yet (modules 05/06)
+     .statuspill             36              40.25 (lh 20.25) +4.25  no consumer yet (module 06 guest status)
+
+   Every delta is a REDUCTION back to the canon; nothing here can make a box taller.
+   `.tab` is the sharpest case: at 1.5 the content alone exceeds the canon's `min-height:42px`,
+   so the declared minimum stopped governing at all.
+
+   DELIBERATELY EXCLUDED, and the only one:
+     .tabbadge — canon 22, port 22, delta 0. It declares `height:22px` with
+     `display:inline-flex;align-items:center`, so the line box is centred inside a fixed
+     box and the inherited 1.5 changes nothing measurable. Adding it would be noise.
+   Nothing else in theme.css renders text and is line-height-silent; the sweep that
+   produced this table walked every element on all 16 prototype screens.
+
+   Scoped to an explicit class list rather than to a blanket `line-height:normal` inside
+   `.app`, on A9's rationale verbatim: a broad rule would also restyle the shadcn
+   children still rendering inside a half-migrated `.app` (UC-DS-002) — the legacy login
+   card and the credential-setup dialog are live examples. `:where()` keeps the (0,1,0)
+   specificity, so `.mono.sub`, `.badge.acc`, `.banner.slim` and every other compound
+   keeps its own cascade. Admin reach is nil by construction: `.app` is declared only in
+   `FriendPortal.vue` and `.modal-layer` only in `NeoModal.vue`. */
+:where(.app, .modal-layer) .field-lbl,
+:where(.app, .modal-layer) .field-help,
+:where(.app, .modal-layer) .sub,
+:where(.app, .modal-layer) .appbar .chip,
+:where(.app, .modal-layer) .badge,
+:where(.app, .modal-layer) .banner,
+:where(.app, .modal-layer) .copyrow .val,
+:where(.app, .modal-layer) .tab,
+:where(.app, .modal-layer) .tbl td,
+:where(.app, .modal-layer) .statuspill{line-height:normal}

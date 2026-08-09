@@ -455,7 +455,22 @@ test.describe('Balance card — three money states (UC-FL-005)', () => {
 // ---------------------------------------------------------------------------
 
 test.describe('Authenticated error banner — the RD-FL-1 residual', () => {
-  test('a failed profile save surfaces, can be dismissed, and clears on a successful retry', async ({ page }) => {
+  // ⚠ RD-FL-8a MOVED this failure, on purpose — the same relocation RD-FL-7
+  // performed on the invite fetch in the test below, and for the same reason.
+  // The row mandates: "Give the profile modal a `profileError` and the
+  // subscription modal a `subError`, after which `error && !showProfileModal`
+  // collapses to `error`."
+  //
+  // RD-FL-3 wrote this test to prove `saveProfile` was no longer a SILENT
+  // writer. It still is not silent: it writes its own `profileError` and renders
+  // `.banner.danger.slim` in the modal body, instead of writing the shared
+  // page-level `error` that the modal then had to SUPPRESS the page banner to
+  // display without duplicating. That suppression term (`!showProfileModal`) had
+  // to grow by one clause per dialog and let any other writer put a message in
+  // this modal's banner. Same stub, same message, relocated assertion — plus the
+  // stronger property the move buys: the message belongs to this action alone
+  // and can never reach the page banner.
+  test('a failed profile save surfaces IN THE MODAL, and a successful retry leaves nothing behind', async ({ page }) => {
     await signIn(page)
     await stubBalance(page, 0)
 
@@ -481,16 +496,18 @@ test.describe('Authenticated error banner — the RD-FL-1 residual', () => {
     await expect(dialog.getByText('Upraviť profil')).toBeVisible()
     await dialog.getByRole('button', { name: 'Uložiť' }).click()
 
-    // The modal stays open (save failed); the banner is now on the page column.
-    const banner = page.locator('.banner.danger')
-    await expect(banner).toContainText('Profil sa nepodarilo uložiť')
+    // The modal stays open (save failed) and the message is in its body, where
+    // the user is looking — not behind the scrim.
+    await expect(dialog.locator('.banner.danger.slim')).toContainText('Profil sa nepodarilo uložiť')
+    // ONE surface: nothing renders it underneath as well.
+    await expect(page.locator('.banner.danger')).toHaveCount(1)
 
-    // Dismissable.
+    // Scoped to the modal, so it goes when the modal does — and it never
+    // reaches the page banner, whose only remaining writer is `resolveVoucher`.
     await dialog.getByRole('button', { name: 'Zrušiť' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
-    await expect(banner).toBeVisible()
-    await page.getByRole('button', { name: 'Zavrieť upozornenie' }).click()
     await expect(page.locator('.banner.danger')).toHaveCount(0)
+    await expect(page.locator('.app')).not.toContainText('Profil sa nepodarilo uložiť')
 
     // …and a successful retry leaves no stale message behind.
     await page.locator('.appbar .titles').click()

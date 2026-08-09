@@ -385,30 +385,55 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
     await dialog.getByRole('button', { name: 'Uložiť' }).click()
     await expect(dialog.locator('.banner.danger.slim')).toHaveText('Profil sa nepodarilo uložiť')
 
-    // ⚠ ONE surface at a time: the page-level banner stands down while the
-    // modal is open, so `.banner.danger` is never ambiguous (and never a
-    // visible duplicate).
+    // ⚠ ONE surface at a time: `.banner.danger` is never ambiguous and never a
+    // visible duplicate.
     await expect(page.locator('.banner.danger')).toHaveCount(1)
 
-    // Closing hands the message back to the page banner, so a failure the user
-    // walked away from is still visible and still dismissable.
+    // ⚠ RE-POINTED by RD-FL-8a item 4, which mandates: "Give the profile modal a
+    // `profileError` and the subscription modal a `subError`, after which
+    // `error && !showProfileModal` collapses to `error`."
+    //
+    // RD-FL-6 satisfied "one surface at a time" by SUPPRESSING the page banner
+    // while this modal was open and rendering the shared page-level `error` in
+    // its body — so closing handed the same message back to the page banner.
+    // That mechanism is gone: the message is now the modal's OWN `profileError`,
+    // and the suppression term (which had to grow by one clause per dialog, and
+    // let any other writer put a message in this modal's banner) with it.
+    //
+    // Same property, re-pointed at the mandated structure: the failure belongs
+    // to THIS action and to nothing else. It is scoped to the modal, so it goes
+    // when the modal does — and it can never reach the page banner, whose only
+    // remaining writer is `resolveVoucher`.
     await dialog.getByRole('button', { name: 'Zrušiť' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
-    const pageBanner = page.locator('.banner.danger')
-    await expect(pageBanner).toHaveCount(1)
-    await expect(pageBanner).toContainText('Profil sa nepodarilo uložiť')
-    await page.getByRole('button', { name: 'Zavrieť upozornenie' }).click()
     await expect(page.locator('.banner.danger')).toHaveCount(0)
+    await expect(page.locator('.app')).not.toContainText('Profil sa nepodarilo uložiť')
+
+    // …and a retry starts clean: re-opening must not show the previous
+    // attempt's message (the "a retry must not leave the previous attempt's
+    // banner standing" rule, applied at the opener).
+    const reopened = await openProfile(page)
+    await expect(reopened.locator('.banner.danger.slim')).toHaveCount(0)
   })
 
   test('⚠ another writer\'s error must not open INSIDE the profile modal', async ({ page }) => {
-    // `error` is page-level and shared with `openInviteModal`,
-    // `saveSubscriptions` and `resolveVoucher`, while the profile modal renders
-    // it as its own `.banner.danger.slim` and suppresses the page banner. So a
-    // message none of them cleared used to open here looking like the PROFILE
-    // save had failed — and without the page banner's `Chyba:` prefix or its
-    // dismiss ×, so it could not be cleared without closing the modal.
-    // UC-FL-009 scopes the in-modal banner to `saveProfile()`'s own errors.
+    // ⚠ RE-POINTED (RD-FL-8a item 4; mandated by `PROGRESS.md` RD-FL-8a item (4)
+    // "Converge the THREE-WAY `error` strategy", building on UC-FL-011's
+    // dedicated `inviteError` from RD-FL-7). Cited per 03 §UC-FL-013's
+    // reformulated e2e-immutability rule, case (a).
+    //
+    // The ORIGINAL mechanism is gone, and with it the original assertions'
+    // meaning. This test used to work because `error` was page-level and shared
+    // with `openInviteModal`, the profile modal rendered that shared ref as its
+    // own `.banner.danger.slim`, and `openProfileModal` cleared it. After item 4
+    // every action owns its ref and no opener clears anything, so the old body
+    // passed VACUOUSLY: `.banner.danger` matched the invite modal's OWN banner
+    // and vanished on Escape with the dialog, and the profile modal was
+    // trivially clean because nothing could have written to it.
+    //
+    // The property is unchanged and still worth pinning — one action's failure
+    // must never surface as another's — so it is now asserted STRUCTURALLY:
+    // confinement by construction rather than by a clear-on-open.
     await signIn(page)
     await page.route('**/api/invitations/my-code*', (route) =>
       route.fulfill({ status: 500, json: { error: 'Pozvánku sa nepodarilo načítať' } })
@@ -417,14 +442,23 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
 
     // Fail an unrelated action: the "Pozvať" chip's invite-code fetch.
     await page.getByRole('button', { name: /Pozvať/ }).click()
-    await expect(page.locator('.banner.danger')).toContainText('Pozvánku sa nepodarilo načítať')
-    await page.keyboard.press('Escape') // close the invite dialog, message stands
 
+    // 1. The failure is CONFINED to the invite dialog — it is that dialog's own
+    //    `inviteError`, not a page-level banner sitting behind the scrim.
+    const invite = page.getByRole('dialog')
+    await expect(invite.locator('.banner.danger')).toContainText('Pozvánku sa nepodarilo načítať')
+    const pageBanners = page.locator('.app > .banner.danger, .app > * > .banner.danger')
+    await expect(pageBanners).toHaveCount(0)
+
+    // 2. It dies with its own dialog; nothing outlives it to leak elsewhere.
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(page.locator('.banner.danger')).toHaveCount(0)
+
+    // 3. The profile modal therefore opens clean — and, unlike before, NOT
+    //    because opening it wiped a shared message.
     const dialog = await openProfile(page)
     await expect(dialog.locator('.banner.danger.slim')).toHaveCount(0)
-    // Opening the modal is treated as moving on from that attempt, so the page
-    // banner is cleared with it (same rule as `saveProfile`/`resolveVoucher`
-    // clearing on retry) — it does not come back when the modal closes.
     await dialog.getByRole('button', { name: 'Zrušiť' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
     await expect(page.locator('.banner.danger')).toHaveCount(0)

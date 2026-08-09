@@ -468,3 +468,65 @@ test.describe('Invite modal — NeoModal + NeoCopyRow (UC-FL-011)', () => {
     expect(over, 'document must not scroll sideways').toBeLessThanOrEqual(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+
+test.describe('⚠ Subscription modal — its OWN failure surface (RD-FL-8a item 4)', () => {
+  // Before RD-FL-8a this modal had NO error surface of its own: a failed
+  // `saveSubscriptions()` wrote the shared page-level `error`, and since the
+  // save leaves the dialog OPEN, the message rendered BEHIND the scrim with its
+  // dismiss × unreachable. The user pressed "Uložiť" and saw a dialog that had
+  // simply "did nothing" — measured, and not a regression (radix behaved the
+  // same way before the NeoModal port). The row converged the view's three
+  // error strategies onto one: every action owns its ref.
+
+  async function failTheSave(page) {
+    await page.route('**/api/subscriptions/friend/*', (route) => {
+      if (route.request().method() !== 'PUT') return route.continue()
+      return route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Odber sa nepodarilo uložiť' }),
+      })
+    })
+  }
+
+  test('a failed save renders .banner.danger.slim INSIDE the dialog, which stays open', async ({ page }) => {
+    await setTypes([])
+    await openPortal(page)
+    await failTheSave(page)
+
+    const d = await openSubs(page)
+    await boxFor(d, 'Pekáreň').click()
+    await d.getByRole('button', { name: 'Uložiť' }).click()
+
+    // The message is where the user is looking, not behind the scrim.
+    await expect(d.locator('.banner.danger.slim')).toHaveText('Odber sa nepodarilo uložiť')
+    await expect(d).toBeVisible()
+    // ONE surface: nothing renders the same message underneath.
+    await expect(page.locator('.banner.danger')).toHaveCount(1)
+    // The footer is usable again, so the user can retry or cancel.
+    await expect(d.getByRole('button', { name: 'Uložiť' })).toBeEnabled()
+    await expect(d.getByRole('button', { name: 'Zrušiť' })).toBeEnabled()
+  })
+
+  test('it is the MODAL\'s ref: it dies with the dialog and a re-open starts clean', async ({ page }) => {
+    await setTypes([])
+    await openPortal(page)
+    await failTheSave(page)
+
+    let d = await openSubs(page)
+    await d.getByRole('button', { name: 'Uložiť' }).click()
+    await expect(d.locator('.banner.danger.slim')).toHaveText('Odber sa nepodarilo uložiť')
+
+    await d.getByRole('button', { name: 'Zrušiť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    // ⚠ It can never reach the page banner — whose only remaining writer after
+    // the convergence is `resolveVoucher`.
+    await expect(page.locator('.banner.danger')).toHaveCount(0)
+    await expect(page.locator('.app')).not.toContainText('Odber sa nepodarilo uložiť')
+
+    d = await openSubs(page)
+    await expect(d.locator('.banner.danger.slim')).toHaveCount(0)
+  })
+})

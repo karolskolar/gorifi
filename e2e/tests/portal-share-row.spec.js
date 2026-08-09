@@ -489,3 +489,74 @@ test.describe('⚠ Session scoping and the sequence guard (UC-FL-007)', () => {
     expect(calls, 'the refetch did re-request the counts').toBeGreaterThan(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+
+test.describe('⚠ The colleague-count fan-out is BOUNDED (RD-FL-8a item 3)', () => {
+  // The batch used to `Promise.all` one `GET /api/guest-links/cycle/:id` per OPEN
+  // cycle in a single tick, on an assumption written into the code — "typically
+  // 1–2". Cycles are never auto-closed, so that decays silently with age: the
+  // e2e database reaches 135 open cycles, and 135 XHRs issued at once queue
+  // behind the browser's 6-connection-per-host limit with the portal's OWN
+  // requests stuck behind them. It really happened, and flaked
+  // `portal-session-boundary.spec.js` until `muteGuestCounts` was added.
+  //
+  // Two bounds are asserted, because either one alone is insufficient: a cap
+  // still starves the portal if the batch is issued first, and ordering alone
+  // still floods the connection pool.
+
+  const MANY = 40
+  const BULK = Array.from({ length: MANY }, (_, i) =>
+    cycleRow({ id: 9600 + i, name: `RDFL8a Bulk ${i} ${uniq}`, status: 'open' })
+  )
+
+  test(`${MANY} open cycles: at most 3 count requests in flight, and never ahead of the portal's own`, async ({ page }) => {
+    await signIn(page)
+    await stubBalance(page)
+    await page.route('**/api/friends/cycles*', (route) => route.fulfill({ json: BULK }))
+
+    const order = []
+    await page.route('**/api/subscriptions/friend/*', async (route) => {
+      order.push('subs')
+      return route.fulfill({ json: { types: [] } })
+    })
+    await page.route('**/api/vouchers/pending*', async (route) => {
+      order.push('vouchers')
+      return route.fulfill({ json: [] })
+    })
+
+    let inFlight = 0
+    let peak = 0
+    let served = 0
+    await page.route('**/api/guest-links/cycle/*', async (route) => {
+      order.push('count')
+      inFlight += 1
+      peak = Math.max(peak, inFlight)
+      // Long enough that an unbounded batch would pile every request up here.
+      await new Promise((r) => setTimeout(r, 60))
+      inFlight -= 1
+      served += 1
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(linkPayload(2)) })
+    })
+
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+
+    // Let the whole capped queue drain.
+    await expect.poll(() => served, { timeout: 25_000 }).toBe(MANY)
+
+    // 1. The cap. Unbounded, `peak` is MANY.
+    expect(peak, `peak concurrent colleague-count requests (of ${MANY} cycles)`).toBeLessThanOrEqual(3)
+
+    // 2. The ordering. Decoration must never be issued before the two fetches
+    //    that decide what the screen shows.
+    const firstCount = order.indexOf('count')
+    expect(firstCount, 'the batch did run').toBeGreaterThan(-1)
+    expect(order.indexOf('subs'), 'subscriptions are issued before any count').toBeLessThan(firstCount)
+    expect(order.indexOf('vouchers'), 'the voucher check is issued before any count').toBeLessThan(firstCount)
+
+    // …and the counts still land, so the bound did not simply drop them.
+    await expect(rowFor(page, BULK[0].name).locator('.tabbadge')).toHaveText('2')
+    await expect(rowFor(page, BULK[MANY - 1].name).locator('.tabbadge')).toHaveText('2')
+  })
+})
