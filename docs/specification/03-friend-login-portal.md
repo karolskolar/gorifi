@@ -23,6 +23,12 @@
 > (pinned selectors), repo `CLAUDE.md` (Friend Ordering Flow, GSO-T2, Packeta, Pending
 > Invitations). The handoff bundle (2026-08) is canonical for visuals/copy; repo code is
 > canonical for behavior. The most recent decision wins.
+> ⚠ **`02-shot.png` is CROPPED mid-card**, immediately after the plan block — it does
+> **not** reach the cycle card's badge row or its share row (UC-FL-007). Verify those two
+> against `friends/portal.jsx:73-81` and the live prototype served **over HTTP** instead
+> (`file://` breaks it — Babel XHRs the `.jsx` and CORS blocks it); reading computed
+> values off the running prototype beats eyeballing a raster anyway. Everything above the
+> plan block — appbar, balance card, card header, plan block — the shot does answer.
 > **Design reference:** `screenshots/01-shot.png` (login), `screenshots/02-shot.png`
 > (portal), `screenshots/17-shot.png` (desktop centering); live prototype
 > `Podpultovka Friends.html` → screens "Prihlásenie" and "Portál — cykly". Match
