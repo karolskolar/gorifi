@@ -221,6 +221,41 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   server would 409), a **cancelled** sub-order still offering it, and the admin
   invitations list showing the tag while the invitation → new-friend prefill
   (`create=1&name=&phone=&email=`) still fills the modal.
+- `tests/self-hosted-fonts.spec.js` — RD-DS-6: the brand webfonts must be
+  **self-hosted**, and the CSP hole that hid it. The Podpultovka restyle loaded
+  Darker Grotesque / Figtree / Courier Prime from `fonts.googleapis.com`, which
+  production and staging nginx block with `style-src 'self'` + `font-src 'self'
+  data:` — measured on staging, `document.fonts.size === 0` and the whole UI fell
+  back to Inter. Nothing caught it because **every gate in the effort ran against
+  Express with no nginx and therefore no CSP header at all**. Two halves: against
+  `BASE_URL`, all three families load and **`/`, `/invite/:code` and `/g/:token`
+  each fetch only same-origin subresources** — the assertion that generalises past
+  fonts. ⚠ It sweeps three routes because sweeping only `/` demonstrably did not
+  generalise: `InviteRegister.vue` was loading the Goriffee logo from
+  `www.goriffee.com`, which the prod `img-src 'self' data:` blocks (and which
+  404s upstream today), on a route this file never opened. **A new public route
+  belongs in that list.** `revolut.me` is excluded on purpose — an `<a href>`
+  navigation is not a subresource fetch. The invite logo is additionally asserted
+  to *decode* (`naturalWidth > 0`), since a blocked or 404 image is still
+  `complete` and still passes `toBeVisible()`. Then, against a throwaway static
+  server over `frontend/dist` that sets `deploy/nginx-gorifi.conf`'s **exact** CSP header,
+  zero `securitypolicyviolation` events plus the same font assertions. ⚠
+  `document.fonts.check()` is NOT used — it returned `true` on staging with zero
+  faces loaded; every probe goes through `FontFace.status === 'loaded'` or a real
+  rendered-width measurement. Every family is asserted **per subset**, because
+  `latin-ext` is where Slovak `č š ž ľ ť ď ň` live and shipping only `latin`
+  breaks those letters mid-word — and **per shipped weight**, because one probe
+  per family left `courier-prime-700-{latin,latin-ext}` never fetched, so deleting
+  those two files kept the suite green. The width probe pre-`document.fonts.load()`s each
+  face (a face nothing on screen uses — Courier Prime on the portal — is not
+  fetched, and `font-display: swap` would measure it at fallback metrics), and
+  measures Courier Prime against `sans-serif` rather than `monospace`: comparing a
+  monospace brand face against the *generic* monospace invites a diff small enough
+  to be noise, and how small depends on whatever the host resolves `monospace` to,
+  so the comparison is made against a family that cannot collide. The last test **reproduces the original
+  bug** against the fixture (a Google Fonts `<link>` must raise a `style-src-elem`
+  violation), so a green run means "self-hosting works", not "the header never
+  arrived". The CSP describe self-skips when `frontend/dist` is absent.
 - `seed.mjs` — seeds a backend with an admin password, legacy friends password,
   one cycle, one friend (idempotent; NOT for production). Also fills the payment
   settings (IBAN / Revolut username) **only if they are empty**, because guest

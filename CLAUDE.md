@@ -587,3 +587,63 @@ produce plausible wrong numbers:
 - ⚠ Confirm the port is **free first** (a stale server serves a `backend/public` deleted
   underneath it), check `echo "EXIT: $?"` rather than piping through `tail` (which returns
   *tail's* status), and remember `pkill -f` matches its own shell — chain nothing after it.
+
+### ⚠ Brand webfonts are SELF-HOSTED, and the gate had no CSP at all (RD-DS-6, 2026-08-09)
+
+The Podpultovka restyle shipped with a `<link>` to `fonts.googleapis.com` in
+`frontend/index.html`. Production **and** staging nginx send
+`style-src 'self' 'unsafe-inline'; font-src 'self' data:`, which blocks the Google
+stylesheet **and** the `fonts.gstatic.com` woff2 files. Measured live on staging:
+`document.fonts.size === 0`, one `style-src-elem` violation, and every screen rendering
+in the `Inter, sans-serif` fallback. The whole 25-row restyle was verified in the wrong
+typeface.
+
+- **Fixed by self-hosting, never by relaxing the CSP.** `font-src 'self'` already permits
+  it, so there is **no deploy-config change** — `frontend/public/fonts/*.woff2` (Vite
+  copies `public/` to `dist/` verbatim, so `/fonts/x.woff2` is the runtime URL and it is
+  **not** hashed or bundled) plus `frontend/src/fonts.css`, imported from `main.js`.
+  `friends-theme.css` was deliberately **not** touched — it is a byte-for-byte design-canon
+  port with a numbered adaptation list, and this belongs to none of it.
+- ⚠ **`latin-ext` is a SEPARATE subset and is NOT optional.** `á é í ó ú ý ô` are `latin`
+  (U+0000–00FF), but **`č š ž ľ ť ď ň ĺ ŕ` are U+0100–017F**. Ship only `latin` and every
+  one of those falls back to another typeface **mid-word** — "Zrušiť", "Späť", "Prihlásiť",
+  "Objednávky kolegov". Both subsets ship for all three families, with Google's
+  `unicode-range` descriptors preserved verbatim so the browser still picks per character.
+  Any future face added here needs both.
+- Figtree is a **variable** font: Google emits five `@font-face` blocks (400–800) that all
+  point at **one file per subset**. Kept verbatim — 17 rules, 9 files, ~118 KB. Darker
+  Grotesque's `vietnamese` subset is kept too: `unicode-range` means it is never fetched by
+  a Slovak UI, so it costs nothing at runtime.
+- ⚠ **`document.fonts.check()` is not a valid probe** — it returned `true` on staging while
+  zero faces were loaded (it answers "would this family be used", not "did the bytes
+  arrive"). Use `FontFace.status === 'loaded'` or a rendered-width measurement.
+- ⚠ **THE ROOT CAUSE IS THE GATE, NOT THE LINK: every e2e run in the whole effort went
+  against Express on `localhost:3997`, which sends NO security headers.** The suite could
+  not see a CSP failure of any kind. `e2e/tests/self-hosted-fonts.spec.js` closes it by
+  standing up a throwaway static server over `frontend/dist` that sets
+  `deploy/nginx-gorifi.conf`'s exact header, and asserting zero
+  `securitypolicyviolation` events — **if that header ever changes, change the copy in the
+  spec too.** Verified non-vacuous — reverted to the pre-fix build, 4 of its tests fail.
+- ⚠ **The same CSP was blocking a SECOND asset, and the first version of this entry
+  overstated the sweep that should have caught it.** `InviteRegister.vue` loaded the
+  Goriffee logo from `https://www.goriffee.com/...png`, which `img-src 'self' data:`
+  blocks — a broken logo on the **public** registration page. (That URL also 404s
+  upstream now, so it was dead twice over; the replacement is the brand's current
+  official mark, self-hosted at `frontend/public/goriffee-logo.svg`. ⚠ Its colour
+  treatment differs from the retired PNG — white wordmark on a black plate — and is
+  **pending design sign-off**.) The spec's "zero non-same-origin requests" assertion only
+  ever visited `/`, so it could not have caught it. It now sweeps **`/`, `/invite/:code`
+  and `/g/:token`** — every public unauthenticated route that renders its own chrome —
+  which is what makes "this catches the next CDN link somebody adds, font or not" a true
+  claim rather than an aspiration. **Any new public route must be added to that list**; an
+  authenticated one is covered for chrome by its own spec. `revolut.me` in
+  `FriendOrder.vue`/`PaymentModal.vue` is deliberately out of scope: those are `<a href>`
+  navigations, not subresource fetches, so no CSP directive applies and nothing is
+  requested until the user clicks.
+- Residual, not introduced here: `friends-theme.css:207` `.pimg .lbl` asks for `'Anton'`,
+  which was never loaded by any `<link>` and is not self-hosted either. RD-FO-2 made `.lbl`
+  unreachable (the no-photo `.pimg` is a bare frame), so it is dead, not broken.
+- Nginx caching was left alone: `/fonts/` falls through to `location /`, so it gets
+  ETag/Last-Modified 304s rather than `/assets`' `expires 1y; immutable`. Deliberate — the
+  filenames are **not** content-hashed, so `immutable` would pin a stale face forever if the
+  subsets are ever refreshed from Google.
