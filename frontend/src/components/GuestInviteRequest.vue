@@ -1,30 +1,39 @@
 <script setup>
 import { ref, computed } from 'vue'
 import api from '../api'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import NeoIcon from '@/components/neo/NeoIcon.vue'
 
-// Lead capture (§UC-GSO-015, §Lead Capture) — ONE component for BOTH guest screens:
-// the confirmation on `/g/:token` and the status page on `/g/:token/o/:orderToken`.
-// Same seam rule as GuestProductGrid: extend this, never fork it.
+// Lead capture (§UC-GSO-015, §Lead Capture; restyled by 06 §UC-GX-009) — ONE
+// component for BOTH guest screens: the confirmation on `/g/:token` and the status
+// page on `/g/:token/o/:orderToken`. Same seam rule as GuestProductGrid: extend
+// this, never fork it.
 //
-// Deliberately LOW-KEY. Both screens exist to tell the guest what to pay and where
-// to pay it; a recruitment box that competes with the payment information would cost
-// more than the lead is worth. So: one line of text and a text-style button, folded
-// away until it is tapped.
+// ⚠ THE RESTYLE INVERTS THE SHIPPED VISUAL PRIORITY, deliberately. The shipped card
+// was "deliberately LOW-KEY" — a dashed muted box with a text-style link — on the
+// argument that a recruitment box must not compete with the payment information.
+// The prototype's `GuestInviteCta` is the opposite: a pink `--hi` card with a
+// rotated icon box and a display-face headline. The prototype wins (00-overview:
+// prototype copy and visuals are final), and the competing-with-payment worry is
+// answered by PLACEMENT instead — both screens keep the CTA below the sum card, the
+// pay button and (on g-confirm) the status-URL row.
 //
-// The CTA writes through `POST /api/guest/:token/orders/:orderToken/invite-request`
-// (no auth headers — the token pair in the URL is the whole credential) and creates
-// an `invitations` row credited to the HOST. The wording is the spec's, moved to the
-// vy-form the rest of these screens use: the spec's "Chceš si nabudúce objednať
-// sám?" both addresses the reader informally and genders them, and CLAUDE.md pins
-// impersonal/vy-form with no reader-gendered participles.
+// ⚠ BEHAVIOUR IS GSO-T10'S AND UNCHANGED BY THIS ROW. The CTA writes through
+// `POST /api/guest/:token/orders/:orderToken/invite-request` (no auth headers — the
+// token PAIR in the URL is the whole credential) and creates an `invitations` row
+// credited to the HOST. Client validation strings, the 409 handling and the
+// prefill-at-open-time rule below are all byte-identical to the shipped ones.
 //
 // Contact details are PREFILLED from the guest's own sub-order (Decision 7 already
 // required name + mobile) but stay editable — a guest may want a different e-mail on
 // their account than the one they used for a one-off coffee.
+//
+// Copy note (resolved conflict #2): the fold line is the prototype's
+// "Chcete si objednať sami?", not the shipped "Chcete si nabudúce objednať sami?".
+// Both satisfy the CLAUDE.md GSO-T10 pin, which is about the vy-form register and
+// the absence of a reader-gendered participle ("Chceš si … sám?" fails both); the
+// pin does not reach the word "nabudúce", which the unfolded body still carries.
+// `guest-lead-capture.spec.js:470` is re-pinned for it — §UC-GX-011 item 1, the one
+// sanctioned e2e edit this row spends.
 
 const props = defineProps({
   token: { type: String, required: true },
@@ -106,63 +115,123 @@ async function submit() {
 </script>
 
 <template>
-  <div
-    class="rounded-lg border border-dashed p-3 text-xs text-muted-foreground"
-    data-testid="invite-cta"
-  >
-    <!-- Submitted in this session -->
-    <p v-if="done" data-testid="invite-done" class="text-emerald-700">
-      Žiadosť o účet je odoslaná. Správca sa vám ozve.
-    </p>
+  <!-- ⚠ `data-testid="invite-cta"` RIDES ON EACH STATE'S OWN ROOT, not on a wrapper.
+       §UC-GX-009 pins "root keeps `data-testid=invite-cta`", and the four states have
+       three different roots (`.card`, `.banner.ok.slim`, `.banner.slim`) — exactly as
+       the prototype, which returns the banner directly when done. A wrapper `<div>`
+       would satisfy the testid but add an unclassed block to a `gap`-ed flex column,
+       and unclassed blocks are the very thing the A10 note warns about. -->
 
-    <!-- Already queued (server-known, or learned from a 409) -->
-    <p v-else-if="alreadyRequested" data-testid="invite-requested">
-      Žiadosť o účet už evidujeme. Správca sa vám ozve.
-    </p>
+  <!-- 3. Submitted in THIS session (a 201 we saw). Prototype verbatim, including the
+         bolded first sentence. -->
+  <div v-if="done" class="banner ok slim" data-testid="invite-cta">
+    <span class="dot"></span>
+    <span data-testid="invite-done" style="min-width:0"><b>Žiadosť o účet je odoslaná.</b> Správca sa vám ozve.</span>
+  </div>
 
-    <!-- Folded away: one line and a text-style button -->
-    <div v-else-if="!open" class="flex flex-wrap items-center justify-between gap-2">
-      <span>Chcete si nabudúce objednať sami?</span>
-      <Button
-        variant="link"
-        size="sm"
-        class="h-auto p-0 text-xs"
+  <!-- 4. Already queued — server-known (`invite_request.requested`) or learned from a
+         409. The prototype has no such state; neutral `.banner.slim` (accent-soft) is
+         the styling decision §UC-GX-009 records, and the `.dot` comes with the banner
+         idiom — every other banner on this shell carries one. Shipped copy kept, and
+         deliberately NOT an invitation to retry: the server would only 409 again. -->
+  <div v-else-if="alreadyRequested" class="banner slim" data-testid="invite-cta">
+    <span class="dot"></span>
+    <span data-testid="invite-requested" style="min-width:0">Žiadosť o účet už evidujeme. Správca sa vám ozve.</span>
+  </div>
+
+  <!-- 1 + 2. One `.card` for both the folded and the unfolded state (prototype:
+         same node, different child), pink `--hi` so it reads as an offer rather than
+         as another piece of order data. -->
+  <div v-else class="card" style="padding:10px 12px;background:var(--hi)" data-testid="invite-cta">
+    <!-- FOLDED. The icon box is a 36×36 white tile with its own 3px border and 2px
+         shadow, rotated −3° — the one rotated element on these screens besides the
+         badges. `display:flex` on it is what centres the 17px glyph; without it the
+         svg would sit on the tile's baseline. -->
+    <div v-if="!open" style="display:flex;gap:10px;align-items:center">
+      <span
+        style="width:36px;height:36px;flex-shrink:0;border:3px solid var(--nb-ink);border-radius:9px;background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:2px 2px 0 var(--nb-ink);transform:rotate(-3deg)"
+      >
+        <NeoIcon name="invite" />
+      </span>
+      <!-- `.display` is uppercase by class; `line-height:.95` is the prototype's and
+           overrides A10's `normal` for this one headline. `min-width:0` lets the
+           headline shrink instead of pushing the button off a 320px card. -->
+      <div class="display" style="flex:1;min-width:0;font-size:17px;line-height:.95">Chcete si objednať sami?</div>
+      <button
+        type="button"
+        class="btn sm"
+        style="flex-shrink:0;min-height:34px;padding:6px 10px;font-size:12.5px"
         data-testid="invite-cta-open"
         @click="openForm"
-      >
-        Požiadať o účet
-      </Button>
+      >Požiadať o účet</button>
     </div>
 
-    <!-- Unfolded: the prefilled invitation form -->
-    <div v-else class="space-y-2">
-      <p>
-        Správca vás pridá medzi priateľov a nabudúce si objednáte priamo, bez kolegu.
-      </p>
-      <div class="space-y-1">
-        <Label for="invite-name" class="text-xs">Meno *</Label>
-        <Input id="invite-name" v-model="form.name" data-testid="invite-name" maxlength="120" />
+    <!-- UNFOLDED. `padding:4px` inside the card's own 10/12 is the prototype's
+         (so the form sits 14/16 in, not 10/12). Fields are the module's `Field` port:
+         a native `label.field-lbl` + `input.inp`, never `ui/label` / `ui/input`. -->
+    <div v-else style="display:flex;flex-direction:column;gap:12px;padding:4px">
+      <div class="display" style="font-size:21px;line-height:.95">Žiadosť o vlastný účet</div>
+      <!-- Prototype copy — it drops the shipped ", bez kolegu", which said the same
+           thing about the host twice. -->
+      <div class="sub" style="font-size:13px">Správca vás pridá medzi priateľov a nabudúce si objednáte priamo.</div>
+
+      <!-- The GSO-T3 bounds mirrored as `maxlength` (120 / 32 / 160). The server
+           re-validates through the SHARED `validateIdentity()` the checkout also
+           uses, but a silently truncated 200 000-char name is what the mirror
+           prevents. -->
+      <div>
+        <label class="field-lbl" for="invite-name">Meno *</label>
+        <input
+          id="invite-name"
+          v-model="form.name"
+          class="inp"
+          type="text"
+          data-testid="invite-name"
+          maxlength="120"
+        />
       </div>
-      <div class="space-y-1">
-        <Label for="invite-phone" class="text-xs">Mobil *</Label>
-        <Input id="invite-phone" v-model="form.phone" data-testid="invite-phone" inputmode="tel" maxlength="32" />
+      <div>
+        <label class="field-lbl" for="invite-phone">Mobil *</label>
+        <input
+          id="invite-phone"
+          v-model="form.phone"
+          class="inp"
+          type="text"
+          data-testid="invite-phone"
+          inputmode="tel"
+          maxlength="32"
+        />
       </div>
-      <div class="space-y-1">
-        <Label for="invite-email" class="text-xs">E-mail (nepovinné)</Label>
-        <Input id="invite-email" v-model="form.email" data-testid="invite-email" inputmode="email" maxlength="160" />
+      <div>
+        <label class="field-lbl" for="invite-email">E-mail (nepovinné)</label>
+        <input
+          id="invite-email"
+          v-model="form.email"
+          class="inp"
+          type="text"
+          data-testid="invite-email"
+          placeholder="meno@example.com"
+          inputmode="email"
+          maxlength="160"
+        />
       </div>
 
-      <Alert v-if="error" variant="destructive">
-        <AlertDescription data-testid="invite-error">{{ error }}</AlertDescription>
-      </Alert>
+      <!-- Client-side messages verbatim ("Zadajte meno." / "Zadajte telefónne číslo
+           (aspoň 9 číslic)."); anything else here is the server's own message. -->
+      <div v-if="error" class="banner danger slim" role="alert">
+        <span class="dot"></span><span data-testid="invite-error" style="min-width:0">{{ error }}</span>
+      </div>
 
-      <div class="flex gap-2 pt-1">
-        <Button variant="outline" size="sm" class="flex-1 h-8 text-xs" :disabled="submitting" @click="open = false">
-          Späť
-        </Button>
-        <Button size="sm" class="flex-1 h-8 text-xs" data-testid="invite-submit" :disabled="submitting" @click="submit">
-          {{ submitting ? 'Odosielam…' : 'Odoslať žiadosť' }}
-        </Button>
+      <div style="display:flex;gap:8px">
+        <button type="button" class="btn sm" style="flex:1" :disabled="submitting" @click="open = false">Späť</button>
+        <button
+          type="button"
+          class="btn sm dark"
+          style="flex:1"
+          data-testid="invite-submit"
+          :disabled="submitting"
+          @click="submit"
+        >{{ submitting ? 'Odosielam…' : 'Odoslať žiadosť' }}</button>
       </div>
     </div>
   </div>

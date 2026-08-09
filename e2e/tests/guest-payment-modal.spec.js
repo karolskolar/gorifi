@@ -321,10 +321,14 @@ test.describe('RD-GX-2 · the Platba modal shell (§UC-GX-005)', () => {
     await expect(page.getByRole('dialog')).toHaveCount(0)
     await expect(page.locator('.modal-scrim')).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Zavrieť' }), 'three immutable specs query this unscoped').toHaveCount(0)
-    // ⚠ NOT asserting `payment-reference` count 0 here: `GuestOrderStatus.vue` is
-    // RD-GX-3's file and still renders its own on-card reference row, so this page
-    // legitimately carries one until that row lands. The modal's copy is addressed
-    // scoped to the dialog everywhere in this file for the same reason.
+    // ⚠ THE DEFERRED HALF, LANDED (RD-GX-4). This used to be a comment explaining
+    // why `payment-reference` count 0 was NOT asserted here: RD-GX-3 owned
+    // `GuestOrderStatus.vue` and that page still rendered its own on-card reference
+    // row, so a closed modal did not mean no reference on screen. RD-GX-3 removed
+    // that row (resolved conflict #4), so the assertion the comment was deferring is
+    // now the real contract — and it is the one that actually pins "modal-only":
+    // without it, re-adding an on-card row would leave every test in this file green.
+    await expect(page.getByTestId('payment-reference'), 'modal-only: nothing on the card').toHaveCount(0)
 
     await page.getByTestId('open-payment').click()
     await expect(page.getByRole('dialog')).toHaveCount(1)
@@ -588,7 +592,11 @@ test.describe('RD-GX-2 · g-confirm (§UC-GX-004)', () => {
 
   test('the sum card: display total, divider, bare `toFixed(2)` lines with U+00D7', async ({ page }) => {
     await submitThrough(page)
-    const card = page.getByTestId('guest-confirmation').locator('.card')
+    // ⚠ `.first()` — RD-GX-4 made `GuestInviteRequest`'s folded state a `.card` too
+    // (§UC-GX-009: pink `--hi` card, display headline), so this column now holds TWO
+    // `.card`s and TWO `.display`s. The sum card is the first, and it is the one this
+    // test is about; the CTA has its own coverage in `guest-invite-dead.spec.js`.
+    const card = page.getByTestId('guest-confirmation').locator('.card').first()
 
     await expect(card.locator('.field-lbl')).toHaveText('Suma na úhradu')
     const total = card.locator('.display')

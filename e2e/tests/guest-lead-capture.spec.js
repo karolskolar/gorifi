@@ -467,7 +467,14 @@ test.describe('Lead capture UI', () => {
 
     const cta = page.getByTestId('invite-cta')
     await expect(cta, 'the low-key lead-capture CTA').toBeVisible()
-    await expect(cta).toContainText(/nabudúce/i)
+    // ⚠ SANCTIONED SPEC UPDATE (06 §UC-GX-011 item 1, resolved conflict #2), the
+    // only edit RD-GX-4 spends. The fold line moved from the shipped "Chcete si
+    // nabudúce objednať sami?" to the prototype's "Chcete si objednať sami?" — the
+    // word "nabudúce" now lives only in the unfolded body, which this assertion is
+    // made before opening. Both wordings satisfy the CLAUDE.md GSO-T10 register pin
+    // (vy-form, no reader-gendered participle); that pin is what this line exists to
+    // protect, and the new regex still protects it.
+    await expect(cta).toContainText(/objednať sami/i)
 
     await page.getByTestId('invite-cta-open').click()
     // Prefilled from the sub-order the guest just created — name/phone/email carried over.
