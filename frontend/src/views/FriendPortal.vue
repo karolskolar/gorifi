@@ -16,6 +16,7 @@ import BrandChrome from '@/components/neo/BrandChrome.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
+import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
 
 const router = useRouter()
 
@@ -105,7 +106,25 @@ const forcedSaving = ref(false)
 const showInviteModal = ref(false)
 const inviteCode = ref('')
 const inviteLoading = ref(false)
-const inviteCopied = ref(false)
+// ⚠ A DEDICATED error ref, not the page-level `error` (UC-FL-011 moves the fetch
+// failure into the modal body). Two reasons it is not the shared one:
+//   · the page banner is suppressed per open modal (`error && !showProfileModal`),
+//     so sharing `error` would need one more `&& !showInviteModal` term per modal
+//     — a condition that grows with every dialog and is wrong the moment someone
+//     forgets a term;
+//   · shared, ANY other writer (`saveProfile`, `saveSubscriptions`,
+//     `resolveVoucher`) could put a message in this modal's banner that its own
+//     fetch never produced. Scoped by construction beats scoped by reachability,
+//     which is the same rule this row's session-boundary spec exists to enforce.
+// The profile modal keeps the shared ref + suppression (RD-FL-6, out of scope
+// here) — retiring that is a seam for RD-FL-8's component extraction.
+const inviteError = ref('')
+// The GSO-T2 `loadSeq` rule applied to the invite fetch: `openInviteModal` is
+// re-entrant (chip → close → chip) and, more importantly, survives a logout as a
+// promise in flight. Without the guard, session A's invite code can land in
+// session B's modal — and an invite code is an identity, not decoration:
+// registrations through it are credited to A. `switchUser` bumps it too.
+let inviteSeq = 0
 
 // Guest share dialog — the cycle whose link is being shared (null = closed)
 const shareCycle = ref(null)
@@ -544,6 +563,48 @@ function switchUser() {
   //    (`forcedNewPassword`/`forcedNewPasswordConfirm` are NOT in this block
   //    and must not be: that gate is `closable:false` and focus-trapped, so
   //    the logout control is unreachable while it holds anything.)
+  //  - The SUBSCRIPTION and INVITE modals (RD-FL-7) are the two this row adds,
+  //    and both are cleared BY CONSTRUCTION rather than by reachability — the
+  //    reviewer sweep that found `showLoginPassword` proved that "the opener
+  //    recomputes it, so it cannot render stale" is a claim about today's
+  //    call graph, not about the refs. `e2e/tests/portal-session-boundary.spec.js`
+  //    now enumerates the SURFACE for exactly this reason.
+  //      · `showSubscriptionModal`/`showInviteModal` are the `showProfileModal`
+  //        case: a dialog left open across a logout renders over the LOGIN
+  //        screen, and the subscription one would then write the previous
+  //        friend's two booleans onto whoever logs in next.
+  //      · `subCoffee`/`subBakery` are re-derived by `openSubscriptionModal()`
+  //        from `subscriptions` (cleared three lines up), so they cannot render
+  //        stale today; reset to their initial `true` anyway so no preference of
+  //        a former session survives in memory and the rule needs no exception.
+  //      · `inviteCode` (cleared further down, pre-existing) is an IDENTITY, not
+  //        decoration: registrations through it are credited to its owner.
+  //        `inviteSeq++` is what stops a response still in flight from writing
+  //        A's code into B's modal — the `guestCountSeq` lesson, and the reason
+  //        clearing the ref alone is not enough.
+  //      · `inviteError` names a failure of a session that has ended, and the
+  //        modal renders it verbatim on open (`voucherResolved`'s class).
+  //      · `inviteLoading`/`subSaving` are in-flight flags; left true by a
+  //        logout mid-request they open the next person's modal with its buttons
+  //        permanently disabled / stuck on "Načítavam...".
+  //  - ⚠ `setupSaving`/`changePasswordSaving` are the SAME in-flight shape, in
+  //    blocks this function already clears in full — added in the RD-FL-7 review
+  //    after the two above made the shape explicit. Both are reachable: a
+  //    `finally` only runs when the request settles, and BOTH dialogs are
+  //    dismissable while one is in flight (NeoModal's Esc/× and radix's Esc
+  //    ignore a disabled footer), so "submit → Esc → logout" leaves the flag set.
+  //    `setupSaving` is the worst of the four, because its dialog is AUTO-RAISED
+  //    for the next person (transition mode, `hasCredentials === false`) and both
+  //    its footer buttons are `:disabled="setupSaving"` — so the next friend gets
+  //    an inert dialog they did nothing to summon and cannot dismiss.
+  //    `profileSaving` is cleared with them, closing the class rather than
+  //    leaving one member of it behind: the RD-FL-7 review deferred it to
+  //    RD-FL-8's convergence seam, but that seam is about where a failure
+  //    MESSAGE renders (`profileError`/`subError`) — a boolean in-flight flag
+  //    raises no such question, and there is no `profileError` ref to converge
+  //    with (the profile modal writes the shared `error`, cleared at the top).
+  //    Leaving the one modal that is NOT auto-raised as the sole uncleared case
+  //    would just be an exception the next sweep has to re-derive.
   //  - `usernameAvailable`/`usernameChecking` are the mild `showArchive` end of
   //    the same modal: with the field cleared, a leftover "Užívateľské meno je
   //    voľné" would describe a name that is no longer in the box. The pending
@@ -563,13 +624,24 @@ function switchUser() {
   changeNewPasswordConfirm.value = ''
   changePasswordError.value = ''
   changePasswordSuccess.value = ''
+  changePasswordSaving.value = false
   profileName.value = ''
   profilePacketaAddress.value = ''
+  profileSaving.value = false
+  showSubscriptionModal.value = false
+  subCoffee.value = true
+  subBakery.value = true
+  subSaving.value = false
+  showInviteModal.value = false
+  inviteError.value = ''
+  inviteLoading.value = false
+  inviteSeq++
   showCredentialSetup.value = false
   setupUsername.value = ''
   setupPassword.value = ''
   setupPasswordConfirm.value = ''
   setupError.value = ''
+  setupSaving.value = false
   if (usernameCheckTimeout) clearTimeout(usernameCheckTimeout)
   usernameCheckTimeout = null
   usernameAvailable.value = null
@@ -672,6 +744,13 @@ async function saveProfile() {
 }
 
 function openSubscriptionModal() {
+  // RD-FL-6's opener rule (see `openProfileModal`): this modal has no banner of
+  // its own, so a stale `error` would keep rendering in the page banner BEHIND
+  // the scrim while the user works here, and re-surface as if this dialog had
+  // failed the moment they close it. `saveSubscriptions` clears it too — this
+  // moves the reset one step earlier, to the point where the user takes the
+  // action, rather than the point where it is submitted.
+  error.value = ''
   subCoffee.value = subscriptions.value.length === 0 || subscriptions.value.includes('coffee')
   subBakery.value = subscriptions.value.length === 0 || subscriptions.value.includes('bakery')
   showSubscriptionModal.value = true
@@ -900,19 +979,28 @@ function orderQuantityLabel(cycle) {
 }
 
 async function openInviteModal() {
+  // Same call, same data, same "fetch on every open" (UC-FL-011) — only where
+  // the failure lands changed.
+  const seq = ++inviteSeq
   showInviteModal.value = true
-  inviteCopied.value = false
+  inviteCode.value = ''
+  inviteError.value = ''
   inviteLoading.value = true
-  // A retry must not leave the previous attempt's banner standing (RD-FL-3).
+  // The page banner is NOT this modal's surface any more, but the opener still
+  // clears it: RD-FL-6's rule applies to every opener, and a message from a
+  // failed profile/subscription/voucher write standing behind the scrim is
+  // noise the user cannot dismiss without closing this dialog first.
   error.value = ''
   try {
     const friendId = getFriendsAuthInfo()?.friendId
     const data = await api.getMyInviteCode(friendId)
+    if (seq !== inviteSeq) return
     inviteCode.value = data.inviteCode
   } catch (e) {
-    error.value = e.message
+    if (seq !== inviteSeq) return
+    inviteError.value = e.message
   } finally {
-    inviteLoading.value = false
+    if (seq === inviteSeq) inviteLoading.value = false
   }
 }
 
@@ -926,23 +1014,13 @@ function openShareDialog(cycle) {
   shareCycle.value = cycle
 }
 
-async function copyInviteLink() {
-  try {
-    await navigator.clipboard.writeText(getInviteUrl())
-    inviteCopied.value = true
-    setTimeout(() => { inviteCopied.value = false }, 2000)
-  } catch (e) {
-    // Fallback for older browsers
-    const input = document.createElement('input')
-    input.value = getInviteUrl()
-    document.body.appendChild(input)
-    input.select()
-    document.execCommand('copy')
-    document.body.removeChild(input)
-    inviteCopied.value = true
-    setTimeout(() => { inviteCopied.value = false }, 2000)
-  }
-}
+// ⚠ `copyInviteLink()` and `inviteCopied` were DELETED here (RD-FL-7).
+// `NeoCopyRow` (UC-DS-011) owns the whole control now: the 2 s "Skopírované!"
+// flip, restarting that window on a re-click, the clipboard write and its
+// failure handling, and clearing the timer if the modal unmounts inside the
+// window — which the view's version did not do. The URL is still built by
+// `getInviteUrl()` from `window.location.origin`; the primitive only renders
+// and copies the string it is handed.
 </script>
 
 <template>
@@ -1598,34 +1676,65 @@ async function copyInviteLink() {
       </template>
     </div>
 
-    <!-- Subscription Modal -->
-    <Dialog :open="showSubscriptionModal" @update:open="showSubscriptionModal = $event">
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Nastavenia odberu</DialogTitle>
-        </DialogHeader>
-        <div class="space-y-4 py-4">
-          <p class="text-sm text-muted-foreground">Vyberte, ktoré typy objednávok chcete vidieť:</p>
-          <label class="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/50">
-            <input v-model="subCoffee" type="checkbox" class="rounded" />
-            <span class="font-medium">Káva</span>
-          </label>
-          <label class="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/50">
-            <input v-model="subBakery" type="checkbox" class="rounded" />
-            <span class="font-medium">Pekáreň</span>
-          </label>
-          <p class="text-xs text-muted-foreground">Ak nevyberiete nič, budú sa zobrazovať všetky cykly.</p>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" @click="showSubscriptionModal = false" :disabled="subSaving">
-            Zrušiť
-          </Button>
-          <Button @click="saveSubscriptions" :disabled="subSaving">
-            {{ subSaving ? 'Ukladám...' : 'Uložiť' }}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <!-- Subscription modal (UC-FL-010) — `portal.jsx:149-159` node for node.
+         `.m-body` is already `flex-direction:column; gap:12px`, so the four
+         children need no wrapper and no spacing of their own.
+
+         Script behaviour is UNCHANGED: `openSubscriptionModal()` still presets
+         the two booleans (empty list ⇒ both), `saveSubscriptions()` still builds
+         `types` from them, PUTs `/subscriptions/friend/:id` and re-runs
+         `loadCycles()` so the filter applies without a reload. -->
+    <NeoModal
+      v-if="showSubscriptionModal"
+      title="Nastavenia odberu"
+      @close="showSubscriptionModal = false"
+    >
+      <div class="sub">Vyberte, ktoré typy objednávok chcete vidieť:</div>
+
+      <!-- ⚠ Three click zones, one toggle each — RD-FL-2's remember-me pattern,
+           and the reason it exists: a `<label>` only forwards clicks to LABELABLE
+           elements, and `NeoCheckbox` is a `span[role=checkbox]`, so the wrapper
+           forwards nothing by itself. UC-FL-010 requires the whole label surface
+           to toggle, so each zone gets its own mechanism, and exactly once:
+             · the box     → NeoCheckbox's own handler;
+             · the text    → the `@click` on the span;
+             · the padding → `@click.self` on the label, which fires ONLY when the
+               and gap       label itself is the event target. Without `.self` the
+                             label would also catch the two clicks above and
+                             double-toggle them straight back.
+           The label cannot name the checkbox either (same non-labelable reason),
+           hence `aria-label` on the control — otherwise the box announces as an
+           unnamed checkbox.
+           Default magenta, NOT `ok`: green is reserved for hand-over semantics
+           (UC-DS-009). -->
+      <label
+        class="card flat"
+        style="padding:12px 14px;display:flex;align-items:center;gap:12px;cursor:pointer"
+        @click.self="subCoffee = !subCoffee"
+      >
+        <NeoCheckbox v-model="subCoffee" aria-label="Káva" />
+        <span style="font-weight:700" @click="subCoffee = !subCoffee">Káva</span>
+      </label>
+      <label
+        class="card flat"
+        style="padding:12px 14px;display:flex;align-items:center;gap:12px;cursor:pointer"
+        @click.self="subBakery = !subBakery"
+      >
+        <NeoCheckbox v-model="subBakery" aria-label="Pekáreň" />
+        <span style="font-weight:700" @click="subBakery = !subBakery">Pekáreň</span>
+      </label>
+
+      <div class="field-help">Ak nevyberiete nič, zobrazia sa všetky cykly.</div>
+
+      <template #footer>
+        <button type="button" class="btn" :disabled="subSaving" @click="showSubscriptionModal = false">
+          Zrušiť
+        </button>
+        <button type="button" class="btn accent" :disabled="subSaving" @click="saveSubscriptions">
+          {{ subSaving ? 'Ukladám...' : 'Uložiť' }}
+        </button>
+      </template>
+    </NeoModal>
 
     <!-- Profile modal (UC-FL-009) — the first CLOSABLE form-bearing NeoModal.
          Composed from `portal.jsx:176-199`: same nodes, same inline styles.
@@ -1918,33 +2027,38 @@ async function copyInviteLink() {
       </DialogContent>
     </Dialog>
 
-    <!-- Invite modal -->
-    <Dialog :open="showInviteModal" @update:open="showInviteModal = $event">
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Pozvi priateľa</DialogTitle>
-        </DialogHeader>
-        <div class="space-y-4 py-4">
-          <p class="text-sm text-muted-foreground">
-            Pošli tento odkaz priateľovi. Po registrácii ho admin pridá do skupiny.
-          </p>
-          <div v-if="inviteLoading" class="text-center py-4 text-muted-foreground">
-            Načítavam...
-          </div>
-          <div v-else-if="inviteCode" class="space-y-3">
-            <div class="flex items-center gap-2">
-              <Input :model-value="getInviteUrl()" readonly class="font-mono text-sm" />
-              <Button @click="copyInviteLink" variant="outline" size="sm" class="shrink-0">
-                {{ inviteCopied ? 'Skopírované!' : 'Kopírovať' }}
-              </Button>
-            </div>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" @click="showInviteModal = false">Zavrieť</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <!-- Invite modal (UC-FL-011) — `portal.jsx:162-167`. The title keeps its
+         familiar "Pozvi priateľa" (resolved conflict #5); the body copy is
+         vy-form.
+
+         ⚠ The prototype's `https://podpultovka.sk/invite/LEGO-9F2K` is demo
+         data. The real value is `getInviteUrl()` — `window.location.origin` +
+         the code fetched on every open — so the link works on localhost, on
+         staging and in production without a build-time host anywhere. -->
+    <NeoModal
+      v-if="showInviteModal"
+      title="Pozvi priateľa"
+      @close="showInviteModal = false"
+    >
+      <div class="sub">Pošlite tento odkaz priateľovi. Po registrácii ho správca pridá do skupiny.</div>
+
+      <!-- Three mutually exclusive states for one fetch. The failure renders
+           HERE rather than in the page banner (UC-FL-011's one permitted UX
+           correction): the user asked for a link, so the answer — link or
+           reason — belongs where they are looking, not behind the scrim. It
+           uses the modal's own `inviteError`, so nothing another action failed
+           at can ever appear in it. -->
+      <div v-if="inviteLoading" class="sub" style="text-align:center">Načítavam...</div>
+      <div v-else-if="inviteError" class="banner danger slim">
+        <span class="dot"></span>
+        <div style="min-width:0">{{ inviteError }}</div>
+      </div>
+      <NeoCopyRow v-else-if="inviteCode" :value="getInviteUrl()" />
+
+      <template #footer>
+        <button type="button" class="btn" @click="showInviteModal = false">Zavrieť</button>
+      </template>
+    </NeoModal>
 
     <!-- Share with colleagues (guest link) — shared with FriendOrder -->
     <GuestShareDialog

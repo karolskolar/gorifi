@@ -249,7 +249,11 @@ test.describe('Portal appbar — name, code, pencil, Pozvať chip, logout (UC-FL
     await page.locator('.appbar .chip.acc').click()
     const invite = page.getByRole('dialog')
     await expect(invite.getByText('Pozvi priateľa')).toBeVisible()
-    await expect(invite.locator('input')).toHaveValue(/\/invite\/[A-Z0-9]+$/)
+    // ⚠ RD-FL-7: the bespoke readonly `<Input>` + copy button became
+    // `NeoCopyRow` (02 §UC-DS-011), whose value box is a `div.copyrow > .val` —
+    // there is no `input` in this modal any more, by design. Same assertion,
+    // same regex, read as text.
+    await expect(invite.locator('.copyrow .val')).toHaveText(/\/invite\/[A-Z0-9]+$/)
     await invite.getByRole('button', { name: 'Zavrieť' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
@@ -496,7 +500,15 @@ test.describe('Authenticated error banner — the RD-FL-1 residual', () => {
     await expect(page.locator('.banner.danger')).toHaveCount(0)
   })
 
-  test('a failed invite-code fetch surfaces too (the second silent writer)', async ({ page }) => {
+  // ⚠ RD-FL-7 MOVED this failure, on purpose (03 §UC-FL-011: "keeping the user
+  // in context is the restyle's one permitted UX correction here — same data,
+  // same call"). RD-FL-3 wrote this test to prove the invite fetch was no longer
+  // a SILENT writer; it is still not silent, but it now writes its own
+  // `inviteError` and renders `.banner.danger.slim` in the modal body instead of
+  // leaking into the page-level `error`. The user asked for a link, so the
+  // answer — link or reason — belongs where they are looking. Same stub, same
+  // message, relocated assertion.
+  test('a failed invite-code fetch surfaces IN THE MODAL (RD-FL-7 moved it there)', async ({ page }) => {
     await signIn(page)
     await stubBalance(page, 0)
     await page.route('**/api/invitations/my-code*', (route) => route.fulfill({
@@ -507,9 +519,15 @@ test.describe('Authenticated error banner — the RD-FL-1 residual', () => {
 
     await openPortal(page)
     await page.locator('.appbar .chip.acc').click()
-    await page.getByRole('dialog').getByRole('button', { name: 'Zavrieť' }).click()
+    const invite = page.getByRole('dialog')
+    await expect(invite.locator('.banner.danger.slim')).toContainText('Pozvánkový kód sa nepodarilo načítať')
+    // …and no copy row for a link that was never fetched.
+    await expect(invite.locator('.copyrow')).toHaveCount(0)
 
-    await expect(page.locator('.banner.danger')).toContainText('Pozvánkový kód sa nepodarilo načítať')
+    await invite.getByRole('button', { name: 'Zavrieť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    // The page banner stays clean: this modal no longer writes the shared ref.
+    await expect(page.locator('.banner.danger')).toHaveCount(0)
   })
 
   test('⚠ the banner does not survive a logout into the NEXT session', async ({ page }) => {
