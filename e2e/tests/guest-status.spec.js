@@ -647,17 +647,18 @@ test.describe('Guest status UI (/g/:token/o/:orderToken)', () => {
     // The flags GSO-T5/T6 will drive are displayed, and read 'unpaid' for now.
     await expect(page.getByTestId('status-paid')).toContainText('Nezaplatené')
 
-    await expect(page.getByTestId('payment-reference')).toContainText(`G${created.order.id} / ${IDENTITY.guest_name} / ${cycle.name}`)
-
     // "Zaplatiť" re-opens the shared PaymentModal until the sub-order is paid.
     await page.getByTestId('open-payment').click()
     const modal = page.getByRole('dialog')
     await expect(modal).toContainText('Platba')
     await expect(modal, 'the exact amount to transfer').toContainText('25.00')
-    // The modal shows the reference only inside the Pay by Square payload (the
-    // component renders no reference text — it is displayed on the page instead),
-    // so a rendered QR is the evidence that the reference was accepted into it: a
-    // payload `encode()` rejects shows "Nepodarilo sa" instead of an image.
+    // ⚠ 06 §UC-GX-011 item 2 (resolved conflict #4), status half: the payment
+    // reference no longer sits on the status card — it lives ONLY inside the Platba
+    // modal, so the modal is opened FIRST and the reference asserted within it.
+    await expect(modal.getByTestId('payment-reference')).toContainText(`G${created.order.id} / ${IDENTITY.guest_name} / ${cycle.name}`)
+    // A rendered QR is separately the evidence that the reference was accepted into
+    // the Pay by Square payload: a payload `encode()` rejects shows "Nepodarilo sa"
+    // instead of an image.
     await expect(modal.getByAltText('Pay by Square QR')).toBeVisible()
     await expect(modal).not.toContainText('Nepodarilo sa')
     await expect(modal.getByRole('link', { name: /Revolut/ }), 'Revolut alternative').toBeVisible()

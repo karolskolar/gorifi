@@ -691,8 +691,13 @@ test.describe('A PAID sub-order is frozen against item edits', () => {
     await page.goto(`/g/${link.token}/o/${paidOrder.order_token}`)
     await expect(page.getByTestId('status-paid')).toContainText('Zaplatené')
     await expect(page.getByTestId('start-edit'), 'the affordance must not lie').toHaveCount(0)
-    await expect(page.getByTestId('paid-locked')).toBeVisible()
-    await expect(page.getByTestId('paid-locked')).toContainText('správcom')
+    // ⚠ 06 §UC-GX-011 item 5 (resolved conflict #5): the `paid-locked` explanation
+    // banner and the "Platba je zaevidovaná. Ďakujeme." line are BOTH gone — the
+    // prototype's paid state is pills + a ghost cancel and nothing else, and the
+    // pills already say Zaplatené. The state is re-pinned on what remains: the pill
+    // above, no edit affordance above, and the direct cancel the backend DOES
+    // accept below.
+    await expect(page.getByTestId('paid-locked'), 'the explanation banner is retired').toHaveCount(0)
     await expect(page.getByTestId('cancel-order')).toBeVisible()
   })
 })

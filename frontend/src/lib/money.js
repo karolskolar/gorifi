@@ -20,13 +20,14 @@
 // data problem, and rendering "NaN EUR" on a payment screen is strictly worse than
 // rendering zero. Same fail-closed reflex as `variantGrams()` server-side.
 //
-// ⚠ DUPLICATE: `lib/guest-cart.js` exports `formatPrice`, which emits the same format
-// but is NOT equivalent on bad input — its `price || 0` guard passes a truthy
-// non-numeric value straight through, so `formatPrice('abc')` yields "NaN EUR" (and
-// `'1e400'` yields "Infinity EUR"), the exact failure mode this function exists to
-// prevent. The guest surface still renders through it. RD-GX-1 restyles
-// `GuestProductGrid.vue`, which imports `formatPrice` — that row should re-point it
-// here and delete the duplicate, rather than inherit it.
+// ⚠ THE DUPLICATE IS CLOSED. `lib/guest-cart.js` used to export `formatPrice`, which
+// emitted the same format but was NOT equivalent on bad input — its `price || 0`
+// guard passed a truthy non-numeric value straight through, so `formatPrice('abc')`
+// yielded "NaN EUR" (and `'1e400'` yielded "Infinity EUR"), the exact failure mode
+// this function exists to prevent. RD-GX-1 re-pointed `GuestProductGrid.vue` and
+// RD-GX-3 re-pointed `views/GuestOrderStatus.vue`, its last consumer, then deleted
+// the export. This is now the ONE home for money formatting on the friend/guest
+// surfaces — do not add a second.
 export function fmtEur(value) {
   const n = Number(value)
   return `${(Number.isFinite(n) ? n : 0).toFixed(2)} EUR`

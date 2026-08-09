@@ -3,35 +3,54 @@ import { ref, computed, onMounted, watch, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../api'
 import { Card, CardContent } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Label } from '@/components/ui/label'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
+import GuestBrandHeader from '@/components/GuestBrandHeader.vue'
+import NeoModal from '@/components/neo/NeoModal.vue'
 import PaymentModal from '@/components/PaymentModal.vue'
 import GuestProductGrid from '@/components/GuestProductGrid.vue'
 import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
+import { fmtEur } from '@/lib/money'
 import {
   availabilityMap,
   cartFromOrderItems,
   cartLines,
-  formatPrice,
   itemsPayload,
   linesTotal,
   variantText
 } from '@/lib/guest-cart'
 
 // The guest's personal status page — route `/g/:token/o/:orderToken`
-// (§UC-GSO-004). No account and no password: the PAIR of tokens in the URL is the
-// whole credential, so this page carries no auth headers at all (api.guestRequest).
+// (§UC-GSO-004, restyled by 06 §UC-GX-006/007/008). No account and no password:
+// the PAIR of tokens in the URL is the whole credential, so this page carries no
+// auth headers at all (api.guestRequest).
 //
-// Three states, driven entirely by the server's `editable` flag so the page can
+// ============================ RD-GX-3 (06 §UC-GX-006..008) ============================
+// ⚠ THE `.app` ROOT IS THE POINT OF THIS ROW, not a detail of it. Every theme rule
+// is `:where(.app,.modal-layer) …`, and this view had no `.app` ancestor — so from
+// RD-GX-1 (which lifted the SHARED `GuestProductGrid` onto the neo card) until this
+// row, the edit screen rendered that grid with EVERY theme class resolving to
+// nothing. Measured on the build immediately before this change:
+//
+//     .cat-tabs   textContent "EspressoFilter"   display:block   gap:normal
+//     .stepper    textContent "−1+"              display:block   border-width:0px
+//     .vbox       "250g11.20 EUR−1+"                             border-width:0px
+//     .card       border-width:0px  box-shadow:none
+//
+// i.e. the purpose tabs ran together into one word and the stepper read as three
+// glued glyphs. Fully functional and `guest-status.spec.js` green throughout —
+// which is exactly why nothing caught it. §UC-GX-006 requires the root anyway.
+//
+// ⚠ `.app > * { position:relative; z-index:1 }` NEUTRALISES Tailwind positioning
+// utilities on a DIRECT child (`fixed`/`absolute`/`sticky` alike, silently). That
+// is why edit mode's footer is the theme's `.cartbar` — declared later at equal
+// specificity, so its `position:sticky` wins — and why the shipped
+// `fixed bottom-0 z-50` footer plus its `<div class="h-36">` spacer are both gone.
+//
+// ⚠ ONE SCREEN ON THIS ROUTE IS STILL OLD-SKIN, deliberately: the status-404 card
+// (RD-GX-4, §UC-GX-010). It sits inside the `.app` root, so it inherits the cream
+// background and the halftone — the same accepted interim GuestOrder.vue holds for
+// its own dead-link card. `GuestInviteRequest` is likewise RD-GX-4's.
+//
+// Four states, driven entirely by the server's flags so the page can
 // never offer an action the backend would refuse:
 //   - editable  — the cycle is open, the link is alive, the sub-order is live:
 //                 items can be changed through the same grid as `/g/:token`, and
@@ -105,18 +124,9 @@ const hasPaymentDetails = computed(() => !!(payment.value?.iban || payment.value
 const cartItems = computed(() => cartLines(cart.value, products.value))
 const cartTotal = computed(() => linesTotal(cartItems.value))
 
-const backgroundClass = computed(() => {
-  if (isCancelled.value) return 'bg-muted'
-  if (isBakery.value) {
-    if (activeTab.value === 'Slané') return 'bg-amber-50'
-    if (activeTab.value === 'Sladké') return 'bg-pink-50'
-    return 'bg-background'
-  }
-  if (activeTab.value === 'Espresso') return 'bg-stone-200'
-  if (activeTab.value === 'Filter') return 'bg-sky-100'
-  if (activeTab.value === 'Kapsule') return 'bg-amber-100'
-  return 'bg-background'
-})
+// §UC-GX-006: the background is uniform `--bg` in EVERY state. The per-tab tinting
+// (`bg-sky-100`/`bg-stone-200`/…) and the `bg-muted` cancelled wash are both gone —
+// the danger banner now carries the cancelled state, not the page colour.
 
 // Why editing is impossible, in the guest's terms. The backend owns the decision;
 // this only words it.
@@ -224,8 +234,21 @@ function stopEditing() {
   showCancelConfirm.value = false
 }
 
+// ⚠ THE CANCEL CONFIRM HAS THREE ENTRY POINTS AND ONE PAYLOAD (§UC-GX-008):
+//   1. `saveEdit()` with an empty cart — the funnel below;
+//   2. edit mode's ghost "Zrušiť objednávku" under the cartbar actions;
+//   3. the paid-frozen read view's ghost "Zrušiť objednávku" (no edit mode to
+//      enter — the server 409s a non-empty edit once `paid` is set, GSO-T6).
+// All three land on `confirmCancel()`, which sends a LITERAL `items: []`. That is
+// the only payload the server accepts as a cancel: GSO-T4 hard rule — `items`
+// absent, non-array, or non-empty-but-unpriceable must 400 non-destructively,
+// because before that guard `PUT {}` returned 200 and irreversibly cancelled the
+// order. Nothing on this page may reach `submitEdit` with anything else meaning
+// "cancel".
+
 // Emptying the cart cancels the sub-order, which is irreversible — so the empty
-// save funnels into the same confirmation as the explicit "Zrušiť objednávku".
+// save funnels into the same confirmation as the explicit "Zrušiť objednávku",
+// rather than quietly PUTting `items: []` on the guest's behalf.
 function saveEdit() {
   if (cartItems.value.length === 0) {
     showCancelConfirm.value = true
@@ -274,40 +297,29 @@ async function submitEdit(payloadItems) {
   }
 }
 
-const copied = ref(false)
-
-async function copyReference() {
-  const text = payment.value?.reference
-  if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch (e) {
-    // Fallback for browsers without the async clipboard API (mirrors
-    // GuestOrder.copyText) — a guest on an old mobile browser still needs it.
-    try {
-      const input = document.createElement('input')
-      input.value = text
-      document.body.appendChild(input)
-      input.select()
-      document.execCommand('copy')
-      document.body.removeChild(input)
-    } catch (fallbackError) {
-      return // Nothing worked; the value stays selectable on screen.
-    }
-  }
-  copied.value = true
-  setTimeout(() => { copied.value = false }, 2000)
-}
+// The on-card payment-reference row and its hand-rolled copy helper are GONE
+// (§UC-GX-006, resolved conflict #4): the reference lives ONLY inside the Platba
+// modal now, where `NeoCopyRow` owns the clipboard write, the 2 s "Skopírované!"
+// window and the missing-clipboard fallback per instance (RD-GX-2 landed that row
+// in `PaymentModal.vue`). Reachable from here via "Zaplatiť" in every state that
+// still owes money.
 </script>
 
 <template>
-  <div :class="['min-h-screen transition-colors', backgroundClass]">
-    <div v-if="loading" class="max-w-4xl mx-auto px-4 py-16 text-center text-muted-foreground">
-      Načítavam…
-    </div>
-
-    <!-- The (link, order) pair does not resolve: a mistyped or truncated URL -->
-    <div v-else-if="unavailable" class="max-w-md mx-auto px-4 py-16">
+  <!-- ⚠ THE `.app` ROOT — see the header note. Without it every `.card`,
+       `.cat-tabs`, `.vbox`, `.stepper`, `.banner` and `.statuspill` below resolves
+       to nothing, because the whole theme is scoped `:where(.app,.modal-layer)`.
+       `flex flex-col` + the theme's `min-height:100vh` is the prototype's root
+       layout, and it is what lets edit mode's page column take `flex-1` so the
+       `.cartbar` sits at the viewport bottom on a short page. -->
+  <div class="app flex flex-col">
+    <!-- The (link, order) pair does not resolve: a mistyped or truncated URL, or
+         a cross-link `orderToken` (GSO-T4's read resolver is 404-ONLY and gives the
+         same message either way — no oracle).
+         ⚠ OLD SKIN ON PURPOSE — restyled by RD-GX-4 (§UC-GX-010, the centered
+         dead-card composition). Untouched here beyond inheriting the `.app`
+         background and halftone. -->
+    <div v-if="unavailable" class="max-w-md mx-auto px-4 py-16">
       <Card data-testid="guest-status-unavailable">
         <CardContent class="p-6 text-center space-y-3">
           <div class="text-4xl">🔎</div>
@@ -320,225 +332,286 @@ async function copyReference() {
       </Card>
     </div>
 
-    <div v-else class="max-w-4xl mx-auto px-4 py-4">
-      <Card class="mb-4" data-testid="guest-status">
-        <CardContent class="p-4 space-y-3">
-          <div>
-            <h1 class="text-lg font-semibold">{{ cycle?.name }}</h1>
-            <p class="text-sm text-muted-foreground">
-              Vaša objednávka · organizuje {{ host?.first_name }}
-            </p>
-            <p class="text-sm mt-1">{{ order?.guest_name }}</p>
+    <template v-else>
+      <!-- ONE instance across both purposes: only the subtitle switches
+           ("Vaša objednávka" ⇄ "Úprava objednávky", §UC-GX-006/007). Rendering two
+           `GuestBrandHeader`s under separate `v-if`s would remount the ticker on
+           every entry into edit mode. Also mounted ABOVE the loading state, so the
+           chrome never flashes in and out. -->
+      <GuestBrandHeader :subtitle="editing ? 'Úprava objednávky' : 'Vaša objednávka'" />
+
+      <div v-if="loading" class="mx-auto w-full max-w-[520px] px-4 sm:px-7 py-4 sm:py-7 flex-1">
+        <div class="sub" style="text-align:center;padding:32px 0">Načítavam…</div>
+      </div>
+
+      <!-- ===================== g-status EDIT MODE (§UC-GX-007) =====================
+           Items-only by construction: there is no name/phone/email field anywhere in
+           here. Identity is frozen at submit (GSO-T4) precisely because anyone
+           holding the URL could otherwise rewrite someone else's contact details.
+
+           The column WIDENS to the grid layout (760, not the read view's 520) — the
+           product cards need it, and it is the same scaffold as `/g/:token`. -->
+      <template v-else-if="editing">
+        <div class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 pb-2 sm:pb-2 flex flex-col gap-[14px] flex-1">
+          <div class="banner slim">
+            <span class="dot"></span>
+            <span style="min-width:0">Upravujete objednávku pre <b>{{ order?.guest_name }}</b>. Zmeny sa prejavia po uložení.</span>
           </div>
 
-          <!-- Cancelled is terminal: say so plainly and offer nothing else. -->
-          <Alert v-if="isCancelled" data-testid="status-cancelled">
-            <AlertDescription>
-              Táto objednávka bola zrušená. Ak si chcete objednať znova, požiadajte kolegu o odkaz na spoločnú objednávku.
-            </AlertDescription>
-          </Alert>
-
-          <!-- Flags with single owners: paid = admin, delivered = host. Read-only here. -->
-          <div v-else class="flex flex-wrap gap-2 text-xs">
-            <span
-              data-testid="status-paid"
-              :class="[
-                'px-2 py-0.5 rounded-full border',
-                isPaid ? 'border-emerald-400 text-emerald-700 bg-emerald-50' : 'border-amber-400 text-amber-700 bg-amber-50'
-              ]"
-            >{{ isPaid ? 'Zaplatené' : 'Nezaplatené' }}</span>
-            <span
-              data-testid="status-delivered"
-              :class="[
-                'px-2 py-0.5 rounded-full border',
-                isDelivered ? 'border-emerald-400 text-emerald-700 bg-emerald-50' : 'border-border text-muted-foreground'
-              ]"
-            >{{ isDelivered ? 'Odovzdané' : 'Zatiaľ neodovzdané' }}</span>
+          <!-- A 400 (bounds, or a stock limit whose per-product detail lines ride in
+               `details`) keeps the guest IN edit mode with their cart intact; a
+               409/410 exits and reloads, so it surfaces as `status-error` instead. -->
+          <div v-if="editError" class="banner danger slim" role="alert">
+            <span class="dot"></span><span data-testid="edit-error" style="min-width:0">{{ editError }}</span>
           </div>
 
-          <!-- Items + total. A cancelled sub-order KEEPS its lines (they are the
-               record of what was called off) but owes nothing, so they are shown
-               struck through under their own heading and without a total. -->
-          <div v-if="items.length > 0" class="rounded-lg border divide-y">
-            <div v-if="isCancelled" class="px-3 py-2 text-xs text-muted-foreground">
-              Zrušené položky
-            </div>
+          <!-- The SHARED grid (GSO-T4: one home, two screens — extend, never fork).
+               `availability` here is the server's `excludeGuestOrderId`-adjusted map,
+               so the grams this sub-order already holds are not shown as taken; the
+               grid must not care which screen feeds it. -->
+          <GuestProductGrid
+            v-model="cart"
+            v-model:active-tab="activeTab"
+            :products="products"
+            :availability="availability"
+            :is-bakery="isBakery"
+          />
+        </div>
+
+        <!-- ⚠ A DIRECT CHILD OF `.app`, after the page column. The theme's
+             `.cartbar` is `position:sticky` and wins over `.app > *` by being
+             declared later at equal specificity; the shipped `fixed` footer would
+             not have survived that rule at all, and its `h-36` spacer would now be
+             144px of dead space at the end of the page. -->
+        <div class="cartbar">
+          <div class="meta" style="align-items:center">
+            <span class="sum" data-testid="edit-total">Celkom: {{ fmtEur(cartTotal) }}</span>
+            <span class="sub" style="font-size:13px">Položiek: {{ cartItems.length }}</span>
+          </div>
+          <div class="actions">
+            <button type="button" class="btn sm" data-testid="abort-edit" :disabled="saving" @click="stopEditing">Späť</button>
+            <button type="button" class="btn accent sm" data-testid="save-edit" :disabled="saving" @click="saveEdit">{{ saving ? 'Ukladám…' : 'Uložiť zmeny' }}</button>
+          </div>
+          <!-- Entry point 2 of 3 into the cancel confirm. Deliberately OUTSIDE
+               `.actions` (whose `.btn` children are `flex:1; min-height:46px`) so it
+               keeps ghost weight — cancelling is not a peer of saving. -->
+          <button
+            type="button"
+            class="btn ghost sm"
+            style="color:var(--danger);margin-top:4px"
+            data-testid="cancel-order"
+            :disabled="saving"
+            @click="requestCancel"
+          >Zrušiť objednávku</button>
+        </div>
+      </template>
+
+      <!-- ===================== g-status READ VIEW (§UC-GX-006) =====================
+           Four states off the SERVER's flags, never off a guess:
+             editable     `items_editable`            → Upraviť + Zaplatiť
+             paid-frozen  `editable && isPaid`        → pills + ghost cancel only
+             read-only    `!editable && !isCancelled` → Zaplatiť + warn banner
+             cancelled    `status === 'cancelled'`    → danger banner, struck lines
+           `items_editable = editable && !paid` (GSO-T6), so the paid case can never
+           show an edit affordance the backend would 409. -->
+      <div
+        v-else
+        class="mx-auto w-full max-w-[520px] px-4 sm:px-7 py-4 sm:py-7 flex flex-col gap-[14px]"
+        data-testid="guest-status"
+      >
+        <!-- ⚠ `line-height:normal` at the CALL SITE, and it is load-bearing: the
+             guest-name line below carries no class, so preflight's `1.5` strut
+             reaches it while `.h-screen` and `.sub` declare their own. A9/A10 are
+             CLASS lists and cannot reach an element with no class — the fix belongs
+             here, never as a widening of A10 (friends-theme.css, A10 block).
+             MEASURED on this build: the block is 103px at `normal` and 108px at
+             `1.5` — +5px of drift, which is exactly the class A10 exists to undo. -->
+        <div style="line-height:normal">
+          <h1 class="h-screen text-[30px] sm:text-[36px]">{{ cycle?.name }}</h1>
+          <!-- The prototype adds "a odovzdá" to the shipped line; the separate
+               "Tovar vám odovzdá {host}." footer line is dropped as a result. -->
+          <div class="sub" style="margin-top:8px">Vaša objednávka · organizuje a odovzdá {{ host?.first_name }}</div>
+          <div style="font-weight:700;margin-top:4px">{{ order?.guest_name }}</div>
+        </div>
+
+        <!-- Cancelled is TERMINAL (the lifecycle diagram has no cancelled →
+             submitted edge, and GSO-T5's host-delete produces the same state), so it
+             replaces the pills outright rather than adding a third one. -->
+        <div v-if="isCancelled" class="banner danger" data-testid="status-cancelled">
+          <span class="dot"></span>
+          <span style="min-width:0">Táto objednávka bola <b>zrušená</b>. Ak si chcete objednať znova, požiadajte kolegu o odkaz na spoločnú objednávku.</span>
+        </div>
+
+        <!-- Flags with SINGLE OWNERS (GSO-T6 Decision 2): `paid` is the ADMIN's,
+             `delivered` is the HOST's. Read-only here — this page owns neither, and
+             offers no control that could write one. -->
+        <div v-else class="flex flex-wrap gap-2">
+          <span class="statuspill" :class="isPaid ? 'ok' : 'warn'" data-testid="status-paid"><span class="sq"></span>{{ isPaid ? 'Zaplatené' : 'Nezaplatené' }}</span>
+          <span class="statuspill" :class="isDelivered ? 'ok' : 'off'" data-testid="status-delivered"><span class="sq"></span>{{ isDelivered ? 'Odovzdané' : 'Zatiaľ neodovzdané' }}</span>
+        </div>
+
+        <!-- Items + total. A cancelled sub-order KEEPS its lines — GSO-T4 cancels by
+             `UPDATE … SET total = 0, status = 'cancelled'` and never deletes rows,
+             because the status predicate is what releases the stock and what every
+             aggregate filters on. They are the record of what was called off, so
+             they are shown struck under their own heading and WITHOUT a total. -->
+        <div class="card" style="padding:16px">
+          <div v-if="isCancelled" class="field-lbl" :style="items.length > 0 ? null : 'margin:0'">Zrušené položky</div>
+
+          <!-- ⚠ `line-height:normal` is LOAD-BEARING here too, and by much more: the
+               left `<span>` of each line carries no class, so preflight's 1.5 reaches
+               it while its `.mono` sibling (covered by A10) is already at `normal` —
+               the two halves of one row would sit on different strut heights.
+               MEASURED on a 3-item order: 108px at `normal` against 133.5px at `1.5`,
+               i.e. +8.5px on EVERY line. -->
+          <div
+            v-if="items.length > 0"
+            style="display:flex;flex-direction:column;gap:6px;font-size:13.5px;color:var(--ink-dim);line-height:normal"
+            :style="{ textDecoration: isCancelled ? 'line-through' : 'none' }"
+          >
             <div
               v-for="item in items"
               :key="item.id"
-              :class="['flex justify-between px-3 py-2 text-sm', isCancelled ? 'text-muted-foreground line-through' : '']"
+              style="display:flex;justify-content:space-between;gap:10px"
               data-testid="status-item"
             >
-              <span>{{ item.product_name }} ({{ variantText(item) }}) x{{ item.quantity }}</span>
-              <span class="whitespace-nowrap">{{ formatPrice(item.price * item.quantity) }}</span>
-            </div>
-            <div v-if="!isCancelled" class="flex justify-between px-3 py-2 font-semibold">
-              <span>Celkom</span>
-              <span data-testid="status-total">{{ formatPrice(order?.total) }}</span>
+              <!-- `×` is U+00D7 MULTIPLICATION SIGN, not the letter "x" (prototype).
+                   Line amounts are BARE `toFixed(2)` — no " EUR": the card's own
+                   "Celkom" row states the unit and these are a breakdown. -->
+              <span>{{ item.product_name }} ({{ variantText(item) }}) ×{{ item.quantity }}</span>
+              <span class="mono">{{ (item.price * item.quantity).toFixed(2) }}</span>
             </div>
           </div>
-          <div v-else-if="!isCancelled" class="text-sm text-muted-foreground" data-testid="status-total">
-            Žiadne položky · {{ formatPrice(order?.total) }}
-          </div>
+          <!-- Shipped zero-item fallback, kept (§UC-GX-006 item 3). It carries
+               `status-total` itself, so exactly ONE node ever holds that testid. -->
+          <div v-else-if="!isCancelled" class="sub" data-testid="status-total">Žiadne položky · {{ fmtEur(order?.total) }}</div>
 
-          <!-- Payment: the reference has to be pasted into the transfer, and
-               Revolut cannot pre-fill a note, so it is copyable. -->
-          <template v-if="!isCancelled">
-            <div class="space-y-1">
-              <Label class="text-xs text-muted-foreground">Poznámka k platbe (uveďte ju pri platbe)</Label>
-              <div class="flex gap-2">
-                <div
-                  data-testid="payment-reference"
-                  class="flex-1 rounded-md border bg-muted/40 px-3 py-2 text-sm font-mono break-all"
-                >{{ payment?.reference }}</div>
-                <Button variant="outline" size="sm" data-testid="copy-reference" @click="copyReference">
-                  {{ copied ? 'Skopírované' : 'Kopírovať' }}
-                </Button>
-              </div>
+          <template v-if="!isCancelled && items.length > 0">
+            <hr class="divider" style="margin:12px 0" />
+            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+              <span class="field-lbl" style="margin:0">Celkom</span>
+              <span class="display" style="font-size:22px" data-testid="status-total">{{ fmtEur(order?.total) }}</span>
             </div>
-
-            <!-- "Zaplatiť" re-opens the modal until the admin marks it paid. -->
-            <Button
-              v-if="!isPaid && hasPaymentDetails"
-              class="w-full"
-              data-testid="open-payment"
-              @click="showPaymentModal = true"
-            >
-              Zaplatiť
-            </Button>
-            <p v-else-if="isPaid" class="text-sm text-emerald-700">
-              Platba je zaevidovaná. Ďakujeme.
-            </p>
-
-            <p class="text-xs text-muted-foreground">
-              Tovar vám odovzdá {{ host?.first_name }}.
-            </p>
           </template>
-
-          <!-- An error from a cancel started OUTSIDE edit mode (the paid case below)
-               has no other place to appear — the edit screen's alert is not mounted. -->
-          <Alert v-if="editError && !editing" variant="destructive">
-            <AlertDescription data-testid="status-error">{{ editError }}</AlertDescription>
-          </Alert>
-
-          <!-- Edit affordance, only while the server says an edit would be accepted -->
-          <div v-if="itemsEditable && !editing" class="pt-1">
-            <Button variant="outline" class="w-full" data-testid="start-edit" @click="startEditing">
-              Upraviť objednávku
-            </Button>
-          </div>
-          <!-- Paid: the items are frozen server-side, so no edit button is offered —
-               but cancelling is still the guest's own call, and it is the only thing
-               the backend would accept here. -->
-          <template v-else-if="editable && isPaid && !isCancelled && !editing">
-            <Alert data-testid="paid-locked">
-              <AlertDescription>
-                Platba je zaevidovaná, obsah objednávky už nie je možné zmeniť.
-                Zmenu vyriešte so správcom. Objednávku môžete zrušiť.
-              </AlertDescription>
-            </Alert>
-            <Button
-              variant="ghost"
-              class="w-full text-destructive hover:text-destructive"
-              data-testid="cancel-order"
-              :disabled="saving"
-              @click="requestCancel"
-            >
-              {{ saving ? 'Ruším…' : 'Zrušiť objednávku' }}
-            </Button>
-          </template>
-          <Alert v-else-if="!editable && !isCancelled" data-testid="status-readonly">
-            <AlertDescription>{{ readOnlyReason }}</AlertDescription>
-          </Alert>
-
-          <!-- Lead capture (§UC-GSO-015). Offered in ALL four states — editable,
-               paid-frozen, read-only after the lock and cancelled — because a guest
-               is a lead in every one of them, and a locked cycle is exactly when they
-               ask. `available` is the server's call, so a dead link (whose endpoint
-               410s) offers nothing. Hidden while editing, where the cart has the
-               screen. -->
-          <GuestInviteRequest
-            v-if="inviteRequest.available && !editing"
-            :token="token"
-            :order-token="orderToken"
-            :name="order?.guest_name || ''"
-            :phone="order?.guest_phone || ''"
-            :email="order?.guest_email || ''"
-            :requested="inviteRequest.requested"
-          />
-        </CardContent>
-      </Card>
-
-      <!-- Edit mode: the same grid as `/g/:token`, pre-seeded with what is ordered -->
-      <template v-if="editing">
-        <Alert v-if="editError" variant="destructive" class="mb-4">
-          <AlertDescription data-testid="edit-error">{{ editError }}</AlertDescription>
-        </Alert>
-
-        <GuestProductGrid
-          v-model="cart"
-          v-model:active-tab="activeTab"
-          :products="products"
-          :availability="availability"
-          :is-bakery="isBakery"
-        />
-
-        <!-- Sticky footer, mirroring the ordering screen -->
-        <div class="fixed bottom-0 left-0 right-0 bg-card shadow-lg border-t z-50">
-          <div class="max-w-4xl mx-auto px-4 py-2 space-y-1.5">
-            <div class="flex justify-between items-center gap-2">
-              <div class="flex items-center gap-1.5">
-                <span class="text-xs text-muted-foreground">Položiek: {{ cartItems.length }}</span>
-                <span class="mx-1 text-xs">|</span>
-                <span class="font-semibold text-sm" data-testid="edit-total">Celkom: {{ formatPrice(cartTotal) }}</span>
-              </div>
-              <div class="flex gap-2">
-                <Button variant="outline" size="sm" class="h-8 text-xs" data-testid="abort-edit" :disabled="saving" @click="stopEditing">
-                  Späť
-                </Button>
-                <Button size="sm" class="h-8 text-xs" data-testid="save-edit" :disabled="saving" @click="saveEdit">
-                  {{ saving ? 'Ukladám…' : 'Uložiť zmeny' }}
-                </Button>
-              </div>
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              class="h-7 text-xs text-destructive hover:text-destructive"
-              data-testid="cancel-order"
-              :disabled="saving"
-              @click="requestCancel"
-            >
-              Zrušiť objednávku
-            </Button>
-          </div>
         </div>
-        <div class="h-36"></div>
+
+        <!-- ================= actions, by state (§UC-GX-006 item 4) =================
+             Every branch is gated on a SERVER flag, so the page can never offer an
+             action the backend would refuse. -->
+
+        <!-- editable: Upraviť + Zaplatiť. The pay button is `flex:1.6` — it is what
+             the guest is here to do; editing is the smaller of the two. -->
+        <div v-if="itemsEditable && !isCancelled" style="display:flex;gap:8px">
+          <button type="button" class="btn" style="flex:1" data-testid="start-edit" @click="startEditing">Upraviť</button>
+          <button
+            v-if="!isPaid && hasPaymentDetails"
+            type="button"
+            class="btn ok"
+            style="flex:1.6"
+            data-testid="open-payment"
+            @click="showPaymentModal = true"
+          >Zaplatiť</button>
+        </div>
+
+        <!-- paid-frozen: the pills already say Zaplatené, so there is no banner and
+             no thank-you line (resolved conflict #5 — the prototype is pills + a
+             ghost cancel and nothing else). No edit mode to enter: the server 409s a
+             non-empty edit once `paid` is set, but a literal `items: []` still
+             cancels, which is exactly what this button sends. Entry point 3 of 3. -->
+        <button
+          v-else-if="editable && isPaid && !isCancelled"
+          type="button"
+          class="btn ghost sm"
+          style="color:var(--danger)"
+          data-testid="cancel-order"
+          :disabled="saving"
+          @click="requestCancel"
+        >{{ saving ? 'Ruším…' : 'Zrušiť objednávku' }}</button>
+
+        <!-- read-only / locked: the money is still owed, so Zaplatiť STAYS. GSO-T4's
+             read resolver is deliberately 404-only — a locked cycle or a dead link
+             must still render the order and reach the payment reference. -->
+        <template v-else-if="!editable && !isCancelled">
+          <button
+            v-if="!isPaid && hasPaymentDetails"
+            type="button"
+            class="btn ok block"
+            data-testid="open-payment"
+            @click="showPaymentModal = true"
+          >Zaplatiť</button>
+          <div class="banner warn slim" data-testid="status-readonly">
+            <span class="dot"></span><span style="min-width:0">{{ readOnlyReason }}</span>
+          </div>
+        </template>
+
+        <!-- An error from a cancel started OUTSIDE edit mode (the paid-frozen button
+             above) has nowhere else to appear — `edit-error` is not mounted here. -->
+        <div v-if="editError" class="banner danger slim" role="alert">
+          <span class="dot"></span><span data-testid="status-error" style="min-width:0">{{ editError }}</span>
+        </div>
+
+        <!-- Lead capture (§UC-GSO-015 / §UC-GX-009 — restyle is RD-GX-4's). Offered
+             in ALL FOUR states, cancelled included: resolved conflict #3 makes the
+             SERVER's `available` flag the authority over the prototype, which hides
+             it when cancelled. A cancelled guest is still a lead (GSO-T10 returns
+             201 there), and a locked cycle is exactly when they ask. A dead link
+             clears `available`, so nothing is offered that would 410. Hidden while
+             editing, where the cart has the screen. -->
+        <GuestInviteRequest
+          v-if="inviteRequest.available"
+          :token="token"
+          :order-token="orderToken"
+          :name="order?.guest_name || ''"
+          :phone="order?.guest_phone || ''"
+          :email="order?.guest_email || ''"
+          :requested="inviteRequest.requested"
+        />
+      </div>
+    </template>
+
+    <!-- ================= Zrušiť objednávku? confirm (§UC-GX-008) =================
+         ⚠ MOUNTED WITH `v-if`, and that is load-bearing, not a style choice.
+         `NeoModal` has no `open` prop — the parent owns mounting — and three
+         shipped guest specs locate controls with role+name queries that are
+         unscoped or scoped only to `getByRole('dialog')` (`guest-status.spec.js:665`,
+         `guest-order.spec.js:879`, `guest-lead-capture.spec.js:466` — each clicks a
+         "Zavrieť" that must resolve to exactly one node). An
+         always-mounted dialog would keep its own footer in the DOM AND leave
+         `.modal-scrim` (pointer-events:auto over the whole viewport) swallowing
+         those clicks.
+
+         The × is named "Zatvoriť dialóg" — a deliberate SYNONYM, because Playwright
+         matches accessible names as a case-insensitive SUBSTRING. Neither footer
+         label here is a substring of the other or of the ×.
+
+         ⚠ ONE PAYLOAD: `confirmCancel()` sends a literal `items: []`. Anything else
+         — `items` absent, non-array, non-empty-but-unpriceable — must 400
+         non-destructively server-side, and this modal must never send it. -->
+    <NeoModal
+      v-if="showCancelConfirm"
+      title="Zrušiť objednávku?"
+      subtitle="Objednávka sa zruší a už ju nebude možné obnoviť. Ak si budete chcieť objednať znova, požiadajte kolegu o odkaz."
+      @close="showCancelConfirm = false"
+    >
+      <div class="banner danger slim">
+        <span class="dot"></span><span style="min-width:0">Toto sa nedá vrátiť späť.</span>
+      </div>
+      <template #footer>
+        <button type="button" class="btn gx-foot-btn" data-testid="keep-order" @click="showCancelConfirm = false">Ponechať</button>
+        <button
+          type="button"
+          class="btn danger gx-foot-btn"
+          data-testid="confirm-cancel-order"
+          :disabled="saving"
+          @click="confirmCancel"
+        >{{ saving ? 'Ruším…' : 'Zrušiť objednávku' }}</button>
       </template>
-    </div>
+    </NeoModal>
 
-    <!-- Cancelling is irreversible (the sub-order cannot be revived), so it is
-         confirmed rather than immediate. -->
-    <Dialog :open="showCancelConfirm" @update:open="val => showCancelConfirm = val">
-      <DialogContent class="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Zrušiť objednávku?</DialogTitle>
-          <DialogDescription>
-            Objednávka sa zruší a už ju nebude možné obnoviť. Ak si budete chcieť objednať znova, požiadajte kolegu o odkaz.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter class="flex gap-2">
-          <Button variant="outline" class="flex-1" data-testid="keep-order" @click="showCancelConfirm = false">
-            Ponechať
-          </Button>
-          <Button variant="destructive" class="flex-1" data-testid="confirm-cancel-order" :disabled="saving" @click="confirmCancel">
-            {{ saving ? 'Ruším…' : 'Zrušiť objednávku' }}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-
-    <!-- Same payment modal friends and the confirmation screen use -->
+    <!-- Same payment modal friends and the confirmation screen use (§UC-GX-005).
+         Since RD-GX-2 it carries the payment-reference copy row, which is now the
+         ONLY place the reference is shown. It mounts its own `NeoModal` under
+         `v-if="open"`, so nothing of it is in the DOM while closed. -->
     <PaymentModal
       v-if="payment"
       :open="showPaymentModal"
@@ -550,3 +623,68 @@ async function copyReference() {
     />
   </div>
 </template>
+
+<!-- ⚠ THE 320px FOOTER, MEASURED — not assumed to wrap. `.btn` is
+     `white-space:nowrap` and `.m-foot .btn` is `flex:1`, so a footer row that does
+     not fit gives NO degradation signal at all: no shrink, no wrap, no ellipsis —
+     the buttons paint outside the modal's 4px border and `.modal-scrim` grows a
+     horizontal scrollbar. Same hazard RD-FO-4 and RD-GX-1 each measured one screen
+     over — but with different labels, and the numbers below are this footer's own.
+
+     The arithmetic at viewport W: the scrim takes 18px a side, `.modal` 4px of
+     border a side, `.m-foot` 18px of padding a side, and the two buttons are
+     separated by an 8px gap — so the row has `W − 80` to spend. Measured on this
+     build against the MIN-CONTENT need (a clone of `.m-foot` at `width:min-content`
+     — NOT the flex-resolved width, which is bounded below by each item's own
+     min-content and therefore hides how far the ROW overflows):
+
+       at the canon 16px a side:  Ponechať 101.25 + Zrušiť objednávku 159.77 + 8
+                                  = 269.02   against 240 @320px  → over by 29.02
+       at RD-FO-4/RD-GX-1's 10px: Ponechať  89.25 + Zrušiť objednávku 147.77 + 8
+                                  = 245.02   against 240 @320px  → STILL over by 5.02
+
+     ⚠ 10px is NOT enough here, unlike on the two footers that set the precedent:
+     "Zrušiť objednávku" is the longest confirm label on this shell (127.77px of
+     glyphs alone against RD-FO-4's 136.05 for a label that had 4 more px of room).
+     6px a side takes the row to 229.02 — 10.98px of headroom, the same order of
+     slack RD-GX-1 left itself, so a wider face than the one measured still fits.
+     (`.btn` min-content is width-invariant, so the same numbers hold at 320/335/378;
+     only `available` moves.)
+
+     Fixed by spending horizontal PADDING, not copy: §UC-GX-008 pins both labels
+     verbatim. `.m-foot .btn` is `flex:1` (grow 1, basis 0) with the flexbox default
+     `min-width:auto`, so each button's MIN-CONTENT is its floor and the padding only
+     ever moves that floor.
+
+     ⚠ NOT "invisible at every width" — RD-FO-4 and RD-GX-1 both claim that of their
+     own reliefs, and MEASURED HERE IT IS NOT TRUE, so it is recorded rather than
+     repeated. Resolved widths, with the relief vs. with the canon 16px:
+
+       378px   145.00 / 145.00      against   130.23 / 159.77
+       320px    92.23 / 139.77      against   101.25 / 159.77  (which OVERFLOWS)
+       >400px  identical — the query does not apply
+
+     At 378px the canon floor pins "Zrušiť objednávku" at its own min-content and
+     squeezes "Ponechať" to what is left; the relief lowers both floors under the
+     even split, so flex distributes evenly and the footer becomes SYMMETRIC. That
+     is a visible change and a better one, but it is a change, and the prototype
+     renders the lopsided version. Accepted on the same basis the two precedent rows
+     chose 400px: one threshold across all three footers on this shell beats three,
+     it stays below the 420px cap where `.modal` stops being viewport-bound, and it
+     leaves room for a wider face than the one measured. 6px rather than the
+     precedents' 10px because 10px still overflowed here (see the arithmetic above)
+     — this is the longest confirm label on the shell.
+
+     Scoped to this view's own footer buttons: `.m-foot .btn` is module 02's rule and
+     every other dialog on this shell keeps its canon padding. (Vue's scope attribute
+     lands on slot content authored here even though `NeoModal` teleports it to
+     `body` — verified on the rendered node, which carries this component's
+     `data-v-*`.) -->
+<style scoped>
+@media (max-width: 400px) {
+  .gx-foot-btn {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+}
+</style>
