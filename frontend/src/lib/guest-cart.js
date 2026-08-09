@@ -28,9 +28,13 @@ export const COFFEE_VARIANTS = [
   { variant: '20pc5g', label: '20 ks × 5g', priceKey: 'price_20pc5g' }
 ]
 
-export function formatPrice(price) {
-  return `${Number(price || 0).toFixed(2)} EUR`
-}
+// ⚠ `formatPrice` USED TO LIVE HERE and is deliberately GONE (RD-GX-3, closing the
+// pointer RD-DS-3 left). It emitted the same `<n>.toFixed(2) + " EUR"` as
+// `lib/money.js`'s `fmtEur`, but was NOT equivalent on bad input: its `price || 0`
+// guard passed a truthy non-numeric value straight through, so `formatPrice('abc')`
+// rendered "NaN EUR" and `formatPrice('1e400')` rendered "Infinity EUR" — on a
+// payment screen. `fmtEur` is fail-closed ("0.00 EUR"), so it is the one home for
+// money formatting on the friend/guest surfaces. Do not reintroduce a second one.
 
 // Guest prices arrive from the server with the cycle markup already applied, so
 // nothing here ever multiplies by markup_ratio.
