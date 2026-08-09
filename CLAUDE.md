@@ -466,3 +466,89 @@ product cards (RD-FO-2), the cartbar (RD-FO-3), the modals (RD-FO-4), the locked
   RD-FO-2..4 still own that markup.
 
 Full suite after this work: **367 passed / 3 skipped** (+14, zero pre-existing specs modified).
+
+### RD-FO-2 — product cards, the `.vbox` matrix, the stock bar (04 §UC-FO-005..007)
+
+- **One card root, two bodies.** `Card`/`CardContent` are gone from the product list; `.card` IS the
+  neo card. `FriendOrder.vue` still imports them for the Kolegovia share card (RD-KG-1), and `Button`
+  for the cartbar/modals — do not "clean up" those imports before RD-FO-3/4/KG-1 land.
+- ⚠ **`GuestProductGrid.vue` is the guest-side twin and deliberately stays on the OLD skin until
+  RD-GX-1.** Its `getGroupQuantityTotal` (the whole-card `ring-2 ring-primary`) still exists there;
+  the friend view's copy is gone, because 04 §UC-FO-007 replaces the ring with per-`.vbox` `.sel`.
+- ⚠ **`COFFEE_VARIANTS` is the fixed order and the CART KEYS.** One `.vbox` per non-null price field:
+  `price_150g/200g/250g/500g/1kg/20pc5g` → `150g … 20pc5g`. The old template gated every weight
+  behind `v-if="!product.price_20pc5g"`, so a product priced for capsules **and** weights showed only
+  the capsules — a published price nobody could buy. Only `label` is presentational
+  (`20pc5g` → "20 ks × 5g"); the `variant` string is `order_items.variant` and `variantGrams`' key.
+- ⚠ **The gram math is untouched (04 resolved conflict #6).** `getRemainingGrams` / `canIncrement` /
+  `variantGrams` / `loadAvailability(excludeFriendId)` are verbatim; only the DISPLAY became kg.
+  `kg(g) = Math.round(g/10)/100 + ' kg'` — up to 2 decimals, trailing zeros stripped, dot decimal
+  (250 → "0.25 kg", 1000 → "1 kg", 1250 → "1.25 kg"). A `toFixed(2)` "tidy-up" would render "1.00 kg".
+  The fill includes the friend's **own uncommitted cart**, so the bar moves before anything is saved.
+  Fill is always accent magenta; the sold-out signal is the danger-red **"Vypredané"** LABEL, never a
+  bar colour (the old amber/red bar tinting is gone).
+- ⚠ **The `+` ceiling is BOTH `incDisabled` AND the `canIncrement` re-check in `onQty`.** 02
+  §UC-DS-008 forbids a `max` in `NeoStepper`, so the rule lives in the view. `incDisabled` carries the
+  shipped `:disabled` semantics to assistive tech and costs no fidelity — RD-DS-3 recorded that the
+  theme has no `.stepper button:disabled` rule, so the button looks identical, which IS the silent
+  refusal 04 §UC-FO-006 asks for. `onQty` routes every increase through `increment()`, so a click that
+  bypasses the disabled attribute still cannot exceed the limit. Never bind `setQuantity` to a
+  stepper's `update:modelValue` — that hands it an unchecked write and retires the ceiling.
+  ⚠ **But the `onQty` half is NOT test-covered, and cannot be.** `NeoStepper.inc()` returns early on
+  `incDisabled`, so a forced click never reaches `onQty`; `incDisabled` and `canIncrement` read the
+  same state in the same tick, so there is no e2e-reachable state where the button is enabled and the
+  increment would still exceed the limit. The suite pins `incDisabled` + the silent refusal only.
+  Consequence for **RD-FO-3**: if the cartbar's steppers omit `incDisabled`, nothing in the suite
+  notices the ceiling going away — bind it, and don't trust a green run as proof.
+- ⚠ **The 368px column fallback — and it is 368 because `.card` has a 3px border.** 04 §UC-FO-005
+  mandates `1fr 1fr` for >1 variant. A `.vbox`'s min-content is 146px (the 38+24+38 stepper plus two
+  10px gaps = 120, plus 11px padding and 2px border a side); two of them plus the 10px gap need 302px
+  of card CONTENT box, and that box is `viewport − 32 (page column) − 28 (card padding) − 6
+  (`.card`'s own `border:3px`, friends-theme.css:45)` ⇒ **368px**. At 378px the tracks are 151px,
+  which only reproduces from `−66`; a `−60` derivation predicts 154px and is how the number first
+  shipped as 362.
+  ⚠ **The 6px error was invisible.** `grid-cols-2` is `repeat(2, minmax(0,1fr))` — track minimum
+  **zero** — so across 362–367 the tracks sat *below* min-content and the shortfall was absorbed by
+  the flex stepper buttons shrinking to 36.5–37.75px, silently losing the 38×38 hit target 02
+  §UC-DS-008 pins as "from CSS — do not override". Pinned now by the 364px case in
+  `order-product-card.spec.js`; any future breakpoint on this grid must assert button size, not
+  just column count.
+  ⚠ **The media query is NOT what satisfies `mobile-no-h-overflow`** — the class-vs-inline switch is.
+  Forcing `grid-cols-2` at 320px gives a document overflow of **0** (122px tracks, 26px buttons: ugly,
+  not overflowing). The 15px overflow only appears with the spec's literal inline
+  `gridTemplateColumns:'1fr 1fr'`, because bare `1fr` is `minmax(auto,1fr)` and `auto` floors the track
+  at min-content. So `grid-cols-*` CLASSES exist for two reasons — a media query cannot reach an
+  inline style, **and** `minmax(0,…)` is what stops the document scrolling — while the media query's
+  own job is protecting the `.vbox` from being squeezed. RD-GX-1 inherits this whole derivation.
+- ⚠ **`min-w-0` is not `overflow-wrap`.** Both product-card text columns carry an inline
+  `overflow-wrap:anywhere` (the RD-FL-4 `plan_note` precedent). `min-w-0` lets the flex item SHRINK;
+  an unbreakable token still paints outside it — a 44-char space-free product name put the `<h3>` at
+  479px inside a 183px column and scrolled the document **263px** sideways at 320px. Set on the
+  CONTAINER, not the `h3`, because `overflow-wrap` inherits and `description1`/`description2` are
+  equally free admin text. A hyphenated name does **not** reproduce it (`-` is a break opportunity),
+  which is why the fixture name is spelled without one.
+- **`phone` is CSS, not a reactive.** The prototype's `phone` is a demo frame toggle
+  (`device === "phone"`), not a media query; this port expresses it as Tailwind `sm:` like module 03
+  already does (`px-4 sm:px-7`). No `resize`/`matchMedia` listener exists on this view — do not add
+  one. ⚠ The one thing a class **cannot** carry is `line-height`: `friends-theme.css` loads after
+  Tailwind and `:where(.app,…) .display` ties `leading-[0.95]` on specificity, so every line-height
+  in these cards is an INLINE style.
+- Text metrics: every text-bearing element in both cards carries an A10-covered class
+  (`.display`, `.badge`, `.sub`, `.mono`, `.vbox .vsize`, `.vbox .vprice`, `.stepper .val`), so no
+  call-site `line-height:normal` was needed and **A10's selector list did not grow**.
+- ⚠ **`.pimg` no-photo = the BARE FRAME** — built-in dark gradient, zero children, no `.band`/`.cap`/
+  `.lbl`, no placeholder icon. This closes 02 §UC-DS-013's OPEN and is recorded there; RD-GX-1
+  inherits it for `GuestProductGrid.vue`.
+- Product name is `<h3 class="display">` on **both** card types (04 §UC-FO-015 pins
+  `getByRole('heading')` for `guest-host-view.spec.js`); on the bakery card it is additionally
+  `inline` so the subtitle sits on its baseline.
+- `NeoStepper`'s first regression net is `e2e/tests/order-product-card.spec.js` (02 §UC-DS-014 item 6):
+  v-model round-trip, the `min` floor **and its no-emit rule** (a no-op tap at 0 must not dirty the
+  cart, or the leave guard fires on nothing), the stock ceiling, and the `.sel` flip.
+- ⚠ **`order-shell.spec.js:337/342` were re-pointed** from `{ name: '+' | '-', exact: true }` to
+  `{ name: 'viac' | 'menej' }` — 03 §UC-FL-013 case (b), structurally unsatisfiable against a
+  mandated primitive (`NeoStepper` labels its buttons in Slovak and renders U+2212, and an aria-label
+  wins over text content, so **both** lookups broke). One pre-existing-spec file edited: **0**;
+  pipeline-authored spec files edited: **1**, two lines.
+
+Full suite after this work: **379 passed / 3 skipped** (+12).

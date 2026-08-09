@@ -2,18 +2,17 @@
 import { ref, computed, onMounted, onBeforeUnmount, watchEffect, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import api, { getFriendsPassword, getFriendsAuthInfo, getFriendsToken } from '../api'
-// shadcn leftovers. `Card`/`CardContent` still dress the product cards (RD-FO-2)
-// and the Kolegovia share card (RD-KG-1); `Button` is still used by the product
-// steppers (RD-FO-2), the cartbar (RD-FO-3) and every modal (RD-FO-4); `Dialog*`
-// is the modals themselves (RD-FO-4). `Alert`, `Badge` and `Tabs*` are gone with
-// this row: the banners, the colleague badge and both tab strips are theme
-// classes now, and nothing else in this view used them.
+// shadcn leftovers. `Card`/`CardContent` now dress ONLY the Kolegovia share card
+// (RD-KG-1) — RD-FO-2 took the product cards off them onto `.card`; `Button` is
+// still the cartbar (RD-FO-3) and every modal (RD-FO-4); `Dialog*` is the modals
+// themselves (RD-FO-4). `Alert`, `Badge` and `Tabs*` went with RD-FO-1.
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
 import GuestSubOrders from '@/components/GuestSubOrders.vue'
 import BrandChrome from '@/components/neo/BrandChrome.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
+import NeoStepper from '@/components/neo/NeoStepper.vue'
 import { snapTab } from '@/lib/snap-tab'
 import {
   Dialog,
@@ -270,8 +269,68 @@ const groupedBakeryProducts = computed(() => {
   return result
 })
 
-function getGroupQuantityTotal(variants) {
-  return variants.reduce((sum, v) => sum + getQuantity(v.id, 'unit'), 0)
+// The coffee card's variant boxes, in 04 §UC-FO-005's FIXED order — one `.vbox`
+// per non-null price field. This replaces the old "capsules XOR weights" split:
+// the template used to render `price_20pc5g` in its own single-column grid and
+// then hide EVERY weight variant behind `v-if="!product.price_20pc5g"`, so a
+// product priced for both would have shown only the capsules. Under the new rule
+// a `20pc5g`-only product is simply a one-variant grid, and a mixed product shows
+// all of its variants (04 §UC-FO-005 business rules).
+//
+// ⚠ The `variant` keys are the CART keys and are also the keys of `variantGrams`
+// and of the server's `order_items.variant` — they are not display strings and
+// must not be "tidied". Only `label` is presentational (`20pc5g` → "20 ks × 5g").
+const COFFEE_VARIANTS = [
+  { field: 'price_150g', variant: '150g', label: '150g' },
+  { field: 'price_200g', variant: '200g', label: '200g' },
+  { field: 'price_250g', variant: '250g', label: '250g' },
+  { field: 'price_500g', variant: '500g', label: '500g' },
+  { field: 'price_1kg', variant: '1kg', label: '1kg' },
+  { field: 'price_20pc5g', variant: '20pc5g', label: '20 ks × 5g' }
+]
+
+function coffeeVariants(product) {
+  const out = []
+  for (const v of COFFEE_VARIANTS) {
+    const price = product[v.field]
+    if (price) out.push({ variant: v.variant, label: v.label, price })
+  }
+  return out
+}
+
+// Grams → the prototype's kg copy (04 §UC-FO-006, resolved conflict #6: repo gram
+// MATH, kg DISPLAY). Up to 2 decimals, trailing zeros stripped, dot decimal:
+// 250 → "0.25 kg", 1000 → "1 kg", 1250 → "1.25 kg". `Number#toString` gives the
+// stripping and the dot for free; `toFixed(2)` would render "1.00 kg".
+function kg(grams) {
+  return `${Math.round((grams || 0) / 10) / 100} kg`
+}
+
+// The bar's fill. Deliberately derived from `getRemainingGrams` — i.e. it INCLUDES
+// the friend's own uncommitted cart, exactly as the shipped bar did — so emptying
+// a variant walks the fill back live. The `limit > 0` guard only keeps a 0/NULL
+// limit out of the style binding as NaN; availability rows only exist for products
+// that have one.
+function stockPct(productId) {
+  const avail = availability.value[productId]
+  const limit = avail?.stock_limit_g
+  if (!limit || limit <= 0) return 0
+  const remaining = getRemainingGrams(productId)
+  return Math.min(100, ((limit - remaining) / limit) * 100)
+}
+
+// The single bridge from `NeoStepper`'s absolute v-model to the shipped cart
+// mutators. 02 §UC-DS-008 forbids a `max` in the primitive, so the stock ceiling
+// has to live HERE: routing an increase through `increment()` is what keeps
+// `canIncrement()` in the path. Binding `setQuantity` directly would have handed
+// the stepper an unchecked write and silently retired the ceiling.
+//
+// The stepper only ever emits ±1; a larger jump is clamped to one step rather
+// than trusted, so no future change to the primitive can widen this hole.
+function onQty(productId, variant, next) {
+  const current = getQuantity(productId, variant)
+  if (next > current) increment(productId, variant)
+  else if (next < current) decrement(productId, variant)
 }
 
 const availablePurposes = computed(() => {
@@ -1104,343 +1163,278 @@ function applyMarkup(price) {
         </div>
 
         <!-- Only the active purpose's cards — the same one-visible-at-a-time
-             behaviour the radix `TabsContent` panels had. -->
+             behaviour the radix `TabsContent` panels had.
+
+             ⚠ ONE root per product, TWO bodies. `Card`/`CardContent` are gone from
+             here: `.card` IS the neo card (3px ink border, radius 14, `5px 5px 0`
+             hard shadow), and leaving it nested inside shadcn's `Card` would have
+             drawn two borders and two shadows around every product.
+
+             `phone` — 04's markup blocks are written against the prototype's
+             `phone ? 14 : 18` boolean. In the prototype that is a DEMO FRAME
+             TOGGLE (`device === "phone"` in app.jsx), not a media query. This port
+             expresses it as Tailwind's `sm:` breakpoint rather than a viewport
+             reactive, deliberately:
+               · module 03 already established that idiom on every friend surface
+                 (`px-4 sm:px-7`, `text-[28px] sm:text-[34px]`), and a second,
+                 JS-driven notion of "phone" would fork the definition;
+               · there is no `resize`/`matchMedia` listener to register, leak, or
+                 forget to tear down, and no re-render of the whole product list on
+                 every resize frame;
+               · it follows `emulateMedia` and a mid-session resize, which a value
+                 read once in `setup()` would not.
+             The ONE thing a class cannot carry here is `line-height`:
+             `friends-theme.css` loads AFTER Tailwind and `:where(.app,…) .display`
+             has the same (0,1,0) specificity as `leading-[0.95]`, so the theme
+             would win. Every line-height below therefore stays an INLINE style,
+             which outranks both.
+
+             Text metrics: every text-bearing element in these two cards carries a
+             class already covered by the theme's A10 `line-height:normal` list
+             (`.display`, `.badge`, `.sub`, `.mono`, `.vbox .vsize`,
+             `.vbox .vprice`, `.stepper .val`), so the inline font-sizes cannot
+             inherit preflight's 1.5 through an unclassed element. Nothing here
+             needs a call-site `line-height:normal`, and A10's selector list must
+             NOT grow for this row — measured against the current build, which
+             already carries RD-FL-8b's `.vbox`/`.stepper` additions. -->
         <div class="flex flex-col gap-4">
-          <Card v-for="product in activeProducts" :key="product.id">
-            <!-- Bakery product card with variant support -->
-            <CardContent v-if="isBakery && product.price_unit" class="p-0">
+          <div
+            v-for="product in activeProducts"
+            :key="product.id"
+            class="card p-[14px] sm:p-[18px]"
+            data-testid="product-card"
+          >
+            <!-- ==================== bakery (04 §UC-FO-007) ====================
+                 Branch condition unchanged from the shipped view. One card per
+                 `source_bakery_product_id` through `groupedBakeryProducts` (the
+                 CLAUDE.md 2026-04-19 contract, untouched); no image column
+                 (resolved conflict #8) and no stock bar — bakery products carry no
+                 availability row, and `'unit'` is zero-gram by contract. -->
+            <template v-if="isBakery && product.price_unit">
+              <div class="flex justify-between gap-[10px] items-baseline">
+                <!-- `overflow-wrap:anywhere` for the same reason as the coffee
+                     card's text column below — see the comment there. -->
+                <div class="min-w-0" style="overflow-wrap:anywhere">
+                  <!-- `<h3>`, not the spec block's `span`: 04 §UC-FO-015 pins the
+                       product name as `getByRole('heading', …)` for
+                       `guest-host-view.spec.js`, and that pin outranks the element
+                       name in the markup sketch. `inline` keeps it on the
+                       subtitle's baseline. RD-FL-4 established that `.display`'s
+                       weight and uppercase fully override the UA `h3` styles, and
+                       Tailwind preflight already zeroes the margin and inherits
+                       the size — so there is no visual delta from a `span`. -->
+                  <h3 class="display inline text-[19px] sm:text-[21px]" style="line-height:.95">{{ product.name }}</h3>
+                  <span v-if="product.description2" class="sub" style="font-size:13px;margin-left:8px">{{ product.description2 }}</span>
+                </div>
+                <!-- Card-level weight = the FIRST variant row's `weight_grams`
+                     (the snapshot carries one per variant — `cycles.js`); the
+                     prototype shows exactly one weight per card. -->
+                <span
+                  v-if="product._variants[0].weight_grams"
+                  class="mono sub"
+                  style="font-size:12px;white-space:nowrap"
+                >{{ product._variants[0].weight_grams }} g</span>
+              </div>
+
+              <div v-if="product.description1" class="sub" style="font-size:13px;margin-top:6px">{{ product.description1 }}</div>
+
+              <details v-if="product.composition" style="margin-top:8px">
+                <summary class="sub" style="cursor:pointer;font-size:13px">Zloženie</summary>
+                <div class="sub" style="font-size:13px;margin-top:4px">{{ product.composition }}</div>
+              </details>
+
+              <!-- Column rule and the 368px floor: see the coffee grid below. -->
               <div
-                :class="[
-                  'flex rounded-lg overflow-hidden transition-colors',
-                  getGroupQuantityTotal(product._variants) > 0
-                    ? 'ring-2 ring-primary'
-                    : ''
-                ]"
+                class="grid gap-[10px] mt-3"
+                :class="product._variants.length > 1 ? 'grid-cols-1 min-[368px]:grid-cols-2' : 'grid-cols-1'"
               >
-                <!-- Product image - full height left side -->
-                <div class="w-28 flex-shrink-0 bg-muted flex items-center justify-center">
-                  <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
-                  <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                  </svg>
-                </div>
-                <!-- Product info + variant rows -->
-                <div class="flex-1 min-w-0 p-3 flex flex-col">
-                  <div class="flex justify-between items-start gap-2">
-                    <div class="min-w-0 flex-1">
-                      <div class="flex items-baseline gap-2">
-                        <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
-                        <span v-if="product.description2" class="text-sm text-muted-foreground">{{ product.description2 }}</span>
-                      </div>
-                      <p v-if="product.description1" class="text-sm text-muted-foreground mt-0.5">{{ product.description1 }}</p>
-                      <details v-if="product.composition" class="mt-1">
-                        <summary class="text-xs text-muted-foreground/70 cursor-pointer select-none">Zloženie</summary>
-                        <p class="text-xs text-muted-foreground/70 mt-0.5">{{ product.composition }}</p>
-                      </details>
-                    </div>
+                <!-- Selection is PER VBOX (04 §UC-FO-007), replacing the repo's
+                     whole-card `ring-2 ring-primary`: two variants of one product
+                     now select independently, which is also why
+                     `getGroupQuantityTotal` — whose only consumer was that ring —
+                     is gone from the script. -->
+                <div
+                  v-for="v in product._variants"
+                  :key="v.id"
+                  class="vbox"
+                  :class="{ sel: getQuantity(v.id, 'unit') > 0 }"
+                >
+                  <div class="vrow">
+                    <!-- NULL on legacy single-variant snapshots. -->
+                    <span class="vsize">{{ v.variant_label || '1 ks' }}</span>
+                    <span class="vprice">{{ formatPrice(applyMarkup(v.price_unit)) }}</span>
                   </div>
-                  <!-- Variant rows -->
-                  <div class="mt-auto pt-2 space-y-1.5">
-                    <div v-for="v in product._variants" :key="v.id" class="flex items-center justify-between">
-                      <div class="text-sm">
-                        <span class="font-semibold text-primary">{{ formatPrice(applyMarkup(v.price_unit)) }}</span>
-                        <span v-if="v.variant_label" class="text-muted-foreground ml-1">/ {{ v.variant_label }}</span>
-                      </div>
-                      <div class="flex items-center gap-1.5">
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          @click="decrement(v.id, 'unit')"
-                          :disabled="isLocked || getQuantity(v.id, 'unit') === 0"
-                          class="h-8 w-8 rounded-full"
-                        >
-                          -
-                        </Button>
-                        <span class="w-6 text-center font-semibold text-sm">{{ getQuantity(v.id, 'unit') }}</span>
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          @click="increment(v.id, 'unit')"
-                          :disabled="isLocked"
-                          class="h-8 w-8 rounded-full"
-                        >
-                          +
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
+                  <NeoStepper
+                    :model-value="getQuantity(v.id, 'unit')"
+                    :disabled="isLocked"
+                    :inc-disabled="!canIncrement(v.id, 'unit')"
+                    @update:model-value="(q) => onQty(v.id, 'unit', q)"
+                  />
                 </div>
               </div>
-            </CardContent>
+            </template>
 
-            <!-- Coffee product card -->
-            <CardContent v-else class="p-4">
-              <div class="flex gap-4 mb-3">
-                <!-- Product image -->
-                <div class="w-20 h-20 flex-shrink-0 bg-muted rounded-lg overflow-hidden flex items-center justify-center">
-                  <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
-                  <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                  </svg>
+            <!-- ==================== coffee (04 §UC-FO-005) ==================== -->
+            <template v-else>
+              <div class="flex gap-[13px] items-stretch">
+                <!-- ⚠ CLOSES 02 §UC-DS-013's `.pimg` OPEN. A product with no
+                     uploaded photo renders the BARE frame — its built-in dark
+                     gradient and nothing else. No `.band`/`.cap`/`.lbl` bag
+                     internals (they encode a per-bag demo colour and `.lbl` wants
+                     Anton, which 02 §UC-DS-003 deliberately does not load), and no
+                     placeholder icon: the grey photo glyph belonged to the shadcn
+                     skin. Recorded in 02 §UC-DS-013's disposition table.
+
+                     `min-height` = width, `height:auto`, `align-self:stretch` is
+                     what makes the frame track the text block's height. -->
+                <div class="pimg w-[58px] sm:w-[70px] min-h-[58px] sm:min-h-[70px] h-auto self-stretch">
+                  <img
+                    v-if="product.image"
+                    :src="product.image"
+                    alt=""
+                    style="display:block;width:100%;height:100%;object-fit:cover"
+                  />
                 </div>
-                <!-- Product info -->
-                <div class="flex-1 min-w-0">
-                  <!-- flex-wrap: the two badges below are `whitespace-nowrap`, so
-                       without it a long product name is squeezed to its longest
-                       word while the badges push out of the card. GuestProductGrid
-                       already wraps here; this keeps the friend view in parity. -->
-                  <div class="flex items-center gap-2 flex-wrap">
-                    <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
-                    <span v-if="product.roast_type" class="text-xs text-muted-foreground/70 bg-muted px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roast_type }}</span>
-                    <span v-if="product.roastery" class="text-xs bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roastery }}</span>
+                <!-- ⚠ `overflow-wrap:anywhere` is REQUIRED, not cosmetic, and
+                     `min-w-0` alone does not do it: `min-w-0` lets the flex item
+                     SHRINK, but an unbreakable token still paints outside it.
+                     Product names are free admin text, and a 45-char space-free
+                     name put the `<h3>` at 479px inside a 183px column and scrolled
+                     the whole DOCUMENT 263px sideways at 320px (measured) — 02
+                     §UC-DS-005's zero-horizontal-overflow floor. It is set on the
+                     CONTAINER, not the `h3`, because `overflow-wrap` inherits and
+                     `description1`/`description2` are equally free text. Same class
+                     of hole RD-FL-4 closed on `plan_note`; pinned with a long
+                     unbreakable fixture name in `order-product-card.spec.js`. -->
+                <div class="flex-1 min-w-0" style="overflow-wrap:anywhere">
+                  <h3 class="display text-[19px] sm:text-[21px]" style="line-height:.95">{{ product.name }}</h3>
+                  <div v-if="product.roast_type || product.roastery" class="flex flex-wrap gap-[6px] mt-2">
+                    <span v-if="product.roast_type" class="badge" style="font-size:11px;padding:2px 7px">{{ product.roast_type }}</span>
+                    <span v-if="product.roastery" class="badge acc-o" style="font-size:11px;padding:2px 7px">{{ product.roastery }}</span>
                   </div>
-                  <p v-if="product.description1" class="text-sm text-muted-foreground">{{ product.description1 }}</p>
-                  <p v-if="product.description2" class="text-sm text-muted-foreground/70 mt-1 line-clamp-2">{{ product.description2 }}</p>
+                  <!-- Fixed field mapping (04 §UC-FO-005): `description1` is the
+                       spec line, `description2` the tasting notes. The old
+                       `line-clamp-2` on the notes is dropped — the prototype does
+                       not truncate them. -->
+                  <div v-if="product.description1" class="sub" style="margin-top:7px;font-size:13px">{{ product.description1 }}</div>
+                  <div v-if="product.description2" class="mono" style="font-size:12.5px;color:var(--ink-faint);margin-top:2px">{{ product.description2 }}</div>
                 </div>
               </div>
 
-              <!-- Capsule variant (20 ks × 5g) -->
-              <div v-if="product.price_20pc5g" class="grid grid-cols-1 gap-4">
-                <div
-                  :class="[
-                    'rounded-lg p-2 transition-colors',
-                    getQuantity(product.id, '20pc5g') > 0
-                      ? 'bg-primary/10 border-2 border-primary'
-                      : 'border bg-card'
-                  ]"
-                >
-                  <div class="flex justify-between items-center mb-1">
-                    <span class="text-sm font-medium">20 ks × 5g</span>
-                    <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_20pc5g)) }}</span>
-                  </div>
-                  <div class="flex items-center justify-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="decrement(product.id, '20pc5g')"
-                      :disabled="isLocked || getQuantity(product.id, '20pc5g') === 0"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      -
-                    </Button>
-                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '20pc5g') }}</span>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="increment(product.id, '20pc5g')"
-                      :disabled="isLocked || !canIncrement(product.id, '20pc5g')"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      +
-                    </Button>
-                  </div>
+              <!-- Stock-limit bar (04 §UC-FO-006). Renders between the description
+                   row and the variant grid, only where the server returned an
+                   availability row.
+
+                   ⚠ The MATH is the shipped gram math, untouched (resolved
+                   conflict #6): `getRemainingGrams` = server `remaining_g` minus
+                   the grams already in THIS friend's local cart, so the fill
+                   includes their own uncommitted basket and walks back live when
+                   they empty a variant. Only the DISPLAY changed — grams became
+                   `kg()`, per prototype copy. Fill is always accent magenta; the
+                   sold-out signal is the danger-red "Vypredané" LABEL (repo
+                   state, kept), never a bar colour — so the old amber/red bar
+                   tinting goes. -->
+              <div v-if="availability[product.id]" class="flex items-center gap-[10px] mt-3" data-testid="stock-bar">
+                <div style="flex:1;height:10px;border:2px solid var(--nb-ink);border-radius:6px;overflow:hidden;background:#fff">
+                  <div
+                    data-testid="stock-fill"
+                    :style="{ width: stockPct(product.id) + '%', height: '100%', background: 'var(--accent)' }"
+                  ></div>
                 </div>
+                <span
+                  v-if="getRemainingGrams(product.id) === 0"
+                  class="mono"
+                  data-testid="stock-label"
+                  style="font-size:11.5px;white-space:nowrap;color:var(--danger)"
+                >Vypredané</span>
+                <span
+                  v-else
+                  class="mono"
+                  data-testid="stock-label"
+                  style="font-size:11.5px;white-space:nowrap;color:var(--warn)"
+                >Zostáva {{ kg(getRemainingGrams(product.id)) }} z {{ kg(availability[product.id].stock_limit_g) }}</span>
               </div>
 
-              <!-- Stock limit indicator -->
-              <div v-if="availability[product.id]" class="mb-2">
-                <div class="flex items-center gap-2 text-xs">
-                  <div class="flex-1 bg-muted rounded-full h-1.5 overflow-hidden">
-                    <div
-                      class="h-full rounded-full transition-all"
-                      :class="getRemainingGrams(product.id) === 0 ? 'bg-destructive' : getRemainingGrams(product.id) < availability[product.id].stock_limit_g * 0.25 ? 'bg-amber-500' : 'bg-primary'"
-                      :style="{ width: Math.min(100, ((availability[product.id].stock_limit_g - availability[product.id].remaining_g + getCartGramsForProduct(product.id)) / availability[product.id].stock_limit_g) * 100) + '%' }"
-                    />
+              <!-- ⚠ COLUMN RULE — and a recorded ADAPTATION at the 320px floor.
+                   04 §UC-FO-005 says `1fr 1fr` for >1 priced variant, single `1fr`
+                   otherwise. Two separate things are going on here, and conflating
+                   them is what produced an earlier wrong breakpoint:
+
+                   (1) `1fr` is written as `grid-cols-*` CLASSES, never an inline
+                       `gridTemplateColumns` — an inline style outranks every class,
+                       so a media query could not reach it. That switch is ALSO what
+                       satisfies `mobile-no-h-overflow.spec.js`, and it does so on
+                       its own: the spec's literal inline `1fr 1fr` is
+                       `minmax(auto,1fr)`, whose `auto` floors each track at the
+                       item's 146px min-content, and at 320px that scrolls the
+                       DOCUMENT 15px sideways (measured). `grid-cols-2` is
+                       `repeat(2, minmax(0,1fr))` — minimum ZERO — so forcing two
+                       columns at 320px gives a document overflow of exactly 0
+                       (measured). No media query needed for the overflow rule.
+
+                   (2) The media query's real job is the opposite one: stopping a
+                       track from sitting BELOW the item's min-content, where the
+                       shortfall is absorbed by the flex stepper buttons shrinking
+                       (`width:38px` with the default `flex-shrink:1`). 02
+                       §UC-DS-008 pins those 38×38 hit targets as "from CSS — do not
+                       override", so a silently squeezed button is a real defect.
+
+                   MEASURED, not estimated: a `.vbox`'s min-content is 146px — the
+                   38+24+38 stepper plus its two 10px gaps (120), plus 11px padding
+                   and 2px border a side. Two of them plus the 10px gap need 302px
+                   of card CONTENT box, and that box is
+                   `viewport − 32 (page column) − 28 (card padding) − 6 (.card's own
+                   3px border a side, friends-theme.css)`; 302 + 66 = 368.
+
+                   ⚠ 368, not 362: dropping the border term put the switch 6px low,
+                   and across 362–367 the tracks rendered at 143–145.5px with the
+                   "+" button squeezed to 36.5–37.75px. Pinned by the 364px case in
+                   `order-product-card.spec.js`. At the prototype's own 378px phone
+                   width the tracks come out at 151px with 38px buttons, which is
+                   why `03-shot.png` shows two boxes side by side and this fallback
+                   never fires on the design width. -->
+              <div
+                class="grid gap-[10px] mt-[13px]"
+                :class="coffeeVariants(product).length > 1 ? 'grid-cols-1 min-[368px]:grid-cols-2' : 'grid-cols-1'"
+              >
+                <div
+                  v-for="v in coffeeVariants(product)"
+                  :key="v.variant"
+                  class="vbox"
+                  :class="{ sel: getQuantity(product.id, v.variant) > 0 }"
+                >
+                  <div class="vrow">
+                    <span class="vsize">{{ v.label }}</span>
+                    <span class="vprice">{{ formatPrice(applyMarkup(v.price)) }}</span>
                   </div>
-                  <span v-if="getRemainingGrams(product.id) === 0" class="text-destructive font-medium whitespace-nowrap">Vypredané</span>
-                  <span v-else class="text-muted-foreground whitespace-nowrap">Zostáva: {{ getRemainingGrams(product.id) }}g z {{ availability[product.id].stock_limit_g }}g</span>
+                  <!-- ⚠ THE `+` CEILING, and why BOTH halves are here.
+                       02 §UC-DS-008 forbids a `max` in `NeoStepper`, so the rule
+                       lives in the view; 04 §UC-FO-006 says an increment past
+                       `remaining_g` is SILENTLY refused — no toast.
+
+                       `incDisabled` carries the shipped semantics: the pre-redesign
+                       "+" was a real `:disabled` button at the ceiling, and
+                       dropping that would have taken the state away from assistive
+                       tech, which is the one audience a purely silent refusal
+                       cannot reach. It costs no fidelity, because RD-DS-3 recorded
+                       that the theme has no `.stepper button:disabled` rule at all
+                       — the button looks identical, which is exactly the silence
+                       the spec asks for.
+
+                       And it is NOT the enforcement. `onQty` routes every increase
+                       through `increment()`, which re-checks `canIncrement()`, so a
+                       programmatic click that bypasses the disabled attribute still
+                       cannot exceed the limit. Both, not either. -->
+                  <NeoStepper
+                    :model-value="getQuantity(product.id, v.variant)"
+                    :disabled="isLocked"
+                    :inc-disabled="!canIncrement(product.id, v.variant)"
+                    @update:model-value="(q) => onQty(product.id, v.variant, q)"
+                  />
                 </div>
               </div>
-
-              <!-- Weight variants (150g / 200g / 250g / 500g / 1kg) -->
-              <div v-if="!product.price_20pc5g" class="grid grid-cols-2 gap-4">
-                <!-- 150g variant -->
-                <div
-                  v-if="product.price_150g"
-                  :class="[
-                    'rounded-lg p-2 transition-colors',
-                    getQuantity(product.id, '150g') > 0
-                      ? 'bg-primary/10 border-2 border-primary'
-                      : 'border bg-card'
-                  ]"
-                >
-                  <div class="flex justify-between items-center mb-1">
-                    <span class="text-sm font-medium">150g</span>
-                    <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_150g)) }}</span>
-                  </div>
-                  <div class="flex items-center justify-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="decrement(product.id, '150g')"
-                      :disabled="isLocked || getQuantity(product.id, '150g') === 0"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      -
-                    </Button>
-                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '150g') }}</span>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="increment(product.id, '150g')"
-                      :disabled="isLocked || !canIncrement(product.id, '150g')"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      +
-                    </Button>
-                  </div>
-                </div>
-
-                <!-- 200g variant -->
-                <div
-                  v-if="product.price_200g"
-                  :class="[
-                    'rounded-lg p-2 transition-colors',
-                    getQuantity(product.id, '200g') > 0
-                      ? 'bg-primary/10 border-2 border-primary'
-                      : 'border bg-card'
-                  ]"
-                >
-                  <div class="flex justify-between items-center mb-1">
-                    <span class="text-sm font-medium">200g</span>
-                    <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_200g)) }}</span>
-                  </div>
-                  <div class="flex items-center justify-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="decrement(product.id, '200g')"
-                      :disabled="isLocked || getQuantity(product.id, '200g') === 0"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      -
-                    </Button>
-                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '200g') }}</span>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="increment(product.id, '200g')"
-                      :disabled="isLocked || !canIncrement(product.id, '200g')"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      +
-                    </Button>
-                  </div>
-                </div>
-
-                <!-- 250g variant -->
-                <div
-                  v-if="product.price_250g"
-                  :class="[
-                    'rounded-lg p-2 transition-colors',
-                    getQuantity(product.id, '250g') > 0
-                      ? 'bg-primary/10 border-2 border-primary'
-                      : 'border bg-card'
-                  ]"
-                >
-                  <div class="flex justify-between items-center mb-1">
-                    <span class="text-sm font-medium">250g</span>
-                    <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_250g)) }}</span>
-                  </div>
-                  <div class="flex items-center justify-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="decrement(product.id, '250g')"
-                      :disabled="isLocked || getQuantity(product.id, '250g') === 0"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      -
-                    </Button>
-                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '250g') }}</span>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="increment(product.id, '250g')"
-                      :disabled="isLocked || !canIncrement(product.id, '250g')"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      +
-                    </Button>
-                  </div>
-                </div>
-
-                <!-- 500g variant -->
-                <div
-                  v-if="product.price_500g"
-                  :class="[
-                    'rounded-lg p-2 transition-colors',
-                    getQuantity(product.id, '500g') > 0
-                      ? 'bg-primary/10 border-2 border-primary'
-                      : 'border bg-card'
-                  ]"
-                >
-                  <div class="flex justify-between items-center mb-1">
-                    <span class="text-sm font-medium">500g</span>
-                    <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_500g)) }}</span>
-                  </div>
-                  <div class="flex items-center justify-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="decrement(product.id, '500g')"
-                      :disabled="isLocked || getQuantity(product.id, '500g') === 0"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      -
-                    </Button>
-                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '500g') }}</span>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="increment(product.id, '500g')"
-                      :disabled="isLocked || !canIncrement(product.id, '500g')"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      +
-                    </Button>
-                  </div>
-                </div>
-
-                <!-- 1kg variant -->
-                <div
-                  v-if="product.price_1kg"
-                  :class="[
-                    'rounded-lg p-2 transition-colors',
-                    getQuantity(product.id, '1kg') > 0
-                      ? 'bg-primary/10 border-2 border-primary'
-                      : 'border bg-card'
-                  ]"
-                >
-                  <div class="flex justify-between items-center mb-1">
-                    <span class="text-sm font-medium">1kg</span>
-                    <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_1kg)) }}</span>
-                  </div>
-                  <div class="flex items-center justify-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="decrement(product.id, '1kg')"
-                      :disabled="isLocked || getQuantity(product.id, '1kg') === 0"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      -
-                    </Button>
-                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '1kg') }}</span>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      @click="increment(product.id, '1kg')"
-                      :disabled="isLocked || !canIncrement(product.id, '1kg')"
-                      class="h-8 w-8 rounded-full"
-                    >
-                      +
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+            </template>
+          </div>
         </div>
       </div>
       <!-- ============ /panel: own order ============ -->

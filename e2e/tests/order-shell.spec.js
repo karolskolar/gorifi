@@ -334,12 +334,23 @@ test.describe('UC-FO-002 — status banners', () => {
 
     // Dirty the cart from the UI. The prototype hides the green banner while
     // `dirty`; the repo equivalent is `hasUnsubmittedChanges`.
-    await page.getByRole('button', { name: '+', exact: true }).first().click()
+    // ⚠ RE-POINTED BY RD-FO-2, under 03 §UC-FL-013 case (b) — "the assertion is
+    // structurally unsatisfiable against a primitive the spec mandates". These two
+    // lines used to look up `{ name: '+' | '-', exact: true }`. 04 §UC-FO-005
+    // mandates `NeoStepper` as the only quantity control, and 02 §UC-DS-008 pins
+    // its markup verbatim from `ui.jsx`: the buttons carry
+    // `aria-label="menej"`/`"viac"` and render U+2212 MINUS SIGN, not a hyphen.
+    // An aria-label WINS over text content for the accessible name, so both the
+    // '+' and the '-' lookups became unsatisfiable the moment the stepper landed —
+    // not just the '-' one. Re-pointed at the mandated labels; the property under
+    // test (the green banner yields while the cart is dirty, and returns when the
+    // change is reverted) is unchanged and unweakened.
+    await page.getByRole('button', { name: 'viac' }).first().click()
     await expect(green, 'the green banner yields to the cartbar warning').toBeHidden()
     await expect(page.getByText('Zmeny neboli odoslané.')).toBeVisible()
 
     // Revert and it comes back — same cart as the last submission.
-    await page.getByRole('button', { name: '-', exact: true }).first().click()
+    await page.getByRole('button', { name: 'menej' }).first().click()
     await expect(green, 'reverting the change brings it back').toBeVisible()
   })
 
