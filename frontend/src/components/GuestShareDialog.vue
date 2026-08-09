@@ -1,22 +1,22 @@
 <script setup>
-// Guest share link for one cycle — "Zdieľať objednávku s kolegami".
+// Guest share link for one cycle — "Zdieľať s kolegami" (05 §UC-KG-006).
 // The host owns exactly one link per cycle (`guest_order_links`); colleagues
 // order through /g/:token without an account and the host hands the goods over.
-// Shared by FriendOrder.vue (inside a cycle) and FriendPortal.vue (cycle list),
-// so both entry points drive the same create / regenerate / deactivate logic.
+// Shared by FriendOrder.vue (the "Kolegovia" panel) and FriendPortalSession.vue
+// (cycle-card share row), so both entry points drive the same
+// create / regenerate / deactivate logic.
+//
+// RD-KG-2 recomposed the TEMPLATE onto NeoModal (UC-DS-010) + NeoCopyRow
+// (UC-DS-011). The component API is frozen — props `open`/`cycleId`/`cycleName`,
+// emit `update:open` — and the whole sequencing below survives verbatim. Only
+// `copyLink`/`copied` were deleted: NeoCopyRow owns the clipboard write and the
+// 2-second "Skopírované!" flip (resolved conflict 4), including the fallback
+// behaviour the bespoke `document.execCommand` branch used to provide.
 import { ref, computed, watch } from 'vue'
 import api from '../api'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Alert, AlertDescription } from '@/components/ui/alert'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
+import NeoModal from '@/components/neo/NeoModal.vue'
+import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
+import NeoIcon from '@/components/neo/NeoIcon.vue'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -30,13 +30,16 @@ const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
 const link = ref(null) // { id, token, active, ... } or null when not shared yet
-const copied = ref(false)
 const confirmRegenerate = ref(false)
 
-// navigator.share exists on mobile browsers only — the copy button is the
-// fallback everywhere else.
+// navigator.share exists on mobile browsers only — the copy row is the
+// fallback everywhere else, so the share BUTTON is absent rather than relabeled
+// (resolved conflict 3; pinned `toHaveCount(0)` in guest-link.spec.js).
 const canNativeShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function'
 
+// ⚠ The host sees the LINK token only. A guest's `order_token` (their private
+// edit URL) is never exposed to the host anywhere in this module — the payload
+// this dialog reads does not carry it (GSO-T2 hard invariant).
 const guestUrl = computed(() =>
   link.value ? `${window.location.origin}/g/${link.value.token}` : ''
 )
@@ -49,13 +52,21 @@ const guestUrl = computed(() =>
 // would act on the stale link.value.id, hitting a different cycle's row.
 // Every request bumps loadSeq and drops its own result if it is no longer the
 // newest one.
+//
+// ⚠ Load-bearing, not legacy: `guest-link.spec.js`'s "slow load … cannot
+// overwrite" test reproduces exactly that corruption with a `page.route` delay.
+// The RD-KG-2 restyle must not restructure this watcher.
 let loadSeq = 0
 
 // Load on every open so a link created from the other entry point shows up, and
 // clear on close so a reopen can never flash the previous cycle's link.
+//
+// NeoModal has no `open` prop — the parent owns the mount — so the template
+// gates it with `v-if="open"`. This watcher is what keeps "clear on close, load
+// on open" true under that mount, and it runs on THIS component, which stays
+// mounted for the lifetime of its host view.
 watch(() => props.open, async (isOpen) => {
   const seq = ++loadSeq
-  copied.value = false
   error.value = ''
   confirmRegenerate.value = false
   link.value = null
@@ -86,7 +97,6 @@ async function saveLink() {
     const data = await api.createGuestLink(props.cycleId)
     if (seq !== loadSeq) return
     link.value = data.link
-    copied.value = false
     confirmRegenerate.value = false
   } catch (e) {
     if (seq !== loadSeq) return
@@ -115,26 +125,14 @@ async function toggleActive() {
   }
 }
 
-async function copyLink() {
-  const url = guestUrl.value
-  if (!url) return
-  try {
-    await navigator.clipboard.writeText(url)
-  } catch (e) {
-    // Fallback for browsers without the async clipboard API
-    const input = document.createElement('input')
-    input.value = url
-    document.body.appendChild(input)
-    input.select()
-    document.execCommand('copy')
-    document.body.removeChild(input)
-  }
-  copied.value = true
-  setTimeout(() => { copied.value = false }, 2000)
-}
-
 // Native share sheet on mobile; the button is hidden where navigator.share is
-// unavailable, so the copy button is always the fallback.
+// unavailable, so the copy row is always the fallback.
+//
+// ⚠ The payload is deliberately UNCHANGED by the rebrand. `document.title` is
+// still "Gorifi - Objednávky" (pinned by public-flow.spec.js), so renaming the
+// share sheet alone would have the app introduce itself as Podpultovka in a
+// message linking to a tab called Gorifi. 05 §UC-KG-006 leaves this OPEN; the
+// decision recorded here is to keep both strings verbatim.
 async function nativeShare() {
   if (!canNativeShare || !guestUrl.value) return
   try {
@@ -147,100 +145,128 @@ async function nativeShare() {
     // User dismissed the share sheet — nothing to report
   }
 }
+
+// Notes on the template below (kept here so the rendered DOM stays identical to
+// the prototype's in dev as well as prod):
+//
+// · `v-if="open"` on NeoModal is not a micro-optimisation. Two IMMUTABLE specs
+//   (`guest-host-view.spec.js:890,929`) locate the page-level share affordances
+//   with an UNSCOPED `getByRole('button', { name: /Zdieľať/ })`; leaving this
+//   dialog mounted while closed would add its own "Zdieľať odkaz" to that set
+//   and turn a `toBeHidden()` into a strict-mode violation.
+// · Every bold lead sits on ONE source line with the text that follows it. Vue's
+//   `condense` whitespace mode deletes a whitespace node that contains a
+//   newline, so breaking `</b>` and `— kolegovia…` across lines would silently
+//   render "Odkaz je deaktivovaný— kolegovia…".
+// · No `line-height` fix-ups are needed here: every text-bearing element carries
+//   a class already in UC-DS-001 A10 (`.sub`, `.banner`, `.copyrow .val`,
+//   `.confirmbox`) or in A9 (`.btn`), and the only unclassed block — the actions
+//   row — contains buttons only. Nothing here may widen A10.
 </script>
 
 <template>
-  <Dialog :open="open" @update:open="emit('update:open', $event)">
-    <DialogContent class="sm:max-w-md">
-      <DialogHeader>
-        <DialogTitle>Zdieľať s kolegami</DialogTitle>
-        <DialogDescription>
-          <!-- Name the cycle: from the portal several open cycles sit side by
-               side, so an unlabelled URL cannot be verified by the host. -->
-          <span v-if="cycleName" class="block font-medium text-foreground">{{ cycleName }}</span>
-          Kolegovia si objednajú cez váš odkaz — bez registrácie. Zásielku prevezmete vy a odovzdáte im ju.
-        </DialogDescription>
-      </DialogHeader>
+  <NeoModal
+    v-if="open"
+    title="Zdieľať s kolegami"
+    @close="emit('update:open', false)"
+  >
+    <!-- Name the cycle: from the portal several open cycles sit side by side, so
+         an unlabelled URL cannot be verified by the host (GSO-T2; pinned by
+         `toContainText(cycleBName)`). -->
+    <template #subtitle>
+      <template v-if="cycleName"><b style="color: var(--ink)">{{ cycleName }}</b><br></template>Kolegovia si objednajú cez váš odkaz — bez registrácie. Zásielku prevezmete vy a odovzdáte im ju.
+    </template>
 
-      <div class="space-y-4 py-2">
-        <Alert v-if="error" variant="destructive">
-          <AlertDescription>{{ error }}</AlertDescription>
-        </Alert>
+    <!-- 1. Error — first in the body in EVERY state, so a failure is never read
+         as "no link yet". Same `.banner.danger.slim` shape as the panel
+         (RD-KG-1): `span.dot` + a `min-width:0` block so a long server message
+         cannot push the modal sideways at 320px. -->
+    <div v-if="error" class="banner danger slim" role="alert">
+      <span class="dot"></span>
+      <div style="min-width:0">{{ error }}</div>
+    </div>
 
-        <div v-if="loading" class="text-center py-4 text-muted-foreground">Načítavam...</div>
+    <!-- 2. Loading -->
+    <div v-if="loading" class="sub" style="text-align:center">Načítavam...</div>
 
-        <template v-else>
-          <!-- Not shared yet -->
-          <div v-if="!link" class="space-y-3">
-            <p class="text-sm text-muted-foreground">Odkaz ešte nie je vytvorený.</p>
-            <Button class="w-full" :disabled="saving" @click="saveLink()">
-              {{ saving ? 'Vytváram...' : 'Vytvoriť odkaz' }}
-            </Button>
+    <template v-else>
+      <!-- 3. Not shared yet. Not in the prototype — composed from its
+           primary-action pattern; the copy is pinned by e2e and by the GSO-T2
+           register rule (impersonal vy-form, no gendered participle). -->
+      <template v-if="!link">
+        <p class="sub">Odkaz ešte nie je vytvorený.</p>
+        <button
+          type="button"
+          class="btn accent block"
+          :disabled="saving"
+          @click="saveLink()"
+        >{{ saving ? 'Vytváram...' : 'Vytvoriť odkaz' }}</button>
+      </template>
+
+      <template v-else>
+        <!-- 4. Link exists. A deactivated link keeps its URL on screen — the
+             host may want to copy it before reactivating. -->
+        <div v-if="!link.active" class="banner warn slim">
+          <span class="dot"></span>
+          <span><b>Odkaz je deaktivovaný</b> — kolegovia si cez neho nemôžu objednať.</span>
+        </div>
+
+        <!-- `value-testid` is the approved UC-DS-011 extension: the testid sits
+             on the `.val` node, never on the row, so a text assertion does not
+             swallow the copy button's label. -->
+        <NeoCopyRow :value="guestUrl" value-testid="guest-link-url" />
+
+        <!-- Native share sheet — rendered only where navigator.share exists. -->
+        <button
+          v-if="canNativeShare"
+          type="button"
+          class="btn accent block"
+          @click="nativeShare"
+        >
+          <NeoIcon name="share" /> Zdieľať odkaz
+        </button>
+
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <!-- Deactivation is REVERSIBLE — the same button toggles back. -->
+          <button
+            type="button"
+            class="btn ghost sm"
+            :disabled="saving"
+            @click="toggleActive"
+          >{{ link.active ? 'Deaktivovať odkaz' : 'Znova aktivovať' }}</button>
+          <button
+            v-if="!confirmRegenerate"
+            type="button"
+            class="btn ghost sm"
+            @click="confirmRegenerate = true"
+          >Vygenerovať nový odkaz</button>
+        </div>
+
+        <!-- ⚠ The second sentence is a factual promise about somebody else's
+             orders and MUST NOT be softened: the server UPDATEs the token on the
+             existing row (never DELETE+INSERT), so every sub-order already
+             hanging off `guest_orders.link_id` survives. -->
+        <div v-if="confirmRegenerate" class="confirmbox">
+          <span><b>Starý odkaz prestane fungovať.</b> Objednávky, ktoré vám kolegovia už poslali, zostanú zachované.</span>
+          <div class="row">
+            <button
+              type="button"
+              class="btn sm dark"
+              :disabled="saving"
+              @click="saveLink()"
+            >{{ saving ? 'Generujem...' : 'Áno, vygenerovať' }}</button>
+            <button
+              type="button"
+              class="btn sm ghost"
+              @click="confirmRegenerate = false"
+            >Zrušiť</button>
           </div>
+        </div>
+      </template>
+    </template>
 
-          <!-- Link exists -->
-          <div v-else class="space-y-3">
-            <Alert v-if="!link.active" class="border-yellow-500 bg-yellow-50 text-yellow-800">
-              <AlertDescription>
-                Odkaz je deaktivovaný — kolegovia si cez neho nemôžu objednať.
-              </AlertDescription>
-            </Alert>
-
-            <div class="flex items-center gap-2">
-              <Input
-                :model-value="guestUrl"
-                readonly
-                data-testid="guest-link-url"
-                class="font-mono text-xs"
-              />
-              <Button variant="outline" size="sm" class="shrink-0" @click="copyLink">
-                {{ copied ? 'Skopírované!' : 'Kopírovať' }}
-              </Button>
-            </div>
-
-            <!-- Native share sheet (mobile only) -->
-            <Button v-if="canNativeShare" class="w-full" @click="nativeShare">
-              Zdieľať
-            </Button>
-
-            <div class="flex flex-wrap items-center gap-2 pt-1">
-              <Button
-                variant="ghost"
-                size="sm"
-                class="text-muted-foreground"
-                :disabled="saving"
-                @click="toggleActive"
-              >
-                {{ link.active ? 'Deaktivovať odkaz' : 'Znova aktivovať' }}
-              </Button>
-              <Button
-                v-if="!confirmRegenerate"
-                variant="ghost"
-                size="sm"
-                class="text-muted-foreground"
-                @click="confirmRegenerate = true"
-              >
-                Vygenerovať nový odkaz
-              </Button>
-              <div v-else class="w-full space-y-2 rounded-md border border-yellow-400 bg-yellow-50 p-3">
-                <p class="text-xs text-yellow-800">
-                  Starý odkaz prestane fungovať. Objednávky, ktoré vám kolegovia už poslali, zostanú zachované.
-                </p>
-                <div class="flex gap-2">
-                  <Button size="sm" :disabled="saving" @click="saveLink()">
-                    {{ saving ? 'Generujem...' : 'Áno, vygenerovať' }}
-                  </Button>
-                  <Button variant="ghost" size="sm" @click="confirmRegenerate = false">Zrušiť</Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </template>
-      </div>
-
-      <DialogFooter>
-        <Button variant="outline" @click="emit('update:open', false)">Zavrieť</Button>
-      </DialogFooter>
-    </DialogContent>
-  </Dialog>
+    <template #footer>
+      <button type="button" class="btn" @click="emit('update:open', false)">Zavrieť</button>
+    </template>
+  </NeoModal>
 </template>

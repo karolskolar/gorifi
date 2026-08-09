@@ -272,7 +272,11 @@ test.describe('Guest share link — UI', () => {
 
     const urlField = dialog.getByTestId('guest-link-url')
     await expect(urlField).toBeVisible()
-    const value = await urlField.inputValue()
+    // RD-KG-2, authorized by 05 §UC-KG-007 "Authorized e2e edits" item 1: the
+    // value box is NeoCopyRow's `div.copyrow > .val` (02 §UC-DS-011), so there is
+    // no <input> to read a value from. The element's text is always the FULL URL
+    // — CSS truncates visually only. Assertion unchanged in substance.
+    const value = (await urlField.textContent()).trim()
     expect(value, 'the full shareable URL is surfaced').toMatch(/\/g\/[A-Z2-9]{12,}$/)
 
     await expect(dialog.getByRole('button', { name: 'Kopírovať' })).toBeVisible()
@@ -313,7 +317,8 @@ test.describe('Guest share link — UI', () => {
     await expect(dialog).toBeVisible()
     await dialog.getByRole('button', { name: 'Vytvoriť odkaz' }).click()
 
-    const value = await dialog.getByTestId('guest-link-url').inputValue()
+    // RD-KG-2, authorized by 05 §UC-KG-007 item 1 — see the note above.
+    const value = (await dialog.getByTestId('guest-link-url').textContent()).trim()
     expect(value).toMatch(/\/g\/[A-Z2-9]{12,}$/)
     await expect(dialog.getByRole('button', { name: 'Kopírovať' })).toBeVisible()
 
@@ -357,12 +362,16 @@ test.describe('Guest share link — UI', () => {
     await cardFor(cycleBName).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
     const dialog = page.getByRole('dialog')
     const urlField = dialog.getByTestId('guest-link-url')
-    await expect(urlField).toHaveValue(new RegExp(`/g/${linkB.token}$`))
+    // RD-KG-2, authorized by 05 §UC-KG-007 item 1 — see the note in the first UI
+    // test: `toHaveValue` has no meaning on NeoCopyRow's `.val` <div>, and the
+    // same anchored regex is applied to its text instead. The race this test
+    // exists for is unchanged.
+    await expect(urlField).toHaveText(new RegExp(`/g/${linkB.token}$`))
 
     // Let cycle A's stale response land — it must not replace what is on screen.
     await staleLoad
-    await expect(urlField, 'a stale response must not swap in another cycle\'s link').toHaveValue(new RegExp(`/g/${linkB.token}$`))
-    expect(await urlField.inputValue()).not.toContain(linkA.token)
+    await expect(urlField, 'a stale response must not swap in another cycle\'s link').toHaveText(new RegExp(`/g/${linkB.token}$`))
+    expect((await urlField.textContent()).trim()).not.toContain(linkA.token)
 
     // And the buttons in this dialog still act on cycle B: deactivating here
     // must leave cycle A's link untouched.
