@@ -126,9 +126,15 @@ test.describe('Portal appbar — name, code, pencil, Pozvať chip, logout (UC-FL
     await stubBalance(page, -74.24)
     await openPortal(page)
 
-    // Titles = LOGIN NAME + uid, never display_name (admin-only).
-    await expect(page.locator('.appbar .titles .t')).toHaveText(friend.name)
-    await expect(page.locator('.appbar .titles .s')).toHaveText(friend.uid)
+    // ⚠ Titles = the Podpultovka WORDMARK + the LOGIN NAME (product decision,
+    // 2026-08-09). It used to be `<name> / <uid>`; the uid is no longer rendered
+    // anywhere in the appbar, so the bar reads as the brand and no user identifier
+    // is on screen. Still never `display_name`, which is admin-only.
+    await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
+    await expect(page.locator('.appbar .titles .s')).toHaveText(friend.name)
+    // The load-bearing half: the uid must be absent from the whole appbar, not
+    // merely moved out of `.s`.
+    await expect(page.locator('.appbar')).not.toContainText(friend.uid)
 
     // The authenticated ticker copy.
     await expect(page.locator('.ticker')).toContainText('ČLENSKÝ OKRUH')
@@ -321,7 +327,10 @@ test.describe('BrandChrome #after-titles + titles-click — the RD-DS-5 obligati
     await expect(titles).toHaveAttribute('aria-label', 'Upraviť profil')
 
     // The whole reason `titlesAction` carries a label rather than a boolean: a
-    // bare role="button" would announce "<name> <uid>, button".
+    // bare role="button" would announce the CONTENT of the block, never the action.
+    // Since 2026-08-09 that content is "Podpultovka <name>" rather than
+    // "<name> <uid>" — still the brand and the person, still not a verb.
+    await expect(page.getByRole('button', { name: 'Podpultovka' })).toHaveCount(0)
     await expect(page.getByRole('button', { name: friend.name })).toHaveCount(0)
     await expect(page.getByRole('button', { name: friend.uid })).toHaveCount(0)
     // ⚠ EXACTLY ONE control answers to the action's name. The pencil is an
@@ -594,7 +603,8 @@ test.describe('Authenticated error banner — the RD-FL-1 residual', () => {
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
 
     await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
-    await expect(page.locator('.appbar .titles .t')).toHaveText(friend.name)
+    await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
+    await expect(page.locator('.appbar .titles .s')).toHaveText(friend.name)
     await expect(page.locator('.banner.danger')).toHaveCount(0)
   })
 })
