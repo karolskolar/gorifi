@@ -1245,8 +1245,21 @@ function applyMarkup(price) {
             <template v-if="isBakery && product.price_unit">
               <div class="flex justify-between gap-[10px] items-baseline">
                 <!-- `overflow-wrap:anywhere` for the same reason as the coffee
-                     card's text column below — see the comment there. -->
-                <div class="min-w-0" style="overflow-wrap:anywhere">
+                     card's text column below — see the comment there.
+
+                     ⚠ `line-height:normal` here is the SECOND half of the same
+                     defect the cartbar's `<details>` carries (see the long note
+                     there). The `<h3>` below is `inline` — deliberately, so it
+                     keeps the weight span's baseline — which makes THIS wrapper
+                     establish the line box, and its strut comes from the
+                     wrapper's own inherited `line-height`. Preflight's 1.5 made
+                     that 24px against the canon's `normal`, so every bakery card
+                     rendered 4px tall: header row 20→24, card 181→185 (measured
+                     at 378px against the live prototype). `normal` reproduces
+                     the canon exactly — 20 and 181.
+                     The COFFEE card needs nothing: its `<h3>` is block-level, so
+                     no strut is involved (measured: zero delta on both cards). -->
+                <div class="min-w-0" style="overflow-wrap:anywhere;line-height:normal">
                   <!-- `<h3>`, not the spec block's `span`: 04 §UC-FO-015 pins the
                        product name as `getByRole('heading', …)` for
                        `guest-host-view.spec.js`, and that pin outranks the element
@@ -1595,8 +1608,27 @@ function applyMarkup(price) {
 
       <!-- Cart lines: FLAT (resolved conflict #10). The purpose headers and their
            per-purpose tints died with `groupedCartItems`. `×` is U+00D7, not "x".
-           `.lines` owns the 170px scroll cap and the row rule from the theme. -->
-      <details>
+           `.lines` owns the 170px scroll cap and the row rule from the theme.
+
+           ⚠ `line-height:normal` ON THE `<details>` ITSELF — measured, not
+           cosmetic. RD-FO-5's canon-vs-port pass found the whole `.cartbar` 3px
+           taller than the prototype on EVERY order screen (146→149 open,
+           90→93 locked, both phone and desktop), and this element is the entire
+           cause: `.cartbar details summary` is `display:inline-flex`, so the
+           `<details>` block establishes a line box whose STRUT comes from the
+           details' own inherited `line-height`. The canon computes the UA
+           `normal`; Tailwind preflight's `html{line-height:1.5}` makes it 24px
+           here, and the taller strut adds exactly 3px. A/B'd live: setting
+           `normal` gives details 27→24 and `.cartbar` 149→146 — the canon's
+           numbers exactly.
+
+           It has to be a CALL-SITE inline. A9/A10 in `friends-theme.css` are
+           CLASS lists and this element carries no class, so no addition to them
+           can reach it — the same structural gap as module 03's four plain-text
+           sites (03 §UC-FL-013 closeout), fixed the same way. The bakery card's
+           `<details>` needs nothing: its `summary` is a block-level `.sub`,
+           already in A10, so no strut is involved (measured: 15px either way). -->
+      <details style="line-height:normal">
         <summary>Zobraziť položky v košíku</summary>
         <div class="lines">
           <span v-if="cartItems.length === 0" class="sub">Košík je prázdny</span>

@@ -271,6 +271,15 @@ product purposes.
   **Espresso, Filter, Kapsule first, then the rest in encounter order** — the shipped
   rule, unchanged. Bakery cycles yield e.g. Slané/Sladké the same way. The prototype's
   "Filter Special / Brew Bags / Nespresso" are admin-entered purpose values, not code.
+  ⚠ **"Encounter order" is in practice ALPHABETICAL** (RD-FO-5, measured): the keys
+  come from the products array, and `backend/src/routes/products.js:19` serves it
+  `ORDER BY purpose, name`. So the residual tabs sort by purpose string, not by
+  creation order — Brew Bags before Filter Special, Sladké before Slané. That is
+  deterministic and fine, but it means the strip will **not** reproduce the
+  prototype's demo sequence and no implementation should try to make it: the
+  prototype's order is hardcoded demo data (resolved conflict #2). Same for product
+  order *within* a purpose (`, name`), which is why `08-shot.png`'s first bakery card
+  is not necessarily the port's.
 - `activeTab` initialization keeps the shipped watcher (first available purpose;
   re-picks when the current one disappears).
 - **Single-purpose fallback** (shipped): when `availablePurposes.length === 1`, render
@@ -757,17 +766,33 @@ completed}` — shipped definition, unchanged).
 - Every `NeoStepper` gets `disabled` (`.stepper.disabled` — 0.35 opacity,
   pointer-events none, plus the `disabled` attribute); `setQuantity` guards stay as
   belt-and-braces.
+  ⚠ **The two declarations live on the BUTTONS, not on the `.stepper` container** —
+  `friends-theme.css:96` and prototype `theme.css:99` are both
+  `.stepper.disabled button{opacity:.35;cursor:not-allowed;pointer-events:none}`.
+  The container keeps its defaults, so a test that reads `opacity`/`pointer-events`
+  off `.stepper` passes vacuously. Corrected in RD-FO-5; `order-locked.spec.js`
+  measures the buttons.
 - `.cartbar`: **no `.actions` row at all** (no Zrušiť/Zaplatiť/Aktualizovať — prototype;
   matches shipped `v-if="!isLocked"`), no warning banners; deadline, counts, sum and
   the cart `<details>` remain.
 - Main switch fully functional; badge flips to amber pending semantics (UC-FO-003);
   the Kolegovia panel's locked content is module 05's.
-- `OPEN:` the locked cartbar shows no Zaplatiť, so a friend who submitted but did not
-  pay before the lock loses the payment shortcut on this screen (shipped behavior —
-  the button is inside the `!isLocked` block; the prototype also hides all actions).
-  Guests keep a Zaplatiť in their locked state (README item 9). Proposed default: keep
-  as shipped/prototype (no button); flag for a product decision since it is a
-  money-collection touchpoint.
+- **DECIDED (orchestrator, 2026-08-08) — the locked cartbar keeps NO Zaplatiť.**
+  Was an `OPEN:`; closed as the spec's own proposed default. It matches shipped
+  behaviour (the button lives inside the `!isLocked` block), the prototype (which
+  hides all locked actions) and `order-cartbar.spec.js:489`'s `.actions` count of 0,
+  which RD-FO-3 already pinned — so *changing* it is now the change that would need
+  a re-point, not keeping it.
+
+  ⚠ **RECORDED PRODUCT RESIDUAL, not a closed question.** A friend who submitted but
+  did not pay before the lock loses the payment shortcut on this screen, while a
+  **guest keeps a Zaplatiť in their locked state** (README item 9, and 06's
+  four-state status page). That asymmetry sits on a money-collection touchpoint and
+  should be visible to whoever reads this spec next. It is pinned from both sides in
+  `order-locked.spec.js` — "Zaplatiť" offered on the open cycle with payment settings
+  live, absent the moment the same cycle locks — so re-introducing the button means
+  re-pointing that test *and* `order-cartbar.spec.js:489`, and re-reading the guest
+  side first so the two surfaces are decided together rather than drifting apart.
 
 **Acceptance criteria:** matches `07-shot.png` — lock chip, warn banner, locked ticker;
 steppers visibly dimmed and inert; footer has no buttons; navigating away never
@@ -784,18 +809,27 @@ triggers the leave modal (nothing can be dirty).
 | Hook | Where it must live after the restyle | Asserted by |
 |---|---|---|
 | `data-testid="purpose-tabs"` | the `.cat-tabs` strip | `mobile-no-h-overflow.spec.js` |
-| `role="tab"` on each category tab | `.cat-tabs .tab` spans | same (counts `strip.getByRole('tab')`) |
+| `role="tab"` on each category tab | `.cat-tabs .tab` spans | same (counts `strip.getByRole('tab')`) — **plus 5 sites in `order-shell.spec.js`** (RD-FO-5 audit) |
 | main switch = **first** `role="tablist"` in DOM, zero internal overflow at 320px | `.tabgroup` above `.cat-tabs` | same |
 | `data-testid="main-tab-own"` / `"main-tab-guests"` with `aria-selected` | `.tabgroup .tab` spans | `guest-host-view.spec.js`, `guest-link.spec.js` |
 | `data-testid="guest-tab-badge"` with the count as exact text | the `.tabbadge` | `guest-host-view.spec.js` |
 | product name findable via `getByRole('heading', …)` | the card title — render it as an `<h3 class="display">` (a styled class, not a bare div, so the role survives) | `guest-host-view.spec.js` |
-| `getByText('Celkom:')` visible on both tabs | `.cartbar .sum` | `guest-host-view.spec.js` |
+| `getByText('Celkom:')` visible on both tabs | `.cartbar .sum` | ⚠ **corrected (RD-FO-5):** `guest-host-view.spec.js:912` asserts it on the **colleagues tab only**. The both-tabs property is covered by `order-cartbar.spec.js:272` (pipeline-authored) |
 | `getByText(CYCLE_NAME)` clickable on the portal → `/cycle/` | module 03's card (seam) | `mobile-no-h-overflow.spec.js` |
 
 **Procedure:**
 
-1. e2e suite at baseline **238 passed / 3 skipped** with zero spec edits — every
-   behavior UC-FO-008…013 restates is already asserted somewhere in the suite.
+1. e2e suite green with zero **pre-existing** spec edits — every behavior
+   UC-FO-008…013 restates is already asserted somewhere in the suite.
+   ⚠ This item used to name a fixed baseline of "238 passed / 3 skipped". That number
+   was written before this effort added coverage and was stale by RD-FO-1; it is
+   struck rather than re-frozen, because a literal count in a spec goes out of date on
+   the next row that adds a test. The **rule** it encodes is what holds: pre-existing
+   specs are immutable, and pipeline-authored ones may be re-pointed only under a
+   mandated change or structural unsatisfiability (03 §UC-FL-013 as reformulated).
+   The live count lives in `PROGRESS.md` and in each row's commit message. For the
+   record, the counts across module 04: **353 → 424** entering RD-FO-5, **436** on
+   completion.
 2. Fidelity per 02 UC-DS-014 item 5: Playwright screenshots at 378px vs `03/07/08-shot.png`
    and 1180px vs `17-shot.png`, recorded in the PR. Interactive states (vbox `.sel`,
    dirty warning, details fold, modal stack) checked against the live prototype.
@@ -803,6 +837,111 @@ triggers the leave modal (nothing can be dirty).
 4. This module is the regression net for `NeoStepper` and `snapTab` (02 UC-DS-014
    item 6) — at least one new/extended spec must exercise a stepper tap mutating the
    cart total and a cat-tab tap scrolling the strip horizontally only.
+
+### CLOSEOUT RESULT (RD-FO-5, 2026-08-08) — measured
+
+**1. Suite and spec immutability.** Baseline re-run before any change: **424 passed /
+3 skipped**, exit 0, fresh DB and fresh server. Across the whole of module 04
+(`RD-FL-8b..RD-FO-5`): **six spec files added, zero pre-existing spec files modified**
+— `order-shell`, `order-product-card`, `order-cartbar`, `order-modals`,
+`order-locked`, `order-fidelity`. The re-point escape hatch was never used in this
+module. Final: **436 passed / 3 skipped**.
+
+**2. Fidelity.** Canon = the live prototype over HTTP (`file://` breaks it — Babel
+XHRs the `.jsx`), fonts force-loaded, and the port fed the prototype's **own demo
+data**: the 13 coffee products with their real names/roasts/prices, `markup_ratio 1`
+so prices render identically, a 5 kg stock limit on Burundi Gakenke with 3 750 g eaten
+by a second friend (= the canon's "1.25 kg z 5 kg"), the host's own submitted
+`p1 250g ×1`, three real guest sub-orders with one handed over (= the canon's
+`pendingDelivery` 2), and the four bakery products with their variants. 36 element
+pairs per coffee screen, 34 locked, 27 bakery — four screens, `03/07/08-shot.png` at
+378 px and `17-shot.png` at 1180 px.
+
+**Two geometry drifts found, both owned by this module, both FIXED:**
+
+| element | canon | port was | mechanism | fix |
+|---|---|---|---|---|
+| `.cartbar` (every order screen) | 146 open / 90 locked | 149 / 93 | `.cartbar details summary` is `display:inline-flex`, so the `<details>` owns a line box whose **strut** is the details' own inherited `line-height`; preflight made it 24px against the canon's `normal` | `line-height:normal` on the `<details>` |
+| bakery card header row / card | 20 / 181 | 24 / 185 | the bakery `<h3>` is `inline` (baseline-shared with the weight span), so the **title wrapper** owns the line box — same strut inflation | `line-height:normal` on the wrapper |
+
+Both are the defect class module 03's closeout named and could **only** be fixed at
+the call site: A9/A10 in `friends-theme.css` are CLASS lists and neither element
+carries a class. After the fixes, every remaining difference on all four screens is
+one of: content (the appbar subtitle is name-only by the recorded 2026-08-08 decision;
+the badge shows the repo's count semantics per resolved conflict #1), a spec-decided
+deviation (the `.tabgroup` renders on bakery — resolved conflict #3; `.actions .btn`
+is `flex:1` because 04 §UC-FO-009 forbids overriding the theme, where the prototype
+inlines `flex:0 1 auto` on Zrušiť), `position:relative` + `z-index:1` from
+02 §UC-DS-001's `.app>*`, data-derived tab/product ordering (see UC-FO-004's
+correction), an invisible Tailwind-preflight border default, or a `line-height`
+*property* on a container with no text of its own. **Interactive states** checked
+against the live prototype: `.vbox .sel`, the dirty warning, the `<details>` fold and
+the modal stack all match.
+
+**Two fidelity residuals, deliberately NOT fixed here** (the fix lands in `neo/` or
+`friends-theme.css`, which this row does not own — and both are systemic, so they want
+one decision in 02, not a per-call-site patch in 04):
+
+- **icon-only `.chip` is 29px against the canon's 32.** Preflight ships
+  `svg{display:block;vertical-align:middle}`; the canon leaves the SVG inline and
+  baseline-aligned, which reserves descender space. A/B'd live: restoring **both**
+  properties reproduces 32 exactly (`display:inline` alone does not). Visible on the
+  locked lock chip and on every icon-only chip/button across modules 03–06.
+- **`.stepper button` renders `−`/`+` in Figtree** where the canon leaves the UA's
+  Arial (preflight's `button{font-family:inherit}`). Glyph 10.52×20 canon vs 11×22
+  port inside an identical 38×38 box — **zero geometry effect**, glyph shape only.
+
+**3. Admin invariance.** The whole admin surface (**14 routes**) screenshotted at
+1280×900 full-page against a build of **`7c3f85e`** — the commit before this effort
+began — served by the SAME backend process over the SAME database, with
+`backend/public` swapped between captures so the bundle is the only variable.
+**14/14 byte-identical** (sha256 over the full-page PNGs), and a same-build control
+capture was also 14/14 identical, i.e. the harness is noise-free here rather than
+noise-tolerant. The swap itself is proven live by a positive control: the **friend**
+login screen differs between the two bundles, as it must.
+
+**4. The `NeoStepper` / `snapTab` obligation (item 4) was ALREADY DISCHARGED** by
+earlier rows, and RD-FO-5 deliberately added no duplicate:
+
+| obligation | discharged by | evidence |
+|---|---|---|
+| a stepper tap mutating the **cart total** | `order-product-card.spec.js` — "v-model round-trips, and the value reaches the cart total" (RD-FO-2) | three "+" taps ⇒ `Celkom: 22.50 EUR`; one "−" ⇒ `Celkom: 15.00 EUR` |
+| a cat-tab tap scrolling the **strip only** | `order-shell.spec.js` — the snapTab A/B (RD-FO-1) | `strip.scrollLeft` lands within 24px of the centring offset and `> 0`, `window.scrollY === 0`, with the B half proving `scrollIntoView` *does* move the document |
+
+**Pinned-hook audit** — every row re-verified against the current build. **All 8 hold;
+two table entries were inaccurate and are corrected in the table above/below:**
+
+| # | Hook | Verdict |
+|---|---|---|
+| 1 | `data-testid="purpose-tabs"` | ✅ `FriendOrder.vue:1179`; `mobile-no-h-overflow.spec.js:84` |
+| 2 | `role="tab"` on each category tab | ✅ counted at `mobile-no-h-overflow.spec.js:89`. **UNDER-ATTRIBUTED**: `order-shell.spec.js` (556/624/653/694/721) now reads the same strip, so the hook has five more call sites than the table implies |
+| 3 | main switch = first `role="tablist"`, no internal overflow at 320px | ✅ `mobile-no-h-overflow.spec.js:109` (`getByRole('tablist').first()`); the switch is still the first tablist in DOM order and `order-shell.spec.js:706` measures its 320px headroom with a real badge on screen |
+| 4 | `main-tab-own` / `main-tab-guests` + `aria-selected` | ✅ `guest-host-view.spec.js:887-926`, `guest-link.spec.js:263`. Also `order-cartbar.spec.js:279`, `order-shell.spec.js:456-506` |
+| 5 | `guest-tab-badge`, count as exact text | ✅ `guest-host-view.spec.js:925` (`toHaveText('1')`), `:941` (absent at 0) |
+| 6 | product name via `getByRole('heading', …)` | ✅ both branches render `<h3 class="display">` (`:1258` bakery, `:1342` coffee); `guest-host-view.spec.js:895/909/915`. Note the bakery one is additionally `inline` — the role is unaffected, the line-box consequence is fixed above |
+| 7 | `getByText('Celkom:')` visible **on both tabs** | ⚠ **OVERSTATED.** The named spec asserts it on the **colleagues tab only** (`guest-host-view.spec.js:912`, and with `.first()`, though exactly one `Celkom:` ships). The both-tabs property is genuinely covered — by `order-cartbar.spec.js:272`, "the bar is the SAME element on both tabs", which also proves the heights match — but that is a pipeline-authored spec, not the pre-existing hook the table cites |
+| 8 | `getByText(CYCLE_NAME)` clickable on the portal → `/cycle/` | ✅ `mobile-no-h-overflow.spec.js:73`; module 03's seam, unchanged |
+
+**Locked-state composition (UC-FO-014) — audited, one gap closed.** Chrome, banner,
+cartbar, badge flip and main switch were all already correct and already pinned
+(`order-shell.spec.js:238/388/462`, `order-cartbar.spec.js:479`,
+`order-modals.spec.js:1084`, `order-product-card.spec.js:827`); no view change was
+needed for any of them. What was **not** covered, and `order-locked.spec.js` now
+covers: *every* stepper rather than the first (six across three coffee cards and both
+category tabs, plus the bakery branch, measured on the `disabled` attribute **and**
+the theme's 0.35/`pointer-events:none` on the buttons); the warn banner as the **only**
+banner by count, with an open-cycle control that shows the green one; the leave modal
+never firing under a lock, on **both** arms, with an open-cycle control proving the
+locator and flow are sound; and the Zaplatiť residual pinned from both sides. Four
+mutations were run against it — un-disabling the bakery stepper, arming
+`hasUnsavedChanges` when locked, restoring the `.actions` row, and letting the green
+banner co-render — and each failed exactly the tests that own it (1, 3, 3 and 2
+respectively). The Kolegovia panel's locked **content** was not touched: it is
+RD-KG-1's, and only the shell and the badge flip were verified here.
+
+**320 px:** unchanged and still green — `order-shell.spec.js:706` (locked, badge on
+screen), `order-product-card.spec.js`'s 364px variant-grid floor and unbreakable-name
+case, and `mobile-no-h-overflow.spec.js` (pre-existing, unmodified).
 
 ---
 
@@ -814,5 +953,34 @@ triggers the leave modal (nothing can be dirty).
 | `frontend/src/lib/snap-tab.js`, `components/neo/*` | consumed, not modified (02) |
 | `e2e/tests/*` | no edits to existing specs; additions per UC-FO-015 item 4 |
 
+**Shipped:** `order-shell.spec.js` (RD-FO-1), `order-product-card.spec.js` (RD-FO-2),
+`order-cartbar.spec.js` (RD-FO-3), `order-modals.spec.js` (RD-FO-4),
+`order-locked.spec.js` + `order-fidelity.spec.js` (RD-FO-5). Six added, zero
+pre-existing edited.
+
 Modules NOT touched here: `GuestSubOrders.vue`, `GuestShareDialog.vue` (→ 05),
 `PaymentModal.vue` (→ 06), portal files (→ 03).
+
+**What modules 05 and 06 inherit from this closeout:**
+
+1. **The call-site `line-height:normal` rule.** A9/A10 are class lists; any element
+   that owns a line box and carries no class is invisible to them. Two such sites
+   shipped here. The tell is an **inline-level child inside an unclassed block** — a
+   `display:inline-flex` `summary`, an `inline` heading. `GuestSubOrders.vue` and
+   `GuestProductGrid.vue` reuse `.suborder`, `.vbox` and `.stepper`; check their
+   wrappers the same way rather than trusting the class list.
+2. **Two open design-system residuals, both 02's** — the icon-only `.chip`'s 3px and
+   `.stepper button`'s font face (measurements and mechanisms above). 06 restyles the
+   guest surface with the same primitives, so it will meet both; do not fix them
+   locally, and do not re-diagnose them from scratch.
+3. **The Zaplatiť asymmetry is live.** The friend loses the payment shortcut when a
+   cycle locks; the guest keeps one. 06 owns the guest half — decide it against this
+   record, not independently.
+4. **`.stepper.disabled` styles the BUTTONS.** Any locked/read-only state 05 or 06
+   ships must assert there, or the assertion is vacuous.
+5. **Tab and product order is `ORDER BY purpose, name`,** i.e. alphabetical — not the
+   prototype's demo sequence. A screen-by-screen fidelity comparison must select the
+   canon's tab and product explicitly or it will compare two different cards.
+6. **The admin-invariance harness recipe** that produced 14/14: same process, same DB,
+   swap only `backend/public`, and always run the friend-surface positive control —
+   without it, "identical" cannot be distinguished from "the swap never happened".
