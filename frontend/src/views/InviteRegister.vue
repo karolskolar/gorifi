@@ -59,8 +59,28 @@ async function submit() {
     <div class="w-full max-w-md">
       <!-- Logo -->
       <div class="flex justify-center mb-6">
+        <!--
+          SELF-HOSTED (RD-DS-6). This used to be
+          https://www.goriffee.com/wp-content/uploads/2024/02/01-GORIFFEE-Logo-RGB-400x110.png,
+          which was broken in production TWICE OVER: the prod CSP is
+          `img-src 'self' data:`, so the request was blocked outright — and the
+          upstream file has since been deleted (that URL 404s today), so it would
+          not have rendered even with the CSP relaxed.
+
+          ⚠ The original bytes are unrecoverable, so this is Goriffee's CURRENT
+          official mark (goriffee.com's own /2025/10/gorifee-logo.svg), copied
+          unmodified. Aspect ratio is effectively unchanged (567:155 vs the old
+          400:110 — 3.658 vs 3.636), so `h-12` still renders ~176x48. Its colour
+          treatment differs: the current lockup is a white wordmark on a black
+          plate, where the retired PNG was a full-colour mark. NEEDS DESIGN
+          SIGN-OFF — see the RD-DS-6 report.
+
+          Do NOT set width/height attributes here: `h-12` sets height only, so a
+          width attribute would stretch the box and `object-contain` would
+          letterbox inside it.
+        -->
         <img
-          src="https://www.goriffee.com/wp-content/uploads/2024/02/01-GORIFFEE-Logo-RGB-400x110.png"
+          src="/goriffee-logo.svg"
           alt="Goriffee"
           class="h-12 object-contain"
         />
