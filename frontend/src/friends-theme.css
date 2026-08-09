@@ -219,3 +219,29 @@
 :where(.app, .modal-layer) .divider{border:none;border-top:2px solid rgba(10,10,10,0.14);margin:0}
 :where(.app, .modal-layer) .stack{display:flex;flex-direction:column}
 :where(.app, .modal-layer) .hstack{display:flex;align-items:center}
+
+/* ---------- A9: counter Tailwind preflight on .inp / .btn (NOT in the canon) ----------
+   The ONLY addition to the ported stylesheet (UC-DS-001 adaptation A9); everything
+   above is the canon verbatim modulo A1–A8.
+
+   Tailwind preflight ships `button,input,optgroup,select,textarea{line-height:inherit}`
+   plus `html{line-height:1.5}`. The prototype has neither, so its controls compute the
+   UA default `line-height:normal` (~1.2). The canon's 7 `line-height` declarations
+   govern `.appbar .titles`, `.appbar .titles .t`, `.h-screen`, `.stepper button`,
+   `.cartbar .sum`, `.pimg .lbl` and `.modal .m-title` — none of them `.inp` or `.btn`,
+   so the canon is SILENT here and `normal` is what it renders. Measured in the live
+   prototype over HTTP: every `.inp` 48px, every `.btn` 44px, `.btn.sm` 38px, all at
+   `line-height: normal`.
+
+   Inherited 1.5 inflated both by exactly the line-box delta:
+     .inp = 22.5 (1.5 × 15px) + 24 padding + 6 border = 52.5   → at normal: 48
+     .btn = 21   (1.5 × 14px) + 20 padding + 6 border = 47     → at normal: 44
+   Restoring `normal` reproduces the canon's numbers exactly.
+
+   Scoped to the two classes rather than to `button,input,…` inside `.app` on purpose:
+   a broad element rule would also restyle the shadcn children still rendering inside a
+   half-migrated `.app` (UC-DS-002). Zero-specificity `:where()` keeps the (0,1,0)
+   specificity the classes already have, so `.btn.sm` and every other compound variant
+   keep their own cascade untouched. */
+:where(.app, .modal-layer) .inp,
+:where(.app, .modal-layer) .btn{line-height:normal}
