@@ -256,6 +256,26 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   bug** against the fixture (a Google Fonts `<link>` must raise a `style-src-elem`
   violation), so a green run means "self-hosting works", not "the header never
   arrived". The CSP describe self-skips when `frontend/dist` is absent.
+- `tests/portal-transactions-modal.spec.js` — the "Všetky transakcie" dialog, which
+  had **no coverage of its own** before this file (the one shipped assertion that
+  touched it, `portal-appbar.spec.js:403`, opens it and checks the title is visible).
+  It also has **no canon screen** — `portal.jsx:114` has the button and nothing
+  behind it — so the file pins the extrapolation: the `NeoModal` shell (teleported
+  out of `.app`, `wide`, the × named "Zatvoriť dialóg" so exactly one control answers
+  to "Zavrieť", and closing UNMOUNTS so the scrim stops eating clicks), one row per
+  transaction with the `sk-SK` date + type label + `cycle_name || note` fallback, the
+  `+`/`−` sign rule with `.neg`/danger for a charge and `--ok-deep` for a credit, the
+  three-state balance in the subtitle (`.neg.pill` / `.zero` / green `.mono`), and the
+  loading / empty / error states — including that a failed load must never read as
+  "you have no transactions". ⚠ The 320px test measures the **row and the
+  `.modal-scrim`**, not the document: `.modal-scrim` is `overflow-y:auto`, so CSS
+  computes its `overflow-x` to `auto` as well and it silently absorbs any spill —
+  with `overflow-wrap:anywhere` deleted the document reads a clean 320/320 while the
+  row paints 342px inside a 206px column and the modal scrolls sideways by 79px. Any
+  future overflow test **inside a modal** has the same trap. Closes with admin
+  invariance: `BalanceBadge.vue` (shared with five admin views) is unchanged against
+  `main` — a `git diff --stat` test that self-skips off a git checkout — and
+  `/admin/friends`, which renders that badge, carries no theme/neo class.
 - `seed.mjs` — seeds a backend with an admin password, legacy friends password,
   one cycle, one friend (idempotent; NOT for production). Also fills the payment
   settings (IBAN / Revolut username) **only if they are empty**, because guest

@@ -51,11 +51,10 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api, { getFriendsAuthInfo } from '../api'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Button } from '@/components/ui/button'
-import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+// ⚠ No `@/components/ui/*` import remains in this file. The credential-setup
+// dialog was the last radix consumer on the authenticated friend surface; it now
+// composes on `NeoModal`, so `Input`/`Label`/`Button`/`Alert`/`Dialog*` are gone.
+// UC-DS-004 rule 4 keeps radix ADMIN-only — do not re-introduce one here.
 import { fmtEur } from '@/lib/money'
 import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
@@ -1295,72 +1294,123 @@ defineExpose({ openProfileModal, openInviteModal })
     </template>
   </NeoModal>
 
-  <!-- Credential Setup Modal -->
-  <Dialog :open="showCredentialSetup" @update:open="showCredentialSetup = $event">
-    <DialogContent>
-      <DialogHeader>
-        <DialogTitle>Nastavte si osobné prihlásenie</DialogTitle>
-      </DialogHeader>
-      <div class="space-y-4 py-4">
-        <p class="text-sm text-muted-foreground">
-          Nastavte si vlastné užívateľské meno a heslo pre bezpečnejšie prihlasovanie.
-        </p>
+  <!-- Credential setup (transition mode) — the LAST radix dialog on the friend
+       surface, now on the house shell. This file imports nothing from
+       `@/components/ui/*` any more.
 
-        <Alert v-if="setupError" variant="destructive">
-          <AlertDescription>{{ setupError }}</AlertDescription>
-        </Alert>
+       ⚠ NO CANON SCREEN EXISTS for it: the prototype has no transition mode.
+       Everything below is the profile modal's vocabulary
+       (`.banner danger slim` + `.dot`, `.field-lbl` + `.inp` + `.field-help`,
+       `.btn` / `.btn accent` in `#footer`) applied 1:1 — no new theme class, and
+       `friends-theme.css` is untouched.
 
-        <div class="space-y-2">
-          <Label>Užívateľské meno</Label>
-          <Input
-            v-model="setupUsername"
-            type="text"
-            placeholder="napr. janko_hrasko"
-            autocapitalize="none"
-            autocorrect="off"
-            :disabled="setupSaving"
-            @input="checkUsernameAvailability"
-          />
-          <p v-if="usernameChecking" class="text-xs text-muted-foreground">Overujem dostupnosť...</p>
-          <p v-else-if="usernameAvailable === true" class="text-xs text-green-600">Užívateľské meno je voľné</p>
-          <p v-else-if="usernameAvailable === false" class="text-xs text-red-600">Toto meno je už obsadené</p>
-          <p class="text-xs text-muted-foreground">Len malé písmená, čísla, bodka (.), podtržník (_) a pomlčka (-). Min. 3 znaky.</p>
-        </div>
+       ⚠ BEHAVIOUR IS FROZEN. Validation, the debounced availability check and
+       its three messages, the disabled predicate, `@keyup.enter` and all three
+       button labels are byte-identical to the radix version. Two SECURITY specs
+       drive this dialog — `portal-profile-modal.spec.js:772` ("must not open
+       pre-filled with the previous friend's credentials") and
+       `portal-session-boundary.spec.js:430` ("the AUTO-RAISED credential-setup
+       dialog is part of that surface") — because it AUTO-RAISES for any
+       transition-mode friend without credentials, so a leaked field shows one
+       friend another's plaintext password.
 
-        <div class="space-y-2">
-          <Label>Heslo</Label>
-          <Input
-            v-model="setupPassword"
-            type="password"
-            placeholder="Minimálne 4 znaky"
-            :disabled="setupSaving"
-          />
-        </div>
+       ⚠ `title-heading` is not cosmetic: those specs resolve this dialog with
+       `getByRole('heading', { name: 'Nastavte si osobné prihlásenie' })`, and
+       `NeoModal`'s `.m-title` is a `<div>` by default. See the prop's note in
+       `NeoModal.vue`.
 
-        <div class="space-y-2">
-          <Label>Potvrdiť heslo</Label>
-          <Input
-            v-model="setupPasswordConfirm"
-            type="password"
-            placeholder="Zopakujte heslo"
-            :disabled="setupSaving"
-            @keyup.enter="saveCredentials()"
-          />
-        </div>
-      </div>
-      <DialogFooter>
-        <Button variant="outline" @click="showCredentialSetup = false" :disabled="setupSaving">
-          Neskôr
-        </Button>
-        <Button
-          @click="saveCredentials()"
-          :disabled="setupSaving || !setupUsername || !setupPassword || !setupPasswordConfirm || usernameAvailable === false"
-        >
-          {{ setupSaving ? 'Ukladám...' : 'Nastaviť' }}
-        </Button>
-      </DialogFooter>
-    </DialogContent>
-  </Dialog>
+       ⚠ `v-if`, not an `:open` prop — the shell has none, and an always-mounted
+       modal would park a second `role="dialog"` (plus a click-swallowing scrim)
+       on every portal screen. Esc and × both route to `@close`, which is what
+       keeps the boundary spec's "Esc — the escape hatch the disabled footer does
+       not close off" path alive while `setupSaving` is true.
+
+       ⚠ The password placeholder says "Minimálne 4 znaky" while
+       `saveCredentials()` rejects anything under 8. That is a shipped
+       inconsistency the boundary spec explicitly leans on ("not this row's to
+       fix"); the string stays verbatim. -->
+  <NeoModal
+    v-if="showCredentialSetup"
+    title="Nastavte si osobné prihlásenie"
+    title-heading
+    @close="showCredentialSetup = false"
+  >
+    <div class="sub">
+      Nastavte si vlastné užívateľské meno a heslo pre bezpečnejšie prihlasovanie.
+    </div>
+
+    <div v-if="setupError" class="banner danger slim">
+      <span class="dot"></span>
+      <div style="min-width:0">{{ setupError }}</div>
+    </div>
+
+    <div>
+      <label class="field-lbl" for="pp-setup-username">Užívateľské meno</label>
+      <input
+        id="pp-setup-username"
+        v-model="setupUsername"
+        class="inp"
+        type="text"
+        placeholder="napr. janko_hrasko"
+        autocapitalize="none"
+        autocorrect="off"
+        :disabled="setupSaving"
+        @input="checkUsernameAvailability"
+      />
+      <!-- The live-availability triple. `.field-help` is A10-covered, so the two
+           coloured variants need no call-site `line-height`; the colours are the
+           theme tokens `FriendBalanceCard` already uses for money-good/money-bad,
+           not Tailwind's palette. -->
+      <div v-if="usernameChecking" class="field-help">Overujem dostupnosť...</div>
+      <div v-else-if="usernameAvailable === true" class="field-help" style="color:var(--ok-deep);font-weight:700">Užívateľské meno je voľné</div>
+      <div v-else-if="usernameAvailable === false" class="field-help" style="color:var(--danger);font-weight:700">Toto meno je už obsadené</div>
+      <div class="field-help">Len malé písmená, čísla, bodka (.), podtržník (_) a pomlčka (-). Min. 3 znaky.</div>
+    </div>
+
+    <div>
+      <label class="field-lbl" for="pp-setup-password">Heslo</label>
+      <input
+        id="pp-setup-password"
+        v-model="setupPassword"
+        class="inp"
+        type="password"
+        placeholder="Minimálne 4 znaky"
+        :disabled="setupSaving"
+      />
+    </div>
+
+    <div>
+      <label class="field-lbl" for="pp-setup-password-confirm">Potvrdiť heslo</label>
+      <input
+        id="pp-setup-password-confirm"
+        v-model="setupPasswordConfirm"
+        class="inp"
+        type="password"
+        placeholder="Zopakujte heslo"
+        :disabled="setupSaving"
+        @keyup.enter="saveCredentials()"
+      />
+    </div>
+
+    <template #footer>
+      <button
+        type="button"
+        class="btn"
+        :disabled="setupSaving"
+        @click="showCredentialSetup = false"
+      >
+        Neskôr
+      </button>
+      <button
+        type="button"
+        class="btn accent"
+        :disabled="setupSaving || !setupUsername || !setupPassword || !setupPasswordConfirm || usernameAvailable === false"
+        @click="saveCredentials()"
+      >
+        {{ setupSaving ? 'Ukladám...' : 'Nastaviť' }}
+      </button>
+    </template>
+  </NeoModal>
 
   <!-- Invite modal (UC-FL-011) — `portal.jsx:162-167`. The title keeps its
        familiar "Pozvi priateľa" (resolved conflict #5); the body copy is
