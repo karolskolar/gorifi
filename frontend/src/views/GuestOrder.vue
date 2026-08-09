@@ -1,14 +1,12 @@
 <script setup>
 import { ref, computed, onMounted, watchEffect } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
 import { Card, CardContent } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import GuestBrandHeader from '@/components/GuestBrandHeader.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
+import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
 import PaymentModal from '@/components/PaymentModal.vue'
 import GuestProductGrid from '@/components/GuestProductGrid.vue'
 import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
@@ -44,14 +42,15 @@ import {
 // only when non-empty, `itemsPayload(cartItems)`. The GSO-T3 input bounds are
 // mirrored as `maxlength` on the three inputs and must stay.
 //
-// ⚠ TWO SCREENS ON THIS ROUTE ARE STILL OLD-SKIN, deliberately: the confirmation
-// (RD-GX-2, 06 §UC-GX-004 — its payment-reference row and status-URL input are
-// pinned verbatim by `guest-order.spec.js:875–893`, which only RD-GX-2 may
-// re-point) and the dead-link card (RD-GX-4, §UC-GX-010). They now sit inside the
-// `.app` root, so they inherit the cream background and the halftone — an accepted
-// interim, exactly the half-migrated `.app` 02 §UC-DS-002 provides for.
+// ⚠ ONE SCREEN ON THIS ROUTE IS STILL OLD-SKIN, deliberately: the dead-link card
+// (RD-GX-4, §UC-GX-010). It sits inside the `.app` root, so it inherits the cream
+// background and the halftone — an accepted interim, exactly the half-migrated
+// `.app` 02 §UC-DS-002 provides for. The confirmation (g-confirm) was restyled by
+// RD-GX-2 and no longer holds a payment-reference row: the reference moved into
+// the Platba modal (§UC-GX-005, resolved conflict #4).
 
 const route = useRoute()
+const router = useRouter()
 const token = computed(() => route.params.token)
 
 const GUEST_STORAGE_KEY = 'gorifi_guest_orders'
@@ -196,35 +195,17 @@ function rememberStatusUrl(result, statusUrl) {
   }
 }
 
-// Which button most recently copied: 'reference' | 'status-url' | ''. A single
-// ref rather than passing a ref in from the template — template refs are
-// unwrapped, so a `flag.value = true` on the argument would throw on a plain
-// boolean and the "Skopírované" label would never appear.
-const copiedTarget = ref('')
-
-async function copyText(text, target) {
-  if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch (e) {
-    // Fallback for browsers without the async clipboard API (mirrors
-    // GuestShareDialog.copyLink) — a guest on an old mobile browser still needs
-    // the status URL.
-    try {
-      const input = document.createElement('input')
-      input.value = text
-      document.body.appendChild(input)
-      input.select()
-      document.execCommand('copy')
-      document.body.removeChild(input)
-    } catch (fallbackError) {
-      return // Nothing worked; the value stays selectable on screen.
-    }
-  }
-  copiedTarget.value = target
-  setTimeout(() => {
-    if (copiedTarget.value === target) copiedTarget.value = ''
-  }, 2000)
+// §UC-GX-004 item 6 — a NEW affordance from the prototype: pure navigation to the
+// personal status page, no API call. `status_path` comes straight off the submit
+// response (`/g/:token/o/:orderToken`), so this never composes a URL itself.
+//
+// The two copy controls this screen used to own are gone: `NeoCopyRow`
+// (02 §UC-DS-011) owns the clipboard write, its own 2 s "Skopírované!" window and
+// the missing-clipboard fallback, per instance. The old shared `copiedTarget` ref
+// was a single page-level flag for two buttons — the exact shape `NeoCopyRow`
+// replaces with per-instance state.
+function goToStatus() {
+  if (confirmation.value?.status_path) router.push(confirmation.value.status_path)
 }
 </script>
 
@@ -265,87 +246,109 @@ async function copyText(text, target) {
       </Card>
     </div>
 
-    <!-- Confirmation (§UC-GSO-003).
-         ⚠ OLD SKIN ON PURPOSE — restyled by RD-GX-2 (§UC-GX-004). Its payment
-         reference, its `<input>`-based status URL and its two "Kopírovať" buttons
-         are pinned VERBATIM by `guest-order.spec.js:875–893`, and those three
-         re-points are RD-GX-2's sanctioned e2e edits (§UC-GX-011 items 2–4). This
-         row spends zero of them, so this block must not move. -->
-    <div v-else-if="confirmation" class="max-w-md mx-auto px-4 py-8">
-      <Card data-testid="guest-confirmation">
-        <CardContent class="p-6 space-y-4">
-          <div class="text-center space-y-1">
-            <div class="text-4xl">✅</div>
-            <h1 class="text-xl font-semibold">Objednávka je odoslaná</h1>
-            <p class="text-sm text-muted-foreground">
-              {{ cycle?.name }} · organizuje {{ host?.first_name }}
-            </p>
+    <!-- ======================= g-confirm (§UC-GX-004) =======================
+         The post-submit confirmation. NARROWER than g-order on purpose: 520px,
+         not 760 — there is no product grid here, and the prototype `GConfirm`
+         sets its own column.
+
+         REMOVED from the shipped screen (resolved conflict #4 + prototype): the
+         on-card payment-reference block — the reference now lives ONLY in the
+         Platba modal (§UC-GX-005) — the "✅" emoji header, and the "Tovar vám
+         odovzdá {host}." footer line, which the checkout subtitle already said. -->
+    <template v-else-if="confirmation">
+      <GuestBrandHeader subtitle="Objednávka odoslaná" />
+
+      <div
+        class="mx-auto w-full max-w-[520px] px-4 sm:px-7 py-4 sm:py-7 flex flex-col gap-4"
+        data-testid="guest-confirmation"
+      >
+        <!-- `line-height:normal` on this unclassed wrapper. An unclassed block
+             inherits preflight's `1.5` with nothing to override it, and A9/A10 are
+             CLASS lists that cannot reach an element carrying no class — so the fix
+             belongs at the call site, never as a widening of A10 (friends-theme.css,
+             A10 block). MEASURED HERE AS A ZERO DELTA (133.59 px either way): the
+             `.badge`'s own box is taller than the strut and `.h-screen`/`.sub`
+             declare their own line-height, so nothing moves today. Kept on the same
+             basis RD-FL-8b kept the remember-me label — the pattern must be safe to
+             copy, and the next line added to this block would not be. -->
+        <div style="text-align:center;margin-top:6px;line-height:normal">
+          <span class="badge ok-solid" style="font-size:13px;padding:6px 14px;transform:rotate(-2deg)">✔ Odoslané</span>
+          <!-- `.hl` = the magenta highlight with the 4px ink underline shadow.
+               ⚠ ONE LINE: a newline before `<span>` is a whitespace node Vue's
+               `condense` mode DELETES, silently gluing "je" to "odoslaná". -->
+          <h1 class="h-screen text-[34px] sm:text-[40px]" style="margin-top:12px">Objednávka je <span class="hl">odoslaná</span></h1>
+          <div class="sub" style="margin-top:10px">{{ cycle?.name }} · organizuje {{ host?.first_name }}</div>
+        </div>
+
+        <!-- Sum card. `.field-lbl` carries its own 8px bottom margin, which the
+             prototype zeroes here because the row is a flex baseline pair. -->
+        <div class="card" style="padding:16px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+            <span class="field-lbl" style="margin:0">Suma na úhradu</span>
+            <span class="display" style="font-size:24px">{{ fmtEur(confirmation.payment.amount) }}</span>
           </div>
-
-          <div class="rounded-lg border p-3 space-y-1 text-sm">
-            <div class="flex justify-between">
-              <span class="text-muted-foreground">Suma na úhradu</span>
-              <span class="font-semibold">{{ fmtEur(confirmation.payment.amount) }}</span>
-            </div>
-            <div v-for="item in confirmation.items" :key="item.id" class="flex justify-between text-xs text-muted-foreground">
-              <span>{{ item.product_name }} ({{ variantText(item) }}) x{{ item.quantity }}</span>
-              <span>{{ fmtEur(item.price * item.quantity) }}</span>
-            </div>
-          </div>
-
-          <!-- Payment reference. Revolut cannot pre-fill a note, so the guest has
-               to paste it there themselves. -->
-          <div class="space-y-1">
-            <Label class="text-xs text-muted-foreground">Poznámka k platbe (uveďte ju pri platbe)</Label>
-            <div class="flex gap-2">
-              <div
-                data-testid="payment-reference"
-                class="flex-1 rounded-md border bg-muted/40 px-3 py-2 text-sm font-mono break-all"
-              >{{ confirmation.payment.reference }}</div>
-              <Button variant="outline" size="sm" data-testid="copy-reference" @click="copyText(confirmation.payment.reference, 'reference')">
-                {{ copiedTarget === 'reference' ? 'Skopírované' : 'Kopírovať' }}
-              </Button>
+          <hr class="divider" style="margin:12px 0" />
+          <!-- Item lines are BARE `toFixed(2)` — no " EUR" (prototype): the card's
+               own heading already states the unit, and the lines are a breakdown,
+               not a set of prices. `×` is U+00D7 MULTIPLICATION SIGN, not "x".
+               ⚠ `line-height:normal` here is LOAD-BEARING, unlike the header
+               wrapper's: the left `<span>` carries no class, so preflight's 1.5
+               reaches it and its `.mono` sibling (covered by A10) does not match.
+               MEASURED on this build: 16 px per line at `normal`, 20.25 px at 1.5 —
+               +4.25 px on every item, which is exactly the class of drift the A10
+               block exists to undo. -->
+          <div style="display:flex;flex-direction:column;gap:5px;font-size:13.5px;color:var(--ink-dim);line-height:normal">
+            <div
+              v-for="item in confirmation.items"
+              :key="item.id"
+              style="display:flex;justify-content:space-between;gap:10px"
+            >
+              <span>{{ item.product_name }} ({{ variantText(item) }}) ×{{ item.quantity }}</span>
+              <span class="mono">{{ (item.price * item.quantity).toFixed(2) }}</span>
             </div>
           </div>
+        </div>
 
-          <Button
-            v-if="confirmation.payment.iban || confirmation.payment.revolut_username"
-            class="w-full"
-            @click="showPaymentModal = true"
-          >
-            Zaplatiť
-          </Button>
+        <!-- Shipped gate kept (§UC-GX-004 item 3): with neither IBAN nor Revolut
+             there is nothing for the modal to open onto — the reference alone is a
+             transfer note with nowhere to send it. -->
+        <button
+          v-if="confirmation.payment.iban || confirmation.payment.revolut_username"
+          type="button"
+          class="btn ok block"
+          @click="showPaymentModal = true"
+        >Zaplatiť</button>
 
-          <!-- Personal status URL (page served by GSO-T4) -->
-          <div class="space-y-1">
-            <Label class="text-xs text-muted-foreground">Odkaz na vašu objednávku — uložte si ho</Label>
-            <div class="flex gap-2">
-              <Input :model-value="confirmation.status_url" readonly data-testid="guest-status-url" class="text-xs" />
-              <Button variant="outline" size="sm" data-testid="copy-status-url" @click="copyText(confirmation.status_url, 'status-url')">
-                {{ copiedTarget === 'status-url' ? 'Skopírované' : 'Kopírovať' }}
-              </Button>
-            </div>
-            <p class="text-xs text-muted-foreground">
-              Na tomto odkaze uvidíte stav objednávky. Odkaz je uložený aj v tomto prehliadači.
-            </p>
-          </div>
+        <!-- Personal status URL (page served by GSO-T4). `NeoCopyRow` owns the
+             clipboard write and the 2 s "Skopírované!" flip; the testid falls
+             through to its `.copyrow` root, so the value is read as text and the
+             button as `getByTestId('guest-status-url').getByRole('button')`
+             (§UC-GX-011 items 3/4). The helper line is prototype-silent and
+             RETAINED — it is the only place the localStorage behaviour is
+             explained. -->
+        <div>
+          <label class="field-lbl">Odkaz na vašu objednávku — uložte si ho</label>
+          <NeoCopyRow :value="confirmation.status_url" data-testid="guest-status-url" />
+          <p class="field-help">Na tomto odkaze uvidíte stav objednávky. Odkaz je uložený aj v tomto prehliadači.</p>
+        </div>
 
-          <p class="text-xs text-muted-foreground text-center">
-            Tovar vám odovzdá {{ host?.first_name }}.
-          </p>
+        <!-- Lead capture (§UC-GSO-015 / §UC-GX-009 — restyle is RD-GX-4's). Kept
+             late on the screen, on purpose: the payment information above it is
+             why the guest is here. -->
+        <GuestInviteRequest
+          :token="token"
+          :order-token="confirmation.order.order_token"
+          :name="confirmation.order.guest_name || ''"
+          :phone="confirmation.order.guest_phone || ''"
+          :email="confirmation.order.guest_email || ''"
+        />
 
-          <!-- Lead capture (§UC-GSO-015). LAST on the screen, on purpose: the payment
-               information above it is why the guest is here. -->
-          <GuestInviteRequest
-            :token="token"
-            :order-token="confirmation.order.order_token"
-            :name="confirmation.order.guest_name || ''"
-            :phone="confirmation.order.guest_phone || ''"
-            :email="confirmation.order.guest_email || ''"
-          />
-        </CardContent>
-      </Card>
-    </div>
+        <button type="button" class="btn ghost sm" style="align-self:center" @click="goToStatus">
+          Zobraziť stav objednávky
+          <NeoIcon name="chev" />
+        </button>
+      </div>
+    </template>
 
     <!-- ======================= g-order (§UC-GX-001..003) ======================= -->
     <template v-else>
@@ -542,8 +545,11 @@ async function copyText(text, target) {
       </template>
     </NeoModal>
 
-    <!-- Same payment modal friends use: Revolut link + Pay by Square QR.
-         ⚠ Its internals are RD-GX-2's (§UC-GX-005) — untouched here. -->
+    <!-- Same payment modal friends use (§UC-GX-005): Revolut link, the real
+         Pay-by-Square QR, and — since RD-GX-2 — the payment-reference copy row,
+         which is now the ONLY place the reference is shown. It mounts its own
+         `NeoModal` under `v-if="open"`, so nothing of it is in the DOM while
+         `showPaymentModal` is false. -->
     <PaymentModal
       v-if="confirmation"
       :open="showPaymentModal"
