@@ -319,7 +319,9 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
     const who = await makeFriend('save')
     await signIn(page, who)
     await openPortal(page)
-    await expect(page.locator('.appbar .titles .t')).toHaveText(who.name)
+    // ⚠ The NAME lives in `.s` since 2026-08-09; `.t` is the constant Podpultovka
+    // wordmark. This test is about the name updating live, so it follows the name.
+    await expect(page.locator('.appbar .titles .s')).toHaveText(who.name)
 
     const dialog = await openProfile(page)
     const renamed = `${who.name} R`
@@ -329,7 +331,9 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
     // No reload anywhere: the appbar name is RD-FL-3's `getCurrentFriendName()`
     // reading `currentFriend`, which `saveProfile` patches in place.
     await expect(page.getByRole('dialog')).toHaveCount(0)
-    await expect(page.locator('.appbar .titles .t')).toHaveText(renamed)
+    await expect(page.locator('.appbar .titles .s')).toHaveText(renamed)
+    // The wordmark is not data and must NOT follow the rename.
+    await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
 
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('gorifi_friend_auth')))
     expect(stored.friendName).toBe(renamed)

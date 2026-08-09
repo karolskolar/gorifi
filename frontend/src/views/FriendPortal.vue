@@ -510,6 +510,13 @@ function openInvite() {
 // Both identity reads fall back to the restored localStorage payload, because a
 // token restore knows the stored name before `hydrateCurrentFriend` lands.
 const currentFriendName = computed(() => currentFriend.value?.name || savedAuth.value?.friendName || '')
+// ⚠ NOT rendered in the appbar any more (product decision, 2026-08-09). The
+// authenticated titles used to be `<name> / <uid>`; they are now the Podpultovka
+// wordmark with the name demoted to `.s`, so the appbar reads as the BRAND and no
+// user identifier is on screen. The wordmark is therefore constant across both auth
+// states and only `.s` varies — do not reintroduce a per-state `.t`.
+// The computed stays because `FriendPortalSession` still passes the uid down to the
+// profile/invite modal, which is where a friend is meant to read their own code.
 const currentFriendUid = computed(() => currentFriend.value?.uid || savedAuth.value?.friendUid || '')
 
 // Computed: friends to show in dropdown (exclude those with credentials in transition mode)
@@ -557,14 +564,8 @@ const dropdownFriends = computed(() => {
       @titles-click="openProfile"
     >
       <template #titles>
-        <template v-if="authState === 'authenticated'">
-          <span class="t">{{ currentFriendName }}</span>
-          <span class="s">{{ currentFriendUid }}</span>
-        </template>
-        <template v-else>
-          <span class="t">Pod<span style="color:var(--accent)">pult</span>ovka</span>
-          <span class="s">Členský vstup</span>
-        </template>
+        <span class="t">Pod<span style="color:var(--accent)">pult</span>ovka</span>
+        <span class="s">{{ authState === 'authenticated' ? currentFriendName : 'Členský vstup' }}</span>
       </template>
       <template #after-titles>
         <span
