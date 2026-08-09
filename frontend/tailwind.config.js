@@ -5,6 +5,29 @@ export default {
     './index.html',
     './src/**/*.{vue,js,ts,jsx,tsx}',
   ],
+  // ⚠ `h-screen` is the friends theme's DISPLAY-HEADING class, not a height
+  // utility (`friends-theme.css`: `:where(.app,.modal-layer) .h-screen`), and
+  // 03 §UC-FL-002/006 mandate `<h1 class="h-screen">` / `<h2 class="h-screen">`
+  // verbatim. Tailwind's JIT generates a utility the moment its name appears in
+  // any scanned source, so writing that markup made it emit `.h-screen{height:
+  // 100vh}` — same specificity as the theme rule, different property, so BOTH
+  // applied and the login headline became a full viewport tall (measured: an
+  // 855px gap between the headline and its subtitle at 378px).
+  //
+  // Blocking the CANDIDATE is the only fix that scales: an inline `height:auto`
+  // would have to be repeated on every heading modules 03–06 add, and one
+  // omission is invisible until someone opens that screen.
+  //
+  // ⚠ This does NOT touch `min-h-screen` — a different candidate string, and
+  // the only one the 19 admin/guest views actually use. Nothing in the tree
+  // uses bare `h-screen` as a height utility.
+  //
+  // ⚠ CONSEQUENCE FOR FUTURE CODE, because the failure is silent: outside
+  // `.app`/`.modal-layer`, `class="h-screen"` now resolves to NOTHING — no
+  // height, no error, no warning. If you want the Tailwind height utility, use
+  // `min-h-screen` (already used across the admin views) or the arbitrary value
+  // `h-[100vh]`, which is a different candidate string and is not blocked.
+  blocklist: ['h-screen'],
   theme: {
     extend: {
       colors: {

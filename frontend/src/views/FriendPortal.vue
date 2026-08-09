@@ -13,6 +13,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
 import BrandChrome from '@/components/neo/BrandChrome.vue'
+import NeoIcon from '@/components/neo/NeoIcon.vue'
+import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
+import NeoModal from '@/components/neo/NeoModal.vue'
 
 const router = useRouter()
 
@@ -65,6 +68,9 @@ const loginTab = ref('shared') // 'shared' | 'personal'
 // Personal login fields
 const loginUsername = ref('')
 const loginPassword = ref('')
+// Modern login only (UC-FL-002): the eye toggle flips the password input's
+// `type` and nothing else — it never touches `loginPassword`.
+const showLoginPassword = ref(false)
 
 // Credential setup modal
 const showCredentialSetup = ref(false)
@@ -860,6 +866,123 @@ async function copyInviteLink() {
       </div>
     </div>
 
+    <!-- ==================================================================
+         Modern login (UC-FL-002) — `auth_mode = 'modern'` only.
+         Native elements + theme classes, no `ui/` components: this is the
+         prototype's f-login screen, values transcribed from portal.jsx.
+         The legacy/transition card below is deliberately untouched
+         (UC-FL-003) — the two branches never overlap.
+         ================================================================== -->
+    <div
+      v-else-if="authState === 'login' && authMode === 'modern'"
+      class="mx-auto flex w-full max-w-[480px] flex-col gap-5 p-5 sm:p-8"
+    >
+      <div class="text-center mt-2 sm:mt-6">
+        <!-- `h-screen` is the theme's DISPLAY-HEADING class inside `.app`, not
+             Tailwind's height utility (UC-DS-001). It is correct here. -->
+        <h1 class="h-screen text-[40px] sm:text-[52px]">Kto <span class="hl">klope?</span></h1>
+        <div class="sub" style="margin-top:12px;font-size:14px">Prihláste sa užívateľským menom a heslom.</div>
+      </div>
+
+      <div class="card flex flex-col gap-4 p-[18px] sm:p-6">
+        <!-- The prototype has no login-error state; `.banner danger slim`
+             follows 02 §UC-DS-013's semantic grammar and keeps the card compact. -->
+        <div v-if="authError" class="banner danger slim">
+          <span class="dot"></span>
+          <div>{{ authError }}</div>
+        </div>
+
+        <div>
+          <label class="field-lbl" for="pp-login-username">Užívateľské meno</label>
+          <input
+            id="pp-login-username"
+            v-model="loginUsername"
+            class="inp"
+            type="text"
+            placeholder="napr. lego"
+            autocapitalize="none"
+            autocorrect="off"
+            autocomplete="username"
+          />
+        </div>
+
+        <div>
+          <label class="field-lbl" for="pp-login-password">Heslo</label>
+          <div style="position:relative">
+            <input
+              id="pp-login-password"
+              v-model="loginPassword"
+              class="inp"
+              :type="showLoginPassword ? 'text' : 'password'"
+              placeholder="Zadajte heslo"
+              style="padding-right:48px"
+              autocomplete="current-password"
+              @keyup.enter="authenticatePersonal()"
+            />
+            <!-- Bare span + @click per the prototype: NOT a <button>, so it can
+                 never act as a submit control. The role/tabindex/aria layer
+                 renders no pixel and is the same permitted enhancement
+                 NeoCheckbox and NeoModal's × already make. -->
+            <span
+              role="button"
+              tabindex="0"
+              :aria-label="showLoginPassword ? 'Skryť heslo' : 'Zobraziť heslo'"
+              :aria-pressed="showLoginPassword ? 'true' : 'false'"
+              :style="{
+                position: 'absolute',
+                right: '14px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                cursor: 'pointer',
+                color: showLoginPassword ? 'var(--accent)' : 'var(--ink-dim)',
+                display: 'flex'
+              }"
+              @click="showLoginPassword = !showLoginPassword"
+              @keydown.enter.prevent="showLoginPassword = !showLoginPassword"
+              @keydown.space.prevent="showLoginPassword = !showLoginPassword"
+            >
+              <NeoIcon name="eye" />
+            </span>
+          </div>
+        </div>
+
+        <!-- A `<label>` only forwards clicks to labelable elements, and
+             NeoCheckbox is a `span[role=checkbox]` — so nothing here toggles by
+             itself. The row declares `cursor:pointer` across its full width, so
+             all three zones must honour it, each by a different mechanism and
+             each exactly once:
+               · the box   → NeoCheckbox's own handler;
+               · the text  → the `@click` on the span;
+               · the 10px  → `@click.self` on the label, which fires ONLY when
+                 gap       the label itself is the event target. Without `.self`
+                           the label would also catch the two clicks above and
+                           double-toggle them back to their previous state. -->
+        <label
+          style="display:flex;align-items:center;gap:10px;font-size:14px;cursor:pointer"
+          @click.self="rememberMe = !rememberMe"
+        >
+          <NeoCheckbox v-model="rememberMe" aria-label="Zapamätať si ma na tomto zariadení" />
+          <span @click="rememberMe = !rememberMe">Zapamätať si ma na tomto zariadení</span>
+        </label>
+
+        <button
+          class="btn accent block"
+          :disabled="loading || !loginUsername || !loginPassword"
+          @click="authenticatePersonal()"
+        >
+          {{ loading ? 'Overujem...' : 'Prihlásiť sa' }}
+        </button>
+      </div>
+
+      <div
+        class="card dashed"
+        style="padding:14px;font-size:13.5px;color:var(--ink-dim);display:flex;gap:10px;align-items:flex-start"
+      >
+        <span style="display:flex;margin-top:1px"><NeoIcon name="lock" /></span>
+        <span>Nemáte účet? Podpultovka je na pozvánky — požiadajte kamoša, ktorý už objednáva, alebo si objednajte cez jeho odkaz bez účtu.</span>
+      </div>
+    </div>
+
     <!-- Login Form -->
     <div v-else-if="authState === 'login'" class="max-w-md mx-auto px-4 py-8">
       <!-- Coffee cup image -->
@@ -1289,46 +1412,60 @@ async function copyInviteLink() {
       </DialogContent>
     </Dialog>
 
-    <!-- Forced password change (after admin reset) — non-dismissable -->
-    <Dialog :open="forcedPasswordChange">
-      <DialogContent data-testid="forced-password-change">
-        <DialogHeader>
-          <DialogTitle>Nastavte si nové heslo</DialogTitle>
-        </DialogHeader>
-        <div class="space-y-4 py-4">
-          <p class="text-sm text-muted-foreground">
-            Administrátor vám resetoval heslo. Pred pokračovaním si prosím nastavte vlastné nové heslo.
-          </p>
-
-          <Alert v-if="forcedError" variant="destructive">
-            <AlertDescription>{{ forcedError }}</AlertDescription>
-          </Alert>
-
-          <div class="space-y-2">
-            <Label>Nové heslo</Label>
-            <Input v-model="forcedNewPassword" type="password" :disabled="forcedSaving" />
-          </div>
-          <div class="space-y-2">
-            <Label>Potvrdiť nové heslo</Label>
-            <Input
-              v-model="forcedNewPasswordConfirm"
-              type="password"
-              :disabled="forcedSaving"
-              @keyup.enter="submitForcedPasswordChange()"
-            />
-          </div>
+    <!-- Forced password change (UC-FL-012) — non-dismissable gate.
+         `closable: false` kills ×, scrim-close and Esc (UC-DS-010), and with
+         `trapFocus` deriving from it, Tab cannot walk out into the page behind
+         the scrim either — which is what makes it a gate rather than a
+         suggestion. `data-testid` falls through onto `.modal` (attrs are bound
+         first there, so `role="dialog"` stays ours). -->
+    <NeoModal
+      v-if="forcedPasswordChange"
+      data-testid="forced-password-change"
+      title="Nastavte si nové heslo"
+      :closable="false"
+    >
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div class="sub">
+          Administrátor vám resetoval heslo. Pred pokračovaním si prosím nastavte vlastné nové heslo.
         </div>
-        <DialogFooter>
-          <Button
-            @click="submitForcedPasswordChange()"
-            :disabled="forcedSaving || !forcedNewPassword || !forcedNewPasswordConfirm"
-            class="w-full"
-          >
-            {{ forcedSaving ? 'Ukladám...' : 'Nastaviť heslo a pokračovať' }}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+
+        <div v-if="forcedError" class="banner danger slim">
+          <span class="dot"></span>
+          <div>{{ forcedError }}</div>
+        </div>
+
+        <div>
+          <label class="field-lbl" for="pp-forced-new-password">Nové heslo</label>
+          <input
+            id="pp-forced-new-password"
+            v-model="forcedNewPassword"
+            class="inp"
+            type="password"
+            :disabled="forcedSaving"
+          />
+        </div>
+        <div>
+          <label class="field-lbl" for="pp-forced-new-password-confirm">Potvrdiť nové heslo</label>
+          <input
+            id="pp-forced-new-password-confirm"
+            v-model="forcedNewPasswordConfirm"
+            class="inp"
+            type="password"
+            :disabled="forcedSaving"
+            @keyup.enter="submitForcedPasswordChange()"
+          />
+        </div>
+      </div>
+      <template #footer>
+        <button
+          class="btn accent block"
+          :disabled="forcedSaving || !forcedNewPassword || !forcedNewPasswordConfirm"
+          @click="submitForcedPasswordChange()"
+        >
+          {{ forcedSaving ? 'Ukladám...' : 'Nastaviť heslo a pokračovať' }}
+        </button>
+      </template>
+    </NeoModal>
 
     <!-- Credential Setup Modal -->
     <Dialog :open="showCredentialSetup" @update:open="showCredentialSetup = $event">
