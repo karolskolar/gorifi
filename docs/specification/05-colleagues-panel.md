@@ -286,10 +286,15 @@ root (the `role="checkbox"` element).
   lands in the panel-level danger banner (UC-KG-001).
 - Works on locked cycles (hand-over happens after the lock) and on paid rows
   (delivery is independent of payment). Hidden on cancelled rows (UC-KG-003 rule 3).
-- While `pending[id]`: NeoCheckbox gets `disabled` — an **approved extension** to
-  UC-DS-009's primitive: optional `disabled` prop → click/keyboard no-op +
-  `aria-disabled="true"`, no new visual beyond the row's pulse (extend the primitive,
-  never fork it).
+- While `pending[id]`: NeoCheckbox gets `disabled`. This is **not** a deviation and not
+  an extension to negotiate — `disabled` is part of the primitive as 02 §UC-DS-009
+  specifies it ("no toggle on click/keyboard, `aria-disabled`, 0.35 opacity; module 05
+  uses it for pending/locked hand-over rows"). 02 owns the primitive and is the later
+  decision, so **defer to it**; this module only chooses *when* to pass the prop. Extend
+  the primitive, never fork it. (An earlier draft of this bullet said "no new visual
+  beyond the row's pulse", which predates 02 pinning the 0.35 opacity — that sentence was
+  the stale one, not the implementation. Cosmetic follow-up for whoever owns 02:
+  `.suborder.animate-pulse` and `opacity:.35` **compound** on a pending row.)
 - Playwright compatibility (verified against the repo's `@playwright/test` 1.61
   bundle): `toBeChecked()` reads `aria-checked` on `role="checkbox"` elements, so the
   NeoCheckbox span satisfies the existing `toBeChecked()` / `.click()` assertions —
@@ -456,7 +461,7 @@ says the DOM changes).
 | `guest-delivered-{id}` + `.click()` + `toBeChecked()` | NeoCheckbox root, `role="checkbox"` + `aria-checked` (UC-KG-004 — verified compatible with Playwright 1.61) |
 | `guest-remove-{id}`, button "Áno, odstrániť", "Nie" | UC-KG-005 |
 | `guest-status-{id}` containing "Zrušené" | `.badge.muted` (UC-KG-003) |
-| `guest-items-{id}` (ul, `li` count), `guest-items-toggle-{id}`, `guest-items-summary-{id}` (+ "N položky" texts) | UC-KG-003 (toggle/testids absent on cancelled rows — no spec exercises them there) |
+| `guest-items-{id}` (ul, `li` count), `guest-items-toggle-{id}`, `guest-items-summary-{id}` (+ "N položky" texts) | UC-KG-003. ⚠ On a **cancelled** row the split is not "all absent": `guest-items-toggle-{id}` and `guest-items-{id}` are absent (nothing to fold, no list), but `guest-items-summary-{id}` is **present permanently** — that is rule 3, and it is the one row state where the summary shows without a toggle beside it. On a **live** row the summary is the collapsed-only affordance, so it is absent while expanded. |
 | "Objednávate aj pre kolegov?", button "Zdieľať objednávku s kolegami", `guest-sub-orders` count 0 when empty | UC-KG-002 state A |
 | `getByRole('dialog')`, Escape close, buttons "Vytvoriť odkaz" / "Kopírovať" / "Deaktivovať odkaz", substring "Odkaz je deaktivovaný", dialog names the cycle | UC-KG-006 |
 | button `{ name: 'Zdieľať' }` count 0 in dialog without `navigator.share` | still 0 — the button is absent, not just relabeled (UC-KG-006) |
