@@ -128,6 +128,76 @@ function requestClose() {
   emit('close')
 }
 
+// ⚠ SCRIM-CLOSE REQUIRES THE GESTURE TO HAVE *STARTED* ON THE SCRIM.
+// (UC-DS-010 amendment, RD-FL-6 — the resolution of the open spec item RD-DS-4
+// raised.)
+//
+// `@click.self` alone is not "the user clicked the backdrop". A `click` fires on
+// the nearest common ancestor of mousedown and mouseup, so a text-selection drag
+// that STARTS on a label inside `.m-body` and RELEASES over the scrim delivers a
+// `click` whose target IS the scrim — `.self` passes, and the dialog closes. On
+// the forced-password gate that was harmless (`closable:false` kills scrim-close
+// outright), which is why RD-FL-2 could leave it standing; the profile modal is
+// the first CLOSABLE form-bearing dialog on this shell, so from here on the same
+// gesture destroys a half-filled form. Modules 04/06 add the checkout and
+// guest-identity forms behind the same shell.
+//
+// The flag is deliberately NOT a `ref`: nothing renders from it, so reactivity
+// would only cost a re-render per mousedown.
+//
+// This is written as ONE handler computing `target === currentTarget` rather
+// than the amendment's literal `@mousedown.self` + a separate reset: they are
+// behaviourally identical (every mousedown that can reach this subtree either
+// sets or clears the flag) and a single handler has no dependence on listener
+// registration order. `.modal-layer` is `pointer-events:none` and the scrim
+// re-enables it over the whole viewport, so there is no mousedown a user can
+// produce that misses this handler while the modal is open.
+//
+// ⚠ The listener is registered in the CAPTURE phase (`@mousedown.capture` in
+// the template). Bubble-phase, any descendant that calls `stopPropagation()` on
+// `mousedown` — none does today, but this is the shared shell modules 04–06 fill
+// with checkout/pickup/payment/guest-identity content, third-party components
+// included — would leave the flag at whatever the PREVIOUS gesture set it to,
+// and a drag out of the body could then close the dialog again. Capture still
+// fires when the scrim itself is the target, so `target === currentTarget` is
+// unaffected, and nothing below can pre-empt it.
+let scrimDown = false
+
+function onScrimMousedown(e) {
+  // ⚠ `button === 0` (primary) as well as the origin check. A right- or
+  // middle-click on the scrim correctly does NOT close the modal — but it also
+  // produces no `click` (middle-click fires `auxclick`), so without this test it
+  // would LATCH the flag: nothing consumes it, and the next `click` to reach the
+  // scrim — including a purely programmatic one — would inherit permission from
+  // a gesture that was never a dismissal. That contradicts the one-shot rule
+  // `onScrimClick` documents, so the two must agree.
+  //
+  // NOT guarded (measured, RD-FL-6 review): `.modal-scrim` is `overflow-y:auto`,
+  // so on a short viewport it grows a scrollbar, and the worry was that dragging
+  // a CLASSIC (layout-consuming) one is a press+release+click all targeting the
+  // scrim ⇒ the modal closes while the user is only scrolling. Reproduced with a
+  // real classic scrollbar (Chromium launched WITHOUT Playwright's default
+  // `--hide-scrollbars`, viewport 420×300, gutter 15px): a thumb drag, a track
+  // click, a thumb click and an arrow click each deliver `mousedown` + `mouseup`
+  // on the scrim (`self: true`, `button: 0`, `offsetX: 413` vs `clientWidth:
+  // 405`) and **no `click` at all** — the modal stays open every time, and the
+  // subsequent text-selection drag out of `.m-body` still does not close it,
+  // because that drag's own mousedown re-computes the flag. So an
+  // `offsetX < clientWidth` guard would be dead code. The only residue is that a
+  // scrollbar press leaves the flag set for a later *programmatic* `click()` —
+  // the same script-only class as the non-primary press above, and no worse than
+  // it.
+  scrimDown = e.button === 0 && e.target === e.currentTarget
+}
+
+function onScrimClick() {
+  if (!scrimDown) return
+  // One-shot: a subsequent programmatic `click` with no mousedown behind it
+  // must not inherit this gesture's permission.
+  scrimDown = false
+  requestClose()
+}
+
 // Everything the browser will hand a Tab to. `[tabindex]` deliberately matches
 // negative values too, so they can be filtered out below rather than silently
 // treated as reachable — the `.modal` container itself is `tabindex="-1"`.
@@ -297,24 +367,21 @@ onBeforeUnmount(() => {
 // ("Tab and Shift+Tab cannot escape the gate"), which drives the forced
 // password-change gate 03 §UC-FL-012 composes on this shell.
 //
-// ⚠ Seam 2 is still open. It is not a UC-DS-010 violation; it needs a spec
-// amendment or a later row that owns the affected screen.
+// ⚠ Seam 2 (a text-selection drag out of `.m-body` closing the modal) is CLOSED
+// as of RD-FL-6 — see `onScrimMousedown`/`onScrimClick` above. UC-DS-010 was
+// amended in the same row, so the spec's structure block and this template
+// agree. It is pinned by `e2e/tests/portal-profile-modal.spec.js` ("a
+// text-selection drag out of the body must NOT close the modal"), which performs
+// the real gesture, alongside a test proving a genuine scrim click still closes.
 //
-// 2. A text-selection drag can close the modal: mousedown inside `.m-body`,
-//    drag out, mouseup over the scrim — the DOM `click` target is then the
-//    nearest common ancestor (`.modal-scrim`), so `@click.self` fires. This is
-//    faithful to UC-DS-010's fixed structure and to `ui.jsx`, so the
-//    `@click.self` below stays exactly as specced. Closing it (also requiring
-//    the MOUSEDOWN to have originated on the scrim) needs a UC-DS-010
-//    amendment, and matters once modules 03/04/06 compose input-heavy dialogs
-//    on this shell — losing a half-filled checkout to a drag is data loss.
+// No seams remain open on this component.
 
 // Notes on the template below (kept here, not as template comments, so the
 // rendered DOM stays identical to the prototype's in dev as well as prod):
 //
 // · `.modal-scrim` uses `@click.self` — that IS the scrim-close rule: a click
 //   that started on ANY child (the card, a button, a text node inside it) must
-//   never close.
+//   never close — plus the mousedown-origin requirement above.
 // · The × is a bare `span` in the prototype, with an onClick — unreachable by
 //   keyboard and announced as nothing. The role/tabindex/aria-label/keydown
 //   layer here renders no pixel; it is the same permitted enhancement
@@ -346,7 +413,7 @@ defineOptions({
 <template>
   <Teleport to="body">
     <div class="modal-layer">
-      <div class="modal-scrim" @click.self="requestClose">
+      <div class="modal-scrim" @mousedown.capture="onScrimMousedown" @click.self="onScrimClick">
         <div
           v-bind="$attrs"
           ref="modalEl"

@@ -579,7 +579,12 @@ Slots: default → `.m-body`; `#footer` → `.m-foot` (omitted when empty); `#su
 ```html
 <Teleport to="body">
   <div class="modal-layer">
-    <div class="modal-scrim" @click.self="closable && $emit('close')">
+    <!-- scrim handlers: see the RD-FL-6 amendment below — the mousedown listener is
+         CAPTURE-phase, records `button === 0 && target === currentTarget`, and the
+         click handler CONSUMES the flag (sets it false) before closing. -->
+    <div class="modal-scrim"
+         @mousedown.capture="onScrimMousedown"
+         @click.self="onScrimClick">
       <div class="modal" :style="wide ? { maxWidth: '520px' } : null"
            role="dialog" aria-modal="true" :aria-labelledby="titleId">
         <div class="m-head">
@@ -610,6 +615,36 @@ Slots: default → `.m-body`; `#footer` → `.m-foot` (omitted when empty); `#su
 - Scrim click closes **only when the click target is the scrim itself** (`@click.self`)
   and only when `closable`. `Escape` closes under the same condition. When `closable`
   is false there is no ×, no scrim-close, no Esc-close (prototype: `onClose` absent).
+- **AMENDMENT (RD-FL-6) — scrim-close additionally requires the gesture to have
+  *started* on the scrim.** `@click.self` alone does not mean "the user clicked the
+  backdrop": a `click` fires on the nearest common ancestor of its `mousedown` and
+  `mouseup`, so a text-selection drag that starts on text inside `.m-body` and
+  releases over the scrim delivers a `click` whose target *is* `.modal-scrim` — and
+  the dialog closes, discarding whatever the user had typed. The shell carries the
+  profile (03 §UC-FL-009), pickup/checkout (04) and guest-identity (06) forms, so
+  this is data loss, not a cosmetic quirk. A `mousedown` handler on the scrim
+  therefore records whether that press landed on the scrim itself
+  (`target === currentTarget`) and `@click.self` closes only when it did; every
+  `mousedown` re-computes the flag, and closing consumes it, so a programmatic
+  `click` with no press behind it can never dismiss the dialog. This changes
+  nothing about a genuine backdrop click, an Esc press, the × or `closable:false`.
+  (Implementation may use one handler computing the boolean rather than a
+  `.self` setter plus a separate reset — behaviourally identical, with no
+  dependence on listener registration order.)
+  Three details of that flag are normative, not incidental:
+  - **The origin listener runs in the CAPTURE phase.** Bubble-phase, any
+    descendant that calls `stopPropagation()` on `mousedown` leaves the flag at
+    the previous gesture's value, which re-opens exactly this hazard — and this
+    shell is filled by modules 04–06 with checkout, pickup, payment and
+    guest-identity content, third-party components included. Capture still fires
+    when the scrim itself is the target, so the `target === currentTarget` test
+    is unaffected and no descendant can pre-empt it.
+  - **Only a PRIMARY button sets the flag** (`button === 0`). A right- or
+    middle-click on the scrim must not close the modal — and it emits no `click`
+    (middle-click emits `auxclick`), so a non-primary press that set the flag
+    would LATCH it with nothing to consume it, handing the permission to some
+    later click.
+  - **Closing consumes the flag**, so it authorizes at most one dismissal.
 - While open: `document.body` scroll is locked (`overflow:hidden`), focus moves into the
   modal (container `tabindex="-1"` focus on open) and returns to the opener on close.
   Focus handling must add no visual artifact.
@@ -627,6 +662,9 @@ Slots: default → `.m-body`; `#footer` → `.m-foot` (omitted when empty); `#su
 - Tokens resolve inside the modal (magenta buttons etc.) even though it is outside `.app`.
 - Click inside modal body never closes; scrim click / Esc / × close; `closable:false`
   disables all three; background does not scroll while open.
+- A text-selection drag that presses inside `.m-body`, moves out and releases over the
+  scrim leaves the modal **open** (and its fields untouched); a press-and-release on
+  the scrim still closes it.
 
 ---
 
