@@ -723,8 +723,14 @@ defineExpose({ openProfileModal, openInviteModal })
   </div>
 
   <!-- Standard page column (UC-DS-005): 760px max, centered, 16px phone /
-       28px desktop side padding. -->
-  <div class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-6">
+       28px desktop padding — on BOTH axes, matching the prototype, which pads
+       the column uniformly. ⚠ The vertical half must stay split as
+       `py-4 sm:py-7` and must NEVER be collapsed into `p-4 sm:p-7`: the cycle
+       card below is pinned on the literal class token `p-4` (see `cardFor()`
+       further down), so an all-sides utility here would make that locator match
+       the column as well and trip Playwright strict mode. RD-FL-8b: was `py-6`
+       (24px), which was 8px over on phone and 4px under on desktop. -->
+  <div class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7">
     <!-- ⚠ The page-level error banner. After RD-FL-8a's convergence it has
          exactly ONE writer left — `resolveVoucher` — because the profile,
          subscription and invite failures each render in their own modal body
@@ -806,7 +812,7 @@ defineExpose({ openProfileModal, openInviteModal })
              share button. Consequences that must survive future edits:
                · nothing else in this view may carry `p-4` while containing a
                  cycle-name heading — notably the page column above, which is
-                 deliberately `px-4 sm:px-7 py-6` and NOT `p-4`, or the
+                 deliberately `px-4 sm:px-7 py-4 sm:py-7` and NOT `p-4`, or the
                  locator would match column AND card and trip strict mode;
                · `p-4` is a Tailwind utility here, not theme CSS. `.card`
                  itself declares no padding, so it is also the real padding.
@@ -947,13 +953,21 @@ defineExpose({ openProfileModal, openInviteModal })
         <!-- `.chev.open` is the theme's own rotate-90 + accent transition, so
              the rotation and the colour come from one class, not from
              Tailwind. Keyboard layer as on the gear: this toggle is the only
-             route to the archived cycles. -->
+             route to the archived cycles.
+
+             ⚠ `line-height:normal` is not in the prototype and is not
+             decoration — this row and the archive row's name below are PLAIN
+             TEXT with no theme class, so A10's class list cannot reach them and
+             Tailwind preflight's `html{line-height:1.5}` applies. Measured
+             canon-vs-port at 378 and 1180 px: this row 21 px against the canon's
+             16, the row name 22.5 against 18. See friends-theme.css §A10,
+             "WHAT THIS RULE STILL CANNOT REACH". -->
         <div
           role="button"
           tabindex="0"
           :aria-expanded="showArchive ? 'true' : 'false'"
           data-testid="archive-toggle"
-          style="display:flex;align-items:center;gap:8px;margin-top:18px;cursor:pointer;font-weight:600;font-size:14px;color:var(--ink-dim)"
+          style="display:flex;align-items:center;gap:8px;margin-top:18px;cursor:pointer;font-weight:600;font-size:14px;line-height:normal;color:var(--ink-dim)"
           @click="showArchive = !showArchive"
           @keydown.enter.prevent="showArchive = !showArchive"
           @keydown.space.prevent="showArchive = !showArchive"
@@ -977,7 +991,7 @@ defineExpose({ openProfileModal, openInviteModal })
             @click="goToCycle(cycle.id)"
           >
             <div style="min-width:0">
-              <div style="font-weight:700;font-size:15px;overflow-wrap:anywhere">{{ cycle.name }}</div>
+              <div style="font-weight:700;font-size:15px;line-height:normal;overflow-wrap:anywhere">{{ cycle.name }}</div>
               <div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap">
                 <span class="badge" style="font-size:10.5px;padding:2px 7px">{{ getCycleTypeLabel(cycle.type) }}</span>
                 <span class="badge muted" style="font-size:10.5px;padding:2px 7px">Dokončený</span>

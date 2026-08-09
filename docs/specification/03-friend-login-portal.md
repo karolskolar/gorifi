@@ -306,15 +306,21 @@ transactions modal; admin screens using `BalanceBadge` are pixel-unchanged.
 
 **Goal:** the portal's main content: section header + active cycle cards.
 
-**Page column:** padding **16 px phone / 28 px desktop**, `max-width: 760px`, centered,
-column `gap: 20px` (UC-DS-005 standard column). Order: balance card (UC-FL-005) →
-cycles section. That horizontal padding **must be expressed with `px-*`**, and the
-column **must never carry the literal class `p-4`** (nor `p-4 sm:p-7`): the cycle card
-below is pinned on that exact class token, so an all-sides `p-4` on the column would
-make `cardFor()` match both the column and the card and trip Playwright strict mode.
-Use UC-DS-005's canonical idiom — `mx-auto w-full max-w-[760px] px-4 sm:px-7` — plus a
-separate vertical utility (`py-6`) where the column needs one; that satisfies the
-prohibition by construction.
+**Page column:** padding **16 px phone / 28 px desktop on BOTH axes** (the prototype pads
+the column uniformly), `max-width: 760px`, centered, column `gap: 20px` (UC-DS-005
+standard column). Order: balance card (UC-FL-005) → cycles section.
+
+⚠ **The padding must be expressed as four axis utilities, never as an all-sides one.**
+The column **must never carry the literal class `p-4`** (nor `p-4 sm:p-7`): the cycle
+card below is pinned on that exact class token, so an all-sides `p-4` on the column
+would make `cardFor()` match both the column and the card and trip Playwright strict
+mode. The canonical idiom — **`mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7`**
+— hits the prototype's 16/28 on both axes *and* satisfies the prohibition by
+construction. **Modules 04–06 copy this line verbatim** for their own page columns;
+02 §UC-DS-005 defers vertical padding to the screen modules, and this is that
+decision. (RD-FL-8b: shipped as `py-6` through RD-FL-4..8a — 24 px, i.e. 8 px over on
+phone and 4 px under on desktop. Corrected here in both the spec and the view, because
+00-overview makes the prototype canonical for visuals.)
 
 **Section header** (`display:flex; justify-content:space-between; align-items:center;
 margin-bottom: 14px`):
@@ -694,6 +700,117 @@ and cannot be dismissed by Esc/scrim; setting a valid password lands on the cycl
    `min-width:0` blocks, the appbar `.t` ellipsizes by CSS).
 5. Admin invariance re-assertion per 02 §UC-DS-014 item 2 (no `pp-*`/`neo/`/theme
    classes added under admin views; `BalanceBadge.vue` untouched).
+
+### CLOSEOUT RESULT (RD-FL-8b, 2026-08-08) — measured
+
+**e2e immutability: 0 pre-existing spec files edited** across the WHOLE effort
+(`7c3f85e..RD-FL-8b`): 9 spec files added, 0 modified, plus `e2e/README.md`. The
+amendment's escape hatch was never needed.
+
+**Pin audit** — each pin re-verified against the current build (structure, not a
+re-run). All 10 hold; three table entries are inaccurate and are corrected here:
+
+| # | Pin | Verdict |
+|---|---|---|
+| 1 | `toHaveTitle(/Gorifi/)` — `public-flow.spec.js:9` | ✅ line exact; `watchEffect` unchanged |
+| 2 | `getByText('Prihlásenie')` — `public-flow.spec.js:11`, `friend-login-list.spec.js:42` | ✅ lines exact; legacy `CardTitle` untouched |
+| 3 | `getByRole('combobox')` — `friend-login-list.spec.js:44-48` | ✅ lines exact; shadcn `SelectTrigger` untouched |
+| 4 | heading "Objednávkové cykly" | ✅ but **UNDER-COUNTED**: `guest-link.spec.js` 252/299/349 + `guest-host-view.spec.js:667` **+ `forced-change-ui.spec.js:50`** — FIVE pre-existing sites, not four |
+| 5 | `div.p-4` + exact `<h3>` + share button — `guest-link.spec.js:301-320` | ✅ `cardFor()` on 301; card is `class="card p-4"`, column is `px-4 sm:px-7 py-6` (never `p-4`) |
+| 6 | `'Zdieľať s kolegami'`, absent on locked, `@click.stop` — `:287-322` | ✅ lines exact; `aria-label` + open-only `v-if` + `.stop` all present |
+| 7 | one dialog, Escape closes, race-guarded — `guest-link.spec.js:325+` | ✅ but the test starts at **324**, not 325 |
+| 8 | `gorifi_friend_auth` restore shape | ✅ all three lines exact. Note `guest-host-view.spec.js:649` writes **no `friendUid`** — the restore path only requires `friendId` + `token`, and `currentFriendUid` falls back to `''` |
+| 9 | cycle-name click navigates — `mobile-no-h-overflow.spec.js:73` | ✅ line exact; card-level `@click` still on `div.card.p-4` |
+| 10 | `data-testid="forced-password-change"` + field labels | ⚠ `forced-change-ui.spec.js` is `test.fixme` — **it has never executed**. Its `getByText(/resetoval vaše heslo/)` does not match the shipped copy "Administrátor vám resetoval **heslo**" — **pre-existing** (identical at `7c3f85e`), not a redesign regression. The redesign *improved* the other half: pre-redesign `<Label>`/`<Input>` had no `for`/`id`, so `getByLabel` could not have resolved; the NeoModal gate now pairs them. The gate is in fact covered by a RUNNING spec — `modern-login.spec.js` §"Forced password change" (testid, `role`, `aria-modal`, copy, no ×, Esc, scrim, scroll lock, focus trap) |
+
+**Fidelity (378 px + 1180 px, canon prototype over HTTP, fonts force-loaded, port
+fed the prototype's own demo data so heights are comparable):** 87 element pairs
+per width across login / portal / archive / all three modals. After the fixes
+below, **zero structural geometry deltas remain**; every surviving difference is
+one of: content (uid, colleague count, cycle count), a `line-height` *property*
+value on a container with no text of its own (measured: no height/width effect),
+a deliberate `overflow-wrap:anywhere` / `white-space:pre-line`, `position:relative`
+from UC-DS-001's `.app>*`, or an invisible Tailwind-preflight border/min-height
+default. Desktop centering (`17-shot.png`) verified: page column `max-width` and
+`.modal` horizontal margins identical at 1180 px.
+
+**Deltas found and FIXED by this row** (all were `html{line-height:1.5}` reaching
+past A9/A10):
+
+| element | canon | port was | fixed by |
+|---|---|---|---|
+| `.ticker` (EVERY screen) | 34 | 36 | A10 class list |
+| `.neg.pill` balance | 28 | 34 | A10 class list |
+| `.display` order total | 24 | 27 | A10 class list |
+| `.mono` archive sum | 15 | 18 | A10 class list |
+| login dashed footnote | 82 | 94.75 | call-site inline |
+| archive toggle row | 16 | 21 | call-site inline |
+| archive row name | 18 | 22.5 | call-site inline |
+| login remember-me label | ~16.4 | 21 | call-site inline |
+| page column `py` (phone) | 16 | 24 | `py-4 sm:py-7` |
+
+A10's "nothing else in theme.css renders text and is line-height-silent" was wrong
+by **13 classes**; all 13 are now covered and the nine that a prototype screen
+renders were A/B/C-verified against the canon. **Nine of them are modules 04–06's**
+(`.stepper .val`, `.vbox .*`, `.suborder .*`, `.cartbar .*`, `.tbl`, `.confirmbox`) —
+they are fixed now so those modules baseline against the canon, not against drift.
+**02 §UC-DS-001's A10 row is rewritten to match** — the falsified "nothing else"
+sentence is struck and replaced by the reproducible static-pass definition
+(font-bearing rules minus line-height-bearing rules) plus its four exclusions, so
+04–06 read the corrected rule in the design-system spec rather than only here.
+
+**The four plain-text sites (no theme class, so A10 cannot reach them):** the login
+dashed footnote, the archive toggle row, the archive row name — and, added by the
+review pass, the login **remember-me label** (`FriendPortal.vue`), whose span
+computed 21 px against the canon's ~16.4. That fourth one has **no geometry delta
+today**: the 24 px `.cbox` sibling dominates its flex line, so it is genuinely
+invisible and was never a fidelity defect. It is fixed anyway, because it is the
+exact pattern this closeout tells 04–06 to watch for and it drifts the moment the
+pattern is reused without a 24 px sibling. All four are pinned in
+`portal-fidelity.spec.js`.
+
+**Page-column vertical padding — RESOLVED, no longer a residual.** The column
+shipped `py-6` (24 px) where the prototype pads uniformly (16 phone / 28 desktop):
+8 px over on phone, 4 px under on desktop. 00-overview makes the prototype
+canonical for visuals, so **UC-FL-006 and the view both move to
+`py-4 sm:py-7`**, which hits both breakpoints and still avoids the `p-4` pin
+collision by construction. Re-measured after the change: phone 16 / desktop 28,
+delta 0 on both; `cardFor()`'s `div.p-4` still resolves to exactly one element.
+**Modules 04–06 copy the full idiom `mx-auto w-full max-w-[760px] px-4 sm:px-7
+py-4 sm:py-7`** — 02 §UC-DS-005 defers vertical padding to the screen modules, and
+UC-FL-006 is now that decision rather than an unqualified number.
+
+**320 px:** 11 states (login modern + its error banner, legacy login, portal,
+portal+archive, load-failure banner, profile modal, profile+password fold,
+subscription, invite, forced-password gate) with a 120-char unbreakable token and
+a pasted spreadsheet URL in **every** free-text field (cycle name, `plan_note`,
+display name, Packeta address, invite code, error copy) — **11/11 with
+`documentElement.scrollWidth === clientWidth`**. Nothing besides `plan_note`
+needed a new wrap rule: `.copyrow .val` already ellipsizes, `.appbar .titles .t`
+already ellipsizes, and the card/archive names already carry `overflow-wrap`.
+
+**Admin invariance:** the whole admin surface (12 routes) screenshotted against a
+build of **`7c3f85e`** — the commit before RD-DS-1 — served by the SAME backend
+process over the SAME database (`backend/public` swapped between captures, so the
+bundle is the only variable). **~20.5 M pixels compared; 11 routes byte-identical,
+the 12th differs in 3 pixels at Δ1 — a difference reproduced exactly by a
+same-build control capture, i.e. the harness's own antialiasing noise.** A runtime
+DOM scan of all 12 for `pp-*`, `font-display`/`font-courier` and 35 theme class
+names returns **0 hits**; `class="app"` exists only in `FriendPortal.vue` and
+`class="modal-layer"` only in `NeoModal.vue`; `BalanceBadge.vue` is untouched.
+
+**Regression net added:** `e2e/tests/portal-fidelity.spec.js` (11 tests, new file,
+zero edits to existing specs) pins the A9/A10 counter — `line-height: normal`
+asserted exactly, because it is the mechanism and is font-independent — **all four**
+plain-text call-site fixes, the `:where()` zero-specificity property that makes the
+class list safe, and the 320 px document-overflow invariant for the portal states
+and modals. Mutation-probed: dropping `.ticker` from A10 fails 3 tests, dropping
+any call-site `line-height` fails its own test — including the review-pass
+remember-me one, re-probed through a full rebuild: **1 failed / 10 passed**, so
+the invisible fourth site is genuinely pinned and not just documented — and
+dropping `plan_note`'s `overflow-wrap` fails 4.
+
+**Suite: 353 passed / 3 skipped** (baseline 342/3 + this row's 11).
 
 ---
 

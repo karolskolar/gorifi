@@ -709,8 +709,17 @@ const dropdownFriends = computed(() => {
                  gap       the label itself is the event target. Without `.self`
                            the label would also catch the two clicks above and
                            double-toggle them back to their previous state. -->
+        <!-- ⚠ `line-height:normal`: the FOURTH plain-text site (RD-FL-8b). Same
+             class as the three above — unclassed markup that A10's class list
+             cannot reach, so `html{line-height:1.5}` applies and the span
+             computes 21 px against the canon's ~16.4. It is invisible TODAY
+             only because the 24 px `.cbox` sibling dominates this flex line, so
+             there is no geometry delta to see — but the moment this pattern is
+             reused without a 24 px sibling the drift becomes real. Fixed rather
+             than tolerated so the pattern is safe to copy. See
+             friends-theme.css §A10, "WHAT THIS RULE STILL CANNOT REACH". -->
         <label
-          style="display:flex;align-items:center;gap:10px;font-size:14px;cursor:pointer"
+          style="display:flex;align-items:center;gap:10px;font-size:14px;line-height:normal;cursor:pointer"
           @click.self="rememberMe = !rememberMe"
         >
           <NeoCheckbox v-model="rememberMe" aria-label="Zapamätať si ma na tomto zariadení" />
@@ -726,9 +735,16 @@ const dropdownFriends = computed(() => {
         </button>
       </div>
 
+      <!-- ⚠ `line-height:normal` is NOT in the prototype and is not decoration:
+           this block is PLAIN TEXT with no theme class, so A10's class list
+           cannot reach it and Tailwind preflight's `html{line-height:1.5}`
+           applies. Measured canon-vs-port at both 378 and 1180 px: the card was
+           94.75 px against the canon's 82 (+12.75) — the largest single fidelity
+           delta module 03 had. See friends-theme.css §A10, "WHAT THIS RULE STILL
+           CANNOT REACH". -->
       <div
         class="card dashed"
-        style="padding:14px;font-size:13.5px;color:var(--ink-dim);display:flex;gap:10px;align-items:flex-start"
+        style="padding:14px;font-size:13.5px;line-height:normal;color:var(--ink-dim);display:flex;gap:10px;align-items:flex-start"
       >
         <span style="display:flex;margin-top:1px"><NeoIcon name="lock" /></span>
         <span>Nemáte účet? Podpultovka je na pozvánky — požiadajte kamoša, ktorý už objednáva, alebo si objednajte cez jeho odkaz bez účtu.</span>
