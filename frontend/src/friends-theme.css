@@ -94,6 +94,30 @@
 :where(.app, .modal-layer) .stepper button:active{transform:translate(2px,2px);box-shadow:0 0 0 var(--nb-ink)}
 :where(.app, .modal-layer) .stepper .val{font-family:var(--font-display);font-weight:800;font-size:20px;min-width:24px;text-align:center}
 :where(.app, .modal-layer) .stepper.disabled button{opacity:.35;cursor:not-allowed;pointer-events:none}
+/* ---------- A11: the `incDisabled` affordance (NOT in the canon) ----------
+   The THIRD addition to the ported stylesheet (RD-GX-1, closing the item RD-DS-3
+   handed forward and 06 §UC-GX-002 specifies as ".35 opacity on the + button only").
+
+   The canon has `.stepper.disabled button` (the WHOLE control, i.e. a locked cycle)
+   and nothing for a single disabled button — but `NeoStepper`'s `incDisabled` puts a
+   real `disabled` attribute on "+" alone at a stock ceiling. Without a rule that
+   button measured `opacity:1`, `cursor:pointer`, `pointer-events:auto`: hover turned
+   it `--hi` and mousedown applied the full press physics
+   (`translate(2px,2px)` + shadow collapse, lines 93–94 above), so the dead control
+   acknowledged the tap and sprang back — reading as "added" at exactly the ceiling.
+
+   ⚠ `pointer-events:none` is the load-bearing declaration; opacity alone leaves the
+   false feedback. The other two values are copied from the container rule verbatim so
+   the two disabled states cannot drift apart.
+
+   Deliberately HERE and not inlined in `NeoStepper.vue`: a `<style scoped>` block
+   there carries `[data-v-*]` specificity that no consumer could override. And
+   deliberately not at the guest call site: 06 §UC-GX-002 requires the guest card to be
+   PIXEL-IDENTICAL to 04's, so this state has to change on both screens at once.
+
+   Scope is exact — `:disabled` inside `.stepper` — and it is a no-op wherever
+   `.stepper.disabled` already applies, since both rules declare the same three values. */
+:where(.app, .modal-layer) .stepper button:disabled{opacity:.35;cursor:not-allowed;pointer-events:none}
 
 /* ---------- variant box (product card price+stepper) ---------- */
 :where(.app, .modal-layer) .vbox{border:2px solid rgba(10,10,10,0.25);border-radius:10px;padding:9px 11px;background:#fff;display:flex;flex-direction:column;gap:8px}
