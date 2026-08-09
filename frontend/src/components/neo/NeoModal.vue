@@ -73,6 +73,28 @@ const props = defineProps({
   subtitle: { type: String, default: '' },
   // `.modal` max-width 520px instead of the default 420px.
   wide: { type: Boolean, default: false },
+  // Render `.m-title` as an `<h2>` instead of the prototype's `<div>`.
+  //
+  // ⚠ OPT-IN, and it exists for exactly one reason: three SHIPPED, non-editable
+  // session-boundary specs resolve the credential-setup dialog with
+  // `getByRole('heading', { name: 'Nastavte si osobné prihlásenie' })`
+  // (`portal-profile-modal.spec.js:812`, `portal-session-boundary.spec.js:457`
+  // and `:533`). That dialog was a radix `Dialog`, whose `DialogTitle` is an
+  // `<h2>`; a `div` answers to no role, so porting it onto this shell without
+  // this prop would have RED-ed three specs that encode a real plaintext-password
+  // session leak. The specs cannot be weakened, so the shell grew the affordance.
+  //
+  // ⚠ DEFAULT `false`, deliberately. Making every modal title a heading is the
+  // more correct a11y default, but it is not behaviour-neutral: a dozen shipped
+  // specs call `page.getByRole('heading', …)` UNSCOPED while a modal is open, and
+  // a new heading in the tree can turn one of those into a strict-mode violation.
+  // Flip it per consumer, never globally.
+  //
+  // Visually inert: Tailwind's preflight resets `h1`–`h6` to
+  // `font-size: inherit; font-weight: inherit; margin: 0`, and `.m-title`
+  // re-declares font-family/size/weight/line-height/transform explicitly at
+  // (0,2,0), so the `h2` renders pixel-for-pixel as the `div` did.
+  titleHeading: { type: Boolean, default: false },
   closable: { type: Boolean, default: true },
   // Keyboard focus containment. RD-FL-2, additive and opt-in.
   //
@@ -427,7 +449,7 @@ defineOptions({
         >
           <div class="m-head">
             <div style="flex: 1; min-width: 0">
-              <div class="m-title" :id="titleId">{{ title }}</div>
+              <component :is="titleHeading ? 'h2' : 'div'" class="m-title" :id="titleId">{{ title }}</component>
               <div v-if="subtitle || $slots.subtitle" class="sub" style="margin-top: 4px">
                 <slot name="subtitle">{{ subtitle }}</slot>
               </div>
