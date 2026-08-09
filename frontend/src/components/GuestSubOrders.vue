@@ -20,10 +20,8 @@
 // footer) stays own-items-only and is not touched by anything in this component.
 import { ref, computed, watch, watchEffect } from 'vue'
 import api from '../api'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import NeoIcon from '@/components/neo/NeoIcon.vue'
+import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 
 const props = defineProps({
   cycleId: { type: [String, Number], default: null },
@@ -134,6 +132,39 @@ function formatPrice(price) {
   return `${Number(price || 0).toFixed(2)} EUR`
 }
 
+// Bare number, no currency: `EUR` appears on TOTALS only (05 §UC-KG-003 item 2,
+// prototype `order.jsx:124`). Item lines carry a mono column instead.
+function formatAmount(price) {
+  return Number(price || 0).toFixed(2)
+}
+
+// One precomposed string per item line rather than three template nodes.
+//
+// ⚠ Deliberate: the variant suffix used to be a sibling `<span>` on its own
+// template line, and Vue's `condense` whitespace mode DELETES a newline-bearing
+// whitespace-only node between two elements — silently gluing "Brazil" to
+// "— 250g" with no build error and no failing test. Building the label here
+// makes the separator impossible to lose, and matches the prototype, which also
+// carries one flat label per line.
+function itemLine(item) {
+  const suffix = item.variant_label
+    ? ` — ${item.variant_label}`
+    : (item.variant && item.variant !== 'unit' ? ` — ${item.variant}` : '')
+  return `${item.quantity}× ${item.product_name}${suffix}`
+}
+
+// The amount that was CALLED OFF, recomputed from the item rows the server kept
+// (§UC-KG-003 rule 6). `total` cannot be used: GSO-T5 zeroes it on soft-cancel,
+// so the struck-through figure would read "0.00 EUR" and say nothing about what
+// the colleague had ordered. Same derivation as the admin refund queue (GSO-T6).
+// Display only — no payload change, and nothing here feeds the host's own total.
+function cancelledTotal(subOrder) {
+  return (subOrder.items || []).reduce(
+    (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0),
+    0
+  )
+}
+
 // 1 kolega / 2-4 kolegovia / 5+ kolegov
 const colleagueCount = computed(() => {
   const count = totals.value.count || 0
@@ -145,6 +176,15 @@ const colleagueCount = computed(() => {
 // Recomputed from the same rows the list renders, so the badge can never drift from
 // what the tab actually contains. Cancelled sub-orders count for neither number:
 // they owe nothing and there is nothing to hand over.
+//
+// ⚠ `rows` is ADDITIVE (05 §UC-KG-001 rule 5) and answers a different question from
+// `count`: "is there a list on screen at all?", cancelled rows INCLUDED. The parent
+// picks the panel's empty / share-row / locked-empty state with it, so a host whose
+// only colleague cancelled keeps the one-line share row instead of being told
+// "Zatiaľ nikto" above a visible cancelled card.
+//
+// `count` and `pendingDelivery` are UNCHANGED and stay cancelled-excluded — module
+// 04's tab badge is computed from those two and must NOT be re-gated on `rows`.
 watchEffect(() => {
   const live = subOrders.value.filter((o) => !isCancelled(o))
   emit('summary', {
@@ -152,6 +192,7 @@ watchEffect(() => {
     total: totals.value.total || 0,
     pendingDelivery: live.reduce((sum, o) => sum + (o.delivered ? 0 : 1), 0),
     failed: !!error.value,
+    rows: subOrders.value.length,
   })
 })
 
@@ -239,157 +280,231 @@ async function removeSubOrder(subOrder) {
 
 <template>
   <!-- Rendered for an ERROR too, not only for rows: with an empty list a failed
-       load would otherwise be indistinguishable from "no colleagues yet". -->
-  <Card v-if="subOrders.length > 0 || error" class="mb-4" data-testid="guest-sub-orders">
-    <CardHeader class="pb-2">
-      <CardTitle class="text-base">Objednávky kolegov</CardTitle>
-      <CardDescription v-if="subOrders.length > 0">
-        Objednali {{ colleagueCount }} · spolu {{ formatPrice(totals.total) }}.
-        Kolegovia platia priamo, vaša suma na úhradu sa tým nemení.
-      </CardDescription>
-    </CardHeader>
+       load would otherwise be indistinguishable from "no colleagues yet".
+       (05 §UC-KG-001 "Error surfacing", the shipped rule, kept.)
 
-    <CardContent class="space-y-3 p-4 pt-0">
-      <Alert v-if="error" variant="destructive">
-        <AlertDescription>{{ error }}</AlertDescription>
-      </Alert>
+       The shadcn `Card` wrapper is gone: the prototype's `GuestsPanel` is a plain
+       14px flex column, and the heading is page-level type rather than a card
+       header. `data-testid="guest-sub-orders"` moves onto the container unchanged
+       — it is the root of everything ten assertions in `guest-host-view.spec.js`
+       scope themselves to. -->
+  <div
+    v-if="subOrders.length > 0 || error"
+    data-testid="guest-sub-orders"
+    style="display:flex;flex-direction:column;gap:14px"
+  >
+    <!-- Panel-level failures (load, delivered toggle, remove) share ONE ref and ONE
+         banner, and it is the FIRST child of the container so a failure is never
+         read as "no colleagues yet". The message is the server's, VERBATIM — the
+         backend speaks Slovak, and the paid-409 ("Táto objednávka je už zaplatená.
+         Zrušenie vyriešte so správcom.") already carries its own escalate-to-the-
+         admin instruction, so rewording it client-side would only weaken it
+         (05 §UC-KG-005). -->
+    <div v-if="error" class="banner danger slim" role="alert">
+      <span class="dot"></span>
+      <div style="min-width:0">{{ error }}</div>
+    </div>
 
-      <div
-        v-for="subOrder in subOrders"
-        :key="subOrder.id"
-        class="rounded-lg border p-3"
-        :class="[
-          isCancelled(subOrder) ? 'border-dashed opacity-60' : 'border-border',
-          pending[subOrder.id] ? 'animate-pulse' : ''
-        ]"
-      >
-        <div class="flex flex-wrap items-start justify-between gap-2">
-          <!-- The whole name block is the fold control — a bare 16px chevron is not
-               a thumb target on the phone this screen is used on. Spans, not divs:
-               a <div> inside a <button> is invalid HTML. -->
-          <button
-            type="button"
-            @click="toggleCollapsed(subOrder)"
-            :aria-expanded="isCollapsed(subOrder) ? 'false' : 'true'"
-            :title="isCollapsed(subOrder) ? 'Zobraziť položky' : 'Skryť položky'"
-            :data-testid="`guest-items-toggle-${subOrder.id}`"
-            class="flex min-w-0 items-start gap-1.5 text-left rounded -m-1 p-1 hover:bg-muted/60 transition-colors"
-          >
-            <svg
-              class="w-4 h-4 mt-0.5 shrink-0 text-muted-foreground transition-transform"
-              :class="{ 'rotate-90': !isCollapsed(subOrder) }"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-            </svg>
-            <span class="min-w-0">
-              <span class="block font-semibold text-sm">{{ subOrder.guest_name }}</span>
-              <span class="block text-xs text-muted-foreground">{{ subOrder.guest_phone }}</span>
-              <!-- Folded, this is the only thing left saying how much is hidden. -->
-              <span
-                v-if="isCollapsed(subOrder) && (subOrder.items || []).length > 0"
-                class="block text-xs text-muted-foreground"
-                :data-testid="`guest-items-summary-${subOrder.id}`"
-              >
-                {{ itemCountLabel(subOrder) }}
-              </span>
-            </span>
-          </button>
-          <div class="flex flex-wrap items-center gap-1.5">
-            <!-- `paid` is the ADMIN's flag: shown, never toggled here. -->
-            <Badge
-              variant="outline"
-              class="text-[11px] px-1.5 py-0"
-              :class="subOrder.paid
-                ? 'border-green-500 text-green-700 bg-green-50'
-                : 'border-amber-400 text-amber-700 bg-amber-50'"
-              data-testid="guest-paid-badge"
-            >
-              {{ subOrder.paid ? 'Zaplatené' : 'Nezaplatené' }}
-            </Badge>
-            <Badge
-              v-if="isCancelled(subOrder)"
-              variant="outline"
-              class="text-[11px] px-1.5 py-0 border-stone-400 text-stone-600 bg-stone-50"
-              :data-testid="`guest-status-${subOrder.id}`"
-            >
-              Zrušené
-            </Badge>
+    <!-- Heading block. `.display` is page-level type here, not a card title: the
+         colleagues are their own section of the tab, under the share row. -->
+    <div v-if="subOrders.length > 0">
+      <div class="display" style="font-size:24px">Objednávky kolegov</div>
+      <!-- ⚠ THE MONEY LINE IS CONTEXT, NOT A CHARGE. `{{ colleagueCount }}` and the
+           total both come from the server's `totals` (`{count, total}`, cancelled
+           excluded — GSO-T5 pins that shape). The colleagues pay the admin
+           directly, so nothing here is added to, or rendered inside, the host's own
+           payable total: the cartbar stays own-items-only (§UC-GSO-006). The
+           sentence says so in as many words, and it must keep saying so. -->
+      <div class="sub" style="margin-top:4px;font-size:13.5px">
+        Objednali {{ colleagueCount }} · spolu <b class="mono" style="color:var(--ink)">{{ formatPrice(totals.total) }}</b>. Kolegovia platia priamo správcovi — vaša suma na úhradu sa tým nemení.
+      </div>
+    </div>
+
+    <div
+      v-for="subOrder in subOrders"
+      :key="subOrder.id"
+      class="suborder"
+      :class="{ cancelled: isCancelled(subOrder), 'animate-pulse': !!pending[subOrder.id] }"
+    >
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">
+        <!-- LIVE row: the whole name block is the fold control — a bare 16px
+             chevron is not a thumb target on the phone this screen is used on.
+             Spans with `display:block`, not divs: a <div> inside a <button> is
+             invalid HTML.
+
+             ⚠ `line-height:normal` at the CALL SITE. Tailwind's preflight sets
+             `line-height:inherit` on <button> and `1.5` on <html>, and the name
+             span below is unclassed — a class list cannot reach it, so it would
+             own a 1.5 strut (23.25px instead of 18px at 15.5px) and stretch the
+             whole header. Fixing it here rather than widening A10 keeps the
+             stylesheet's canon list honest. -->
+        <button
+          v-if="!isCancelled(subOrder)"
+          type="button"
+          @click="toggleCollapsed(subOrder)"
+          :aria-expanded="isCollapsed(subOrder) ? 'false' : 'true'"
+          :title="isCollapsed(subOrder) ? 'Zobraziť položky' : 'Skryť položky'"
+          :data-testid="`guest-items-toggle-${subOrder.id}`"
+          style="display:flex;gap:8px;align-items:flex-start;min-width:0;text-align:left;line-height:normal;background:transparent;border:0;padding:0;margin:0;cursor:pointer"
+        >
+          <span class="chev" :class="{ open: !isCollapsed(subOrder) }" style="margin-top:3px"><NeoIcon name="chev" /></span>
+          <span style="display:block;min-width:0">
+            <span style="display:block;font-weight:800;font-size:15.5px">{{ subOrder.guest_name }}</span>
+            <span class="mono sub" style="display:block;font-size:12px">{{ subOrder.guest_phone }}</span>
+            <!-- Folded, this is the only thing left saying how much is hidden. -->
+            <span
+              v-if="isCollapsed(subOrder) && (subOrder.items || []).length > 0"
+              class="sub"
+              style="display:block;font-size:12px"
+              :data-testid="`guest-items-summary-${subOrder.id}`"
+            >{{ itemCountLabel(subOrder) }}</span>
+          </span>
+        </button>
+
+        <!-- CANCELLED row: the same block, but NOT a toggle (§UC-KG-003 rule 3).
+             There is nothing left to unfold — the item list is not rendered at all
+             on a cancelled row — so a control that reveals nothing would be a lie.
+             The prototype keeps a live-looking click handler here; that is a
+             prototype glitch, and the spec resolves it this way. No `aria-expanded`
+             and no `guest-items-toggle-{id}`; no spec exercises either here. -->
+        <div v-else style="display:flex;gap:8px;align-items:flex-start;min-width:0;line-height:normal">
+          <span class="chev" style="margin-top:3px"><NeoIcon name="chev" /></span>
+          <div style="min-width:0">
+            <div style="font-weight:800;font-size:15.5px">{{ subOrder.guest_name }}</div>
+            <div class="mono sub" style="font-size:12px">{{ subOrder.guest_phone }}</div>
+            <!-- Permanent on a cancelled row: it is the only record left on screen
+                 of how big the called-off order was. -->
+            <div
+              class="sub"
+              style="font-size:12px"
+              :data-testid="`guest-items-summary-${subOrder.id}`"
+            >{{ itemCountLabel(subOrder) }}</div>
           </div>
         </div>
 
-        <ul
-          v-if="!isCollapsed(subOrder)"
-          class="mt-2 space-y-0.5 text-xs text-muted-foreground"
-          :data-testid="`guest-items-${subOrder.id}`"
-        >
-          <li v-for="item in subOrder.items" :key="item.id" class="flex justify-between gap-2">
-            <span class="min-w-0">
-              {{ item.quantity }}× {{ item.product_name }}
-              <span v-if="item.variant_label" class="text-muted-foreground/80">— {{ item.variant_label }}</span>
-              <span v-else-if="item.variant && item.variant !== 'unit'" class="text-muted-foreground/80">— {{ item.variant }}</span>
-            </span>
-            <span class="shrink-0">{{ formatPrice(item.price * item.quantity) }}</span>
-          </li>
-        </ul>
-
-        <div class="mt-2 flex flex-wrap items-center justify-between gap-2 border-t pt-2">
-          <span class="text-sm font-semibold">{{ formatPrice(subOrder.total) }}</span>
-
-          <div class="flex items-center gap-3">
-            <label
-              v-if="!isCancelled(subOrder)"
-              class="flex items-center gap-1.5 text-xs cursor-pointer select-none"
-            >
-              <input
-                type="checkbox"
-                class="w-4 h-4 accent-green-500"
-                :checked="!!subOrder.delivered"
-                :disabled="!!pending[subOrder.id]"
-                :data-testid="`guest-delivered-${subOrder.id}`"
-                @change="toggleDelivered(subOrder)"
-              />
-              Odovzdané
-            </label>
-
-            <Button
-              v-if="!cycleLocked && !isCancelled(subOrder) && confirmRemoveId !== subOrder.id"
-              variant="ghost"
-              size="sm"
-              class="h-7 px-2 text-xs text-muted-foreground"
-              :data-testid="`guest-remove-${subOrder.id}`"
-              @click="confirmRemoveId = subOrder.id"
-            >
-              Odstrániť
-            </Button>
-          </div>
-        </div>
-
-        <!-- Removing is destructive (the colleague's order is called off and they
-             cannot re-save it), so it asks first. -->
-        <div
-          v-if="confirmRemoveId === subOrder.id"
-          class="mt-2 space-y-2 rounded-md border border-yellow-400 bg-yellow-50 p-3"
-        >
-          <p class="text-xs text-yellow-800">
-            Objednávka kolegu sa zruší. Kolega ju uvidí ako zrušenú a už si ju nebude môcť upraviť.
-          </p>
-          <div class="flex gap-2">
-            <Button
-              size="sm"
-              class="bg-red-600 hover:bg-red-700"
-              :disabled="!!pending[subOrder.id]"
-              @click="removeSubOrder(subOrder)"
-            >
-              {{ pending[subOrder.id] ? 'Odstraňujem...' : 'Áno, odstrániť' }}
-            </Button>
-            <Button variant="ghost" size="sm" @click="confirmRemoveId = null">Nie</Button>
-          </div>
+        <!-- Exactly ONE badge. A cancelled row drops the paid badge (resolved
+             conflict 2): its paid state is the ADMIN's refund-queue signal
+             (GSO-T6), not something the host can act on, and two badges on a 60%
+             dashed card read as a live row. `paid` itself is the admin's flag in
+             every state — shown, never toggled here (Decision 2). -->
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          <span
+            v-if="isCancelled(subOrder)"
+            class="badge muted"
+            :data-testid="`guest-status-${subOrder.id}`"
+          >Zrušené</span>
+          <span
+            v-else
+            class="badge"
+            :class="subOrder.paid ? 'ok' : 'warn'"
+            data-testid="guest-paid-badge"
+          >{{ subOrder.paid ? 'Zaplatené' : 'Nezaplatené' }}</span>
         </div>
       </div>
-    </CardContent>
-  </Card>
+
+      <!-- Never rendered on a cancelled row, in either fold state. -->
+      <ul
+        v-if="!isCollapsed(subOrder) && !isCancelled(subOrder)"
+        class="items"
+        :data-testid="`guest-items-${subOrder.id}`"
+      >
+        <li v-for="item in subOrder.items" :key="item.id">
+          <span style="min-width:0">{{ itemLine(item) }}</span>
+          <span class="mono">{{ formatAmount(item.price * item.quantity) }}</span>
+        </li>
+      </ul>
+
+      <!-- Cancelled foot: the called-off amount, struck through, and nothing else
+           — no hand-over tick (there is nothing to hand over) and no "Odstrániť"
+           (`cancelled` is terminal, GSO-T4). -->
+      <div v-if="isCancelled(subOrder)" class="foot">
+        <span class="sub" style="text-decoration:line-through">{{ formatPrice(cancelledTotal(subOrder)) }}</span>
+      </div>
+
+      <div v-else class="foot">
+        <span class="total">{{ formatPrice(subOrder.total) }}</span>
+
+        <div style="display:flex;align-items:center;gap:14px">
+          <!-- The hand-over tick — the ONLY writer of `delivered` in the system
+               (Decision 2 / GSO-T5). `ok` because green is this system's
+               done/money-good colour; `big` because it is a 32px thumb target in
+               a warehouse-floor moment. It survives the lock on purpose: the
+               hand-over happens precisely AFTER the cycle is locked.
+
+               `disabled` while this row has a mutation in flight — per-row, never
+               a shared lock. `tabindex` deliberately stays 0 on the primitive
+               (aria-disabled = present but unavailable).
+
+               ⚠ THREE ZONES, because `NeoCheckbox` is a `span[role=checkbox]`, not a
+               native `<input>`. A `<label>` can neither forward its click to a
+               non-labelable element nor NAME one, so the naive "wrap the text in the
+               label" that works for an `<input>` silently loses BOTH here: the text
+               and the gap stop toggling, and `getByRole('checkbox', {name})` resolves
+               nothing. This row is the hand-over checklist on a phone — the whole
+               reason this screen exists — so the label declaring `cursor:pointer`
+               across a width where only 32px responds is a real miss, not a nicety.
+               Hence: `@click.self` for the GAP, an explicit `@click` on the SPAN, and
+               `aria-label` on the control. Same fix, same reason, as the three other
+               NeoCheckbox call sites (FriendPortal, FriendOrder, FriendPortalSession).
+
+               No extra pending guard is needed and none is added: `toggleDelivered`
+               already returns early on `pending[id]` (set SYNCHRONOUSLY by
+               `beginRowRequest`) and on cancelled rows, so all three zones are inert
+               for the same reasons and cannot double-write. `.self` also cannot
+               double-fire with the span: a click on the span makes the label a
+               bubble ancestor, not the target. -->
+          <label
+            style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:700;font-size:13.5px;line-height:normal"
+            @click.self="toggleDelivered(subOrder)"
+          >
+            <NeoCheckbox
+              big
+              ok
+              :model-value="!!subOrder.delivered"
+              :disabled="!!pending[subOrder.id]"
+              aria-label="Odovzdané"
+              :data-testid="`guest-delivered-${subOrder.id}`"
+              @update:model-value="toggleDelivered(subOrder)"
+            />
+            <span @click="toggleDelivered(subOrder)">Odovzdané</span>
+          </label>
+
+          <!-- Stays visible on a PAID row on purpose (§UC-KG-005): hiding it would
+               hide the escalation path silently. The server's 409 refusal is the
+               explanation, and it lands in the banner above. -->
+          <button
+            v-if="!cycleLocked && !isCancelled(subOrder) && confirmRemoveId !== subOrder.id"
+            type="button"
+            class="btn ghost sm"
+            :data-testid="`guest-remove-${subOrder.id}`"
+            @click="confirmRemoveId = subOrder.id"
+          >Odstrániť</button>
+        </div>
+      </div>
+
+      <!-- Removing is destructive (the colleague's order is called off and, since
+           `cancelled` is terminal, they cannot re-save it), so it asks first.
+           ⚠ The confirmbox is NOT closed by a failure — only by success or by
+           "Nie". That is what makes the paid-409 legible: the host sees the
+           refusal in the banner while the thing they asked for is still on
+           screen, and dismisses it themselves. -->
+      <div v-if="confirmRemoveId === subOrder.id" class="confirmbox" style="margin-top:10px">
+        <span>Objednávka kolegu sa zruší. Kolega ju uvidí ako zrušenú a už si ju nebude môcť upraviť.</span>
+        <div class="row">
+          <button
+            type="button"
+            class="btn sm danger"
+            :disabled="!!pending[subOrder.id]"
+            @click="removeSubOrder(subOrder)"
+          >{{ pending[subOrder.id] ? 'Odstraňujem...' : 'Áno, odstrániť' }}</button>
+          <button
+            type="button"
+            class="btn sm ghost"
+            :disabled="!!pending[subOrder.id]"
+            @click="confirmRemoveId = null"
+          >Nie</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>

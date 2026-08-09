@@ -2,22 +2,14 @@
 import { ref, computed, onMounted, onBeforeUnmount, watchEffect, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import api, { getFriendsPassword, getFriendsAuthInfo, getFriendsToken } from '../api'
-// shadcn leftovers, and the FINAL inventory for this view.
-//
-// 04 §UC-FO-001 asks for "all shadcn imports removed from this view", and RD-FO-1
-// recorded that only THIS row could satisfy it, because it is the last one that
-// owns any shadcn surface here (the four `Dialog`s). `Dialog*` is now gone — every
-// modal on this screen is `NeoModal` (02 §UC-DS-010).
-//
-// What legitimately REMAINS, and why: `Card`/`CardContent`/`Button` dress the
-// Kolegovia share card ONLY. That card is module 05's (RD-KG-1) and is explicitly
-// out of scope for this row — restyling it here would be an unreviewed change to
-// another module's surface, and 04's own Deliverables table lists module 05's files
-// as "NOT touched here". RD-KG-1 removes these three and closes UC-FO-001.
-// (RD-FO-2 took the product cards off `Card`; RD-FO-3 took the cart footer off
-// `Button`; `Alert`, `Badge` and `Tabs*` went with RD-FO-1.)
-import { Card, CardContent } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
+// ⚠ 04 §UC-FO-001's "all shadcn imports removed from this view" is now CLOSED.
+// RD-FO-1 took `Alert`/`Badge`/`Tabs*`, RD-FO-2 the product cards' `Card`,
+// RD-FO-3 the cart footer's `Button`, RD-FO-5 the four `Dialog`s (every modal on
+// this screen is `NeoModal`, 02 §UC-DS-010) — and the last three,
+// `Card`/`CardContent`/`Button`, dressed the Kolegovia share card, which is
+// module 05's surface and therefore had to wait for RD-KG-1. They are gone with
+// it. Nothing under `@/components/ui/` is imported here any more; keep it that
+// way (02 §UC-DS-004 rule 4 makes shadcn admin-only).
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
 import GuestSubOrders from '@/components/GuestSubOrders.vue'
 import BrandChrome from '@/components/neo/BrandChrome.vue'
@@ -166,7 +158,19 @@ const showShareModal = ref(false)
 const mainTab = ref('own')
 
 // Fed by GuestSubOrders (one fetch, one owner) — see its `summary` emit.
-const guestSummary = ref({ count: 0, total: 0, pendingDelivery: 0, failed: false })
+//
+// ⚠ Two DIFFERENT questions live in here and must not be conflated (05 §UC-KG-001
+// rule 5 / resolved conflict 6):
+//   · `count` / `pendingDelivery` — cancelled-EXCLUDED. They are money and work:
+//     how many colleagues owe/are owed something. The tab badge below is computed
+//     from these two and is NOT re-gated on `rows`.
+//   · `rows` — ALL rows, cancelled included. Purely "is there a list on screen?",
+//     and the only thing the panel's state machine below may ask. Gating the panel
+//     on `count` stacked a "Zatiaľ nikto" CTA card directly above visible
+//     cancelled cards.
+// Seeded with `rows: 0` so the empty state is correct on the very first paint,
+// before the child's `watchEffect` has emitted.
+const guestSummary = ref({ count: 0, total: 0, pendingDelivery: 0, failed: false, rows: 0 })
 
 const cycleId = computed(() => route.params.cycleId)
 
@@ -1073,67 +1077,89 @@ function applyMarkup(price) {
       </div>
 
       <!-- ============ panel: colleagues ============ -->
-      <div v-show="mainTab === 'guests'" id="panel-guests" role="tabpanel" aria-labelledby="tab-guests">
-        <!-- Sharing moved here in full (it used to sit above the product list on
-             every load). With colleagues present it is a one-line action; with none
-             it IS the panel, so it carries the explanation.
+      <!-- ⚠ `flex flex-col gap-[14px]` mirrors #panel-own: the prototype's whole
+           GuestsPanel is ONE 14px column (share row → heading → cards), and the
+           child container repeats the same gap, so the rhythm is continuous across
+           the component boundary. `v-show` writes inline `display:none`, which
+           beats the `flex` class — order-shell.spec.js reads that inline value. -->
+      <div
+        v-show="mainTab === 'guests'"
+        id="panel-guests"
+        role="tabpanel"
+        aria-labelledby="tab-guests"
+        class="flex flex-col gap-[14px]"
+      >
+        <!-- The panel's three non-list states, ONE v-if chain (05 §UC-KG-001 item 1,
+             §UC-KG-002 A/B/C). Keeping them in a single chain is deliberate: an
+             independent `v-if` slipped between the branches silently kills the rest
+             of the chain, and no test would catch it (GSO-T6's CycleDetail lesson).
 
-             ⚠ RD-KG-1 restyles this card. What is actually PINNED on it is text,
-             not structure — three accessible names / strings that must survive:
-               · `Zdieľať objednávku s kolegami` (empty-state button)
-                 — guest-link.spec.js:259, guest-host-view.spec.js:945
-               · `Zdieľať odkaz` (populated state), matched as /Zdieľať/ when a
-                 locked cycle asserts the count is 0 — guest-host-view.spec.js:929
-               · `Objednávate aj pre kolegov?` (getByText) — guest-host-view.spec.js:944
-             The `p-4` on the CardContent below is NOT pinned by anything (the
-             `div.p-4` locator that pins it in the portal never runs on this
-             route — see the page column above). -->
-        <Card v-if="!isLocked" class="mb-4">
-          <CardContent
-            v-if="guestSummary.count > 0"
-            class="p-4 flex flex-wrap items-center justify-between gap-3"
+             All three are gated on `guestSummary.rows`, never on `count` — see the
+             ref's note in the script.
+
+             ⚠ Sharing disappears entirely when the cycle is locked: nobody can order
+             into it, so an odkaz is a dead end. `guest-host-view.spec.js` asserts
+             `/Zdieľať/` count 0 on a locked cycle, and the portal's own entry point
+             (module 03) hides on the same rule.
+
+             Copy is verbatim from the prototype and must not drift. -->
+        <div
+          v-if="!isLocked && guestSummary.rows > 0"
+          class="card flat"
+          style="padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"
+        >
+          <span class="sub" style="font-size:13px">Ďalší kolegovia sa môžu pridať cez ten istý odkaz.</span>
+          <button type="button" class="btn sm" @click="showShareModal = true">
+            <NeoIcon name="share" /> Zdieľať odkaz
+          </button>
+        </div>
+
+        <!-- Empty state (A). The tab stays visible with nobody in it precisely so
+             the sharing can be found at all — hiding it would bury the feature, and
+             this card IS the panel then, so it carries the whole explanation.
+             `guest-sub-orders` must NOT exist in this state (pinned: count 0) — the
+             child renders nothing without rows or an error, so that holds by
+             construction. -->
+        <div
+          v-else-if="!isLocked && guestSummary.rows === 0"
+          class="card"
+          style="padding:22px;display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center"
+        >
+          <span class="badge acc">Zatiaľ nikto</span>
+          <div class="display" style="font-size:22px">Objednávate aj pre kolegov?</div>
+          <div class="sub" style="max-width:300px">Pošlite im odkaz — objednajú si sami, bez registrácie, a vy im tovar odovzdáte.</div>
+          <!-- ⚠ `white-space:normal` is a 320px accommodation, not a style choice.
+               `.btn` is `white-space:nowrap`, so this 28-character label has a
+               min-content width of ~271px against ~238px of card interior at
+               320px — and a nowrap `.btn` gives NO degradation signal: it neither
+               shrinks nor wraps nor ellipsizes, it just pushes the page sideways.
+               Wrapping to two lines is the honest failure mode. No effect at the
+               378px reference width, where it still fits on one line. -->
+          <button
+            type="button"
+            class="btn accent"
+            style="margin-top:4px;white-space:normal"
+            @click="showShareModal = true"
           >
-            <p class="text-xs text-muted-foreground min-w-0">
-              Ďalší kolegovia sa môžu pridať cez ten istý odkaz.
-            </p>
-            <Button variant="outline" size="sm" class="shrink-0 gap-1.5" @click="showShareModal = true">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342A3 3 0 106.316 10.658m0 2.684l8.632 4.316m-8.632-7l8.632-4.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-              </svg>
-              Zdieľať odkaz
-            </Button>
-          </CardContent>
+            <NeoIcon name="share" /> Zdieľať objednávku s kolegami
+          </button>
+        </div>
 
-          <!-- Empty state. The tab stays visible with nobody in it precisely so the
-               sharing can be found at all — hiding it would bury the feature. -->
-          <CardContent v-else class="p-6 flex flex-col items-center gap-2 text-center">
-            <span class="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
-              Zatiaľ nikto
-            </span>
-            <div class="font-medium text-sm text-foreground">Objednávate aj pre kolegov?</div>
-            <p class="text-xs text-muted-foreground max-w-xs">
-              Pošlite im odkaz — objednajú si sami a vy im tovar odovzdáte.
-            </p>
-            <Button size="sm" class="mt-1 gap-1.5" @click="showShareModal = true">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342A3 3 0 106.316 10.658m0 2.684l8.632 4.316m-8.632-7l8.632-4.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-              </svg>
-              Zdieľať objednávku s kolegami
-            </Button>
-          </CardContent>
-        </Card>
-
-        <!-- A locked cycle has no sharing left to offer, but the panel must not be
-             empty: the hand-over checklist below is the whole point of it by then. -->
-        <p v-else-if="guestSummary.count === 0 && !guestSummary.failed" class="text-sm text-muted-foreground">
-          Cez váš odkaz si nikto neobjednal.
-        </p>
+        <!-- Locked, and nobody used the link (B). One line, no card, no CTA — there
+             is nothing to offer and nothing to hand over. Suppressed when the load
+             FAILED: "nikto neobjednal" over a failed request is a lie, and the
+             child's danger banner is the truthful thing to show instead. -->
+        <div
+          v-else-if="isLocked && guestSummary.rows === 0 && !guestSummary.failed"
+          class="sub"
+          style="padding:8px 2px"
+        >Cez váš odkaz si nikto neobjednal.</div>
 
         <!-- Sub-orders the colleagues placed through the share link. Rendered
-             regardless of the lock: removal ends at the lock, but the "odovzdané"
-             hand-over checklist is used exactly AFTER it. The guest total inside is
-             context only — the host's own payable total below is own items only
-             (§UC-GSO-006). -->
+             regardless of the lock (C): removal ends at the lock, but the
+             "odovzdané" hand-over checklist is used exactly AFTER it. The guest
+             total inside is context only — the host's own payable total in the
+             cartbar is own items only (§UC-GSO-006). -->
         <!-- `ready` waits for an authenticated load: this view restores the friend
              session in onMounted, which runs AFTER a child's setup, so fetching any
              earlier would 401 on a fresh load of /cycle/:id. -->
