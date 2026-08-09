@@ -371,6 +371,98 @@ The theme's own classes survive only because they sit *later in the same stylesh
 
 Known call sites, enumerated when RD-FL-1 landed the first `.app`:
 - `FriendPortal.vue` voucher overlay — **fixed in RD-FL-1** via `<Teleport to="body">`; the view now has zero exposed direct children.
-- ⚠ `FriendOrder.vue` `<header … sticky top-0 z-40>` is a **direct child** of the root. The moment RD-FO-1 writes `class="app"` there it silently stops being sticky. It is replaced by `BrandChrome` in the same row so the fix is free — but landing `.app` before replacing the header is an invisible regression.
-- ⚠ `FriendOrder.vue` `TabsList data-testid="purpose-tabs" class="sticky top-16 z-30"` is *nested*, so `sticky` survives — but `top-16` (64 px) was calibrated against the sticky header that `BrandChrome` (non-sticky) replaces, so it will pin 64 px below the viewport top. `mobile-no-h-overflow.spec.js` asserts the strip scrolls within itself and will **not** catch a wrong `top`.
+- ~~⚠ `FriendOrder.vue` `<header … sticky top-0 z-40>` is a **direct child** of the root.~~ **Resolved in RD-FO-1**: the header is gone, replaced by the non-sticky `BrandChrome`. `order-shell.spec.js` asserts `header` count 0, `.appbar` computing `position: relative`, and the appbar moving 1:1 with the page.
+- ~~⚠ `FriendOrder.vue` `TabsList … class="sticky top-16 z-30"`~~ **Resolved in RD-FO-1**: it is `.cat-tabs` now, `top: 0` from the theme, which is correct precisely because nothing above it is pinned any more. Pinned by `order-shell.spec.js` (`top`, `z-index`, and the strip's box actually reaching y = 0 after a scroll) — `mobile-no-h-overflow.spec.js` would not have caught a wrong `top`.
 - `FriendOrder.vue` / `GuestOrder.vue` / `GuestOrderStatus.vue` hand-rolled `fixed bottom-0 z-50` cart bars are all *nested* inside their page-column div, so they survive as-is; converting them to the theme's `.cartbar` is safe even at root level. Do not "tidy" them up to root level while they are still on Tailwind utilities.
+
+### FriendOrder shell — the neobrutal chrome, banners, switch and category strip (RD-FO-1, 2026-08-08)
+
+`frontend/src/views/FriendOrder.vue` is now an `.app` scope (04 §UC-FO-001..004). **Shell only** —
+product cards (RD-FO-2), the cartbar (RD-FO-3), the modals (RD-FO-4), the locked composition
+(RD-FO-5) and the Kolegovia panel's *contents* (RD-KG-1) are still on the old skin by design.
+
+- **Appbar subtitle is the friend's NAME ONLY.** The prototype shows "Lego · X42KPGZZ", but
+  `GET /orders/cycle/:id/friend/:id` returns `{id, name, packeta_address}` and `friends.js` strips
+  `invite_code` from every friend response. Module 03's portal appbar sources its uid from the
+  *session*, which `guest-host-view.spec.js:641-647` proves is **optional** in the stored shape — so
+  a code here would render for some friends and not others. Consistency won; revisit only if a
+  client-side code source becomes guaranteed.
+- ⚠ **The green "odoslaná" banner now YIELDS while unsent changes exist**
+  (`isSubmitted && cartItems.length > 0 && !hasUnsubmittedChanges`). That is the prototype's
+  `submitted && !dirty && lines > 0` — a deliberate handoff UX change, in contract, and the cartbar
+  warning carries the state instead. It is a *condition*, so nothing but a spec can catch its loss.
+- ⚠ **The badge computeds live in this view and module 05 must never re-own them.**
+  `guestBadgeIsPending = isLocked && pendingDelivery > 0`, `guestBadgeCount = pending ? pendingDelivery : count`,
+  fed exclusively by `GuestSubOrders`' `summary` emit. The badge has to be right *before* its tab is
+  opened, which is only possible from the parent. Visuals follow the prototype and semantics follow
+  the repo (resolved conflict #1): plain white `.tabbadge` at rest, amber `.tabbadge.pending` only
+  when locked with an outstanding hand-over. The prototype paints pending unconditionally — wrong here.
+- **Both panels stay `v-show`.** Same rule as 2026-08-07, now also asserted structurally
+  (`#panel-guests` present in the DOM with `style.display: none` while the own tab is active).
+- **One product list, not two.** The radix `TabsContent` panels and the "only one purpose" fallback
+  were byte-divergent copies of the same card markup, and the fallback was the **poorer** copy in
+  **four** ways: no roast/roastery badges, no `canIncrement` on "+", **no stock-limit bar at all**
+  (no `getRemainingGrams`, no "Vypredané"), and **no 500 g variant** — its own comment said so
+  verbatim: `<!-- Weight variants (150g / 200g / 250g / 1kg) -->`. The two that mattered HID PRODUCT
+  from the user: on a single-purpose cycle a 500 g option was unbuyable and no stock bar existed
+  even when the product had a `stock_limit_g`. ⚠ The
+  missing `canIncrement` was **cosmetic only** — `increment()` already returns early on
+  `!canIncrement` (`2ecb934:519`), so the button was *dead*, not an over-order path; an earlier
+  version of this note claimed the limit "could be stepped past", which is wrong. Collapsed into
+  `activeProducts` (the active purpose only): after stripping indentation the surviving card block is
+  byte-identical to the `TabsContent` one apart from the `v-for` source, so nothing was lost from the
+  richer copy. Net −280 lines and one card for RD-FO-2 to restyle; the strip is still absent when
+  there is a single purpose.
+- **`.tabgroup` fits 320 px — and the BADGE, not the label, is what spends the margin.** The model is
+  `min₁ + min₂ + gap ≤ content`: `grid-auto-columns: 1fr` is `minmax(auto, 1fr)`, so each track floors
+  at its own min-content and only the surplus is shared. "Moja objednávka" therefore legitimately
+  **exceeds** its half cell (136.2 px border-box against 133.5 px) and the Kolegovia track hands the
+  difference back. ⚠ An earlier version of this note read the tab's `clientWidth` (132) against its
+  own border-box (136.2) and called the 4.2 px difference "spare" — it is the tab's own transparent
+  2 px border, not slack. Measured at 320 px (content box 272 px, gap 5 px): **41.3 px** headroom with
+  no badge on Figtree, 32.5 px on the fallback face, **12.3 px with a 1-digit badge** (the shipped
+  state), 3.6 px with a 1-digit badge on the fallback face — and a 3-digit badge on the fallback face
+  **overflows by 2 px**. No override shipped, but the margin is thin and data-dependent.
+  ⚠ Neither `mobile-no-h-overflow.spec.js`'s seeded cycle nor `order-shell.spec.js` originally put a
+  badge on screen at 320 px, so the tight case was **untested**; `order-shell.spec.js`'s 320 px test
+  now creates a real guest sub-order, asserts the badge is rendered (a non-vacuity gate) and asserts
+  the headroom stays positive. If an override is ever needed it goes on `.tabgroup .tab` only and
+  **cannot be a Tailwind utility** — that selector is `(0,2,0)` and `friends-theme.css` loads after
+  Tailwind, so it needs a scoped block.
+- ⚠ **`successMessage` ("Košík bol uložený") is reachable, unreadable, and once actively wrong.**
+  `saveCart(false)` is its only writer and `doSubmitOrder()` its only non-silent caller (auto-save and
+  cancel pass `silent: true` on purpose), so it has **no user-initiated trigger**. After a successful
+  submit it renders behind the success modal, which navigates away on close. After a **failed** submit
+  it is plainly visible **next to the error banner** — "saved" and "failed" side by side for 3 s
+  (reproduced by stubbing the submit endpoint to 500). Pre-existing, not introduced by this row.
+  Recommendation for **RD-FO-3** (which owns the cartbar messaging): retire the banner, or clear
+  `successMessage` at the top of `doSubmitOrder()`'s try. Do **not** give it a trigger.
+- The Kolegovia **share card** (RD-KG-1's to restyle) is pinned by TEXT, not structure — the
+  accessible names `Zdieľať objednávku s kolegami` (`guest-link.spec.js:259`,
+  `guest-host-view.spec.js:945`) and `Zdieľať odkaz`, matched as `/Zdieľať/` when a locked cycle
+  asserts count 0 (`guest-host-view.spec.js:929`), plus `getByText('Objednávate aj pre kolegov?')`
+  (`:944`). Its `p-4` is **not** pinned: `guest-link.spec.js`'s `div.p-4` `cardFor()` locator only ever
+  runs after `page.goto('/')`, i.e. on the **portal**, so the "never use the `p-4` shorthand" rule
+  belongs to `FriendPortalSession.vue` (where it is documented) and does not constrain this route —
+  UC-DS-004 rule 2 lists `p-4` among the allowed layout utilities. The order page's column uses axis
+  utilities for consistency with the portal, not because a spec requires it.
+- **snapTab is proven by A/B, not asserted** (02 §UC-DS-012's deferred obligation, discharged in
+  `e2e/tests/order-shell.spec.js`): the same tab, same page — `snapTab` centres the strip and leaves
+  `window.scrollY` at 0, `scrollIntoView()` scrolls the *document*. ⚠ Both halves need a **short
+  viewport**: with one card per purpose the page does not scroll at 844 px tall and `scrollIntoView`
+  looks as innocent as `snapTab`. ⚠ The centring tolerance is 24 px because `.cat-tabs` is
+  `scroll-snap-type: x proximity` and re-snaps to the nearest tab edge after the smooth scroll
+  (measured 5 px off the ideal centre), and Chromium serialises that computed value as bare `"x"`.
+- The back chevron, both switch tabs and every category tab carry the house zero-pixel ARIA layer
+  (role + tabindex + Enter/Space). Not decoration: the controls they replace were a real `<button>`
+  and radix `TabsTrigger`s, both natively focusable — pointer-only spans would have been an
+  accessibility **regression**, and the Kolegovia panel plus every non-first category would have
+  become keyboard-unreachable. ⚠ The chevron's label is **"Späť"**, not "Späť na zoznam cyklov":
+  the fatal-error state renders a button with that exact text and Playwright matches accessible
+  names as a case-insensitive SUBSTRING unless `exact: true`.
+- Dropped with this row: the per-category page tint (`backgroundClass`) and the coloured
+  `TabsTrigger` classes (resolved conflict #7) — the active tab is `.tab.on` and nothing else.
+  `Alert`, `Badge` and `Tabs*` imports are gone; `Card`/`CardContent`/`Button`/`Dialog*` stay because
+  RD-FO-2..4 still own that markup.
+
+Full suite after this work: **367 passed / 3 skipped** (+14, zero pre-existing specs modified).

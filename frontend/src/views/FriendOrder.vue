@@ -2,13 +2,19 @@
 import { ref, computed, onMounted, onBeforeUnmount, watchEffect, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import api, { getFriendsPassword, getFriendsAuthInfo, getFriendsToken } from '../api'
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
+// shadcn leftovers. `Card`/`CardContent` still dress the product cards (RD-FO-2)
+// and the Kolegovia share card (RD-KG-1); `Button` is still used by the product
+// steppers (RD-FO-2), the cartbar (RD-FO-3) and every modal (RD-FO-4); `Dialog*`
+// is the modals themselves (RD-FO-4). `Alert`, `Badge` and `Tabs*` are gone with
+// this row: the banners, the colleague badge and both tab strips are theme
+// classes now, and nothing else in this view used them.
+import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
 import GuestSubOrders from '@/components/GuestSubOrders.vue'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import BrandChrome from '@/components/neo/BrandChrome.vue'
+import NeoIcon from '@/components/neo/NeoIcon.vue'
+import { snapTab } from '@/lib/snap-tab'
 import {
   Dialog,
   DialogContent,
@@ -107,10 +113,17 @@ const isSubmitted = computed(() => order.value?.status === 'submitted')
 const markupRatio = computed(() => cycle.value?.markup_ratio || 1.0)
 const isBakery = computed(() => cycle.value?.type === 'bakery')
 
-// Amber only when the host actually owes someone an action: the cycle is locked, so
-// the goods have arrived, and somebody has not been handed theirs yet. Violet with
-// the colleague count is the resting state; no badge at all when nobody has ordered.
+// Amber (`.tabbadge.pending`) only when the host actually owes someone an action:
+// the cycle is locked, so the goods have arrived, and somebody has not been handed
+// theirs yet. The plain white/ink `.tabbadge` with the colleague count is the
+// resting state; no badge at all when nobody has ordered.
 // (Declared after isLocked so the dependency reads in source order.)
+//
+// ⚠ These two computeds are OWNED BY THIS VIEW and are never re-derived in the
+// Kolegovia panel (module 05): the badge must be right before its tab is opened,
+// which is only possible from the parent, off `GuestSubOrders`' `summary` emit.
+// The prototype always renders the amber pending badge, even on an open cycle
+// (04 resolved conflict #1) — shipped semantics win, prototype visuals win.
 const guestBadgeIsPending = computed(
   () => isLocked.value && guestSummary.value.pendingDelivery > 0
 )
@@ -275,28 +288,17 @@ const availablePurposes = computed(() => {
   return sorted
 })
 
-const backgroundClass = computed(() => {
-  if (isBakery.value) {
-    if (activeTab.value === 'Slané') return 'bg-amber-50'
-    if (activeTab.value === 'Sladké') return 'bg-pink-50'
-    return 'bg-background'
-  }
-  if (activeTab.value === 'Espresso') return 'bg-stone-200'
-  if (activeTab.value === 'Filter') return 'bg-sky-100'
-  if (activeTab.value === 'Kapsule') return 'bg-amber-100'
-  return 'bg-background'
+// The cards of the ACTIVE purpose only — one list, rendered under the strip.
+//
+// This replaces the radix `TabsContent` panels AND the "only one purpose, so no
+// strip" fallback, which were two byte-divergent copies of the same card markup
+// (the fallback's had no roast/roastery badges and no `canIncrement` guard on
+// "+", so a single-purpose cycle could be stepped past its stock limit in the UI).
+// Same one-visible-at-a-time behaviour, one card to restyle in RD-FO-2.
+const activeProducts = computed(() => {
+  const source = isBakery.value ? groupedBakeryProducts.value : groupedProducts.value
+  return source[activeTab.value] || []
 })
-
-function getTabTriggerClass(purpose) {
-  const isActive = activeTab.value === purpose
-  if (!isActive) return ''
-  if (purpose === 'Slané') return 'bg-amber-600 text-white data-[state=active]:bg-amber-600 data-[state=active]:text-white'
-  if (purpose === 'Sladké') return 'bg-pink-600 text-white data-[state=active]:bg-pink-600 data-[state=active]:text-white'
-  if (purpose === 'Espresso') return 'bg-stone-600 text-white data-[state=active]:bg-stone-600 data-[state=active]:text-white'
-  if (purpose === 'Filter') return 'bg-sky-600 text-white data-[state=active]:bg-sky-600 data-[state=active]:text-white'
-  if (purpose === 'Kapsule') return 'bg-amber-600 text-white data-[state=active]:bg-amber-600 data-[state=active]:text-white'
-  return ''
-}
 
 // Set active tab to first available purpose when products load
 watch(availablePurposes, (purposes) => {
@@ -760,127 +762,241 @@ function applyMarkup(price) {
 </script>
 
 <template>
-  <div :class="['min-h-screen transition-colors', backgroundClass]">
-    <!-- Header -->
-    <header class="bg-primary text-primary-foreground shadow sticky top-0 z-40 relative">
-      <div class="max-w-4xl mx-auto px-4 py-3 flex justify-between items-center">
-        <div class="flex items-center gap-3">
-          <Button
-            variant="ghost"
-            size="icon"
-            @click="goBack"
-            class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10"
-          >
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-            </svg>
-          </Button>
-          <div v-if="friend" class="flex flex-col">
-            <span class="text-lg font-semibold">{{ friend.name }}</span>
-            <span class="text-primary-foreground/70 text-sm">{{ cycle?.name }}</span>
-          </div>
-        </div>
-      </div>
-    </header>
+  <!-- ⚠ `.app` brings `.app > * { position:relative; z-index:1 }` with it, which
+       NEUTRALISES every Tailwind positioning utility on a DIRECT child — `fixed`,
+       `absolute`, `sticky`, and even `relative z-10` (whose z-index is silently
+       clamped). It fails silently: no build error, no failing spec. Two live
+       consequences on this screen, both handled here:
+         · the old `<header … sticky top-0 z-40>` was a direct child and would have
+           un-stuck the moment this class landed — it is GONE, replaced by the
+           deliberately non-sticky `BrandChrome` (UC-DS-005/006);
+         · the purpose strip's old `top-16` was calibrated against that sticky
+           header. `.cat-tabs` is `top:0` from the theme, which is now correct
+           because nothing above it is pinned any more.
+       The cart footer's `fixed bottom-0 z-50` is NESTED (inside the page column),
+       so it survives — do not hoist it to root level while it is still on Tailwind
+       utilities. RD-FO-3 puts it on `.cartbar`.
+
+       `flex flex-col` + the theme's `min-height:100vh` is the prototype's root
+       layout, and it is what lets the page column take `flex-1`. -->
+  <div class="app flex flex-col">
+    <!-- Brand chrome (UC-FO-001): appbar + hazard tape + ticker, full-bleed, NOT
+         sticky — it scrolls away and `.cat-tabs` owns the top edge alone.
+
+         Subtitle is the friend's NAME ONLY. The prototype's appbar shows
+         "Lego · X42KPGZZ", but `GET /orders/cycle/:id/friend/:id` returns only
+         `{id, name, packeta_address}`, `friends.js` strips `invite_code` from every
+         friend response, and no API change is in scope. The session's uid — which
+         module 03's portal appbar uses — is OPTIONAL in the stored auth shape, so
+         sourcing it here would render "name · code" for some friends and a bare
+         name for others. Consistency wins (orchestrator decision, 2026-08-08).
+
+         The back chevron carries the house zero-pixel ARIA layer (role + tabindex
+         + Enter/Space): it is a bare `<span>` in the prototype, and it is the only
+         in-page route back to the cycle list — the control it replaced was a real
+         `<button>`, so leaving it pointer-only would be a regression. Its label is
+         "Späť", NOT "Späť na zoznam cyklov": the fatal-error state renders a button
+         with that exact text, and Playwright matches accessible names as a
+         case-insensitive SUBSTRING unless `exact: true`. -->
+    <BrandChrome
+      :title="cycle?.name || ''"
+      :subtitle="friend?.name || ''"
+      :ticker="isLocked
+        ? '+++ OBJEDNÁVKY UZAMKNUTÉ +++ DRŽ JAZYK ZA ZUBAMI +++'
+        : '+++ OBJEDNÁVKY OTVORENÉ +++ NEHOVOR O TOM NAHLAS +++'"
+    >
+      <template #leading>
+        <span
+          class="back"
+          role="button"
+          tabindex="0"
+          aria-label="Späť"
+          @click="goBack"
+          @keydown.enter.prevent="goBack"
+          @keydown.space.prevent="goBack"
+        >
+          <NeoIcon name="back" />
+        </span>
+      </template>
+      <template #trailing>
+        <span v-if="isLocked" class="chip" title="Objednávky sú uzamknuté">
+          <NeoIcon name="lock" />
+        </span>
+        <span v-else class="chip acc">Otvorené</span>
+      </template>
+    </BrandChrome>
 
     <!-- Loading -->
-    <div v-if="loading" class="text-center py-12 text-muted-foreground">Načítavam...</div>
-
-    <!-- Error -->
-    <div v-else-if="error && !friend" class="max-w-4xl mx-auto px-4 py-12">
-      <Alert variant="destructive">
-        <AlertDescription>
-          <strong>Chyba:</strong> {{ error }}
-        </AlertDescription>
-      </Alert>
-      <Button @click="goBack" class="mt-4">Späť na zoznam cyklov</Button>
+    <div v-if="loading" class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7">
+      <div class="sub" style="text-align:center;padding:32px 0">Načítavam...</div>
     </div>
 
-    <!-- Order Form -->
-    <div v-else class="max-w-4xl mx-auto px-4 py-6">
-      <!-- Status banner -->
-      <Alert v-if="isLocked" class="mb-6 border-yellow-500 bg-yellow-50 text-yellow-800">
-        <AlertDescription>
-          <strong>Objednávky sú uzamknuté.</strong> Už nie je možné meniť objednávku.
-        </AlertDescription>
-      </Alert>
+    <!-- Fatal error (no friend loaded at all) -->
+    <div v-else-if="error && !friend" class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 flex flex-col gap-[14px]">
+      <div class="banner danger" role="alert">
+        <span class="dot"></span>
+        <div style="min-width:0"><b>Chyba:</b> {{ error }}</div>
+      </div>
+      <div>
+        <button type="button" class="btn" @click="goBack">Späť na zoznam cyklov</button>
+      </div>
+    </div>
 
-      <Alert v-if="isSubmitted && !isLocked && cartItems.length > 0" class="mb-6 border-green-500 bg-green-50 text-green-800">
-        <AlertDescription>
-          <strong>Vaša objednávka bola odoslaná!</strong> Stále ju môžete upraviť až do uzamknutia.
-        </AlertDescription>
-      </Alert>
+    <!-- Order Form.
+         The page column is the settled geometry (UC-DS-005): 760px max, centred,
+         16px phone / 28px desktop — written as axis utilities, the same idiom as
+         `FriendPortalSession.vue`'s column. `pb-2` is repeated at both breakpoints
+         so the `sm` layer cannot re-raise it; that 8px bottom is the prototype's
+         `paddingBottom: 8` (UC-FO-001 item 3).
+
+         NOTE: the "never use the `p-4` shorthand" rule that guards the portal's
+         column does NOT apply on this route. It exists because
+         `guest-link.spec.js`'s `cardFor()` locator (`div.p-4` containing a cycle
+         heading) would otherwise match the column as well as the cycle card — and
+         that locator only ever runs after `page.goto('/')`, i.e. on the PORTAL.
+         It is documented where it belongs, in `FriendPortalSession.vue`. Here
+         `p-4` would be perfectly legal (UC-DS-004 rule 2 lists it as an allowed
+         layout utility); the axis form is kept for consistency, not for a pin. -->
+    <div v-else class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 pb-2 sm:pb-2 flex flex-col gap-[14px] flex-1">
+      <!-- Status banner. Exactly one of the two, in the shipped priority order.
+           ⚠ The green one now YIELDS while unsent changes exist — the prototype's
+           `submitted && !dirty && lines > 0`, whose repo equivalent is
+           `hasUnsubmittedChanges`. The cartbar warning carries that state instead
+           (RD-FO-3). A handoff UX change, in contract (UC-FO-002). -->
+      <div v-if="isLocked" class="banner warn">
+        <span class="dot"></span>
+        <div style="min-width:0"><b>Objednávky sú uzamknuté.</b> Už nie je možné meniť objednávku.</div>
+      </div>
+      <div v-else-if="isSubmitted && cartItems.length > 0 && !hasUnsubmittedChanges" class="banner ok">
+        <span class="dot"></span>
+        <div style="min-width:0"><b>Vaša objednávka bola odoslaná!</b> Stále ju môžete upraviť až do uzamknutia.</div>
+      </div>
 
       <!-- Messages. Page-level, so they sit ABOVE the switch: the order can be
            submitted from the sticky footer on either tab, and a failure the host
            cannot see because they happen to be on the colleagues tab is worse than
            no message at all. -->
-      <Alert v-if="error" variant="destructive" class="mb-4">
-        <AlertDescription>{{ error }}</AlertDescription>
-      </Alert>
-      <Alert v-if="successMessage" class="mb-4 border-green-500 bg-green-50 text-green-800">
-        <AlertDescription>{{ successMessage }}</AlertDescription>
-      </Alert>
+      <div v-if="error" class="banner danger slim" role="alert">
+        <span class="dot"></span>
+        <div style="min-width:0">{{ error }}</div>
+      </div>
+      <!-- ⚠ `successMessage` is REACHABLE — but it has no user-initiated trigger
+           and one state where it actively misleads. Verified live, not reasoned:
+
+             · `saveCart(false)` is the only writer, and `doSubmitOrder()` is its
+               only non-silent caller (the other two — auto-save and cancel — pass
+               `silent: true` deliberately). So "Košík bol uložený" only ever
+               appears as a side effect of SUBMITTING.
+             · After a SUCCESSFUL submit it is in the DOM and laid out, next to
+               the green status banner — merely occluded by the success modal,
+               and closing that modal navigates away.
+             · ⚠ After a FAILED submit it is VISIBLE: `saveCart` has already set
+               it, the catch then sets `error`, and the page renders "Košík bol
+               uložený" and the failure SIDE BY SIDE for the 3s until the timeout
+               fires. Reproduced by stubbing the submit endpoint to 500.
+
+           Identical in the pre-redesign view, so this row introduced none of it.
+           RD-FO-3 owns the cartbar and its messaging: either retire this banner
+           (nothing calls `saveCart(false)` except the submit) or clear
+           `successMessage` at the top of `doSubmitOrder()`'s try. Do not "fix" it
+           by giving it a trigger — there is no user-initiated save to report. -->
+      <div v-if="successMessage" class="banner ok slim">
+        <span class="dot"></span>
+        <div style="min-width:0">{{ successMessage }}</div>
+      </div>
 
       <!-- Own order ⇄ colleagues. Hand-rolled rather than the Tabs component
            because the panels must stay MOUNTED (v-show) — see mainTab's note — and
            because only the purpose tabs inside may be sticky: two stacked sticky
-           bars eat a third of a phone screen. -->
-      <div
-        class="mb-4 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1"
-        role="tablist"
-        aria-label="Objednávka alebo kolegovia"
-      >
-        <button
-          type="button"
+           bars eat a third of a phone screen.
+
+           ⚠ This must remain the FIRST tablist in the DOM: `mobile-no-h-overflow`
+           asserts `scrollWidth − clientWidth <= 0` on `getByRole('tablist').first()`.
+           `.tabgroup` is a 1fr/1fr grid with NO scroll affordance, so an
+           overflowing label would simply be unreachable.
+
+           ⚠ The fit model is `min₁ + min₂ + gap ≤ content`, NOT "does the label
+           fit a half cell". `grid-auto-columns: 1fr` is `minmax(auto, 1fr)`, so
+           each track FLOORS at its own min-content and only the surplus is
+           shared: "Moja objednávka" legitimately exceeds half the row (136.2px
+           against a 133.5px half cell) and the Kolegovia track gives the
+           difference back, down to its own min-content.
+
+           And the binding factor is the BADGE — data-dependent width — not the
+           label. Measured at 320px (container content box 272px, gap 5px):
+
+             no badge, Figtree ............. 41.3px headroom
+             no badge, fallback face ....... 32.5px
+             1-digit badge, Figtree ........ 12.3px      ← the shipped state
+             1-digit badge, fallback ....... 3.6px
+             3-digit badge, fallback ....... overflows by 2px
+
+           So no override is shipped, but the margin is thin and it is the badge
+           that spends it. `order-shell.spec.js`'s 320px test renders a real guest
+           sub-order and asserts that headroom stays positive — before RD-FO-1's
+           review neither it nor `mobile-no-h-overflow.spec.js` had a badge on
+           screen at 320px at all, so the tight case was untested.
+
+           If an override is ever needed it goes on `.tabgroup .tab` ONLY, never on
+           `.tab` globally (the purpose strip must keep its canon metrics) — and it
+           cannot be a Tailwind utility: `.tabgroup .tab` is `(0,2,0)` and
+           `friends-theme.css` loads after Tailwind, so it needs a scoped block. -->
+      <div class="tabgroup" role="tablist" aria-label="Objednávka alebo kolegovia">
+        <span
+          class="tab"
+          :class="{ on: mainTab === 'own' }"
           role="tab"
           id="tab-own"
+          tabindex="0"
           aria-controls="panel-own"
           :aria-selected="mainTab === 'own' ? 'true' : 'false'"
           data-testid="main-tab-own"
           @click="mainTab = 'own'"
-          :class="[
-            'min-w-0 truncate rounded-md px-2 py-1.5 text-[13px] font-medium transition-colors sm:px-3 sm:text-sm',
-            mainTab === 'own' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-          ]"
-        >
-          Moja objednávka
-        </button>
-        <button
-          type="button"
+          @keydown.enter.prevent="mainTab = 'own'"
+          @keydown.space.prevent="mainTab = 'own'"
+        >Moja objednávka</span>
+        <span
+          class="tab"
+          :class="{ on: mainTab === 'guests' }"
           role="tab"
           id="tab-guests"
+          tabindex="0"
           aria-controls="panel-guests"
           :aria-selected="mainTab === 'guests' ? 'true' : 'false'"
           data-testid="main-tab-guests"
           @click="mainTab = 'guests'"
-          :class="[
-            'flex min-w-0 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] font-medium transition-colors sm:px-3 sm:text-sm',
-            mainTab === 'guests' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-          ]"
+          @keydown.enter.prevent="mainTab = 'guests'"
+          @keydown.space.prevent="mainTab = 'guests'"
         >
           Kolegovia
           <span
             v-if="guestBadgeCount > 0"
+            class="tabbadge"
+            :class="{ pending: guestBadgeIsPending }"
             data-testid="guest-tab-badge"
-            :title="guestBadgeIsPending ? 'Toľkým kolegom ste ešte neodovzdali tovar' : 'Toľko kolegov si objednalo cez váš odkaz'"
-            :class="[
-              'inline-flex min-w-[1.25rem] items-center justify-center rounded-full border px-1.5 text-[11px] font-bold tabular-nums',
-              guestBadgeIsPending
-                ? 'border-amber-300 bg-amber-100 text-amber-700'
-                : 'border-violet-200 bg-violet-100 text-violet-700'
-            ]"
-          >
-            {{ guestBadgeCount }}
-          </span>
-        </button>
+            :title="guestBadgeIsPending
+              ? 'Toľkým kolegom ste ešte neodovzdali tovar'
+              : 'Toľko kolegov si objednalo cez váš odkaz'"
+          >{{ guestBadgeCount }}</span>
+        </span>
       </div>
 
       <!-- ============ panel: colleagues ============ -->
       <div v-show="mainTab === 'guests'" id="panel-guests" role="tabpanel" aria-labelledby="tab-guests">
         <!-- Sharing moved here in full (it used to sit above the product list on
              every load). With colleagues present it is a one-line action; with none
-             it IS the panel, so it carries the explanation. -->
+             it IS the panel, so it carries the explanation.
+
+             ⚠ RD-KG-1 restyles this card. What is actually PINNED on it is text,
+             not structure — three accessible names / strings that must survive:
+               · `Zdieľať objednávku s kolegami` (empty-state button)
+                 — guest-link.spec.js:259, guest-host-view.spec.js:945
+               · `Zdieľať odkaz` (populated state), matched as /Zdieľať/ when a
+                 locked cycle asserts the count is 0 — guest-host-view.spec.js:929
+               · `Objednávate aj pre kolegov?` (getByText) — guest-host-view.spec.js:944
+             The `p-4` on the CardContent below is NOT pinned by anything (the
+             `div.p-4` locator that pins it in the portal never runs on this
+             route — see the page column above). -->
         <Card v-if="!isLocked" class="mb-4">
           <CardContent
             v-if="guestSummary.count > 0"
@@ -939,645 +1055,393 @@ function applyMarkup(price) {
       </div>
 
       <!-- ============ panel: own order ============ -->
-      <div v-show="mainTab === 'own'" id="panel-own" role="tabpanel" aria-labelledby="tab-own">
+      <div
+        v-show="mainTab === 'own'"
+        id="panel-own"
+        role="tabpanel"
+        aria-labelledby="tab-own"
+        class="flex flex-col gap-[14px]"
+      >
+        <!-- Category strip (UC-FO-004). Purposes are DATA-DERIVED — `availablePurposes`
+             is the distinct `product.purpose` of the cycle snapshot, ordered Espresso,
+             Filter, Kapsule first and then in encounter order (unchanged shipped rule).
+             The prototype's "Filter Special / Brew Bags / Nespresso" are admin-entered
+             values, not code.
 
-      <!-- Products by purpose with tabs -->
-      <Tabs v-if="availablePurposes.length > 1" v-model="activeTab" :default-value="availablePurposes[0]" class="w-full">
-        <TabsList data-testid="purpose-tabs" class="sticky top-16 z-30 w-full justify-start bg-card/95 backdrop-blur">
-          <TabsTrigger
+             ⚠ Geometry comes from `.cat-tabs` in the theme and is NOT re-derived here:
+             `position:sticky; top:0; z-index:40`, hidden scrollbar, `scroll-snap-type`,
+             the 28px right-edge fade. `top:0` is right ONLY because the chrome above is
+             not sticky; the old `top-16` was calibrated against a sticky header that no
+             longer exists, and `mobile-no-h-overflow.spec.js` would NOT have caught it.
+
+             `data-testid="purpose-tabs"` moved onto this element and must not be
+             dropped, and the tabs must expose `role="tab"` — that spec counts
+             `strip.getByRole('tab')`.
+
+             Single purpose ⇒ no strip at all (shipped fallback); the cards below render
+             either way. Per-category page tints and coloured triggers are dropped
+             (resolved conflict #7): the active tab is `.tab.on` (magenta) and nothing
+             else. -->
+        <div
+          v-if="availablePurposes.length > 1"
+          class="cat-tabs"
+          data-testid="purpose-tabs"
+          role="tablist"
+          aria-label="Kategórie produktov"
+        >
+          <span
             v-for="purpose in availablePurposes"
             :key="purpose"
-            :value="purpose"
-            :class="['flex-1', getTabTriggerClass(purpose)]"
-          >
-            {{ purpose }}
-          </TabsTrigger>
-        </TabsList>
+            class="tab"
+            :class="{ on: purpose === activeTab }"
+            role="tab"
+            tabindex="0"
+            :aria-selected="purpose === activeTab ? 'true' : 'false'"
+            @click="(e) => { snapTab(e); activeTab = purpose }"
+            @keydown.enter.prevent="activeTab = purpose"
+            @keydown.space.prevent="activeTab = purpose"
+          >{{ purpose }}</span>
+        </div>
 
-        <TabsContent
-          v-for="purpose in availablePurposes"
-          :key="purpose"
-          :value="purpose"
-          class="mt-4"
-        >
-          <div class="space-y-3">
-            <Card
-              v-for="product in (isBakery ? groupedBakeryProducts[purpose] : groupedProducts[purpose])"
-              :key="product.id"
-            >
-              <!-- Bakery product card with variant support -->
-              <CardContent v-if="isBakery && product.price_unit" class="p-0">
+        <!-- Only the active purpose's cards — the same one-visible-at-a-time
+             behaviour the radix `TabsContent` panels had. -->
+        <div class="flex flex-col gap-4">
+          <Card v-for="product in activeProducts" :key="product.id">
+            <!-- Bakery product card with variant support -->
+            <CardContent v-if="isBakery && product.price_unit" class="p-0">
+              <div
+                :class="[
+                  'flex rounded-lg overflow-hidden transition-colors',
+                  getGroupQuantityTotal(product._variants) > 0
+                    ? 'ring-2 ring-primary'
+                    : ''
+                ]"
+              >
+                <!-- Product image - full height left side -->
+                <div class="w-28 flex-shrink-0 bg-muted flex items-center justify-center">
+                  <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
+                  <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                </div>
+                <!-- Product info + variant rows -->
+                <div class="flex-1 min-w-0 p-3 flex flex-col">
+                  <div class="flex justify-between items-start gap-2">
+                    <div class="min-w-0 flex-1">
+                      <div class="flex items-baseline gap-2">
+                        <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
+                        <span v-if="product.description2" class="text-sm text-muted-foreground">{{ product.description2 }}</span>
+                      </div>
+                      <p v-if="product.description1" class="text-sm text-muted-foreground mt-0.5">{{ product.description1 }}</p>
+                      <details v-if="product.composition" class="mt-1">
+                        <summary class="text-xs text-muted-foreground/70 cursor-pointer select-none">Zloženie</summary>
+                        <p class="text-xs text-muted-foreground/70 mt-0.5">{{ product.composition }}</p>
+                      </details>
+                    </div>
+                  </div>
+                  <!-- Variant rows -->
+                  <div class="mt-auto pt-2 space-y-1.5">
+                    <div v-for="v in product._variants" :key="v.id" class="flex items-center justify-between">
+                      <div class="text-sm">
+                        <span class="font-semibold text-primary">{{ formatPrice(applyMarkup(v.price_unit)) }}</span>
+                        <span v-if="v.variant_label" class="text-muted-foreground ml-1">/ {{ v.variant_label }}</span>
+                      </div>
+                      <div class="flex items-center gap-1.5">
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          @click="decrement(v.id, 'unit')"
+                          :disabled="isLocked || getQuantity(v.id, 'unit') === 0"
+                          class="h-8 w-8 rounded-full"
+                        >
+                          -
+                        </Button>
+                        <span class="w-6 text-center font-semibold text-sm">{{ getQuantity(v.id, 'unit') }}</span>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          @click="increment(v.id, 'unit')"
+                          :disabled="isLocked"
+                          class="h-8 w-8 rounded-full"
+                        >
+                          +
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+
+            <!-- Coffee product card -->
+            <CardContent v-else class="p-4">
+              <div class="flex gap-4 mb-3">
+                <!-- Product image -->
+                <div class="w-20 h-20 flex-shrink-0 bg-muted rounded-lg overflow-hidden flex items-center justify-center">
+                  <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
+                  <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                </div>
+                <!-- Product info -->
+                <div class="flex-1 min-w-0">
+                  <!-- flex-wrap: the two badges below are `whitespace-nowrap`, so
+                       without it a long product name is squeezed to its longest
+                       word while the badges push out of the card. GuestProductGrid
+                       already wraps here; this keeps the friend view in parity. -->
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
+                    <span v-if="product.roast_type" class="text-xs text-muted-foreground/70 bg-muted px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roast_type }}</span>
+                    <span v-if="product.roastery" class="text-xs bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roastery }}</span>
+                  </div>
+                  <p v-if="product.description1" class="text-sm text-muted-foreground">{{ product.description1 }}</p>
+                  <p v-if="product.description2" class="text-sm text-muted-foreground/70 mt-1 line-clamp-2">{{ product.description2 }}</p>
+                </div>
+              </div>
+
+              <!-- Capsule variant (20 ks × 5g) -->
+              <div v-if="product.price_20pc5g" class="grid grid-cols-1 gap-4">
                 <div
                   :class="[
-                    'flex rounded-lg overflow-hidden transition-colors',
-                    getGroupQuantityTotal(product._variants) > 0
-                      ? 'ring-2 ring-primary'
-                      : ''
+                    'rounded-lg p-2 transition-colors',
+                    getQuantity(product.id, '20pc5g') > 0
+                      ? 'bg-primary/10 border-2 border-primary'
+                      : 'border bg-card'
                   ]"
                 >
-                  <!-- Product image - full height left side -->
-                  <div class="w-28 flex-shrink-0 bg-muted flex items-center justify-center">
-                    <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
-                    <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                    </svg>
+                  <div class="flex justify-between items-center mb-1">
+                    <span class="text-sm font-medium">20 ks × 5g</span>
+                    <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_20pc5g)) }}</span>
                   </div>
-                  <!-- Product info + variant rows -->
-                  <div class="flex-1 min-w-0 p-3 flex flex-col">
-                    <div class="flex justify-between items-start gap-2">
-                      <div class="min-w-0 flex-1">
-                        <div class="flex items-baseline gap-2">
-                          <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
-                          <span v-if="product.description2" class="text-sm text-muted-foreground">{{ product.description2 }}</span>
-                        </div>
-                        <p v-if="product.description1" class="text-sm text-muted-foreground mt-0.5">{{ product.description1 }}</p>
-                        <details v-if="product.composition" class="mt-1">
-                          <summary class="text-xs text-muted-foreground/70 cursor-pointer select-none">Zloženie</summary>
-                          <p class="text-xs text-muted-foreground/70 mt-0.5">{{ product.composition }}</p>
-                        </details>
-                      </div>
-                    </div>
-                    <!-- Variant rows -->
-                    <div class="mt-auto pt-2 space-y-1.5">
-                      <div v-for="v in product._variants" :key="v.id" class="flex items-center justify-between">
-                        <div class="text-sm">
-                          <span class="font-semibold text-primary">{{ formatPrice(applyMarkup(v.price_unit)) }}</span>
-                          <span v-if="v.variant_label" class="text-muted-foreground ml-1">/ {{ v.variant_label }}</span>
-                        </div>
-                        <div class="flex items-center gap-1.5">
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            @click="decrement(v.id, 'unit')"
-                            :disabled="isLocked || getQuantity(v.id, 'unit') === 0"
-                            class="h-8 w-8 rounded-full"
-                          >
-                            -
-                          </Button>
-                          <span class="w-6 text-center font-semibold text-sm">{{ getQuantity(v.id, 'unit') }}</span>
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            @click="increment(v.id, 'unit')"
-                            :disabled="isLocked"
-                            class="h-8 w-8 rounded-full"
-                          >
-                            +
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-
-              <!-- Coffee product card -->
-              <CardContent v-else class="p-4">
-                <div class="flex gap-4 mb-3">
-                  <!-- Product image -->
-                  <div class="w-20 h-20 flex-shrink-0 bg-muted rounded-lg overflow-hidden flex items-center justify-center">
-                    <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
-                    <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                    </svg>
-                  </div>
-                  <!-- Product info -->
-                  <div class="flex-1 min-w-0">
-                    <!-- flex-wrap: the two badges below are `whitespace-nowrap`, so
-                         without it a long product name is squeezed to its longest
-                         word while the badges push out of the card. GuestProductGrid
-                         already wraps here; this keeps the friend view in parity. -->
-                    <div class="flex items-center gap-2 flex-wrap">
-                      <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
-                      <span v-if="product.roast_type" class="text-xs text-muted-foreground/70 bg-muted px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roast_type }}</span>
-                      <span v-if="product.roastery" class="text-xs bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full whitespace-nowrap">{{ product.roastery }}</span>
-                    </div>
-                    <p v-if="product.description1" class="text-sm text-muted-foreground">{{ product.description1 }}</p>
-                    <p v-if="product.description2" class="text-sm text-muted-foreground/70 mt-1 line-clamp-2">{{ product.description2 }}</p>
-                  </div>
-                </div>
-
-                <!-- Capsule variant (20 ks × 5g) -->
-                <div v-if="product.price_20pc5g" class="grid grid-cols-1 gap-4">
-                  <div
-                    :class="[
-                      'rounded-lg p-2 transition-colors',
-                      getQuantity(product.id, '20pc5g') > 0
-                        ? 'bg-primary/10 border-2 border-primary'
-                        : 'border bg-card'
-                    ]"
-                  >
-                    <div class="flex justify-between items-center mb-1">
-                      <span class="text-sm font-medium">20 ks × 5g</span>
-                      <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_20pc5g)) }}</span>
-                    </div>
-                    <div class="flex items-center justify-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="decrement(product.id, '20pc5g')"
-                        :disabled="isLocked || getQuantity(product.id, '20pc5g') === 0"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        -
-                      </Button>
-                      <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '20pc5g') }}</span>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="increment(product.id, '20pc5g')"
-                        :disabled="isLocked || !canIncrement(product.id, '20pc5g')"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        +
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Stock limit indicator -->
-                <div v-if="availability[product.id]" class="mb-2">
-                  <div class="flex items-center gap-2 text-xs">
-                    <div class="flex-1 bg-muted rounded-full h-1.5 overflow-hidden">
-                      <div
-                        class="h-full rounded-full transition-all"
-                        :class="getRemainingGrams(product.id) === 0 ? 'bg-destructive' : getRemainingGrams(product.id) < availability[product.id].stock_limit_g * 0.25 ? 'bg-amber-500' : 'bg-primary'"
-                        :style="{ width: Math.min(100, ((availability[product.id].stock_limit_g - availability[product.id].remaining_g + getCartGramsForProduct(product.id)) / availability[product.id].stock_limit_g) * 100) + '%' }"
-                      />
-                    </div>
-                    <span v-if="getRemainingGrams(product.id) === 0" class="text-destructive font-medium whitespace-nowrap">Vypredané</span>
-                    <span v-else class="text-muted-foreground whitespace-nowrap">Zostáva: {{ getRemainingGrams(product.id) }}g z {{ availability[product.id].stock_limit_g }}g</span>
-                  </div>
-                </div>
-
-                <!-- Weight variants (150g / 200g / 250g / 500g / 1kg) -->
-                <div v-if="!product.price_20pc5g" class="grid grid-cols-2 gap-4">
-                  <!-- 150g variant -->
-                  <div
-                    v-if="product.price_150g"
-                    :class="[
-                      'rounded-lg p-2 transition-colors',
-                      getQuantity(product.id, '150g') > 0
-                        ? 'bg-primary/10 border-2 border-primary'
-                        : 'border bg-card'
-                    ]"
-                  >
-                    <div class="flex justify-between items-center mb-1">
-                      <span class="text-sm font-medium">150g</span>
-                      <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_150g)) }}</span>
-                    </div>
-                    <div class="flex items-center justify-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="decrement(product.id, '150g')"
-                        :disabled="isLocked || getQuantity(product.id, '150g') === 0"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        -
-                      </Button>
-                      <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '150g') }}</span>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="increment(product.id, '150g')"
-                        :disabled="isLocked || !canIncrement(product.id, '150g')"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        +
-                      </Button>
-                    </div>
-                  </div>
-
-                  <!-- 200g variant -->
-                  <div
-                    v-if="product.price_200g"
-                    :class="[
-                      'rounded-lg p-2 transition-colors',
-                      getQuantity(product.id, '200g') > 0
-                        ? 'bg-primary/10 border-2 border-primary'
-                        : 'border bg-card'
-                    ]"
-                  >
-                    <div class="flex justify-between items-center mb-1">
-                      <span class="text-sm font-medium">200g</span>
-                      <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_200g)) }}</span>
-                    </div>
-                    <div class="flex items-center justify-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="decrement(product.id, '200g')"
-                        :disabled="isLocked || getQuantity(product.id, '200g') === 0"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        -
-                      </Button>
-                      <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '200g') }}</span>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="increment(product.id, '200g')"
-                        :disabled="isLocked || !canIncrement(product.id, '200g')"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        +
-                      </Button>
-                    </div>
-                  </div>
-
-                  <!-- 250g variant -->
-                  <div
-                    v-if="product.price_250g"
-                    :class="[
-                      'rounded-lg p-2 transition-colors',
-                      getQuantity(product.id, '250g') > 0
-                        ? 'bg-primary/10 border-2 border-primary'
-                        : 'border bg-card'
-                    ]"
-                  >
-                    <div class="flex justify-between items-center mb-1">
-                      <span class="text-sm font-medium">250g</span>
-                      <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_250g)) }}</span>
-                    </div>
-                    <div class="flex items-center justify-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="decrement(product.id, '250g')"
-                        :disabled="isLocked || getQuantity(product.id, '250g') === 0"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        -
-                      </Button>
-                      <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '250g') }}</span>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="increment(product.id, '250g')"
-                        :disabled="isLocked || !canIncrement(product.id, '250g')"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        +
-                      </Button>
-                    </div>
-                  </div>
-
-                  <!-- 500g variant -->
-                  <div
-                    v-if="product.price_500g"
-                    :class="[
-                      'rounded-lg p-2 transition-colors',
-                      getQuantity(product.id, '500g') > 0
-                        ? 'bg-primary/10 border-2 border-primary'
-                        : 'border bg-card'
-                    ]"
-                  >
-                    <div class="flex justify-between items-center mb-1">
-                      <span class="text-sm font-medium">500g</span>
-                      <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_500g)) }}</span>
-                    </div>
-                    <div class="flex items-center justify-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="decrement(product.id, '500g')"
-                        :disabled="isLocked || getQuantity(product.id, '500g') === 0"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        -
-                      </Button>
-                      <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '500g') }}</span>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="increment(product.id, '500g')"
-                        :disabled="isLocked || !canIncrement(product.id, '500g')"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        +
-                      </Button>
-                    </div>
-                  </div>
-
-                  <!-- 1kg variant -->
-                  <div
-                    v-if="product.price_1kg"
-                    :class="[
-                      'rounded-lg p-2 transition-colors',
-                      getQuantity(product.id, '1kg') > 0
-                        ? 'bg-primary/10 border-2 border-primary'
-                        : 'border bg-card'
-                    ]"
-                  >
-                    <div class="flex justify-between items-center mb-1">
-                      <span class="text-sm font-medium">1kg</span>
-                      <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_1kg)) }}</span>
-                    </div>
-                    <div class="flex items-center justify-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="decrement(product.id, '1kg')"
-                        :disabled="isLocked || getQuantity(product.id, '1kg') === 0"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        -
-                      </Button>
-                      <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '1kg') }}</span>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="increment(product.id, '1kg')"
-                        :disabled="isLocked || !canIncrement(product.id, '1kg')"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        +
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-      </Tabs>
-
-      <!-- Fallback: show all products without tabs when only one purpose -->
-      <div v-else-if="availablePurposes.length === 1" class="space-y-3">
-        <Card
-          v-for="product in (isBakery ? groupedBakeryProducts[availablePurposes[0]] : groupedProducts[availablePurposes[0]])"
-          :key="product.id"
-        >
-          <!-- Bakery product card with variant support -->
-          <CardContent v-if="isBakery && product.price_unit" class="p-0">
-            <div
-              :class="[
-                'flex rounded-lg overflow-hidden transition-colors',
-                getGroupQuantityTotal(product._variants) > 0
-                  ? 'ring-2 ring-primary'
-                  : ''
-              ]"
-            >
-              <!-- Product image - full height left side -->
-              <div class="w-28 flex-shrink-0 bg-muted flex items-center justify-center">
-                <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
-                <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-              </div>
-              <!-- Product info + variant rows -->
-              <div class="flex-1 min-w-0 p-3 flex flex-col">
-                <div class="flex justify-between items-start gap-2">
-                  <div class="min-w-0 flex-1">
-                    <div class="flex items-baseline gap-2">
-                      <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
-                      <span v-if="product.description2" class="text-sm text-muted-foreground">{{ product.description2 }}</span>
-                    </div>
-                    <p v-if="product.description1" class="text-sm text-muted-foreground mt-0.5">{{ product.description1 }}</p>
-                    <details v-if="product.composition" class="mt-1">
-                      <summary class="text-xs text-muted-foreground/70 cursor-pointer select-none">Zloženie</summary>
-                      <p class="text-xs text-muted-foreground/70 mt-0.5">{{ product.composition }}</p>
-                    </details>
-                  </div>
-                </div>
-                <!-- Variant rows -->
-                <div class="mt-auto pt-2 space-y-1.5">
-                  <div v-for="v in product._variants" :key="v.id" class="flex items-center justify-between">
-                    <div class="text-sm">
-                      <span class="font-semibold text-primary">{{ formatPrice(applyMarkup(v.price_unit)) }}</span>
-                      <span v-if="v.variant_label" class="text-muted-foreground ml-1">/ {{ v.variant_label }}</span>
-                    </div>
-                    <div class="flex items-center gap-1.5">
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="decrement(v.id, 'unit')"
-                        :disabled="isLocked || getQuantity(v.id, 'unit') === 0"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        -
-                      </Button>
-                      <span class="w-6 text-center font-semibold text-sm">{{ getQuantity(v.id, 'unit') }}</span>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        @click="increment(v.id, 'unit')"
-                        :disabled="isLocked"
-                        class="h-8 w-8 rounded-full"
-                      >
-                        +
-                      </Button>
-                    </div>
+                  <div class="flex items-center justify-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="decrement(product.id, '20pc5g')"
+                      :disabled="isLocked || getQuantity(product.id, '20pc5g') === 0"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      -
+                    </Button>
+                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '20pc5g') }}</span>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="increment(product.id, '20pc5g')"
+                      :disabled="isLocked || !canIncrement(product.id, '20pc5g')"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      +
+                    </Button>
                   </div>
                 </div>
               </div>
-            </div>
-          </CardContent>
 
-          <!-- Coffee product card -->
-          <CardContent v-else class="p-4">
-            <div class="flex gap-4 mb-3">
-              <div class="w-20 h-20 flex-shrink-0 bg-muted rounded-lg overflow-hidden flex items-center justify-center">
-                <img v-if="product.image" :src="product.image" class="w-full h-full object-cover" />
-                <svg v-else class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-              </div>
-              <div class="flex-1 min-w-0">
-                <h3 class="font-semibold text-foreground">{{ product.name }}</h3>
-                <p v-if="product.description1" class="text-sm text-muted-foreground">{{ product.description1 }}</p>
-                <p v-if="product.description2" class="text-sm text-muted-foreground/70 mt-1 line-clamp-2">{{ product.description2 }}</p>
-              </div>
-            </div>
-
-            <!-- Capsule variant (20 ks × 5g) -->
-            <div v-if="product.price_20pc5g" class="grid grid-cols-1 gap-4">
-              <div
-                :class="[
-                  'rounded-lg p-2 transition-colors',
-                  getQuantity(product.id, '20pc5g') > 0
-                    ? 'bg-primary/10 border-2 border-primary'
-                    : 'border bg-card'
-                ]"
-              >
-                <div class="flex justify-between items-center mb-1">
-                  <span class="text-sm font-medium">20 ks × 5g</span>
-                  <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_20pc5g)) }}</span>
-                </div>
-                <div class="flex items-center justify-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    @click="decrement(product.id, '20pc5g')"
-                    :disabled="isLocked || getQuantity(product.id, '20pc5g') === 0"
-                    class="h-8 w-8 rounded-full"
-                  >
-                    -
-                  </Button>
-                  <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '20pc5g') }}</span>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    @click="increment(product.id, '20pc5g')"
-                    :disabled="isLocked"
-                    class="h-8 w-8 rounded-full"
-                  >
-                    +
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            <!-- Weight variants (150g / 200g / 250g / 1kg) -->
-            <div v-else class="grid grid-cols-2 gap-4">
-              <div
-                v-if="product.price_150g"
-                :class="[
-                  'rounded-lg p-2 transition-colors',
-                  getQuantity(product.id, '150g') > 0
-                    ? 'bg-primary/10 border-2 border-primary'
-                    : 'border bg-card'
-                ]"
-              >
-                <div class="flex justify-between items-center mb-1">
-                  <span class="text-sm font-medium">150g</span>
-                  <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_150g)) }}</span>
-                </div>
-                <div class="flex items-center justify-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    @click="decrement(product.id, '150g')"
-                    :disabled="isLocked || getQuantity(product.id, '150g') === 0"
-                    class="h-8 w-8 rounded-full"
-                  >
-                    -
-                  </Button>
-                  <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '150g') }}</span>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    @click="increment(product.id, '150g')"
-                    :disabled="isLocked"
-                    class="h-8 w-8 rounded-full"
-                  >
-                    +
-                  </Button>
+              <!-- Stock limit indicator -->
+              <div v-if="availability[product.id]" class="mb-2">
+                <div class="flex items-center gap-2 text-xs">
+                  <div class="flex-1 bg-muted rounded-full h-1.5 overflow-hidden">
+                    <div
+                      class="h-full rounded-full transition-all"
+                      :class="getRemainingGrams(product.id) === 0 ? 'bg-destructive' : getRemainingGrams(product.id) < availability[product.id].stock_limit_g * 0.25 ? 'bg-amber-500' : 'bg-primary'"
+                      :style="{ width: Math.min(100, ((availability[product.id].stock_limit_g - availability[product.id].remaining_g + getCartGramsForProduct(product.id)) / availability[product.id].stock_limit_g) * 100) + '%' }"
+                    />
+                  </div>
+                  <span v-if="getRemainingGrams(product.id) === 0" class="text-destructive font-medium whitespace-nowrap">Vypredané</span>
+                  <span v-else class="text-muted-foreground whitespace-nowrap">Zostáva: {{ getRemainingGrams(product.id) }}g z {{ availability[product.id].stock_limit_g }}g</span>
                 </div>
               </div>
 
-              <div
-                v-if="product.price_200g"
-                :class="[
-                  'rounded-lg p-2 transition-colors',
-                  getQuantity(product.id, '200g') > 0
-                    ? 'bg-primary/10 border-2 border-primary'
-                    : 'border bg-card'
-                ]"
-              >
-                <div class="flex justify-between items-center mb-1">
-                  <span class="text-sm font-medium">200g</span>
-                  <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_200g)) }}</span>
+              <!-- Weight variants (150g / 200g / 250g / 500g / 1kg) -->
+              <div v-if="!product.price_20pc5g" class="grid grid-cols-2 gap-4">
+                <!-- 150g variant -->
+                <div
+                  v-if="product.price_150g"
+                  :class="[
+                    'rounded-lg p-2 transition-colors',
+                    getQuantity(product.id, '150g') > 0
+                      ? 'bg-primary/10 border-2 border-primary'
+                      : 'border bg-card'
+                  ]"
+                >
+                  <div class="flex justify-between items-center mb-1">
+                    <span class="text-sm font-medium">150g</span>
+                    <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_150g)) }}</span>
+                  </div>
+                  <div class="flex items-center justify-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="decrement(product.id, '150g')"
+                      :disabled="isLocked || getQuantity(product.id, '150g') === 0"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      -
+                    </Button>
+                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '150g') }}</span>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="increment(product.id, '150g')"
+                      :disabled="isLocked || !canIncrement(product.id, '150g')"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      +
+                    </Button>
+                  </div>
                 </div>
-                <div class="flex items-center justify-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    @click="decrement(product.id, '200g')"
-                    :disabled="isLocked || getQuantity(product.id, '200g') === 0"
-                    class="h-8 w-8 rounded-full"
-                  >
-                    -
-                  </Button>
-                  <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '200g') }}</span>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    @click="increment(product.id, '200g')"
-                    :disabled="isLocked"
-                    class="h-8 w-8 rounded-full"
-                  >
-                    +
-                  </Button>
-                </div>
-              </div>
 
-              <div
-                v-if="product.price_250g"
-                :class="[
-                  'rounded-lg p-2 transition-colors',
-                  getQuantity(product.id, '250g') > 0
-                    ? 'bg-primary/10 border-2 border-primary'
-                    : 'border bg-card'
-                ]"
-              >
-                <div class="flex justify-between items-center mb-1">
-                  <span class="text-sm font-medium">250g</span>
-                  <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_250g)) }}</span>
+                <!-- 200g variant -->
+                <div
+                  v-if="product.price_200g"
+                  :class="[
+                    'rounded-lg p-2 transition-colors',
+                    getQuantity(product.id, '200g') > 0
+                      ? 'bg-primary/10 border-2 border-primary'
+                      : 'border bg-card'
+                  ]"
+                >
+                  <div class="flex justify-between items-center mb-1">
+                    <span class="text-sm font-medium">200g</span>
+                    <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_200g)) }}</span>
+                  </div>
+                  <div class="flex items-center justify-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="decrement(product.id, '200g')"
+                      :disabled="isLocked || getQuantity(product.id, '200g') === 0"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      -
+                    </Button>
+                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '200g') }}</span>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="increment(product.id, '200g')"
+                      :disabled="isLocked || !canIncrement(product.id, '200g')"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      +
+                    </Button>
+                  </div>
                 </div>
-                <div class="flex items-center justify-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    @click="decrement(product.id, '250g')"
-                    :disabled="isLocked || getQuantity(product.id, '250g') === 0"
-                    class="h-8 w-8 rounded-full"
-                  >
-                    -
-                  </Button>
-                  <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '250g') }}</span>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    @click="increment(product.id, '250g')"
-                    :disabled="isLocked"
-                    class="h-8 w-8 rounded-full"
-                  >
-                    +
-                  </Button>
-                </div>
-              </div>
 
-              <div
-                v-if="product.price_1kg"
-                :class="[
-                  'rounded-lg p-2 transition-colors',
-                  getQuantity(product.id, '1kg') > 0
-                    ? 'bg-primary/10 border-2 border-primary'
-                    : 'border bg-card'
-                ]"
-              >
-                <div class="flex justify-between items-center mb-1">
-                  <span class="text-sm font-medium">1kg</span>
-                  <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_1kg)) }}</span>
+                <!-- 250g variant -->
+                <div
+                  v-if="product.price_250g"
+                  :class="[
+                    'rounded-lg p-2 transition-colors',
+                    getQuantity(product.id, '250g') > 0
+                      ? 'bg-primary/10 border-2 border-primary'
+                      : 'border bg-card'
+                  ]"
+                >
+                  <div class="flex justify-between items-center mb-1">
+                    <span class="text-sm font-medium">250g</span>
+                    <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_250g)) }}</span>
+                  </div>
+                  <div class="flex items-center justify-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="decrement(product.id, '250g')"
+                      :disabled="isLocked || getQuantity(product.id, '250g') === 0"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      -
+                    </Button>
+                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '250g') }}</span>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="increment(product.id, '250g')"
+                      :disabled="isLocked || !canIncrement(product.id, '250g')"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      +
+                    </Button>
+                  </div>
                 </div>
-                <div class="flex items-center justify-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    @click="decrement(product.id, '1kg')"
-                    :disabled="isLocked || getQuantity(product.id, '1kg') === 0"
-                    class="h-8 w-8 rounded-full"
-                  >
-                    -
-                  </Button>
-                  <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '1kg') }}</span>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    @click="increment(product.id, '1kg')"
-                    :disabled="isLocked"
-                    class="h-8 w-8 rounded-full"
-                  >
-                    +
-                  </Button>
+
+                <!-- 500g variant -->
+                <div
+                  v-if="product.price_500g"
+                  :class="[
+                    'rounded-lg p-2 transition-colors',
+                    getQuantity(product.id, '500g') > 0
+                      ? 'bg-primary/10 border-2 border-primary'
+                      : 'border bg-card'
+                  ]"
+                >
+                  <div class="flex justify-between items-center mb-1">
+                    <span class="text-sm font-medium">500g</span>
+                    <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_500g)) }}</span>
+                  </div>
+                  <div class="flex items-center justify-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="decrement(product.id, '500g')"
+                      :disabled="isLocked || getQuantity(product.id, '500g') === 0"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      -
+                    </Button>
+                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '500g') }}</span>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="increment(product.id, '500g')"
+                      :disabled="isLocked || !canIncrement(product.id, '500g')"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      +
+                    </Button>
+                  </div>
+                </div>
+
+                <!-- 1kg variant -->
+                <div
+                  v-if="product.price_1kg"
+                  :class="[
+                    'rounded-lg p-2 transition-colors',
+                    getQuantity(product.id, '1kg') > 0
+                      ? 'bg-primary/10 border-2 border-primary'
+                      : 'border bg-card'
+                  ]"
+                >
+                  <div class="flex justify-between items-center mb-1">
+                    <span class="text-sm font-medium">1kg</span>
+                    <span class="text-sm text-primary font-semibold">{{ formatPrice(applyMarkup(product.price_1kg)) }}</span>
+                  </div>
+                  <div class="flex items-center justify-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="decrement(product.id, '1kg')"
+                      :disabled="isLocked || getQuantity(product.id, '1kg') === 0"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      -
+                    </Button>
+                    <span class="w-8 text-center font-semibold">{{ getQuantity(product.id, '1kg') }}</span>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      @click="increment(product.id, '1kg')"
+                      :disabled="isLocked || !canIncrement(product.id, '1kg')"
+                      class="h-8 w-8 rounded-full"
+                    >
+                      +
+                    </Button>
+                  </div>
                 </div>
               </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+            </CardContent>
+          </Card>
+        </div>
       </div>
       <!-- ============ /panel: own order ============ -->
 
