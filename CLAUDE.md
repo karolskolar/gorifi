@@ -546,3 +546,44 @@ Full suite after this work: **367 passed / 3 skipped** (+14, zero pre-existing s
   pipeline-authored spec files edited: **1**, two lines.
 
 Full suite after this work: **379 passed / 3 skipped** (+12).
+
+### Podpultovka friends-portal restyle — what survives it (2026-08-09)
+
+A 25-row, frontend-only re-skin of the friend + guest portal (`friends-theme.css`,
+`components/neo/`, `.app` / `.modal-layer` roots). ⚠ **`git diff 7c3f85e..HEAD -- backend/`
+is empty** — every GSO-T1..T10 rule above still holds verbatim, and `frontend/src/api.js`
+was never touched, so no request shape or header set moved.
+
+- ⚠ **`.app > *` neutralises Tailwind positioning utilities on a direct child.** No build
+  error, no failing spec — `.cartbar` stays sticky only by cascade order. A plain
+  `sticky` div as a direct child of `.app` computes `relative`.
+- ⚠ **`.m-foot .btn` is `nowrap` + `flex:1` with `min-width:auto`, so a too-wide modal
+  footer gives NO degradation signal** — no shrink, no wrap, no ellipsis; it paints
+  outside the border and hands the scrim a scrollbar. Measure **min-content**, never the
+  flex-resolved width. The ≤400px padding relief is invisible only while the even split
+  clears **both** floors — three rows recorded "invisible at every width" and **two were
+  false**. Never generalise one footer's verdict to another button pair.
+- ⚠ **Tailwind preflight sets `svg{display:block}`**, which breaks an inline icon+text
+  badge onto two lines. Fix at the call site with `inline-flex`, never by widening the
+  theme's `line-height:normal` selector list.
+- ⚠ **`v-if` on modal mounts is load-bearing** — shipped specs locate "Zavrieť" unscoped,
+  so an always-mounted dialog matches them and its scrim swallows clicks.
+- Playwright matches role names as a **case-insensitive substring** unless `exact: true`.
+- Vue's `condense` deletes a newline-bearing whitespace node between elements, silently
+  concatenating adjacent strings.
+- Session state: `FriendPortalSession.vue` is keyed on the **auth handshake, not the
+  friend id** — keying on identity flushes at the first `await` while `entry` is seeded
+  once at setup, so friend B mounted with friend A's data (six consecutive leak bugs,
+  worst of which auto-opened B's credential dialog pre-filled with A's plaintext password).
+
+**Running the e2e suite locally** (528 tests, ~11 min) — three harness traps that each
+produce plausible wrong numbers:
+- ⚠ **`CORS_ORIGIN` must include the gate's own origin.** The allowlist is
+  `gorifi.skolar.sk,gorifi-dev.skolar.sk,localhost:5173`, so a same-origin SPA on
+  `localhost:3997` gets **500 on every XHR** and renders a blank body — surfacing as ~31
+  unrelated-looking UI failures that read exactly like a regression.
+- ⚠ **`e2e/seed.mjs` is not optional** on a fresh `DB_PATH`, or every admin-authenticated
+  spec fails at the login field.
+- ⚠ Confirm the port is **free first** (a stale server serves a `backend/public` deleted
+  underneath it), check `echo "EXIT: $?"` rather than piping through `tail` (which returns
+  *tail's* status), and remember `pkill -f` matches its own shell — chain nothing after it.

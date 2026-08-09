@@ -2,8 +2,8 @@
 import { ref, computed, onMounted, watch, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../api'
-import { Card, CardContent } from '@/components/ui/card'
 import GuestBrandHeader from '@/components/GuestBrandHeader.vue'
+import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import PaymentModal from '@/components/PaymentModal.vue'
 import GuestProductGrid from '@/components/GuestProductGrid.vue'
@@ -45,10 +45,8 @@ import {
 // specificity, so its `position:sticky` wins — and why the shipped
 // `fixed bottom-0 z-50` footer plus its `<div class="h-36">` spacer are both gone.
 //
-// ⚠ ONE SCREEN ON THIS ROUTE IS STILL OLD-SKIN, deliberately: the status-404 card
-// (RD-GX-4, §UC-GX-010). It sits inside the `.app` root, so it inherits the cream
-// background and the halftone — the same accepted interim GuestOrder.vue holds for
-// its own dead-link card. `GuestInviteRequest` is likewise RD-GX-4's.
+// The status-404 card (§UC-GX-010) and `GuestInviteRequest` (§UC-GX-009) are
+// RD-GX-4's — every screen on this route is now on the neo shell.
 //
 // Four states, driven entirely by the server's flags so the page can
 // never offer an action the backend would refuse:
@@ -313,24 +311,45 @@ async function submitEdit(payloadItems) {
        layout, and it is what lets edit mode's page column take `flex-1` so the
        `.cartbar` sits at the viewport bottom on a short page. -->
   <div class="app flex flex-col">
-    <!-- The (link, order) pair does not resolve: a mistyped or truncated URL, or
+    <!-- ================= status-404 (§UC-GX-010) =================
+         The (link, order) pair does not resolve: a mistyped or truncated URL, or
          a cross-link `orderToken` (GSO-T4's read resolver is 404-ONLY and gives the
          same message either way — no oracle).
-         ⚠ OLD SKIN ON PURPOSE — restyled by RD-GX-4 (§UC-GX-010, the centered
-         dead-card composition). Untouched here beyond inheriting the `.app`
-         background and halftone. -->
-    <div v-if="unavailable" class="max-w-md mx-auto px-4 py-16">
-      <Card data-testid="guest-status-unavailable">
-        <CardContent class="p-6 text-center space-y-3">
-          <div class="text-4xl">🔎</div>
-          <h1 class="text-xl font-semibold">{{ unavailableTitle }}</h1>
-          <p class="text-sm text-muted-foreground">{{ unavailable.message }}</p>
-          <p class="text-sm text-muted-foreground">
-            Skontrolujte, či je odkaz skopírovaný celý. Ak nie, požiadajte kolegu, ktorý objednávku organizuje.
-          </p>
-        </CardContent>
-      </Card>
-    </div>
+
+         ⚠ THIS IS A COMPOSITION DECISION, NOT NEW BEHAVIOUR. The prototype does not
+         design this screen; §UC-GX-010 reuses g-dead's visual — same badge, same
+         floating card, same closing shape — because the two are the same dead end
+         seen from two URLs, and a guest who mistypes one is as lost as one who
+         mistypes the other. The COPY is the shipped copy: the title, the server's
+         own message line, and the "skopírovaný celý" instruction all stand, because
+         the pair-resolution failure has an actionable cause the g-dead variants do
+         not share.
+
+         ⚠ This is the ONLY dead card on this route. A locked cycle or a dead link
+         must still render the order and the payment reference (GSO-T4's read
+         resolver is deliberately 404-only), so they land on the read-only banner
+         below — never here. -->
+    <template v-if="unavailable">
+      <GuestBrandHeader subtitle="Vaša objednávka" />
+
+      <div class="flex-1 flex items-center justify-center p-5 sm:p-10">
+        <div
+          class="card p-[22px] sm:p-[30px]"
+          style="max-width:400px;text-align:center;display:flex;flex-direction:column;gap:12px;align-items:center"
+          data-testid="guest-status-unavailable"
+        >
+          <!-- ⚠ `inline-flex`, for the reason measured on GuestOrder.vue's twin:
+               Tailwind preflight's `svg{display:block}` breaks the prototype's
+               `inline-block` badge into two lines (41.14px tall becomes 52.41px, and
+               the glyph drops 6.13px off centre). The 4px gap replaces the
+               prototype's literal space, which a flex container strips anyway. -->
+          <span class="badge danger" style="font-size:13px;padding:6px 14px;transform:rotate(-2deg);display:inline-flex;align-items:center;gap:4px"><NeoIcon name="lock" /><span>Slepá ulička</span></span>
+          <h1 class="h-screen text-[32px] sm:text-[38px]">{{ unavailableTitle }}</h1>
+          <div class="sub" style="font-size:14px">{{ unavailable.message }}</div>
+          <div class="sub" style="font-size:13.5px">Skontrolujte, či je odkaz skopírovaný celý. Ak nie, požiadajte kolegu, ktorý objednávku organizuje.</div>
+        </div>
+      </div>
+    </template>
 
     <template v-else>
       <!-- ONE instance across both purposes: only the subtitle switches
@@ -656,9 +675,13 @@ async function submitEdit(payloadItems) {
      `min-width:auto`, so each button's MIN-CONTENT is its floor and the padding only
      ever moves that floor.
 
-     ⚠ NOT "invisible at every width" — RD-FO-4 and RD-GX-1 both claim that of their
-     own reliefs, and MEASURED HERE IT IS NOT TRUE, so it is recorded rather than
-     repeated. Resolved widths, with the relief vs. with the canon 16px:
+     ⚠ NOT "invisible at every width" — RD-FO-4 and RD-GX-1 both claimed that of
+     their own reliefs, and MEASURED HERE IT IS NOT TRUE, so it was recorded rather
+     than repeated. RD-GX-4 then went back and measured those two as well: the claim
+     is false there too (on the `Spôsob prevzatia` and guest-checkout footers; it
+     does hold for the three whose min-content sum already sits under the even
+     split), and both call-site comments now carry their own numbers. Resolved
+     widths here, with the relief vs. with the canon 16px:
 
        378px   145.00 / 145.00      against   130.23 / 159.77
        320px    92.23 / 139.77      against   101.25 / 159.77  (which OVERFLOWS)

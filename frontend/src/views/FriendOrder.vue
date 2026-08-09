@@ -2162,11 +2162,33 @@ function applyMarkup(price) {
    Fixed by spending horizontal PADDING rather than copy: 04 §UC-FO-010 pins the
    labels verbatim, and shortening one to fit would be the wrong trade. The
    buttons are `flex:1` (`.m-foot .btn`), so they re-grow to fill the row either
-   way — the padding is only ever their MINIMUM, which is why this is invisible
-   at every width and only ever prevents the overflow.
+   way — the padding is only ever their MINIMUM.
 
-   400px, not 323px: it costs nothing (nothing above 323 was overflowing anyway,
-   and nothing moves), it stays well below the 420px cap where `.modal` stops
+   ⚠ CORRECTED BY RD-GX-4 — "which is why this is invisible at every width" USED
+   TO STAND HERE AND IS FALSE FOR ONE OF THE FOUR FOOTERS. `.m-foot .btn` is
+   `flex:1` (grow 1, basis 0) with the flexbox default `min-width:auto`, so each
+   button's min-content is its FLOOR — and the relief is invisible only while the
+   even split already clears both floors. That holds for three of these footers
+   and not for the one whose overflow motivated the relief. Re-measured on this
+   build (relief vs. the canon 16px, real modals, same face):
+
+     Spôsob prevzatia   378px  145.00 / 145.00    against  133.95 / 156.05
+                        360px  127.95 / 144.05    against  115.95 / 156.05
+                        320px   87.95 / 144.05    against   78.69 / 156.05  (OVERFLOWS)
+     Hotovo! (OK)       every width: identical — one `flex:1` button fills the row
+     Zrušiť objednávku? every width: identical — 180.93 min-content sum, both
+                        floors sit under the even split from 320px up
+     Neuložené zmeny    every width: identical — same, 180.66
+
+   At 378px `Potvrdiť a odoslať` is pinned at its own 156.05 under the canon and
+   squeezes `Zrušiť` to what is left; the relief lowers both floors under the even
+   split, so flex distributes evenly and that footer becomes SYMMETRIC. Better
+   looking, and a change — the same shape RD-GX-3 found on the guest cancel
+   confirm. Recorded rather than repeated. Above 400px the query does not apply and
+   all four are untouched.
+
+   400px, not 323px: it costs only the redistribution tabulated above (nothing
+   above 323 was overflowing anyway), it stays well below the 420px cap where `.modal` stops
    being viewport-bound, and it leaves room for a wider face than the one
    measured here. Scoped to this view's own footer buttons — `.m-foot .btn` is
    module 02's rule and every other dialog on this shell keeps its canon

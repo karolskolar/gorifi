@@ -2,7 +2,6 @@
 import { ref, computed, onMounted, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
-import { Card, CardContent } from '@/components/ui/card'
 import GuestBrandHeader from '@/components/GuestBrandHeader.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
@@ -42,12 +41,10 @@ import {
 // only when non-empty, `itemsPayload(cartItems)`. The GSO-T3 input bounds are
 // mirrored as `maxlength` on the three inputs and must stay.
 //
-// ⚠ ONE SCREEN ON THIS ROUTE IS STILL OLD-SKIN, deliberately: the dead-link card
-// (RD-GX-4, §UC-GX-010). It sits inside the `.app` root, so it inherits the cream
-// background and the halftone — an accepted interim, exactly the half-migrated
-// `.app` 02 §UC-DS-002 provides for. The confirmation (g-confirm) was restyled by
-// RD-GX-2 and no longer holds a payment-reference row: the reference moved into
-// the Platba modal (§UC-GX-005, resolved conflict #4).
+// The confirmation (g-confirm) was restyled by RD-GX-2 and no longer holds a
+// payment-reference row: the reference moved into the Platba modal (§UC-GX-005,
+// resolved conflict #4). The dead-link card (g-dead) is RD-GX-4's — every screen
+// on this route is now on the neo shell.
 
 const route = useRoute()
 const router = useRouter()
@@ -109,12 +106,38 @@ async function load() {
   }
 }
 
+// ================= g-dead (§UC-GX-010) =================
+// The TITLES are the shipped ones, unchanged. What §UC-GX-010 adds is a matching
+// prototype DESCRIPTION per variant, replacing the raw server `e.message` the
+// shipped card printed under every title — "Odkaz už nie je aktívny." under
+// "Odkaz už nie je aktívny" was the server's own sentence repeated as its own
+// explanation.
+//
+// ⚠ The three variants are safe to discriminate HERE and nowhere else. The server
+// names the reason explicitly on this route (404 unknown / 410 `inactive` / 410
+// `closed`, GSO-T3), so the page is reading a fact, not guessing. GSO-T10's "the
+// page cannot distinguish a lock from a dead link" is about the STATUS page, whose
+// payload only clears `editable` — and that page correspondingly never routes to a
+// dead card, it shows the read-only banner (§UC-GX-006).
+//
+// The `anything else` row (network, 5xx) keeps BOTH shipped strings: the fallback
+// title and the server's message as the description. There is no prototype copy
+// for a failure the prototype has no concept of, and inventing one would claim
+// knowledge the page does not have.
 const unavailableTitle = computed(() => {
   if (!unavailable.value) return ''
   if (unavailable.value.status === 404) return 'Odkaz neexistuje'
   if (unavailable.value.reason === 'inactive') return 'Odkaz už nie je aktívny'
   if (unavailable.value.reason === 'closed') return 'Objednávanie je uzavreté'
   return 'Objednávka nie je dostupná'
+})
+
+const unavailableText = computed(() => {
+  if (!unavailable.value) return ''
+  if (unavailable.value.status === 404) return 'Tento odkaz sme nenašli. Skontrolujte, či je skopírovaný celý.'
+  if (unavailable.value.reason === 'inactive') return 'Kolega, ktorý objednávku organizuje, tento odkaz deaktivoval.'
+  if (unavailable.value.reason === 'closed') return 'Cyklus sa medzičasom uzamkol — objednávky už neprijímame.'
+  return unavailable.value.message
 })
 
 function openCheckout() {
@@ -229,22 +252,54 @@ function goToStatus() {
        / bg-amber-100 / …) is REMOVED — §UC-GX-001 item 1: the prototype background
        is a uniform `--bg` everywhere. -->
   <div class="app flex flex-col">
-    <!-- Dead link: deactivated, unknown, or a cycle that is no longer open.
-         ⚠ OLD SKIN ON PURPOSE — restyled by RD-GX-4 (§UC-GX-010, three copy
-         variants + the badge/centered-card composition). Untouched here beyond
-         inheriting the `.app` background. -->
-    <div v-if="unavailable" class="max-w-md mx-auto px-4 py-16">
-      <Card data-testid="guest-unavailable">
-        <CardContent class="p-6 text-center space-y-3">
-          <div class="text-4xl">🔒</div>
-          <h1 class="text-xl font-semibold">{{ unavailableTitle }}</h1>
-          <p class="text-sm text-muted-foreground">{{ unavailable.message }}</p>
-          <p class="text-sm text-muted-foreground">
-            Ak ste odkaz dostali od kolegu, požiadajte ho o nový.
-          </p>
-        </CardContent>
-      </Card>
-    </div>
+    <!-- ======================= g-dead (§UC-GX-010) =======================
+         Dead link: unknown, deactivated (link or host), or a cycle that is no
+         longer open. Three copy variants off the SERVER's own reason code, plus
+         the shipped fallback — see the `unavailableText` note in the script.
+
+         The card FLOATS: the zone takes `flex-1` and centres on both axes, so on
+         a tall viewport the card sits in the middle of the halftone background
+         rather than under the header (`16-shot.png`). That is the whole layout —
+         there is no page column here, because there is no page.
+
+         The header is the same `GuestBrandHeader` every guest screen carries, with
+         this route's own subtitle. It was ABSENT from the shipped dead card, which
+         meant a guest who mistyped a link got an unbranded box on a white page and
+         no way to tell what they had reached. -->
+    <template v-if="unavailable">
+      <GuestBrandHeader subtitle="Objednávka cez odkaz" />
+
+      <div class="flex-1 flex items-center justify-center p-5 sm:p-10">
+        <div
+          class="card p-[22px] sm:p-[30px]"
+          style="max-width:400px;text-align:center;display:flex;flex-direction:column;gap:12px;align-items:center"
+          data-testid="guest-unavailable"
+        >
+          <!-- ⚠ `inline-flex` ON THE BADGE, AND IT IS NOT COSMETIC — the prototype's
+               `{I.lock()} Slepá ulička` inside a plain `display:inline-block` badge
+               DOES NOT PORT. Tailwind preflight declares `svg{display:block}`, so the
+               transcribed markup put the padlock on a line of its own and pushed the
+               label underneath it. Measured on this build, prototype vs. the literal
+               port: badge 148.93 × 41.14 against 128.85 × 52.41 (11.3px taller,
+               20px narrower), glyph centre +0.22 from the badge centre against
+               −6.13. `16-shot.png` shows one line, so the port is the deviation.
+               `inline-flex; align-items:center; gap:4px` restores it, landing at
+               149.31 × 38.15 with the glyph +1.73 off centre. The 4px is not a round
+               number by accident: it replaces the prototype's literal space
+               character, whose advance in Figtree 13px measures 3.62px (and which a
+               flex container would strip from the anonymous text item anyway) — 6px
+               was tried first and overshot the width by 2.4px. The residual −3px of
+               height is the baseline-aligned line box the prototype gets for free
+               from an inline svg; it is tighter, not wrong, and is left. Scoped to
+               this badge — `.badge` is module 02's rule and every text-only badge on
+               this shell keeps `inline-block`. -->
+          <span class="badge danger" style="font-size:13px;padding:6px 14px;transform:rotate(-2deg);display:inline-flex;align-items:center;gap:4px"><NeoIcon name="lock" /><span>Slepá ulička</span></span>
+          <h1 class="h-screen text-[32px] sm:text-[38px]">{{ unavailableTitle }}</h1>
+          <div class="sub" style="font-size:14px">{{ unavailableText }}</div>
+          <div class="sub" style="font-size:13.5px">Ak ste odkaz dostali od kolegu, požiadajte ho o nový.</div>
+        </div>
+      </div>
+    </template>
 
     <!-- ======================= g-confirm (§UC-GX-004) =======================
          The post-submit confirmation. NARROWER than g-order on purpose: 520px,
@@ -584,17 +639,45 @@ function goToStatus() {
 
      Fixed by spending horizontal PADDING, not copy: §UC-GX-003 pins both labels
      verbatim. 10px a side takes the row to 224.18, which clears 240 with 15.8px to
-     spare. The buttons are `flex:1`, so they re-grow to fill the row either way —
-     the padding is only ever their MINIMUM, which is why this is invisible at every
-     width and only ever prevents the overflow (verified: resolved widths and the
-     rendered footer are unchanged at 378px). 400px rather than 328px, and 10px
-     rather than a tighter value, for the reasons RD-FO-4 recorded on `.fo-foot-btn`
-     — it costs nothing above the threshold, stays below the 420px cap where
-     `.modal` stops being viewport-bound, and leaves room for a wider face than the
-     one measured. Scoped to this view's own footer buttons: `.m-foot .btn` is
-     module 02's rule and every other dialog on this shell keeps its canon padding.
-     (Vue's scope attribute lands on slot content authored here even though
-     `NeoModal` teleports it to `body`.) -->
+     spare.
+
+     ⚠ CORRECTED BY RD-GX-4 — "invisible at every width" WAS WRONG, and the
+     parenthetical "verified: resolved widths and the rendered footer are unchanged
+     at 378px" that used to stand here was wrong with it. `.m-foot .btn` is `flex:1`
+     (grow 1, basis 0) with the flexbox default `min-width:auto`, so each button's
+     MIN-CONTENT is its floor — and the relief is only invisible while the even
+     split clears BOTH floors. "Odoslať objednávku" needs 171.05 at the canon 16px,
+     which is above the even split at every width the query covers, so it is pinned
+     at its own min-content and "Späť" takes what is left. Re-measured on this build
+     (relief vs. the canon 16px, same page, same face):
+
+       399px   151.95 / 159.05     against   139.95 / 171.05
+       378px   130.95 / 159.05     against   118.95 / 171.05
+       360px   112.95 / 159.05     against   100.95 / 171.05
+       320px    65.11 / 166.89     against    71.52 / 178.89  (which OVERFLOWS)
+                ⚠ this row alone was captured on the FALLBACK face, before Figtree
+                loaded — its floors are 59.52/166.89 (relief) and 71.52/178.89
+                (canon), so the canon sum is 258.41, not the 248.18 quoted above
+                for Figtree. Both faces overflow 240 and both are cleared by the
+                relief (fallback 234.41, 5.59px spare; Figtree 224.18, 15.8px), so
+                the conclusion is face-independent — but do not read 248.18 and
+                this row as the same measurement.
+       >400px  identical — the query does not apply
+
+     So the relief moves 12px from the accent button to "Späť" on every phone
+     viewport. It is a visible change and a small one — unlike the cancel confirm on
+     GuestOrderStatus.vue, where the same relief tips the row past the even split
+     and the footer becomes symmetric — but it is a change, and it is recorded
+     rather than repeated. The claim stands only in the two senses that matter: the
+     relief never makes the footer WORSE, and it is what stops the overflow.
+
+     400px rather than 328px, and 10px rather than a tighter value, for the reasons
+     RD-FO-4 recorded on `.fo-foot-btn` — it costs nothing above the threshold,
+     stays below the 420px cap where `.modal` stops being viewport-bound, and leaves
+     room for a wider face than the one measured. Scoped to this view's own footer
+     buttons: `.m-foot .btn` is module 02's rule and every other dialog on this
+     shell keeps its canon padding. (Vue's scope attribute lands on slot content
+     authored here even though `NeoModal` teleports it to `body`.) -->
 <style scoped>
 @media (max-width: 400px) {
   .gx-foot-btn {
