@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
+import BrandChrome from '@/components/neo/BrandChrome.vue'
 
 const router = useRouter()
 
@@ -763,15 +764,35 @@ async function copyInviteLink() {
 </script>
 
 <template>
-  <div class="min-h-screen bg-background">
-    <!-- Header -->
-    <header class="bg-primary text-primary-foreground shadow sticky top-0 z-40">
-      <div class="max-w-4xl mx-auto px-4 py-3 flex justify-between items-center">
-        <div v-if="authState === 'authenticated'" class="flex items-center gap-3">
-          <div class="flex flex-col">
-            <span class="text-lg font-semibold">{{ getCurrentFriendName() }}</span>
-            <span class="text-primary-foreground/70 text-xs font-mono">{{ getCurrentFriendUid() }}</span>
-          </div>
+  <div class="app">
+    <!-- Brand chrome (UC-FL-001): appbar + hazard tape + ticker, mounted in ALL
+         three states as the first child of `.app`, full-bleed and NOT sticky
+         (UC-DS-005/006). One instance — the state only swaps its slot contents
+         and the ticker copy, so the chrome never remounts on login/logout.
+
+         NOTE: the authenticated appbar's CONTENTS are UC-FL-004 (row RD-FL-3).
+         Until then the existing controls are carried through verbatim into the
+         `#trailing` slot so the portal stays usable — no chip, no NeoIcon, no
+         profile-click on the titles block, and the pencil sits on the trailing
+         side rather than between `.titles` and `.grow` (BrandChrome's three
+         fixed slots cannot express that position; RD-FL-3 amends UC-DS-006). -->
+    <BrandChrome
+      :ticker="authState === 'authenticated'
+        ? '+++ ČLENSKÝ OKRUH +++ PRE TÝCH, ČO VEDIA +++'
+        : '+++ VSTUP LEN PRE SVOJICH +++ HESLO NEDÁVAJ ĎALEJ +++'"
+    >
+      <template #titles>
+        <template v-if="authState === 'authenticated'">
+          <span class="t">{{ getCurrentFriendName() }}</span>
+          <span class="s">{{ getCurrentFriendUid() }}</span>
+        </template>
+        <template v-else>
+          <span class="t">Pod<span style="color:var(--accent)">pult</span>ovka</span>
+          <span class="s">Členský vstup</span>
+        </template>
+      </template>
+      <template #trailing>
+        <template v-if="authState === 'authenticated'">
           <Button
             variant="ghost"
             size="icon"
@@ -795,22 +816,21 @@ async function copyInviteLink() {
             </svg>
             <span class="text-xs">Pozvať</span>
           </Button>
-        </div>
-        <div v-else class="flex-1"></div>
-        <Button
-          v-if="authState === 'authenticated'"
-          variant="ghost"
-          size="icon"
-          @click="switchUser"
-          class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10"
-          title="Odhlásiť sa"
-        >
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-          </svg>
-        </Button>
-      </div>
-    </header>
+          <Button
+            variant="ghost"
+            size="icon"
+            @click="switchUser"
+            class="text-primary-foreground/70 hover:text-primary-foreground hover:bg-primary-foreground/10"
+            title="Odhlásiť sa"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+          </Button>
+        </template>
+        <span v-else class="chip acc">Len pre svojich</span>
+      </template>
+    </BrandChrome>
 
     <div v-if="voucherResolved && !showVoucherModal" class="max-w-4xl mx-auto px-4 mt-4">
       <div v-if="voucherResolved.action === 'accept'" class="bg-green-900/30 border border-green-700/50 rounded-lg p-4 flex items-center gap-3">
@@ -830,15 +850,14 @@ async function copyInviteLink() {
     </div>
 
     <!-- Loading -->
-    <div v-if="loading && authState === 'loading'" class="text-center py-12 text-muted-foreground">Načítavam...</div>
+    <div v-if="loading && authState === 'loading'" class="sub" style="text-align:center;padding:48px 0">Načítavam...</div>
 
     <!-- Global Error -->
-    <div v-else-if="error && authState === 'loading'" class="max-w-4xl mx-auto px-4 py-12">
-      <Alert variant="destructive">
-        <AlertDescription>
-          <strong>Chyba:</strong> {{ error }}
-        </AlertDescription>
-      </Alert>
+    <div v-else-if="error && authState === 'loading'" class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-12">
+      <div class="banner danger">
+        <span class="dot"></span>
+        <div><strong>Chyba:</strong> {{ error }}</div>
+      </div>
     </div>
 
     <!-- Login Form -->
@@ -963,7 +982,9 @@ async function copyInviteLink() {
     </div>
 
     <!-- Authenticated - Cycle List -->
-    <div v-else-if="authState === 'authenticated'" class="max-w-4xl mx-auto px-4 py-6">
+    <!-- Standard page column (UC-DS-005): 760px max, centered, 16px phone /
+         28px desktop side padding. Contents are restyled by RD-FL-3/4/5. -->
+    <div v-else-if="authState === 'authenticated'" class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-6">
       <!-- Balance Card -->
       <FriendBalanceCard :friend-id="selectedFriendId" />
 
@@ -1412,6 +1433,14 @@ async function copyInviteLink() {
       @update:open="val => !val && (shareCycle = null)"
     />
 
+    <!-- Voucher modal — markup deliberately untouched (out of scope, 00-overview).
+         It only needs the teleport: `.app>*{position:relative;z-index:1}`
+         (UC-DS-001) wins the specificity tie against Tailwind's `.fixed`/`.z-50`
+         because friends-theme.css is imported last, so a hand-rolled fixed
+         overlay left as a DIRECT child of `.app` collapses into page flow.
+         `<Teleport to="body">` is the same escape NeoModal documents; this
+         subtree uses no theme tokens, so it renders exactly as before. -->
+    <Teleport to="body">
     <div v-if="showVoucherModal && currentVoucher" class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
       <div class="bg-card rounded-2xl p-7 max-w-sm w-full shadow-2xl">
         <div class="text-center mb-5">
@@ -1448,5 +1477,6 @@ async function copyInviteLink() {
         </div>
       </div>
     </div>
+    </Teleport>
   </div>
 </template>
