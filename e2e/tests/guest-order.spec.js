@@ -854,16 +854,14 @@ test.describe('Guest ordering UI (/g/:token)', () => {
     await dialog.getByTestId('guest-phone').fill('0901 234 567')
     await dialog.getByTestId('guest-submit').click()
 
-    // Confirmation: payment reference + the personal status URL.
+    // Confirmation: the personal status URL on the card, the payment reference in
+    // the Platba modal.
     const confirmation = page.getByTestId('guest-confirmation')
     await expect(confirmation).toBeVisible()
 
     // §UC-GSO-003: the confirmation opens the shared PaymentModal straight away.
-    // Close it to get back to the card (a modal is inert-behind by design).
     const paymentDialog = page.getByRole('dialog')
     await expect(paymentDialog, 'the payment modal opens on confirmation').toContainText('Platba')
-    await paymentDialog.getByRole('button', { name: 'Zavrieť' }).click()
-    await expect(page.getByRole('dialog')).toHaveCount(0)
 
     const hostView = await (await ctx.get(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })).json()
     expect(hostView.guest_orders.length, 'the order reached the backend').toBe(1)
@@ -872,25 +870,47 @@ test.describe('Guest ordering UI (/g/:token)', () => {
     expect(sub.guest_name).toBe('Marek')
     expect(sub.guest_phone).toBe('0901 234 567')
 
-    await expect(page.getByTestId('payment-reference')).toContainText(`G${sub.id} / Marek / ${cycle.name}`)
+    // 06 §UC-GX-011 item 2 (resolved conflict #4): the payment reference no longer
+    // sits on the confirmation card — it lives ONLY inside the Platba modal, so it
+    // is asserted within the auto-opened dialog, before closing it.
+    await expect(paymentDialog.getByTestId('payment-reference')).toContainText(`G${sub.id} / Marek / ${cycle.name}`)
 
-    const statusUrl = await page.getByTestId('guest-status-url').inputValue()
+    // Close it to get back to the card (a modal is inert-behind by design).
+    await paymentDialog.getByRole('button', { name: 'Zavrieť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    // 06 §UC-GX-011 item 3: the status URL is a `NeoCopyRow`, not an `<input>` —
+    // the value is the row's text.
+    const statusUrl = (await page.getByTestId('guest-status-url').locator('.val').textContent()).trim()
     expect(statusUrl).toMatch(new RegExp(`/g/${link.token}/o/[A-Z2-9]{12,}$`))
 
     // ...and the same URL is kept in localStorage so the guest can find it again.
     const stored = await page.evaluate(() => localStorage.getItem('gorifi_guest_orders'))
     expect(stored, 'status URL persisted for a return visit').toContain(statusUrl.split('/o/')[1])
 
-    // Both copy buttons must CONFIRM the copy. The status URL is the guest's only
-    // route back to their order, so silent feedback is not acceptable — and the
-    // confirmation is per-button, not shared.
-    await page.getByTestId('copy-status-url').click()
-    await expect(page.getByTestId('copy-status-url')).toHaveText('Skopírované')
-    await expect(page.getByTestId('copy-reference'), 'only the clicked button confirms').toHaveText('Kopírovať')
+    // 06 §UC-GX-011 item 4: both copy buttons must CONFIRM the copy — the status URL
+    // is the guest's only route back to their order, so silent feedback is not
+    // acceptable — and the confirmation is per-ROW, not shared. The two rows now
+    // live on different layers (the status URL on the page, the reference inside the
+    // modal), so the independence is checked with both mounted: `NeoModal` teleports
+    // to `<body>` and leaves the confirmation card in the DOM behind its scrim. The
+    // label is "Skopírované!" with the exclamation mark (resolved conflict #6), and
+    // the buttons are addressed through their rows — the standalone
+    // `copy-status-url` / `copy-reference` testids retired with the old markup.
+    await page.getByRole('button', { name: 'Zaplatiť', exact: true }).click()
+    const reopened = page.getByRole('dialog')
+    const copyReference = reopened.getByTestId('payment-reference').getByRole('button')
+    const copyStatusUrl = page.getByTestId('guest-status-url').getByRole('button')
 
-    await page.getByTestId('copy-reference').click()
-    await expect(page.getByTestId('copy-reference')).toHaveText('Skopírované')
-    await expect(page.getByTestId('copy-status-url')).toHaveText('Kopírovať')
+    await copyReference.click()
+    await expect(copyReference).toHaveText('Skopírované!')
+    await expect(copyStatusUrl, 'only the clicked row confirms').toHaveText('Kopírovať')
+
+    await reopened.getByRole('button', { name: 'Zavrieť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    await copyStatusUrl.click()
+    await expect(copyStatusUrl).toHaveText('Skopírované!')
   })
 
   test('a bakery cycle groups the variants of one product into a single card', async ({ page }) => {

@@ -518,9 +518,13 @@ test.describe('RD-GX-1 · the submit is untouched by the restyle', () => {
     await expect(page.getByRole('dialog')).toHaveCount(1)
     await expect(page.getByRole('dialog')).toContainText('Platba')
     await expect(page.getByRole('button', { name: 'Zavrieť' }), 'the immutable specs query this unscoped').toHaveCount(1)
-    // `.modal-scrim` is `NeoModal`'s; `PaymentModal` is still the radix dialog
-    // (RD-GX-2 owns it), so a scrim on screen here could only be the checkout's,
-    // left behind to swallow the click those specs make.
-    await expect(page.locator('.modal-scrim'), 'no NeoModal scrim survives the submit').toHaveCount(0)
+    // ⚠ UPDATED BY RD-GX-2. When this row shipped, `PaymentModal` was still the
+    // radix dialog, so the only `.modal-scrim` that could exist here was the
+    // checkout's — left behind to swallow the click those specs make — and the
+    // count was 0. RD-GX-2 put `PaymentModal` on `NeoModal` (06 §UC-GX-005), so the
+    // payment modal now brings its OWN scrim. The property being pinned is
+    // unchanged: exactly ONE scrim, and it belongs to the dialog on screen.
+    await expect(page.locator('.modal-scrim'), 'exactly one scrim: the payment modal\'s').toHaveCount(1)
+    await expect(page.locator('.modal-scrim .modal .m-title'), 'and it is the Platba one, not the checkout\'s').toHaveText('Platba')
   })
 })
