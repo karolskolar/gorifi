@@ -2,6 +2,7 @@
 import { computed, watch } from 'vue'
 import NeoStepper from '@/components/neo/NeoStepper.vue'
 import { snapTab } from '@/lib/snap-tab'
+import CatScrollArrow from '@/components/CatScrollArrow.vue'
 import { fmtEur } from '@/lib/money'
 import {
   COFFEE_VARIANTS,
@@ -245,6 +246,11 @@ function onQty(productId, variant, next) {
           @keydown.enter.prevent="activeTab = purpose"
           @keydown.space.prevent="activeTab = purpose"
         >{{ purpose }}</span>
+        <!-- Scroll affordance — the same control as the friend strip, one
+             component, so the two cannot diverge. MUST stay the last direct child
+             of `.cat-tabs`: it sticks to that scroller and finds it through
+             `parentElement`. -->
+        <CatScrollArrow />
       </div>
 
       <!-- ⚠ ONE root per product, TWO bodies. `.card` IS the neo card (3px ink
