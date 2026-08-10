@@ -18,6 +18,7 @@ import NeoStepper from '@/components/neo/NeoStepper.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { snapTab } from '@/lib/snap-tab'
+import CatScrollArrow from '@/components/CatScrollArrow.vue'
 import PaymentModal from '@/components/PaymentModal.vue'
 import { encode as bysquareEncode, PaymentOptions, CurrencyCode, Version } from 'bysquare'
 import QRCode from 'qrcode'
@@ -1218,6 +1219,12 @@ function applyMarkup(price) {
             @keydown.enter.prevent="activeTab = purpose"
             @keydown.space.prevent="activeTab = purpose"
           >{{ purpose }}</span>
+          <!-- Scroll affordance. The theme's own signal is the 28px `::after`
+               fade, which reads as a soft edge rather than "there is more" — the
+               categories past the fold went unfound. MUST stay the last direct
+               child of `.cat-tabs`: it sticks to that scroller and finds it via
+               `parentElement`. Identical wiring in `GuestProductGrid.vue`. -->
+          <CatScrollArrow />
         </div>
 
         <!-- Only the active purpose's cards — the same one-visible-at-a-time

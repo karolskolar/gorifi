@@ -235,12 +235,24 @@ test.describe('RD-GX-1 · the shared neo grid (§UC-GX-002)', () => {
     await expect(strip.getByRole('tab', { name: 'Filter' })).toHaveClass(/\bon\b/)
     await expect(page.getByTestId(`product-${coffee.id}`), 'one purpose at a time').toHaveCount(0)
 
-    // At most one sticky bar per edge (02 §UC-DS-005): the strip at the top, the
-    // cartbar at the bottom, nothing else.
+    // At most one sticky bar per PAGE EDGE (02 §UC-DS-005): the strip at the top,
+    // the cartbar at the bottom, nothing else.
+    //
+    // ⚠ There is now a third sticky element in the codebase — `CatScrollArrow`,
+    // the `.cat-tabs` overflow affordance. It is absent from this list honestly,
+    // not by accident or by a loosened matcher: this fixture has TWO purposes,
+    // which fit at 378px, and a hidden arrow is `display:none` AND
+    // `position:static` (a `position:sticky` element still computes as sticky
+    // while `display:none`, so this could not have been left to chance). The set
+    // WITH the arrow showing is pinned exactly, by name, in
+    // `cat-scroll-arrow.spec.js` — and it is not a fourth page-edge bar: it rides
+    // the strip's own right edge INSIDE the horizontal scroller, which is the
+    // technique `.cat-tabs::after`'s fade already uses. Add a third purpose to
+    // this cycle and this assertion is expected to need the arrow added to it.
     const stickies = await page.evaluate(() => [...document.querySelectorAll('.app *')]
       .filter((e) => getComputedStyle(e).position === 'sticky')
       .map((e) => e.className))
-    expect(stickies, 'exactly two, one per edge').toEqual(['cat-tabs', 'cartbar'])
+    expect(stickies, 'exactly two, one per page edge').toEqual(['cat-tabs', 'cartbar'])
   })
 
   test('a variant box selects individually (`.vbox.sel`) — the whole-card ring is gone', async ({ page }) => {

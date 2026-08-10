@@ -647,3 +647,60 @@ typeface.
   ETag/Last-Modified 304s rather than `/assets`' `expires 1y; immutable`. Deliberate — the
   filenames are **not** content-hashed, so `immutable` would pin a stale face forever if the
   subsets are ever refreshed from Google.
+
+### `.cat-tabs` scroll affordance — `CatScrollArrow.vue` (2026-08-10)
+
+The theme's only overflow signal on the category strip was `.cat-tabs::after`, a 28px
+`transparent → --bg` fade. Users read it as a soft edge, not as "there is more to the
+right", so categories past the fold went unfound. `components/CatScrollArrow.vue` adds an
+accent control at the strip's right edge that both signals the overflow and performs the
+scroll. **No theme rule was added** — `friends-theme.css` is untouched and its adaptation
+list still ends at A11; the whole control is one SFC with `<style scoped>`.
+
+- **ONE component, TWO call sites** — `views/FriendOrder.vue` and
+  `components/GuestProductGrid.vue` (which itself serves both `/g/:token` and the
+  status/edit screen). They are the same control; never inline a second copy.
+- ⚠ **It must stay the LAST DIRECT CHILD of `.cat-tabs`, and it finds that scroller via
+  `parentElement`** — not via a prop. `position:sticky` only pins against the scroll
+  container the element actually lives in, so "the element I am a child of" and "the
+  element I control" are necessarily the same node; a prop could disagree with the DOM.
+- ⚠ **Sticky-inside-the-horizontal-scroller is the only technique that works**, and it is
+  the theme's own (`.cat-tabs::after` is `position:sticky; right:-1px`). Do **not** wrap
+  `.cat-tabs` in a positioned container to get `position:absolute`: `.cat-tabs` is itself
+  `position:sticky; top:0`, and a wrapper box its own height leaves it no travel — it
+  silently stops sticking (`order-shell.spec.js` pins top/z-index/y=0-after-scroll).
+  `display:contents` generates no box, so it rescues nothing.
+- ⚠ **`z-index: 2` is load-bearing.** `::after` is generated content — last in paint order —
+  and is itself sticky with `z-index:auto`, so without it the fade washes over the arrow.
+  Pure appearance bug: every behavioural assertion still passes. Pinned by **sampling the
+  rendered pixel** (screenshot → `data:` URL → canvas → `getImageData`), because the thing
+  covering it is a pseudo-element that cannot be located or hit-tested. Mutation-verified:
+  removing the z-index reads `rgb(255, 165, 199)` against the accent's `rgb(255, 45, 135)`.
+- ⚠ **`margin-left: -44px` cancels the arrow's contribution to `scrollWidth` exactly** —
+  its own `36px` plus one more `8px` flex `gap`. Without it a strip whose tabs comfortably
+  FIT reports an overflow and renders an arrow that scrolls nowhere, and `scrollWidth`
+  moves as the arrow appears/disappears at the right end. The 8px is the theme's
+  `.cat-tabs { gap: 8px }`; if that gap changes, this number moves with it.
+- ⚠ **The hidden state is `display:none` AND `position:static`**, and the element is always
+  rendered (class toggle, not `v-if`) so `parentElement` survives. A `position:sticky`
+  element still *computes* as sticky while `display:none`, which would have put a hidden
+  affordance into `guest-order-shell.spec.js`'s exact sticky census. That spec's fixture
+  has two purposes that fit, so it honestly still reads `['cat-tabs','cartbar']`; the set
+  **with** the arrow showing — `['cat-tabs','catarrow on','cartbar']` — is pinned in
+  `cat-scroll-arrow.spec.js`. It is not a fourth page-edge bar: it rides the strip's own
+  right edge, inside the scroller.
+- ⚠ **`aria-hidden="true"` + `tabindex="-1"`, deliberately.** `.cat-tabs` is a
+  `role="tablist"` whose children are `role="tab"`; a focusable control there breaks the
+  ARIA contract and inflates the count `mobile-no-h-overflow.spec.js:84` asserts. Same
+  basis as the appbar's profile pencil — exactly one control answers to an action's name,
+  and this is an adjacent, pointer-only duplicate of scrolling. Nothing is lost: the tabs
+  are focusable and focus scrolls them into view.
+- Re-measures on `scroll`, on a `ResizeObserver` (disconnected on unmount) **and on
+  `document.fonts.ready`** — tab widths are font-metric driven and Figtree loads async, so
+  the first measurement runs against the fallback face.
+- Judgement call, recorded: the arrow overlays the strip's rightmost ~40px, so a tab
+  resting exactly there is partially un-tappable. No `scroll-padding-right` was added —
+  tabs are ≥70px wide so a clickable region always remains, and the arrow withdraws at the
+  right end, which is where it would bite most. Revisit if short category names appear.
+
+Full suite after this work: **554 passed / 3 skipped** (+9).
