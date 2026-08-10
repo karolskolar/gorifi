@@ -195,13 +195,16 @@ test.describe('Modern login — the redesigned card (UC-FL-002)', () => {
     // Fields — native inputs with the theme classes, label-associated.
     const username = page.getByLabel(/^užívateľské meno$/i)
     await expect(username).toHaveClass(/\binp\b/)
-    await expect(username).toHaveAttribute('placeholder', 'napr. lego')
+    // ⚠ NO placeholder, deliberately (product decision, 2026-08-10): the fields
+    // are empty until typed in. Asserted as ABSENT rather than simply dropping the
+    // line — an assertion that the attribute is gone is what catches it coming back.
+    await expect(username).not.toHaveAttribute('placeholder', /./)
     await expect(username).toHaveAttribute('autocomplete', 'username')
     await expect(username).toHaveAttribute('autocapitalize', 'none')
 
     const password = page.getByLabel(/^heslo$/i)
     await expect(password).toHaveClass(/\binp\b/)
-    await expect(password).toHaveAttribute('placeholder', 'Zadajte heslo')
+    await expect(password).not.toHaveAttribute('placeholder', /./)
     await expect(password).toHaveAttribute('type', 'password')
     await expect(password).toHaveAttribute('autocomplete', 'current-password')
 
