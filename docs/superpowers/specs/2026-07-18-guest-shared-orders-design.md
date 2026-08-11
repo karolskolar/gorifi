@@ -292,13 +292,57 @@ guest sub-orders.
   on the cycle detail; packing checkboxes per guest sub-order so the host
   receives pre-separated bags.
 
-## Lead Capture
+## Conversion Funnel: Guest → Member
 
-Every guest with a phone/email is a warm lead. On the guest confirmation screen,
-show a low-key CTA: "Chceš si nabudúce objednať sám? Požiadaj o účet" → prefills
-the existing invitations flow (`invitations` table, `invited_by_friend_id` =
-host). Admin invitations view gains a "prišiel cez hosťovskú objednávku" source
-tag (reuse `onboarding_source` pattern).
+The membership half of the funnel **already exists end-to-end**: every friend has
+an `invite_code`, FriendPortal has a "Pozvať" share dialog for
+`/invite/:code`, `InviteRegister.vue` is the public registration form, and
+submissions land as pending invitations (amber dashboard banner → "Vytvoriť"
+prefill into AdminFriends). Guest orders add the missing *first rung* — taste
+before committing — and this feature only needs to build the **bridge** between
+the two:
+
+```mermaid
+flowchart TD
+    classDef new fill:#fef3c7,stroke:#d97706,stroke-width:2px
+    classDef existing fill:#f1f5f9,stroke:#64748b
+
+    subgraph STEP1 [Rung 1 — taste it — NEW, this spec]
+        G1[Host shares per-cycle guest link]:::new
+        G1 --> G2[Guest orders without account,<br/>pays admin via QR/Revolut]:::new
+    end
+
+    subgraph BRIDGE [Rung 2 — the bridge — NEW]
+        B1[CTA on guest confirmation/status page:<br/>Chceš si objednávať sám?]:::new
+        B1 --> B2[Opens /invite/:hostCode with<br/>name/phone/email prefilled<br/>from the guest order]:::new
+    end
+
+    subgraph STEP3 [Rung 3 — membership — EXISTING, unchanged]
+        E1[InviteRegister ➜ pending invitation]:::existing
+        E1 --> E2[Admin: amber banner ➜ Vytvoriť<br/>prefilled friend account]:::existing
+        E2 --> E3[Credentials via WhatsApp ➜ regular friend]:::existing
+    end
+
+    G2 --> B1
+    B2 --> E1
+```
+
+Bridge work items:
+
+1. **CTA on guest confirmation + status pages** linking to `/invite/<host's
+   invite_code>` — using the *host's* code keeps attribution correct
+   (`invited_by_friend_id` = host, consistent with `is_root` grouping).
+2. **Prefill in `InviteRegister.vue`** via query params (`name`, `phone`,
+   `email` from the guest order) — same pattern as the AdminFriends prefill
+   (2026-07-07).
+3. **Guest history on the invitation row** (optional): match `invitations.phone`
+   against `guest_orders.guest_phone` and show "objednával ako hosť 2×, spolu
+   1,5 kg, vždy zaplatené" in AdminInvitations, so approval is a formality.
+
+The rest of the invitations flow — approval gate, manual credential handout,
+`invitations` schema — stays untouched. No discounts or rewards are attached to
+conversion (tier discounts are not passed to friends; see CLAUDE.md product
+context).
 
 ## Edge Cases
 
