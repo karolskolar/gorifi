@@ -33,6 +33,18 @@ cd backend && npm run dev
 cd frontend && npm run dev
 ```
 
+## Product / Operations Context
+
+- **Cycle announcements go through a WhatsApp group** where all friends are members.
+  The admin posts manually when a cycle opens. There are no in-app or push
+  notifications; some friends may have the group muted, so announcements can be
+  missed. Any notification feature should complement (not replace) this WhatsApp flow.
+- **Tier/supplier discounts are NOT passed on to friends** and this won't change
+  anytime soon. Do not design features that promise friends a discount or show
+  collective discount goals (e.g. "X kg to the next tier for everyone").
+- **Segmentation-based win-back nudge tooling** (one-click personal messages to
+  friends who haven't ordered) was considered and deprioritized by the owner (2026-08).
+
 ## Key Patterns
 
 ### Database
