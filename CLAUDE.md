@@ -823,3 +823,63 @@ Five product-decided cuts to `/g/:token`'s post-submit screen, frontend only.
   is the only way to see the overlap a text assertion cannot.
 Verified locally: `guest-payment-modal` (11), `guest-order` + `guest-order-shell` +
 `guest-invite-dead` (52) — **63 passed**, plus phone/desktop screenshots.
+
+### `CartLineList.vue` — one home for every list of ordered coffee (2026-08-12)
+
+Product decision: the colleagues' sub-orders on the host's screen and the guest's own
+order summary must read exactly like the friend cart bar — grouped by purpose, one-row
+names, quantity/size in aligned columns, `€` on every amount. Frontend only.
+
+⚠ **`components/CartLineList.vue` is now the ONLY place this list is rendered**, on FIVE
+surfaces: `FriendOrder.vue`'s cart bar, `GuestOrder.vue`'s cart bar AND its confirmation
+sum card, `GuestOrderStatus.vue`'s item list, and `GuestSubOrders.vue`'s sub-order cards.
+Before it they were five hand-rolled copies in **four different formats** — the host read
+two of them on one screen. Extend the component; never fork it. Call sites map their own
+row shape into `{ key, name, purpose, size, quantity, amount }` and own nothing else.
+
+- ⚠ **Every value the component's CSS shares with the theme's `.cartbar .lines .ln`
+  (0,3,0) is byte-identical, deliberately** — inside a cart bar the theme wins, outside it
+  the component's rules are the only ones there are, and matching numbers is what makes
+  the two cases indistinguishable. It deliberately does NOT declare `max-height` /
+  `overflow-y` (the 170px scroll cap is the cart bar's alone; a list in a card must show
+  every line) or `margin-top` (call sites pass their own, which falls through to the root).
+- ⚠ **`line-height:normal` inside the component is load-bearing**: the `.ln-*` column
+  classes are NOT in the theme's A10 list, so without it every line inherits preflight's
+  1.5. The three call sites that used to carry their own `line-height:normal` inline (with
+  measured +4.25px/+8.5px notes) delegate to it now.
+- ⚠ **It renders `ul`/`li`**, so `li` counts in specs must be `li.ln` — the purpose header
+  is an `li` too. Two shipped assertions counted bare `li` and read 3 for a 2-item order.
+- ⚠ **The purpose header is a `.badge`, which collided with the sub-order card's "exactly
+  ONE badge" rule** (§UC-KG-001/003, the paid/cancelled status flag). Fixed by scoping
+  that assertion to a new `data-testid="sub-order-badges"` row — plus a second assertion
+  that every *other* badge in the card is a group header, so the original rule is still
+  enforced rather than merely relocated.
+- ⚠ **`€` on item lines REVERSES 05 §UC-KG-003 item 2** ("EUR on totals only, item lines
+  carry a bare mono column", from the prototype). A bare "15.20" was ambiguous precisely
+  where it mattered: a colleague's lines sit in a card directly above a cart-bar total
+  that belongs to a **different** order. Totals still say `EUR`.
+- ⚠ **The amount uses an ORDINARY space before `€`.** A U+00A0 slipped in first and cost
+  half an hour: Playwright normalises NBSP away for a STRING `toHaveText` but **not** for a
+  REGEX one, so `toHaveText('9.04 €')` passed while `toHaveText(/^\d+\.\d{2} €$/)` failed
+  on the same node. `.ln-amt` is `nowrap`, so NBSP bought nothing anyway.
+- `GuestSubOrders`' precomposed `"2× Name — 250g"` string is gone. It existed because a
+  sibling `<span>` could lose its separator to Vue's `condense` whitespace mode — a hazard
+  that cannot arise once the size is a COLUMN. Its `variantText` now comes from
+  `lib/guest-cart.js`, so `'unit'` reads "ks" instead of printing nothing.
+- `lib/purposes.js` `purposeOrder(products)` gives the two guest screens the group order
+  (`GuestProductGrid` computes it internally and never exposes it; `FriendOrder` passes its
+  own `availablePurposes`). ⚠ **Deliberately NOT wired into either of those two copies**:
+  they feed a `groupedProducts[activeTab]` LOOKUP whose keys fall back to `'Ostatne'`
+  (no diacritic) while everything else in the app uses `'Ostatné'` — normalising there
+  would make a purposeless product's tab select an empty group, i.e. silently hide
+  product. Here the fallback only affects group ORDER, and unranked purposes are appended.
+- `lib/guest-cart.js` `cartLines()` now carries `purpose` (presentation only — nothing
+  prices or weighs by it).
+- **NOT changed, and visible:** `GuestOrder.vue`'s cart bar still shows `Položiek: N` in
+  its meta row with the small `<summary>`; the friend bar merged that into
+  "Zobraziť položky v košíku (N položiek)" with a 40px hit target earlier the same day.
+  The two bars now differ in that one respect.
+Verified locally: `order-cartbar`, `colleagues-panel`, `guest-host-view`,
+`guest-status-shell`, `guest-order-shell`, `guest-payment-modal`, `guest-status`,
+`guest-order` — **~170 passed** — plus screenshots of all three restyled surfaces and
+320px no-overflow checks.

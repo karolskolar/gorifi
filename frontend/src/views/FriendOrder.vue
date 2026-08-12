@@ -19,6 +19,7 @@ import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { snapTab } from '@/lib/snap-tab'
 import { itemsLabel } from '@/lib/plural'
+import CartLineList from '@/components/CartLineList.vue'
 import CatScrollArrow from '@/components/CatScrollArrow.vue'
 import PaymentModal from '@/components/PaymentModal.vue'
 import { encode as bysquareEncode, PaymentOptions, CurrencyCode, Version } from 'bysquare'
@@ -269,33 +270,31 @@ const cartItems = computed(() => {
   return items
 })
 
-// The cart lines, grouped by purpose — REINSTATED by product decision (2026-08-12),
-// which reverses 04 resolved conflict #10's flat list. What comes back is the
-// grouping and ONE neutral header badge per group; the per-purpose page tints that
-// the original `groupedCartItems` also carried do NOT (RD-FO-1 dropped those for the
-// whole view and nothing here reopens them).
+// The cart lines in `CartLineList`'s normalized shape. Grouping, columns, the
+// ellipsis and the `€` all live in that component now — it is the ONE home for this
+// list on every screen (product decision 2026-08-12), and the grouping it does
+// reverses 04 resolved conflict #10's flat list.
 //
-// ⚠ Group ORDER is `availablePurposes`, not `Object.keys(cart)`: the strip above and
-// the cart below must list Espresso → Filter → Kapsule → others in the same order,
-// and the cart's own key order is whatever sequence the friend happened to tap in.
-// Purposes with nothing in the cart are absent; a purpose that is no longer in the
-// product list at all (a cart key surviving a re-snapshot) is appended rather than
-// dropped, so a line can never become invisible while still being billed.
-const groupedCartItems = computed(() => {
-  const byPurpose = new Map()
-  for (const item of cartItems.value) {
-    if (!byPurpose.has(item.purpose)) byPurpose.set(item.purpose, [])
-    byPurpose.get(item.purpose).push(item)
-  }
-  const groups = []
-  for (const purpose of availablePurposes.value) {
-    if (byPurpose.has(purpose)) groups.push({ purpose, items: byPurpose.get(purpose) })
-  }
-  for (const [purpose, items] of byPurpose) {
-    if (!availablePurposes.value.includes(purpose)) groups.push({ purpose, items })
-  }
-  return groups
-})
+// Only the MAPPING is this view's business: `lineSize` is the shipped
+// `variant_label` / 'ks' / raw-variant-key rule (04 §UC-FO-009) and `item.total` is
+// already marked up by `cartItems`.
+const cartLines = computed(() => cartItems.value.map((item) => ({
+  key: item.key,
+  name: item.product_name,
+  purpose: item.purpose,
+  size: lineSize(item),
+  quantity: item.quantity,
+  amount: item.total,
+})))
+
+// `orders.delivery_fee` is a field ON the order and never an `order_items` line
+// (CLAUDE.md 2026-05-01), so it is an EXTRA rather than an item: no purpose header,
+// no quantity, no size — just a name and an amount in the same column.
+const cartExtraLines = computed(() => (
+  order.value?.delivery_fee
+    ? [{ key: 'delivery', name: 'Doručenie Packetou', amount: order.value.delivery_fee }]
+    : []
+))
 
 // The cart line's size label — the shipped logic verbatim (04 §UC-FO-009):
 // `variant_label` when the snapshot carries one (bakery variants), 'ks' for the
@@ -1712,26 +1711,20 @@ function applyMarkup(price) {
              correct as "0 položiek" and the fold still opens onto "Košík je
              prázdny". -->
         <summary>Zobraziť položky v košíku ({{ itemsLabel(cartItems.length) }})</summary>
-        <div class="lines">
-          <span v-if="cartItems.length === 0" class="sub">Košík je prázdny</span>
-          <template v-for="group in groupedCartItems" :key="group.purpose">
-            <div class="ln-group"><span class="badge acc-o">{{ group.purpose }}</span></div>
-            <div class="ln" v-for="item in group.items" :key="item.key">
-              <span class="ln-name" :title="item.product_name">{{ item.product_name }}</span>
-              <span class="mono ln-qty">{{ item.quantity }}×</span>
-              <span class="mono ln-size">{{ lineSize(item) }}</span>
-              <span class="mono ln-amt">{{ item.total.toFixed(2) }} €</span>
-            </div>
-          </template>
-          <!-- The Packeta fee, plain text — the repo's 📦 goes with the emoji ban.
-               It carries no group header (it is not a product and belongs to no
-               purpose) and no quantity/size, but it DOES keep `.ln-amt`, so its
-               figure stays in the same column as the lines above it. -->
-          <div v-if="order?.delivery_fee" class="ln">
-            <span class="ln-name">Doručenie Packetou</span>
-            <span class="mono ln-amt">{{ order.delivery_fee.toFixed(2) }} €</span>
-          </div>
-        </div>
+        <!-- The empty state has no `.lines` wrapper any more, so it carries the 8px
+             the theme's `.cartbar .lines` used to give it. -->
+        <span v-if="cartItems.length === 0" class="sub" style="display:block;margin-top:8px">Košík je prázdny</span>
+        <!-- `purpose-order` is what keeps the cart's groups in the same order as the
+             category strip above it (`availablePurposes`); the cart's own key order
+             is whatever sequence the friend happened to tap in. The fee line rides
+             along as an `extra` — see `cartExtraLines`, and note the repo's 📦 stays
+             banned with the rest of the emoji. -->
+        <CartLineList
+          v-else
+          :items="cartLines"
+          :extras="cartExtraLines"
+          :purpose-order="availablePurposes"
+        />
       </details>
     </div>
 
@@ -2186,17 +2179,6 @@ function applyMarkup(price) {
      ring, which is why the old spelling survives there and only there. It is
      inert wherever `:has()` parses, so the two can never both paint. -->
 <style scoped>
-/* ---- cart lines: the purpose header and the four columns ----
-   Scoped here rather than added to `friends-theme.css`, which is a byte-for-byte
-   design-canon port with a numbered adaptation list this belongs to none of
-   (the `CatScrollArrow.vue` precedent, 2026-08-10).
-
-   Specificity is safe by construction: the theme's own rules for this subtree are
-   `:where(.app,.modal-layer) .cartbar .lines .ln` — (0,3,0), since `:where()`
-   contributes nothing — but nothing below re-declares a property those rules set.
-   `.ln` keeps the theme's `display:flex`, its `gap:10px`, its bottom rule and its
-   `justify-content:space-between` (inert here: `.ln-name` is `flex:1`, so there is
-   no free space left to distribute). */
 /* ⚠ The fold's own control, ENLARGED with the line the count vacated (product
    decision 2026-08-12). The theme's `.cartbar details summary` is 13px and
    `inline-flex`, i.e. a hit target as tall as one line of 13px text (~16px) and
@@ -2225,64 +2207,14 @@ function applyMarkup(price) {
   color: var(--ink);
 }
 
-.ln-group {
-  /* Deliberately NOT an `.ln`: no bottom rule, so a header can never be read as a
-     line with a missing price. `.lines` is a 5px-gap flex column, so the extra
-     `margin-top` is what makes the badge sit closer to the group it labels (5px
-     below) than to the group above it (11px) — without it the header floats
-     equidistant between two groups and labels neither. */
-  margin-top: 6px;
-}
-
-.ln-group:first-child {
-  margin-top: 0;
-}
-
-.ln-name {
-  /* ONE ROW, always — see the template comment. `min-width:0` is what lets a flex
-     item shrink below its content at all; without it `text-overflow` never
-     triggers and the row grows instead. */
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* The three fixed columns. `flex-shrink:0` so they never give up width to a long
-   name, `text-align` so the digits align on their own edge, and `font-variant-
-   numeric:tabular-nums` so "1×" and "12×" occupy the same box in a proportional
-   fallback face (Courier Prime is already monospaced; the fallback may not be). */
-.ln-qty,
-.ln-size,
-.ln-amt {
-  flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-dim);
-}
-
-.ln-qty {
-  width: 26px;
-  text-align: right;
-}
-
-.ln-size {
-  /* Fits `20pc5g`, the longest coffee variant key, at the theme's 13.5px mono;
-     bakery `variant_label` is free admin text, so it may still ellipsise — which
-     is the correct failure here (the column alignment is the point, and the size
-     is repeated inside the product card above). */
-  width: 52px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.ln-amt {
-  min-width: 58px;
-  text-align: right;
-  color: var(--ink);
-}
-
+/* ⚠ The cart-line rules that used to live here — `.ln-group`, `.ln-name`,
+   `.ln-qty`, `.ln-size`, `.ln-amt` — moved WHOLESALE into
+   `components/CartLineList.vue` when four other screens had to render the same
+   list (product decision 2026-08-12). They could not have stayed: a parent's
+   `<style scoped>` cannot reach a child component's internals, so leaving copies
+   here would have been dead CSS that looks authoritative. The component's block
+   carries the derivations (the 320px ellipsis guard, the column widths, why every
+   value it shares with `friends-theme.css` is byte-identical). */
 .sr-radio {
   position: absolute;
   width: 1px;

@@ -8,7 +8,9 @@ import NeoModal from '@/components/neo/NeoModal.vue'
 import PaymentModal from '@/components/PaymentModal.vue'
 import GuestProductGrid from '@/components/GuestProductGrid.vue'
 import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
+import CartLineList from '@/components/CartLineList.vue'
 import { fmtEur } from '@/lib/money'
+import { purposeOrder } from '@/lib/purposes'
 import {
   availabilityMap,
   cartFromOrderItems,
@@ -121,6 +123,21 @@ const hasPaymentDetails = computed(() => !!(payment.value?.iban || payment.value
 
 const cartItems = computed(() => cartLines(cart.value, products.value))
 const cartTotal = computed(() => linesTotal(cartItems.value))
+
+// The SUBMITTED order's lines in `CartLineList`'s normalized shape — the same
+// component the host's "Objednávky kolegov" and both cart bars render (product
+// decision 2026-08-12: every list of ordered coffee reads the same). `purpose` rides
+// along on the server's item rows (`routes/guest.js:228`), so the grouping needs no
+// second request — and it still works on a LOCKED cycle, where `products` is
+// deliberately not published (GSO-T4's read/write asymmetry) and is therefore empty.
+const statusLines = computed(() => items.value.map((item) => ({
+  key: item.id,
+  name: item.product_name,
+  purpose: item.purpose,
+  size: variantText(item),
+  quantity: item.quantity,
+  amount: Number(item.price || 0) * Number(item.quantity || 0),
+})))
 
 // §UC-GX-006: the background is uniform `--bg` in EVERY state. The per-tab tinting
 // (`bg-sky-100`/`bg-stone-200`/…) and the `bg-muted` cancelled wash are both gone —
@@ -477,30 +494,21 @@ async function submitEdit(payloadItems) {
         <div class="card" style="padding:16px">
           <div v-if="isCancelled" class="field-lbl" :style="items.length > 0 ? null : 'margin:0'">Zrušené položky</div>
 
-          <!-- ⚠ `line-height:normal` is LOAD-BEARING here too, and by much more: the
-               left `<span>` of each line carries no class, so preflight's 1.5 reaches
-               it while its `.mono` sibling (covered by A10) is already at `normal` —
-               the two halves of one row would sit on different strut heights.
-               MEASURED on a 3-item order: 108px at `normal` against 133.5px at `1.5`,
-               i.e. +8.5px on EVERY line. -->
-          <div
+          <!-- ⚠ `text-decoration` goes on the LIST ROOT, not on a wrapper around it.
+               It propagates to descendants visually but is NOT inherited as a computed
+               value, so `guest-status-shell.spec.js` reads it off `status-item`'s
+               PARENT — which is `CartLineList`'s own `ul`. A style bound on the
+               component tag falls through to that root, which is exactly what keeps
+               the strike (and that assertion) working after the extraction.
+               `line-height` is no longer set here: the component declares `normal`
+               itself, which is what its non-A10 column classes need. -->
+          <CartLineList
             v-if="items.length > 0"
-            style="display:flex;flex-direction:column;gap:6px;font-size:13.5px;color:var(--ink-dim);line-height:normal"
-            :style="{ textDecoration: isCancelled ? 'line-through' : 'none' }"
-          >
-            <div
-              v-for="item in items"
-              :key="item.id"
-              style="display:flex;justify-content:space-between;gap:10px"
-              data-testid="status-item"
-            >
-              <!-- `×` is U+00D7 MULTIPLICATION SIGN, not the letter "x" (prototype).
-                   Line amounts are BARE `toFixed(2)` — no " EUR": the card's own
-                   "Celkom" row states the unit and these are a breakdown. -->
-              <span>{{ item.product_name }} ({{ variantText(item) }}) ×{{ item.quantity }}</span>
-              <span class="mono">{{ (item.price * item.quantity).toFixed(2) }}</span>
-            </div>
-          </div>
+            :items="statusLines"
+            :purpose-order="purposeOrder(products)"
+            line-testid="status-item"
+            :style="isCancelled ? 'text-decoration:line-through' : null"
+          />
           <!-- Shipped zero-item fallback, kept (§UC-GX-006 item 3). It carries
                `status-total` itself, so exactly ONE node ever holds that testid. -->
           <div v-else-if="!isCancelled" class="sub" data-testid="status-total">Žiadne položky · {{ fmtEur(order?.total) }}</div>

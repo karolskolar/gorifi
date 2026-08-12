@@ -301,17 +301,29 @@ test.describe('UC-KG-001/003 — composition, money rule, sub-order cards', () =
     expect(skin.shadow).toContain('3px 3px 0px')
     expect(skin.opacity).toBe('1')
 
-    // Item lines: bare numbers. The EUR suffix belongs to TOTALS only.
-    const lines = page.getByTestId(`guest-items-${first.order.id}`).locator('li')
+    // ⚠ 2026-08-12: the sub-order lines are `components/CartLineList.vue` now — the
+    // SAME component the host's own cart bar renders directly below this card, which
+    // is the whole reason the format was unified. `li.ln` for the lines, one
+    // `li.ln-group` header per purpose, four columns, and `€` on every amount (the
+    // "EUR belongs to totals only" rule is superseded: a bare "15.20" in this card was
+    // ambiguous next to a cart bar total that belongs to a DIFFERENT order).
+    const list = page.getByTestId(`guest-items-${first.order.id}`)
+    const lines = list.locator('li.ln')
     await expect(lines).toHaveCount(2)
+    await expect(list.locator('li.ln-group .badge')).toHaveText('Espresso')
     for (const line of await lines.all()) {
-      const mono = line.locator('.mono')
-      await expect(mono).toHaveText(/^\d+\.\d{2}$/)
-      await expect(mono).not.toContainText('EUR')
+      await expect(line.locator('.ln-amt')).toHaveText(/^\d+\.\d{2} €$/)
     }
-    // …and the variant suffix survived: a lost whitespace node would glue the
-    // product name straight onto the em dash.
-    await expect(lines.first()).toContainText(`${product.name} — 250g`)
+    // The size is its own COLUMN, not a " — 250g" suffix on the name — which also
+    // retires the lost-whitespace-node hazard the old precomposed label existed for.
+    await expect(lines.first().locator('.ln-name')).toHaveText(product.name)
+    await expect(lines.first().locator('.ln-size')).toHaveText('250g')
+    await expect(lines.first().locator('.ln-qty'), 'the fixture ordered 2× 250g').toHaveText('2×')
+    // Both lines are the same product, so they share ONE purpose header — the second
+    // line is the 1kg one, and its size column is what distinguishes them now.
+    await expect(lines.nth(1).locator('.ln-size')).toHaveText('1kg')
+    expect(await lines.first().innerText(), 'no em-dash suffix left in the name')
+      .not.toContain(`${product.name} —`)
 
     // Foot total: display face, WITH the EUR suffix.
     const cardTotal = card.locator('.total')
@@ -320,10 +332,18 @@ test.describe('UC-KG-001/003 — composition, money rule, sub-order cards', () =
     expect(t.font).toBe('20px')
     expect(t.family).toContain('Darker Grotesque')
 
-    // Exactly ONE badge, and it is the admin's read-only paid flag.
-    const badges = card.locator('.badge')
-    await expect(badges).toHaveCount(1)
+    // Exactly ONE STATUS badge, and it is the admin's read-only paid flag.
+    // ⚠ Scoped to the badge ROW since 2026-08-12: the card also carries one `.badge`
+    // per purpose group inside `CartLineList`, so an unscoped count would conflate a
+    // group header with a second status badge. The rule being protected is unchanged —
+    // and the second assertion is what keeps it honest, by pinning that every OTHER
+    // badge in the card is a group header and nothing else.
+    await expect(card.getByTestId('sub-order-badges').locator('.badge')).toHaveCount(1)
     await expect(page.getByTestId('guest-paid-badge').first()).toHaveText('Zaplatené')
+    expect(
+      await card.locator('.badge').count(),
+      'one status badge + one purpose header, nothing else'
+    ).toBe(1 + await card.locator('.ln-group .badge').count())
 
     // The chevron is accent + rotated while open (`.chev.open`).
     const chev = card.locator('.chev')

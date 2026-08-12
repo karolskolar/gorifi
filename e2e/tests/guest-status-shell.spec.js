@@ -421,12 +421,17 @@ test.describe('RD-GX-3 · the read view, four states (§UC-GX-006)', () => {
     const first = host.name.split(' ')[0]
     await expect(page.locator('.sub').first()).toHaveText(`Vaša objednávka · organizuje a odovzdá ${first}`)
 
-    // U+00D7 MULTIPLICATION SIGN, not the letter "x"; amounts bare, no " EUR" —
-    // the card's own "Celkom" row states the unit.
+    // ⚠ 2026-08-12: this list is `components/CartLineList.vue` — the same component
+    // the host's colleague view and both cart bars render. The size left the name
+    // string for its own column, and the amount carries `€` (the "bare on lines, unit
+    // on the total" rule is superseded); `status-total` still says EUR, because that
+    // is the figure the guest actually pays.
     const line = page.getByTestId('status-item')
-    await expect(line).toContainText('(250g) ×2')
-    await expect(line).not.toContainText('x2')
-    await expect(line.locator('.mono')).toHaveText('20.00')
+    await expect(line.locator('.ln-qty')).toHaveText('2×')
+    expect(await line.locator('.ln-qty').innerText(), 'U+00D7, not the letter x').not.toContain('x')
+    await expect(line.locator('.ln-size')).toHaveText('250g')
+    await expect(line.locator('.ln-amt')).toHaveText('20.00 €')
+    await expect(page.locator('.ln-group .badge'), 'grouped by purpose').toHaveText('Espresso')
     await expect(page.getByTestId('status-total'), 'the total keeps its unit').toHaveText('20.00 EUR')
   })
 })

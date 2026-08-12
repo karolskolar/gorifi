@@ -9,7 +9,9 @@ import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
 import PaymentModal from '@/components/PaymentModal.vue'
 import GuestProductGrid from '@/components/GuestProductGrid.vue'
 import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
+import CartLineList from '@/components/CartLineList.vue'
 import { fmtEur } from '@/lib/money'
+import { purposeOrder } from '@/lib/purposes'
 import {
   availabilityMap,
   cartLines,
@@ -77,6 +79,34 @@ const isBakery = computed(() => cycle.value?.type === 'bakery')
 
 const cartItems = computed(() => cartLines(cart.value, products.value))
 const cartTotal = computed(() => linesTotal(cartItems.value))
+
+// `CartLineList`'s normalized shape, for the two lists this view renders: the cart
+// footer while ordering, and the submitted order on the confirmation screen. Same
+// component as the friend cart bar and the host's colleague view (product decision
+// 2026-08-12) — only the mapping differs, because the two sources differ: `cartItems`
+// is built client-side from `products`, `confirmation.items` is what the server froze.
+const guestCartLines = computed(() => cartItems.value.map((item) => ({
+  key: item.key,
+  name: item.product_name,
+  purpose: item.purpose,
+  size: variantText(item),
+  quantity: item.quantity,
+  amount: item.total,
+})))
+
+const confirmationLines = computed(() => (confirmation.value?.items || []).map((item) => ({
+  key: item.id,
+  name: item.product_name,
+  purpose: item.purpose,
+  size: variantText(item),
+  quantity: item.quantity,
+  amount: Number(item.price || 0) * Number(item.quantity || 0),
+})))
+
+// The strip's own order is computed inside `GuestProductGrid` and never exposed, so
+// the cart footer builds it here — see `lib/purposes.js` for why this must not be
+// wired into the grid's copy.
+const purposes = computed(() => purposeOrder(products.value))
 
 watchEffect(() => {
   document.title = cycle.value?.name ? `${cycle.value.name} - Objednávka` : 'Objednávka'
@@ -360,25 +390,13 @@ function goToStatus() {
             <span class="display" style="font-size:24px">{{ fmtEur(confirmation.payment.amount) }}</span>
           </div>
           <hr class="divider" style="margin:12px 0" />
-          <!-- Item lines are BARE `toFixed(2)` — no " EUR" (prototype): the card's
-               own heading already states the unit, and the lines are a breakdown,
-               not a set of prices. `×` is U+00D7 MULTIPLICATION SIGN, not "x".
-               ⚠ `line-height:normal` here is LOAD-BEARING, unlike the header
-               wrapper's: the left `<span>` carries no class, so preflight's 1.5
-               reaches it and its `.mono` sibling (covered by A10) does not match.
-               MEASURED on this build: 16 px per line at `normal`, 20.25 px at 1.5 —
-               +4.25 px on every item, which is exactly the class of drift the A10
-               block exists to undo. -->
-          <div style="display:flex;flex-direction:column;gap:5px;font-size:13.5px;color:var(--ink-dim);line-height:normal">
-            <div
-              v-for="item in confirmation.items"
-              :key="item.id"
-              style="display:flex;justify-content:space-between;gap:10px"
-            >
-              <span>{{ item.product_name }} ({{ variantText(item) }}) ×{{ item.quantity }}</span>
-              <span class="mono">{{ (item.price * item.quantity).toFixed(2) }}</span>
-            </div>
-          </div>
+          <!-- ⚠ `CartLineList` — the ONE home for this list, shared with the guest's
+               own status page, the host's "Objednávky kolegov" and both cart bars
+               (product decision 2026-08-12). The lines carry `€` now: the prototype's
+               "bare `toFixed(2)`, the heading states the unit" rule is superseded, and
+               `line-height:normal` moved into the component, which needs it for its
+               own non-A10 column classes. -->
+          <CartLineList :items="confirmationLines" />
         </div>
 
         <!-- Shipped gate kept (§UC-GX-004 item 3): with neither IBAN nor Revolut
@@ -522,13 +540,9 @@ function goToStatus() {
                identical site on the friend cartbar. -->
           <details v-if="cartItems.length > 0" style="line-height:normal">
             <summary>Zobraziť položky v košíku</summary>
-            <div class="lines">
-              <!-- `×` is U+00D7 MULTIPLICATION SIGN, not the letter "x". -->
-              <div v-for="item in cartItems" :key="item.key" class="ln">
-                <span>{{ item.product_name }} ({{ variantText(item) }}) ×{{ item.quantity }}</span>
-                <span class="mono">{{ fmtEur(item.total) }}</span>
-              </div>
-            </div>
+            <!-- Same list, same component as the friend cart bar — `purpose-order`
+                 keeps its groups in the order the category strip above shows them. -->
+            <CartLineList :items="guestCartLines" :purpose-order="purposes" />
           </details>
         </div>
       </template>

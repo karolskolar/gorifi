@@ -605,7 +605,7 @@ test.describe('RD-GX-2 · g-confirm (§UC-GX-004)', () => {
     await expect(sub).toHaveCSS('margin-top', '20px')
   })
 
-  test('the sum card: display total, divider, bare `toFixed(2)` lines with U+00D7', async ({ page }) => {
+  test('the sum card: display total, divider, and the shared `CartLineList` columns', async ({ page }) => {
     await submitThrough(page)
     // ⚠ `.first()` — RD-GX-4 made `GuestInviteRequest`'s folded state a `.card` too
     // (§UC-GX-009: pink `--hi` card, display headline), so this column now holds TWO
@@ -622,11 +622,22 @@ test.describe('RD-GX-2 · g-confirm (§UC-GX-004)', () => {
     expect(await card.locator('hr.divider').evaluate((el) => getComputedStyle(el).borderTopWidth),
       'the theme rule must beat preflight\'s 1px hr').toBe('2px')
 
-    const line = card.locator('.mono').first().locator('xpath=..')
-    await expect(line).toContainText('×1')
-    expect(await line.innerText(), 'the letter x would be a fidelity bug').not.toContain('x1')
-    // Bare amount on the lines — no " EUR" (prototype).
-    await expect(card.locator('.mono').first()).toHaveText('12.50')
+    // ⚠ 2026-08-12: this list is `components/CartLineList.vue` now — the SAME
+    // component the friend cart bar, the guest cart bar, the guest status page and the
+    // host's "Objednávky kolegov" render, so the four columns and the `€` are asserted
+    // here as its contract rather than as this screen's own composition.
+    const line = card.locator('.lines .ln')
+    await expect(line).toHaveCount(1)
+    await expect(line.locator('.ln-name')).toHaveText(`Platba Kava ${uniq}`)
+    await expect(line.locator('.ln-qty')).toHaveText('1×')
+    expect(await line.locator('.ln-qty').innerText(), 'U+00D7, not the letter x').not.toContain('x')
+    await expect(line.locator('.ln-size')).toHaveText('250g')
+    // ⚠ `€` on the line. The prototype's "bare toFixed(2), the heading states the
+    // unit" rule is superseded — the guest reads these lines on screens where the
+    // nearest total belongs to a different order.
+    await expect(line.locator('.ln-amt')).toHaveText('12.50 €')
+    // …and the purpose header the grouping adds.
+    await expect(card.locator('.ln-group .badge')).toHaveText('Espresso')
   })
 
   test('⚠ the reference is GONE from the card and lives only in the modal (resolved conflict #4)', async ({ page }) => {
