@@ -553,7 +553,7 @@ test.describe('RD-GX-2 · g-confirm (§UC-GX-004)', () => {
     await expect(page.getByRole('dialog')).toHaveCount(0)
   }
 
-  test('the prototype composition: brand subtitle, rotated badge, highlighted headline, 520px column', async ({ page }) => {
+  test('the composition: brand subtitle, highlighted headline with room to breathe, 520px column', async ({ page }) => {
     await submitThrough(page)
 
     await expect(page.locator('.appbar .titles .s')).toHaveText('Objednávka odoslaná')
@@ -568,17 +568,11 @@ test.describe('RD-GX-2 · g-confirm (§UC-GX-004)', () => {
     expect(geom.padTop).toBe('16px')
     expect(geom.gap).toBe('16px')
 
-    const badge = col.locator('.badge.ok-solid')
-    await expect(badge).toHaveText('✔ Odoslané')
-    const badgeStyle = await badge.evaluate((el) => {
-      const cs = getComputedStyle(el)
-      return { fontSize: cs.fontSize, padding: cs.paddingTop, transform: cs.transform, bg: cs.backgroundColor }
-    })
-    expect(badgeStyle.fontSize).toBe('13px')
-    expect(badgeStyle.padding).toBe('6px')
-    expect(badgeStyle.bg, 'the solid green').toBe('rgb(31, 138, 91)')
-    // rotate(-2deg) as a matrix — cos(-2°) ≈ 0.99939, sin(-2°) ≈ -0.0349.
-    expect(badgeStyle.transform).toMatch(/^matrix\(0\.999\d+, -0\.034\d+/)
+    // ⚠ 2026-08-12: the rotated green "✔ Odoslané" badge is REMOVED — it was the
+    // third statement of one fact (badge + headline + appbar subtitle). Asserted as
+    // an absence so a revert cannot land unnoticed.
+    await expect(col.locator('.badge.ok-solid'), 'the green confirmation badge is gone').toHaveCount(0)
+    expect(await col.innerText()).not.toMatch(/Odoslané/)
 
     const h1 = col.locator('h1.h-screen')
     // ⚠ Vue's `condense` deletes a newline-bearing whitespace node between two
@@ -587,7 +581,28 @@ test.describe('RD-GX-2 · g-confirm (§UC-GX-004)', () => {
     await expect(h1.locator('.hl')).toHaveText('odoslaná')
     expect(await h1.evaluate((el) => getComputedStyle(el).fontSize), '34px on a phone').toBe('34px')
 
-    await expect(col.locator('.sub').first()).toHaveText(`${cycle.name} · organizuje ${host.name.split(' ')[0]}`)
+    // ⚠ THE HEADLINE'S LEADING, AND WHY IT IS MEASURED AS GEOMETRY. This headline
+    // wraps onto two lines on a phone and `.hl` paints a filled block with a `0 4px 0`
+    // underline shadow, so at the theme's `.h-screen{line-height:.95}` the second
+    // line's block overlapped the descenders above it. A text assertion cannot see
+    // that. Read back: the override is in force, and the highlighted line's box
+    // really does clear the line above it.
+    const lead = await h1.evaluate((el) => {
+      const cs = getComputedStyle(el)
+      const hl = el.querySelector('.hl').getBoundingClientRect()
+      // The first line's baseline area: the h1's own top edge plus one line box.
+      const box = el.getBoundingClientRect()
+      return { lh: cs.lineHeight, fs: parseFloat(cs.fontSize), hlTop: hl.top, boxTop: box.top, h: box.height }
+    })
+    expect(parseFloat(lead.lh) / lead.fs, 'the .95 canon is overridden for this wrapped headline')
+      .toBeGreaterThan(1.2)
+    expect(lead.hlTop - lead.boxTop, 'the highlighted line starts below the first line, not over it')
+      .toBeGreaterThan(lead.fs)
+
+    const sub = col.locator('.sub').first()
+    await expect(sub).toHaveText(`${cycle.name} · organizuje ${host.name.split(' ')[0]}`)
+    // 20px, not the shipped 10px — the underline shadow eats 4px of it.
+    await expect(sub).toHaveCSS('margin-top', '20px')
   })
 
   test('the sum card: display total, divider, bare `toFixed(2)` lines with U+00D7', async ({ page }) => {
@@ -643,8 +658,12 @@ test.describe('RD-GX-2 · g-confirm (§UC-GX-004)', () => {
     await expect(row).toHaveClass(/\bcopyrow\b/)
     const shown = (await row.locator('.val').textContent()).trim()
     expect(shown).toMatch(new RegExp(`/g/${link.token}/o/[A-Z2-9]{12,}$`))
-    await expect(col.getByText('Odkaz na vašu objednávku — uložte si ho')).toBeVisible()
-    await expect(col.locator('.field-help')).toContainText('Odkaz je uložený aj v tomto prehliadači.')
+    // ⚠ 2026-08-12: the label absorbed the help line's first sentence and the
+    // `.field-help` paragraph under the copy row is GONE (the screen was too
+    // crowded). The absence is asserted, not just the new copy — otherwise a revert
+    // of the removal passes silently.
+    await expect(col.getByText('Na tomto odkaze uvidíte stav objednávky - uložte si ho!')).toBeVisible()
+    await expect(col.locator('.field-help'), 'no help paragraph on this screen any more').toHaveCount(0)
 
     // ⚠ §UC-GX-004 item 6 — a NEW prototype affordance: pure client-side navigation
     // to `result.status_path`. It must land on the SAME URL the copy row shows; a

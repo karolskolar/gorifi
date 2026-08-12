@@ -317,22 +317,39 @@ function goToStatus() {
         class="mx-auto w-full max-w-[520px] px-4 sm:px-7 py-4 sm:py-7 flex flex-col gap-4"
         data-testid="guest-confirmation"
       >
-        <!-- `line-height:normal` on this unclassed wrapper. An unclassed block
+        <!-- ⚠ The green `.badge.ok-solid` "✔ Odoslané" that sat above the headline is
+             REMOVED (product decision 2026-08-12: this screen was too crowded). It
+             said nothing the 34px headline underneath it does not already say twice
+             over — the badge, "Objednávka je odoslaná" and the appbar subtitle
+             "Objednávka odoslaná" were three statements of one fact.
+
+             `line-height:normal` stays on this unclassed wrapper. An unclassed block
              inherits preflight's `1.5` with nothing to override it, and A9/A10 are
              CLASS lists that cannot reach an element carrying no class — so the fix
              belongs at the call site, never as a widening of A10 (friends-theme.css,
-             A10 block). MEASURED HERE AS A ZERO DELTA (133.59 px either way): the
-             `.badge`'s own box is taller than the strut and `.h-screen`/`.sub`
-             declare their own line-height, so nothing moves today. Kept on the same
-             basis RD-FL-8b kept the remember-me label — the pattern must be safe to
-             copy, and the next line added to this block would not be. -->
+             A10 block). It was measured as a ZERO delta when the badge was here, and
+             it still is for a different reason: every remaining child is a BLOCK that
+             declares its own line-height, so the wrapper establishes no line box at
+             all. Kept on the same basis RD-FL-8b kept the remember-me label — the
+             pattern must be safe to copy, and the next line added to this block
+             would not be. -->
         <div style="text-align:center;margin-top:6px;line-height:normal">
-          <span class="badge ok-solid" style="font-size:13px;padding:6px 14px;transform:rotate(-2deg)">✔ Odoslané</span>
           <!-- `.hl` = the magenta highlight with the 4px ink underline shadow.
                ⚠ ONE LINE: a newline before `<span>` is a whitespace node Vue's
-               `condense` mode DELETES, silently gluing "je" to "odoslaná". -->
-          <h1 class="h-screen text-[34px] sm:text-[40px]" style="margin-top:12px">Objednávka je <span class="hl">odoslaná</span></h1>
-          <div class="sub" style="margin-top:10px">{{ cycle?.name }} · organizuje {{ host?.first_name }}</div>
+               `condense` mode DELETES, silently gluing "je" to "odoslaná".
+
+               ⚠ `line-height:1.3` OVERRIDES the theme's `.h-screen{line-height:.95}`,
+               and it is not cosmetic here. This headline WRAPS onto two lines on a
+               phone, and `.hl` paints a filled block plus a `0 4px 0` underline
+               shadow — at .95 the second line's block overlapped the descenders of
+               "OBJEDNÁVKA JE" above it and the underline was clipped by the text.
+               .95 is right for the single-line headlines the canon uses it for; a
+               wrapped, highlighted one needs the leading. Inline because A9/A10
+               cannot beat a class rule that declares its own value. -->
+          <h1 class="h-screen text-[34px] sm:text-[40px]" style="line-height:1.3">Objednávka je <span class="hl">odoslaná</span></h1>
+          <!-- 20px, not the shipped 10px: the highlight's underline shadow extends
+               4px BELOW the text box, so a 10px margin reads as 6px of air. -->
+          <div class="sub" style="margin-top:20px">{{ cycle?.name }} · organizuje {{ host?.first_name }}</div>
         </div>
 
         <!-- Sum card. `.field-lbl` carries its own 8px bottom margin, which the
@@ -378,13 +395,19 @@ function goToStatus() {
              clipboard write and the 2 s "Skopírované!" flip; the testid falls
              through to its `.copyrow` root, so the value is read as text and the
              button as `getByTestId('guest-status-url').getByRole('button')`
-             (§UC-GX-011 items 3/4). The helper line is prototype-silent and
-             RETAINED — it is the only place the localStorage behaviour is
-             explained. -->
+             (§UC-GX-011 items 3/4).
+
+             ⚠ The `.field-help` line below the copy row is REMOVED and the label
+             REWORDED (product decision 2026-08-12) — the label now carries what the
+             help line's first sentence said, so the screen states it once instead of
+             twice. Its second sentence ("Odkaz je uložený aj v tomto prehliadači")
+             was the ONLY place the localStorage fallback was explained; that
+             behaviour still exists (`api.js` writes `gorifi_guest_orders`, keyed by
+             link token) but is now undocumented on screen, deliberately. Do not
+             "restore" it without asking — it was cut on purpose. -->
         <div>
-          <label class="field-lbl">Odkaz na vašu objednávku — uložte si ho</label>
+          <label class="field-lbl">Na tomto odkaze uvidíte stav objednávky - uložte si ho!</label>
           <NeoCopyRow :value="confirmation.status_url" data-testid="guest-status-url" />
-          <p class="field-help">Na tomto odkaze uvidíte stav objednávky. Odkaz je uložený aj v tomto prehliadači.</p>
         </div>
 
         <!-- Lead capture (§UC-GSO-015 / §UC-GX-009 — restyle is RD-GX-4's). Kept

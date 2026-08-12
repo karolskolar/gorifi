@@ -796,3 +796,30 @@ is correct Slovak and not a fallback).
   row. The guest views keep their own `Položiek: N` footer (RD-GX-1's scope), so
   `guest-order-shell` / `guest-status-shell` are untouched and still pass.
 Verified locally: those four files, **67 passed**, plus a 320px no-overflow check.
+
+**Follow-up — decluttering the guest confirmation screen (`GuestOrder.vue`, 2026-08-12).**
+Five product-decided cuts to `/g/:token`'s post-submit screen, frontend only.
+- The rotated green `.badge.ok-solid` **"✔ Odoslané" is REMOVED.** It was the third
+  statement of one fact: badge + the 34px "Objednávka je odoslaná" headline + the appbar
+  subtitle "Objednávka odoslaná".
+- ⚠ **`line-height:1.3` on the `h1.h-screen`, overriding the theme's
+  `.h-screen{line-height:.95}` — not cosmetic.** This headline WRAPS on a phone and `.hl`
+  paints a filled block plus a `0 4px 0` underline shadow, so at .95 the second line's
+  block overlapped the descenders of "OBJEDNÁVKA JE" and clipped the underline. .95 is
+  right for the single-line headlines the canon uses it for. Inline, because A9/A10 cannot
+  beat a class rule that declares its own value. The `.sub` beneath went 10px → **20px**
+  (the underline shadow eats 4px of any margin below the highlight).
+- The copy-row label is now **"Na tomto odkaze uvidíte stav objednávky - uložte si ho!"**
+  (verbatim from the product owner, plain hyphen) and the `.field-help` paragraph under it
+  is **gone**. ⚠ Its second sentence was the ONLY on-screen explanation of the
+  localStorage fallback (`api.js` writes `gorifi_guest_orders`, keyed by link token); the
+  behaviour is unchanged but now undocumented **deliberately** — do not "restore" it.
+  ⚠ `.field-lbl` is `text-transform:uppercase`, so this sentence renders as caps and wraps
+  to two lines at 390px. Accepted.
+- ⚠ Both removals are asserted in `guest-payment-modal.spec.js` as **absences**
+  (`.badge.ok-solid` count 0, `.field-help` count 0, no `/Odoslané/` in the column) —
+  new copy alone would let a revert pass. The headline's leading is asserted as
+  **geometry** (the `.hl` box starting more than one font-size below the h1's top), which
+  is the only way to see the overlap a text assertion cannot.
+Verified locally: `guest-payment-modal` (11), `guest-order` + `guest-order-shell` +
+`guest-invite-dead` (52) — **63 passed**, plus phone/desktop screenshots.
