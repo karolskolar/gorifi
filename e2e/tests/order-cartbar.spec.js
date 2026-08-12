@@ -356,7 +356,7 @@ test.describe('UC-FO-009 — composition at 378px', () => {
       expect(m.h).toBe(46)
     }
 
-    // 5. `<details>` — collapsed by default, ▸ before / ▾ after, flat lines.
+    // 5. `<details>` — collapsed by default, ▸ before / ▾ after, grouped lines.
     const details = bar(page).locator('details')
     await expect(details).toHaveCount(1)
     const lines = bar(page).locator('.lines .ln')
@@ -367,18 +367,77 @@ test.describe('UC-FO-009 — composition at 378px', () => {
     await expect(lines.first()).toBeVisible()
     expect(await marker()).toContain('▾')
 
-    // Flat: product line then the fee line, no purpose headers, `×` not `x`, and the
-    // per-line totals ARE mono (only the `.sum` is display).
+    // GROUPED BY PURPOSE (product decision 2026-08-12, reversing conflict #10's
+    // flat list): one `.ln-group` header badge per purpose, then that purpose's
+    // lines, then the fee line — which carries NO header, because it belongs to no
+    // purpose. `×` is still U+00D7, not "x", and every mono column is Courier Prime
+    // (only the `.sum` is the display face).
+    await expect(bar(page).locator('.ln-group')).toHaveCount(1)
+    await expect(bar(page).locator('.ln-group .badge')).toHaveText('Espresso')
     await expect(lines).toHaveCount(2)
-    await expect(lines.nth(0)).toContainText(`Brazil Morada da Prata ${uniq} (250g) ×1`)
-    await expect(lines.nth(0).locator('.mono')).toHaveText('9.04 EUR')
+    await expect(lines.nth(0).locator('.ln-name')).toHaveText(`Brazil Morada da Prata ${uniq}`)
+    await expect(lines.nth(0).locator('.ln-qty')).toHaveText('1×')
+    await expect(lines.nth(0).locator('.ln-size')).toHaveText('250g')
+    // ⚠ `€`, not `EUR`, on the LINES — and `EUR` is still what the `.sum` above and
+    // the payment modals print, which the total assertion in step 3 pins.
+    await expect(lines.nth(0).locator('.ln-amt')).toHaveText('9.04 €')
     await expect(lines.nth(1)).toContainText('Doručenie Packetou')
-    await expect(lines.nth(1).locator('.mono')).toHaveText('3.50 EUR')
-    expect(await bar(page).innerText(), 'no 📦, and no purpose header (conflict #10)')
-      .not.toMatch(/📦|Espresso/)
+    await expect(lines.nth(1).locator('.ln-amt')).toHaveText('3.50 €')
+    expect(await bar(page).innerText(), 'no 📦').not.toMatch(/📦/)
     for (const m of await lines.locator('.mono').evaluateAll((els) => els.map((e) => getComputedStyle(e).fontFamily))) {
       expect(m).toContain('Courier Prime')
     }
+
+    // The four columns line up DOWN the list — the whole point of splitting the
+    // quantity and the size out of the old "Name (250g) ×1" string. Asserted as
+    // geometry, because a spec that only reads text would pass on a layout where
+    // every column starts at a different x.
+    const geom = await lines.evaluateAll((els) => els.map((el) => ({
+      h: Math.round(el.getBoundingClientRect().height),
+      amt: Math.round(el.querySelector('.ln-amt').getBoundingClientRect().right),
+      name: (() => {
+        const n = el.querySelector('.ln-name')
+        return { clipped: n.scrollWidth > n.clientWidth, ws: getComputedStyle(n).whiteSpace }
+      })(),
+    })))
+    expect(geom[0].amt, 'the fee amount shares the product amount’s right edge').toBe(geom[1].amt)
+    // ONE ROW per line, by CSS ellipsis — the name is never shortened in the data,
+    // so the full string stays in the DOM (and in the `title`).
+    expect(geom[0].h, JSON.stringify(geom)).toBeLessThanOrEqual(24)
+    expect(geom[0].name.ws).toBe('nowrap')
+  })
+
+  test('a long product name ellipsises rather than wrapping or overflowing', async ({ page }) => {
+    // ⚠ The unbreakable-token case, which is the one that actually bit RD-FO-2 one
+    // screen up (a space-free 44-char name scrolled the document 263px sideways).
+    // Here `overflow:hidden` is what makes it safe, so the assertion is: clipped,
+    // still one row, zero document overflow — at the narrowest supported width.
+    const long = await makeCycle('LongName')
+    const p = await addProduct(long.id, {
+      name: `Brazil${uniq}MoradaDaPrataNaturalYellowBourbonSpecial`, purpose: 'Espresso', price_250g: 9,
+    })
+    await seedSubmitted(long.id, [{ product_id: p.id, variant: '250g', quantity: 1 }])
+
+    await page.setViewportSize({ width: 320, height: 844 })
+    await signIn(page)
+    await gotoCycle(page, long)
+    await bar(page).getByText('Zobraziť položky v košíku').click()
+
+    const line = bar(page).locator('.lines .ln').first()
+    await expect(line.locator('.ln-name')).toHaveAttribute('title', `Brazil${uniq}MoradaDaPrataNaturalYellowBourbonSpecial`)
+    const m = await line.evaluate((el) => {
+      const n = el.querySelector('.ln-name')
+      return {
+        clipped: n.scrollWidth - n.clientWidth,
+        rowH: Math.round(el.getBoundingClientRect().height),
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        barOverflow: (() => { const c = document.querySelector('.cartbar'); return c.scrollWidth - c.clientWidth })(),
+      }
+    })
+    expect(m.clipped, 'the name is clipped, not laid out at full width').toBeGreaterThan(0)
+    expect(m.rowH, 'still exactly one row').toBeLessThanOrEqual(24)
+    expect(m.doc, 'and the document does not scroll sideways').toBe(0)
+    expect(m.barOverflow).toBe(0)
   })
 
   test('an empty cart: "Košík je prázdny", 0.00 total, both actions disabled', async ({ page }) => {
@@ -435,14 +494,24 @@ test.describe('UC-FO-009 — composition at 378px', () => {
     await plusIn(page, `Stara Buchta ${uniq}`).click()
     await bar(page).getByText('Zobraziť položky v košíku').click()
 
-    const text = await bar(page).locator('.lines').innerText()
-    expect(text, '`variant_label` wins when the snapshot carries one').toContain(`Makovnik ${uniq} (1/2) ×1`)
-    expect(text, "a NULL label on the zero-gram `'unit'` variant reads 'ks'").toContain(`Stara Buchta ${uniq} (ks) ×1`)
+    // ⚠ The size is its OWN column now (`.ln-size`), not a "(1/2)" parenthetical in
+    // the name string — so it is read off that column per line rather than out of
+    // one blob of text.
+    const sizes = {}
+    for (const row of await bar(page).locator('.lines .ln').evaluateAll((els) => els.map((el) => ({
+      name: el.querySelector('.ln-name').textContent.trim(),
+      size: el.querySelector('.ln-size')?.textContent.trim(),
+      qty: el.querySelector('.ln-qty')?.textContent.trim(),
+    })))) sizes[row.name] = row
+    expect(sizes[`Makovnik ${uniq}`], '`variant_label` wins when the snapshot carries one')
+      .toMatchObject({ size: '1/2', qty: '1×' })
+    expect(sizes[`Stara Buchta ${uniq}`], "a NULL label on the zero-gram `'unit'` variant reads 'ks'")
+      .toMatchObject({ size: 'ks', qty: '1×' })
 
     // …and the coffee fallback: the raw variant key.
     await gotoCycle(page, cycle)
     await bar(page).getByText('Zobraziť položky v košíku').click()
-    expect(await bar(page).locator('.lines').innerText()).toContain('(250g) ×1')
+    await expect(bar(page).locator('.lines .ln').first().locator('.ln-size')).toHaveText('250g')
   })
 
   test('320px: no document overflow, and three real hit targets', async ({ page }) => {

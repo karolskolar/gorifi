@@ -105,10 +105,36 @@ const MATRIX = [
   cycleRow({ id: IDS.planned, name: NAMES.planned, status: 'planned' }),
 ]
 
-/** The GSO-T2 `{ link, guest_orders, totals }` payload, trimmed to what the row reads. */
-const linkPayload = (count) => ({
+/**
+ * The GSO-T2 `{ link, guest_orders, totals }` payload, trimmed to what the row reads.
+ *
+ * ⚠ It carries real `items` since 2026-08-12: the row prints the colleagues' KILOS
+ * beside the count, and those are summed client-side off `guest_orders[].items`
+ * (the payload already carries them — `helpers/guest-orders.js attachItems` — so no
+ * new request was added for the figure). `totals.count` still drives the count
+ * phrase, because the server is the authority on it.
+ *
+ * One 250g bag per colleague ⇒ kilos = count × 0.25. `cancelled` appends a
+ * sub-order with a 1kg bag that must NOT reach the screen: the client applies the
+ * same status predicate every guest aggregate in the backend does, and 1kg is large
+ * enough that a leak is unmissable rather than a rounding argument.
+ */
+const linkPayload = (count, { cancelled = false } = {}) => ({
   link: { id: 1, token: 'E2ERDFL5TOKEN', host_friend_id: 0, cycle_id: 0, active: 1 },
-  guest_orders: [],
+  guest_orders: [
+    ...Array.from({ length: count }, (_, i) => ({
+      id: i + 1,
+      status: 'submitted',
+      total: 4.2,
+      items: [{ id: i + 1, product_id: 1, variant: '250g', quantity: 1 }],
+    })),
+    ...(cancelled ? [{
+      id: 900,
+      status: 'cancelled',
+      total: 0,
+      items: [{ id: 900, product_id: 1, variant: '1kg', quantity: 1 }],
+    }] : []),
+  ],
   totals: { count, total: count * 4.2 },
 })
 
@@ -151,7 +177,13 @@ async function stubCounts(page, counts) {
   await page.route('**/api/guest-links/cycle/*', (route) => {
     const id = Number(route.request().url().split('/').pop())
     if (!(id in counts)) return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
-    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(linkPayload(counts[id])) })
+    // A value may be a bare count or `{ count, cancelled }`.
+    const spec = typeof counts[id] === 'number' ? { count: counts[id] } : counts[id]
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(linkPayload(spec.count, spec)),
+    })
   })
 }
 
@@ -167,28 +199,63 @@ async function openPortal(page, { cycles = MATRIX, counts = {} } = {}) {
 /** `guest-link.spec.js:301`'s locator, verbatim. */
 const cardFor = (page, name) => page.locator('div.p-4', { has: page.getByRole('heading', { name, exact: true }) })
 const rowFor = (page, name) => cardFor(page, name).getByTestId('share-row')
+/** The emphasised first line — "N kolegovia · X kg". Absent when the count is 0. */
+const countFor = (page, name) => rowFor(page, name).getByTestId('share-row-count')
 const shareBtn = (page, name) => cardFor(page, name).getByRole('button', { name: 'Zdieľať s kolegami' })
 
 // ---------------------------------------------------------------------------
 
 test.describe('Share row — the two count states (UC-FL-007)', () => {
-  test('≥1 non-cancelled sub-order renders the mono badge + "kolegovia cez váš odkaz"', async ({ page }) => {
-    await openPortal(page, { counts: { [IDS.openA]: 3 } })
+  // ⚠ 2026-08-12 product decision: the `.tabbadge` chip and the single
+  // "N | kolegovia cez váš odkaz" line are replaced by a declined count PLUS the
+  // colleagues' quantity on one emphasised line ("3 kolegovia · 0.75 kg"), with
+  // "objednali cez váš odkaz" underneath. The count alone answered the host's real
+  // question — how much coffee am I collecting for other people — only if every
+  // colleague buys exactly one bag.
+  test('≥1 non-cancelled sub-order renders "N kolegovia · X kg" + "objednali cez váš odkaz"', async ({ page }) => {
+    await openPortal(page, { counts: { [IDS.openA]: { count: 3, cancelled: true } } })
 
     const row = rowFor(page, NAMES.openA)
-    await expect(row).toContainText('kolegovia cez váš odkaz')
+    // 3 × 250g = 0.75 kg. The cancelled sub-order's 1kg is excluded, so a leak
+    // would read "1.75 kg" — and the count would still be 3, since the server's
+    // `totals` already excludes it.
+    await expect(countFor(page, NAMES.openA)).toHaveText('3 kolegovia · 0.75 kg')
+    await expect(row).toContainText('objednali cez váš odkaz')
     await expect(row).not.toContainText('Objednávate aj pre kolegov?')
+    await expect(row.locator('.tabbadge'), 'the mono chip is retired').toHaveCount(0)
 
-    // `.tabbadge` is the theme's mono, bordered, pill-shaped chip.
-    const badge = row.locator('.tabbadge')
-    await expect(badge).toHaveText('3')
-    await expect(badge).toHaveCSS('border-radius', '999px')
-    await expect(badge).toHaveCSS('border-width', '2px')
-    const font = await badge.evaluate((el) => getComputedStyle(el).fontFamily)
-    expect(font, 'the count is mono').toMatch(/Courier/i)
+    // The declension is `lib/plural.js`'s, shared with the host's "Objednávky
+    // kolegov" tab: 1 kolega / 2-4 kolegovia / 5+ kolegov.
+    await expect(countFor(page, NAMES.openB), 'openB is not stubbed ⇒ no count line').toHaveCount(0)
   })
 
-  test('no colleagues — and a FAILED fetch — both render "Objednávate aj pre kolegov?" with no badge', async ({ page }) => {
+  test('the count is declined, and trailing zeros are stripped off the kilos', async ({ page }) => {
+    // 1 → "1 kolega" with 0.25 kg; 6 → "6 kolegov" with a whole 1.5 kg. The second
+    // is the `formatKilos`/`Math.round(g/10)/100` split: this row prints "1.5 kg",
+    // not the "1.50 kg" the "Objednané ·" badge above it would.
+    await openPortal(page, { counts: { [IDS.openA]: 1, [IDS.openB]: 6 } })
+    await expect(countFor(page, NAMES.openA)).toHaveText('1 kolega · 0.25 kg')
+    await expect(countFor(page, NAMES.openB)).toHaveText('6 kolegov · 1.5 kg')
+  })
+
+  test('a count with no item rows drops the "· " separator instead of printing "0 kg"', async ({ page }) => {
+    // Reachable in the real payload only transiently, but the rule is deliberate:
+    // " · 0 kg" beside a live colleague count reads as a failure, so an empty
+    // quantity yields no separator at all. (A bakery cycle is the same rule in the
+    // other unit — pieces, not kilos.)
+    await page.route('**/api/guest-links/cycle/*', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...linkPayload(0), guest_orders: [], totals: { count: 2, total: 8.4 } }),
+    }))
+    await signIn(page)
+    await stubBalance(page)
+    await stubCycles(page)
+    await page.goto('/')
+    await expect(countFor(page, NAMES.openA)).toHaveText('2 kolegovia')
+  })
+
+  test('no colleagues — and a FAILED fetch — both render "Objednávate aj pre kolegov?" with no count line', async ({ page }) => {
     // openB is stubbed with count 0; `locked`/`planned` never fetch at all, and
     // openA is deliberately NOT in the map, so its request 500s.
     await openPortal(page, { counts: { [IDS.openB]: 0 } })
@@ -196,7 +263,7 @@ test.describe('Share row — the two count states (UC-FL-007)', () => {
     for (const name of [NAMES.openA, NAMES.openB]) {
       const row = rowFor(page, name)
       await expect(row).toContainText('Objednávate aj pre kolegov?')
-      await expect(row.locator('.tabbadge'), 'no badge when the count is 0 or unknown').toHaveCount(0)
+      await expect(row.getByTestId('share-row-count'), 'no count line when the count is 0 or unknown').toHaveCount(0)
     }
 
     // ⚠ A failed count must never surface as the page's error banner — the row
@@ -214,8 +281,8 @@ test.describe('Share row — the two count states (UC-FL-007)', () => {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(linkPayload(1)) })
     })
     await page.goto('/')
-    await expect(rowFor(page, NAMES.openA).locator('.tabbadge')).toHaveText('1')
-    await expect(rowFor(page, NAMES.openB).locator('.tabbadge')).toHaveText('1')
+    await expect(countFor(page, NAMES.openA)).toHaveText('1 kolega · 0.25 kg')
+    await expect(countFor(page, NAMES.openB)).toHaveText('1 kolega · 0.25 kg')
 
     expect(asked.slice().sort(), JSON.stringify(asked)).toEqual([IDS.openA, IDS.openB])
   })
@@ -285,7 +352,7 @@ test.describe('Share row — structure, geometry and absence (UC-FL-007)', () =>
   test('no horizontal overflow at 320px', async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 720 })
     await openPortal(page, { counts: { [IDS.openA]: 12 } })
-    await expect(rowFor(page, NAMES.openA).locator('.tabbadge')).toHaveText('12')
+    await expect(countFor(page, NAMES.openA)).toHaveText('12 kolegov · 3 kg')
 
     const overflow = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
@@ -373,7 +440,7 @@ test.describe('⚠ Session scoping and the sequence guard (UC-FL-007)', () => {
       : route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })))
 
     await page.goto('/')
-    await expect(rowFor(page, NAMES.openA).locator('.tabbadge')).toHaveText('4')
+    await expect(countFor(page, NAMES.openA)).toHaveText('4 kolegovia · 1 kg')
 
     // The next session's own fetch fails, so the ONLY way a number can appear is
     // if the previous session's map survived.
@@ -382,7 +449,7 @@ test.describe('⚠ Session scoping and the sequence guard (UC-FL-007)', () => {
     await logBackIn(page)
 
     await expect(rowFor(page, NAMES.openA)).toContainText('Objednávate aj pre kolegov?')
-    await expect(rowFor(page, NAMES.openA).locator('.tabbadge')).toHaveCount(0)
+    await expect(countFor(page, NAMES.openA)).toHaveCount(0)
   })
 
   test('⚠ a response deferred past a LOGOUT is dropped, not written', async ({ page }) => {
@@ -435,7 +502,7 @@ test.describe('⚠ Session scoping and the sequence guard (UC-FL-007)', () => {
       rowFor(page, NAMES.openA),
       "a stale response must not write another session's colleague count"
     ).toContainText('Objednávate aj pre kolegov?')
-    await expect(rowFor(page, NAMES.openA).locator('.tabbadge')).toHaveCount(0)
+    await expect(countFor(page, NAMES.openA)).toHaveCount(0)
     expect(calls, 'the second session did fetch — it just got nothing').toBeGreaterThan(1)
   })
 
@@ -485,7 +552,7 @@ test.describe('⚠ Session scoping and the sequence guard (UC-FL-007)', () => {
       rowFor(page, NAMES.openA),
       'a superseded batch must not land on the refetched list'
     ).toContainText('Objednávate aj pre kolegov?')
-    await expect(rowFor(page, NAMES.openA).locator('.tabbadge')).toHaveCount(0)
+    await expect(countFor(page, NAMES.openA)).toHaveCount(0)
     expect(calls, 'the refetch did re-request the counts').toBeGreaterThan(1)
   })
 })
@@ -556,7 +623,7 @@ test.describe('⚠ The colleague-count fan-out is BOUNDED (RD-FL-8a item 3)', ()
     expect(order.indexOf('vouchers'), 'the voucher check is issued before any count').toBeLessThan(firstCount)
 
     // …and the counts still land, so the bound did not simply drop them.
-    await expect(rowFor(page, BULK[0].name).locator('.tabbadge')).toHaveText('2')
-    await expect(rowFor(page, BULK[MANY - 1].name).locator('.tabbadge')).toHaveText('2')
+    await expect(countFor(page, BULK[0].name)).toHaveText('2 kolegovia · 0.5 kg')
+    await expect(countFor(page, BULK[MANY - 1].name)).toHaveText('2 kolegovia · 0.5 kg')
   })
 })

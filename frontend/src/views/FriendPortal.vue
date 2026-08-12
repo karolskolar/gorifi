@@ -446,7 +446,7 @@ function switchUser() {
   //
   // It used to clear ~35 refs across seven blocks, and it leaked in SIX
   // consecutive rows anyway — `error`/`voucherResolved`/`subscriptions`
-  // (RD-FL-3), `showArchive` (RD-FL-4), `guestCounts` (RD-FL-5), the
+  // (RD-FL-3), `showArchive` (RD-FL-4), `guestSummaries` (RD-FL-5), the
   // credential-setup block holding a PLAINTEXT password that auto-rendered in
   // the next person's dialog and `showLoginPassword` (RD-FL-6), then
   // `setupSaving`/`changePasswordSaving`/`profileSaving` (RD-FL-7). The sixth

@@ -20,6 +20,7 @@
 // footer) stays own-items-only and is not touched by anything in this component.
 import { ref, computed, watch, watchEffect } from 'vue'
 import api from '../api'
+import { colleaguesLabel } from '@/lib/plural'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 
@@ -165,13 +166,10 @@ function cancelledTotal(subOrder) {
   )
 }
 
-// 1 kolega / 2-4 kolegovia / 5+ kolegov
-const colleagueCount = computed(() => {
-  const count = totals.value.count || 0
-  if (count === 1) return '1 kolega'
-  if (count >= 2 && count <= 4) return `${count} kolegovia`
-  return `${count} kolegov`
-})
+// 1 kolega / 2-4 kolegovia / 5+ kolegov — `lib/plural.js` owns the declension
+// since the portal cycle card's share row prints the same phrase from the same
+// count reached a different way.
+const colleagueCount = computed(() => colleaguesLabel(totals.value.count || 0))
 
 // Recomputed from the same rows the list renders, so the badge can never drift from
 // what the tab actually contains. Cancelled sub-orders count for neither number:

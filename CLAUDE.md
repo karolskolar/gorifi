@@ -704,3 +704,72 @@ list still ends at A11; the whole control is one SFC with `<style scoped>`.
   right end, which is where it would bite most. Revisit if short category names appear.
 
 Full suite after this work: **554 passed / 3 skipped** (+9).
+
+### Colleague kilos on the portal card + grouped cart lines (2026-08-12)
+
+Two product decisions, **frontend only** — `git diff -- backend/` is empty, `api.js` is
+untouched, and no request shape or endpoint moved. Both were specified from screenshots
+of a redesigned card / cart bar.
+
+**1. The portal cycle card's share row now prints the colleagues' QUANTITY.**
+- Two lines: `3 kolegovia · 4 kg` (emphasised, `data-testid="share-row-count"`) over
+  `objednali cez váš odkaz`. This **retires the `.tabbadge` chip** and the single
+  "N | kolegovia cez váš odkaz" line. The count alone answered the host's real question —
+  how much coffee am I collecting for other people — only if every colleague buys one bag.
+- ⚠ **No new request and no new endpoint.** `GET /api/guest-links/cycle/:id` already
+  carries `guest_orders[].items` (`helpers/guest-orders.js attachItems`), so
+  `summariseSubOrders()` sums grams client-side off the payload the concurrency-capped
+  batch already fetches. `guestCounts` became **`guestSummaries`** = `{count, grams, units}`
+  keyed by cycle id; every RD-FL-5 rule about it still holds (sequence guard, merge map
+  that does not heal on error, non-blocking, context-only).
+- ⚠ **`count` comes from the server's `totals`, the quantity is derived** — so the number
+  beside the kilos can never disagree with the host's "Objednávky kolegov" tab. Cancelled
+  sub-orders count for **neither** figure (the same status predicate every backend guest
+  aggregate applies); pinned with a cancelled 1 kg bag that must not reach the screen.
+- ⚠ **Trailing zeros are STRIPPED here ("4 kg", not "4.00 kg")** — the RD-FO-2
+  `Math.round(g/10)/100` rule, deliberately NOT `formatKilos`, which the "Objednané ·"
+  badge in the same card still uses. The two are fed different units (kg from the API vs
+  grams summed off items) and the design canon for this row prints "4 kg".
+- ⚠ **An empty quantity drops the "· " separator rather than printing "0 kg"**, which
+  next to a live colleague count reads as a failure. Bakery cycles print `ks` (units), the
+  same split `orderQuantityLabel` uses one row above.
+- `lib/plural.js` is the **one home** for `colleaguesLabel()` (1 kolega / 2-4 kolegovia /
+  5+ kolegov). It was private to `GuestSubOrders.vue`; two screens now print it from two
+  different sources, and two copies of a three-branch declension is how one of them ends
+  up reading "3 kolegov".
+
+**2. `FriendOrder.vue`'s cart lines are grouped by purpose and column-aligned.**
+- ⚠ This **REVERSES 04 resolved conflict #10** (the prototype's flat list). What comes back
+  is the grouping and one neutral `.badge.acc-o` header per purpose — the per-purpose page
+  tints that the deleted `groupedCartItems` also carried do **not**.
+- ⚠ **Group order is `availablePurposes`, not the cart's key order**, so the strip above and
+  the cart below agree; a purpose no longer in the product list is **appended, never
+  dropped**, or a line could go invisible while still being billed.
+- Four columns: `.ln-name` (flex, ellipsis) · `.ln-qty` (26px, `1×`) · `.ln-size` (52px) ·
+  `.ln-amt` (58px min, right). The fee line carries no header and no qty/size but keeps
+  `.ln-amt`, so its figure stays in the same column. Verified by geometry, not text: every
+  row 22px tall, all four columns sharing one x per column.
+- ⚠ **`€` on the LINES only.** `.sum` ("Celkom: 28.50 EUR"), the success modal, the QR and
+  `PaymentModal` all still say `EUR` — that is the figure the friend actually pays.
+- ⚠ **The name is shortened by CSS, never in the data.** `overflow:hidden` +
+  `text-overflow:ellipsis` + `white-space:nowrap` on a `min-width:0` flex item, with the
+  full string kept in the DOM and in `title`. This is also what makes it safe against the
+  RD-FO-2 hazard one screen up (a space-free 44-char name scrolled the document 263px
+  sideways): unlike `overflow-wrap`, a clipped box cannot paint outside its row. Pinned at
+  320px with an unbreakable name — clipped, one row, zero document overflow.
+- Styles are a `<style scoped>` block in the view, **not** an addition to
+  `friends-theme.css` (the `CatScrollArrow.vue` precedent — the theme is a byte-for-byte
+  canon port with a numbered adaptation list this belongs to none of). Nothing below
+  re-declares a property the theme's `(0,3,0)` `.cartbar .lines .ln` rule sets.
+- ⚠ **`GuestOrder.vue` / `GuestOrderStatus.vue` / `GuestProductGrid.vue` still render the
+  OLD flat cart footer with `EUR`** — the guest surface belongs to RD-GX-1 and was out of
+  scope here. The two skins are now visibly different; do not treat the guest one as the
+  reference when RD-GX-1 lands.
+
+Specs edited: `order-cartbar.spec.js` (grouped assertions + a new long-name test) and
+`portal-share-row.spec.js` (its `linkPayload` fixture now carries real `items`, plus a
+cancelled row, and the `.tabbadge` locators became `share-row-count`). Verified locally:
+those two files plus `order-shell`, `order-locked`, `order-product-card`,
+`colleagues-panel`, `portal-fidelity`, `portal-cycles`, `mobile-no-h-overflow`,
+`guest-host-view`, `guest-link`, `portal-session-boundary` — **157 passed**. The full suite
+was not run for this change.
