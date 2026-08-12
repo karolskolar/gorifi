@@ -578,10 +578,10 @@ was never touched, so no request shape or header set moved.
 
 **Running the e2e suite locally** (528 tests, ~11 min) — three harness traps that each
 produce plausible wrong numbers:
-- ⚠ **`CORS_ORIGIN` must include the gate's own origin.** The allowlist is
-  `gorifi.skolar.sk,gorifi-dev.skolar.sk,localhost:5173`, so a same-origin SPA on
-  `localhost:3997` gets **500 on every XHR** and renders a blank body — surfacing as ~31
-  unrelated-looking UI failures that read exactly like a regression.
+- ⚠ **`CORS_ORIGIN` must include the gate's own origin.** The default allowlist is
+  the skolar.sk pair + the podpultovka.sk trio + `localhost:5173` (see `index.js`), so a
+  same-origin SPA on `localhost:3997` gets **500 on every XHR** and renders a blank body —
+  surfacing as ~31 unrelated-looking UI failures that read exactly like a regression.
 - ⚠ **`e2e/seed.mjs` is not optional** on a fresh `DB_PATH`, or every admin-authenticated
   spec fails at the login field.
 - ⚠ Confirm the port is **free first** (a stale server serves a `backend/public` deleted
