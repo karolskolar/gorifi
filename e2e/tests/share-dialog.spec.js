@@ -495,11 +495,12 @@ test.describe('UC-KG-006 — native share', () => {
 
     await share.click()
     const origin = await page.evaluate(() => window.location.origin)
-    // ⚠ FROZEN by decision: `document.title` is still "Gorifi - Objednávky"
-    // (pinned by public-flow.spec.js), so the share sheet must not introduce the
-    // app as something else in a message that links to a tab called Gorifi.
+    // ⚠ The share-sheet name moves WITH `document.title` (now "Podpultovka -
+    // Objednávky", pinned by public-flow.spec.js) — the share sheet must not
+    // introduce the app as something else in a message that links to that tab.
+    // Renamed together on 2026-08-12 by product decision.
     expect(await page.evaluate(() => window.__shared)).toEqual([{
-      title: 'Objednávka Gorifi',
+      title: 'Objednávka Podpultovka',
       text: `Pridajte sa k mojej objednávke — ${cycle.name}`,
       url: `${origin}/g/${link.token}`,
     }])
