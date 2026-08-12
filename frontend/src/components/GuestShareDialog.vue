@@ -128,16 +128,17 @@ async function toggleActive() {
 // Native share sheet on mobile; the button is hidden where navigator.share is
 // unavailable, so the copy row is always the fallback.
 //
-// ⚠ The payload is deliberately UNCHANGED by the rebrand. `document.title` is
-// still "Gorifi - Objednávky" (pinned by public-flow.spec.js), so renaming the
-// share sheet alone would have the app introduce itself as Podpultovka in a
-// message linking to a tab called Gorifi. 05 §UC-KG-006 leaves this OPEN; the
-// decision recorded here is to keep both strings verbatim.
+// ⚠ The share-sheet name and `document.title` move TOGETHER — the app must not
+// introduce itself under one name in a message linking to a tab called another.
+// 05 §UC-KG-006 left this OPEN; the original decision kept both strings on
+// "Gorifi", and on 2026-08-12 the product owner renamed the tab to Podpultovka,
+// so both strings are now "Podpultovka" (tab pinned by public-flow.spec.js,
+// this payload by share-dialog.spec.js).
 async function nativeShare() {
   if (!canNativeShare || !guestUrl.value) return
   try {
     await navigator.share({
-      title: 'Objednávka Gorifi',
+      title: 'Objednávka Podpultovka',
       text: `Pridajte sa k mojej objednávke — ${props.cycleName || 'objednávkový cyklus'}`,
       url: guestUrl.value
     })

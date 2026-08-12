@@ -121,7 +121,7 @@ onMounted(async () => {
 
 // Set page title
 watchEffect(() => {
-  document.title = 'Gorifi - Objednávky'
+  document.title = 'Podpultovka - Objednávky'
 })
 
 async function loadInitialData() {

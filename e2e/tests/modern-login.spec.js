@@ -295,7 +295,7 @@ test.describe('Modern login — the redesigned card (UC-FL-002)', () => {
     expect(typeof stored.token).toBe('string')
     expect(typeof stored.friendUid).toBe('string')
     // The title contract survives the redesign.
-    await expect(page).toHaveTitle(/Gorifi/)
+    await expect(page).toHaveTitle(/Podpultovka/)
   })
 
   test('remember-me off keeps the session in memory only', async ({ page }) => {

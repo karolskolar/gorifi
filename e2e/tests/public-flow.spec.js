@@ -6,7 +6,7 @@ import { test, expect } from '@playwright/test'
 test.describe('Public surfaces', () => {
   test('friend portal loads at / and shows the login card', async ({ page }) => {
     await page.goto('/')
-    await expect(page).toHaveTitle(/Gorifi/)
+    await expect(page).toHaveTitle(/Podpultovka/)
     // Legacy/modern both render a "Prihlásenie" login card for anonymous users.
     await expect(page.getByText('Prihlásenie')).toBeVisible()
   })
@@ -21,6 +21,6 @@ test.describe('Public surfaces', () => {
     // A non-API deep link should still return the SPA (not a 404).
     const res = await page.goto('/cycle/999999')
     expect(res.status()).toBeLessThan(400)
-    await expect(page).toHaveTitle(/Gorifi/)
+    await expect(page).toHaveTitle(/Podpultovka/)
   })
 })
