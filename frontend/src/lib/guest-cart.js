@@ -89,6 +89,10 @@ export function cartLines(cart, products) {
       product_id: productId,
       product_name: product.name,
       variant_label: product.variant_label || null,
+      // Carried since 2026-08-12 so the cart footer can group its lines by purpose
+      // (`CartLineList`) without a second pass over `products`. Nothing prices or
+      // weighs anything by it — it is presentation only.
+      purpose: product.purpose || null,
       variant,
       quantity,
       price,

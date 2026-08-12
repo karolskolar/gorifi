@@ -814,7 +814,7 @@ test.describe('NeoStepper smoke (02 §UC-DS-008)', () => {
     await minus.click()
     await minus.click()
     await expect(val, 'floored at min = 0').toHaveText('0')
-    await expect(page.getByText('Položiek: 0')).toBeVisible()
+    await expect(page.locator('.cartbar details summary')).toHaveText('Zobraziť položky v košíku (0 položiek)')
 
     // ⚠ A no-op tap must not emit: the emit is what the view hangs auto-save and
     // the unsaved-changes guard off, so an emit at `min` would make an empty cart

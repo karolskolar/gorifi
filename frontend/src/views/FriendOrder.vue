@@ -18,6 +18,8 @@ import NeoStepper from '@/components/neo/NeoStepper.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { snapTab } from '@/lib/snap-tab'
+import { itemsLabel } from '@/lib/plural'
+import CartLineList from '@/components/CartLineList.vue'
 import CatScrollArrow from '@/components/CatScrollArrow.vue'
 import PaymentModal from '@/components/PaymentModal.vue'
 import { encode as bysquareEncode, PaymentOptions, CurrencyCode, Version } from 'bysquare'
@@ -268,12 +270,31 @@ const cartItems = computed(() => {
   return items
 })
 
-// `groupedCartItems` — the purpose-grouped cart lines and their coloured headers —
-// was DELETED here together with its only consumer. 04 resolved conflict #10 drops
-// the grouping in favour of the prototype's flat `.lines` list; RD-FO-1 left both
-// halves standing rather than half-migrate a block it was not rewriting, and the
-// computed then had exactly one reader left. `item.purpose` is still populated in
-// `cartItems` — it costs nothing and is the natural place for a future consumer.
+// The cart lines in `CartLineList`'s normalized shape. Grouping, columns, the
+// ellipsis and the `€` all live in that component now — it is the ONE home for this
+// list on every screen (product decision 2026-08-12), and the grouping it does
+// reverses 04 resolved conflict #10's flat list.
+//
+// Only the MAPPING is this view's business: `lineSize` is the shipped
+// `variant_label` / 'ks' / raw-variant-key rule (04 §UC-FO-009) and `item.total` is
+// already marked up by `cartItems`.
+const cartLines = computed(() => cartItems.value.map((item) => ({
+  key: item.key,
+  name: item.product_name,
+  purpose: item.purpose,
+  size: lineSize(item),
+  quantity: item.quantity,
+  amount: item.total,
+})))
+
+// `orders.delivery_fee` is a field ON the order and never an `order_items` line
+// (CLAUDE.md 2026-05-01), so it is an EXTRA rather than an item: no purpose header,
+// no quantity, no size — just a name and an amount in the same column.
+const cartExtraLines = computed(() => (
+  order.value?.delivery_fee
+    ? [{ key: 'delivery', name: 'Doručenie Packetou', amount: order.value.delivery_fee }]
+    : []
+))
 
 // The cart line's size label — the shipped logic verbatim (04 §UC-FO-009):
 // `variant_label` when the snapshot carries one (bakery variants), 'ks' for the
@@ -1591,12 +1612,15 @@ function applyMarkup(price) {
       </div>
 
       <!-- Deadline: only when the cycle carries one, and VERBATIM from the API — no
-           reformatting, no 📅 (the design language has no emoji). The count keeps
-           its own place in the row; with no deadline `space-between` simply leaves
-           it at the start. -->
-      <div class="meta">
-        <span v-if="cycle?.expected_date" class="deadline">Objednávka do: {{ cycle.expected_date }}</span>
-        <span class="sub" style="font-size:13px">Položiek: {{ cartItems.length }}</span>
+           reformatting, no 📅 (the design language has no emoji).
+           ⚠ The "Položiek: N" span that used to share this row is GONE (product
+           decision 2026-08-12): the count moved into the `<details>` summary below,
+           where it labels the very list it counts. The row is therefore dropped
+           WHOLESALE when there is no deadline — an empty `.meta` would still be a
+           flex container in the bar's vertical rhythm, and the whole point of the
+           change was to give that line back to the summary's hit target. -->
+      <div v-if="cycle?.expected_date" class="meta">
+        <span class="deadline">Objednávka do: {{ cycle.expected_date }}</span>
       </div>
       <!-- ⚠ `paymentTotal`, not `cartTotal` (resolved conflict #9): it includes
            `orders.delivery_fee`, which is a field ON the order and never an
@@ -1639,9 +1663,27 @@ function applyMarkup(price) {
         >{{ saving ? 'Odosielam…' : (isSubmitted ? 'Aktualizovať' : 'Odoslať') }}</button>
       </div>
 
-      <!-- Cart lines: FLAT (resolved conflict #10). The purpose headers and their
-           per-purpose tints died with `groupedCartItems`. `×` is U+00D7, not "x".
-           `.lines` owns the 170px scroll cap and the row rule from the theme.
+      <!-- Cart lines: GROUPED BY PURPOSE and column-aligned (product decision
+           2026-08-12, reversing 04 resolved conflict #10's flat list). `×` is
+           U+00D7, not "x". `.lines` owns the 170px scroll cap and the row rule
+           from the theme; the four columns and the group header come from this
+           file's scoped block.
+
+           Each line is exactly ONE row at every supported width. That is the
+           `.ln-name` ellipsis doing it, not a shortened string: product names are
+           free admin text, so nothing in the data bounds them. Truncating in CSS
+           keeps the full name in the DOM (and in the `title`), which is also why
+           this needs no `overflow-wrap` — `overflow:hidden` cannot paint outside
+           the row the way an unbreakable token can (RD-FO-2's 263px document
+           overflow was exactly that failure, one screen up).
+
+           The quantity and the size are their OWN fixed-width columns, so they
+           line up down the list instead of drifting with the name's length — the
+           whole point of splitting them out of the "Name (250g) ×1" string.
+
+           `€` replaces `EUR` on these lines to buy that width back; the `.sum`
+           row above and the modals keep `EUR`, which is what the friend sees on
+           the figure they actually pay.
 
            ⚠ `line-height:normal` ON THE `<details>` ITSELF — measured, not
            cosmetic. RD-FO-5's canon-vs-port pass found the whole `.cartbar` 3px
@@ -1662,19 +1704,27 @@ function applyMarkup(price) {
            `<details>` needs nothing: its `summary` is a block-level `.sub`,
            already in A10, so no strut is involved (measured: 15px either way). -->
       <details style="line-height:normal">
-        <summary>Zobraziť položky v košíku</summary>
-        <div class="lines">
-          <span v-if="cartItems.length === 0" class="sub">Košík je prázdny</span>
-          <div v-else class="ln" v-for="item in cartItems" :key="item.key">
-            <span>{{ item.product_name }} ({{ lineSize(item) }}) ×{{ item.quantity }}</span>
-            <span class="mono">{{ item.total.toFixed(2) }} EUR</span>
-          </div>
-          <!-- The Packeta fee, plain text — the repo's 📦 goes with the emoji ban. -->
-          <div v-if="order?.delivery_fee" class="ln">
-            <span>Doručenie Packetou</span>
-            <span class="mono">{{ order.delivery_fee.toFixed(2) }} EUR</span>
-          </div>
-        </div>
+        <!-- ⚠ The item count lives HERE now, not in the meta row above (product
+             decision 2026-08-12) — it labels the list it counts, and the line it
+             frees is spent on this control's hit target (see the scoped block).
+             Declined, so it reads "1 položka" / "3 položky" / "11 položiek"; 0 is
+             correct as "0 položiek" and the fold still opens onto "Košík je
+             prázdny". -->
+        <summary>Zobraziť položky v košíku ({{ itemsLabel(cartItems.length) }})</summary>
+        <!-- The empty state has no `.lines` wrapper any more, so it carries the 8px
+             the theme's `.cartbar .lines` used to give it. -->
+        <span v-if="cartItems.length === 0" class="sub" style="display:block;margin-top:8px">Košík je prázdny</span>
+        <!-- `purpose-order` is what keeps the cart's groups in the same order as the
+             category strip above it (`availablePurposes`); the cart's own key order
+             is whatever sequence the friend happened to tap in. The fee line rides
+             along as an `extra` — see `cartExtraLines`, and note the repo's 📦 stays
+             banned with the rest of the emoji. -->
+        <CartLineList
+          v-else
+          :items="cartLines"
+          :extras="cartExtraLines"
+          :purpose-order="availablePurposes"
+        />
       </details>
     </div>
 
@@ -2129,6 +2179,42 @@ function applyMarkup(price) {
      ring, which is why the old spelling survives there and only there. It is
      inert wherever `:has()` parses, so the two can never both paint. -->
 <style scoped>
+/* ⚠ The fold's own control, ENLARGED with the line the count vacated (product
+   decision 2026-08-12). The theme's `.cartbar details summary` is 13px and
+   `inline-flex`, i.e. a hit target as tall as one line of 13px text (~16px) and
+   only as wide as its label — well under the 38-44px the rest of this bar
+   spends on everything tappable (`.btn.sm` is 38, `.actions .btn` 46).
+
+   Three changes, and each is doing a distinct job:
+   · `display:flex` widens the target to the FULL bar width, so a thumb landing
+     right of the label still opens the fold. This is what actually makes it
+     forgiving — the vertical padding alone would leave a narrow column.
+   · `min-height:40px` + the padding give it a real vertical target.
+   · 14.5px, and `--ink` rather than the theme's `--ink-dim`: at 13px dimmed it
+     read as a caption rather than as a control.
+
+   Specificity: `.cartbar details summary` is (0,3,0) in `friends-theme.css`
+   (`:where()` contributes nothing), and `<style scoped>` appends a data attribute
+   to the last compound, so this is (0,4,0) and wins regardless of file order —
+   NOT a cascade-order bet like `.cartbar` itself is. `list-style:none` and the
+   `::before` marker stay the theme's; only the box changes. */
+.cartbar details summary {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 6px 2px;
+  font-size: 14.5px;
+  color: var(--ink);
+}
+
+/* ⚠ The cart-line rules that used to live here — `.ln-group`, `.ln-name`,
+   `.ln-qty`, `.ln-size`, `.ln-amt` — moved WHOLESALE into
+   `components/CartLineList.vue` when four other screens had to render the same
+   list (product decision 2026-08-12). They could not have stayed: a parent's
+   `<style scoped>` cannot reach a child component's internals, so leaving copies
+   here would have been dead CSS that looks authoritative. The component's block
+   carries the derivations (the 320px ellipsis guard, the column widths, why every
+   value it shares with `friends-theme.css` is byte-identical). */
 .sr-radio {
   position: absolute;
   width: 1px;

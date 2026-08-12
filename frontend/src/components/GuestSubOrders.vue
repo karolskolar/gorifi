@@ -20,6 +20,9 @@
 // footer) stays own-items-only and is not touched by anything in this component.
 import { ref, computed, watch, watchEffect } from 'vue'
 import api from '../api'
+import { colleaguesLabel } from '@/lib/plural'
+import { variantText } from '@/lib/guest-cart'
+import CartLineList from '@/components/CartLineList.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 
@@ -132,25 +135,34 @@ function formatPrice(price) {
   return `${Number(price || 0).toFixed(2)} EUR`
 }
 
-// Bare number, no currency: `EUR` appears on TOTALS only (05 §UC-KG-003 item 2,
-// prototype `order.jsx:124`). Item lines carry a mono column instead.
-function formatAmount(price) {
-  return Number(price || 0).toFixed(2)
-}
+// `formatAmount` — the bare, currency-less item amount (05 §UC-KG-003 item 2,
+// prototype `order.jsx:124`) — is RETIRED with its only caller. Item lines now carry
+// `€` like every other list of ordered coffee (product decision 2026-08-12), and
+// `CartLineList` owns that formatting. `formatPrice` stays: the card's foot total and
+// the struck cancelled amount are still `EUR`, which is the unit the host pays in.
 
-// One precomposed string per item line rather than three template nodes.
+// One sub-order's lines in `CartLineList`'s normalized shape (product decision
+// 2026-08-12: every list of ordered coffee reads the same, and the host sees this one
+// directly above their own cart bar).
 //
-// ⚠ Deliberate: the variant suffix used to be a sibling `<span>` on its own
-// template line, and Vue's `condense` whitespace mode DELETES a newline-bearing
-// whitespace-only node between two elements — silently gluing "Brazil" to
-// "— 250g" with no build error and no failing test. Building the label here
-// makes the separator impossible to lose, and matches the prototype, which also
-// carries one flat label per line.
-function itemLine(item) {
-  const suffix = item.variant_label
-    ? ` — ${item.variant_label}`
-    : (item.variant && item.variant !== 'unit' ? ` — ${item.variant}` : '')
-  return `${item.quantity}× ${item.product_name}${suffix}`
+// This replaces the old precomposed `"2× Name — 250g"` string. That string existed
+// because a sibling `<span>` for the variant suffix could lose its separator to Vue's
+// `condense` whitespace mode — a hazard that simply does not arise now: the size is
+// its own COLUMN, not a suffix, so there is no separator left to lose.
+//
+// `variantText` from `lib/guest-cart.js` is the one home for variant → label, so a
+// bakery `variant_label`, the zero-gram `'unit'` ⇒ "ks" and `'20pc5g'` ⇒ "20 ks × 5g"
+// all render exactly as they do on the guest's own screens. (The old local rule
+// printed NOTHING for `'unit'`.)
+function subOrderLines(subOrder) {
+  return (subOrder.items || []).map((item) => ({
+    key: item.id,
+    name: item.product_name,
+    purpose: item.purpose,
+    size: variantText(item),
+    quantity: item.quantity,
+    amount: Number(item.price || 0) * Number(item.quantity || 0),
+  }))
 }
 
 // The amount that was CALLED OFF, recomputed from the item rows the server kept
@@ -165,13 +177,10 @@ function cancelledTotal(subOrder) {
   )
 }
 
-// 1 kolega / 2-4 kolegovia / 5+ kolegov
-const colleagueCount = computed(() => {
-  const count = totals.value.count || 0
-  if (count === 1) return '1 kolega'
-  if (count >= 2 && count <= 4) return `${count} kolegovia`
-  return `${count} kolegov`
-})
+// 1 kolega / 2-4 kolegovia / 5+ kolegov — `lib/plural.js` owns the declension
+// since the portal cycle card's share row prints the same phrase from the same
+// count reached a different way.
+const colleagueCount = computed(() => colleaguesLabel(totals.value.count || 0))
 
 // Recomputed from the same rows the list renders, so the badge can never drift from
 // what the tab actually contains. Cancelled sub-orders count for neither number:
@@ -387,7 +396,12 @@ async function removeSubOrder(subOrder) {
              (GSO-T6), not something the host can act on, and two badges on a 60%
              dashed card read as a live row. `paid` itself is the admin's flag in
              every state — shown, never toggled here (Decision 2). -->
-        <div style="display:flex;gap:6px;flex-shrink:0">
+        <!-- ⚠ The testid exists so "exactly one badge" can be asserted about THIS row
+             rather than about the whole card: since 2026-08-12 the card also holds one
+             `.badge` per purpose group inside `CartLineList`, and a bare
+             `card.locator('.badge')` count would conflate a stray STATUS badge with a
+             legitimate group header. -->
+        <div style="display:flex;gap:6px;flex-shrink:0" data-testid="sub-order-badges">
           <span
             v-if="isCancelled(subOrder)"
             class="badge muted"
@@ -402,17 +416,18 @@ async function removeSubOrder(subOrder) {
         </div>
       </div>
 
-      <!-- Never rendered on a cancelled row, in either fold state. -->
-      <ul
+      <!-- Never rendered on a cancelled row, in either fold state.
+           ⚠ The testid stays on the LIST ROOT — `CartLineList` renders the `ul`, so
+           the attribute falls through to it and both shipped locators
+           (`getByTestId('guest-items-N').locator('li')` in `colleagues-panel` and
+           `guest-host-view`) still resolve. The theme's `.suborder .items` rule is no
+           longer used by this component; the list brings its own styling. -->
+      <CartLineList
         v-if="!isCollapsed(subOrder) && !isCancelled(subOrder)"
-        class="items"
+        :items="subOrderLines(subOrder)"
         :data-testid="`guest-items-${subOrder.id}`"
-      >
-        <li v-for="item in subOrder.items" :key="item.id">
-          <span style="min-width:0">{{ itemLine(item) }}</span>
-          <span class="mono">{{ formatAmount(item.price * item.quantity) }}</span>
-        </li>
-      </ul>
+        style="margin-top:10px"
+      />
 
       <!-- Cancelled foot: the called-off amount, struck through, and nothing else
            — no hand-over tick (there is nothing to hand over) and no "Odstrániť"

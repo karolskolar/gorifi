@@ -704,3 +704,199 @@ list still ends at A11; the whole control is one SFC with `<style scoped>`.
   right end, which is where it would bite most. Revisit if short category names appear.
 
 Full suite after this work: **554 passed / 3 skipped** (+9).
+
+### Colleague kilos on the portal card + grouped cart lines (2026-08-12)
+
+Two product decisions, **frontend only** — `git diff -- backend/` is empty, `api.js` is
+untouched, and no request shape or endpoint moved. Both were specified from screenshots
+of a redesigned card / cart bar.
+
+**1. The portal cycle card's share row now prints the colleagues' QUANTITY.**
+- Two lines: `3 kolegovia · 4 kg` (emphasised, `data-testid="share-row-count"`) over
+  `objednali cez váš odkaz`. This **retires the `.tabbadge` chip** and the single
+  "N | kolegovia cez váš odkaz" line. The count alone answered the host's real question —
+  how much coffee am I collecting for other people — only if every colleague buys one bag.
+- ⚠ **No new request and no new endpoint.** `GET /api/guest-links/cycle/:id` already
+  carries `guest_orders[].items` (`helpers/guest-orders.js attachItems`), so
+  `summariseSubOrders()` sums grams client-side off the payload the concurrency-capped
+  batch already fetches. `guestCounts` became **`guestSummaries`** = `{count, grams, units}`
+  keyed by cycle id; every RD-FL-5 rule about it still holds (sequence guard, merge map
+  that does not heal on error, non-blocking, context-only).
+- ⚠ **`count` comes from the server's `totals`, the quantity is derived** — so the number
+  beside the kilos can never disagree with the host's "Objednávky kolegov" tab. Cancelled
+  sub-orders count for **neither** figure (the same status predicate every backend guest
+  aggregate applies); pinned with a cancelled 1 kg bag that must not reach the screen.
+- ⚠ **Trailing zeros are STRIPPED here ("4 kg", not "4.00 kg")** — the RD-FO-2
+  `Math.round(g/10)/100` rule, deliberately NOT `formatKilos`, which the "Objednané ·"
+  badge in the same card still uses. The two are fed different units (kg from the API vs
+  grams summed off items) and the design canon for this row prints "4 kg".
+- ⚠ **An empty quantity drops the "· " separator rather than printing "0 kg"**, which
+  next to a live colleague count reads as a failure. Bakery cycles print `ks` (units), the
+  same split `orderQuantityLabel` uses one row above.
+- `lib/plural.js` is the **one home** for `colleaguesLabel()` (1 kolega / 2-4 kolegovia /
+  5+ kolegov). It was private to `GuestSubOrders.vue`; two screens now print it from two
+  different sources, and two copies of a three-branch declension is how one of them ends
+  up reading "3 kolegov".
+
+**2. `FriendOrder.vue`'s cart lines are grouped by purpose and column-aligned.**
+- ⚠ This **REVERSES 04 resolved conflict #10** (the prototype's flat list). What comes back
+  is the grouping and one neutral `.badge.acc-o` header per purpose — the per-purpose page
+  tints that the deleted `groupedCartItems` also carried do **not**.
+- ⚠ **Group order is `availablePurposes`, not the cart's key order**, so the strip above and
+  the cart below agree; a purpose no longer in the product list is **appended, never
+  dropped**, or a line could go invisible while still being billed.
+- Four columns: `.ln-name` (flex, ellipsis) · `.ln-qty` (26px, `1×`) · `.ln-size` (52px) ·
+  `.ln-amt` (58px min, right). The fee line carries no header and no qty/size but keeps
+  `.ln-amt`, so its figure stays in the same column. Verified by geometry, not text: every
+  row 22px tall, all four columns sharing one x per column.
+- ⚠ **`€` on the LINES only.** `.sum` ("Celkom: 28.50 EUR"), the success modal, the QR and
+  `PaymentModal` all still say `EUR` — that is the figure the friend actually pays.
+- ⚠ **The name is shortened by CSS, never in the data.** `overflow:hidden` +
+  `text-overflow:ellipsis` + `white-space:nowrap` on a `min-width:0` flex item, with the
+  full string kept in the DOM and in `title`. This is also what makes it safe against the
+  RD-FO-2 hazard one screen up (a space-free 44-char name scrolled the document 263px
+  sideways): unlike `overflow-wrap`, a clipped box cannot paint outside its row. Pinned at
+  320px with an unbreakable name — clipped, one row, zero document overflow.
+- Styles are a `<style scoped>` block in the view, **not** an addition to
+  `friends-theme.css` (the `CatScrollArrow.vue` precedent — the theme is a byte-for-byte
+  canon port with a numbered adaptation list this belongs to none of). Nothing below
+  re-declares a property the theme's `(0,3,0)` `.cartbar .lines .ln` rule sets.
+- ⚠ **`GuestOrder.vue` / `GuestOrderStatus.vue` / `GuestProductGrid.vue` still render the
+  OLD flat cart footer with `EUR`** — the guest surface belongs to RD-GX-1 and was out of
+  scope here. The two skins are now visibly different; do not treat the guest one as the
+  reference when RD-GX-1 lands.
+
+Specs edited: `order-cartbar.spec.js` (grouped assertions + a new long-name test) and
+`portal-share-row.spec.js` (its `linkPayload` fixture now carries real `items`, plus a
+cancelled row, and the `.tabbadge` locators became `share-row-count`). Verified locally:
+those two files plus `order-shell`, `order-locked`, `order-product-card`,
+`colleagues-panel`, `portal-fidelity`, `portal-cycles`, `mobile-no-h-overflow`,
+`guest-host-view`, `guest-link`, `portal-session-boundary` — **157 passed**. The full suite
+was not run for this change.
+
+**Follow-up the same day — the cart fold's label absorbed the item count.**
+`Položiek: N` is gone from the `.cartbar` meta row; the `<details>` summary now reads
+**"Zobraziť položky v košíku (11 položiek)"** via `itemsLabel()` in `lib/plural.js`
+(1 položka / 2-4 položky / 5+ položiek; 0 takes the genitive plural, "0 položiek", which
+is correct Slovak and not a fallback).
+- ⚠ The deadline row is now dropped **wholesale** when the cycle carries no
+  `expected_date` — with the count gone it would otherwise be an empty flex row in the
+  bar's vertical rhythm, and freeing that line is the whole point.
+- The line it frees is spent on the control: the summary is `display:flex` (**full bar
+  width**, so a thumb landing right of the label still opens the fold — the vertical
+  padding alone would leave a narrow column), `min-height:40px`, 14.5px, `--ink` instead
+  of the theme's `--ink-dim`, which at 13px dimmed read as a caption rather than a
+  control. Measured 358×40 at 390px.
+- Specificity here is **not** a cascade-order bet like `.cartbar` itself: the theme's
+  `.cartbar details summary` is (0,3,0) and `<style scoped>` appends a data attribute to
+  the last compound ⇒ (0,4,0), so it wins regardless of file order.
+- ⚠ `getByText('Položiek: N')` was asserted in **four** friend-side spec files
+  (`order-cartbar`, `order-locked`, `order-modals`, `order-product-card`) — all now read
+  the summary's text instead, plus one assertion that `Položiek` has really left the meta
+  row. The guest views keep their own `Položiek: N` footer (RD-GX-1's scope), so
+  `guest-order-shell` / `guest-status-shell` are untouched and still pass.
+Verified locally: those four files, **67 passed**, plus a 320px no-overflow check.
+
+**Follow-up — decluttering the guest confirmation screen (`GuestOrder.vue`, 2026-08-12).**
+Five product-decided cuts to `/g/:token`'s post-submit screen, frontend only.
+- The rotated green `.badge.ok-solid` **"✔ Odoslané" is REMOVED.** It was the third
+  statement of one fact: badge + the 34px "Objednávka je odoslaná" headline + the appbar
+  subtitle "Objednávka odoslaná".
+- ⚠ **`line-height:1.3` on the `h1.h-screen`, overriding the theme's
+  `.h-screen{line-height:.95}` — not cosmetic.** This headline WRAPS on a phone and `.hl`
+  paints a filled block plus a `0 4px 0` underline shadow, so at .95 the second line's
+  block overlapped the descenders of "OBJEDNÁVKA JE" and clipped the underline. .95 is
+  right for the single-line headlines the canon uses it for. Inline, because A9/A10 cannot
+  beat a class rule that declares its own value. The `.sub` beneath went 10px → **20px**
+  (the underline shadow eats 4px of any margin below the highlight).
+- The copy-row label is now **"Na tomto odkaze uvidíte stav objednávky - uložte si ho!"**
+  (verbatim from the product owner, plain hyphen) and the `.field-help` paragraph under it
+  is **gone**. ⚠ Its second sentence was the ONLY on-screen explanation of the
+  localStorage fallback (`api.js` writes `gorifi_guest_orders`, keyed by link token); the
+  behaviour is unchanged but now undocumented **deliberately** — do not "restore" it.
+  ⚠ `.field-lbl` is `text-transform:uppercase`, so this sentence renders as caps and wraps
+  to two lines at 390px. Accepted.
+- ⚠ Both removals are asserted in `guest-payment-modal.spec.js` as **absences**
+  (`.badge.ok-solid` count 0, `.field-help` count 0, no `/Odoslané/` in the column) —
+  new copy alone would let a revert pass. The headline's leading is asserted as
+  **geometry** (the `.hl` box starting more than one font-size below the h1's top), which
+  is the only way to see the overlap a text assertion cannot.
+Verified locally: `guest-payment-modal` (11), `guest-order` + `guest-order-shell` +
+`guest-invite-dead` (52) — **63 passed**, plus phone/desktop screenshots.
+
+### `CartLineList.vue` — one home for every list of ordered coffee (2026-08-12)
+
+Product decision: the colleagues' sub-orders on the host's screen and the guest's own
+order summary must read exactly like the friend cart bar — grouped by purpose, one-row
+names, quantity/size in aligned columns, `€` on every amount. Frontend only.
+
+⚠ **`components/CartLineList.vue` is now the ONLY place this list is rendered**, on FIVE
+surfaces: `FriendOrder.vue`'s cart bar, `GuestOrder.vue`'s cart bar AND its confirmation
+sum card, `GuestOrderStatus.vue`'s item list, and `GuestSubOrders.vue`'s sub-order cards.
+Before it they were five hand-rolled copies in **four different formats** — the host read
+two of them on one screen. Extend the component; never fork it. Call sites map their own
+row shape into `{ key, name, purpose, size, quantity, amount }` and own nothing else.
+
+- ⚠ **Every value the component's CSS shares with the theme's `.cartbar .lines .ln`
+  (0,3,0) is byte-identical, deliberately** — inside a cart bar the theme wins, outside it
+  the component's rules are the only ones there are, and matching numbers is what makes
+  the two cases indistinguishable. It deliberately does NOT declare `max-height` /
+  `overflow-y` (the 170px scroll cap is the cart bar's alone; a list in a card must show
+  every line) or `margin-top` (call sites pass their own, which falls through to the root).
+- ⚠ **`line-height:normal` inside the component is load-bearing**: the `.ln-*` column
+  classes are NOT in the theme's A10 list, so without it every line inherits preflight's
+  1.5. The three call sites that used to carry their own `line-height:normal` inline (with
+  measured +4.25px/+8.5px notes) delegate to it now.
+- ⚠ **It renders `ul`/`li`**, so `li` counts in specs must be `li.ln` — the purpose header
+  is an `li` too. Two shipped assertions counted bare `li` and read 3 for a 2-item order.
+- ⚠ **The purpose header is a `.badge`, which collided with the sub-order card's "exactly
+  ONE badge" rule** (§UC-KG-001/003, the paid/cancelled status flag). Fixed by scoping
+  that assertion to a new `data-testid="sub-order-badges"` row — plus a second assertion
+  that every *other* badge in the card is a group header, so the original rule is still
+  enforced rather than merely relocated.
+- ⚠ **`€` on item lines REVERSES 05 §UC-KG-003 item 2** ("EUR on totals only, item lines
+  carry a bare mono column", from the prototype). A bare "15.20" was ambiguous precisely
+  where it mattered: a colleague's lines sit in a card directly above a cart-bar total
+  that belongs to a **different** order. Totals still say `EUR`.
+- ⚠ **The amount uses an ORDINARY space before `€`.** A U+00A0 slipped in first and cost
+  half an hour: Playwright normalises NBSP away for a STRING `toHaveText` but **not** for a
+  REGEX one, so `toHaveText('9.04 €')` passed while `toHaveText(/^\d+\.\d{2} €$/)` failed
+  on the same node. `.ln-amt` is `nowrap`, so NBSP bought nothing anyway.
+- `GuestSubOrders`' precomposed `"2× Name — 250g"` string is gone. It existed because a
+  sibling `<span>` could lose its separator to Vue's `condense` whitespace mode — a hazard
+  that cannot arise once the size is a COLUMN. Its `variantText` now comes from
+  `lib/guest-cart.js`, so `'unit'` reads "ks" instead of printing nothing.
+- `lib/purposes.js` `purposeOrder(products)` gives the two guest screens the group order
+  (`GuestProductGrid` computes it internally and never exposes it; `FriendOrder` passes its
+  own `availablePurposes`). ⚠ **Deliberately NOT wired into either of those two copies**:
+  they feed a `groupedProducts[activeTab]` LOOKUP whose keys fall back to `'Ostatne'`
+  (no diacritic) while everything else in the app uses `'Ostatné'` — normalising there
+  would make a purposeless product's tab select an empty group, i.e. silently hide
+  product. Here the fallback only affects group ORDER, and unranked purposes are appended.
+- `lib/guest-cart.js` `cartLines()` now carries `purpose` (presentation only — nothing
+  prices or weighs by it).
+- **NOT changed, and visible:** `GuestOrder.vue`'s cart bar still shows `Položiek: N` in
+  its meta row with the small `<summary>`; the friend bar merged that into
+  "Zobraziť položky v košíku (N položiek)" with a 40px hit target earlier the same day.
+  The two bars now differ in that one respect.
+Verified locally: `order-cartbar`, `colleagues-panel`, `guest-host-view`,
+`guest-status-shell`, `guest-order-shell`, `guest-payment-modal`, `guest-status`,
+`guest-order` — **~170 passed** — plus screenshots of all three restyled surfaces and
+320px no-overflow checks.
+
+**Follow-up — the guest cart bar matches the friend one (2026-08-12).**
+`GuestOrder.vue`'s footer took the same change the friend bar took earlier the same day:
+`Položiek: N` left the meta row for the `<details>` label
+("Zobraziť položky v košíku (2 položky)", `itemsLabel`), the deadline row is dropped
+wholesale when the cycle has no `expected_date`, and the summary is the same enlarged
+control (`display:flex` full width, `min-height:40px`, 14.5px, `--ink`) via the same
+(0,4,0) scoped override of `.cartbar details summary`. Measured 358×40 at 390px.
+- ⚠ **The two bars still differ in ONE state, and it is by design.** The guest fold is
+  `v-if="cartItems.length > 0"` (shipped rule, pinned), so an **empty guest cart shows no
+  count at all** while the friend bar reads "(0 položiek)". Nothing is lost — the 0.00
+  total and the disabled "Objednať" say it — and `guest-order-shell.spec.js` now asserts
+  that absence rather than the old "Položiek: 0".
+- ⚠ **`GuestOrderStatus.vue`'s EDIT bar keeps `Položiek: N`** and was deliberately not
+  touched: it has no `<details>` fold to merge the count into. Its spec is unchanged.
+Verified locally: `guest-order-shell`, `guest-status-shell`, `guest-order`,
+`guest-payment-modal` — **73 passed**, plus screenshots at 390px/320px.

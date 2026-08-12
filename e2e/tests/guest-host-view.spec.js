@@ -843,7 +843,7 @@ test.describe('Objednávky kolegov — UI', () => {
 
     // Expanded by default — this card exists to show what colleagues ordered.
     await expect(itemsFirst).toBeVisible()
-    await expect(itemsFirst.locator('li')).toHaveCount(2)
+    await expect(itemsFirst.locator("li.ln"), "2 item lines (plus their purpose header)").toHaveCount(2)
     await expect(itemsSecond).toBeVisible()
 
     // Fold the first colleague only.
@@ -869,7 +869,7 @@ test.describe('Objednávky kolegov — UI', () => {
 
     // Unfold: the same lines come back.
     await section.getByTestId(`guest-items-toggle-${first.order.id}`).click()
-    await expect(section.getByTestId(`guest-items-${first.order.id}`).locator('li')).toHaveCount(2)
+    await expect(section.getByTestId(`guest-items-${first.order.id}`).locator('li.ln'), 'item lines only — the purpose header is an li too').toHaveCount(2)
   })
   // The tab split itself (§ the "Kolegovia" switch). The point of the change is that
   // the host's OWN offer is the first thing on the page again, so the assertions run

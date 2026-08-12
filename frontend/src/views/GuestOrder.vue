@@ -9,7 +9,10 @@ import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
 import PaymentModal from '@/components/PaymentModal.vue'
 import GuestProductGrid from '@/components/GuestProductGrid.vue'
 import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
+import CartLineList from '@/components/CartLineList.vue'
 import { fmtEur } from '@/lib/money'
+import { purposeOrder } from '@/lib/purposes'
+import { itemsLabel } from '@/lib/plural'
 import {
   availabilityMap,
   cartLines,
@@ -77,6 +80,34 @@ const isBakery = computed(() => cycle.value?.type === 'bakery')
 
 const cartItems = computed(() => cartLines(cart.value, products.value))
 const cartTotal = computed(() => linesTotal(cartItems.value))
+
+// `CartLineList`'s normalized shape, for the two lists this view renders: the cart
+// footer while ordering, and the submitted order on the confirmation screen. Same
+// component as the friend cart bar and the host's colleague view (product decision
+// 2026-08-12) — only the mapping differs, because the two sources differ: `cartItems`
+// is built client-side from `products`, `confirmation.items` is what the server froze.
+const guestCartLines = computed(() => cartItems.value.map((item) => ({
+  key: item.key,
+  name: item.product_name,
+  purpose: item.purpose,
+  size: variantText(item),
+  quantity: item.quantity,
+  amount: item.total,
+})))
+
+const confirmationLines = computed(() => (confirmation.value?.items || []).map((item) => ({
+  key: item.id,
+  name: item.product_name,
+  purpose: item.purpose,
+  size: variantText(item),
+  quantity: item.quantity,
+  amount: Number(item.price || 0) * Number(item.quantity || 0),
+})))
+
+// The strip's own order is computed inside `GuestProductGrid` and never exposed, so
+// the cart footer builds it here — see `lib/purposes.js` for why this must not be
+// wired into the grid's copy.
+const purposes = computed(() => purposeOrder(products.value))
 
 watchEffect(() => {
   document.title = cycle.value?.name ? `${cycle.value.name} - Objednávka` : 'Objednávka'
@@ -317,22 +348,39 @@ function goToStatus() {
         class="mx-auto w-full max-w-[520px] px-4 sm:px-7 py-4 sm:py-7 flex flex-col gap-4"
         data-testid="guest-confirmation"
       >
-        <!-- `line-height:normal` on this unclassed wrapper. An unclassed block
+        <!-- ⚠ The green `.badge.ok-solid` "✔ Odoslané" that sat above the headline is
+             REMOVED (product decision 2026-08-12: this screen was too crowded). It
+             said nothing the 34px headline underneath it does not already say twice
+             over — the badge, "Objednávka je odoslaná" and the appbar subtitle
+             "Objednávka odoslaná" were three statements of one fact.
+
+             `line-height:normal` stays on this unclassed wrapper. An unclassed block
              inherits preflight's `1.5` with nothing to override it, and A9/A10 are
              CLASS lists that cannot reach an element carrying no class — so the fix
              belongs at the call site, never as a widening of A10 (friends-theme.css,
-             A10 block). MEASURED HERE AS A ZERO DELTA (133.59 px either way): the
-             `.badge`'s own box is taller than the strut and `.h-screen`/`.sub`
-             declare their own line-height, so nothing moves today. Kept on the same
-             basis RD-FL-8b kept the remember-me label — the pattern must be safe to
-             copy, and the next line added to this block would not be. -->
+             A10 block). It was measured as a ZERO delta when the badge was here, and
+             it still is for a different reason: every remaining child is a BLOCK that
+             declares its own line-height, so the wrapper establishes no line box at
+             all. Kept on the same basis RD-FL-8b kept the remember-me label — the
+             pattern must be safe to copy, and the next line added to this block
+             would not be. -->
         <div style="text-align:center;margin-top:6px;line-height:normal">
-          <span class="badge ok-solid" style="font-size:13px;padding:6px 14px;transform:rotate(-2deg)">✔ Odoslané</span>
           <!-- `.hl` = the magenta highlight with the 4px ink underline shadow.
                ⚠ ONE LINE: a newline before `<span>` is a whitespace node Vue's
-               `condense` mode DELETES, silently gluing "je" to "odoslaná". -->
-          <h1 class="h-screen text-[34px] sm:text-[40px]" style="margin-top:12px">Objednávka je <span class="hl">odoslaná</span></h1>
-          <div class="sub" style="margin-top:10px">{{ cycle?.name }} · organizuje {{ host?.first_name }}</div>
+               `condense` mode DELETES, silently gluing "je" to "odoslaná".
+
+               ⚠ `line-height:1.3` OVERRIDES the theme's `.h-screen{line-height:.95}`,
+               and it is not cosmetic here. This headline WRAPS onto two lines on a
+               phone, and `.hl` paints a filled block plus a `0 4px 0` underline
+               shadow — at .95 the second line's block overlapped the descenders of
+               "OBJEDNÁVKA JE" above it and the underline was clipped by the text.
+               .95 is right for the single-line headlines the canon uses it for; a
+               wrapped, highlighted one needs the leading. Inline because A9/A10
+               cannot beat a class rule that declares its own value. -->
+          <h1 class="h-screen text-[34px] sm:text-[40px]" style="line-height:1.3">Objednávka je <span class="hl">odoslaná</span></h1>
+          <!-- 20px, not the shipped 10px: the highlight's underline shadow extends
+               4px BELOW the text box, so a 10px margin reads as 6px of air. -->
+          <div class="sub" style="margin-top:20px">{{ cycle?.name }} · organizuje {{ host?.first_name }}</div>
         </div>
 
         <!-- Sum card. `.field-lbl` carries its own 8px bottom margin, which the
@@ -343,25 +391,13 @@ function goToStatus() {
             <span class="display" style="font-size:24px">{{ fmtEur(confirmation.payment.amount) }}</span>
           </div>
           <hr class="divider" style="margin:12px 0" />
-          <!-- Item lines are BARE `toFixed(2)` — no " EUR" (prototype): the card's
-               own heading already states the unit, and the lines are a breakdown,
-               not a set of prices. `×` is U+00D7 MULTIPLICATION SIGN, not "x".
-               ⚠ `line-height:normal` here is LOAD-BEARING, unlike the header
-               wrapper's: the left `<span>` carries no class, so preflight's 1.5
-               reaches it and its `.mono` sibling (covered by A10) does not match.
-               MEASURED on this build: 16 px per line at `normal`, 20.25 px at 1.5 —
-               +4.25 px on every item, which is exactly the class of drift the A10
-               block exists to undo. -->
-          <div style="display:flex;flex-direction:column;gap:5px;font-size:13.5px;color:var(--ink-dim);line-height:normal">
-            <div
-              v-for="item in confirmation.items"
-              :key="item.id"
-              style="display:flex;justify-content:space-between;gap:10px"
-            >
-              <span>{{ item.product_name }} ({{ variantText(item) }}) ×{{ item.quantity }}</span>
-              <span class="mono">{{ (item.price * item.quantity).toFixed(2) }}</span>
-            </div>
-          </div>
+          <!-- ⚠ `CartLineList` — the ONE home for this list, shared with the guest's
+               own status page, the host's "Objednávky kolegov" and both cart bars
+               (product decision 2026-08-12). The lines carry `€` now: the prototype's
+               "bare `toFixed(2)`, the heading states the unit" rule is superseded, and
+               `line-height:normal` moved into the component, which needs it for its
+               own non-A10 column classes. -->
+          <CartLineList :items="confirmationLines" />
         </div>
 
         <!-- Shipped gate kept (§UC-GX-004 item 3): with neither IBAN nor Revolut
@@ -378,13 +414,19 @@ function goToStatus() {
              clipboard write and the 2 s "Skopírované!" flip; the testid falls
              through to its `.copyrow` root, so the value is read as text and the
              button as `getByTestId('guest-status-url').getByRole('button')`
-             (§UC-GX-011 items 3/4). The helper line is prototype-silent and
-             RETAINED — it is the only place the localStorage behaviour is
-             explained. -->
+             (§UC-GX-011 items 3/4).
+
+             ⚠ The `.field-help` line below the copy row is REMOVED and the label
+             REWORDED (product decision 2026-08-12) — the label now carries what the
+             help line's first sentence said, so the screen states it once instead of
+             twice. Its second sentence ("Odkaz je uložený aj v tomto prehliadači")
+             was the ONLY place the localStorage fallback was explained; that
+             behaviour still exists (`api.js` writes `gorifi_guest_orders`, keyed by
+             link token) but is now undocumented on screen, deliberately. Do not
+             "restore" it without asking — it was cut on purpose. -->
         <div>
-          <label class="field-lbl">Odkaz na vašu objednávku — uložte si ho</label>
+          <label class="field-lbl">Na tomto odkaze uvidíte stav objednávky - uložte si ho!</label>
           <NeoCopyRow :value="confirmation.status_url" data-testid="guest-status-url" />
-          <p class="field-help">Na tomto odkaze uvidíte stav objednávky. Odkaz je uložený aj v tomto prehliadači.</p>
         </div>
 
         <!-- Lead capture (§UC-GSO-015 / §UC-GX-009 — restyle is RD-GX-4's). Kept
@@ -475,9 +517,21 @@ function goToStatus() {
              root. One accent action only (Objednať), disabled on an empty cart.
              `<details>` renders only when the cart has lines (shipped rule). -->
         <div class="cartbar" data-testid="cartbar">
-          <div class="meta">
-            <span v-if="cycle?.expected_date" class="deadline">Objednávka do: {{ cycle.expected_date }}</span>
-            <span class="sub" style="font-size:13px">Položiek: {{ cartItems.length }}</span>
+          <!-- ⚠ The "Položiek: N" span that shared this row is GONE — the count moved
+               into the `<details>` summary below, where it labels the list it counts
+               (the friend cart bar took the same change first). The row is therefore
+               dropped WHOLESALE when the cycle carries no deadline: an empty `.meta`
+               would still be a flex container in the bar's vertical rhythm, and the
+               point of the change is to give that line to the summary's hit target.
+
+               ⚠ CONSEQUENCE, accepted: `<details>` renders only when the cart has
+               lines (shipped rule, pinned), so on an EMPTY cart the count is now absent
+               rather than reading "Položiek: 0". Nothing is lost — the 0.00 total and
+               the disabled "Objednať" already say the cart is empty — but this is why
+               the guest bar and the friend bar (whose fold always renders, and reads
+               "(0 položiek)") still differ in that one state. -->
+          <div v-if="cycle?.expected_date" class="meta">
+            <span class="deadline">Objednávka do: {{ cycle.expected_date }}</span>
           </div>
           <div class="meta" style="margin-top:2px;align-items:center">
             <span class="sum" data-testid="cart-total">Celkom: {{ fmtEur(cartTotal) }}</span>
@@ -498,14 +552,14 @@ function goToStatus() {
                no addition to them can reach it — RD-FO-3 measured and fixed the
                identical site on the friend cartbar. -->
           <details v-if="cartItems.length > 0" style="line-height:normal">
-            <summary>Zobraziť položky v košíku</summary>
-            <div class="lines">
-              <!-- `×` is U+00D7 MULTIPLICATION SIGN, not the letter "x". -->
-              <div v-for="item in cartItems" :key="item.key" class="ln">
-                <span>{{ item.product_name }} ({{ variantText(item) }}) ×{{ item.quantity }}</span>
-                <span class="mono">{{ fmtEur(item.total) }}</span>
-              </div>
-            </div>
+            <!-- The count lives here now, declined by `itemsLabel` — and the line it
+                 freed above is spent on this control's hit target (see the scoped
+                 block, which is the friend bar's rule applied to the same theme
+                 selector). -->
+            <summary>Zobraziť položky v košíku ({{ itemsLabel(cartItems.length) }})</summary>
+            <!-- Same list, same component as the friend cart bar — `purpose-order`
+                 keeps its groups in the order the category strip above shows them. -->
+            <CartLineList :items="guestCartLines" :purpose-order="purposes" />
           </details>
         </div>
       </template>
@@ -679,6 +733,29 @@ function goToStatus() {
      shell keeps its canon padding. (Vue's scope attribute lands on slot content
      authored here even though `NeoModal` teleports it to `body`.) -->
 <style scoped>
+/* ⚠ The cart fold's control, ENLARGED with the line the item count vacated — the same
+   rule `FriendOrder.vue` carries, on the same theme selector, so the two bars behave
+   identically. The theme's `.cartbar details summary` is 13px and `inline-flex`, i.e. a
+   target as tall as one line of 13px text (~16px) and only as wide as its label, in a
+   bar where every button spends 38-46px.
+
+   `display:flex` widens it to the FULL bar width, which is what actually makes it
+   forgiving — a thumb landing right of the label still opens the fold, where vertical
+   padding alone would leave a narrow column. `--ink` rather than the theme's
+   `--ink-dim`: at 13px dimmed it read as a caption, not a control.
+
+   Specificity is not a cascade-order bet: the theme's selector is (0,3,0) and
+   `<style scoped>` appends a data attribute to the last compound ⇒ (0,4,0). The
+   `::before` marker and `list-style:none` stay the theme's; only the box changes. */
+.cartbar details summary {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 6px 2px;
+  font-size: 14.5px;
+  color: var(--ink);
+}
+
 @media (max-width: 400px) {
   .gx-foot-btn {
     padding-left: 10px;

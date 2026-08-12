@@ -5,7 +5,7 @@
 //
 // ⚠ WHY THIS FILE EXISTS — and it is not tidiness. `switchUser()` leaked session
 // state in SIX consecutive rows: `error`/`voucherResolved`/`subscriptions`
-// (RD-FL-3), `showArchive` (RD-FL-4), `guestCounts` (RD-FL-5), the
+// (RD-FL-3), `showArchive` (RD-FL-4), `guestSummaries` (RD-FL-5), the
 // credential-setup block — which held a PLAINTEXT password and auto-rendered it
 // in the next person's dialog — and `showLoginPassword` (RD-FL-6), then
 // `setupSaving`/`changePasswordSaving`/`profileSaving` (RD-FL-7). The sixth was
@@ -56,6 +56,8 @@ import api, { getFriendsAuthInfo } from '../api'
 // composes on `NeoModal`, so `Input`/`Label`/`Button`/`Alert`/`Dialog*` are gone.
 // UC-DS-004 rule 4 keeps radix ADMIN-only — do not re-introduce one here.
 import { fmtEur } from '@/lib/money'
+import { VARIANT_GRAMS } from '@/lib/guest-cart'
+import { colleaguesLabel } from '@/lib/plural'
 import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
@@ -122,11 +124,16 @@ const showArchive = ref(false)
 // everything" and "Uložiť" writes that over the friend's real preferences.
 const subscriptions = ref(Array.isArray(props.entry?.subscriptions) ? props.entry.subscriptions : []) // ['coffee', 'bakery']
 
-// Colleague counts for the UC-FL-007 share row, keyed by cycle id. CONTEXT ONLY
-// — nothing on this screen is gated on them; a missing entry simply renders the
-// "Objednávate aj pre kolegov?" fallback, which is also the failure surface (the
-// fetch is non-blocking and error-swallowing, never the `error` banner).
-const guestCounts = ref({})
+// Colleague aggregates for the UC-FL-007 share row, keyed by cycle id:
+// `{ count, grams, units }`. CONTEXT ONLY — nothing on this screen is gated on
+// them; a missing entry simply renders the "Objednávate aj pre kolegov?"
+// fallback, which is also the failure surface (the fetch is non-blocking and
+// error-swallowing, never the `error` banner).
+//
+// It carries the QUANTITY as well as the count because the host's real question
+// on this card is how much coffee they are collecting for other people — the
+// count alone says nothing about whether that is one 250g bag or 4 kg.
+const guestSummaries = ref({})
 
 // ⚠ Sequence guard for that batch — the GSO-T2 `loadSeq` rule. It is NOT the
 // cosmetic case: a count is another friend's colleague data. `loadCycles` bumps
@@ -332,17 +339,16 @@ async function loadGuestCounts(seq, list) {
       try {
         const data = await api.getGuestLink(cycle.id)
         if (seq !== guestCountSeq) return
-        const count = Number(data?.totals?.count)
-        // Written even when 0, so a colleague cancelling is reflected on the
-        // next load instead of leaving a stale badge standing.
+        // Written even when the count is 0, so a colleague cancelling is
+        // reflected on the next load instead of leaving a stale figure standing.
         //
-        // ⚠ That self-healing is SUCCESS-PATH ONLY. `guestCounts` is a merge map
-        // that is never reset per batch, so a refetch that FAILS leaves the
-        // previous count standing rather than falling back to the "Objednávate
+        // ⚠ That self-healing is SUCCESS-PATH ONLY. `guestSummaries` is a merge
+        // map that is never reset per batch, so a refetch that FAILS leaves the
+        // previous entry standing rather than falling back to the "Objednávate
         // aj pre kolegov?" copy — showing last-known-good is the better UX, but
         // do not read this as "the map heals on error". It is not a
         // cross-session leak: the map dies with this component.
-        guestCounts.value = { ...guestCounts.value, [cycle.id]: Number.isFinite(count) ? count : 0 }
+        guestSummaries.value = { ...guestSummaries.value, [cycle.id]: summariseSubOrders(data) }
       } catch {
         // Swallowed: no link yet, a 404 on a stale cycle id, or an offline blip
         // all render the "Objednávate aj pre kolegov?" fallback.
@@ -353,6 +359,32 @@ async function loadGuestCounts(seq, list) {
   await Promise.all(
     Array.from({ length: Math.min(GUEST_COUNT_CONCURRENCY, queue.length) }, worker)
   )
+}
+
+// One cycle's colleague aggregate, out of the GSO-T2 `{ link, guest_orders,
+// totals }` payload the batch above already fetches. No new request and no new
+// endpoint: `guest_orders` carries its `items` (helpers/guest-orders.js
+// `attachItems`), so the quantity is derivable from what is on the wire.
+//
+// ⚠ CANCELLED sub-orders count for NEITHER figure — the same rule the server's
+// own `totals` applies (`subOrderTotals`) and the same status predicate every
+// guest aggregate in the backend uses. `count` is taken from `totals` rather than
+// recomputed, so the number beside the quantity can never disagree with the
+// host's "Objednávky kolegov" tab; only the quantity is derived here.
+function summariseSubOrders(data) {
+  const count = Number(data?.totals?.count)
+  const orders = Array.isArray(data?.guest_orders) ? data.guest_orders : []
+  let grams = 0
+  let units = 0
+  for (const order of orders) {
+    if ((order?.status || 'submitted') === 'cancelled') continue
+    for (const item of order?.items || []) {
+      const quantity = Number(item?.quantity) || 0
+      grams += (VARIANT_GRAMS[item?.variant] || 0) * quantity
+      units += quantity
+    }
+  }
+  return { count: Number.isFinite(count) ? count : 0, grams, units }
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +460,25 @@ function formatKilos(kilos) {
 function orderQuantityLabel(cycle) {
   if (cycle.type === 'bakery') return `${cycle.orderItemCount} ks`
   return formatKilos(cycle.orderKilos)
+}
+
+// The colleagues' quantity on the share row — the same bakery/coffee split the
+// badge above uses, but fed by `guestSummaries` rather than by the cycle row.
+//
+// ⚠ Trailing zeros are STRIPPED here ("4 kg", not "4.00 kg"), which is the
+// RD-FO-2 rule from FriendOrder's stock bar and NOT `formatKilos`. The two are
+// fed from different units — `cycle.orderKilos` arrives as kilos from the API,
+// this one is summed in GRAMS off the sub-order items — and the design canon for
+// this row prints "4 kg". Empty string when there is nothing to show: the
+// template appends this after a "· " separator, and " · 0 kg" next to a live
+// colleague count would read as a failure rather than as "no weight yet" (the
+// real case being a bakery-only cycle, or the count arriving without items).
+function guestQuantityLabel(cycle) {
+  const summary = guestSummaries.value[cycle.id]
+  if (!summary) return ''
+  if (cycle.type === 'bakery') return summary.units > 0 ? `${summary.units} ks` : ''
+  if (!summary.grams) return ''
+  return `${Math.round(summary.grams / 10) / 100} kg`
 }
 
 // Guest share link straight from the cycle list, so the host does not have to
@@ -911,24 +962,34 @@ defineExpose({ openProfileModal, openInviteModal })
                portal before the dialog could be seen (pinned — after the click
                the URL stays `/`).
 
-               The left half is context only. `guestCounts` is filled by a
+               The left half is context only. `guestSummaries` is filled by a
                non-blocking, concurrency-capped batch; while it is in flight,
                has failed, or the host simply has no colleagues yet, the row
                reads "Objednávate aj pre kolegov?" — there is deliberately no
                loading or error state, because a missing count costs the host
-               nothing. -->
+               nothing.
+
+               ⚠ The count is a DECLINED phrase plus the quantity ("3 kolegovia
+               · 4 kg") on its own emphasised line, with "objednali cez váš
+               odkaz" underneath — it replaces the `.tabbadge` chip and the
+               single "N | kolegovia cez váš odkaz" line. The host's question
+               here is how much coffee they are collecting for other people, and
+               a bare count answers it only if every colleague buys one bag.
+               `guestQuantityLabel` yields an empty string rather than "0 kg"
+               when there is no weight to show (see it for why), so the "· "
+               separator is conditional on the label, not on the count. -->
           <div
             v-if="cycle.status === 'open'"
             data-testid="share-row"
             style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px;border-top:2px solid rgba(10,10,10,0.12);padding-top:12px"
           >
-            <span class="sub" style="display:flex;align-items:center;gap:6px;min-width:0">
-              <!-- The badge appears only when the count is > 0 — a "0" mono
-                   chip next to "kolegovia cez váš odkaz" would read as a
-                   failure rather than as an invitation. -->
-              <template v-if="guestCounts[cycle.id] > 0">
-                <span class="tabbadge">{{ guestCounts[cycle.id] }}</span>
-                <span style="overflow-wrap:anywhere">kolegovia cez váš odkaz</span>
+            <span class="sub" style="display:flex;flex-direction:column;gap:1px;min-width:0">
+              <template v-if="guestSummaries[cycle.id]?.count > 0">
+                <span
+                  data-testid="share-row-count"
+                  style="font-weight:700;font-size:15px;color:var(--ink);overflow-wrap:anywhere"
+                >{{ colleaguesLabel(guestSummaries[cycle.id].count) }}<template v-if="guestQuantityLabel(cycle)"> · {{ guestQuantityLabel(cycle) }}</template></span>
+                <span style="overflow-wrap:anywhere">objednali cez váš odkaz</span>
               </template>
               <span v-else style="overflow-wrap:anywhere">Objednávate aj pre kolegov?</span>
             </span>
