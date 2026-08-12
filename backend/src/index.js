@@ -45,7 +45,7 @@ app.set('trust proxy', 1);
 // only really needed for the local dev flow (Vite on :5173 → API on :3000) and
 // the staging domain. Override with CORS_ORIGIN (comma-separated) if needed.
 const allowedOrigins = (process.env.CORS_ORIGIN
-  || 'https://gorifi.skolar.sk,https://gorifi-dev.skolar.sk,http://localhost:5173')
+  || 'https://gorifi.skolar.sk,https://gorifi-dev.skolar.sk,https://podpultovka.sk,https://www.podpultovka.sk,https://dev.podpultovka.sk,http://localhost:5173')
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
