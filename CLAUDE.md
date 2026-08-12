@@ -1004,3 +1004,42 @@ prototype number and a deliberate divergence can never again be confused.
 margin **collapses** with the `<details>`'s own, where the canon's inline-level one
 could not — so `detailsH === summaryH` today, and giving `.cartbar details` any
 padding or border would silently add 8px back to the bar's height.
+
+### ⚠ A12 — iOS zoomed the whole app in after login (2026-08-12, reported from prod)
+
+Mobile Safari zooms the viewport IN when a text control with a computed
+`font-size` **under 16px** is focused, and **does not zoom back out on blur** — so
+one tap in the login field left every subsequent screen magnified for the rest of
+the session (appbar chip and logout glyph clipped off the right edge, ticker cut
+mid-word, cycle-list gear unreachable). The canon's `.inp` is **15px**, i.e. exactly
+1px inside the trigger; `.inp.mono` is 13px.
+
+- Fixed as **adaptation A12** in `friends-theme.css` (the 4th addition to the ported
+  stylesheet), gated on **`@media (pointer: coarse)`** so desktop keeps the canon
+  15px — the deviation is 1px, only on devices that have the bug. The gate is
+  deliberately **not** `max-width`: an iPad in landscape is 1024px wide and zooms
+  just the same.
+- ⚠ **`.inp.mono` needs its own line inside the block.** It is (0,2,0) against
+  `.inp`'s (0,1,0) — `:where()` contributes nothing — so it would keep 13px and keep
+  zooming. It has no call site today, so that line ships as a no-op on purpose.
+- ⚠ **The fix must NEVER be `maximum-scale=1` / `user-scalable=no`**, which is what
+  most search results suggest: it removes pinch-zoom for everyone (WCAG 1.4.4) on the
+  one screen where someone who cannot read a password most needs to magnify.
+  `ios-input-zoom.spec.js` asserts the viewport meta contains neither.
+- ⚠ **The zoom itself is NOT reproducible in this suite** — no engine here implements
+  it and the gate runs Chromium. The spec measures the *condition* it keys on
+  (computed font-size under `pointer: coarse`, which Chromium reports under touch
+  emulation), plus the desktop counter-assertion that the 15px canon is untouched.
+  A test watching `visualViewport.scale` would be silently vacuous.
+- Remaining instances NOT fixed (admin-only, still old skin): the `text-sm` (14px)
+  `<textarea>`s in `CycleDetail.vue` and `AdminBakeryProducts.vue`. Same bug class;
+  out of scope for a friend-surface fix.
+
+**⚠ THE LOCAL GATE IS UNRELIABLE ON A SMALL BOX, and it produces failures that read
+exactly like regressions.** This host is 4 GB / 2 cores: Chromium dies with
+**SIGSEGV** ("worker process exited unexpectedly", `Target crashed`, bash exit
+**139** — which also silently truncates an `&&` chain, so a build never runs and the
+test then measures a STALE `backend/public`), and the long walkthrough specs cross
+their 30s timeout under memory pressure. A **different set** of tests fails on every
+run — that non-determinism is the tell. Confirm any suspicious failure by running its
+file ALONE, two or three times, before believing it.
