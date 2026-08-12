@@ -11,6 +11,32 @@ test.describe('Public surfaces', () => {
     await expect(page.getByText('Prihlásenie')).toBeVisible()
   })
 
+  // The tab identity. Both halves regressed in production before: the title
+  // shipped as the Vite scaffold's literal "frontend" and the icon as `vite.svg`,
+  // the scaffold triangle, for months. `/favicon.svg` is the brand monogram
+  // imported from the design project.
+  //
+  // ⚠ The link is asserted AND the file is FETCHED. A `<link>` pointing at a path
+  // that 404s renders exactly like no favicon at all, and neither the DOM
+  // assertion nor a screenshot would show it — browsers request the icon out of
+  // band, so it never appears in a page-load network sweep either.
+  test('the favicon is the brand monogram, and it actually resolves', async ({ page, request }) => {
+    await page.goto('/')
+    const icon = page.locator('link[rel="icon"]')
+    await expect(icon).toHaveCount(1)
+    await expect(icon).toHaveAttribute('href', '/favicon.svg')
+    await expect(icon).toHaveAttribute('type', 'image/svg+xml')
+
+    const res = await request.get('/favicon.svg')
+    expect(res.status(), '/favicon.svg must be served').toBe(200)
+    expect(res.headers()['content-type']).toContain('image/svg+xml')
+    const svg = await res.text()
+    // The two brand tokens, so a placeholder icon cannot pass: ink #0a0a0a plate,
+    // accent #ff2d87 monogram (friends-theme.css `--nb-ink` / `--accent`).
+    expect(svg).toContain('#0a0a0a')
+    expect(svg).toContain('#ff2d87')
+  })
+
   test('admin login page loads at /admin', async ({ page }) => {
     await page.goto('/admin')
     await expect(page.locator('#password')).toBeVisible()

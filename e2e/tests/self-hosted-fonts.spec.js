@@ -327,24 +327,42 @@ test.describe('No public route fetches a third-party subresource', () => {
     expect(offenders, `third-party subresources by route:\n${JSON.stringify(offenders, null, 2)}`).toEqual({})
   })
 
-  test('the invite page renders its logo from this origin, at the expected size', async ({ page }) => {
+  // ⚠ This test used to assert the Goriffee logo decoded at `h-12` on this route.
+  // The logo is GONE (product decision, 2026-08-12: the invite screen was restyled
+  // onto the Podpultovka skin, which carries the wordmark chrome like every other
+  // public screen, and `goriffee-logo.svg` is deleted). Retargeted rather than
+  // deleted, because the VALUE was never "a logo exists" — it was "an image this
+  // route renders actually decodes", which a bare `toBeVisible()` misses since a
+  // CSP-blocked or 404 image is `complete` with `naturalWidth === 0`.
+  //
+  // So it now (a) pins the chrome that replaced it — the route must still say what
+  // it is to someone who mistyped a code — and (b) applies the decode check to
+  // EVERY image the route renders, whatever they turn out to be. Part (b) is
+  // vacuous while the count is zero, which is why (a) is asserted alongside it and
+  // why the count itself is reported.
+  test('the invite page renders its own chrome, and any image it renders decodes', async ({ page }) => {
     await page.goto(`/invite/RDDS6-${uniq}`)
-    const logo = page.getByAltText('Goriffee')
-    await expect(logo).toBeVisible()
 
-    const info = await logo.evaluate((el) => ({
+    // The wordmark lives in `BrandChrome`'s `.titles` block and is split across
+    // spans ("Pod" + accent "pult" + "ovka"), so match the block's text content.
+    const titles = page.locator('.appbar .titles')
+    await expect(titles).toContainText('Podpultovka')
+    await expect(titles).toContainText('Registrácia')
+    // The Goriffee mark must not come back on this route by any path.
+    await expect(page.getByAltText('Goriffee')).toHaveCount(0)
+    await expect(page.locator('img[src*="goriffee"]')).toHaveCount(0)
+
+    const images = await page.locator('img').evaluateAll((els) => els.map((el) => ({
       src: el.currentSrc || el.src,
+      alt: el.alt,
       complete: el.complete,
       naturalWidth: el.naturalWidth,
-      box: el.getBoundingClientRect().toJSON(),
-    }))
-    expect(new URL(info.src).origin, 'logo must be same-origin').toBe(new URL(page.url()).origin)
-    // A blocked or 404 image is `complete` with naturalWidth 0 — which is exactly
-    // what production shows today, and what a bare `toBeVisible()` would miss.
-    expect(info.complete && info.naturalWidth > 0, `logo did not decode: ${JSON.stringify(info)}`).toBe(true)
-    expect(Math.round(info.box.height), 'h-12').toBe(48)
-    expect(info.box.width, 'aspect preserved (~176px at h-12)').toBeGreaterThan(150)
-    expect(info.box.width, 'aspect preserved (~176px at h-12)').toBeLessThan(200)
+    })))
+    for (const img of images) {
+      expect(new URL(img.src).origin, `image must be same-origin: ${img.src}`).toBe(new URL(page.url()).origin)
+      expect(img.complete && img.naturalWidth > 0, `image did not decode: ${JSON.stringify(img)}`).toBe(true)
+    }
+    console.log(`[invite chrome] images on /invite/:code: ${images.length}`)
   })
 })
 
@@ -479,10 +497,15 @@ test.describe('Brand fonts under the PRODUCTION CSP', () => {
     const violations = await page.evaluate(() => window.__cspViolations)
     expect(violations, `CSP violations on /invite/:code:\n${JSON.stringify(violations, null, 2)}`).toEqual([])
 
-    const logo = page.getByAltText('Goriffee')
-    await expect(logo).toBeVisible()
-    const decoded = await logo.evaluate((el) => el.complete && el.naturalWidth > 0)
-    expect(decoded, 'the logo must actually decode under the production CSP').toBe(true)
+    // ⚠ The route's own render must be asserted here too, or a page that failed to
+    // mount at all would pass this test trivially — no markup, no violations. The
+    // Goriffee logo this used to check is gone (2026-08-12 restyle); the chrome that
+    // replaced it is the load-bearing thing on the route now, and it is styled by
+    // `friends-theme.css`, i.e. it also proves `style-src` did not eat the theme.
+    await expect(page.locator('.appbar .titles')).toContainText('Podpultovka')
+    await expect(page.getByTestId('invite-invalid')).toBeVisible()
+    const themed = await page.locator('.app').evaluate((el) => getComputedStyle(el).backgroundColor)
+    expect(themed, 'the theme background must survive the CSP').toBe('rgb(255, 248, 243)')
   })
 
   test('the .woff2 files are served from the app origin with the CSP applied', async ({ page }) => {
