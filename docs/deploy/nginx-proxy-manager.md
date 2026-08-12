@@ -223,24 +223,24 @@ curl -sI http://gorifi.skolar.sk | grep -i location
 You should see HSTS, CSP(-Report-Only), and the other headers, and the HTTP call
 should 301 to HTTPS.
 
-## 5. podpultovka.sk (added 2026-08-12)
+## 5. podpultovka.biz (added 2026-08-12)
 
-The app is also served on **podpultovka.sk** / **www.podpultovka.sk** (prod) and
-**dev.podpultovka.sk** (staging). Server-side this is already wired: both LXC
+The app is also served on **podpultovka.biz** / **www.podpultovka.biz** (prod) and
+**dev.podpultovka.biz** (staging). Server-side this is already wired: both LXC
 nginx configs list the new names in `server_name`, and the backend CORS
 allowlist includes the three HTTPS origins.
 
 NPM setup — **extend the two existing proxy hosts** rather than creating new
 ones (one host = one upstream = one Advanced-tab config to keep in sync):
 
-1. DNS: point `podpultovka.sk`, `www.podpultovka.sk` and `dev.podpultovka.sk`
+1. DNS: point `podpultovka.biz`, `www.podpultovka.biz` and `dev.podpultovka.biz`
    at the same public IP as `gorifi.skolar.sk` (A records, or CNAME for the
    subdomains).
 2. In NPM, edit proxy host `gorifi.skolar.sk` → Domain Names: add
-   `podpultovka.sk` and `www.podpultovka.sk`. Request a **new** Let's Encrypt
+   `podpultovka.biz` and `www.podpultovka.biz`. Request a **new** Let's Encrypt
    certificate covering all three names (the old cert has no SAN for them).
-3. Same for `gorifi-dev.skolar.sk` → add `dev.podpultovka.sk`, reissue cert.
+3. Same for `gorifi-dev.skolar.sk` → add `dev.podpultovka.biz`, reissue cert.
 4. **HSTS Subdomains stays OFF** on the prod host unless every future
-   `*.podpultovka.sk` host will be HTTPS — the toggle applies to all domains on
+   `*.podpultovka.biz` host will be HTTPS — the toggle applies to all domains on
    the proxy host.
-5. Verify per §4 against `https://podpultovka.sk`.
+5. Verify per §4 against `https://podpultovka.biz`.
