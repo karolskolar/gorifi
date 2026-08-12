@@ -346,7 +346,12 @@ test.describe('RD-GX-1 · the sticky cartbar (§UC-GX-003)', () => {
 
     const bar = page.locator('.cartbar')
     await expect(bar.locator('.deadline')).toHaveText('Objednávka do: 29. august 2026')
-    await expect(bar).toContainText('Položiek: 0')
+    // ⚠ 2026-08-12: the item count moved into the `<details>` summary, and that fold
+    // renders only when the cart has lines (shipped rule, asserted just below) — so an
+    // EMPTY guest cart carries NO count at all. The 0.00 total and the disabled
+    // "Objednať" are what say the cart is empty. This is the one state where the guest
+    // bar still differs from the friend bar, whose fold always renders "(0 položiek)".
+    expect(await bar.innerText(), 'no count row on an empty cart').not.toMatch(/Položiek/)
     await expect(page.getByTestId('cart-total')).toHaveText('Celkom: 0.00 EUR')
 
     const order = bar.getByTestId('open-checkout')
@@ -361,7 +366,8 @@ test.describe('RD-GX-1 · the sticky cartbar (§UC-GX-003)', () => {
     await page.getByTestId(`product-${coffee.id}`).getByTestId('inc-250g').click()
     await page.getByTestId(`product-${coffee.id}`).getByTestId('inc-250g').click()
     await expect(page.getByTestId('cart-total')).toHaveText('Celkom: 25.00 EUR')
-    await expect(bar).toContainText('Položiek: 1')
+    // The count is in the fold's own label now, declined by `itemsLabel`.
+    await expect(bar.locator('details summary')).toHaveText('Zobraziť položky v košíku (1 položka)')
     await expect(order).toBeEnabled()
 
     await bar.locator('summary').click()

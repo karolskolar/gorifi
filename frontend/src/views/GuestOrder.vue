@@ -12,6 +12,7 @@ import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
 import CartLineList from '@/components/CartLineList.vue'
 import { fmtEur } from '@/lib/money'
 import { purposeOrder } from '@/lib/purposes'
+import { itemsLabel } from '@/lib/plural'
 import {
   availabilityMap,
   cartLines,
@@ -516,9 +517,21 @@ function goToStatus() {
              root. One accent action only (Objednať), disabled on an empty cart.
              `<details>` renders only when the cart has lines (shipped rule). -->
         <div class="cartbar" data-testid="cartbar">
-          <div class="meta">
-            <span v-if="cycle?.expected_date" class="deadline">Objednávka do: {{ cycle.expected_date }}</span>
-            <span class="sub" style="font-size:13px">Položiek: {{ cartItems.length }}</span>
+          <!-- ⚠ The "Položiek: N" span that shared this row is GONE — the count moved
+               into the `<details>` summary below, where it labels the list it counts
+               (the friend cart bar took the same change first). The row is therefore
+               dropped WHOLESALE when the cycle carries no deadline: an empty `.meta`
+               would still be a flex container in the bar's vertical rhythm, and the
+               point of the change is to give that line to the summary's hit target.
+
+               ⚠ CONSEQUENCE, accepted: `<details>` renders only when the cart has
+               lines (shipped rule, pinned), so on an EMPTY cart the count is now absent
+               rather than reading "Položiek: 0". Nothing is lost — the 0.00 total and
+               the disabled "Objednať" already say the cart is empty — but this is why
+               the guest bar and the friend bar (whose fold always renders, and reads
+               "(0 položiek)") still differ in that one state. -->
+          <div v-if="cycle?.expected_date" class="meta">
+            <span class="deadline">Objednávka do: {{ cycle.expected_date }}</span>
           </div>
           <div class="meta" style="margin-top:2px;align-items:center">
             <span class="sum" data-testid="cart-total">Celkom: {{ fmtEur(cartTotal) }}</span>
@@ -539,7 +552,11 @@ function goToStatus() {
                no addition to them can reach it — RD-FO-3 measured and fixed the
                identical site on the friend cartbar. -->
           <details v-if="cartItems.length > 0" style="line-height:normal">
-            <summary>Zobraziť položky v košíku</summary>
+            <!-- The count lives here now, declined by `itemsLabel` — and the line it
+                 freed above is spent on this control's hit target (see the scoped
+                 block, which is the friend bar's rule applied to the same theme
+                 selector). -->
+            <summary>Zobraziť položky v košíku ({{ itemsLabel(cartItems.length) }})</summary>
             <!-- Same list, same component as the friend cart bar — `purpose-order`
                  keeps its groups in the order the category strip above shows them. -->
             <CartLineList :items="guestCartLines" :purpose-order="purposes" />
@@ -716,6 +733,29 @@ function goToStatus() {
      shell keeps its canon padding. (Vue's scope attribute lands on slot content
      authored here even though `NeoModal` teleports it to `body`.) -->
 <style scoped>
+/* ⚠ The cart fold's control, ENLARGED with the line the item count vacated — the same
+   rule `FriendOrder.vue` carries, on the same theme selector, so the two bars behave
+   identically. The theme's `.cartbar details summary` is 13px and `inline-flex`, i.e. a
+   target as tall as one line of 13px text (~16px) and only as wide as its label, in a
+   bar where every button spends 38-46px.
+
+   `display:flex` widens it to the FULL bar width, which is what actually makes it
+   forgiving — a thumb landing right of the label still opens the fold, where vertical
+   padding alone would leave a narrow column. `--ink` rather than the theme's
+   `--ink-dim`: at 13px dimmed it read as a caption, not a control.
+
+   Specificity is not a cascade-order bet: the theme's selector is (0,3,0) and
+   `<style scoped>` appends a data attribute to the last compound ⇒ (0,4,0). The
+   `::before` marker and `list-style:none` stay the theme's; only the box changes. */
+.cartbar details summary {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 6px 2px;
+  font-size: 14.5px;
+  color: var(--ink);
+}
+
 @media (max-width: 400px) {
   .gx-foot-btn {
     padding-left: 10px;

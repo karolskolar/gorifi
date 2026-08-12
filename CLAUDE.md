@@ -883,3 +883,20 @@ Verified locally: `order-cartbar`, `colleagues-panel`, `guest-host-view`,
 `guest-status-shell`, `guest-order-shell`, `guest-payment-modal`, `guest-status`,
 `guest-order` — **~170 passed** — plus screenshots of all three restyled surfaces and
 320px no-overflow checks.
+
+**Follow-up — the guest cart bar matches the friend one (2026-08-12).**
+`GuestOrder.vue`'s footer took the same change the friend bar took earlier the same day:
+`Položiek: N` left the meta row for the `<details>` label
+("Zobraziť položky v košíku (2 položky)", `itemsLabel`), the deadline row is dropped
+wholesale when the cycle has no `expected_date`, and the summary is the same enlarged
+control (`display:flex` full width, `min-height:40px`, 14.5px, `--ink`) via the same
+(0,4,0) scoped override of `.cartbar details summary`. Measured 358×40 at 390px.
+- ⚠ **The two bars still differ in ONE state, and it is by design.** The guest fold is
+  `v-if="cartItems.length > 0"` (shipped rule, pinned), so an **empty guest cart shows no
+  count at all** while the friend bar reads "(0 položiek)". Nothing is lost — the 0.00
+  total and the disabled "Objednať" say it — and `guest-order-shell.spec.js` now asserts
+  that absence rather than the old "Položiek: 0".
+- ⚠ **`GuestOrderStatus.vue`'s EDIT bar keeps `Položiek: N`** and was deliberately not
+  touched: it has no `<details>` fold to merge the count into. Its spec is unchanged.
+Verified locally: `guest-order-shell`, `guest-status-shell`, `guest-order`,
+`guest-payment-modal` — **73 passed**, plus screenshots at 390px/320px.
