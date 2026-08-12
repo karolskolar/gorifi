@@ -18,6 +18,7 @@ import NeoStepper from '@/components/neo/NeoStepper.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { snapTab } from '@/lib/snap-tab'
+import { itemsLabel } from '@/lib/plural'
 import CatScrollArrow from '@/components/CatScrollArrow.vue'
 import PaymentModal from '@/components/PaymentModal.vue'
 import { encode as bysquareEncode, PaymentOptions, CurrencyCode, Version } from 'bysquare'
@@ -1612,12 +1613,15 @@ function applyMarkup(price) {
       </div>
 
       <!-- Deadline: only when the cycle carries one, and VERBATIM from the API — no
-           reformatting, no 📅 (the design language has no emoji). The count keeps
-           its own place in the row; with no deadline `space-between` simply leaves
-           it at the start. -->
-      <div class="meta">
-        <span v-if="cycle?.expected_date" class="deadline">Objednávka do: {{ cycle.expected_date }}</span>
-        <span class="sub" style="font-size:13px">Položiek: {{ cartItems.length }}</span>
+           reformatting, no 📅 (the design language has no emoji).
+           ⚠ The "Položiek: N" span that used to share this row is GONE (product
+           decision 2026-08-12): the count moved into the `<details>` summary below,
+           where it labels the very list it counts. The row is therefore dropped
+           WHOLESALE when there is no deadline — an empty `.meta` would still be a
+           flex container in the bar's vertical rhythm, and the whole point of the
+           change was to give that line back to the summary's hit target. -->
+      <div v-if="cycle?.expected_date" class="meta">
+        <span class="deadline">Objednávka do: {{ cycle.expected_date }}</span>
       </div>
       <!-- ⚠ `paymentTotal`, not `cartTotal` (resolved conflict #9): it includes
            `orders.delivery_fee`, which is a field ON the order and never an
@@ -1701,7 +1705,13 @@ function applyMarkup(price) {
            `<details>` needs nothing: its `summary` is a block-level `.sub`,
            already in A10, so no strut is involved (measured: 15px either way). -->
       <details style="line-height:normal">
-        <summary>Zobraziť položky v košíku</summary>
+        <!-- ⚠ The item count lives HERE now, not in the meta row above (product
+             decision 2026-08-12) — it labels the list it counts, and the line it
+             frees is spent on this control's hit target (see the scoped block).
+             Declined, so it reads "1 položka" / "3 položky" / "11 položiek"; 0 is
+             correct as "0 položiek" and the fold still opens onto "Košík je
+             prázdny". -->
+        <summary>Zobraziť položky v košíku ({{ itemsLabel(cartItems.length) }})</summary>
         <div class="lines">
           <span v-if="cartItems.length === 0" class="sub">Košík je prázdny</span>
           <template v-for="group in groupedCartItems" :key="group.purpose">
@@ -2187,6 +2197,34 @@ function applyMarkup(price) {
    `.ln` keeps the theme's `display:flex`, its `gap:10px`, its bottom rule and its
    `justify-content:space-between` (inert here: `.ln-name` is `flex:1`, so there is
    no free space left to distribute). */
+/* ⚠ The fold's own control, ENLARGED with the line the count vacated (product
+   decision 2026-08-12). The theme's `.cartbar details summary` is 13px and
+   `inline-flex`, i.e. a hit target as tall as one line of 13px text (~16px) and
+   only as wide as its label — well under the 38-44px the rest of this bar
+   spends on everything tappable (`.btn.sm` is 38, `.actions .btn` 46).
+
+   Three changes, and each is doing a distinct job:
+   · `display:flex` widens the target to the FULL bar width, so a thumb landing
+     right of the label still opens the fold. This is what actually makes it
+     forgiving — the vertical padding alone would leave a narrow column.
+   · `min-height:40px` + the padding give it a real vertical target.
+   · 14.5px, and `--ink` rather than the theme's `--ink-dim`: at 13px dimmed it
+     read as a caption rather than as a control.
+
+   Specificity: `.cartbar details summary` is (0,3,0) in `friends-theme.css`
+   (`:where()` contributes nothing), and `<style scoped>` appends a data attribute
+   to the last compound, so this is (0,4,0) and wins regardless of file order —
+   NOT a cascade-order bet like `.cartbar` itself is. `list-style:none` and the
+   `::before` marker stay the theme's; only the box changes. */
+.cartbar details summary {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 6px 2px;
+  font-size: 14.5px;
+  color: var(--ink);
+}
+
 .ln-group {
   /* Deliberately NOT an `.ln`: no bottom rule, so a header can never be read as a
      line with a missing price. `.lines` is a 5px-gap flex column, so the extra

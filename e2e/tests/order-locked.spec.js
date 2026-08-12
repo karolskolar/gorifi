@@ -275,7 +275,7 @@ test.describe('UC-FO-014 — EVERY stepper is inert, not just the first', () => 
     const all = await steppers(page)
     expect(all.map((s) => s.value), 'nothing moved').toEqual(all.map(() => '0'))
     await expect(bar(page).locator('.sum'), 'and the total is untouched').toHaveText('Celkom: 0.00 EUR')
-    await expect(bar(page).getByText('Položiek: 0')).toBeVisible()
+    await expect(bar(page).locator('details summary')).toHaveText('Zobraziť položky v košíku (0 položiek)')
   })
 
   test('bakery: the `unit` steppers are disabled on the same terms', async ({ page }) => {

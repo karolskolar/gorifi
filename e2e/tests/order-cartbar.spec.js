@@ -327,8 +327,12 @@ test.describe('UC-FO-009 — composition at 378px', () => {
     // A10 covers `.cartbar .deadline`; at the inherited 1.5 it would be 16.5px.
     expect(dl.lh).toBe('normal')
 
-    // 2. Count.
-    await expect(bar(page).getByText('Položiek: 1')).toBeVisible()
+    // 2. Count — it lives in the `<details>` summary now (product decision
+    //    2026-08-12), declined, and NOT in the meta row above.
+    await expect(bar(page).locator('details summary'))
+      .toHaveText('Zobraziť položky v košíku (1 položka)')
+    expect(await bar(page).locator('.meta').first().innerText(), 'the count left the meta row')
+      .not.toMatch(/Položiek/)
 
     // 3. Total — `.sum` display style (22px Darker Grotesque), NOT mono, and it is
     //    `paymentTotal`: 9.04 product + 3.50 delivery.
@@ -448,7 +452,7 @@ test.describe('UC-FO-009 — composition at 378px', () => {
     await signIn(page)
     await gotoCycle(page, empty)
 
-    await expect(bar(page).getByText('Položiek: 0')).toBeVisible()
+    await expect(bar(page).locator('details summary')).toHaveText('Zobraziť položky v košíku (0 položiek)')
     // ⚠ `paymentTotal.toFixed(2)`, not the old `formatPrice`, which rendered a bare
     // "-" for a zero total.
     await expect(bar(page).locator('.sum')).toHaveText('Celkom: 0.00 EUR')
@@ -557,7 +561,7 @@ test.describe('UC-FO-009 — composition at 378px', () => {
 
     await expect(bar(page).locator('.actions')).toHaveCount(0)
     await expect(bar(page).locator('.deadline')).toHaveText('Objednávka do: 29. august 2026')
-    await expect(bar(page).getByText('Položiek: 1')).toBeVisible()
+    await expect(bar(page).locator('details summary')).toHaveText('Zobraziť položky v košíku (1 položka)')
     await expect(bar(page).locator('.sum')).toHaveText('Celkom: 15.00 EUR')
     await bar(page).getByText('Zobraziť položky v košíku').click()
     await expect(bar(page).locator('.lines .ln')).toHaveCount(1)
@@ -677,7 +681,7 @@ test.describe('UC-FO-008 — the auto-save matrix, observed as requests', () => 
     await page.setViewportSize({ width: 378, height: 900 })
     await signIn(page)
     await gotoCycle(page, cycle)
-    await expect(bar(page).getByText('Položiek: 1')).toBeVisible()
+    await expect(bar(page).locator('details summary')).toHaveText('Zobraziť položky v košíku (1 položka)')
 
     const puts = watchCartPuts(page)
     const plus = plusIn(page, `AsDraft Kava ${uniq}`)

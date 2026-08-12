@@ -773,3 +773,26 @@ those two files plus `order-shell`, `order-locked`, `order-product-card`,
 `colleagues-panel`, `portal-fidelity`, `portal-cycles`, `mobile-no-h-overflow`,
 `guest-host-view`, `guest-link`, `portal-session-boundary` — **157 passed**. The full suite
 was not run for this change.
+
+**Follow-up the same day — the cart fold's label absorbed the item count.**
+`Položiek: N` is gone from the `.cartbar` meta row; the `<details>` summary now reads
+**"Zobraziť položky v košíku (11 položiek)"** via `itemsLabel()` in `lib/plural.js`
+(1 položka / 2-4 položky / 5+ položiek; 0 takes the genitive plural, "0 položiek", which
+is correct Slovak and not a fallback).
+- ⚠ The deadline row is now dropped **wholesale** when the cycle carries no
+  `expected_date` — with the count gone it would otherwise be an empty flex row in the
+  bar's vertical rhythm, and freeing that line is the whole point.
+- The line it frees is spent on the control: the summary is `display:flex` (**full bar
+  width**, so a thumb landing right of the label still opens the fold — the vertical
+  padding alone would leave a narrow column), `min-height:40px`, 14.5px, `--ink` instead
+  of the theme's `--ink-dim`, which at 13px dimmed read as a caption rather than a
+  control. Measured 358×40 at 390px.
+- Specificity here is **not** a cascade-order bet like `.cartbar` itself: the theme's
+  `.cartbar details summary` is (0,3,0) and `<style scoped>` appends a data attribute to
+  the last compound ⇒ (0,4,0), so it wins regardless of file order.
+- ⚠ `getByText('Položiek: N')` was asserted in **four** friend-side spec files
+  (`order-cartbar`, `order-locked`, `order-modals`, `order-product-card`) — all now read
+  the summary's text instead, plus one assertion that `Položiek` has really left the meta
+  row. The guest views keep their own `Položiek: N` footer (RD-GX-1's scope), so
+  `guest-order-shell` / `guest-status-shell` are untouched and still pass.
+Verified locally: those four files, **67 passed**, plus a 320px no-overflow check.

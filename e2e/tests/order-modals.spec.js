@@ -1072,7 +1072,7 @@ test.describe('UC-FO-012 — the cancel confirm', () => {
     await bar(page).getByRole('button', { name: 'Zrušiť' }).click()
     await dialog(page).getByRole('button', { name: 'Nie' }).click()
     await expect(page.getByText('Zrušiť objednávku?')).toHaveCount(0)
-    await expect(bar(page).getByText('Položiek: 1')).toBeVisible()
+    await expect(bar(page).locator('details summary')).toHaveText('Zobraziť položky v košíku (1 položka)')
 
     // The × is the same non-destructive branch.
     await bar(page).getByRole('button', { name: 'Zrušiť' }).click()
@@ -1128,7 +1128,7 @@ test.describe('UC-FO-013 — the leave guard, all three outcomes', () => {
     await d.getByRole('button', { name: 'Zostať' }).click()
     await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
     await expect(page.getByText('Neuložené zmeny')).toHaveCount(0)
-    await expect(bar(page).getByText('Položiek: 1')).toBeVisible()
+    await expect(bar(page).locator('details summary')).toHaveText('Zobraziť položky v košíku (1 položka)')
     await expect(bar(page).getByTestId('cart-warn-dirty'), 'still dirty, nothing thrown away').toBeVisible()
   })
 
