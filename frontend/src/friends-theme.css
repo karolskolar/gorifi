@@ -148,6 +148,42 @@
 :where(.app, .modal-layer) .field-lbl{font-family:var(--font-body);font-weight:700;font-size:12.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--nb-ink);margin-bottom:8px;display:block}
 :where(.app, .modal-layer) .field-help{font-size:13px;color:var(--ink-dim);margin-top:6px}
 
+/* ---------- A12: the iOS focus-zoom counter (NOT in the canon) ----------
+   The FOURTH addition to the ported stylesheet, and it fixes a REPORTED PRODUCTION
+   BUG: on iOS the whole app stayed magnified after logging in — the appbar's
+   "Pozvať" chip and logout glyph, the ticker and the cycle-list gear were all cut
+   off past the right edge, on every screen, until the user pinched back out.
+
+   Mobile Safari zooms the viewport in when a text control is focused whose computed
+   `font-size` is UNDER 16px, and it does NOT zoom back out on blur — so one tap in
+   the login field re-scales every subsequent screen for the rest of the session.
+   The canon's `.inp` is 15px (line 144), i.e. exactly 1px inside the trigger, and
+   `.inp.mono` is 13px.
+
+   ⚠ The fix must NOT be `maximum-scale=1` / `user-scalable=no` on the viewport meta,
+   which is the answer most search results give. That does stop the zoom, by taking
+   pinch-zoom away from everyone — a WCAG 1.4.4 failure, and this is the one screen a
+   person with poor eyesight most needs to magnify (a password they cannot see).
+
+   Gated on `pointer: coarse` so the canon's 15px is untouched on desktop, where the
+   bug cannot occur: the deviation is 1px, and only on the devices that have the bug.
+   The gate is not `max-width` — an iPad in landscape is 1024px wide and zooms just
+   the same. Android/Chrome has no such behaviour but is also `coarse`; 16px on a
+   phone field is not a regression there, so the simpler query wins.
+
+   `.inp.mono` needs its own line: it is (0,2,0) against `.inp`'s (0,1,0) — `:where()`
+   contributes nothing — so it would keep its 13px and keep zooming. It has no call
+   site today (nothing renders `class="inp mono"`), so this ships as a no-op and
+   exists so the next mono field cannot reintroduce the bug.
+
+   Verified by asserting the COMPUTED value under a coarse-pointer context in
+   ios-input-zoom.spec.js — Chromium reports `pointer: coarse` under touch emulation,
+   so the gate itself is testable, which a UA-string hack would not have been. */
+@media (pointer: coarse) {
+  :where(.app, .modal-layer) .inp{font-size:16px}
+  :where(.app, .modal-layer) .inp.mono{font-size:16px}
+}
+
 /* ---------- banners ---------- */
 :where(.app, .modal-layer) .banner{border:3px solid var(--nb-ink);border-radius:12px;background:var(--accent-soft);box-shadow:4px 4px 0 var(--nb-ink);color:var(--ink);padding:14px 16px;font-size:15px;display:flex;align-items:flex-start;gap:12px}
 :where(.app, .modal-layer) .banner .dot{width:12px;height:12px;border:2px solid var(--nb-ink);border-radius:4px;background:var(--accent);flex-shrink:0;margin-top:4px}
