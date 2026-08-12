@@ -2,7 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/coffee-cup.png" />
+    <!-- The brand favicon: a magenta "P" monogram on the ink square, imported from
+         the "Podpultovka - Reviewed" design project (favicon.svg) via the design
+         MCP. `public/` is copied to `dist/` verbatim, so /favicon.svg is the runtime
+         URL and it is NOT content-hashed — same caching note as /fonts/ (nginx gives
+         it ETag/304s, not `immutable`). Pinned by public-flow.spec.js.
+
+         It replaced `vite.svg` (the Vite scaffold triangle, which shipped to
+         production for months) and then `coffee-cup.png`, an interim stand-in.
+         coffee-cup.png STAYS in public/ — FriendPortal.vue renders it as an image. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Podpultovka</title>
     <!-- Brand webfonts are SELF-HOSTED in src/fonts.css (imported by main.js).

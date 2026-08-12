@@ -57,8 +57,17 @@ const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 // Canon numbers, measured in `docs/design/friends-portal-redesign/Podpultovka
 // Friends.html` over HTTP at 378px, phone frame, fonts force-loaded.
 const CANON = {
-  cartbarDetails: 24,   // summary 16 + its 8px margin-top, no strut inflation
   bakeryHeaderRow: 20,  // .display 18.05 baseline-aligned with the 13px weight span
+}
+
+// ⚠ `cartbarDetails: 24` USED to live in CANON ("summary 16 + its 8px margin-top").
+// It is gone because the element deliberately no longer matches the canon: the
+// 2026-08-12 cart-fold decision gave the summary `display:flex` + `min-height:40px`
+// so the whole bar width opens the fold (the canon's inline-flex target was ~16px
+// tall and only as wide as its label). These are the SHIPPED numbers, measured on
+// this build at 378px — not prototype numbers, and that distinction is the point.
+const SHIPPED = {
+  cartbarSummary: 40,   // min-height 40 wins over 14.5px text + 12px padding
 }
 
 const near = (actual, expected, what) =>
@@ -165,7 +174,17 @@ test.describe('04 fidelity — the preflight line-height counter at the two call
     bakery = { ...(await bc.json()), name: bname }
   })
 
-  test('⚠ the cartbar `<details>` computes line-height NORMAL, and is the canon 24px', async ({ page }) => {
+  // ⚠ RETARGETED 2026-08-12. This test asserted the canon `inline-flex` summary and
+  // a 24px `<details>`; commit 113d261 (the cart fold absorbing the item count)
+  // deliberately made the summary `display:flex; min-height:40px` for a real hit
+  // target, and that change shipped to PRODUCTION with this spec left stale —
+  // its own note records that the full suite was not run for it.
+  //
+  // The test's REASON to exist is unchanged and still asserted first: the preflight
+  // `html{line-height:1.5}` counter must be in force on `.cartbar details`. What
+  // changed is the geometry it happens to imply, and one structural consequence
+  // worth pinning — see the comments at each assertion.
+  test('⚠ the cartbar `<details>` computes line-height NORMAL, and the fold is a 40px target', async ({ page }) => {
     await page.setViewportSize({ width: 378, height: 844 })
     await signIn(page)
     await gotoCycle(page, coffee)
@@ -183,15 +202,32 @@ test.describe('04 fidelity — the preflight line-height counter at the two call
       }
     })
 
-    // The mechanism. `1.5` (or `24px`) here is the whole defect.
+    // The mechanism, unchanged: `1.5` (or `24px`) here is the whole defect.
     expect(m.lh, 'the counter is in force on the element preflight actually reaches').toBe('normal')
-    // Why the element matters at all: an inline-level summary makes the details a
-    // line-box owner. If this ever becomes `block` the fix is moot — and it is the
-    // theme's, canon-verbatim, so a change is a signal, not a detail.
-    expect(m.summaryDisplay, 'canon: .cartbar details summary is inline-flex').toBe('inline-flex')
+
+    // The shipped override (FriendOrder.vue `<style scoped>`, (0,4,0) so it beats the
+    // theme's (0,3,0) regardless of file order). `flex` is BLOCK-level, which is the
+    // structural difference from the canon's `inline-flex`.
+    expect(m.summaryDisplay, 'the fold control is block-level flex, not the canon inline-flex').toBe('flex')
+    // The whole point of that decision — a thumb-sized target. This is the assertion
+    // that would catch the override being dropped or outranked.
+    near(m.summaryH, SHIPPED.cartbarSummary, '.cartbar details summary height')
+
+    // ⚠ The 8px margin is still declared by the theme, but it no longer ADDS height:
+    // a block-level summary's top margin collapses with the `<details>`'s own (there
+    // is no border or padding on `details` to stop it), where the canon's
+    // inline-level summary could not collapse and so made the details 8px taller.
+    // Pinned because the collapse is fragile: give `.cartbar details` any padding or
+    // border and 8px silently reappears in the bar's height.
     expect(m.summaryMt).toBe('8px')
-    near(m.detailsH, CANON.cartbarDetails, '.cartbar details height')
-    near(m.detailsH - m.summaryH, 8, 'details height is exactly the summary plus its margin')
+    near(m.detailsH, m.summaryH, '.cartbar details height == its summary (margin collapses)')
+
+    // The defect this test was written for cannot recur through the summary path
+    // while it is block-level — a block container with no inline content owns no
+    // line box, so no strut. `lh` is still asserted above because the theme rule is
+    // shared, and because a future revert to an inline-level summary would make the
+    // strut load-bearing again without touching this file.
+    expect(m.summaryDisplay).not.toBe('inline')
   })
 
   test('⚠ the bakery card title wrapper computes NORMAL, and the header row is the canon 20px', async ({ page }) => {

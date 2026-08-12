@@ -900,3 +900,107 @@ control (`display:flex` full width, `min-height:40px`, 14.5px, `--ink`) via the 
   touched: it has no `<details>` fold to merge the count into. Its spec is unchanged.
 Verified locally: `guest-order-shell`, `guest-status-shell`, `guest-order`,
 `guest-payment-modal` — **73 passed**, plus screenshots at 390px/320px.
+
+### The new domain, the tab brand, and the invite screen's restyle (2026-08-12)
+
+**podpultovka.biz** serves the app alongside `gorifi.skolar.sk`. Wiring is in three
+places and nowhere else: `server_name` in **both** `deploy/nginx-*.conf`
+(`podpultovka.biz www.podpultovka.biz` on prod, `dev.podpultovka.biz` on staging),
+and the `CORS_ORIGIN` default in `backend/src/index.js` — without the origin in that
+allowlist every XHR from the new host 500s and the SPA renders a blank body (the same
+failure mode the e2e harness note describes). TLS/DNS live outside the repo: the two
+existing **Nginx Proxy Manager** proxy hosts each gained the new names plus a reissued
+Let's Encrypt cert; `docs/deploy/nginx-proxy-manager.md` §5 is the runbook. ⚠ The
+domain was first implemented as `.sk` and corrected to `.biz` — if a stray `.sk`
+reference ever surfaces, it is that mistake, not a second domain.
+
+**The tab is Podpultovka.** `index.html`'s `<title>` was still the Vite scaffold's
+literal `frontend`; it is now `Podpultovka`, the favicon is `/coffee-cup.png` (was
+`vite.svg`), and `FriendPortal.vue` sets `Podpultovka - Objednávky`.
+- ⚠ **`GuestShareDialog`'s share-sheet title moves WITH `document.title`.** The
+  UC-KG-006 freeze that kept it on "Objednávka Gorifi" was about *consistency* — the
+  app must not introduce itself under one name in a message linking to a tab called
+  another — so renaming the tab obliges renaming the payload. Both are pinned
+  (`public-flow`/`modern-login` for the title, `share-dialog` for the payload).
+- Admin screens still say "Gorifi Admin" — internal tool, still on the old skin.
+
+**`InviteRegister.vue` (`/invite/:code`) is on the Podpultovka skin** — it was the
+last friend-facing screen on shadcn `Card`/`Input`/`Label`/`Button`/`Alert`, and it is
+the FIRST screen a new member ever sees. It has **no design-canon screen**
+(`03-friend-login-portal.md:587` puts the route out of scope), so it is composed from
+the two shipped public-screen precedents: the modern login's 480px branded column +
+`.card` form, and the guest **g-dead** card for the terminal states.
+- ⚠ **The Goriffee logo is GONE and `frontend/public/goriffee-logo.svg` is deleted**
+  (product decision). This route was its only consumer app-wide. That also retires
+  RD-DS-6's "colour treatment differs — design sign-off pending" residual: the asset
+  needing sign-off no longer renders anywhere.
+- ⚠ **`self-hosted-fonts.spec.js` had TWO tests pinning that logo** (an `h-12` decode
+  check and an img-src-under-CSP check). Both were **retargeted, not deleted** — the
+  value was never "a logo exists" but "an image this route renders actually decodes"
+  (a CSP-blocked or 404 image is `complete` with `naturalWidth === 0`, which
+  `toBeVisible()` misses). They now assert the chrome that replaced it plus a decode
+  sweep over *every* image the route renders, and the CSP test additionally asserts
+  `.app`'s themed background so a page that failed to mount cannot pass by rendering
+  nothing. The route sweep at §1b is unchanged and still the generalizing assertion.
+- Copy is **vy-form**: `Pozvánka od X` replaces "Pozval/a ťa" (a noun phrase needs no
+  gender at all), "Tvoje meno" → labels only, "Popros priateľa" → "Požiadajte…".
+- **No placeholders** on the three fields (the 2026-08-10 login decision, 81abbf9),
+  and the email's "(pre zásielkovňu, voliteľné)" moved out of the label into
+  `.field-help` — `.field-lbl` is `text-transform:uppercase`, so a parenthetical
+  there renders as shouting.
+- ⚠ **The success state is CENTRED (`flex-1`), not a top-aligned column.** Built
+  top-aligned first and it was a headline stranded above ~1000px of empty halftone:
+  g-confirm gets away with that composition only because a sum card, a line list and
+  a payment button follow it. Terminal states with two lines of content use the
+  g-dead centring. It carries no "Odoslané" badge, per the g-confirm declutter rule.
+- ⚠ Both wrapping headlines carry inline **`line-height:1.3`** over
+  `.h-screen{line-height:.95}` — the g-confirm lesson (`.hl`'s filled block plus its
+  `0 4px 0` underline shadow overlap the line above at .95). Mutation-verified: the
+  new spec's geometry test reddens when the override is removed, which no text
+  assertion can do.
+- ⚠ **`innerText` applies `text-transform`.** Three classes here are uppercase
+  (`.h-screen`, `.badge`, `.field-lbl`), so a copy assertion read from `innerText`
+  must be case-insensitive — `toContain('Pozvánka od')` fails against
+  "POZVÁNKA OD …" while the copy is perfectly correct. `toHaveText` reads
+  `textContent` and is NOT transformed, which is why element-level assertions can
+  stay exact.
+- New spec: `e2e/tests/invite-register-shell.spec.js` (9 tests). It provisions a real
+  invite code via `GET /invitations/my-code` on a friend Bearer session — `friends.js`
+  strips `invite_code` from every friend response, so that is the only route to one.
+  ⚠ Running it repeatedly exhausts `abuseLimiter` (invite-code lookup, 40/window) and
+  the *page* then renders its invalid state; raise `RATE_LIMIT_ABUSE_MAX` for repeated
+  local runs, exactly as `RATE_LIMIT_AUTH_MAX` is raised for admin re-login.
+
+**⚠ Running the suite locally: raise ALL FOUR rate-limit buckets, not just `AUTH`.**
+The documented recipe raises nothing, and the failures it produces read exactly like
+real regressions in code you just touched:
+- `authLimiter` (20) — exhausted by admin re-login across several spec files;
+  `share-dialog.spec.js`'s `refreshAdminToken` fails with `429 !== 200`.
+- `abuseLimiter` (40) — the invite-code lookup. Exhausting it makes
+  **`/invite/:code` render its INVALID state**, so an invite spec fails on copy that
+  is perfectly correct, and a manual check of the page looks like a broken route.
+- `guestReadLimiter` / `guestWriteLimiter` (300/60) — `guest-status.spec.js` alone
+  runs enough guest writes that batching it with other guest files 429s ~15 tests.
+Every one of these passes when its file is run ALONE, which is the tell. Start the
+gate with `RATE_LIMIT_AUTH_MAX / RATE_LIMIT_ABUSE_MAX / RATE_LIMIT_GUEST_READ_MAX /
+RATE_LIMIT_GUEST_WRITE_MAX` raised — `rate-limit.spec.js` and
+`rate-limit-isolation.spec.js` then self-skip (they need LOW limits), which is
+exactly the documented "3 skipped".
+⚠ Also: pipe the run to a FILE, never `| tail -N`. A `tail -25` keeps the summary
+(which is honest about pass/fail) but discards every `✘` line above it, so a run
+with failures is indistinguishable from a clean one at a glance.
+
+**⚠ `order-fidelity.spec.js`'s cartbar-`<details>` test was STALE IN PRODUCTION.**
+Commit `113d261` (the cart fold absorbing the item count) deliberately overrode the
+theme's `inline-flex` summary with `display:flex; min-height:40px`; that spec still
+asserted the canon `inline-flex` and a 24px `<details>`, and the change shipped to
+prod with the failure unnoticed because — as its own CLAUDE.md note says — the full
+suite was not run for it. Retargeted, not deleted: the `line-height:normal` counter
+it exists for is asserted first and unchanged, the geometry now pins the **40px hit
+target** the decision bought (mutation-verified: dropping the override reddens it),
+and `CANON.cartbarDetails` is gone in favour of a separate `SHIPPED` constant so a
+prototype number and a deliberate divergence can never again be confused.
+⚠ One structural consequence is now pinned too: a **block-level** summary's 8px top
+margin **collapses** with the `<details>`'s own, where the canon's inline-level one
+could not — so `detailsH === summaryH` today, and giving `.cartbar details` any
+padding or border would silently add 8px back to the bar's height.
