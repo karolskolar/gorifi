@@ -1110,3 +1110,27 @@ name`) merely needed `.mono` → `.pnotes` as its probe.
 races FriendOrder's session restore and bounces to `/`, which cost a debugging round.
 
 Batch after this work: **106 passed** across the ten affected files.
+
+**Follow-up the same day — the portal cycle card's date and plan rows.** Product
+decision: extend the condensed face to `FriendPortalSession.vue`'s cycle card — the
+date under the cycle name is **Noto Sans Cond 700**, the `plan_note` block **500**.
+Sizes, colours and spacing are unchanged (12px, `--ink-dim` / `--ink-faint`); only the
+family and weight move, so no new woff2 and no new token.
+- ⚠ **`.mono` is REMOVED from both rows, not overridden.** An inline `font-family`
+  would have won while leaving the class in place, and several specs read `.mono` as
+  "this is the mono face". Consequence to keep in mind: `.mono` is what used to carry
+  A10's `line-height:normal` on the date row — `.sub` stays there and covers it, and
+  the plan block's inline `line-height:1.7` was already the only declaration (20.4px,
+  still pinned).
+- ⚠ **FOUR shipped assertions located these rows by class** — `.mono.sub` and
+  `.mono` **nth(1)** in `portal-cycles.spec.js`, `.mono.sub` / `.mono:not(.sub)` in
+  `portal-fidelity.spec.js` (the line-height invariant AND the 320px hostile-text
+  `overflow-wrap` test). All four now use `data-testid="cycle-date"` /
+  `"cycle-plan"`, added for exactly this reason. The `nth(1)` one was the dangerous
+  case: with the class gone it would not have errored but silently re-pointed at the
+  archive rows' money column, which IS still `.mono`.
+- The face is now asserted (family + weight), not just relocated — otherwise the
+  change would have been a locator rename with nothing pinning it.
+Verified: 64 passed across `portal-cycles`, `portal-fidelity`, `portal-share-row`,
+`portal-appbar`, `mobile-no-h-overflow`; computed values read back as
+Cond/700/12px/normal on the date and Cond/500/12px/20.4px on the plan, zero overflow.

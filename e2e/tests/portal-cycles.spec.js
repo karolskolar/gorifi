@@ -378,15 +378,29 @@ test.describe('Cycle card — structure and pins (UC-FL-006)', () => {
     const nameFont = await name.evaluate((el) => getComputedStyle(el).fontFamily)
     expect(nameFont, 'the cycle name uses the display family').toMatch(/Darker Grotesque/i)
 
-    const date = card.locator('.mono.sub')
+    // ⚠ `.mono` left this row on 2026-08-13 (it is Noto Sans Condensed Bold now),
+    // so the locator is the testid the view gained for exactly this reason.
+    const date = card.getByTestId('cycle-date')
     await expect(date).toContainText('29. august 2026')
     await expect(date.locator('svg'), 'the calendar glyph').toHaveCount(1)
+    // The face itself, or this change is only a locator rename. Bold on the date,
+    // Medium on the plan — the same 700/500 pair the product card uses.
+    await expect(date).toHaveCSS('font-weight', '700')
+    expect(await date.evaluate((el) => getComputedStyle(el).fontFamily), 'condensed face on the date')
+      .toContain('Noto Sans Cond')
+    // …and it is NOT the mono face any more.
+    expect(await date.evaluate((el) => getComputedStyle(el).fontFamily)).not.toContain('Courier')
 
-    // Plan block: mono, faint, and `white-space: pre-line` so the admin's
-    // multiline note keeps one line per row.
-    const plan = card.locator('.mono').nth(1)
+    // Plan block: faint, and `white-space: pre-line` so the admin's multiline note
+    // keeps one line per row. ⚠ Was `.mono` nth(1) — the face is Noto Sans Condensed
+    // Medium since 2026-08-13, and an nth() over a class this row no longer carries
+    // would silently have pointed at the archive rows' money column.
+    const plan = card.getByTestId('cycle-plan')
     await expect(plan).toHaveCSS('white-space', 'pre-line')
     await expect(plan).toHaveCSS('font-size', '12px')
+    await expect(plan).toHaveCSS('font-weight', '500')
+    expect(await plan.evaluate((el) => getComputedStyle(el).fontFamily), 'condensed face on the plan')
+      .toContain('Noto Sans Cond')
     expect((await plan.textContent()).split('\n').map((s) => s.trim())).toEqual([
       '22. – 28. august — Objednávanie',
       '1. – 3. september — Delivery',
