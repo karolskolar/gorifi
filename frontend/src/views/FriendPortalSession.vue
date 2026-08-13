@@ -906,7 +906,7 @@ defineExpose({ openProfileModal, openInviteModal })
                 v-if="cycle.expected_date"
                 class="sub"
                 data-testid="cycle-date"
-                style="font-family:var(--font-cond);font-weight:700;font-size:12px;margin-top:7px;display:flex;align-items:center;gap:6px"
+                style="font-family:var(--font-cond);font-weight:700;font-size:14px;margin-top:7px;display:flex;align-items:center;gap:6px"
               >
                 <NeoIcon name="cal" /> {{ cycle.expected_date }}
               </div>
@@ -939,7 +939,7 @@ defineExpose({ openProfileModal, openInviteModal })
           <div
             v-if="cycle.plan_note"
             data-testid="cycle-plan"
-            style="font-family:var(--font-cond);font-weight:500;font-size:12px;color:var(--ink-faint);margin-top:10px;line-height:1.7;white-space:pre-line;overflow-wrap:anywhere"
+            style="font-family:var(--font-cond);font-weight:500;font-size:13.5px;color:var(--ink-faint);margin-top:10px;line-height:1.7;white-space:pre-line;overflow-wrap:anywhere"
           >{{ cycle.plan_note }}</div>
 
           <!-- Badge row: type × status × order.

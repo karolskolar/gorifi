@@ -386,6 +386,9 @@ test.describe('Cycle card — structure and pins (UC-FL-006)', () => {
     // The face itself, or this change is only a locator rename. Bold on the date,
     // Medium on the plan — the same 700/500 pair the product card uses.
     await expect(date).toHaveCSS('font-weight', '700')
+    // ⚠ 14px, bumped from 12px on 2026-08-13 (product decision: both rows were too
+    // small in the condensed face). Pinned because the size is the whole ask.
+    await expect(date).toHaveCSS('font-size', '14px')
     expect(await date.evaluate((el) => getComputedStyle(el).fontFamily), 'condensed face on the date')
       .toContain('Noto Sans Cond')
     // …and it is NOT the mono face any more.
@@ -397,7 +400,9 @@ test.describe('Cycle card — structure and pins (UC-FL-006)', () => {
     // would silently have pointed at the archive rows' money column.
     const plan = card.getByTestId('cycle-plan')
     await expect(plan).toHaveCSS('white-space', 'pre-line')
-    await expect(plan).toHaveCSS('font-size', '12px')
+    // ⚠ 13.5px, bumped from 12px the same day — kept below the date's 14px so the
+    // weight AND size hierarchy both still say "date first, plan second".
+    await expect(plan).toHaveCSS('font-size', '13.5px')
     await expect(plan).toHaveCSS('font-weight', '500')
     expect(await plan.evaluate((el) => getComputedStyle(el).fontFamily), 'condensed face on the plan')
       .toContain('Noto Sans Cond')

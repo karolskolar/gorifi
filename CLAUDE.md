@@ -1132,5 +1132,11 @@ family and weight move, so no new woff2 and no new token.
 - The face is now asserted (family + weight), not just relocated — otherwise the
   change would have been a locator rename with nothing pinning it.
 Verified: 64 passed across `portal-cycles`, `portal-fidelity`, `portal-share-row`,
-`portal-appbar`, `mobile-no-h-overflow`; computed values read back as
-Cond/700/12px/normal on the date and Cond/500/12px/20.4px on the plan, zero overflow.
+`portal-appbar`, `mobile-no-h-overflow`; zero overflow at 390px and 320px.
+- **Sizes bumped the same day** (both rows read too small in the condensed face):
+  date **12 → 14px**, plan **12 → 13.5px**. The plan stays *below* the date so the
+  hierarchy is carried by size AND weight, not weight alone. ⚠ Two assertions moved
+  with it: `portal-cycles`' `font-size` on the plan, and — less obviously —
+  `portal-fidelity`'s **computed line-height**, since the row's leading is the inline
+  unitless `1.7` (12 × 1.7 = 20.4px → 13.5 × 1.7 = **22.95px**). A size change on any
+  row whose leading is a multiplier moves that pin too.
