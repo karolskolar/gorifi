@@ -371,9 +371,14 @@ function onQty(productId, variant, next) {
                 <!-- Fixed field mapping (04 §UC-FO-005): `description1` is the
                      spec line, `description2` the tasting notes. The old
                      `line-clamp-2` on the notes is dropped — the prototype does
-                     not truncate them. -->
-                <div v-if="product.description1" class="sub" style="margin-top:7px;font-size:13px">{{ product.description1 }}</div>
-                <div v-if="product.description2" class="mono" style="font-size:12.5px;color:var(--ink-faint);margin-top:2px">{{ product.description2 }}</div>
+                     not truncate them.
+
+                     ⚠ `.pspec` / `.pnotes` — see the twin block in FriendOrder.vue.
+                     06 §UC-GX-002 requires this card to be PIXEL-IDENTICAL to the
+                     friend one, so the two must change together even though the rest
+                     of this component is still on the old skin until RD-GX-1. -->
+                <div v-if="product.description1" class="pspec" style="margin-top:7px">{{ product.description1 }}</div>
+                <div v-if="product.description2" class="pnotes" style="margin-top:2px">{{ product.description2 }}</div>
               </div>
             </div>
 

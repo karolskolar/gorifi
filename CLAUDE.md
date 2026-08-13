@@ -1043,3 +1043,70 @@ test then measures a STALE `backend/public`), and the long walkthrough specs cro
 their 30s timeout under memory pressure. A **different set** of tests fails on every
 run — that non-determinism is the tell. Confirm any suspicious failure by running its
 file ALONE, two or three times, before believing it.
+
+### Noto Sans Condensed on the product description (design brief, 2026-08-13)
+
+Two lines under the badges in a **coffee** product card change typeface — a
+frontend-only, typography-only change (`git diff -- backend/` is empty):
+
+| line | field | was | now |
+|---|---|---|---|
+| spec | `description1` | `.sub` Figtree 13px `--ink-dim` | **`.pspec`** Noto Sans Cond **700**, 14.5px, lh 1.25, ls .005em, `--ink` |
+| notes | `description2` | `.mono` Courier Prime 12.5px `--ink-faint` | **`.pnotes`** Noto Sans Cond **500**, 14px, lh 1.3, ls .005em, `--ink-dim` |
+
+- **`--font-cond`, `.pspec` and `.pnotes` are a CANON SYNC**, not a local invention:
+  the design project's own `friends/theme.css` carries all three verbatim (fetched and
+  compared, 2026-08-13). So they are ported into `friends-theme.css` like every other
+  rule there — **not** as a numbered adaptation (the list still ends at A12).
+- ⚠ **The canon also moved `--font-mono` to `'Space Mono','Courier Prime',monospace`.
+  That is NOT ported.** Space Mono is not self-hosted here, so the stack would fall
+  straight through to Courier Prime and render identically while implying a face we do
+  not ship. The brief scopes the change to two lines and says mono stays.
+- ⚠ **Only the COFFEE card changed.** The bakery card renders the same two columns
+  with a *different mapping* — `description2` is a subtitle beside the name and
+  `description1` a plain line — so it keeps `.sub`. Admin views (`CycleDetail.vue`)
+  also render these fields and are deliberately untouched (old skin).
+- The notes line **loses `.mono` on purpose** (it was the least readable text on the
+  card). Mono stays on dates, prices, IBANs and references — pinned by asserting zero
+  `.mono` inside a product card *and* that `.cartbar .deadline` still has it, so
+  "mono left the card" cannot be satisfied by mono leaving the screen.
+
+**Self-hosting (four new files, 99,192 B total).** OFL 1.1, and the prod CSP is
+`font-src 'self' data:` — a CDN is blocked outright (RD-DS-6). Two cuts only, 500 and
+700, no italic, no variable font.
+- ⚠ **The latin-ext range here is NARROWER than Google's, and is declared exactly as
+  shipped** — the one place this file departs from "preserve Google's ranges verbatim",
+  because these files are subset from the handoff TTFs rather than being Google's own
+  subset. Noto's Latin coverage is enormous: at Google's literal latin-ext range each
+  weight came to **62.6 KB**, the excess being IPA Extensions (U+1D00-1DBF), Latin
+  Extended Additional (U+1E00-1E9F, i.e. Vietnamese) and Extended-D (U+A720-A7FF).
+  Restricting to U+0100-024F + punctuation/currency gives **28.1/28.7 KB**. Declaring
+  the narrower range is the load-bearing half: a codepoint outside it now falls
+  through to `'Noto Sans'` → sans-serif instead of fetching a file with no glyph.
+- ⚠ **Slovak is in latin-ext, not latin** (carons are U+0100-017F). Shipping only
+  `latin` breaks "mliečna čokoláda" **mid-word**. Both subsets ship for both cuts.
+- **`self-hosted-fonts.spec.js`'s exact-set `FAMILIES` assertion is what forced the
+  ledger update** — a face cannot arrive here without one. That is its whole purpose;
+  `PROBES` gained both cuts, so latin AND latin-ext are load-verified per weight.
+- **Preload: the 700 cut only, both subsets** (~50 KB), per the brief's no-FOUT
+  criterion. Deliberately not all four — this is fetched on every route including the
+  portal, where no card exists. Measured: **no "preloaded but not used" console
+  warning** on either the order page or the portal. `crossorigin` is required even
+  same-origin, or the browser fetches each file twice.
+
+**Verified:** every briefed value asserted as *computed* style on both the friend and
+the guest card (06 §UC-GX-002 pixel-identical), both acceptance strings on **one** line
+at 390px — including `Honey Co-Fermented Pink Bourbon · SCA 86`, which the brief only
+required to fit in two — and the diacritic check is mutation-proved: removing
+`noto-sans-condensed-500-latin-ext.woff2` reddens exactly one test with
+"500|latin-ext rendered in the FALLBACK face (brand 316.4 vs fallback 316.4)".
+⚠ That check needed **two** `document.fonts.load` call sites wrapped in a catch —
+unhandled, a missing subset surfaces as an opaque `page.evaluate: NetworkError` from
+whichever helper ran first, masking the assertion that names the broken subset.
+⚠ Two shipped assertions in `order-product-card.spec.js` pinned the OLD classes
+(`.sub` / `.flex-1 .mono`) and were retargeted; the second (`unbreakable product
+name`) merely needed `.mono` → `.pnotes` as its probe.
+⚠ `gotoFriendCard` must enter via the portal card — a direct `page.goto('/cycle/:id')`
+races FriendOrder's session restore and bounces to `/`, which cost a debugging round.
+
+Batch after this work: **106 passed** across the ten affected files.
