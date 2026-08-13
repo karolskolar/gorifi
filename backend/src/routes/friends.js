@@ -4,6 +4,7 @@ import db, { generateUid, generateInviteCode } from '../db/schema.js';
 import { validateFriendAuth, requireFriendOwner, createFriendSession, invalidateFriendSessions, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { authLimiter } from '../middleware/rate-limit.js';
+import { getPlaceholderCycleId } from '../helpers/friend-create.js';
 
 const router = Router();
 
@@ -468,16 +469,13 @@ router.post('/', requireAdmin, (req, res) => {
 
   // cycle_id column still has foreign key constraint, so we need a valid cycle_id
   // Use the first available cycle, or create a placeholder cycle if none exist
-  let cycle = db.prepare('SELECT id FROM order_cycles ORDER BY id LIMIT 1').get();
-  if (!cycle) {
-    const cycleResult = db.prepare(`INSERT INTO order_cycles (name, status) VALUES ('_placeholder', 'completed')`).run();
-    cycle = { id: cycleResult.lastInsertRowid };
-  }
+  // (shared with onboarding + approval — see helpers/friend-create.js, 07 §UC-IA-002)
+  const cycleId = getPlaceholderCycleId();
 
   const result = db.prepare(`
     INSERT INTO friends (cycle_id, name, display_name, uid, access_token, invite_code, active, phone, email)
     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-  `).run(cycle.id, name, display_name || null, uid, access_token, invite_code, phone || null, trimmedEmail);
+  `).run(cycleId, name, display_name || null, uid, access_token, invite_code, phone || null, trimmedEmail);
 
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(sanitizeFriend(friend));

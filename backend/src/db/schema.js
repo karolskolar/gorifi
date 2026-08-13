@@ -40,6 +40,15 @@ function generateGuestToken() {
   return randomCode(14);
 }
 
+// Generate a temporary password for a friend created by an admin approval
+// (IA-T1, 07 §UC-IA-001). 12 chars over the same unambiguous alphabet (~60
+// bits), which clears the ≥8-char password policy. SEC-S2: it delegates to the
+// module-private `randomCode` — never a second RNG, and deliberately NOT a
+// re-export of `generateGuestToken()`, which is a guest-token concept.
+function generateTempPassword() {
+  return randomCode(12);
+}
+
 // `bdb` is the real better-sqlite3 (file-backed, WAL) connection used by the
 // query helpers. `db` is a thin shim exposing the sql.js-style methods the
 // migration code in initDb was written against, so that migration logic stays
@@ -690,6 +699,28 @@ function initDb() {
     // Column already exists, ignore
   }
 
+  // Migration (IA-T1, 07 §UC-IA-001): the login name the applicant requested on
+  // the public registration form. NULL when none was requested. Written by
+  // POST /invitations/register; approval never rewrites it — the invitation row
+  // keeps the applicant's request as the historical record.
+  try {
+    db.run('ALTER TABLE invitations ADD COLUMN username TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Migration (IA-T1, 07 §UC-IA-001): back-link to the friend row an approval
+  // created; NULL until approved. Deliberately NO foreign key — the bare
+  // ALTER TABLE pattern cannot add one — so it is informational only: a hard
+  // friend delete leaves it dangling and consumers must tolerate an
+  // unresolvable pointer (the GSO-T9 tolerance precedent). Nothing may gate
+  // behaviour on it resolving.
+  try {
+    db.run('ALTER TABLE invitations ADD COLUMN created_friend_id INTEGER');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   // Initialize rewards_threshold_kg setting if not exists
   const rewardsThreshold = db.exec("SELECT * FROM settings WHERE key = 'rewards_threshold_kg'");
   if (!rewardsThreshold.length || !rewardsThreshold[0].values.length) {
@@ -848,4 +879,4 @@ const dbHelpers = {
 initDb();
 
 export default dbHelpers;
-export { saveDb, generateUid, generateInviteCode, generateGuestToken };
+export { saveDb, generateUid, generateInviteCode, generateGuestToken, generateTempPassword };
