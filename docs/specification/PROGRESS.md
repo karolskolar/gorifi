@@ -209,6 +209,25 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ---
 
+## 5. Invitation → friend with login (07) — ⚠ FIRST module with backend/schema scope
+
+> Added 2026-08-13, after the redesign closed. **The "no backend change" stack note above
+> scopes modules 02–06 only** — module 07 deliberately includes schema migrations and two
+> route changes; `07-invitation-approval.md` is the task definition source. The redesign's
+> "7 sanctioned e2e edits all spent" ledger also scopes 02–06: module 07 §UC-IA-008 is its
+> own sanctioned-edit list (api-security +1 row, guest-lead-capture retarget,
+> invite-register-shell counts, ios-input-zoom counts, one new spec file). Copy strings are
+> product-owner-signed (the clipboard message is deliberately ty-form — recorded register
+> override); NO legacy-mode warning in the dialog (legacy retirement = separate follow-up).
+
+- [ ] IA-T1  Schema foundations: `invitations.username` + `created_friend_id` (try/catch ALTER), `generateTempPassword()` = randomCode(12) export, `helpers/friend-create.js` extraction of `getPlaceholderCycleId()` (rewire onboarding.js + friends.js byte-identically) — `07 §UC-IA-001,002` ⚠ both columns land with NO writer (register writes username in IA-T2; approve writes created_friend_id in IA-T3 — no FK by design, consumers tolerate dangling); generateTempPassword has no consumer until IA-T3 and must wrap randomCode, never generateGuestToken (SEC-S2).
+- [ ] IA-T2  Register hardening (type guards + 120/32/160 bounds — local constants, NOT guest.js's validateIdentity — fixes `{name:123}`→500) + optional username validate/store + InviteRegister.vue 4th field (`.inp`, `maxlength=30`, NO placeholder, vy-form field-help) — `07 §UC-IA-003,004 + §UC-IA-008 items 3,4` ⚠ MUST carry in the same run: invite-register-shell.spec.js `.field-lbl` 3→4 + no-placeholder loop + `.field-help` scoped to the email field; ios-input-zoom.spec.js `.inp` count 3→4 in BOTH tests. Stored username has no reader until IA-T3/T4; register-time availability check is a courtesy — approval revalidates.
+- [ ] IA-T3  `POST /api/invitations/:id/approve` — requireAdmin per-route (MIXED mount, never wrap the router), bcrypt + uid/invite_code loops BEFORE the tx, ONE transaction (INSERT friend with username/hash/`must_change_password=1`/`onboarding_source` provenance + UPDATE invitation processed/`created_friend_id`), SQLITE_CONSTRAINT→409 dual-layer, 201 `{friend:{id,name,uid,username}, username, tempPassword}` hand-picked (never sanitizeFriend) — `07 §UC-IA-005 + §UC-IA-008 items 1,5-API` · model=heavy ⚠ MUST carry ADMIN_ENDPOINTS += the new route (api-security.spec.js) and the API half of the new invitation-approval.spec.js (incl. ZERO friend_subscriptions/transactions rows as pinned non-writes; temp-password login → `mustChangePassword:true`). Response shape is IA-T4's contract; 409 non-pending carries `created_friend_id` for the dialog's message.
+- [ ] IA-T4  AdminInvitations approval dialog — "Vytvoriť" opens a dialog (NO navigation), username prefill (`inv.username` else slugify, editable), note prefill `Pozval/a: {inviter}`, inline editable 409, success state = ONLY plaintext holder (mono block + login URL + copy button with the VERBATIM ty-form message), list refreshes BEHIND the dialog, closes only on explicit action + `api.approveInvitation` — `07 §UC-IA-006 + §UC-IA-008 items 2,5-UI` · model=heavy ⚠ MUST carry the guest-lead-capture.spec.js:538-565 retarget (old pinned navigation dies here) UPGRADED to pin `onboarding_source==='guest_order'`; carries the UI half of invitation-approval.spec.js. Retires the `?create=1` CALLER only — the dead receiver block in AdminFriends.vue is IA-T5's (green in between: nothing navigates to it).
+- [ ] IA-T5  AdminFriends cleanup — relabel `Prihlasovacie meno *`→`Meno *` (modal + table header + placeholder + hint; governing rule: grep 'prihlasovac' in AdminFriends.vue returns nothing) + DELETE the `?create=1` onMounted block (cite by content — plan's line numbers drifted) — `07 §UC-IA-007` ⚠ completes IA-T4's retirement; `/admin/friends?create=1&name=X` must open the plain list, no modal. ⚠ Do NOT touch FriendPortalSession.vue's identical label (pinned ~10× by portal-profile-modal.spec.js, module 03 owns it — that spec passes UNMODIFIED). Also supersede CLAUDE.md's stale 2026-07-07 "Invitation → new friend flow" note.
+
+---
+
 ## Log
 
 <!-- /next-task appends one line per completed task below (durable cross-session record). -->
