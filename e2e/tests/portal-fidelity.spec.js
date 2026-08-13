@@ -239,7 +239,10 @@ test.describe('A9/A10 — the preflight line-height counter is in force (02 §UC
 
     // the plan block declares an inline 1.7 — same invariant, other way up. It has
     // NO class at all now, which is exactly why the inline value is load-bearing.
-    await expect(card.getByTestId('cycle-plan')).toHaveCSS('line-height', '20.4px')
+    // 13.5px x the inline 1.7 = 22.95px (was 12px x 1.7 = 20.4px before the
+    // 2026-08-13 size bump). The INVARIANT is unchanged — the inline multiplier is
+    // still the only declaration standing between this row and preflight's 1.5.
+    await expect(card.getByTestId('cycle-plan')).toHaveCSS('line-height', '22.95px')
   })
 
   // The portal's share of the four plain-text sites; the login screen's two (the
