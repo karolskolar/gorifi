@@ -49,6 +49,7 @@ Design is phone-first (378 px); desktop is the same layout centered at max-width
 | `04-friend-order.md` | f-order, f-order-locked, f-bakery; cat-tabs, product cards, vbox, cartbar, pickup/cancel/success modals | UC-FO |
 | `05-colleagues-panel.md` | f-guests panel, suborder cards, share dialog | UC-KG |
 | `06-guest-flow.md` | g-order, g-confirm, g-status ×4, g-dead, checkout + payment modals, invite CTA | UC-GX |
+| `07-invitation-approval.md` | Invitation → friend-with-login: registration username field, register hardening, atomic approve endpoint, admin approval dialog, AdminFriends relabel. ⚠ Unlike 02–06 this module INCLUDES backend/schema changes (added 2026-08-13, after the redesign shipped — the "no backend change" rule above scopes 02–06 only) | UC-IA |
 
 ## Glossary
 
