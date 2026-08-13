@@ -232,10 +232,14 @@ test.describe('A9/A10 — the preflight line-height counter is in force (02 §UC
     // that must keep winning: `:where()` gives the A10 rule zero specificity.
     await expect(card.locator('h3.display')).toHaveCSS('line-height', '22px')
     await expect(card.locator('.badge.ok')).toHaveCSS('line-height', 'normal')
-    await expect(card.locator('.mono.sub').first()).toHaveCSS('line-height', 'normal')
+    // ⚠ The date row is Noto Sans Condensed Bold since 2026-08-13 and no longer
+    // carries `.mono`. The invariant is UNCHANGED and still the point of this line:
+    // `.sub` is in A10's list, so it is what keeps preflight's 1.5 off this row now.
+    await expect(card.getByTestId('cycle-date')).toHaveCSS('line-height', 'normal')
 
-    // the plan block is `.mono` with an inline 1.7 — same invariant, other way up
-    await expect(card.locator('.mono:not(.sub)')).toHaveCSS('line-height', '20.4px')
+    // the plan block declares an inline 1.7 — same invariant, other way up. It has
+    // NO class at all now, which is exactly why the inline value is load-bearing.
+    await expect(card.getByTestId('cycle-plan')).toHaveCSS('line-height', '20.4px')
   })
 
   // The portal's share of the four plain-text sites; the login screen's two (the
@@ -344,7 +348,11 @@ test.describe('320 px — zero horizontal document overflow with hostile free te
     // RD-FL-4's finding, re-asserted: `plan_note` is free ADMIN text and needs
     // `overflow-wrap` — without it the whole document scrolled to 531px.
     const card = page.locator('div.p-4', { has: page.getByRole('heading', { name: NAMES.hostile, exact: true }) })
-    await expect(card.locator('.mono:not(.sub)')).toHaveCSS('overflow-wrap', 'anywhere')
+    // ⚠ `.mono:not(.sub)` → the testid: the plan block is Noto Sans Condensed
+    // Medium since 2026-08-13 and carries no class at all. The claim is unchanged and
+    // is the load-bearing one on this screen — a pasted URL in `plan_note` scrolled
+    // the whole document to 531px without `overflow-wrap`.
+    await expect(card.getByTestId('cycle-plan')).toHaveCSS('overflow-wrap', 'anywhere')
     await expect(card.locator('h3.display')).toHaveCSS('overflow-wrap', 'anywhere')
 
     await page.getByTestId('archive-toggle').click()
