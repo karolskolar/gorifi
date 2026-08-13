@@ -260,19 +260,36 @@ test.describe('UC-FO-005 — coffee product card', () => {
     expect((await badges.nth(1).getAttribute('class')).split(/\s+/)).toContain('acc-o')
     expect(await badges.nth(0).evaluate((el) => getComputedStyle(el).fontSize)).toBe('11px')
 
-    // description1 = grey spec line (`.sub`), description2 = mono tasting notes.
-    const spec = card.locator('.sub').first()
+    // ⚠ RETARGETED 2026-08-13 (design brief — the product-description face). These
+    // two lines were `.sub` 13px --ink-dim and `.mono` 12.5px --ink-faint; they are
+    // now Noto Sans Condensed `.pspec` 700 / `.pnotes` 500, and the notes line has
+    // LOST `.mono` deliberately (it was the least readable text on the card). The
+    // full computed table, both weights, both subsets and the ≤2-line acceptance
+    // criteria live in `product-desc-font.spec.js`; what this test keeps is the
+    // card-composition claim — the two lines exist, in the right order, with the
+    // right text — plus enough of the face to notice the classes being reverted.
+    const spec = card.locator('.pspec').first()
     await expect(spec).toHaveText('100% natural bourbon arabica')
-    const notes = card.locator('.flex-1 .mono').first()
+    const notes = card.locator('.pnotes').first()
     await expect(notes).toHaveText('cokolada · lieskovy orech · karamel')
-    const notesStyle = await notes.evaluate((el) => ({
-      ff: getComputedStyle(el).fontFamily,
-      fs: getComputedStyle(el).fontSize,
-      color: getComputedStyle(el).color,
-    }))
-    expect(notesStyle.ff, 'mono face').toContain('Courier Prime')
-    expect(notesStyle.fs).toBe('12.5px')
-    expect(notesStyle.color, 'ink-faint').toBe('rgba(10, 10, 10, 0.45)')
+    const lineStyles = await card.evaluate((el) => {
+      const read = (sel) => {
+        const cs = getComputedStyle(el.querySelector(sel))
+        return { ff: cs.fontFamily, fw: cs.fontWeight, fs: cs.fontSize, color: cs.color }
+      }
+      return { spec: read('.pspec'), notes: read('.pnotes') }
+    })
+    expect(lineStyles.spec.ff, 'condensed face on the spec line').toContain('Noto Sans Cond')
+    expect(lineStyles.spec.fw, 'the spec line is the Bold cut').toBe('700')
+    expect(lineStyles.spec.fs).toBe('14.5px')
+    expect(lineStyles.spec.color, 'ink — the spec line is the heavier of the two').toBe('rgb(10, 10, 10)')
+    expect(lineStyles.notes.ff, 'condensed face on the notes line').toContain('Noto Sans Cond')
+    expect(lineStyles.notes.fw, 'the notes line is the Medium cut').toBe('500')
+    expect(lineStyles.notes.fs).toBe('14px')
+    expect(lineStyles.notes.color, 'ink-dim — dimmer than the spec line').toBe('rgba(10, 10, 10, 0.66)')
+    // The hierarchy the brief asks for, as a relation rather than two constants:
+    // spec is heavier AND darker than notes.
+    expect(Number(lineStyles.spec.fw)).toBeGreaterThan(Number(lineStyles.notes.fw))
 
     // ⚠ (E) — closes 02 §UC-DS-013's `.pimg` OPEN. No photo ⇒ the BARE frame:
     // its own dark gradient, zero children — no `.band`/`.cap`/`.lbl`, no icon.
@@ -416,7 +433,11 @@ test.describe('UC-FO-005 — coffee product card', () => {
     const card = cardFor(page, unbreakable.name)
     const metrics = await card.locator('h3.display').evaluate((el) => {
       const col = el.parentElement
-      const notes = col.querySelector('.mono')
+      // ⚠ `.pnotes`, not `.mono`: the notes line moved to Noto Sans Condensed on
+      // 2026-08-13 and no longer carries `.mono`. The claim under test is unchanged
+      // — free admin text must wrap inside its own column — and the notes line is
+      // still the right probe for it, being the longest free-text line on the card.
+      const notes = col.querySelector('.pnotes')
       return {
         wrap: getComputedStyle(col).overflowWrap,
         h3Box: Math.round(el.getBoundingClientRect().width),

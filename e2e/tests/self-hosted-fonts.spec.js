@@ -40,7 +40,10 @@ const PROD_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsaf
   "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; " +
   "base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
 
-const FAMILIES = ['Darker Grotesque', 'Figtree', 'Courier Prime']
+// ⚠ 'Noto Sans Cond' joined this list on 2026-08-13 (the product-description face,
+// `.pspec`/`.pnotes`). The exact-set assertion below is what forced this edit, which
+// is exactly its purpose — a face may not arrive without a ledger note.
+const FAMILIES = ['Darker Grotesque', 'Figtree', 'Courier Prime', 'Noto Sans Cond']
 
 // Every shipped weight, and the fallback each is measured against. The fallback
 // must be metrically FAR from the brand face, or a "did it render?" width diff is
@@ -60,6 +63,11 @@ const PROBES = [
   { family: 'Figtree', weight: 400, fallback: 'monospace' },
   { family: 'Courier Prime', weight: 400, fallback: 'sans-serif' },
   { family: 'Courier Prime', weight: 700, fallback: 'sans-serif' },
+  // Both shipped cuts of the product-description face. `monospace` is the far
+  // fallback for the same reason the other sans faces use it — and a CONDENSED face
+  // against a monospace one is the widest metric gap in this table.
+  { family: 'Noto Sans Cond', weight: 500, fallback: 'monospace' },
+  { family: 'Noto Sans Cond', weight: 700, fallback: 'monospace' },
 ]
 
 const LATIN = 'AHOJ KOLEGOVIA'

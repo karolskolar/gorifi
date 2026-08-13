@@ -1414,9 +1414,19 @@ function applyMarkup(price) {
                   <!-- Fixed field mapping (04 §UC-FO-005): `description1` is the
                        spec line, `description2` the tasting notes. The old
                        `line-clamp-2` on the notes is dropped — the prototype does
-                       not truncate them. -->
-                  <div v-if="product.description1" class="sub" style="margin-top:7px;font-size:13px">{{ product.description1 }}</div>
-                  <div v-if="product.description2" class="mono" style="font-size:12.5px;color:var(--ink-faint);margin-top:2px">{{ product.description2 }}</div>
+                       not truncate them.
+
+                       ⚠ `.pspec` / `.pnotes` (Noto Sans Condensed 700 / 500) carry
+                       EVERY text property for these two lines — family, size,
+                       line-height, letter-spacing and colour — so no inline
+                       `font-size` may come back here. The condensed face is what
+                       lets a long Slovak varietal fit one line, and the 700/500 pair
+                       is the hierarchy (what it is → how it tastes). The notes line
+                       deliberately LOSES `.mono`: it was the least readable text on
+                       the card. Mono stays on dates, prices, IBANs and references.
+                       Only the two `margin-top`s remain inline, as spacing. -->
+                  <div v-if="product.description1" class="pspec" style="margin-top:7px">{{ product.description1 }}</div>
+                  <div v-if="product.description2" class="pnotes" style="margin-top:2px">{{ product.description2 }}</div>
                 </div>
               </div>
 
