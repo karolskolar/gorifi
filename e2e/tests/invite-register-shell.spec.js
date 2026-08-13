@@ -19,7 +19,30 @@ const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 let ctx = null
 let inviteCode = ''
 let inviterName = ''
+let inviterUsername = ''
 let adminToken = ''
+
+// Every successful registration must carry a distinct phone: the shipped pending
+// dedupe (`idx_invitations_phone_pending`) 409s a repeat, so a shared number would
+// make the second test in a file fail for a reason that is not under test.
+let phoneSeq = 0
+function uniquePhone() {
+  phoneSeq += 1
+  return `+4219${String(Date.now() % 1e5).padStart(5, '0')}${String(phoneSeq).padStart(3, '0')}`
+}
+
+// `GET /api/invitations` is `SELECT i.*`, so `username` surfaces with no route
+// change (the `source`/GSO-T10 precedent) — this is the only reader of the stored
+// value until UC-IA-005 approval lands.
+async function pendingByPhone(phone) {
+  const list = await ctx.get('/api/invitations?status=pending', { headers: { 'X-Admin-Token': adminToken } })
+  expect(list.status()).toBe(200)
+  return (await list.json()).find((r) => r.phone === phone) || null
+}
+
+function register(data) {
+  return ctx.post('/api/invitations/register', { data })
+}
 
 // Provisioning idiom copied from self-hosted-fonts.spec.js / portal-appbar.spec.js:
 // a real friend, a real Bearer session, and the friend's own invite code read from
@@ -36,7 +59,10 @@ test.beforeAll(async ({ baseURL }) => {
   })
 
   inviterName = `E2E Inviter ${uniq}`
+  // Kept in a module-level ref too: it is a REAL taken username, which is what the
+  // 409 courtesy-check test below needs (UC-IA-003).
   const username = `ireg_${uniq}`.slice(0, 30)
+  inviterUsername = username
   const created = await admin('/api/friends', { method: 'post', data: { name: inviterName } })
   expect(created.status(), 'friend create').toBe(201)
   const friend = await created.json()
@@ -121,8 +147,12 @@ test.describe('Invite registration — the restyled shell', () => {
     // Native inputs + theme classes, label-associated — no `ui/` components.
     const name = page.getByLabel(/^meno a priezvisko$/i)
     const phone = page.getByLabel(/^telefón$/i)
+    // 07 §UC-IA-008 item 3: the optional username field is MANDATED by
+    // §UC-IA-004, so the no-placeholder loop and the `.field-lbl` count below are
+    // re-pointed at the 4-field form. Both still protect the same properties.
+    const username = page.getByLabel(/^prihlasovacie meno$/i)
     const email = page.getByLabel(/^email$/i)
-    for (const [field, label] of [[name, 'name'], [phone, 'phone'], [email, 'email']]) {
+    for (const [field, label] of [[name, 'name'], [phone, 'phone'], [username, 'username'], [email, 'email']]) {
       await expect(field, label).toHaveClass(/\binp\b/)
       // ⚠ NO placeholder (the 2026-08-10 login decision). Asserted as ABSENT —
       // that is what catches one coming back, which dropping the line would not.
@@ -130,11 +160,31 @@ test.describe('Invite registration — the restyled shell', () => {
     }
     await expect(phone).toHaveAttribute('type', 'tel')
     await expect(email).toHaveAttribute('type', 'email')
-    await expect(page.locator('.field-lbl')).toHaveCount(3)
+    await expect(page.locator('.field-lbl')).toHaveCount(4)
+
+    // The username field's own constraints (§UC-IA-004's markup table).
+    await expect(username).toHaveAttribute('type', 'text')
+    await expect(username).toHaveAttribute('maxlength', '30')
+    await expect(username).toHaveAttribute('autocapitalize', 'none')
+    await expect(username).toHaveAttribute('autocorrect', 'off')
+    // And the `maxlength` mirror of UC-IA-003's server bounds on the other three.
+    await expect(name).toHaveAttribute('maxlength', '120')
+    await expect(phone).toHaveAttribute('maxlength', '32')
+    await expect(email).toHaveAttribute('maxlength', '160')
 
     // The optional-email hint moved OUT of the label into `.field-help`:
     // `.field-lbl` is `text-transform:uppercase`, so a parenthetical there shouts.
-    await expect(page.locator('.field-help')).toHaveText(/Nepovinné/)
+    // ⚠ 07 §UC-IA-008 item 3: there are TWO `.field-help` blocks now, so this
+    // single-element locator became strict-mode-ambiguous. SCOPED to the email
+    // field's own help (via its testid) rather than weakened to `.first()` — the
+    // point of the assertion is that the EMAIL hint still says "Nepovinné".
+    await expect(page.getByTestId('invite-email-help')).toHaveText(/Nepovinné/)
+    await expect(page.locator('.field-help')).toHaveCount(2)
+    // The username hint is pinned VERBATIM from §UC-IA-004's markup table — it is
+    // the only statement of the charset the applicant ever sees, and the en dash
+    // in "3–30" is part of it.
+    await expect(page.locator('.field-help').nth(0))
+      .toHaveText('Nepovinné. 3–30 znakov: malé písmená, čísla, bodka, podčiarknik, pomlčka.')
     await expect(page.getByText(/^Email$/)).toBeVisible()
 
     const submit = page.getByRole('button', { name: 'Odoslať registráciu' })
@@ -255,6 +305,111 @@ test.describe('Invite registration — the restyled shell', () => {
     }
   })
 
+  // ── 07 §UC-IA-004: the username field end to end ──────────────────────────
+  test('a submitted username is lowercased and trimmed on the way in', async ({ page }) => {
+    const phone = uniquePhone()
+    const applicant = `E2E Username ${uniq}`
+    // Typed with a capital and surrounding spaces — the acceptance criterion is
+    // that ' Lego ' arrives as `lego`. The trim is the view's; the lowercase is
+    // applied on BOTH sides (view + server), and this asserts the observable end.
+    const wanted = `Lego_${uniq}`.slice(0, 30)
+
+    await page.goto(`/invite/${inviteCode}`)
+    await page.getByLabel(/^meno a priezvisko$/i).fill(applicant)
+    await page.getByLabel(/^telefón$/i).fill(phone)
+    await page.getByLabel(/^prihlasovacie meno$/i).fill(`  ${wanted}  `)
+    await page.getByRole('button', { name: 'Odoslať registráciu' }).click()
+
+    await expect(page.getByTestId('invite-success')).toBeVisible()
+
+    const row = await pendingByPhone(phone)
+    expect(row, `invitation not found for ${phone}`).toBeTruthy()
+    expect(row.name).toBe(applicant)
+    expect(row.username).toBe(wanted.toLowerCase())
+  })
+
+  test('leaving the username blank still registers — and stores no username', async ({ page }) => {
+    const phone = uniquePhone()
+    const applicant = `E2E No Username ${uniq}`
+
+    await page.goto(`/invite/${inviteCode}`)
+    await page.getByLabel(/^meno a priezvisko$/i).fill(applicant)
+    await page.getByLabel(/^telefón$/i).fill(phone)
+    // The username input is deliberately left untouched: the button must not gate
+    // on it, and the body must omit the field entirely.
+    await expect(page.getByRole('button', { name: 'Odoslať registráciu' })).toBeEnabled()
+
+    // The request body itself, not just its effect: an empty field must send NO
+    // `username` key, because a `''` would be a different code path server-side.
+    const [request] = await Promise.all([
+      page.waitForRequest((r) => r.url().includes('/api/invitations/register') && r.method() === 'POST'),
+      page.getByRole('button', { name: 'Odoslať registráciu' }).click(),
+    ])
+    expect(Object.keys(request.postDataJSON())).not.toContain('username')
+
+    await expect(page.getByTestId('invite-success')).toBeVisible()
+
+    const row = await pendingByPhone(phone)
+    expect(row, `invitation not found for ${phone}`).toBeTruthy()
+    expect(row.username, 'an empty username must be stored as NULL').toBeNull()
+  })
+
+  test('the username field sits between Telefón and Email in DOM order', async ({ page }) => {
+    // §UC-IA-004's field-group table places the new input "between Telefón and
+    // Email". The `.field-lbl`/`.inp` COUNT is already pinned above; this is the
+    // one thing that count cannot see — a field reordered (or moved to the very
+    // end) would still pass every other assertion in this file.
+    await page.goto(`/invite/${inviteCode}`)
+    await expect(page.getByTestId('invite-form')).toBeVisible()
+
+    const ids = await page.locator('input.inp').evaluateAll((els) => els.map((el) => el.id))
+    expect(ids).toEqual(['ir-name', 'ir-phone', 'ir-username', 'ir-email'])
+  })
+
+  test('a real 409 on a taken username shows the field message in the banner, AND the form stays filled for a retry', async ({ page }) => {
+    // §UC-IA-004: "Server 400/409 with `field: 'username'` surfaces through the
+    // view's existing error display; the form stays filled so the applicant can
+    // retry." Only the API-level 400/409s were pinned above (invitations.js
+    // directly) and the one UI-level failed-submit test mocks a generic 500 —
+    // neither exercises a REAL field-specific error through the browser, and
+    // neither checks that every field (not just the container) survives it.
+    const phone = uniquePhone()
+    const applicant = `E2E Retry ${uniq}`
+    const email = `retry-${uniq}@example.com`
+
+    await page.goto(`/invite/${inviteCode}`)
+    await page.getByLabel(/^meno a priezvisko$/i).fill(applicant)
+    await page.getByLabel(/^telefón$/i).fill(phone)
+    await page.getByLabel(/^email$/i).fill(email)
+    // `inviterUsername` is a REAL taken username (the friend created in
+    // beforeAll), typed with a capital as a real applicant might.
+    await page.getByLabel(/^prihlasovacie meno$/i).fill(inviterUsername.toUpperCase())
+    await page.getByRole('button', { name: 'Odoslať registráciu' }).click()
+
+    const banner = page.locator('.banner.danger.slim')
+    await expect(banner).toBeVisible()
+    // The route-local message, verbatim — the same string `invitations.js` sends
+    // for this exact 409 (pinned at the API level in the describe block below).
+    await expect(banner).toContainText('Toto prihlasovacie meno je už obsadené')
+    await expect(page.getByTestId('invite-success')).toHaveCount(0)
+
+    // The whole form, not just its container — every field the applicant typed.
+    await expect(page.getByTestId('invite-form')).toBeVisible()
+    await expect(page.getByLabel(/^meno a priezvisko$/i)).toHaveValue(applicant)
+    await expect(page.getByLabel(/^telefón$/i)).toHaveValue(phone)
+    await expect(page.getByLabel(/^email$/i)).toHaveValue(email)
+    await expect(page.getByLabel(/^prihlasovacie meno$/i)).toHaveValue(inviterUsername.toUpperCase())
+
+    // The retry itself succeeds without re-typing anything but the username.
+    await page.getByLabel(/^prihlasovacie meno$/i).fill(`retryok_${uniq}`.slice(0, 30))
+    await page.getByRole('button', { name: 'Odoslať registráciu' }).click()
+    await expect(page.getByTestId('invite-success')).toBeVisible()
+
+    const row = await pendingByPhone(phone)
+    expect(row, `invitation not found for ${phone}`).toBeTruthy()
+    expect(row.username).toBe(`retryok_${uniq}`.slice(0, 30))
+  })
+
   test('no horizontal overflow at 320px, in every state', async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 700 })
 
@@ -265,5 +420,153 @@ test.describe('Invite registration — the restyled shell', () => {
         document.documentElement.scrollWidth - document.documentElement.clientWidth)
       expect(overflow, `document scrolls sideways at 320px on ${route}`).toBeLessThanOrEqual(0)
     }
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 07 §UC-IA-003 — `POST /invitations/register` hardening.
+//
+// API-level, because the form cannot produce these bodies: `maxlength` caps the
+// inputs and the view always sends strings. The endpoint is PUBLIC and
+// unauthenticated, so a malformed body is the ordinary case, not the exotic one —
+// `{name: 123}` was a recorded 500 (a number has no `.trim()`).
+//
+// Every 400 must carry a `field` marker (the guest.js contract), so the form can
+// point at the offending input.
+test.describe('Invite registration — POST /register input hardening', () => {
+  test('a non-string field is a 400 with a field marker, never a 500', async () => {
+    // The recorded follow-up, verbatim.
+    const numeric = await register({ invite_code: inviteCode, name: 123, phone: uniquePhone() })
+    expect(numeric.status(), 'a numeric name used to 500 inside .trim()').toBe(400)
+    const body = await numeric.json()
+    expect(body.field).toBe('name')
+    expect(body.error).toBeTruthy()
+
+    // The other shapes an attacker actually sends. Each names its own field.
+    for (const [field, value] of [
+      ['invite_code', { toString: 1 }],
+      ['name', ['a']],
+      ['phone', true],
+      ['email', 42],
+      ['username', { a: 1 }],
+    ]) {
+      const res = await register({
+        invite_code: inviteCode,
+        name: 'Testovací Kolega',
+        phone: uniquePhone(),
+        [field]: value,
+      })
+      expect(res.status(), `${field}=${JSON.stringify(value)}`).toBe(400)
+      expect((await res.json()).field, `${field} must be named in the 400`).toBe(field)
+    }
+  })
+
+  test('the 120/32/160 bounds are enforced after trim, each naming its field', async () => {
+    const over = [
+      ['name', 'a'.repeat(121)],
+      ['phone', '1'.repeat(33)],
+      ['email', `${'a'.repeat(155)}@e.com`],
+    ]
+    for (const [field, value] of over) {
+      const res = await register({
+        invite_code: inviteCode,
+        name: 'Testovací Kolega',
+        phone: uniquePhone(),
+        [field]: value,
+      })
+      expect(res.status(), `over-length ${field} (${value.length} chars)`).toBe(400)
+      expect((await res.json()).field).toBe(field)
+    }
+
+    // Non-vacuity: exactly at the bound it still goes through, so the assertions
+    // above are about the LIMIT and not about the field being rejected outright.
+    const atLimit = await register({
+      invite_code: inviteCode,
+      name: 'a'.repeat(120),
+      phone: uniquePhone(),
+    })
+    expect(atLimit.status(), 'a 120-char name is inside the bound').toBe(201)
+  })
+
+  test('an invalid username is a 400 with `field: username`', async () => {
+    // The spec's own example. ⚠ It fails on LENGTH ONLY: `invitations.js`
+    // lowercases before validating, so the uppercase is normalised away and the
+    // charset branch is never reached by a capital. Case is never validated.
+    const short = await register({
+      invite_code: inviteCode, name: 'Testovací Kolega', phone: uniquePhone(), username: 'AB',
+    })
+    expect(short.status()).toBe(400)
+    const shortBody = await short.json()
+    expect(shortBody.field).toBe('username')
+
+    // The charset half, on a value that is long enough to reach it.
+    const badChars = await register({
+      invite_code: inviteCode, name: 'Testovací Kolega', phone: uniquePhone(), username: 'ma ma',
+    })
+    expect(badChars.status()).toBe(400)
+    const body = await badChars.json()
+    expect(body.field).toBe('username')
+    // ⚠ The message is ROUTE-LOCAL, not `validateUsername`'s return. The helper's
+    // own string is diacritic-free and calls the field "Uzivatelske meno" — a THIRD
+    // name for an input labelled "Prihlasovacie meno" whose sibling 409 also says
+    // "prihlasovacie meno". Pinned as the EXACT string so a silent fall-back to the
+    // helper's wording (which would still be a 400 with the right field) fails here.
+    expect(body.error)
+      .toBe('Prihlasovacie meno musí mať 3–30 znakov: malé písmená, čísla, bodka, podčiarknik, pomlčka.')
+    // Both branches speak with one voice — the length rejection above too.
+    expect(shortBody.error).toBe(body.error)
+  })
+
+  test('a username already taken by a friend is a 409 with `field: username`', async () => {
+    const res = await register({
+      invite_code: inviteCode,
+      name: 'Testovací Kolega',
+      phone: uniquePhone(),
+      username: inviterUsername.toUpperCase(),
+    })
+    // Uppercase on the way in — the lowercase happens BEFORE the taken check, or
+    // the collision would be missed and two friends would race for one login.
+    expect(res.status(), 'a taken username must 409, not 201').toBe(409)
+    expect((await res.json()).field).toBe('username')
+  })
+
+  test('an empty or absent username takes the unchanged happy path — stored NULL', async () => {
+    // ⚠ THE REGRESSION THIS GUARDS: `validateUsername('')` returns "povinné", so
+    // calling it unconditionally would 400 every registration that omits the
+    // field — i.e. the shipped happy path. All four empty shapes must be 201.
+    for (const [label, extra] of [
+      ['absent', {}],
+      ['empty string', { username: '' }],
+      ['whitespace only', { username: '   ' }],
+      ['null', { username: null }],
+    ]) {
+      const phone = uniquePhone()
+      const res = await register({ invite_code: inviteCode, name: `E2E ${label} ${uniq}`, phone, ...extra })
+      expect(res.status(), `username ${label}`).toBe(201)
+      expect(await res.json()).toEqual({ success: true })
+
+      const row = await pendingByPhone(phone)
+      expect(row, `invitation not found for ${phone}`).toBeTruthy()
+      expect(row.username, `username ${label} must store NULL`).toBeNull()
+    }
+  })
+
+  test('the preserved contract: bad code 400, pending-phone dedupe 409, 201 shape', async () => {
+    const bad = await register({ invite_code: `NOPE${uniq}`, name: 'Testovací Kolega', phone: uniquePhone() })
+    expect(bad.status()).toBe(400)
+    expect((await bad.json()).error).toBe('Neplatný kód pozvánky')
+
+    const missing = await register({ invite_code: inviteCode, name: '  ', phone: uniquePhone() })
+    expect(missing.status()).toBe(400)
+    expect((await missing.json()).error).toBe('Meno a telefón sú povinné')
+
+    // The invite code is still matched case-INSENSITIVELY (uppercased server-side).
+    const phone = uniquePhone()
+    const first = await register({ invite_code: inviteCode.toLowerCase(), name: `E2E Dedupe ${uniq}`, phone })
+    expect(first.status(), 'a lowercased invite code must still resolve').toBe(201)
+
+    const second = await register({ invite_code: inviteCode, name: `E2E Dedupe ${uniq}`, phone })
+    expect(second.status()).toBe(409)
+    expect((await second.json()).error).toBe('Registrácia s týmto číslom už existuje')
   })
 })

@@ -98,7 +98,10 @@ test.describe('A12 — no iOS focus-zoom on any friend/guest field', () => {
       // Non-vacuity, both halves: the gate must really be a coarse pointer, and
       // there must really be fields on screen.
       expect(m.coarse, 'the emulated device must report pointer: coarse').toBe(true)
-      expect(m.inputs.length, 'no .inp rendered — the assertion below would be empty').toBe(3)
+      // 07 §UC-IA-008 item 4: 3 → 4, the mandated optional username field
+      // (§UC-IA-004). This is a NON-VACUITY gate, so it must track the real field
+      // count — the loop below would pass on an empty list.
+      expect(m.inputs.length, 'no .inp rendered — the assertion below would be empty').toBe(4)
 
       for (const input of m.inputs) {
         expect(input.fontSize, `${input.id} would trigger iOS zoom at ${input.fontSize}px`)
@@ -156,7 +159,8 @@ test.describe('A12 — no iOS focus-zoom on any friend/guest field', () => {
 
       const m = await inputMetrics(page)
       expect(m.coarse, 'desktop must not match pointer: coarse').toBe(false)
-      expect(m.inputs.length).toBe(3)
+      // 07 §UC-IA-008 item 4 — same 3 → 4 as the coarse-pointer test above.
+      expect(m.inputs.length).toBe(4)
       for (const input of m.inputs) {
         expect(input.fontSize, `${input.id} should keep the canon 15px on desktop`).toBe(15)
       }
