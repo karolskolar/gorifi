@@ -27,6 +27,11 @@ const ADMIN_ENDPOINTS = [
   // half is gated by friend identity instead — see guest-host-view.spec.js).
   { method: 'patch', path: '/api/guest-orders/1/paid', data: { paid: true } },
   { method: 'get', path: '/api/guest-orders/cycle/1/unpaid' },
+  // 07 §UC-IA-008 item 1: the approval endpoint MINTS A LOGIN for a new friend, and
+  // it lives on the MIXED /api/invitations mount (GET /code/:code and POST /register
+  // are public), so its guard is per-route rather than on the mount. Anonymous must
+  // never reach the handler.
+  { method: 'post', path: '/api/invitations/1/approve', data: { username: 'evil.admin' } },
   { method: 'post', path: '/api/cycles', data: { name: 'evil' } },
 ]
 

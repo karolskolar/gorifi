@@ -1140,3 +1140,46 @@ Verified: 64 passed across `portal-cycles`, `portal-fidelity`, `portal-share-row
   `portal-fidelity`'s **computed line-height**, since the row's leading is the inline
   unitless `1.7` (12 × 1.7 = 20.4px → 13.5 × 1.7 = **22.95px**). A size change on any
   row whose leading is a multiplier moves that pin too.
+
+### ⚠ `POST /api/invitations/:id/approve` — two invariants no test can hold (IA-T3, 2026-08-13)
+
+The approve endpoint (module 07) converts a pending invitation into a friend **with a
+working login** in ONE `better-sqlite3` transaction. Two of its properties are
+**structural, not behavioural — a refactor can break either with the ENTIRE SUITE
+GREEN**, so they live here:
+
+1. **bcrypt `hashPassword()`, both collision-retry loops and `getPlaceholderCycleId()`
+   run OUTSIDE the transaction.** better-sqlite3 transactions are synchronous and
+   bcrypt is ~62 ms of CPU (measured over 9 approvals: 61.8–64.7 ms hashing, then a
+   **0.13–0.21 ms** transaction — the tx holds the write lock ~400× shorter than the
+   hashing it follows). Moving `hashPassword` into the `db.transaction` callback is
+   undetectable by any test in this repo.
+2. **Exactly TWO writes inside the transaction** — INSERT friend, UPDATE invitation.
+   Nothing else may join them.
+
+Same class as the standing `instances: 1` concurrency caveat. The comment at
+`invitations.js:326` is the only in-code guard.
+
+Also load-bearing, and each proved rather than assumed:
+- ⚠ **The `SQLITE_CONSTRAINT` → 409 translation is real, not decorative.** Deleting
+  the app-level `isUsernameTaken` check leaves the suite **15/15 green** — the UNIQUE
+  index catches it and the catch produces the identical `409 field:'username'`. The
+  regex matches better-sqlite3's actual `UNIQUE constraint failed: friends.username`;
+  a `friends.uid` collision correctly falls through to 500.
+- ⚠ **THREE deliberate non-writes**, each a rule with a reason: **no
+  `friend_subscriptions` row** (no rows = sees everything, so an invited friend starts
+  UNFILTERED — deliberately diverging from onboarding's bakery auto-subscribe), **no
+  session mint** (the friend logs in themselves), **no `transactions` row** (creation
+  is not a financial event — the GSO-T6 lesson). All three are asserted as zero rows
+  and mutation-verified, with a non-vacuity test proving onboarding DOES create
+  `['bakery']` in the same run.
+- ⚠ **The temp password is UPPERCASE-ONLY** (`randomCode(12)` over the unambiguous
+  alphabet) and `friends.js:35` lowercases **only the username, never the password** —
+  which is exactly why it authenticates unmangled. Do not "normalise" the password.
+- The plaintext exists in **exactly one place repo-wide** outside `schema.js`: the 201
+  body. Never persisted, never logged (error paths log `e.message` only). The 201
+  friend object is hand-picked and pinned by an exact-keys assertion PLUS a raw-text
+  regex for `invite_code|access_token|password_hash`, so a later `SELECT *` fails loudly.
+- **`requireAdmin` is PER-ROUTE.** `routes/invitations.js` is a MIXED mount — public
+  `/code/:code` + `/register`, admin for the rest. Wrapping the mount breaks the public
+  registration flow.
