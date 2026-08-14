@@ -441,6 +441,73 @@ mandating UC in a code comment. All other pre-existing specs (notably
 
 ---
 
+## UC-IA-009 Mailgun delivery of the credentials (Admin → Applicant)
+
+**Goal:** approval also *emails* the new friend their credentials, so the admin no
+longer has to relay them by hand. Confirmed with the product owner 2026-08-14 after
+Mailgun was configured and a live send verified (`delivered`, EU region).
+
+**Infrastructure (already in place, not this UC's work):** Mailgun account, domain
+`mg.podpultovka.biz` **active** with SPF + DKIM (selector `email`) + tracking CNAME all
+`valid`, EU region. Secrets live in `/var/www/gorifi/.env` and
+`/var/www/gorifi-staging/.env`, mode 600, owned by `gorifi`:
+`MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, `MAILGUN_BASE_URL`.
+⚠ That path is **outside** the directory `deploy.sh` rsyncs with `--delete` — a
+`backend/.env` would be deleted on every deploy.
+
+**`backend/src/helpers/mailer.js` — the ONE home for outbound mail:**
+
+- **No new dependency.** The server runs Node 20.20.2, so global `fetch` sends the
+  multipart POST to `${MAILGUN_BASE_URL}/v3/${MAILGUN_DOMAIN}/messages` with HTTP basic
+  auth `api:<key>`. Do NOT add nodemailer or an SDK.
+- **Disabled by default.** With any of the three env vars absent it is a **no-op**
+  returning `{ sent: false, skipped: 'not_configured' }`. This is what keeps local dev
+  and **the entire e2e suite from ever sending real mail** — the suite must never set
+  those vars.
+- ⚠ **The API key must never reach a log line, an API response, or an error message.**
+  On failure log only the HTTP status and Mailgun's own `message` field. Same discipline
+  the temp password already has (UC-IA-005).
+- Timeout via `AbortSignal.timeout` (~10 s) so a hanging Mailgun cannot hold a request.
+
+**Wiring into `POST /api/invitations/:id/approve`:**
+
+- ⚠ The send happens **AFTER the transaction commits** — never inside it. The IA-T3
+  invariant is that the transaction holds exactly two synchronous writes; network I/O in
+  a synchronous better-sqlite3 transaction would hold the write lock across a round trip.
+- Recipient: **the applicant's email when the invitation has one.** No email on the
+  invitation ⇒ `{ sent: false, skipped: 'no_recipient' }` and the dialog says the copy
+  button is the only channel.
+- ⚠ **A mail failure NEVER fails the approval** (product decision): the friend is
+  already created and the plaintext is already on screen. The 201 gains
+  `email: { sent, skipped?, error? }` and the dialog renders the outcome.
+- Body copy: the **same ty-form message** §UC-IA-006 pins for the clipboard (same
+  content, same recipient, same register), plus a subject line. The password IS included
+  (product decision 2026-08-14) — bounded by `must_change_password = 1` making it
+  single-use.
+
+**Dialog (`AdminInvitations.vue`) — one line in the success state:**
+
+- sent ⇒ confirmation naming the address; `no_recipient` ⇒ a neutral note that no email
+  was on the invitation; `not_configured` ⇒ nothing user-facing (a dev/staging state, not
+  an error); failure ⇒ a **warning** that the mail did not go out and the credentials
+  must be sent by hand. The copy button is present in **every** case.
+
+**Env plumbing (`deploy/ecosystem.config.cjs`):**
+
+- ⚠ Use **`--env-file-if-exists`** (Node ≥ 20.12), NOT `--env-file`: a missing file makes
+  `--env-file` abort at startup, which would make the app unstartable on any host without
+  the secrets (a fresh container, a clone). Each app entry points at its own path
+  (`/var/www/gorifi/.env`, `/var/www/gorifi-staging/.env`).
+
+**Acceptance criteria:** with the env absent, approving returns
+`email.skipped === 'not_configured'` and **no HTTP request leaves the process** (assert
+by route interception, so an accidental send is caught); with an invitation carrying no
+email, `skipped === 'no_recipient'`; a stubbed Mailgun 500 still returns 201 with the
+friend created and `email.sent === false`, and the dialog shows the warning **with the
+copy button still present**; the API key appears in no response body and no log line.
+
+---
+
 ## Follow-ups discovered during implementation (IA-T1..T5, not in this module's scope)
 
 Each was found by a review or e2e pass, judged out of scope, and left unfixed
@@ -458,9 +525,8 @@ deliberately. They are recorded here so they are not re-discovered from scratch.
    `password_hash` but no `username` displays as credentialed while being unable to log in
    under modern auth (found in IA-T5 review). Pre-existing; reachable via the per-friend
    "Resetovať heslo" action on a friend who never got a username.
-4. **SMTP delivery of the credentials** — the phase-2 half of §UC-IA-006's copy button,
-   already recorded in §Accepted risks. Needs a mail dependency + env plumbing; the repo
-   has no mailer today.
+4. ~~**SMTP delivery of the credentials**~~ — **RESOLVED: see §UC-IA-009** (Mailgun,
+   2026-08-14). Needed no mail dependency after all — Node 20's global `fetch` is enough.
 5. **Retire the legacy shared-password mode** — recorded in §Accepted risks from the
    product owner's 2026-08-13 decision ("Portal does not use shared password anymore").
    Its own effort: multiple shipped specs pin legacy behaviour.
