@@ -508,6 +508,26 @@ copy button still present**; the API key appears in no response body and no log 
 
 ---
 
+## ✅ End-to-end verification (2026-08-14, by the product owner)
+
+The whole module was walked by hand on a deployed environment, which is the one thing
+the suite cannot substitute for: registration through a real invite link **with a
+requested username** → one-click approval in the dialog → **credentials email delivered**
+→ login with the temporary password → **forced password change completed**. Reported
+working by the product owner.
+
+Deployment state at that point: staging and production both show
+`node_args: ['--env-file-if-exists=…/.env']` and boot with
+`[mailer] Mailgun enabled for mg.podpultovka.biz via https://api.eu.mailgun.net`.
+Prod data unchanged across the migrations (70 friends / 9 invitations), and an anonymous
+`POST /api/invitations/:id/approve` returns 401.
+
+⚠ Deploy lesson recorded with it: the first production deploy of IA-T6 **silently did not
+run** — the command produced no output and a filtered pipeline's `head` exit code read as
+success. Prod sat on the pre-Mailgun code until verification caught it (no `mailer.js` on
+disk, no restart since the previous deploy). **Never judge a deploy by a filtered exit
+code**; check the artefact on the server (the boot line is the cheapest proof here).
+
 ## Follow-ups discovered during implementation (IA-T1..T5, not in this module's scope)
 
 Each was found by a review or e2e pass, judged out of scope, and left unfixed
