@@ -10,6 +10,12 @@ import {
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { abuseLimiter } from '../middleware/rate-limit.js';
 import { getPlaceholderCycleId } from '../helpers/friend-create.js';
+import { sendMail } from '../helpers/mailer.js';
+import {
+  CREDENTIALS_EMAIL_SUBJECT,
+  credentialsMessage,
+  resolveLoginUrl,
+} from '../helpers/credentials-message.js';
 
 const router = Router();
 
@@ -264,8 +270,10 @@ router.get('/', requireAdmin, (req, res) => {
 //   400 — `username`/`note` present but not a string; no username resolvable; the
 //         username fails the format rule. All with a `field` marker.
 //   409 — the username is taken (`field: 'username'`)
-//   201 — `{ friend: { id, name, uid, username }, username, tempPassword }`
-router.post('/:id/approve', requireAdmin, (req, res) => {
+//   201 — `{ friend: { id, name, uid, username }, username, tempPassword,
+//           login_url, credentials_message, email }` — the last three added by
+//         07 §UC-IA-009 (Mailgun delivery); see the send block at the bottom.
+router.post('/:id/approve', requireAdmin, async (req, res) => {
   try {
     const body = req.body || {};
 
@@ -410,19 +418,58 @@ router.post('/:id/approve', requireAdmin, (req, res) => {
       throw e;
     }
 
+    // ── E-MAIL DELIVERY (07 §UC-IA-009) ───────────────────────────────────────
+    // ⚠ AFTER THE TRANSACTION, NEVER INSIDE IT. The IA-T3 invariant is that the
+    // transaction holds exactly two synchronous writes; better-sqlite3 transactions
+    // are synchronous, so a network round trip inside one would hold the write lock
+    // for the whole flight of an HTTP request to Mailgun.
+    //
+    // The message is rendered ONCE, on the server (helpers/credentials-message.js):
+    // the same string is mailed and returned as `credentials_message`, which is what
+    // the dialog's copy button writes. One renderer ⇒ the mail and the clipboard
+    // cannot drift, and the admin pastes exactly what the friend received.
+    const loginUrl = resolveLoginUrl(req);
+    const message = credentialsMessage({ loginUrl, username, tempPassword });
+
+    // ⚠ A MAIL FAILURE MUST NEVER FAIL THE APPROVAL (product decision). The friend
+    // already exists, the invitation already reads `processed`, and the plaintext is
+    // in the response below — a 500 here would tell the admin the approval failed
+    // while it had in fact succeeded, and destroy the only copy of the password.
+    // `sendMail` is written not to throw; this catch is the second layer, so even a
+    // programming error in the mailer degrades to "send it by hand".
+    let email;
+    try {
+      email = await sendMail({
+        to: invitation.email,
+        subject: CREDENTIALS_EMAIL_SUBJECT,
+        text: message,
+      });
+    } catch (e) {
+      // No key material can reach here (it never leaves the mailer), but stay terse:
+      // status/message only, per §UC-IA-009.
+      console.error('[approve] credentials e-mail threw unexpectedly:', e?.message || e?.name);
+      email = { sent: false, error: 'network' };
+    }
+
     // The plaintext temp password exists in THIS RESPONSE AND NOWHERE ELSE: it is
     // never persisted (only its bcrypt digest is), never logged, and no other
-    // endpoint returns it. Once the admin closes the dialog it is unrecoverable by
-    // design — the recovery path is the existing per-friend password reset.
+    // endpoint returns it. (§UC-IA-009 mails it too, deliberately — bounded by
+    // `must_change_password = 1` making it single-use.) Once the admin closes the
+    // dialog it is unrecoverable by design — the recovery path is the existing
+    // per-friend password reset.
     //
     // The friend object is HAND-PICKED — never `sanitizeFriend` (module-local to
     // friends.js, and a delete-list is the wrong default here) and never `SELECT *`,
     // so `invite_code` / `access_token` / `password_hash` cannot reach a client by
-    // someone later adding a column.
+    // someone later adding a column. `email` is the mailer's own result object, whose
+    // failure codes are a fixed vocabulary — never server text, never the API key.
     res.status(201).json({
       friend: { id: friendId, name: invitation.name, uid, username },
       username,
       tempPassword,
+      login_url: loginUrl,
+      credentials_message: message,
+      email,
     });
   } catch (e) {
     console.error('Error approving invitation:', e.message);

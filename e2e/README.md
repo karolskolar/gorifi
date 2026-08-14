@@ -322,7 +322,36 @@ Two gotchas in that recipe that look like app bugs when you skip them:
 - **Start a fresh server.** A backend left running from an earlier session keeps
   serving from a `backend/public` whose hashed asset files have since been
   replaced under it (`rm -rf` + rebuild), so `express.static` 500s and the UI
-  specs fail for reasons that have nothing to do with your diff.
+  specs fail for reasons that have nothing to do with your diff. Check the port
+  is actually free (`ss -ltnp | grep PORT`) — a stale process silently keeps the
+  old CODE too, which reads as a mass regression in whatever you just changed.
+- ⚠ **`invitation-approval.spec.js` is mail-aware: prefer a LOCAL target for it.**
+  Approval mails the credentials to the invitation's address, and the documented
+  staging target (`BASE_URL=https://gorifi-dev.skolar.sk`) HAS the Mailgun secrets
+  in its `.env` — so run naively there, every approval in that file would fire a
+  real send to an `@example.test` address, which hard-bounces on the brand's only
+  sending domain. Two guards make that safe: off a local `BASE_URL` the fixtures
+  carry **no** e-mail address (approval reports `no_recipient`, the transport is
+  never touched), and the handful of tests that need a real send outcome
+  `test.skip` with `NEEDS_LOCAL_TARGET`. Consequence to know: against staging that
+  file runs with a couple of skips and its "e-mail carried over to the friend"
+  assertion compares NULL to NULL. **Any new test there that approves an
+  e-mail-bearing invitation must use `fixtureEmail()` or carry the same skip.**
+- ⚠ **`PUBLIC_BASE_URL` on the target must match its `BASE_URL`, or leave it unset.**
+  The credential message (clipboard *and* e-mail body) is rendered by the server,
+  and the dialog's copy assertion compares it against `window.location.origin`. A
+  target that sets `PUBLIC_BASE_URL` to some other host makes that mismatch — a
+  real config difference, not a bug in the view.
+- ⚠ **NEVER give the server under test any `MAILGUN_*` env var** (07 §UC-IA-009).
+  `backend/src/helpers/mailer.js` is a no-op unless `MAILGUN_API_KEY`,
+  `MAILGUN_DOMAIN` and `MAILGUN_BASE_URL` are ALL set, and that no-op is the only
+  thing standing between an approval in `invitation-approval.spec.js` and a real
+  e-mail to a real address. The two tests that need a live transport
+  (`Approval + Mailgun — the stubbed transport`) spawn their OWN throwaway backend
+  with a FAKE key and `MAILGUN_BASE_URL` on 127.0.0.1, and blank the three vars
+  first so an operator's real key cannot be inherited from the ambient
+  environment. They self-skip when the backend source is not beside `e2e/`
+  (i.e. when `BASE_URL` points at a deployment).
 
 ### Friend-portal UI specs and the friends-list stub
 

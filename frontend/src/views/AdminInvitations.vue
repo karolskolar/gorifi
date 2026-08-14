@@ -175,13 +175,58 @@ function slugifyUsername(name) {
   return slug.length >= 3 ? slug : ''
 }
 
-// The signed credential message (§UC-IA-006), VERBATIM. Deliberately ty-form —
-// it is the admin's personal message to someone they invited, not app copy — with a
-// plain hyphen. Do not re-word or "fix" the register.
-const credentialsMessage = computed(() => {
-  if (!approveResult.value) return ''
-  const { username, tempPassword } = approveResult.value
-  return `Ahoj, tvoj účet je pripravený. Prihlás sa na ${baseUrl.value} - užívateľské meno: ${username}, dočasné heslo: ${tempPassword}. Po prvom prihlásení si nastav vlastné heslo.`
+// The signed credential message (§UC-IA-006), rendered BY THE SERVER.
+//
+// ⚠ It is not built here any more (07 §UC-IA-009). Approval now also *mails* this exact
+// sentence, so the string has one home — `backend/src/helpers/credentials-message.js` —
+// and the approve response carries it as `credentials_message`. The clipboard therefore
+// gets byte-for-byte what the friend received in their inbox; a locally rebuilt copy
+// would be a second literal of a product-owner-signed string (ty-form, plain hyphen)
+// that only a human diff could keep in sync with the mail body.
+const credentialsMessage = computed(() => approveResult.value?.credentials_message || '')
+
+// The e-mail outcome line (§UC-IA-009). Exactly one of four states, and one of them is
+// silence: `not_configured` means the deployment has no Mailgun env (local dev, and
+// staging until it is configured) — an admin can do nothing about it, and calling it a
+// failure would train them to ignore the line that matters.
+const emailOutcome = computed(() => {
+  const email = approveResult.value?.email
+  if (!email) return null
+  if (email.sent) {
+    return {
+      kind: 'sent',
+      testid: 'approve-email-sent',
+      alert: false,
+      text: `E-mail s prihlasovacími údajmi bol odoslaný na ${email.to}.`,
+    }
+  }
+  if (email.skipped === 'not_configured') return null
+  if (email.skipped === 'no_recipient') {
+    return {
+      kind: 'none',
+      testid: 'approve-email-none',
+      alert: false,
+      text: 'Pozvánka neobsahuje e-mailovú adresu, takže e-mail nebol odoslaný. Údaje pošlite priateľovi sami.',
+    }
+  }
+  // ⚠ A bad ADDRESS gets its own line, naming it. The generic "sending failed" sends the
+  // admin looking for a Mailgun outage, when the actual fix is one typo on the
+  // invitation — and nothing else on this screen shows the address once the summary is
+  // replaced by the credentials block.
+  if (email.error === 'invalid_recipient') {
+    return {
+      kind: 'invalid',
+      testid: 'approve-email-invalid',
+      alert: true,
+      text: `Adresa ${email.to || 'v pozvánke'} nie je platná e-mailová adresa, e-mail nebol odoslaný. Údaje pošlite priateľovi sami.`,
+    }
+  }
+  return {
+    kind: 'failed',
+    testid: 'approve-email-failed',
+    alert: true,
+    text: 'E-mail s prihlasovacími údajmi sa nepodarilo odoslať. Pošlite ich priateľovi sami — použite tlačidlo nižšie.',
+  }
 })
 
 function openApproveDialog(invitation) {
@@ -262,6 +307,17 @@ onBeforeRouteLeave(() => {
 })
 
 function copyCredentials() {
+  // ⚠ Nothing to copy means the server sent no `credentials_message` — a frontend
+  // deployed AHEAD of its backend, which `deploy.sh` explicitly supports (`./deploy.sh
+  // production frontend`). Writing an empty string would flip the button to
+  // "Skopírované!" over an empty clipboard; returning silently leaves a dead button. On
+  // the one screen whose entire purpose is being the fallback delivery channel, the
+  // admin has to be told — so it goes through the same failure path as a denied
+  // clipboard permission.
+  if (!credentialsMessage.value) {
+    alert('Nepodarilo sa skopírovať správu')
+    return
+  }
   navigator.clipboard.writeText(credentialsMessage.value).then(() => {
     approveCopied.value = true
     setTimeout(() => { approveCopied.value = false }, 2000)
@@ -595,7 +651,10 @@ const pendingCount = computed(() => {
           <div class="rounded-md bg-muted px-3 py-2 font-mono text-sm space-y-1">
             <div>
               <span class="text-muted-foreground">Prihlásenie: </span>
-              <span data-testid="approve-login-url">{{ baseUrl }}</span>
+              <!-- The URL the SERVER put in the message it mailed (07 §UC-IA-009), so
+                   what is on screen is what the friend received. `baseUrl` stays as the
+                   fallback for a response without it. -->
+              <span data-testid="approve-login-url">{{ approveResult.login_url || baseUrl }}</span>
             </div>
             <div>
               <span class="text-muted-foreground">Meno: </span>
@@ -606,6 +665,28 @@ const pendingCount = computed(() => {
               <span data-testid="approve-cred-password">{{ approveResult.tempPassword }}</span>
             </div>
           </div>
+
+          <!-- ── E-mail outcome (07 §UC-IA-009): ONE line, and never a blocker ──
+               The approval has already succeeded by the time this renders; this only
+               tells the admin whether they still have to deliver the credentials
+               themselves. `not_configured` renders NOTHING — it is the dev/staging
+               default, not something an admin can act on. The copy button below is
+               present in every case, because it is still the fallback channel. -->
+          <Alert
+            v-if="emailOutcome?.alert"
+            variant="destructive"
+            :data-testid="emailOutcome.testid"
+          >
+            <AlertDescription>{{ emailOutcome.text }}</AlertDescription>
+          </Alert>
+          <p
+            v-else-if="emailOutcome"
+            class="text-xs"
+            :class="emailOutcome.kind === 'sent' ? 'text-emerald-700' : 'text-muted-foreground'"
+            :data-testid="emailOutcome.testid"
+          >
+            {{ emailOutcome.text }}
+          </p>
         </div>
 
         <DialogFooter>
