@@ -665,3 +665,647 @@ test.describe('Approval API — the admin boundary', () => {
     expect(reg.status(), 'POST /register stays public').toBe(201)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// IA-T4 / 07 §UC-IA-006 — the approval DIALOG (the UI half).
+//
+// The endpoint above is only half the feature. The dialog is the part that handles a
+// PLAINTEXT PASSWORD ON SCREEN, and three of its properties are security properties,
+// not cosmetics:
+//
+//   1. NO NAVIGATION, EVER. The retired flow pushed the admin to /admin/friends with
+//      the applicant's details in the QUERY STRING (resolved conflict #1). Every test
+//      below asserts the URL is still /admin/invitations at the end — a re-introduced
+//      `router.push` would put credentials-adjacent data into history again, and the
+//      dialog holding the plaintext would be unmounted by the route change.
+//   2. THE LIST REFRESHES BEHIND THE STILL-OPEN DIALOG. The row must leave the pending
+//      queue (the approval really happened) while the dialog stays mounted — the
+//      dialog is the ONLY holder of the plaintext, so anything that closes it on
+//      success destroys the credential before the admin has copied it.
+//   3. CLOSING IS ALWAYS AN EXPLICIT USER ACTION, and it is destructive by design:
+//      after close the temp password is gone from the DOM and unrecoverable. There is
+//      no timeout, no auto-close.
+//
+// The copy button is the WHOLE delivery mechanism in this phase (SMTP is the recorded
+// phase-2 follow-up), so its message is asserted CHARACTER FOR CHARACTER against the
+// product-owner-signed string — deliberately ty-form, plain hyphen. A reworded or
+// "corrected" register is a real regression, which is why it is a literal here and not
+// a loose /Ahoj/ match.
+//
+// ⚠ Fixtures stay per test (§UC-IA-008 item 5) — same reason as the API half.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// The signed message, VERBATIM from 07 §UC-IA-006. Both halves of this file's coverage
+// hang off it: the string the button writes, and nothing else.
+function credentialsMessage(url, username, tempPassword) {
+  return `Ahoj, tvoj účet je pripravený. Prihlás sa na ${url} - užívateľské meno: ${username}, dočasné heslo: ${tempPassword}. Po prvom prihlásení si nastav vlastné heslo.`
+}
+
+async function loginAsAdminUI(page) {
+  await page.goto('/admin')
+  await page.locator('#password').fill(ADMIN_PASSWORD)
+  await page.getByRole('button', { name: /Prihlásiť sa/ }).click()
+  await expect(page).toHaveURL(/\/admin\/dashboard/)
+  // ⚠ There is exactly ONE admin token app-wide — `admin.js` stores it in a single
+  // `settings` row with INSERT OR REPLACE — so a UI login INVALIDATES the token this
+  // file's `beforeAll` minted, and every subsequent `admin()` call would 401 for a
+  // reason that has nothing to do with what is under test. Adopt the browser's token.
+  adminToken = await page.evaluate(() => localStorage.getItem('adminToken'))
+  expect(adminToken, 'the UI login stored an admin token').toBeTruthy()
+}
+
+// The pending row for a given phone. Phone is the one column that is unique per test
+// (`idx_invitations_phone_pending`), so it is the only safe row key — names repeat
+// across runs and the slugify tests deliberately reuse one.
+function pendingRow(page, phone) {
+  return page.locator('tr', { hasText: phone })
+}
+
+async function openApprovalDialog(page, phone) {
+  const row = pendingRow(page, phone)
+  await expect(row).toBeVisible()
+  await row.getByRole('button', { name: 'Vytvoriť' }).click()
+  const dialog = page.getByTestId('approve-dialog')
+  await expect(dialog).toBeVisible()
+  return dialog
+}
+
+test.describe('Approval dialog — opening and the prefills', () => {
+  test('"Vytvoriť" opens the dialog IN PLACE, with the applicant\'s requested username and the inviter note', async ({ page }) => {
+    const inviter = await makeInviter('uiopen')
+    const requested = uniqueUsername('wanted')
+    const invitation = await registerInvitation(inviter, { username: requested })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+    const dialog = await openApprovalDialog(page, invitation.phone)
+
+    // ⚠ Property 1: no navigation. The retired flow left /admin/invitations here.
+    await expect(page).toHaveURL(/\/admin\/invitations$/)
+
+    // The invitation summary the admin approves against — the phone in particular is
+    // the accepted-risk mitigation for the missing digit-normalised dedupe
+    // (§Accepted risks): the admin sees the number before creating the account.
+    const summary = dialog.getByTestId('approve-summary')
+    await expect(summary).toContainText(invitation.name)
+    await expect(summary).toContainText(invitation.phone)
+    await expect(summary).toContainText(invitation.email)
+    await expect(summary, 'the inviter is named').toContainText(inviter.name)
+
+    // `inv.username` wins over the slugify suggestion — the applicant asked for it.
+    await expect(dialog.getByTestId('approve-username')).toHaveValue(requested)
+    await expect(dialog.getByTestId('approve-note')).toHaveValue(`Pozval/a: ${inviter.name}`)
+
+    // §UC-IA-006: the dialog renders NO auth-mode-dependent content. The shared
+    // password is gone, so a legacy warning here would describe a dead state.
+    await expect(dialog).not.toContainText(/legacy|auth mode/i)
+  })
+
+  test('SLUGIFY: "Ján Kováč" prefills jan.kovac, and a name too short to slug prefills EMPTY', async ({ page }) => {
+    // The suggestion is the fallback when the applicant requested nothing. The
+    // diacritics case is the whole reason the algorithm is NFD-then-strip rather than
+    // a naive lowercase: `validateUsername` rejects `[^a-z0-9._-]`, so "ján.kováč"
+    // would be a suggestion the endpoint 400s on — a prefill that cannot be submitted.
+    const inviter = await makeInviter('uislug')
+    const withDiacritics = await registerInvitation(inviter, { name: 'Ján Kováč' })
+    expect(withDiacritics.username, 'nothing requested — the suggestion is the only source').toBeFalsy()
+    // Under the ≥3 rule this one has to prefill EMPTY: 'jo' is 2 chars, and a
+    // pre-filled value the server would reject is worse than an empty required field.
+    const tooShort = await registerInvitation(inviter, { name: 'Jo' })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+
+    const a = await openApprovalDialog(page, withDiacritics.phone)
+    await expect(a.getByTestId('approve-username')).toHaveValue('jan.kovac')
+    await a.getByRole('button', { name: 'Zrušiť' }).click()
+    await expect(page.getByTestId('approve-dialog')).toHaveCount(0)
+
+    const b = await openApprovalDialog(page, tooShort.phone)
+    await expect(b.getByTestId('approve-username'), 'shorter than 3 ⇒ empty, never a value the server rejects').toHaveValue('')
+
+    // …and the suggestion is EDITABLE — the admin has the last word (§UC-IA-006).
+    await b.getByTestId('approve-username').fill('manually.typed')
+    await expect(b.getByTestId('approve-username')).toHaveValue('manually.typed')
+    await expect(page).toHaveURL(/\/admin\/invitations$/)
+  })
+
+  test('a plain referral shows NO source badge and prefills the inviter note — the non-vacuity for the guest-lead-capture assertion that DOES expect one', async ({ page }) => {
+    // The GUEST side of this pair lives in `guest-lead-capture.spec.js` (the
+    // retargeted §UC-IA-008 item 2 test), which asserts `approve-source-guest` IS
+    // visible for a lead that came through a guest sub-order. Without the negative
+    // case here, that assertion could pass against a badge rendered unconditionally.
+    const inviter = await makeInviter('uibadge')
+    const invitation = await registerInvitation(inviter, { username: uniqueUsername('badge') })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+    const dialog = await openApprovalDialog(page, invitation.phone)
+    await expect(dialog.getByTestId('approve-source-guest'), 'a referral is not a guest lead').toHaveCount(0)
+    await expect(dialog.getByTestId('approve-note'), 'a referral always has an inviter').toHaveValue(`Pozval/a: ${inviter.name}`)
+
+    // ⚠ UNCOVERED, and deliberately so: the OTHER half of the note prefill — the
+    // empty string §UC-IA-006 specifies for an invitation with no `inviter_name` —
+    // is unreachable through the app, so there is nothing to drive it from.
+    // `invitations.invited_by_friend_id` is `NOT NULL` with a FK to `friends(id)` and
+    // NO `ON DELETE` clause (schema.js:674/682), and `foreign_keys = ON` (schema.js:62),
+    // so SQLite RESTRICTs: a hard delete of the inviter is REJECTED while any of their
+    // invitations survive. Every writer (invite-code register, the guest CTA) resolves
+    // a live friend. Reaching a NULL `inviter_name` would mean writing a bad row
+    // straight into the DB — i.e. testing a state the schema forbids. If that FK ever
+    // gains `ON DELETE SET NULL`, this branch becomes real and needs a test.
+  })
+})
+
+test.describe('Approval dialog — the success state and the plaintext', () => {
+  test('approving swaps the dialog to the credentials block, and the copy button writes the EXACT signed message', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    const inviter = await makeInviter('uicopy')
+    const username = uniqueUsername('copyme')
+    const invitation = await registerInvitation(inviter, { username })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+    const dialog = await openApprovalDialog(page, invitation.phone)
+    await dialog.getByTestId('approve-submit').click()
+
+    const creds = dialog.getByTestId('approve-credentials')
+    await expect(creds).toBeVisible()
+    await expect(creds.getByTestId('approve-cred-username')).toHaveText(username)
+
+    const tempPassword = (await creds.getByTestId('approve-cred-password').innerText()).trim()
+    expect(tempPassword, '12 chars over CODE_ALPHABET — the same generator the API half pins').toMatch(TEMP_PASSWORD_RE)
+
+    // The login URL is window.location.origin — the friend has to be able to type it.
+    const origin = new URL(page.url()).origin
+    await expect(creds.getByTestId('approve-login-url')).toHaveText(origin)
+
+    await dialog.getByTestId('approve-copy').click()
+    const clipboard = await page.evaluate(() => navigator.clipboard.readText())
+    // ⚠ CHARACTER FOR CHARACTER. This string is the entire credential-delivery
+    // mechanism in this phase and it is product-owner-signed: ty-form on purpose,
+    // plain hyphen on purpose. A "corrected" register is a regression.
+    expect(clipboard).toBe(credentialsMessage(origin, username, tempPassword))
+
+    // The password on screen is the real one — a credentials block showing a string
+    // that does not open the account is worse than a failed approval.
+    const ok = await loginAs(username, tempPassword)
+    expect(ok.status(), 'the shown temp password really logs in').toBe(200)
+    expect((await ok.json()).mustChangePassword).toBe(true)
+
+    await expect(page).toHaveURL(/\/admin\/invitations$/)
+  })
+
+  test('⚠ the row leaves the pending list BEHIND the still-open dialog, and closing destroys the plaintext', async ({ page }) => {
+    const inviter = await makeInviter('uibehind')
+    const username = uniqueUsername('behind')
+    const invitation = await registerInvitation(inviter, { username })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+    await expect(pendingRow(page, invitation.phone)).toBeVisible()
+
+    const dialog = await openApprovalDialog(page, invitation.phone)
+    await dialog.getByTestId('approve-submit').click()
+    await expect(dialog.getByTestId('approve-credentials')).toBeVisible()
+
+    // Property 2: the refresh happened (the approval is real and the queue is
+    // current) while the dialog is STILL MOUNTED. Anything that closed the dialog to
+    // refresh would destroy the only copy of the password.
+    await expect(pendingRow(page, invitation.phone), 'the row left the pending queue').toHaveCount(0)
+    await expect(dialog, 'and the dialog is still open on top of that').toBeVisible()
+    const tempPassword = (await dialog.getByTestId('approve-cred-password').innerText()).trim()
+    expect(tempPassword).toMatch(TEMP_PASSWORD_RE)
+
+    // Property 3: closing is explicit, and destructive by design.
+    await dialog.getByTestId('approve-close').click()
+    await expect(page.getByTestId('approve-dialog')).toHaveCount(0)
+    await expect(page.locator('body'), 'the plaintext is gone from the page').not.toContainText(tempPassword)
+
+    // Re-opening the same invitation is impossible — it is not pending any more; the
+    // recovery path is the admin's per-friend password reset, as §UC-IA-006 says.
+    await expect(page).toHaveURL(/\/admin\/invitations$/)
+    await page.getByRole('button', { name: 'Spracované' }).first().click()
+    const processed = pendingRow(page, invitation.phone)
+    await expect(processed).toBeVisible()
+    await expect(processed.getByRole('button', { name: 'Vytvoriť' }), 'no second approval path').toHaveCount(0)
+  })
+})
+
+test.describe('Approval dialog — the inline error path', () => {
+  test('a taken username renders INLINE with the field still editable, and the retry succeeds without reopening', async ({ page }) => {
+    // The "two pending invitations race" (§Accepted risks) lands exactly here. The
+    // dialog must not close, must not navigate, and must not lose the note — the admin
+    // types a different username and presses the same button again.
+    const occupant = await makeFriendWithSession('uioccupant')
+    const inviter = await makeInviter('uiclash')
+    const invitation = await registerInvitation(inviter, { username: uniqueUsername('clash') })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+    const dialog = await openApprovalDialog(page, invitation.phone)
+
+    await dialog.getByTestId('approve-username').fill(occupant.username)
+    await dialog.getByTestId('approve-submit').click()
+
+    await expect(dialog.getByTestId('approve-error'), 'the 409 is inline in the dialog').toBeVisible()
+    await expect(dialog, 'and the dialog stayed open').toBeVisible()
+    await expect(dialog.getByTestId('approve-credentials'), 'no credentials on a failure').toHaveCount(0)
+    await expect(page).toHaveURL(/\/admin\/invitations$/)
+
+    // THE field is still editable — this is the whole point of "inline".
+    const field = dialog.getByTestId('approve-username')
+    await expect(field).toBeEditable()
+    await expect(field, 'the rejected value is still there to be corrected').toHaveValue(occupant.username)
+    await expect(dialog.getByTestId('approve-note'), 'the note survived the failed attempt').toHaveValue(`Pozval/a: ${inviter.name}`)
+
+    // …and the row is still pending behind it: nothing was written.
+    const fixed = uniqueUsername('fixed')
+    await field.fill(fixed)
+    await dialog.getByTestId('approve-submit').click()
+
+    await expect(dialog.getByTestId('approve-credentials'), 'the retry succeeds in the same dialog').toBeVisible()
+    await expect(dialog.getByTestId('approve-cred-username')).toHaveText(fixed)
+    await expect(dialog.getByTestId('approve-error'), 'the stale error is cleared').toHaveCount(0)
+
+    const after = await invitationById(invitation.id)
+    expect(after.status, 'exactly one approval happened').toBe('processed')
+    expect(after.created_friend_id).toBeTruthy()
+    const tempPassword = (await dialog.getByTestId('approve-cred-password').innerText()).trim()
+    expect((await loginAs(fixed, tempPassword)).status()).toBe(200)
+    await expect(page).toHaveURL(/\/admin\/invitations$/)
+  })
+
+  test('an invalid username is a 400 inline — the dialog never becomes a dead end', async ({ page }) => {
+    const inviter = await makeInviter('uibad')
+    const invitation = await registerInvitation(inviter, { username: uniqueUsername('bad') })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+    const dialog = await openApprovalDialog(page, invitation.phone)
+
+    // Diacritics: the exact class the slugify prefill exists to avoid, typed by hand.
+    await dialog.getByTestId('approve-username').fill('jánko')
+    await dialog.getByTestId('approve-submit').click()
+    await expect(dialog.getByTestId('approve-error')).toBeVisible()
+    await expect(dialog.getByTestId('approve-error')).toContainText(/Prihlasovacie meno/)
+    await expect(dialog.getByTestId('approve-username')).toBeEditable()
+
+    const fixed = uniqueUsername('janko')
+    await dialog.getByTestId('approve-username').fill(fixed)
+    await dialog.getByTestId('approve-submit').click()
+    await expect(dialog.getByTestId('approve-credentials')).toBeVisible()
+    await expect(page).toHaveURL(/\/admin\/invitations$/)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// IA-T4 gap hunt (2026-08-13) — coverage added on top of the 22 tests above after
+// walking the real admin journey per 07 §UC-IA-006's acceptance criteria.
+//
+// ⚠ TWO REAL BUGS were found while doing this and are DELIBERATELY NOT pinned by a
+// test here (do not fix app code from this file; see the e2e report):
+//   1. Tabbing to the row's "Vytvoriť" button and pressing ENTER (rather than
+//      clicking) submits the approval IMMEDIATELY, with the slugify-suggested
+//      username, before the admin ever sees the dialog. Root cause: Radix moves
+//      focus onto the auto-focused username input synchronously during the SAME
+//      keypress's keydown phase (the native "Enter clicks a focused button" effect),
+//      so the keyup half of that one physical Enter press lands on the username
+//      input's own `@keyup.enter="confirmApprove"` handler instead of on the button.
+//      Reproduced deterministically. A keyboard-only admin tabbing through the
+//      pending queue can silently mint unreviewed friend accounts.
+//   2. Pressing the browser BACK button while the dialog shows an uncopied temp
+//      password navigates away with NO warning and NO confirmation, unmounting the
+//      dialog and destroying the only copy of the credential. There is no
+//      `beforeRouteLeave`/`beforeunload` guard for this state.
+// Encoding either as a red assertion would leave this suite failing, which is not
+// this pass's job — they are reported to the implementer instead.
+//
+// What IS added below, because it passes and was genuinely untested:
+//   (a) keyboard reachability/focus-trap of the dialog ONCE OPEN, and focus
+//       restoration to the trigger when cancelling with no changes made;
+//   (c) the literal "two PENDING invitations race for one username" scenario end to
+//       end, proving the recovery leaves BOTH friends created (the existing inline-409
+//       test uses an unrelated pre-existing friend as the occupant, not a second
+//       invitation);
+//   (d) the three untouched row actions ("Spracované" / "Zamietnuť" / "Vymazať") had
+//       ZERO e2e coverage anywhere in the suite (grep for Zamietnuť/Vymazať/
+//       updateStatus/deleteInvitation returns nothing else) — closed here.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test.describe('Approval dialog — keyboard-only completion and focus management', () => {
+  test('once open, Tab traps focus inside the dialog and the whole approval can be completed without a mouse', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    const inviter = await makeInviter('kbfull')
+    const invitation = await registerInvitation(inviter, { username: uniqueUsername('kbfull') })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+    // Opened with a real click — Tab-to-trigger-then-Enter hits the focus-race bug
+    // documented in the file banner above; this test isolates the in-dialog
+    // keyboard-completion property once the dialog is already open.
+    const dialog = await openApprovalDialog(page, invitation.phone)
+    await expect(dialog).toHaveAttribute('role', 'dialog')
+
+    async function activeTestId() {
+      return page.evaluate(
+        () => document.activeElement?.getAttribute('data-testid')
+          || document.activeElement?.textContent?.trim().slice(0, 20)
+          || null
+      )
+    }
+
+    // Focus is moved INTO the dialog on open — not left on the trigger, not on body.
+    expect(await activeTestId(), 'focus lands on the username field on open').toBe('approve-username')
+
+    // The trap: five Tabs from the username field visit every focusable control in
+    // the form state and wrap back to the start — nothing in the background (another
+    // row's "Vytvoriť", the filter tabs) is reachable while the dialog is open.
+    const order = []
+    for (let i = 0; i < 5; i++) {
+      await page.keyboard.press('Tab')
+      order.push(await activeTestId())
+    }
+    expect(order[0], 'note field').toBe('approve-note')
+    expect(order[1], 'Zrušiť').toBe('Zrušiť')
+    expect(order[2], 'Vytvoriť priateľa').toBe('approve-submit')
+    expect(order[3], 'the corner close icon (sr-only "Close")').toBe('Close')
+    expect(order[4], 'wraps back to the first field').toBe('approve-username')
+
+    // Drive the actual approval by keyboard only, from where Tab left focus (back on
+    // the username field): select-all + retype, Tab to the note, type it, Enter from
+    // the note field submits — safe, because nothing moves focus between that field's
+    // own keydown and keyup the way the trigger button's click did.
+    const kbUsername = uniqueUsername('kbdone')
+    await page.keyboard.press('Control+a')
+    await page.keyboard.type(kbUsername)
+    await page.keyboard.press('Tab')
+    await page.keyboard.type('Cez klávesnicu')
+    await page.keyboard.press('Enter')
+
+    const creds = dialog.getByTestId('approve-credentials')
+    await expect(creds).toBeVisible()
+    await expect(creds.getByTestId('approve-cred-username')).toHaveText(kbUsername)
+
+    // Tab to "Kopírovať správu" and activate it with the keyboard.
+    await page.keyboard.press('Tab')
+    expect(await activeTestId(), 'Kopírovať správu is reachable by Tab in the success state').toBe('approve-copy')
+    await page.keyboard.press('Enter')
+    const clipboard = await page.evaluate(() => navigator.clipboard.readText())
+    expect(clipboard, 'the keyboard-activated copy really wrote the clipboard').toContain(kbUsername)
+
+    // Tab to "Zavrieť" and close with the keyboard.
+    await page.keyboard.press('Tab')
+    expect(await activeTestId(), 'Zavrieť is next').toBe('approve-close')
+    await page.keyboard.press('Enter')
+    await expect(page.getByTestId('approve-dialog')).toHaveCount(0)
+    await expect(page).toHaveURL(/\/admin\/invitations$/)
+
+    expect((await invitationById(invitation.id)).status, 'the keyboard-only approval really happened').toBe('processed')
+  })
+
+  test('cancelling ("Zrušiť") with no changes made restores focus to the row\'s "Vytvoriť" trigger', async ({ page }) => {
+    const inviter = await makeInviter('kbcancel')
+    const invitation = await registerInvitation(inviter, { username: uniqueUsername('kbcancel') })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+    const dialog = await openApprovalDialog(page, invitation.phone)
+    await dialog.getByRole('button', { name: 'Zrušiť' }).click()
+    await expect(page.getByTestId('approve-dialog')).toHaveCount(0)
+
+    const active = await page.evaluate(() => ({
+      tag: document.activeElement?.tagName,
+      text: document.activeElement?.textContent?.trim(),
+    }))
+    expect(active.tag, 'focus returns to a real button, not lost to <body>').toBe('BUTTON')
+    expect(active.text, 'specifically the trigger that opened it').toBe('Vytvoriť')
+
+    // Nothing was written by a cancelled dialog.
+    await expect(pendingRow(page, invitation.phone)).toBeVisible()
+    expect((await invitationById(invitation.id)).status).toBe('pending')
+  })
+})
+
+test.describe('Approval dialog — the two ways an unseen temp password used to escape', () => {
+  test('⚠ Enter on a focused "Vytvoriť" OPENS the dialog and approves NOTHING — the keydown/keyup focus race', async ({ page }) => {
+    // THE BUG THIS PINS (found by the e2e-tester, fixed in AdminInvitations.vue):
+    // Enter activates a focused button during KEYDOWN. The click handler opened the
+    // dialog and Radix synchronously moved focus into `approve-username` — so the
+    // KEYUP half of that same physical keypress landed on the input, whose
+    // `@keyup.enter` handler fired the approval instantly. The admin never saw the
+    // dialog, yet a real friend and a ONE-TIME temp password were minted: the
+    // password is unrecoverable, so that friend can never log in, while the
+    // invitation reads `processed`. It is the exact failure mode this module exists
+    // to prevent, reachable by pure keyboard navigation.
+    //
+    // The fix is `@keydown.enter` (+ an `event.repeat` guard for a HELD Enter): the
+    // stray event is a keyup whose target was the BUTTON, so keydown cannot see it.
+    const inviter = await makeInviter('kbrace')
+    const invitation = await registerInvitation(inviter, { username: uniqueUsername('kbrace') })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+
+    const trigger = pendingRow(page, invitation.phone).getByRole('button', { name: 'Vytvoriť' })
+    await trigger.focus()
+    expect(await page.evaluate(() => document.activeElement?.textContent?.trim()), 'the trigger really has focus').toBe('Vytvoriť')
+    await page.keyboard.press('Enter')
+
+    const dialog = page.getByTestId('approve-dialog')
+    await expect(dialog, 'Enter still OPENS the dialog — the fix must not break the trigger').toBeVisible()
+    await expect(dialog.getByTestId('approve-username'), 'the FORM state, which the admin gets to read').toBeVisible()
+
+    // A mis-fire is a network round trip; give it far longer than it would need and
+    // then prove the negative both on screen and in the database.
+    await page.waitForTimeout(1000)
+    await expect(dialog.getByTestId('approve-credentials'), 'no credentials block — nothing was submitted').toHaveCount(0)
+    expect((await invitationById(invitation.id)).status, 'the invitation is untouched').toBe('pending')
+    const friends = await (await admin('/api/friends')).json()
+    expect(
+      friends.filter((f) => f.name === invitation.name),
+      'no friend was created, so no temp password went unread',
+    ).toHaveLength(0)
+
+    // ⚠ NON-VACUITY / the deliberate path: focus is now sitting on the username field
+    // (Radix put it there). A FRESH, deliberate Enter from that same field DOES
+    // submit — so the fix suppressed the phantom keyup, not Enter-to-submit itself.
+    await page.keyboard.press('Enter')
+    await expect(dialog.getByTestId('approve-credentials'), 'a deliberate Enter still approves').toBeVisible()
+    expect((await invitationById(invitation.id)).status).toBe('processed')
+  })
+
+  test('⚠ browser Back with an uncopied temp password on screen ASKS first, and staying keeps it readable', async ({ page }) => {
+    // §UC-IA-006's "unrecoverable by design" is about the EXPLICIT close action. An
+    // accidental route change is not that: Back unmounted the view and took the only
+    // copy of the password with it, silently. A page RELOAD stays unguarded — that is
+    // ordinary SPA behaviour and no route guard sees it.
+    const inviter = await makeInviter('backguard')
+    const username = uniqueUsername('backguard')
+    const invitation = await registerInvitation(inviter, { username })
+
+    await loginAsAdminUI(page)
+    // ⚠ Reach the page by an IN-SPA push, not `page.goto`. Back out of a
+    // document-loaded entry is a real document navigation, which a vue-router guard
+    // never sees — the test would pass for the wrong reason.
+    await page.getByRole('button', { name: 'Pozvánky' }).first().click()
+    await expect(page).toHaveURL(/\/admin\/invitations$/)
+
+    const dialog = await openApprovalDialog(page, invitation.phone)
+    await dialog.getByTestId('approve-submit').click()
+    await expect(dialog.getByTestId('approve-credentials')).toBeVisible()
+    const tempPassword = (await dialog.getByTestId('approve-cred-password').innerText()).trim()
+    expect(tempPassword).toMatch(TEMP_PASSWORD_RE)
+
+    // (1) Declining the confirm keeps the admin — and the password — where they were.
+    let asked = null
+    const decline = async (d) => { asked = d.message(); await d.dismiss() }
+    page.on('dialog', decline)
+    await page.goBack()
+    await expect
+      .poll(() => asked, { message: 'the guard asked before letting the plaintext go' })
+      .toBeTruthy()
+    expect(asked).toMatch(/heslo/i)
+    await expect(page, 'the navigation was cancelled').toHaveURL(/\/admin\/invitations$/)
+    await expect(dialog.getByTestId('approve-cred-password'), 'and the password is still readable').toHaveText(tempPassword)
+    page.off('dialog', decline)
+
+    // (2) Accepting really leaves — the guard is a speed bump, not a trap.
+    page.once('dialog', (d) => d.accept())
+    await page.goBack()
+    await expect(page).toHaveURL(/\/admin\/dashboard/)
+    await expect(page.getByTestId('approve-dialog')).toHaveCount(0)
+
+    // NON-VACUITY: with no credentials on screen the guard must stay silent, or every
+    // ordinary navigation away from this page would nag.
+    let askedAgain = false
+    page.on('dialog', async (d) => { askedAgain = true; await d.accept() })
+    await page.getByRole('button', { name: 'Pozvánky' }).first().click()
+    await expect(page).toHaveURL(/\/admin\/invitations$/)
+    await page.goBack()
+    await expect(page).toHaveURL(/\/admin\/dashboard/)
+    expect(askedAgain, 'no prompt when there is nothing to lose').toBe(false)
+  })
+})
+
+test.describe('Approval dialog — the username race between two PENDING invitations', () => {
+  test('A takes username X; B tries X and gets the inline 409; the recovery (fix to Y, retry) creates BOTH friends', async ({ page }) => {
+    // §Accepted risks: "Two pending invitations may request the same username — first
+    // approval wins; the second gets the editable inline 409." The existing inline-409
+    // test (above) proves the mechanism using an unrelated pre-existing FRIEND as the
+    // occupant; this proves the literal two-invitation race end to end, including that
+    // the recovery leaves both applicants as real, distinct friends who can log in.
+    const inviter = await makeInviter('racepair')
+    const shared = uniqueUsername('shared')
+    const invA = await registerInvitation(inviter, { username: uniqueUsername('racea') })
+    const invB = await registerInvitation(inviter, { username: uniqueUsername('raceb') })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+
+    // A takes the shared username first.
+    const dialogA = await openApprovalDialog(page, invA.phone)
+    await dialogA.getByTestId('approve-username').fill(shared)
+    await dialogA.getByTestId('approve-submit').click()
+    await expect(dialogA.getByTestId('approve-credentials')).toBeVisible()
+    const passwordA = (await dialogA.getByTestId('approve-cred-password').innerText()).trim()
+    await dialogA.getByTestId('approve-close').click()
+    await expect(page.getByTestId('approve-dialog')).toHaveCount(0)
+
+    // B tries the SAME username — the race.
+    const dialogB = await openApprovalDialog(page, invB.phone)
+    await dialogB.getByTestId('approve-username').fill(shared)
+    await dialogB.getByTestId('approve-submit').click()
+    await expect(dialogB.getByTestId('approve-error'), 'the collision is inline, in B\'s own dialog').toBeVisible()
+    await expect(dialogB.getByTestId('approve-username'), 'still editable, rejected value kept').toHaveValue(shared)
+    await expect(dialogB.getByTestId('approve-credentials')).toHaveCount(0)
+
+    // Recovery: fix to a different username, retry, in the SAME dialog — no reopen.
+    const different = uniqueUsername('racebfix')
+    await dialogB.getByTestId('approve-username').fill(different)
+    await dialogB.getByTestId('approve-submit').click()
+    await expect(dialogB.getByTestId('approve-credentials')).toBeVisible()
+    await expect(dialogB.getByTestId('approve-cred-username')).toHaveText(different)
+    const passwordB = (await dialogB.getByTestId('approve-cred-password').innerText()).trim()
+    await dialogB.getByTestId('approve-close').click()
+
+    // Both applicants are now real, distinct friends who can each log in.
+    const afterA = await invitationById(invA.id)
+    const afterB = await invitationById(invB.id)
+    expect(afterA.status).toBe('processed')
+    expect(afterB.status).toBe('processed')
+    expect(afterA.created_friend_id).toBeTruthy()
+    expect(afterB.created_friend_id).toBeTruthy()
+    expect(afterA.created_friend_id, 'two distinct friends were created, not one').not.toBe(afterB.created_friend_id)
+
+    const friendA = await friendRow(afterA.created_friend_id)
+    const friendB = await friendRow(afterB.created_friend_id)
+    expect(friendA.username).toBe(shared)
+    expect(friendB.username).toBe(different)
+    expect((await loginAs(shared, passwordA)).status(), 'A logs in with A\'s own credentials').toBe(200)
+    expect((await loginAs(different, passwordB)).status(), 'B logs in with B\'s own credentials').toBe(200)
+    // Cross-checking the two would-be-colliding accounts stayed fully independent.
+    expect((await loginAs(shared, passwordB)).status(), 'B\'s password does not open A\'s account').toBe(401)
+  })
+})
+
+test.describe('Approval dialog — the untouched row actions still work', () => {
+  // ⚠ Zero e2e coverage existed for any of these three prior to this file: grep for
+  // Zamietnuť / Vymazať / updateStatus / deleteInvitation across e2e/tests/ turns up
+  // nothing else. IA-T4 did not touch their handlers, but the dialog now sits right
+  // beside them in the same action cell, so it is worth proving the row genuinely
+  // still degrades to them correctly.
+  test('"Spracované" marks a pending invitation processed WITHOUT creating a friend', async ({ page }) => {
+    const inviter = await makeInviter('rowproc')
+    const invitation = await registerInvitation(inviter, { username: uniqueUsername('rowproc') })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+    const row = pendingRow(page, invitation.phone)
+    await row.getByRole('button', { name: 'Spracované' }).click()
+    await expect(pendingRow(page, invitation.phone), 'left the pending list').toHaveCount(0)
+
+    const after = await invitationById(invitation.id)
+    expect(after.status).toBe('processed')
+    expect(after.created_friend_id, 'this shortcut mints no account — unlike the dialog').toBeFalsy()
+  })
+
+  test('"Zamietnuť" rejects, and the rejected row then offers only "Vymazať"', async ({ page }) => {
+    const inviter = await makeInviter('rowrej')
+    const invitation = await registerInvitation(inviter, { username: uniqueUsername('rowrej') })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+    const row = pendingRow(page, invitation.phone)
+    await row.getByRole('button', { name: 'Zamietnuť' }).click()
+    await expect(pendingRow(page, invitation.phone)).toHaveCount(0)
+    expect((await invitationById(invitation.id)).status).toBe('rejected')
+
+    await page.getByRole('button', { name: 'Zamietnuté' }).click()
+    const rejectedRow = pendingRow(page, invitation.phone)
+    await expect(rejectedRow).toBeVisible()
+    await expect(rejectedRow.getByRole('button', { name: 'Vytvoriť' }), 'no approval path for a rejected row').toHaveCount(0)
+    await expect(rejectedRow.getByRole('button', { name: 'Vymazať' })).toBeVisible()
+  })
+
+  test('"Vymazať" deletes a processed row for good', async ({ page }) => {
+    const inviter = await makeInviter('rowdel')
+    const invitation = await registerInvitation(inviter, { username: uniqueUsername('rowdel') })
+    expect((await approve(invitation.id, { username: uniqueUsername('rowdelfriend') })).status()).toBe(201)
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+    // ⚠ "Spracované" labels BOTH the top filter tab and (on a still-pending row) the
+    // row action — `.first()` is the file's existing convention (line ~888) for
+    // picking the filter tab, which renders first in the DOM.
+    await page.getByRole('button', { name: 'Spracované' }).first().click()
+    const row = pendingRow(page, invitation.phone)
+    await expect(row).toBeVisible()
+
+    page.once('dialog', (d) => d.accept())
+    await row.getByRole('button', { name: 'Vymazať' }).click()
+    await expect(pendingRow(page, invitation.phone)).toHaveCount(0)
+
+    expect(await invitationById(invitation.id), 'gone for good').toBeNull()
+  })
+})

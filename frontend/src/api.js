@@ -322,6 +322,11 @@ export const api = {
   getInvitations: (status) => adminRequest(`/invitations${status ? `?status=${status}` : ''}`),
   updateInvitation: (id, data) => adminRequest(`/invitations/${id}`, { method: 'PATCH', body: data }),
   deleteInvitation: (id) => adminRequest(`/invitations/${id}`, { method: 'DELETE' }),
+  // 07 §UC-IA-006. The 201 body carries a PLAINTEXT temp password that exists in this
+  // one response and nowhere else — never persisted, never logged, returned by no
+  // other endpoint. The only caller is the approval dialog in AdminInvitations.vue;
+  // nothing here may store or log it. `data` is `{ username, note }`.
+  approveInvitation: (id, data) => adminRequest(`/invitations/${id}/approve`, { method: 'POST', body: data }),
 
   // Admin onboarding links
   getOnboardingLinks: () => adminRequest('/onboarding-links'),

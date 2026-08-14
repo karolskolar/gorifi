@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, watchEffect } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, onBeforeRouteLeave } from 'vue-router'
 import { api } from '../api'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -8,6 +8,8 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 
 const router = useRouter()
 const loading = ref(true)
@@ -137,11 +139,135 @@ async function deleteInvitation(id) {
   }
 }
 
-function createFriendFromInvitation(invitation) {
-  const params = new URLSearchParams({ create: '1', name: invitation.name })
-  if (invitation.phone) params.set('phone', invitation.phone)
-  if (invitation.email) params.set('email', invitation.email)
-  router.push(`/admin/friends?${params.toString()}`)
+// ── Approval dialog (07 §UC-IA-006) ──────────────────────────────────────────
+// One click turns a pending invitation into a friend WITH WORKING CREDENTIALS, and
+// this dialog is the ONLY holder of the plaintext temp password: it exists in the
+// approve response, is rendered here, and is unrecoverable once the dialog closes
+// (the recovery path is the per-friend password reset in AdminFriends).
+//
+// ⚠ NO NAVIGATION. This replaces the retired `?create=1` flow, which pushed the admin
+// to /admin/friends with the applicant's name/phone/e-mail in the QUERY STRING
+// (07 resolved conflict #1). Navigating away would also unmount the dialog and
+// destroy the password with it.
+const approveOpen = ref(false)
+const approveInv = ref(null)
+const approveUsername = ref('')
+const approveNote = ref('')
+const approveError = ref('')
+const approveSaving = ref(false)
+const approveResult = ref(null)
+const approveCopied = ref(false)
+
+// The username suggestion, exactly per §UC-IA-006: NFD → strip combining marks →
+// lowercase → whitespace runs to '.' → drop everything outside [a-z0-9._-] → clamp 30.
+// ⚠ The diacritics strip is not cosmetic: `validateUsername` rejects [^a-z0-9._-], so
+// a naive lowercase of "Ján Kováč" would suggest "ján.kováč" — a prefill the endpoint
+// 400s on. A result shorter than 3 prefills EMPTY for the same reason: an unusable
+// suggestion is worse than an empty required field.
+function slugifyUsername(name) {
+  const slug = String(name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, '.')
+    .replace(/[^a-z0-9._-]/g, '')
+    .slice(0, 30)
+  return slug.length >= 3 ? slug : ''
+}
+
+// The signed credential message (§UC-IA-006), VERBATIM. Deliberately ty-form —
+// it is the admin's personal message to someone they invited, not app copy — with a
+// plain hyphen. Do not re-word or "fix" the register.
+const credentialsMessage = computed(() => {
+  if (!approveResult.value) return ''
+  const { username, tempPassword } = approveResult.value
+  return `Ahoj, tvoj účet je pripravený. Prihlás sa na ${baseUrl.value} - užívateľské meno: ${username}, dočasné heslo: ${tempPassword}. Po prvom prihlásení si nastav vlastné heslo.`
+})
+
+function openApproveDialog(invitation) {
+  approveInv.value = invitation
+  // The applicant's own request wins; the slug is only the fallback.
+  approveUsername.value = invitation.username || slugifyUsername(invitation.name)
+  approveNote.value = invitation.inviter_name ? `Pozval/a: ${invitation.inviter_name}` : ''
+  approveError.value = ''
+  approveResult.value = null
+  approveCopied.value = false
+  approveSaving.value = false
+  approveOpen.value = true
+}
+
+// Closing is ALWAYS an explicit user action (button / Esc / scrim) — never a timeout,
+// never automatic on success — and it drops the plaintext.
+function setApproveOpen(open) {
+  approveOpen.value = open
+  if (!open) {
+    approveResult.value = null
+    approveInv.value = null
+    approveUsername.value = ''
+    approveNote.value = ''
+    approveError.value = ''
+    approveCopied.value = false
+  }
+}
+
+async function confirmApprove() {
+  if (!approveInv.value || approveSaving.value || approveResult.value) return
+  const username = approveUsername.value.trim().toLowerCase()
+  approveSaving.value = true
+  approveError.value = ''
+  try {
+    approveResult.value = await api.approveInvitation(approveInv.value.id, {
+      username,
+      note: approveNote.value.trim(),
+    })
+    // ⚠ The list refreshes BEHIND the still-open dialog: the row must leave the
+    // pending queue (the approval really happened) while the credentials stay on
+    // screen. Anything that closed the dialog to refresh would destroy them.
+    await loadInvitations()
+  } catch (e) {
+    // 400/409 render INLINE with the field still editable, so the admin fixes the
+    // username and retries without reopening (the "two pending invitations request
+    // the same username" race lands here).
+    approveError.value = e.message || 'Pozvánku sa nepodarilo schváliť'
+  } finally {
+    approveSaving.value = false
+  }
+}
+
+// ⚠ Enter submits on KEYDOWN, never on keyup — this is a security guard, not a style
+// choice. Enter on a focused row trigger activates the button during KEYDOWN; Radix
+// then synchronously moves focus into `approve-username`, so the KEYUP half of that
+// same physical keypress lands on the input. A `@keyup.enter` handler there fired the
+// approval instantly, before the admin had seen the dialog — minting a real account
+// and a one-time temp password nobody ever read, leaving the friend permanently
+// locked out while the invitation read `processed`. Keydown cannot see that event:
+// its target was the button. `event.repeat` covers the remaining case of Enter being
+// HELD down, where auto-repeat would deliver genuine keydowns to the freshly focused
+// input ~500 ms later.
+function onEnterSubmit(event) {
+  if (event.repeat) return
+  confirmApprove()
+}
+
+// ⚠ §UC-IA-006's "after close the plaintext is unrecoverable by design" is about the
+// EXPLICIT close action. An accidental route change is not that: browser Back (or the
+// header's back chevron) unmounts this view and takes the only copy of the temp
+// password with it, silently. A page RELOAD is deliberately NOT guarded — that is
+// ordinary SPA behaviour and no route guard sees it.
+onBeforeRouteLeave(() => {
+  if (!approveResult.value) return true
+  return window.confirm(
+    'Dočasné heslo je zobrazené len teraz — po odchode zo stránky sa už nedá zobraziť. Naozaj chcete odísť?'
+  )
+})
+
+function copyCredentials() {
+  navigator.clipboard.writeText(credentialsMessage.value).then(() => {
+    approveCopied.value = true
+    setTimeout(() => { approveCopied.value = false }, 2000)
+  }).catch(() => {
+    alert('Nepodarilo sa skopírovať správu')
+  })
 }
 
 function formatDate(dateStr) {
@@ -357,7 +483,7 @@ const pendingCount = computed(() => {
                 <TableCell class="text-right">
                   <div class="flex items-center justify-end gap-1">
                     <template v-if="inv.status === 'pending'">
-                      <Button size="sm" variant="outline" @click="createFriendFromInvitation(inv)" title="Vytvoriť priateľa">
+                      <Button size="sm" variant="outline" @click="openApproveDialog(inv)" title="Vytvoriť priateľa s prihlásením">
                         Vytvoriť
                       </Button>
                       <Button size="sm" variant="outline" class="text-green-600 hover:text-green-700" @click="updateStatus(inv.id, 'processed')">
@@ -380,5 +506,127 @@ const pendingCount = computed(() => {
         </CardContent>
       </Card>
     </main>
+
+    <!-- Approval dialog (07 §UC-IA-006). Two states in ONE dialog: the form, and the
+         credentials. It never navigates, and on success it stays open while the list
+         refreshes behind it — it is the only place the plaintext temp password ever
+         exists, so closing it (button / Esc / scrim, always an explicit user action)
+         destroys the credential by design. -->
+    <Dialog :open="approveOpen" @update:open="setApproveOpen">
+      <DialogContent data-testid="approve-dialog">
+        <DialogHeader>
+          <DialogTitle>
+            {{ approveResult ? 'Prihlasovacie údaje' : 'Vytvoriť priateľa z pozvánky' }}
+          </DialogTitle>
+        </DialogHeader>
+
+        <!-- ── FORM STATE ── -->
+        <div v-if="!approveResult" class="space-y-4 py-2">
+          <!-- Read-only summary: what the admin is approving. The phone is here on
+               purpose — it is the mitigation for the accepted risk that approval does
+               no digit-normalised duplicate check. -->
+          <div class="rounded-md border bg-muted/40 px-3 py-2 text-sm space-y-1" data-testid="approve-summary">
+            <div class="font-medium">{{ approveInv?.name }}</div>
+            <div class="text-muted-foreground">
+              {{ approveInv?.phone }}
+              <template v-if="approveInv?.email"> · {{ approveInv.email }}</template>
+            </div>
+            <div class="text-muted-foreground">
+              Pozval/a: {{ approveInv?.inviter_name || '-' }} · {{ formatDate(approveInv?.created_at) }}
+            </div>
+            <!-- GSO-T10: the same provenance tag as the list row. A guest lead is a
+                 stranger the host vouched for, not a friend-of-a-friend referral. -->
+            <div
+              v-if="approveInv?.source === 'guest_order'"
+              class="text-xs text-violet-700"
+              data-testid="approve-source-guest"
+            >
+              Prišiel cez hosťovskú objednávku
+            </div>
+          </div>
+
+          <!-- 400/409 render INLINE, with the username field still editable, so the
+               admin retries without reopening the dialog. -->
+          <Alert v-if="approveError" variant="destructive" data-testid="approve-error">
+            <AlertDescription>{{ approveError }}</AlertDescription>
+          </Alert>
+
+          <div class="space-y-2">
+            <Label>Prihlasovacie meno *</Label>
+            <Input
+              v-model="approveUsername"
+              data-testid="approve-username"
+              type="text"
+              maxlength="30"
+              autocapitalize="none"
+              autocorrect="off"
+              :disabled="approveSaving"
+              @keydown.enter="onEnterSubmit"
+            />
+            <p class="text-xs text-muted-foreground">
+              Len malé písmená, čísla, bodka (.), podtržník (_) a pomlčka (-). Min. 3 znaky.
+            </p>
+          </div>
+
+          <div class="space-y-2">
+            <Label>Poznámka (voliteľné)</Label>
+            <Input
+              v-model="approveNote"
+              data-testid="approve-note"
+              type="text"
+              :disabled="approveSaving"
+              @keydown.enter="onEnterSubmit"
+            />
+            <p class="text-xs text-muted-foreground">
+              Interná poznámka pre admina (nezobrazuje sa priateľovi).
+            </p>
+          </div>
+        </div>
+
+        <!-- ── SUCCESS STATE: the only copy of the plaintext ── -->
+        <div v-else class="space-y-4 py-2" data-testid="approve-credentials">
+          <Alert class="border-amber-300 bg-amber-50">
+            <AlertDescription class="text-amber-800">
+              Dočasné heslo vidíte <strong>iba teraz</strong>. Po zatvorení okna sa už nedá zobraziť —
+              pošlite ho priateľovi hneď. Pri prvom prihlásení si nastaví vlastné heslo.
+            </AlertDescription>
+          </Alert>
+
+          <div class="rounded-md bg-muted px-3 py-2 font-mono text-sm space-y-1">
+            <div>
+              <span class="text-muted-foreground">Prihlásenie: </span>
+              <span data-testid="approve-login-url">{{ baseUrl }}</span>
+            </div>
+            <div>
+              <span class="text-muted-foreground">Meno: </span>
+              <span data-testid="approve-cred-username">{{ approveResult.username }}</span>
+            </div>
+            <div>
+              <span class="text-muted-foreground">Heslo: </span>
+              <span data-testid="approve-cred-password">{{ approveResult.tempPassword }}</span>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <template v-if="!approveResult">
+            <Button variant="outline" :disabled="approveSaving" @click="setApproveOpen(false)">Zrušiť</Button>
+            <Button
+              data-testid="approve-submit"
+              :disabled="approveSaving || !approveUsername.trim()"
+              @click="confirmApprove"
+            >
+              {{ approveSaving ? 'Vytváram...' : 'Vytvoriť priateľa' }}
+            </Button>
+          </template>
+          <template v-else>
+            <Button variant="outline" data-testid="approve-copy" @click="copyCredentials">
+              {{ approveCopied ? 'Skopírované!' : 'Kopírovať správu' }}
+            </Button>
+            <Button data-testid="approve-close" @click="setApproveOpen(false)">Zavrieť</Button>
+          </template>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>
