@@ -438,6 +438,12 @@ async function loginAsAdminUI(page) {
   await page.locator('#password').fill(ADMIN_PASSWORD)
   await page.getByRole('button', { name: /Prihlásiť sa/ }).click()
   await expect(page).toHaveURL(/\/admin\/dashboard/)
+  // ⚠ There is exactly ONE admin token app-wide (`admin.js` keeps it in a single
+  // `settings` row), so this UI login invalidates the one `beforeAll` minted. The
+  // retargeted test below reads back through `admin()` AFTER logging in here, so the
+  // browser's token has to be adopted or those reads 401.
+  adminToken = await page.evaluate(() => localStorage.getItem('adminToken'))
+  expect(adminToken, 'the UI login stored an admin token').toBeTruthy()
 }
 
 test.describe('Lead capture UI', () => {
@@ -535,7 +541,21 @@ test.describe('Lead capture UI', () => {
     expect((await oneInvitationFor(guestPhone, 'pending')).source).toBe('guest_order')
   })
 
-  test('the admin invitations list tags the guest-order lead and still prefills the new-friend form', async ({ page }) => {
+  test('the admin invitations list tags the guest-order lead, and approving it in the dialog stamps the provenance onto the friend', async ({ page }) => {
+    // ⚠ RETARGETED — 07 §UC-IA-008 item 2. This test used to pin the `?create=1`
+    // navigation-prefill flow ("Vytvoriť" → router.push('/admin/friends?name=…') →
+    // the AdminFriends modal reading query params). 07 resolved conflict #1 RETIRES
+    // that flow: "Vytvoriť" now opens the approval dialog in place, so the old
+    // `toHaveURL(/\/admin\/friends/)` + three `getByPlaceholder` assertions describe
+    // markup that no longer exists.
+    //
+    // The property being protected is unchanged and is in fact STRONGER: it was
+    // "a guest-sourced lead can be turned into a friend, carrying its details" —
+    // now proved by actually completing the conversion rather than by inspecting a
+    // prefilled form that a human still had to submit. It is additionally UPGRADED to
+    // assert `friends.onboarding_source === 'guest_order'` (07 §UC-IA-005), which is
+    // the GSO-T10 follow-up: before this, provenance died with the invitation row the
+    // admin later deletes.
     const { host, link, order, guestPhone } = await scenario('uiadmin')
     expect((await askForAccount(link.token, order.order_token, {
       name: `Lead Admin ${uniq}`, phone: guestPhone, email: 'lead.admin@example.com',
@@ -550,16 +570,43 @@ test.describe('Lead capture UI', () => {
     await expect(row.getByTestId('invitation-source-guest'), 'the source tag').toBeVisible()
     await expect(row.getByTestId('invitation-source-guest')).toContainText(/hosťovskú objednávku/i)
 
-    // The invitation → new friend flow still works for a guest-sourced lead: name,
-    // phone and e-mail are carried into the AdminFriends modal.
+    // "Vytvoriť" opens the approval dialog IN PLACE — no navigation at any point.
     await row.getByRole('button', { name: 'Vytvoriť' }).click()
-    await expect(page).toHaveURL(/\/admin\/friends/)
-    const dialog = page.getByRole('dialog')
+    const dialog = page.getByTestId('approve-dialog')
     await expect(dialog).toBeVisible()
-    // The modal's inputs carry no ids, so they are addressed by their placeholders
-    // (the same fields CLAUDE.md's "invitation → new friend prefill" note describes).
-    await expect(dialog.getByPlaceholder('Zobrazuje sa v prihlasovacom dropdowne')).toHaveValue(`Lead Admin ${uniq}`)
-    await expect(dialog.getByPlaceholder('napr. +421 900 000 000')).toHaveValue(guestPhone)
-    await expect(dialog.getByPlaceholder('napr. priatel@example.sk')).toHaveValue('lead.admin@example.com')
+    await expect(page, 'the retired flow navigated away; this one does not').toHaveURL(/\/admin\/invitations$/)
+
+    // The lead's details are what the admin approves against — the same three fields
+    // the retired prefill carried, now read-only context rather than an editable form.
+    const summary = dialog.getByTestId('approve-summary')
+    await expect(summary).toContainText(`Lead Admin ${uniq}`)
+    await expect(summary).toContainText(guestPhone)
+    await expect(summary).toContainText('lead.admin@example.com')
+    await expect(dialog.getByTestId('approve-source-guest'), 'the guest badge follows into the dialog').toBeVisible()
+
+    // The CTA has no username field, so the dialog suggests one from the name.
+    const username = `lead.admin.${uniq}`.slice(0, 30)
+    await dialog.getByTestId('approve-username').fill(username)
+    await dialog.getByTestId('approve-submit').click()
+    await expect(dialog.getByTestId('approve-credentials')).toBeVisible()
+    await expect(dialog.getByTestId('approve-cred-username')).toHaveText(username)
+
+    // THE UPGRADE (the GSO-T10 provenance follow-up this module closes): the created
+    // friend is permanently tagged as having arrived through a guest order. The
+    // friends list is admin-readable, so this survives deleting the invitation row.
+    const friends = await (await admin('/api/friends')).json()
+    const created = friends.find((f) => f.username === username)
+    expect(created, 'the approval really created the friend').toBeTruthy()
+    expect(created.onboarding_source, 'provenance outlives the invitation row').toBe('guest_order')
+    expect(created.name).toBe(`Lead Admin ${uniq}`)
+    expect(created.phone).toBe(guestPhone)
+    expect(created.email).toBe('lead.admin@example.com')
+    expect(created.must_change_password, 'a temp password always forces a rotation').toBe(1)
+
+    // The invitation is back-linked and out of the pending queue, behind the dialog
+    // that still holds the only copy of the plaintext password.
+    const inv = await oneInvitationFor(guestPhone, 'processed')
+    expect(inv.created_friend_id).toBe(created.id)
+    await expect(dialog, 'still open — it is the only holder of the temp password').toBeVisible()
   })
 })

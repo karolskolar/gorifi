@@ -438,3 +438,29 @@ mandating UC in a code comment. All other pre-existing specs (notably
   legacy warning dropped entirely).
 - **CLAUDE.md staleness:** the 2026-07-07 "Invitation → new friend flow" note describes
   the retired `?create=1` path — supersede it when this module lands.
+
+---
+
+## Follow-ups discovered during implementation (IA-T1..T5, not in this module's scope)
+
+Each was found by a review or e2e pass, judged out of scope, and left unfixed
+deliberately. They are recorded here so they are not re-discovered from scratch.
+
+1. **Global 500 on an unparsable JSON body** (found in IA-T2). `-d 'null'` or `-d '"hi"'`
+   returns `500` from the global handler in `backend/src/index.js` — body-parser rejects
+   before any route, so it reproduces identically on `/api/admin/login` and
+   `/api/friends/auth`. Fix = translate `err.type === 'entity.parse.failed'` / `err.status`
+   to 400 in the global error handler. App-wide, so it needs its own row.
+2. **`AdminFriends.vue`'s reset-password placeholder says "Minimálne 4 znaky"** while
+   `resetPassword()` rejects anything under 8 (found in IA-T5 review). The same
+   copy-vs-behaviour lie this module was opened to remove, on the same screen.
+3. **The "Prihlásenie" badge reads `friend.username || 'Nastavené'`**, so a friend with a
+   `password_hash` but no `username` displays as credentialed while being unable to log in
+   under modern auth (found in IA-T5 review). Pre-existing; reachable via the per-friend
+   "Resetovať heslo" action on a friend who never got a username.
+4. **SMTP delivery of the credentials** — the phase-2 half of §UC-IA-006's copy button,
+   already recorded in §Accepted risks. Needs a mail dependency + env plumbing; the repo
+   has no mailer today.
+5. **Retire the legacy shared-password mode** — recorded in §Accepted risks from the
+   product owner's 2026-08-13 decision ("Portal does not use shared password anymore").
+   Its own effort: multiple shipped specs pin legacy behaviour.

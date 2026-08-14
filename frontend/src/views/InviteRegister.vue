@@ -44,6 +44,10 @@ const submitting = ref(false)
 const name = ref('')
 const phone = ref('')
 const email = ref('')
+// Optional (07 §UC-IA-004): the login name the applicant WANTS. It is a request,
+// not a reservation — the admin can overwrite it at approval, and the availability
+// check the server runs here is a courtesy (UC-IA-003).
+const username = ref('')
 
 onMounted(async () => {
   try {
@@ -67,11 +71,16 @@ async function submit() {
 
   submitting.value = true
   try {
+    // ⚠ `username` is OMITTED from the body when empty rather than sent as `''`
+    // or `null`: the server stores NULL for an absent value and runs no validation
+    // on it, which is what keeps the username-less happy path unchanged.
+    const wanted = username.value.trim().toLowerCase()
     await api.submitInvitation({
       invite_code: route.params.code,
       name: name.value.trim(),
       phone: phone.value.trim(),
-      email: email.value.trim() || null
+      email: email.value.trim() || null,
+      ...(wanted ? { username: wanted } : {})
     })
     state.value = 'success'
   } catch (e) {
@@ -190,6 +199,9 @@ async function submit() {
           <div>{{ error }}</div>
         </div>
 
+        <!-- ⚠ Every `maxlength` here MIRRORS a server bound (07 §UC-IA-003: name
+             120, phone 32, email 160, username 30) — the GSO-T3 convention. The
+             server is the boundary; these only stop a paste from reaching a 400. -->
         <div>
           <label class="field-lbl" for="ir-name">Meno a priezvisko</label>
           <input
@@ -197,6 +209,7 @@ async function submit() {
             v-model="name"
             class="inp"
             type="text"
+            maxlength="120"
             autocomplete="name"
             @keyup.enter="submit"
           />
@@ -209,9 +222,33 @@ async function submit() {
             v-model="phone"
             class="inp"
             type="tel"
+            maxlength="32"
             autocomplete="tel"
             @keyup.enter="submit"
           />
+        </div>
+
+        <!-- The requested login name (07 §UC-IA-004). `.inp` is mandatory, not
+             stylistic: the A12 coarse-pointer 16px rule keys off that class, and
+             without it a tap here re-scales the whole session on iOS.
+             `autocapitalize="none"` + `autocorrect="off"` because the server
+             lowercases and the charset is `[a-z0-9._-]` — iOS would otherwise
+             offer "Lego" for a field that stores `lego`.
+             No `autocomplete`: this is a NEW name being chosen, so neither
+             `username` (which offers existing logins) nor `off` helps. -->
+        <div>
+          <label class="field-lbl" for="ir-username">Prihlasovacie meno</label>
+          <input
+            id="ir-username"
+            v-model="username"
+            class="inp"
+            type="text"
+            maxlength="30"
+            autocapitalize="none"
+            autocorrect="off"
+            @keyup.enter="submit"
+          />
+          <div class="field-help">Nepovinné. 3–30 znakov: malé písmená, čísla, bodka, podčiarknik, pomlčka.</div>
         </div>
 
         <div>
@@ -221,6 +258,7 @@ async function submit() {
             v-model="email"
             class="inp"
             type="email"
+            maxlength="160"
             autocapitalize="none"
             autocorrect="off"
             autocomplete="email"
@@ -229,8 +267,13 @@ async function submit() {
           <!-- The old skin folded this into the label as "(pre zásielkovňu,
                voliteľné)". `.field-lbl` is `text-transform:uppercase`, so a
                parenthetical there renders as caps and reads as shouting; the
-               theme has `.field-help` for exactly this. -->
-          <div class="field-help">Nepovinné. Potrebujeme ho len pre doručenie zásielkovňou.</div>
+               theme has `.field-help` for exactly this.
+               ⚠ `data-testid` because there are now TWO `.field-help` blocks on
+               this screen — the spec's assertion that THIS one still says
+               "Nepovinné" would otherwise be strict-mode ambiguous, and scoping it
+               is what keeps it an assertion about the email hint specifically
+               (07 §UC-IA-008 item 3). -->
+          <div class="field-help" data-testid="invite-email-help">Nepovinné. Potrebujeme ho len pre doručenie zásielkovňou.</div>
         </div>
 
         <button
