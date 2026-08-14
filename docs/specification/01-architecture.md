@@ -70,8 +70,20 @@ Prototype copy is final — transcribe it verbatim, don't rewrite it.
 
 - No background jobs or schedulers.
 - Integrations: Pay by Square QR via `bysquare` + `qrcode` (inside `PaymentModal.vue`),
-  Revolut payment link, Packeta as a manually-entered address (no API). Google Fonts is the
-  only new external resource this effort adds.
+  Revolut payment link, Packeta as a manually-entered address (no API).
+- **Outbound e-mail — Mailgun (IA-T6, 07 §UC-IA-009). The backend's first and only
+  outbound network call.** `backend/src/helpers/mailer.js` is the one home: Node's global
+  `fetch` to `${MAILGUN_BASE_URL}/v3/${MAILGUN_DOMAIN}/messages` (EU region,
+  `mg.podpultovka.biz`), basic auth `api:<key>`, 10 s `AbortSignal.timeout`, no
+  dependency. Egress to `api.eu.mailgun.net:443` is therefore a deployment requirement —
+  a host that blocks it degrades to `{sent:false,error:'network'}` per approval, never to
+  a failed approval. Secrets live only in `/var/www/gorifi{,-staging}/.env`, loaded via
+  `node_args: --env-file-if-exists` (see `deploy/ecosystem.config.cjs`); with any of the
+  three vars missing the mailer is a **no-op**, which is what keeps local dev and the e2e
+  suite from sending mail. One boot line reports which way it resolved. Sole caller:
+  `POST /api/invitations/:id/approve`, after the transaction commits.
+- Fonts are self-hosted (`frontend/public/fonts`, RD-DS-6) — the CSP allows no external
+  subresource host, so any *browser-side* third-party asset is out of the question.
 
 ## NFRs
 

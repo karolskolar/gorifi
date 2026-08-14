@@ -181,7 +181,22 @@ if [ "$DEPLOY_BACKEND" = true ]; then
     "$SERVER_USER@$SERVER_HOST:$REMOTE_PATH/backend/"
 
   # Install deps and restart AS the app user (apps live in the gorifi pm2 daemon).
-  ssh "$SERVER_USER@$SERVER_HOST" "runuser -u $APP_USER -- bash -lc 'cd $REMOTE_PATH/backend && npm ci --omit=dev && (pm2 restart $PM2_APP || pm2 start $REMOTE_PATH/ecosystem.config.cjs --only $PM2_APP) && pm2 save'"
+  #
+  # ⚠ RESTART FROM THE FILE, NEVER FROM THE APP NAME. `pm2 restart <name>` relaunches
+  # from PM2's STORED per-process config and does NOT re-read ecosystem.config.cjs, so
+  # any field added to that file (env, node_args, limits) never reaches the process —
+  # the rsync + scp above land the new config and the restart silently ignores it.
+  # Measured with PM2 7.0.3 on an already-running app whose file had just gained
+  # `node_args`: restart-by-name left `node_args: []` and the child's `execArgv` empty;
+  # `pm2 restart <file> --only <app>` applied it on the same daemon. That is how the
+  # IA-T6 Mailgun `--env-file-if-exists` would have shipped dead — and `not_configured`
+  # is the one outcome the approval dialog renders as NOTHING, so there would have been
+  # no signal anywhere. (The mailer's boot log line is the second half of that fix.)
+  #
+  # `pm2 restart <file>` also STARTS an app that is not running yet ("Applications X not
+  # running, starting..."), so it covers a first deploy on its own; the `pm2 start`
+  # fallback is kept for a daemon-level failure, which is the only case left.
+  ssh "$SERVER_USER@$SERVER_HOST" "runuser -u $APP_USER -- bash -lc 'cd $REMOTE_PATH/backend && npm ci --omit=dev && (pm2 restart $REMOTE_PATH/ecosystem.config.cjs --only $PM2_APP || pm2 start $REMOTE_PATH/ecosystem.config.cjs --only $PM2_APP) && pm2 save'"
 
   echo -e "${GREEN}Backend deployed to $ENVIRONMENT!${NC}"
 fi

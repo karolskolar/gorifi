@@ -1,5 +1,5 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
-import { ADMIN_PASSWORD } from '../fixtures.js'
+import { ADMIN_PASSWORD, TARGET_IS_LOCAL, NEEDS_LOCAL_TARGET } from '../fixtures.js'
 
 // GSO-T10: lead capture (§UC-GSO-015, §Lead Capture, Decision 7).
 //
@@ -556,6 +556,24 @@ test.describe('Lead capture UI', () => {
     // assert `friends.onboarding_source === 'guest_order'` (07 §UC-IA-005), which is
     // the GSO-T10 follow-up: before this, provenance died with the invitation row the
     // admin later deletes.
+    //
+    // ⚠ MAIL SAFETY (07 §UC-IA-009, added with IA-T6): this is the ONLY test in this
+    // file that APPROVES, and approval now mails the credentials to the invitation's
+    // address — so against a configured deployment (the documented staging target holds
+    // the Mailgun secrets) it would fire a real send to `lead.admin@example.com`, which
+    // hard-bounces on the brand's only sending domain.
+    //
+    // It takes the SKIP rather than `fixtureEmail()`, deliberately: two assertions below
+    // are load-bearing on the address — the dialog summary showing it (line ~584, one of
+    // the three fields the retired `?create=1` prefill carried, which is the property
+    // this retarget exists to preserve) and `created.email` proving the contact is
+    // carried onto the friend row. Deriving the address from `fixtureEmail()` would
+    // yield `undefined` off-local and force both of those to become conditional — i.e.
+    // weakening the very assertions this test is for. A skipped test against staging is
+    // fine; a weakened one is not. Everything else in this file is safe as-is: no other
+    // test approves (the "processed lead frees the phone" case uses a status PATCH).
+    test.skip(!TARGET_IS_LOCAL, NEEDS_LOCAL_TARGET)
+
     const { host, link, order, guestPhone } = await scenario('uiadmin')
     expect((await askForAccount(link.token, order.order_token, {
       name: `Lead Admin ${uniq}`, phone: guestPhone, email: 'lead.admin@example.com',

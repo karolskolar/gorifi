@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync } from 'fs';
 import db from './db/schema.js';
+import { allowedOrigins } from './config/origins.js';
 import { requireAdmin } from './middleware/admin-auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -44,11 +45,10 @@ app.set('trust proxy', 1);
 // same-origin by this same Express process (express.static below), so CORS is
 // only really needed for the local dev flow (Vite on :5173 → API on :3000) and
 // the staging domain. Override with CORS_ORIGIN (comma-separated) if needed.
-const allowedOrigins = (process.env.CORS_ORIGIN
-  || 'https://gorifi.skolar.sk,https://gorifi-dev.skolar.sk,https://podpultovka.biz,https://www.podpultovka.biz,https://dev.podpultovka.biz,http://localhost:5173')
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
+//
+// ⚠ The list itself now lives in `config/origins.js` — unchanged semantics, but
+// `helpers/credentials-message.js` needs the SAME list to decide which `Origin`
+// may be echoed into an outbound e-mail (07 §UC-IA-009). Two copies could drift.
 app.use(cors({
   origin(origin, callback) {
     // Allow same-origin / non-browser requests (curl, health checks) that send no Origin header

@@ -1,6 +1,19 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { DatabaseSync } from 'node:sqlite'
-import { ADMIN_PASSWORD } from '../fixtures.js'
+import { spawn } from 'node:child_process'
+import http from 'node:http'
+import net from 'node:net'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  ADMIN_PASSWORD,
+  TARGET_IS_LOCAL,
+  NEEDS_LOCAL_TARGET,
+  fixtureEmail,
+  setMailSafeTarget,
+} from '../fixtures.js'
 
 // IA-T3 / 07 §UC-IA-005 — `POST /api/invitations/:id/approve`, the API half.
 // (The dialog that drives it is IA-T4's; §UC-IA-008 item 5 splits this file that way.)
@@ -39,6 +52,22 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 let ctx
 let adminToken
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
+
+// ── ⚠ NEVER SEND REAL MAIL FROM THIS FILE (07 §UC-IA-009) ────────────────────
+// Approval MAILS the credentials to the invitation's address, so every successful
+// approval here is a potential outbound send, and against a configured deployment each
+// one would hard-bounce on the brand's only sending domain. The shared guard lives in
+// `../fixtures.js` (`fixtureEmail` / `TARGET_IS_LOCAL` / `NEEDS_LOCAL_TARGET`) because
+// `guest-lead-capture.spec.js` approves a lead too and needs the same answer. How this
+// file uses it:
+//   1. Off a mail-safe target, fixtures carry NO address (`fixtureEmail` ⇒ undefined),
+//      so approval reports `no_recipient` and the transport is never reached. A test
+//      that needs an address but never APPROVES passes one explicitly.
+//   2. A test that needs a real transport OUTCOME (`not_configured`, the dialog's
+//      outcome line) carries `test.skip(!TARGET_IS_LOCAL, NEEDS_LOCAL_TARGET)`.
+//   3. The stub-harness tests are always safe — they talk to a throwaway LOCAL backend
+//      whose `MAILGUN_BASE_URL` is a 127.0.0.1 stub — so `withMailHarness` flips the
+//      shared flag via `setMailSafeTarget` instead of deriving it from `BASE_URL`.
 
 // The 32-char unambiguous CODE_ALPHABET (schema.js) — `generateTempPassword()` is
 // `randomCode(12)` over it, `generateUid()` is `randomCode(8)`.
@@ -145,15 +174,22 @@ async function invitationById(id) {
 // Register a pending invitation through the ONLY public writer and read its row back
 // (`GET /api/invitations` is `SELECT i.*`, so `username` and `created_friend_id`
 // surface with no route change — the GSO-T10 `source` precedent).
+//
+// `email`: omitted ⇒ `fixtureEmail()` decides (an address only on a mail-safe target —
+// see the guard at the top of this file); `null` ⇒ deliberately no address; a string ⇒
+// an explicit opt-in, for a test that needs an address on screen but never approves.
 async function registerInvitation(inviter, { name, username, email } = {}) {
   const phone = uniquePhone()
   const applicant = name || `Ján Kováč ${uniq}${nameSeq}`
+  const defaultEmail = fixtureEmail(phone)
   const res = await ctx.post('/api/invitations/register', {
     data: {
       invite_code: inviter.inviteCode,
       name: applicant,
       phone,
-      ...(email === undefined ? { email: `ia3.${phone}@example.test` } : email === null ? {} : { email }),
+      ...(email === undefined
+        ? (defaultEmail ? { email: defaultEmail } : {})
+        : email === null ? {} : { email }),
       ...(username ? { username } : {}),
     },
   })
@@ -216,7 +252,16 @@ test.describe('Approval API — the happy path', () => {
     const body = await res.json()
 
     // ── the 201 shape: hand-picked, never sanitizeFriend, never SELECT * ──
-    expect(Object.keys(body).sort(), 'top-level keys').toEqual(['friend', 'tempPassword', 'username'])
+    // ⚠ RE-POINTED by 07 §UC-IA-009, which MANDATES three more keys: the mail outcome
+    // (`email`) and the server-rendered hand-off message plus the URL inside it
+    // (`credentials_message`, `login_url` — the sentence moved to the server so the
+    // mail body and the dialog's clipboard cannot drift apart). The property this
+    // assertion protects is unchanged and is the reason it is an exact key SET rather
+    // than a `toHaveProperty` list: a hand-picked payload must never quietly grow a
+    // column, which is what `SELECT *` or `sanitizeFriend` here would do.
+    expect(Object.keys(body).sort(), 'top-level keys').toEqual(
+      ['credentials_message', 'email', 'friend', 'login_url', 'tempPassword', 'username']
+    )
     expect(Object.keys(body.friend).sort(), 'friend keys').toEqual(['id', 'name', 'uid', 'username'])
     expect(body.friend.name, 'name comes from the invitation').toBe(invitation.name)
     expect(body.friend.username).toBe(requested)
@@ -236,6 +281,11 @@ test.describe('Approval API — the happy path', () => {
     expect(friend.display_name, 'the note lands in display_name').toBe(note)
     expect(friend.username).toBe(requested)
     expect(friend.phone, 'phone carried over').toBe(invitation.phone)
+    // ⚠ Off a mail-safe target this compares NULL to NULL (the fixture carries no
+    // address so the approval cannot send — see the guard at the top). The carry-over
+    // property is therefore only really pinned on the local recipe; the transport-level
+    // "addressed to the applicant" assertion in the stub harness covers the same field
+    // from the other side, and that one always runs against its own local server.
     expect(friend.email, 'email carried over').toBe(invitation.email)
     expect(friend.active, 'created active').toBe(1)
     expect(friend.must_change_password, 'the shipped forced-change gate fires on first login').toBe(1)
@@ -319,7 +369,10 @@ test.describe('Approval API — the happy path', () => {
 
     const leadPhone = uniquePhone()
     const cta = await ctx.post(`/api/guest/${link.token}/orders/${order.order_token}/invite-request`, {
-      data: { name: `Marek Hosť ${uniq}`, phone: leadPhone, email: `lead.${leadPhone}@example.test` },
+      // `email` only on a mail-safe target (the guard at the top of this file): this
+      // test APPROVES the lead, and the property under test is `onboarding_source`, not
+      // the address — so dropping it off-local costs this test nothing.
+      data: { name: `Marek Hosť ${uniq}`, phone: leadPhone, email: fixtureEmail(leadPhone) },
     })
     expect(cta.status(), 'invite request').toBe(201)
 
@@ -667,6 +720,481 @@ test.describe('Approval API — the admin boundary', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// IA-T6 / 07 §UC-IA-009 — Mailgun delivery of the credentials.
+//
+// Approval now also MAILS the hand-off message. Three properties are what this block
+// exists for, and none of them is "an e-mail arrives":
+//
+//   1. THE DEFAULT IS SILENCE, AND IT IS PROVEN BY INTERCEPTION. With any of the three
+//      `MAILGUN_*` vars missing `helpers/mailer.js` makes NO network call at all. That
+//      no-op is the only thing standing between this suite and real mail landing in a
+//      real inbox, so asserting `skipped: 'not_configured'` on the response is NOT
+//      enough — the response field would still read that way if the fetch had gone out
+//      and been ignored. The harness below therefore points `MAILGUN_BASE_URL` at a
+//      LOCAL STUB and asserts the stub received zero requests.
+//   2. A MAIL FAILURE NEVER FAILS THE APPROVAL. The friend exists and the one-time
+//      plaintext is already in the response by the time the send is attempted, so a
+//      Mailgun 500 must still be a 201 with working credentials. A rolled-back friend
+//      (or a 500 to the admin) would destroy the only copy of the password.
+//   3. THE API KEY IS IN NO RESPONSE AND NO LOG LINE. The harness gives the server a
+//      FAKE key and greps for it in both.
+//
+// ⚠ NO TEST HERE EVER SENDS REAL MAIL. The main server under test is started with no
+// Mailgun env at all (per the local recipe), and the harness servers are given a fake
+// key plus a `MAILGUN_BASE_URL` on 127.0.0.1 — so even a bug that ignored the no-op
+// rule could only reach the stub.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const E2E_DIR = path.resolve(HERE, '..')
+const BACKEND_ENTRY = path.resolve(E2E_DIR, '../backend/src/index.js')
+const SEED_SCRIPT = path.resolve(E2E_DIR, 'seed.mjs')
+
+// The stub harness needs the backend SOURCE, so it self-skips when the suite is pointed
+// at a deployment (`BASE_URL=https://gorifi-dev.skolar.sk`) — the `DB_PATH` precedent.
+// The two non-harness tests below cover the same two outcomes through the ordinary
+// server, so the coverage is degraded, not lost.
+const CAN_SPAWN_BACKEND = fs.existsSync(BACKEND_ENTRY) && fs.existsSync(SEED_SCRIPT)
+
+// Obviously not a credential, and long enough that a substring search for it in a
+// response body or a log file is meaningful.
+const FAKE_MAILGUN_KEY = 'key-e2e-fake-0000000000000000000000000000'
+const STUB_MAILGUN_DOMAIN = 'mg.stub.invalid'
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer()
+    probe.once('error', reject)
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address()
+      probe.close(() => resolve(port))
+    })
+  })
+}
+
+// A stand-in for `https://api.eu.mailgun.net` that records what it was sent and replies
+// with whatever the test asks for.
+async function startMailgunStub() {
+  const requests = []
+  let reply = { status: 200, body: { id: '<stub.20260814@mg.stub.invalid>', message: 'Queued. Thank you.' } }
+
+  const server = http.createServer((req, res) => {
+    let raw = ''
+    // ⚠ setEncoding, not string concatenation of raw Buffers: the multipart body carries
+    // Slovak diacritics and a chunk boundary can fall inside a UTF-8 sequence.
+    req.setEncoding('utf8')
+    req.on('data', (chunk) => { raw += chunk })
+    req.on('end', () => {
+      requests.push({
+        method: req.method,
+        url: req.url,
+        authorization: req.headers.authorization || '',
+        contentType: req.headers['content-type'] || '',
+        body: raw,
+      })
+      res.writeHead(reply.status, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(reply.body))
+    })
+  })
+
+  const port = await freePort()
+  await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve))
+
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    requests,
+    setReply(next) { reply = next },
+    async stop() {
+      // undici keeps the connection alive, so close() alone would hang.
+      server.closeAllConnections?.()
+      await new Promise((resolve) => server.close(resolve))
+    },
+  }
+}
+
+// A second, throwaway backend process with its own DB and its own Mailgun env.
+async function startBackend(mailEnv) {
+  const port = await freePort()
+  const dbPath = path.join(os.tmpdir(), `gorifi-mailer-${Date.now()}-${Math.floor(Math.random() * 1e6)}.sqlite`)
+  const baseUrl = `http://127.0.0.1:${port}`
+
+  const child = spawn(process.execPath, [BACKEND_ENTRY], {
+    cwd: path.resolve(BACKEND_ENTRY, '../..'),
+    env: {
+      ...process.env,
+      DB_PATH: dbPath,
+      PORT: String(port),
+      CORS_ORIGIN: baseUrl,
+      PUBLIC_BASE_URL: baseUrl,
+      RATE_LIMIT_AUTH_MAX: '100000',
+      RATE_LIMIT_ABUSE_MAX: '100000',
+      RATE_LIMIT_GUEST_READ_MAX: '100000',
+      RATE_LIMIT_GUEST_WRITE_MAX: '100000',
+      // ⚠ Blanked FIRST, so an operator's real key in the ambient environment cannot be
+      // inherited by a harness server. Only `mailEnv` can turn sending on.
+      MAILGUN_API_KEY: '',
+      MAILGUN_DOMAIN: '',
+      MAILGUN_BASE_URL: '',
+      ...mailEnv,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  const output = []
+  child.stdout.on('data', (c) => output.push(String(c)))
+  child.stderr.on('data', (c) => output.push(String(c)))
+
+  const deadline = Date.now() + 30_000
+  for (;;) {
+    if (child.exitCode !== null) throw new Error(`harness backend exited early (${child.exitCode}): ${output.join('')}`)
+    if (Date.now() > deadline) {
+      child.kill('SIGKILL')
+      throw new Error(`harness backend never became healthy: ${output.join('')}`)
+    }
+    try {
+      const health = await fetch(`${baseUrl}/api/health`)
+      if (health.ok) break
+    } catch { /* not listening yet */ }
+    await new Promise((r) => setTimeout(r, 150))
+  }
+
+  // The same seeding the local recipe does — it is what sets the admin password.
+  await new Promise((resolve) => {
+    const seed = spawn(process.execPath, [SEED_SCRIPT], {
+      cwd: E2E_DIR,
+      env: { ...process.env, BASE_URL: baseUrl },
+      stdio: 'ignore',
+    })
+    seed.on('exit', resolve)
+    seed.on('error', resolve)
+  })
+
+  return {
+    baseUrl,
+    logs: () => output.join(''),
+    async stop() {
+      if (child.exitCode === null) {
+        child.kill('SIGTERM')
+        await new Promise((resolve) => {
+          const timer = setTimeout(() => { child.kill('SIGKILL'); resolve() }, 5000)
+          child.on('exit', () => { clearTimeout(timer); resolve() })
+        })
+      }
+      for (const suffix of ['', '-wal', '-shm']) {
+        try { fs.unlinkSync(`${dbPath}${suffix}`) } catch { /* best effort */ }
+      }
+    },
+  }
+}
+
+// Run `fn` against a throwaway backend + stub Mailgun.
+//
+// ⚠ It SWAPS the module-level `ctx`/`adminToken` for the duration, so every fixture
+// builder above (which is the point — none of them are duplicated here) targets the
+// harness server instead. Safe because `playwright.config.js` sets `fullyParallel:
+// false`: one worker, one test at a time. Restored in `finally`, whatever happens.
+async function withMailHarness(mailEnv, fn) {
+  const stub = await startMailgunStub()
+  let backend
+  const savedCtx = ctx
+  const savedToken = adminToken
+  let savedMailSafe
+  let harnessCtx
+  try {
+    // Inside a harness block the fixtures talk to a LOCAL throwaway backend whose
+    // `MAILGUN_BASE_URL` is a 127.0.0.1 stub, so an address in a fixture cannot reach
+    // Mailgun even when `BASE_URL` points at staging. Without this the transport tests
+    // would register recipient-less invitations off-local and assert nothing.
+    savedMailSafe = setMailSafeTarget(true)
+    // MAILGUN_BASE_URL always points at the stub — including in the "not configured"
+    // case, which is exactly how a stray send gets caught instead of leaving the host.
+    backend = await startBackend({ MAILGUN_BASE_URL: stub.baseUrl, ...mailEnv })
+    harnessCtx = await playwrightRequest.newContext({ baseURL: backend.baseUrl })
+    ctx = harnessCtx
+    const login = await ctx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+    expect(login.status(), 'harness admin login (did seed.mjs run?)').toBe(200)
+    adminToken = (await login.json()).token
+
+    await fn({ stub, backend })
+  } finally {
+    ctx = savedCtx
+    adminToken = savedToken
+    if (savedMailSafe !== undefined) setMailSafeTarget(savedMailSafe)
+    await harnessCtx?.dispose()
+    await backend?.stop()
+    await stub.stop()
+  }
+}
+
+test.describe('Approval + Mailgun — against the server under test (no Mailgun env)', () => {
+  test('the outcome is not_configured, and the message the server WOULD have mailed is the signed one', async () => {
+    // This one asserts a transport outcome for an invitation that HAS an address, i.e.
+    // it is exactly the shape that would send for real against a configured deployment.
+    test.skip(!TARGET_IS_LOCAL, NEEDS_LOCAL_TARGET)
+    const inviter = await makeInviter('mailoff')
+    const username = uniqueUsername('mailoff')
+    const invitation = await registerInvitation(inviter, { username })
+
+    const res = await approve(invitation.id)
+    expect(res.status()).toBe(201)
+    const body = await res.json()
+
+    // The local recipe starts the server with no `MAILGUN_*` at all (§UC-IA-009: the
+    // suite must never set them). If this ever fails, someone gave the server real
+    // credentials and the run has been sending mail.
+    expect(body.email, 'a deployment without Mailgun env says nothing happened').toEqual({
+      sent: false,
+      skipped: 'not_configured',
+    })
+
+    // The server now renders the hand-off sentence (§UC-IA-009) so the mail body and
+    // the dialog's clipboard cannot drift. Same literal the UI half asserts.
+    expect(body.login_url, 'an http(s) origin, never an empty string in the sentence').toMatch(/^https?:\/\/[^/]+$/)
+    expect(body.credentials_message).toBe(credentialsMessage(body.login_url, username, body.tempPassword))
+
+    // The credentials still work — the mail path is additive, not a replacement.
+    const ok = await loginAs(username, body.tempPassword)
+    expect(ok.status()).toBe(200)
+    expect((await ok.json()).mustChangePassword).toBe(true)
+  })
+
+  test('⚠ an invitation with NO e-mail reports no_recipient — the recipient check runs BEFORE the config check', async () => {
+    // Ordering rule, not a detail: this server has no Mailgun env, so a config-first
+    // mailer would answer `not_configured` here and the dialog could never tell "there
+    // was no address" (a neutral note the admin must act on) from "this deployment does
+    // not send mail" (which it renders as nothing at all).
+    const inviter = await makeInviter('mailnorec')
+    const username = uniqueUsername('norecip')
+    const invitation = await registerInvitation(inviter, { username, email: null })
+    expect(invitation.email, 'the fixture really has no e-mail').toBeFalsy()
+
+    const res = await approve(invitation.id)
+    expect(res.status()).toBe(201)
+    expect((await res.json()).email).toEqual({ sent: false, skipped: 'no_recipient' })
+  })
+
+  test('⚠ a MALFORMED e-mail on a deployment that does not send mail is still SILENT, not a red warning', async () => {
+    // The other half of the ordering rule (§UC-IA-009): recipient PRESENCE is checked
+    // before the config, but recipient VALIDITY is checked after it. `invalid_recipient`
+    // is an `error`, which the dialog paints as a red "sending failed" alert — and on a
+    // deployment with no Mailgun env nothing was attempted and never would be, so a
+    // warning here would contradict "`not_configured` ⇒ nothing user-facing". The
+    // configured counterpart (a real `invalid_recipient`, with the address named) is in
+    // the stub-harness block; that address is deliberately unroutable in both.
+    const inviter = await makeInviter('mailbadaddr')
+    const invitation = await registerInvitation(inviter, {
+      username: uniqueUsername('badaddr'),
+      email: 'not-an-email-address',
+    })
+    expect(invitation.email, 'the malformed address really is stored').toBe('not-an-email-address')
+
+    const res = await approve(invitation.id)
+    expect(res.status()).toBe(201)
+    expect((await res.json()).email).toEqual({ sent: false, skipped: 'not_configured' })
+  })
+})
+
+test.describe('Approval + Mailgun — the stubbed transport', () => {
+  test('⚠ with the key absent NO HTTP REQUEST LEAVES THE PROCESS — the stub Mailgun is never contacted', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    test.setTimeout(120_000)
+
+    // Domain + base URL present, key missing: a partial configuration must be treated
+    // as unconfigured, not half-attempted.
+    await withMailHarness({ MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN }, async ({ stub }) => {
+      const inviter = await makeInviter('stubnoop')
+      const username = uniqueUsername('stubnoop')
+      const invitation = await registerInvitation(inviter, { username })
+
+      const res = await approve(invitation.id)
+      expect(res.status()).toBe(201)
+      const body = await res.json()
+      expect(body.email).toEqual({ sent: false, skipped: 'not_configured' })
+
+      // THE ASSERTION THIS TEST EXISTS FOR.
+      expect(stub.requests, 'a no-op must make no network call whatsoever').toHaveLength(0)
+
+      const ok = await loginAs(username, body.tempPassword)
+      expect(ok.status(), 'and the approval itself is unaffected').toBe(200)
+    })
+  })
+
+  test('⚠ a Mailgun 500 still returns 201 with a WORKING account, reports sent:false, and leaks the key nowhere', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    test.setTimeout(120_000)
+
+    await withMailHarness(
+      { MAILGUN_API_KEY: FAKE_MAILGUN_KEY, MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN },
+      async ({ stub, backend }) => {
+        stub.setReply({ status: 500, body: { message: 'Internal server error' } })
+
+        const inviter = await makeInviter('stub500')
+        const username = uniqueUsername('stub500')
+        const invitation = await registerInvitation(inviter, { username })
+
+        const res = await approve(invitation.id)
+        expect(res.status(), 'a mail failure NEVER fails the approval').toBe(201)
+
+        const raw = await res.text()
+        expect(raw, 'the API key appears in NO response body').not.toContain(FAKE_MAILGUN_KEY)
+        const body = JSON.parse(raw)
+        // A FIXED failure vocabulary, never Mailgun's own text — server strings in an
+        // API response are how a secret eventually escapes.
+        expect(body.email).toEqual({ sent: false, error: 'HTTP 500' })
+        expect(raw, "Mailgun's own message stays in the log, not the response").not.toContain('Internal server error')
+
+        // The friend is REAL and the plaintext on the admin's screen opens the account.
+        const ok = await loginAs(username, body.tempPassword)
+        expect(ok.status(), 'the credentials work despite the failed send').toBe(200)
+        expect((await ok.json()).mustChangePassword).toBe(true)
+        const after = await invitationById(invitation.id)
+        expect(after.status, 'and the invitation really is processed').toBe('processed')
+        expect(after.created_friend_id).toBe(body.friend.id)
+
+        // ── exactly one attempt, and its shape is the verified Mailgun call ──
+        expect(stub.requests, 'one attempt, no retry storm').toHaveLength(1)
+        const call = stub.requests[0]
+        expect(call.method).toBe('POST')
+        expect(call.url, 'POST ${base}/v3/${domain}/messages').toBe(`/v3/${STUB_MAILGUN_DOMAIN}/messages`)
+        expect(call.contentType, 'multipart form, as verified live').toMatch(/^multipart\/form-data/)
+        expect(
+          Buffer.from(call.authorization.replace(/^Basic\s+/i, ''), 'base64').toString('utf8'),
+          'HTTP basic auth api:<key>'
+        ).toBe(`api:${FAKE_MAILGUN_KEY}`)
+
+        // ⚠ The mailed body is BYTE-IDENTICAL to what the dialog puts on the clipboard —
+        // that is the whole reason the sentence moved to the server. Two literals of a
+        // product-owner-signed string would drift the first time one is reworded.
+        expect(call.body, 'the mailed text is the returned credentials_message').toContain(body.credentials_message)
+        expect(call.body, 'addressed to the applicant').toContain(invitation.email)
+        expect(call.body, 'the password IS included — product decision, bounded by must_change_password')
+          .toContain(body.tempPassword)
+        expect(call.body, 'and it carries a subject').toContain('Tvoj účet v Podpultovke je pripravený')
+
+        // ── the log line: status + Mailgun's message, and NOT the key ──
+        await new Promise((r) => setTimeout(r, 200)) // stdio is async; let it flush
+        const logs = backend.logs()
+        expect(logs, 'the API key appears in NO log line').not.toContain(FAKE_MAILGUN_KEY)
+        expect(logs, 'the status is logged').toContain('HTTP 500')
+      }
+    )
+  })
+
+  test('a Mailgun 200 reports sent + the address, and a recipient-less invitation never reaches the transport', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    test.setTimeout(120_000)
+
+    await withMailHarness(
+      { MAILGUN_API_KEY: FAKE_MAILGUN_KEY, MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN },
+      async ({ stub }) => {
+        const inviter = await makeInviter('stub200')
+
+        // ── the happy transport ──
+        const okUser = uniqueUsername('stub200')
+        const withEmail = await registerInvitation(inviter, { username: okUser })
+        const sentRes = await approve(withEmail.id)
+        expect(sentRes.status()).toBe(201)
+        const sentBody = await sentRes.json()
+        // `to` is what the dialog names, so it has to be the real recipient.
+        expect(sentBody.email).toEqual({ sent: true, to: withEmail.email })
+        expect(stub.requests).toHaveLength(1)
+
+        // ── no address ⇒ no send attempt at all (the config is present here, so this
+        //    is the recipient check on its own, not the ordering rule) ──
+        const noneUser = uniqueUsername('stubnone')
+        const withoutEmail = await registerInvitation(inviter, { username: noneUser, email: null })
+        const noneRes = await approve(withoutEmail.id)
+        expect(noneRes.status()).toBe(201)
+        expect((await noneRes.json()).email).toEqual({ sent: false, skipped: 'no_recipient' })
+        expect(stub.requests, 'no second call — there was nobody to mail').toHaveLength(1)
+
+        // ── a MALFORMED address: now that mail IS configured this is a real, actionable
+        //    failure, and the outcome NAMES the address so the dialog can too. Still no
+        //    transport call — a broken address must not burn a send. ──
+        const badInv = await registerInvitation(inviter, {
+          username: uniqueUsername('stubbad'),
+          email: 'not-an-email-address',
+        })
+        const badRes = await approve(badInv.id)
+        expect(badRes.status(), 'a bad address does not fail the approval either').toBe(201)
+        expect((await badRes.json()).email).toEqual({
+          sent: false,
+          error: 'invalid_recipient',
+          to: 'not-an-email-address',
+        })
+        expect(stub.requests, 'a malformed address never reaches Mailgun').toHaveLength(1)
+      }
+    )
+  })
+
+  test('⚠ the login URL echoed into the e-mail must be an ALLOWLISTED origin — a foreign Origin cannot get in', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    test.setTimeout(120_000)
+
+    // WHY THIS IS PINNED: `login_url` is interpolated into an e-mail sent to a THIRD
+    // PARTY from our own verified sending domain, and its default source is the request's
+    // `Origin` header. `config/origins.js` is the one allowlist, shared with `index.js`'s
+    // `cors()`, and `resolveLoginUrl` intersects with it independently — so the safety of
+    // outbound mail does not rest on a middleware ordering nothing asserts.
+    //
+    // ⚠ HONEST LIMIT OF THE NEGATIVE HALF: `cors()` already refuses a non-allowlisted
+    // Origin on the ACTUAL request (its callback calls `next(err)` ⇒ 500 before any
+    // route), so the foreign-Origin call below cannot normally reach the handler at all,
+    // and the intersection is what would catch it if that ever changed. The assertion is
+    // therefore written as a property ("the attacker origin is nowhere in the message")
+    // that holds under BOTH layers, instead of pinning one status code.
+    await withMailHarness(
+      {
+        MAILGUN_API_KEY: FAKE_MAILGUN_KEY,
+        MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN,
+        // The allowlist for this server is one origin that is NOT its own base URL, and
+        // no PUBLIC_BASE_URL, so the Origin header is the only thing that can win.
+        CORS_ORIGIN: 'https://allowed.test',
+        PUBLIC_BASE_URL: '',
+      },
+      async ({ stub }) => {
+        const inviter = await makeInviter('originpin')
+
+        // ── POSITIVE: an allowlisted Origin IS used, verbatim ──
+        const okInv = await registerInvitation(inviter, { username: uniqueUsername('originok') })
+        const okRes = await ctx.post(`/api/invitations/${okInv.id}/approve`, {
+          headers: { 'X-Admin-Token': adminToken, Origin: 'https://allowed.test' },
+        })
+        expect(okRes.status()).toBe(201)
+        const okBody = await okRes.json()
+        expect(okBody.login_url, 'an allowlisted Origin is honoured').toBe('https://allowed.test')
+        expect(okBody.credentials_message).toContain('Prihlás sa na https://allowed.test -')
+        expect(stub.requests.at(-1).body, 'and that is what was mailed').toContain('https://allowed.test')
+
+        // ── NEGATIVE: a foreign Origin never reaches the message ──
+        const evilInv = await registerInvitation(inviter, { username: uniqueUsername('originbad') })
+        const evilRes = await ctx.post(`/api/invitations/${evilInv.id}/approve`, {
+          headers: { 'X-Admin-Token': adminToken, Origin: 'https://attacker.test' },
+        })
+        const evilRaw = await evilRes.text()
+        expect(evilRaw, 'a foreign origin is nowhere in the response').not.toContain('attacker.test')
+        if (evilRes.status() === 201) {
+          // The intersection did its job (this is the path taken if cors is ever relaxed).
+          expect(JSON.parse(evilRaw).login_url).toBe('https://podpultovka.biz')
+        }
+        for (const call of stub.requests) {
+          expect(call.body, 'and nothing with that origin was ever mailed').not.toContain('attacker.test')
+        }
+
+        // ── FALLBACK: no Origin at all (curl/cron) ⇒ the brand domain, never an empty
+        //    URL that would render "Prihlás sa na  - užívateľské meno:" ──
+        const bareInv = await registerInvitation(inviter, { username: uniqueUsername('originnone') })
+        const bareRes = await approve(bareInv.id)
+        expect(bareRes.status()).toBe(201)
+        const bareBody = await bareRes.json()
+        expect(bareBody.login_url).toBe('https://podpultovka.biz')
+        expect(bareBody.credentials_message).toContain('Prihlás sa na https://podpultovka.biz -')
+      }
+    )
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // IA-T4 / 07 §UC-IA-006 — the approval DIALOG (the UI half).
 //
 // The endpoint above is only half the feature. The dialog is the part that handles a
@@ -734,7 +1262,12 @@ test.describe('Approval dialog — opening and the prefills', () => {
   test('"Vytvoriť" opens the dialog IN PLACE, with the applicant\'s requested username and the inviter note', async ({ page }) => {
     const inviter = await makeInviter('uiopen')
     const requested = uniqueUsername('wanted')
-    const invitation = await registerInvitation(inviter, { username: requested })
+    // An EXPLICIT address (not the `fixtureEmail` default): the summary assertion below
+    // needs one on screen, and this test never approves, so nothing can be mailed.
+    const invitation = await registerInvitation(inviter, {
+      username: requested,
+      email: `uiopen.${uniq}@example.test`,
+    })
 
     await loginAsAdminUI(page)
     await page.goto('/admin/invitations')
@@ -1307,5 +1840,126 @@ test.describe('Approval dialog — the untouched row actions still work', () => 
     await expect(pendingRow(page, invitation.phone)).toHaveCount(0)
 
     expect(await invitationById(invitation.id), 'gone for good').toBeNull()
+  })
+})
+
+test.describe('Approval dialog — the e-mail outcome line (07 §UC-IA-009)', () => {
+  // ⚠ HOW THE TRANSPORT OUTCOMES ARE DRIVEN, and why not for real: the server under
+  // test has no Mailgun env and must never be given any (§UC-IA-009 — that no-op is what
+  // keeps this suite from mailing real people). The dialog learns the outcome from
+  // exactly one place, the `email` field of the approve 201, so the tests below let the
+  // REAL approval happen and rewrite only that field on the way back. The friend, the
+  // plaintext, the login URL and `credentials_message` are all genuine — a stubbed body
+  // would prove nothing about the copy button, which is the point of the last assertion
+  // in each case.
+  //
+  // The API-level counterpart (a real Mailgun 500 against a stub transport, asserting the
+  // 201 and the working account) is the "stubbed transport" block above; this half is
+  // only about what the admin is told.
+  //
+  // THE INVARIANT ACROSS ALL FOUR STATES: the copy button is present. It is the fallback
+  // channel, and it is the only channel when the mail did not go out.
+  async function withOutcome(page, phone, emailField) {
+    await page.route('**/api/invitations/*/approve', async (route) => {
+      const response = await route.fetch()
+      const json = await response.json()
+      await route.fulfill({ response, json: emailField === undefined ? json : { ...json, email: emailField } })
+    })
+    const dialog = await openApprovalDialog(page, phone)
+    await dialog.getByTestId('approve-submit').click()
+    await expect(dialog.getByTestId('approve-credentials')).toBeVisible()
+    return dialog
+  }
+
+  test('⚠ a FAILED send shows a warning and the copy button still works — the credentials must not be stranded', async ({ page, context }) => {
+    // The approval underneath is REAL and the invitation carries an address, so against a
+    // configured deployment this would send (§UC-IA-009's never-send-real-mail rule).
+    test.skip(!TARGET_IS_LOCAL, NEEDS_LOCAL_TARGET)
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    const inviter = await makeInviter('mailfail')
+    const username = uniqueUsername('mailfail')
+    const invitation = await registerInvitation(inviter, { username })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+    const dialog = await withOutcome(page, invitation.phone, { sent: false, error: 'HTTP 500' })
+
+    const warning = dialog.getByTestId('approve-email-failed')
+    await expect(warning, 'the admin has to know the mail did not go out').toBeVisible()
+    await expect(warning).toContainText('nepodarilo odoslať')
+    await expect(warning, 'and that they must deliver it themselves').toContainText(/Pošlite/)
+    // Never two lines at the same time — a screen saying both "sent" and "not sent" is
+    // worse than either.
+    await expect(dialog.getByTestId('approve-email-sent')).toHaveCount(0)
+    await expect(dialog.getByTestId('approve-email-none')).toHaveCount(0)
+    await expect(dialog.getByTestId('approve-email-invalid')).toHaveCount(0)
+
+    // ⚠ THE COPY BUTTON IS STILL THERE, and still writes the real message. This is the
+    // whole reason a failed send is not an error state: the admin falls back to pasting.
+    const copy = dialog.getByTestId('approve-copy')
+    await expect(copy).toBeVisible()
+    const tempPassword = (await dialog.getByTestId('approve-cred-password').innerText()).trim()
+    const origin = new URL(page.url()).origin
+    await copy.click()
+    expect(await page.evaluate(() => navigator.clipboard.readText()))
+      .toBe(credentialsMessage(origin, username, tempPassword))
+
+    // The account is real — the failed mail changed nothing about the approval.
+    const ok = await loginAs(username, tempPassword)
+    expect(ok.status()).toBe(200)
+    await expect(page).toHaveURL(/\/admin\/invitations$/)
+  })
+
+  test('sent NAMES the address, a bad address NAMES it too, no_recipient is neutral, not_configured says NOTHING — copy present in all four', async ({ page }) => {
+    test.skip(!TARGET_IS_LOCAL, NEEDS_LOCAL_TARGET)
+    const inviter = await makeInviter('mailstates')
+    const sentInv = await registerInvitation(inviter, { username: uniqueUsername('mailsent') })
+    const badInv = await registerInvitation(inviter, { username: uniqueUsername('mailbad') })
+    const noneInv = await registerInvitation(inviter, { username: uniqueUsername('mailnone') })
+    const quietInv = await registerInvitation(inviter, { username: uniqueUsername('mailquiet') })
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/invitations')
+
+    // ── sent ⇒ the address, so the admin can see it went somewhere plausible ──
+    const sentDialog = await withOutcome(page, sentInv.phone, { sent: true, to: sentInv.email })
+    await expect(sentDialog.getByTestId('approve-email-sent')).toContainText(sentInv.email)
+    await expect(sentDialog.getByTestId('approve-email-failed')).toHaveCount(0)
+    await expect(sentDialog.getByTestId('approve-copy'), 'still the fallback channel').toBeVisible()
+    await sentDialog.getByTestId('approve-close').click()
+    await expect(page.getByTestId('approve-dialog')).toHaveCount(0)
+
+    // ── invalid_recipient ⇒ a WARNING that names the address, because the fix is a typo
+    //    on the invitation and nothing else on this screen still shows it ──
+    const badDialog = await withOutcome(page, badInv.phone, {
+      sent: false, error: 'invalid_recipient', to: 'not-an-email-address',
+    })
+    const invalidLine = badDialog.getByTestId('approve-email-invalid')
+    await expect(invalidLine, 'the admin must see WHICH address is unusable').toContainText('not-an-email-address')
+    await expect(badDialog.getByTestId('approve-email-failed'), 'not the generic Mailgun-is-down line').toHaveCount(0)
+    await expect(badDialog.getByTestId('approve-copy')).toBeVisible()
+    await badDialog.getByTestId('approve-close').click()
+    await expect(page.getByTestId('approve-dialog')).toHaveCount(0)
+
+    // ── no_recipient ⇒ neutral, and it tells the admin what to do instead ──
+    const noneDialog = await withOutcome(page, noneInv.phone, { sent: false, skipped: 'no_recipient' })
+    const note = noneDialog.getByTestId('approve-email-none')
+    await expect(note).toContainText('neobsahuje e-mailovú adresu')
+    await expect(noneDialog.getByTestId('approve-email-failed'), 'a missing address is not a failure').toHaveCount(0)
+    await expect(noneDialog.getByTestId('approve-copy')).toBeVisible()
+    await noneDialog.getByTestId('approve-close').click()
+    await expect(page.getByTestId('approve-dialog')).toHaveCount(0)
+
+    // ── not_configured ⇒ NOTHING user-facing. The response is left untouched here, so
+    //    this is the real outcome from the server under test (§UC-IA-009: a dev/staging
+    //    state an admin cannot act on — calling it a failure trains them to ignore the
+    //    line that matters). ──
+    const quietDialog = await withOutcome(page, quietInv.phone, undefined)
+    await expect(quietDialog.getByTestId('approve-email-sent')).toHaveCount(0)
+    await expect(quietDialog.getByTestId('approve-email-none')).toHaveCount(0)
+    await expect(quietDialog.getByTestId('approve-email-failed')).toHaveCount(0)
+    await expect(quietDialog.getByTestId('approve-email-invalid')).toHaveCount(0)
+    await expect(quietDialog.getByTestId('approve-copy'), 'the copy button is the channel here').toBeVisible()
+    await expect(page).toHaveURL(/\/admin\/invitations$/)
   })
 })
