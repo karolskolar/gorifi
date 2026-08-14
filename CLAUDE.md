@@ -218,8 +218,8 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 ### Pending Invitations Dashboard Alert + Prefill (2026-07-07)
 - AdminDashboard shows a clickable amber banner when pending invitations exist; fetches count via `api.getInvitations('pending')` on mount (non-blocking, swallows errors), navigates to `/admin/invitations` on click
 - Slovak pluralization inline: 1 → "čakajúca pozvánka", 2-4 → "čakajúce pozvánky", 5+ → "čakajúcich pozvánok"
-- Invitation → new friend flow: "Vytvoriť" in AdminInvitations passes `create=1&name=&phone=&email=` query params to `/admin/friends`; AdminFriends `onMounted` reads them to prefill the modal (previously only `name` was passed, phone/email were blanked)
-- Modal field mapping in AdminFriends: friendName=Prihlasovacie meno (login), friendDisplayName=Poznámka (internal admin note), friendPhone=Telefón, friendEmail=Email. Invitations table has only name/phone/email (no user note field)
+- ~~Invitation → new friend flow: "Vytvoriť" passes `create=1&name=&phone=&email=` query params to `/admin/friends`; AdminFriends `onMounted` prefills the modal~~ **SUPERSEDED (module 07, IA-T4/IA-T5, 2026-08-13).** "Vytvoriť" now opens an **approval dialog in place — no navigation**; the query params and the `onMounted` receiver are both DELETED. See `docs/specification/07-invitation-approval.md`.
+- ~~Modal field mapping in AdminFriends: friendName=Prihlasovacie meno (login)~~ **SUPERSEDED — and this bullet was the bug.** ⚠ `friendName` writes **`friends.name`, a DISPLAY label that never was a login**; the field is now labelled **`Meno *`** and `POST /api/friends` still sets no credentials. A friend gets a real login ONLY via `POST /api/invitations/:id/approve` (module 07) or the per-friend "Nastaviť username" / "Resetovať heslo" actions. The rest of the mapping still holds: friendDisplayName=Poznámka (internal admin note), friendPhone=Telefón, friendEmail=Email; the `invitations` table has name/phone/email/username (no user note field). ⚠ `grep -i prihlasovac frontend/src/views/AdminFriends.vue` must stay EMPTY (07 §UC-IA-007) — the one legitimate `Prihlásen*` string there is the `Prihlásenie` column header, which reports real credential state (`hasCredentials`) and makes no claim about the name field.
 
 ### Guest Shared Orders — schema + host share link (GSO-T2, 2026-08-04)
 - All three guest tables live in `schema.js` from GSO-T2 on: `guest_order_links` (one per host+cycle, `UNIQUE(host_friend_id, cycle_id)`), `guest_orders` (`link_id` carries host+cycle; `paid` = admin-only, `delivered` = host-only), `guest_order_items` (incl. `packed`). Later guest tasks must NOT add migrations for them.
@@ -1183,3 +1183,40 @@ Also load-bearing, and each proved rather than assumed:
 - **`requireAdmin` is PER-ROUTE.** `routes/invitations.js` is a MIXED mount — public
   `/code/:code` + `/register`, admin for the rest. Wrapping the mount breaks the public
   registration flow.
+
+### Module 07 — invitation → friend WITH a login (IA-T1..T5, 2026-08-13)
+
+The reported bug: the "Nový priateľ" modal's `Prihlasovacie meno *` field wrote
+`friends.name` and `POST /api/friends` set no credentials, so approving an invitation
+produced a friend who **could not log in** (the "Prihlásenie" column showed `-`). Spec:
+`docs/specification/07-invitation-approval.md`; backlog rows in `PROGRESS.md` §5.
+
+The shipped flow: applicant optionally requests a username on `/invite/:code` →
+admin clicks "Vytvoriť" → **approval dialog** (username prefilled from the request or a
+slugify of the name, editable note) → `POST /api/invitations/:id/approve` creates the
+friend with a generated temp password and `must_change_password = 1` → the dialog shows
+the credentials with a copy button → the friend logs in and is forced to set their own
+password. **No email** — the copy button is the whole delivery mechanism (SMTP is a
+recorded phase-2 follow-up).
+
+⚠ **Two UI hazards this module discovered, both fixed, both worth not reintroducing:**
+- **`@keyup.enter` on an input inside a dialog opened by an Enter keypress fires on
+  open.** The browser's native "Enter activates a focused button" delivers `keydown` to
+  the BUTTON, Radix synchronously focuses the dialog's first input, and the **keyup half
+  of that same physical press** lands on the input. On the approval dialog this silently
+  approved before the admin saw anything — minting an account and a one-time password
+  nobody read. Use **`@keydown.enter`** (structurally cannot see a keyup targeting
+  another element) plus an **`event.repeat` guard** (auto-repeat delivers genuine
+  keydowns to the newly focused input ~500 ms later).
+- **A one-time secret on screen needs a route-leave guard.** Browser Back unmounted the
+  dialog and destroyed an uncopied temp password with no warning. `onBeforeRouteLeave` +
+  `confirm()` while `approveResult` is set. Reload is deliberately unguarded.
+
+⚠ **e2e harness traps recorded here because they cost real time:**
+- **There is exactly ONE admin token app-wide** (`admin.js` does `INSERT OR REPLACE …
+  'admin_token'`), so a UI admin login **invalidates** a token minted earlier by an API
+  `beforeAll`. Any spec mixing `loginAsAdminUI(page)` with API `admin()` calls must adopt
+  the browser's token (`localStorage.getItem('adminToken')`).
+- **A back-navigation test cannot use `page.goto` to reach the page** — backing out of a
+  document-loaded entry is a real document navigation that a vue-router guard never
+  sees, so the test passes for the wrong reason. Navigate in-SPA instead.
