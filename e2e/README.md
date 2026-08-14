@@ -219,8 +219,22 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   `GuestInviteRequest.vue`, incl. the already-requested state served by
   `invite_request.requested` after a reload, so the page never offers an action the
   server would 409), a **cancelled** sub-order still offering it, and the admin
-  invitations list showing the tag while the invitation → new-friend prefill
-  (`create=1&name=&phone=&email=`) still fills the modal.
+  invitations list showing the tag while the invitation → new-friend flow reaches the
+  approval dialog. ⚠ That last test was RETARGETED in IA-T4: it used to pin the
+  `?create=1&name=&phone=&email=` navigation-prefill, which IA-T4 replaced with an
+  in-place approval dialog and IA-T5 deleted the receiver for
+  (`tests/admin-friends-labels.spec.js` pins the absence).
+- `tests/admin-friends-labels.spec.js` — IA-T5 / 07 §UC-IA-007: the "Nový priateľ"
+  name field writes `friends.name`, a DISPLAY label, and never minted a login, so the
+  "Prihlasovacie meno *" label was the original reported bug. Asserts the new copy
+  ("Meno", "Meno *", the `Toto meno vidí správca a kolegovia.` hint) **and the
+  absences** — no `/prihlasovac/i` anywhere in the page's rendered text **or its
+  attributes** (the retired claim lived in a `placeholder=`, invisible to an
+  innerText-only sweep), and `/admin/friends?create=1&name=X` opening the plain list
+  with no modal. `Prihlásenie` (the credentials column) is deliberately kept and
+  asserted present. Scoped entirely to `/admin/friends`: the identical label in
+  `FriendPortalSession.vue` is correct there and belongs to
+  `tests/portal-profile-modal.spec.js`.
 - `tests/self-hosted-fonts.spec.js` — RD-DS-6: the brand webfonts must be
   **self-hosted**, and the CSP hole that hid it. The Podpultovka restyle loaded
   Darker Grotesque / Figtree / Courier Prime from `fonts.googleapis.com`, which

@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watchEffect } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
+import { useRouter } from 'vue-router'
 import api from '../api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -14,7 +14,6 @@ import { Switch } from '@/components/ui/switch'
 import BalanceBadge from '@/components/BalanceBadge.vue'
 
 const router = useRouter()
-const route = useRoute()
 const friends = ref([])
 const loading = ref(true)
 const error = ref('')
@@ -22,8 +21,12 @@ const error = ref('')
 // Modal state
 const showModal = ref(false)
 const editingFriend = ref(null)
-const friendName = ref('')      // login name
-const friendDisplayName = ref('') // display name (Meno)
+// ⚠ `friendName` writes `friends.name` — a DISPLAY label, NOT a login (07 §UC-IA-007).
+// The login lives on `friends.username` + `password_hash`, minted either by the
+// invitation-approval dialog or by the per-row "Nastaviť username" / "Resetovať heslo"
+// actions below. Never relabel this field as a credential again.
+const friendName = ref('')        // friends.name — shown to the admin and to colleagues
+const friendDisplayName = ref('') // friends.display_name — internal admin note (Poznámka)
 const friendPhone = ref('')
 const friendEmail = ref('')
 
@@ -49,18 +52,10 @@ function handleClickOutside(e) {
 onMounted(async () => {
   document.addEventListener('click', handleClickOutside)
   await loadFriends()
-
-  // Pre-fill friend creation from invitation page
-  if (route.query.create === '1' && route.query.name) {
-    friendName.value = route.query.name
-    friendDisplayName.value = ''
-    friendPhone.value = route.query.phone || ''
-    friendEmail.value = route.query.email || ''
-    editingFriend.value = null
-    showModal.value = true
-    // Clean up the URL
-    router.replace({ path: route.path })
-  }
+  // ⚠ The `?create=1` prefill receiver was DELETED in IA-T5 (07 §UC-IA-007). Its only
+  // caller — AdminInvitations' "Vytvoriť" navigation — was retired in IA-T4 in favour of
+  // an in-place approval dialog that mints real credentials. Do not reintroduce it:
+  // prefilling this modal from a query string creates a friend with no login at all.
 })
 
 onUnmounted(() => {
@@ -286,7 +281,7 @@ async function logout() {
           <TableHeader>
             <TableRow>
               <TableHead>ID</TableHead>
-              <TableHead>Prihlasovacie meno</TableHead>
+              <TableHead>Meno</TableHead>
               <TableHead>Poznámka</TableHead>
               <TableHead class="text-right">Zostatok</TableHead>
               <TableHead class="text-center">Stav</TableHead>
@@ -421,13 +416,12 @@ async function logout() {
             <div class="font-mono text-sm bg-muted px-3 py-2 rounded">{{ editingFriend.uid }}</div>
           </div>
           <div class="space-y-2">
-            <Label>Prihlasovacie meno *</Label>
+            <Label>Meno *</Label>
             <Input
               v-model="friendName"
-              placeholder="Zobrazuje sa v prihlasovacom dropdowne"
               @keyup.enter="saveFriend"
             />
-            <p class="text-xs text-muted-foreground">Toto meno sa zobrazuje pri prihlasovaní</p>
+            <p class="text-xs text-muted-foreground">Toto meno vidí správca a kolegovia.</p>
           </div>
           <div class="space-y-2">
             <Label>Poznámka (voliteľné)</Label>
