@@ -10,25 +10,13 @@ import {
 } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { abuseLimiter } from '../middleware/rate-limit.js';
+import { getPlaceholderCycleId } from '../helpers/friend-create.js';
 
 const router = Router();
 
 // Generate a 16-character base64url token for an onboarding link.
 function generateLinkToken() {
   return crypto.randomBytes(12).toString('base64url');
-}
-
-// Resolve a placeholder cycle_id for new friends, matching the existing
-// global friend creation pattern in routes/friends.js.
-function getPlaceholderCycleId() {
-  let cycle = db.prepare('SELECT id FROM order_cycles ORDER BY id LIMIT 1').get();
-  if (!cycle) {
-    const result = db.prepare(
-      `INSERT INTO order_cycles (name, status) VALUES ('_placeholder', 'completed')`
-    ).run();
-    return result.lastInsertRowid;
-  }
-  return cycle.id;
 }
 
 // Count of friends created via a given link's note. Free-text snapshot
