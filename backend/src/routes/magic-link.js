@@ -1,5 +1,5 @@
 // Magic-link recovery — the REQUEST half (09 §UC-ML-003 + §UC-ML-004 + §UC-ML-009
-// rule 1). ML-T3 adds `POST /redeem` to this same router.
+// rule 1) and, since ML-T3, the REDEMPTION half (§UC-ML-005) at the bottom.
 //
 // ⚠ THIS ROUTER IS MOUNTED BARE at /api/magic-link — public and anonymous by design.
 // It is the path for someone who CANNOT log in, so neither `requireAdmin` nor friend
@@ -38,8 +38,8 @@
 
 import { Router } from 'express';
 import db, { generateLoginToken, hashLoginToken, LOGIN_TOKEN_TTL_MS } from '../db/schema.js';
-import { getAuthMode } from '../middleware/friend-auth.js';
-import { magicLinkLimiter } from '../middleware/rate-limit.js';
+import { getAuthMode, createFriendSession } from '../middleware/friend-auth.js';
+import { magicLinkLimiter, authLimiter } from '../middleware/rate-limit.js';
 import { renderEmail } from '../helpers/email-templates.js';
 import { sendMail } from '../helpers/mailer.js';
 import { resolveLoginUrl } from '../helpers/credentials-message.js';
@@ -259,6 +259,143 @@ router.post('/request', magicLinkLimiter, (req, res) => {
   res.json(NEUTRAL_RESPONSE);
 
   if (pending) deliverMagicLink(req, pending);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// REDEMPTION — POST /api/magic-link/redeem (09 §UC-ML-005), ML-T3
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠ ON `authLimiter`, NOT `magicLinkLimiter`. This endpoint mints sessions — it IS a
+// login, and it costs no outbound mail. Putting it on the mail bucket would let a
+// redemption storm block the *requests* that produce the links, and vice versa.
+//
+// ══ THE TWO RULES THIS HALF EXISTS TO ENFORCE ═════════════════════════════════
+//
+//  1. THE ATOMIC SINGLE-USE WRITE. The `used_at IS NULL` predicate lives INSIDE the
+//     UPDATE, so "is this token still redeemable?" and "claim it" are one statement.
+//     Never a read-then-write pair — not even with a check in between: two concurrent
+//     redemptions of one link would both pass the read and both mint a session. The
+//     `expires_at >` predicate rides along for the same reason.
+//     `changes !== 1` is the ONLY thing that decides whether the token was ours;
+//     unknown, expired and already-used are therefore indistinguishable BY
+//     CONSTRUCTION, not by three branches that happen to return the same body.
+//
+//  2. ONE NEUTRAL FAILURE — one status, one message, one frozen literal, referenced
+//     from a single helper. Unknown / expired / used / inactive / ineligible /
+//     legacy-mode / malformed / over-length all answer with it. No `reason` field, no
+//     differing status codes: any distinction here is an oracle over token state, and
+//     the token is the whole credential.
+//     ⚠ Note the deliberate asymmetry with `/request` above, where a malformed body
+//     IS a distinct 400: there the input is an identifier the caller already knows,
+//     here the input is the secret itself, so "wrong shape" is already a statement
+//     about it.
+//
+// The raw token is read from the body, hashed, and dropped. It is never logged and
+// never echoed — a failure response carries nothing but the sentence below.
+
+// Generous but finite: the token is 64 hex chars. The bound exists so a multi-megabyte
+// string never reaches `createHash` (§UC-ML-005 "non-string or length > 128").
+const MAX_TOKEN_LENGTH = 128;
+
+// ⚠ THE one failure literal. Frozen, and reached through `neutralFailure()` only.
+// ⚠ Copy status: proposed, not signed (the consolidated §UC-ML-006 OPEN).
+const NEUTRAL_FAILURE = Object.freeze({
+  error: 'Odkaz na prihlásenie už nie je platný. Požiadajte o nový na prihlasovacej obrazovke.',
+});
+
+function neutralFailure(res) {
+  return res.status(401).json(NEUTRAL_FAILURE);
+}
+
+// Burn the token and resolve the friend, atomically. Returns `{ friend, session }` on
+// the one success path and `null` on every other.
+//
+// ⚠ THE BURN COMMITS EVEN WHEN THE ACCOUNT TURNS OUT TO BE INELIGIBLE. Returning null
+// from the callback is not a rollback (better-sqlite3 only rolls back on a throw), and
+// that is deliberate per §UC-ML-005 step 2: a token that reached an inactive or
+// credential-less account must not stay redeemable. An expired or already-used token,
+// by contrast, is never touched at all — the UPDATE's own predicates refuse it.
+function redeemLoginToken(rawToken) {
+  const tokenHash = hashLoginToken(rawToken);
+  const now = Date.now();
+
+  return db.transaction(() => {
+    const claim = db
+      .prepare(
+        'UPDATE login_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?'
+      )
+      .run(now, tokenHash, now);
+    // Unknown, expired, already used — one branch, no oracle.
+    if (claim.changes !== 1) return null;
+
+    // Safe as a second statement: the UPDATE above already claimed this row inside
+    // this transaction, so nothing else can be holding it. `token_hash` is UNIQUE.
+    const row = db.prepare('SELECT friend_id FROM login_tokens WHERE token_hash = ?').get(tokenHash);
+    const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(row.friend_id);
+    // Same eligibility as the request half: active, and a password to recover. A
+    // credential-less legacy friend must not gain a login side-door here.
+    if (!friend || !friend.password_hash) return null;
+
+    // ⚠ 24 h, and NO remember opt-in at redemption (resolved by the product owner
+    // 2026-08-15): a link can be opened on any device that reaches the friend's
+    // mailbox, including a borrowed one. The 60-day session stays an explicit
+    // checkbox on the login screen. `via` is written here and NOWHERE else.
+    //
+    // Sharing the transaction is fine — every write in this flow is synchronous and
+    // sub-millisecond, with no bcrypt anywhere (the IA-T3 invariant is about hashing,
+    // not about statement count).
+    const session = createFriendSession(friend.id, { via: 'magic_link' });
+    return { friend, session };
+  })();
+}
+
+router.post('/redeem', authLimiter, (req, res) => {
+  // ⚠ TYPE AND LENGTH FIRST — `hashLoginToken` throws a TypeError on a non-string
+  // (ML-T1 handover), and a 500 with a stack is both a broken contract and a
+  // difference an attacker can steer into. This is NOT a 400: see rule 2 above.
+  const rawToken = req.body?.token;
+  if (typeof rawToken !== 'string' || !rawToken || rawToken.length > MAX_TOKEN_LENGTH) {
+    return neutralFailure(res);
+  }
+
+  // Modern-mode only (01-architecture). Checked BEFORE the write, so a legacy-mode
+  // attempt leaves an outstanding token intact rather than silently burning it.
+  if (getAuthMode() !== 'modern') return neutralFailure(res);
+
+  let redeemed = null;
+  try {
+    redeemed = redeemLoginToken(rawToken);
+  } catch (e) {
+    // A failure inside the write must not surface as a 500 either — that is a
+    // difference visible to a caller, on exactly the path that does the extra work.
+    console.error(`[magic-link] redeem failed: ${e?.message || 'unknown error'}`);
+    return neutralFailure(res);
+  }
+  if (!redeemed) return neutralFailure(res);
+
+  const { friend, session } = redeemed;
+
+  // ⚠ MIRRORS `POST /friends/auth`'s personal branch (friends.js) field for field, so
+  // the frontend reuses its login handling verbatim — plus `viaMagicLink`, which
+  // ML-T6's prompt keys off. HAND-PICKED FIELDS, never the row itself: `invite_code`,
+  // `access_token`, `password_hash` and `google_sub` stay unpublished (07 §UC-IA-005).
+  res.json({
+    success: true,
+    friend: {
+      id: friend.id,
+      name: friend.name,
+      uid: friend.uid,
+      username: friend.username,
+      packeta_address: friend.packeta_address,
+    },
+    token: session.token,
+    expiresAt: session.expiresAt,
+    hasCredentials: true,
+    // Routes into the EXISTING forced-change gate (03 §UC-FL-012) exactly as a
+    // password login does — the forced flow wins over the §UC-ML-008 prompt.
+    mustChangePassword: !!friend.must_change_password,
+    viaMagicLink: true,
+  });
 });
 
 export default router;

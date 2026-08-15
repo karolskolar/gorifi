@@ -32,6 +32,16 @@ const routes = [
     name: 'invite-register',
     component: () => import('./views/InviteRegister.vue')
   },
+  // Magic-link recovery (09 §UC-ML-005). Public for the same reason as `/g/:token`
+  // and `/invite/:code`: the URL token is the whole credential, and this is the path
+  // for someone who cannot log in. ⚠ The document GET is side-effect-free — the view
+  // spends the token with an explicit POST on mount, because mail scanners and
+  // prefetchers follow GET links.
+  {
+    path: '/magic/:token',
+    name: 'magic-login',
+    component: () => import('./views/MagicLogin.vue')
+  },
   {
     path: '/onboard/:token',
     name: 'onboarding',

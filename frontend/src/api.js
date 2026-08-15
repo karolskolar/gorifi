@@ -180,6 +180,23 @@ export const api = {
     body: { currentPassword, newPassword }
   }),
   checkUsername: (username) => request(`/friends/check-username/${username}`),
+
+  // Magic-link recovery (09 §UC-ML-003 / §UC-ML-005). Both go through the standard
+  // `request()`: the endpoints are public and anonymous, and an ambient Bearer header
+  // is harmless on either — `/redeem` in particular is REACHED by someone who may
+  // already be signed in as a DIFFERENT friend, and the server ignores the header
+  // entirely (the URL token is the whole credential).
+  // ⚠ The raw token travels in the BODY of a POST, never as a GET side effect: mail
+  // scanners and link-prefetchers follow GET links, and a burned token would make the
+  // human's own click land on "already used".
+  requestMagicLink: (identifier) => request('/magic-link/request', {
+    method: 'POST',
+    body: { identifier }
+  }),
+  redeemMagicLink: (token) => request('/magic-link/redeem', {
+    method: 'POST',
+    body: { token }
+  }),
   getFriendsCycles: (friendId) => request(`/friends/cycles${friendId ? `?friendId=${friendId}` : ''}`),
 
   // Admin settings

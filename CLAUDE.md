@@ -324,6 +324,23 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 
 ### Rate-limit buckets, and `backend/public` (follow-ups, 2026-08-04)
 
+### ⚠ `<script setup>` has NO module scope — a singleton declared there is per-instance (ML-T3, 2026-08-15)
+
+`<script setup>` compiles its **entire body** into the component's `setup()`, so a
+`const` at its top level is created **fresh for every component instance**. Only
+`import`s are hoisted out. A module-scope singleton in an SFC therefore needs a
+**plain `<script>` block alongside** `<script setup>` — that is the only way to get one.
+
+Found on `MagicLogin.vue`'s single-shot redemption guard: it lived in `<script setup>`,
+*looked* module-scope, and was per-mount — so an in-SPA Back to `/magic/:token` fired the
+POST again and **spent a single-use login credential twice**. Caught only by the guard's
+own e2e ("Expected: 1, Received: 2"); nothing else would have noticed, because the server
+correctly refuses the replay and the page shows the same neutral card either way.
+
+⚠ **It fails silently in exactly the cases that matter** — a guard, a cache, a
+"warn once" flag, an in-flight-request dedupe. Verify in the BUILT chunk if unsure: the
+declaration must sit at module top level, not inside `setup(…)`.
+
 **Rate-limit buckets — `middleware/rate-limit.js` exports FIVE, each a SEPARATE bucket. Do not collapse them.**
 - `authLimiter` (`RATE_LIMIT_AUTH_MAX`, 20) — admin login, friend auth.
 - `abuseLimiter` (`RATE_LIMIT_ABUSE_MAX`, 40) — invite-code lookup, onboarding submit.

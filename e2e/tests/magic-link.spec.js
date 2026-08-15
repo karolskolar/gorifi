@@ -1,9 +1,15 @@
 // ML-T2 — 09 §UC-ML-003 (the enumeration-safe request endpoint), §UC-ML-004 (the
 // magic-link mail) and §UC-ML-009 rule 1 (a new request invalidates its predecessors).
+// ML-T3 — 09 §UC-ML-005 (redemption: the atomic single-use write, the ONE neutral 401,
+// the login-shaped 200, and the `/magic/:token` page) appended at the bottom.
 //
-// ⚠ REDEMPTION IS ML-T3's. This file covers the REQUEST half only; ML-T3 appends its
-// capture → redeem → authenticated-call tests here (§UC-ML-010 obligation 1 names this
-// exact filename for the full-flow spec), and ML-T7 appends the invalidation matrix.
+// ⚠ ML-T3 EXTENDED THIS FILE RATHER THAN ADDING ITS OWN, deliberately: §UC-ML-010
+// obligation 1 names this exact filename for the FULL-FLOW spec, ML-T2's header above
+// reserved it for exactly this append, and — the load-bearing reason — the raw token's
+// ONLY observable source is the stub-captured mail body, so every redemption test has
+// to sit inside the same `withMailHarness` + `makeApi` scaffolding the request tests
+// already build. A second file would have had to fork both. ML-T7 appends the
+// invalidation matrix here for the same reason.
 //
 // TWO EXECUTION MODES, and the split is forced by the environment:
 //
@@ -46,6 +52,21 @@ const NEEDS_SOURCE = 'needs the backend source beside e2e/ (skipped against a de
 // exact byte string. Asserted as raw text, not as a parsed object, so a reordered or
 // extended body reddens too.
 const NEUTRAL_BODY = '{"success":true}'
+
+// ⚠ ML-T3 / §UC-ML-005 — THE one failure literal. Unknown, expired, already used,
+// inactive, ineligible, legacy-mode, malformed and over-length all answer with this
+// exact status and these exact bytes. Asserted as raw text (and as an exact key set)
+// so an added `reason` field, a reordered body or a different status reddens.
+// ⚠ Copy status: PROPOSED, NOT SIGNED (the consolidated §UC-ML-006 OPEN).
+const NEUTRAL_401_BODY =
+  '{"error":"Odkaz na prihlásenie už nie je platný. Požiadajte o nový na prihlasovacej obrazovke."}'
+
+// `fullFriend` sets its password through the admin reset route, which raises
+// `must_change_password`; `cleanFriend` then changes it once to clear the flag.
+const INITIAL_PASSWORD = 'initPass123'
+const CHOSEN_PASSWORD = 'friendChosen9'
+
+const DAY_MS = 24 * 60 * 60 * 1000
 
 const MAGIC_SUBJECT = 'Prihlásenie do Podpultovky'
 // The mail carries the raw 64-hex token in three places (the text part, the button
@@ -104,6 +125,34 @@ function makeApi(ctx, adminToken) {
     request(identifier, opts = {}) {
       return ctx.post('/api/magic-link/request', { data: { identifier }, ...opts })
     },
+
+    // ── ML-T3 ────────────────────────────────────────────────────────────────
+    redeem(token, opts = {}) {
+      return ctx.post('/api/magic-link/redeem', { data: { token }, ...opts })
+    },
+    async setLegacyMode() {
+      const r = await ctx.put('/api/admin/settings', { headers: admin(), data: { authMode: 'legacy' } })
+      expect(r.status(), 'switch back to legacy auth mode').toBe(200)
+    },
+    async passwordLogin(username, password) {
+      const r = await ctx.post('/api/friends/auth', { data: { username, password } })
+      expect(r.status(), `password login for ${username}`).toBe(200)
+      return await r.json()
+    },
+    // `fullFriend` sets the password through the ADMIN reset route, which always
+    // raises `must_change_password` (modern-login.spec.js documents this). A friend
+    // who is NOT in the forced-change state therefore has to go through one real
+    // password change first — which is also what a real friend does.
+    async cleanFriend(tag, uniq, emailOverride) {
+      const friend = await this.fullFriend(tag, uniq, emailOverride)
+      const { token } = await this.passwordLogin(friend.username, INITIAL_PASSWORD)
+      const changed = await ctx.put(`/api/friends/${friend.id}/change-password`, {
+        headers: { Authorization: `Bearer ${token}` },
+        data: { newPassword: CHOSEN_PASSWORD },
+      })
+      expect(changed.status(), 'clear must_change_password').toBe(200)
+      return { ...friend, password: CHOSEN_PASSWORD }
+    },
   }
 }
 
@@ -135,6 +184,67 @@ function outstandingRows(dbPath, friendId) {
   } finally {
     db.close()
   }
+}
+
+// ── ML-T3 helpers ────────────────────────────────────────────────────────────
+
+/** The raw token out of the NEWEST captured mail. */
+function latestToken(stub) {
+  expect(stub.requests.length, 'a captured mail to read the token from').toBeGreaterThan(0)
+  const tokens = tokensIn(multipartFields(stub.requests[stub.requests.length - 1]).text)
+  expect(tokens.length, 'the mail carries a 64-hex token').toBeGreaterThan(0)
+  return tokens[0]
+}
+
+function sha256(value) {
+  return crypto.createHash('sha256').update(value).digest('hex')
+}
+
+function withDb(dbPath, fn) {
+  const db = new DatabaseSync(dbPath)
+  try {
+    return fn(db)
+  } finally {
+    db.close()
+  }
+}
+
+/** Request a link for `friend` and hand back the raw token the mail carried. */
+async function captureToken(api, stub, identifier) {
+  const before = stub.requests.length
+  const res = await api.request(identifier)
+  expect(await res.text(), 'the request half is unchanged by ML-T3').toBe(NEUTRAL_BODY)
+  await waitForStubCalls(stub, before + 1, `a link was mailed for ${identifier}`)
+  return latestToken(stub)
+}
+
+/**
+ * The per-response half of the neutral-failure assertion: ONE status, and a body
+ * carrying exactly one key. Returns the raw body.
+ *
+ * ⚠ IT DELIBERATELY DOES NOT COMPARE THE BODY TO `NEUTRAL_401_BODY`, and that is the
+ * whole point of splitting it this way. With the literal check in here, every caller's
+ * body was that literal BY CONSTRUCTION, so the `new Set(bodies).size === 1` assertions
+ * below could not fail independently — they were a restatement, not a cross-class
+ * check, and the comment claiming otherwise would have licensed someone to weaken this
+ * helper later (review finding, ML-T3). Kept OUT here, each collecting test asserts
+ * "there is exactly ONE distinct answer across all the classes I just exercised" AND
+ * "that answer is the specified sentence" — two genuinely different failures, both
+ * reachable: a class that answers with a different 401 body reddens the first, and a
+ * uniform change of the sentence reddens the second.
+ */
+async function expectNeutral401(res, label) {
+  const body = await res.text()
+  expect(res.status(), `${label}: one status`).toBe(401)
+  // No `reason`, no code, no field — any extra key is an oracle over token state.
+  expect(Object.keys(JSON.parse(body)).sort(), `${label}: exactly one key`).toEqual(['error'])
+  return body
+}
+
+/** The cross-class half: one distinct answer, and it is the specified sentence. */
+function expectOneNeutralShape(bodies, label) {
+  expect(new Set(bodies).size, `${label}: one failure shape across every class`).toBe(1)
+  expect(bodies[0], `${label}: and it is the specified sentence, byte for byte`).toBe(NEUTRAL_401_BODY)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -591,6 +701,555 @@ test.describe('UC-ML-003/004 — modern mode, on a throwaway backend with a stub
       } finally {
         check.close()
       }
+    })
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ML-T3 · 09 §UC-ML-005 — REDEMPTION
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The two properties this half exists to hold, and what pins each:
+//
+//  1. THE ATOMIC SINGLE-USE WRITE. `UPDATE login_tokens SET used_at = ? WHERE
+//     token_hash = ? AND used_at IS NULL AND expires_at > ?` — the `used_at IS NULL`
+//     predicate INSIDE the write IS the mechanism, never a read-then-write pair. What
+//     a test can see of it: a second redeem of the same token fails, and the row it
+//     failed on carries the FIRST redemption's `used_at`.
+//  2. ONE NEUTRAL FAILURE — one status, one message, for unknown / expired / used /
+//     inactive / ineligible / legacy-mode / malformed / over-length. Pinned by
+//     collecting every class's raw body into one array and asserting a single distinct
+//     value, which is stronger than N independent comparisons against a literal: it
+//     also catches a future class that answers differently from all the others.
+//
+// ⚠ Note the deliberate asymmetry with the REQUEST endpoint above: there a malformed
+// body is a 400 with a `field` marker; here it is the same 401 as everything else,
+// because on this endpoint the input IS the secret and "your token is the wrong shape"
+// is already a statement about it.
+
+test.describe('UC-ML-005 — redemption failure shape (shared server, mode-independent)', () => {
+  let ctx
+  let api
+
+  test.beforeEach(async () => {
+    ctx = await playwrightRequest.newContext({ baseURL: BASE_URL })
+    const adminToken = (await (await ctx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })).json()).token
+    api = makeApi(ctx, adminToken)
+  })
+
+  test.afterEach(async () => {
+    await ctx.dispose()
+  })
+
+  test('a malformed token is the SAME neutral 401 — never a 400, never a 500', async () => {
+    // ⚠ ML-T1's handover: `hashLoginToken` throws a TypeError on a non-string, so the
+    // type/length guard has to run BEFORE the hash or every one of these becomes a 500
+    // with a stack — a difference an attacker can steer into.
+    const bodies = []
+    for (const value of [5, null, true, {}, [], ['a'], { toString: null }, '']) {
+      const res = await api.redeem(value)
+      bodies.push(await expectNeutral401(res, `token = ${JSON.stringify(value)}`))
+      expect(await res.text(), 'no stack trace leaked').not.toContain('    at ')
+    }
+    const absent = await ctx.post('/api/magic-link/redeem', { data: {} })
+    bodies.push(await expectNeutral401(absent, 'absent token'))
+
+    expectOneNeutralShape(bodies, 'every malformed shape')
+  })
+
+  test('an over-length token is the same neutral 401 (128 is the bound, not a 400)', async () => {
+    const bodies = []
+    bodies.push(await expectNeutral401(await api.redeem('a'.repeat(200)), '200 chars'))
+    bodies.push(await expectNeutral401(await api.redeem('b'.repeat(129)), '129 chars'))
+    // Non-vacuity: 128 is INSIDE the bound and still fails — for the ordinary reason
+    // (no such token), with the identical body. The bound is not what refuses it.
+    bodies.push(await expectNeutral401(await api.redeem('c'.repeat(128)), '128 chars'))
+    expectOneNeutralShape(bodies, 'over/at/under the length bound')
+  })
+
+  test('a well-formed but unknown 64-hex token is the same neutral 401', async () => {
+    const res = await api.redeem(crypto.randomBytes(32).toString('hex'))
+    const body = await expectNeutral401(res, 'unknown 64-hex token')
+    expect(body).toBe(NEUTRAL_401_BODY)
+  })
+
+  test('the endpoint is public — an anonymous caller reaches it', async () => {
+    const anon = await playwrightRequest.newContext({ baseURL: BASE_URL })
+    try {
+      const res = await anon.post('/api/magic-link/redeem', { data: { token: 'd'.repeat(64) } })
+      expect(await expectNeutral401(res, 'anonymous caller')).toBe(NEUTRAL_401_BODY)
+      expect(res.headers()['content-type'] || '').toContain('application/json')
+    } finally {
+      await anon.dispose()
+    }
+  })
+
+  test('no redemption response ever carries a session token or a 64-hex string', async () => {
+    const body = await (await api.redeem('e'.repeat(64))).text()
+    expect(body, 'a failure hands back nothing at all').not.toMatch(/[a-f0-9]{64}/)
+  })
+})
+
+test.describe('UC-ML-005 — redemption (throwaway backend, modern mode)', () => {
+  test('the captured token redeems ONCE: login-shaped 200, a 24 h session, a working Bearer', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+      const friend = await api.cleanFriend('redeem', uniq)
+
+      const token = await captureToken(api, stub, friend.username)
+
+      const before = Date.now()
+      const res = await api.redeem(token)
+      expect(res.status(), 'the happy path').toBe(200)
+      const body = await res.json()
+
+      // ⚠ The 200 MIRRORS `POST /friends/auth`'s personal branch so the frontend can
+      // reuse its login handling verbatim, plus `viaMagicLink`. ML-T6 keys off this.
+      expect(Object.keys(body).sort()).toEqual(
+        ['expiresAt', 'friend', 'hasCredentials', 'mustChangePassword', 'success', 'token', 'viaMagicLink']
+      )
+      expect(body.success).toBe(true)
+      expect(body.hasCredentials).toBe(true)
+      expect(body.viaMagicLink, 'the provenance flag ML-T6 keys off').toBe(true)
+      expect(body.mustChangePassword, 'this friend already chose their own password').toBe(false)
+
+      // ⚠ HAND-PICKED FIELDS, never `SELECT *` (07 §UC-IA-005). A raw-text sweep as
+      // well as the key set, so a later `SELECT *` fails loudly rather than quietly.
+      expect(Object.keys(body.friend).sort()).toEqual(['id', 'name', 'packeta_address', 'uid', 'username'])
+      expect(body.friend.id).toBe(friend.id)
+      expect(body.friend.username).toBe(friend.username)
+      expect(await res.text()).not.toMatch(/invite_code|access_token|password_hash|google_sub|email/)
+
+      // 24 h — no remember opt-in at redemption (resolved by the product owner
+      // 2026-08-15: the page never offers the checkbox).
+      expect(body.expiresAt - before).toBeGreaterThan(DAY_MS - 60_000)
+      expect(body.expiresAt - before).toBeLessThan(DAY_MS + 60_000)
+
+      // The minted Bearer is a REAL session: it passes an owner-scoped call.
+      const profile = await ctx.get(`/api/friends/${friend.id}/profile`, {
+        headers: { Authorization: `Bearer ${body.token}` },
+      })
+      expect(profile.status(), 'the minted Bearer authenticates').toBe(200)
+      expect((await profile.json()).id).toBe(friend.id)
+
+      // Storage side: the row is burned, and the session carries the provenance.
+      const rows = outstandingRows(backend.dbPath, friend.id)
+      expect(rows.length, 'the row is kept, not deleted').toBe(1)
+      expect(rows[0].token_hash).toBe(sha256(token))
+      expect(rows[0].used_at, '`used_at` was stamped by the UPDATE itself').toBeTruthy()
+      const usedAt = rows[0].used_at
+
+      // ⚠ Scoped to `via = 'magic_link'`, NOT to "the friend has one session": the
+      // fixture's own password change already re-minted a (NULL-`via`) session, and a
+      // redemption does not invalidate other devices. Counting all rows here would be
+      // asserting the fixture, not the feature.
+      const magicSessions = () => withDb(backend.dbPath, (db) =>
+        db.prepare("SELECT token FROM friend_sessions WHERE friend_id = ? AND via = 'magic_link'")
+          .all(friend.id))
+      expect(magicSessions().length, 'exactly one magic-link session was minted').toBe(1)
+      expect(magicSessions()[0].token).toBe(body.token)
+      // Non-vacuity for the `via` write: the fixture's password-login re-mint is right
+      // beside it and carries NULL, so "one magic_link row" is a real discrimination.
+      expect(
+        withDb(backend.dbPath, (db) =>
+          db.prepare('SELECT COUNT(*) AS n FROM friend_sessions WHERE friend_id = ? AND via IS NULL')
+            .get(friend.id).n),
+        'the password-login session beside it still carries NULL `via`'
+      ).toBeGreaterThan(0)
+
+      // ── SINGLE USE ──────────────────────────────────────────────────────────
+      const second = await api.redeem(token)
+      expect(
+        await expectNeutral401(second, 'a second redemption of the same token'),
+        'a spent token is refused with the SAME sentence as an unknown one'
+      ).toBe(NEUTRAL_401_BODY)
+      const afterSecond = outstandingRows(backend.dbPath, friend.id)
+      expect(
+        afterSecond[0].used_at,
+        'the failed second attempt did not re-stamp the row — the predicate refused the write'
+      ).toBe(usedAt)
+      expect(magicSessions().length, 'and it minted no second session').toBe(1)
+    })
+  })
+
+  test('a `must_change_password` friend redeems with the flag set (the forced gate, not new gate code)', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withMailHarness(MAIL_ENV, async ({ stub, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      // `fullFriend` sets the password via the ADMIN reset route, so this friend is in
+      // the forced-change state — exactly the resolved-conflict-#4 case: the link logs
+      // them in and 03 §UC-FL-012's existing gate appears.
+      const friend = await api.fullFriend('forced', uniq)
+      const token = await captureToken(api, stub, friend.username)
+
+      const body = await (await api.redeem(token)).json()
+      expect(body.mustChangePassword, 'the forced flow wins over the magic-link prompt').toBe(true)
+      expect(body.viaMagicLink).toBe(true)
+    })
+  })
+
+  test('every failure class returns the byte-identical neutral 401', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const bodies = []
+
+      // (1) expired — manufactured by writing `expires_at`, never by waiting 15
+      //     minutes and never by adding a TTL env knob (§UC-ML-010 obligation 2).
+      const expiredFriend = await api.cleanFriend('expired', uniq)
+      const expiredToken = await captureToken(api, stub, expiredFriend.username)
+      withDb(backend.dbPath, (db) =>
+        db.prepare('UPDATE login_tokens SET expires_at = ? WHERE token_hash = ?')
+          .run(Date.now() - 1000, sha256(expiredToken)))
+      bodies.push(await expectNeutral401(await api.redeem(expiredToken), 'expired token'))
+      expect(
+        outstandingRows(backend.dbPath, expiredFriend.id)[0].used_at,
+        'an expired token is NOT burned — the `expires_at >` predicate refused the write'
+      ).toBeFalsy()
+
+      // (2) the friend was deactivated after the link was issued.
+      //     ⚠ The token IS burned first even here — deliberate: a token that reached
+      //     an ineligible account must not stay redeemable.
+      const goneFriend = await api.cleanFriend('gone', uniq)
+      const goneToken = await captureToken(api, stub, goneFriend.username)
+      await api.deactivate(goneFriend.id)
+      bodies.push(await expectNeutral401(await api.redeem(goneToken), 'deactivated friend'))
+      expect(
+        outstandingRows(backend.dbPath, goneFriend.id)[0].used_at,
+        'burned anyway — an ineligible account must not leave a redeemable token behind'
+      ).toBeTruthy()
+      expect(
+        withDb(backend.dbPath, (db) =>
+          db.prepare("SELECT COUNT(*) AS n FROM friend_sessions WHERE friend_id = ? AND via = 'magic_link'")
+            .get(goneFriend.id).n),
+        'and no magic-link session was minted for the inactive friend'
+      ).toBe(0)
+
+      // (3) already used
+      const usedFriend = await api.cleanFriend('used', uniq)
+      const usedToken = await captureToken(api, stub, usedFriend.username)
+      expect((await api.redeem(usedToken)).status()).toBe(200)
+      bodies.push(await expectNeutral401(await api.redeem(usedToken), 'already-used token'))
+
+      // (4) unknown / malformed / over-length, on the same server as the rest
+      bodies.push(await expectNeutral401(await api.redeem(crypto.randomBytes(32).toString('hex')), 'unknown'))
+      bodies.push(await expectNeutral401(await api.redeem(42), 'non-string'))
+      bodies.push(await expectNeutral401(await api.redeem('f'.repeat(500)), 'over-length'))
+
+      // (5) LEGACY MODE — a perfectly valid, outstanding token still fails. This is
+      //     the only place the mode gate can be exercised with a REAL token: the
+      //     shared server may never be flipped, and a legacy-mode request writes no
+      //     row to redeem.
+      const legacyFriend = await api.cleanFriend('legacy', uniq)
+      const legacyToken = await captureToken(api, stub, legacyFriend.username)
+      await api.setLegacyMode()
+      bodies.push(await expectNeutral401(await api.redeem(legacyToken), 'legacy mode'))
+      expect(
+        outstandingRows(backend.dbPath, legacyFriend.id)[0].used_at,
+        'the mode gate runs BEFORE the write — the token survives a legacy-mode attempt'
+      ).toBeFalsy()
+
+      // ⚠ THE cross-class assertion, and it is load-bearing precisely because
+      // `expectNeutral401` no longer compares bodies to the literal: each of the seven
+      // classes above could have answered 401-with-one-key and a DIFFERENT sentence,
+      // and only this catches it.
+      expectOneNeutralShape(bodies, 'all seven failure classes')
+    })
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ML-T3 · the `/magic/:token` PAGE
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠ REDEMPTION IS A POST FIRED BY THE PAGE'S JS, NEVER A GET SIDE EFFECT. Corporate
+// mail scanners and link-prefetchers (the Outlook SafeLinks class) follow GET links; if
+// the SPA document GET burned the token, the human's click would always land on
+// "already used". So the assertions below are about the POST: that the document GET
+// alone changes nothing, that exactly ONE POST is fired per visit, and that a re-visit
+// of the same token does not fire a second one.
+
+test.describe('UC-ML-005 — the /magic/:token page (shared server, terminal state)', () => {
+  // The shared server is LEGACY, so every token — well-formed or not — takes the
+  // neutral-failure branch for real. That makes this the honest end-to-end test of the
+  // failure page: no stub, no fixture, the server's own 401.
+
+  test('the document GET alone redeems nothing — the POST is what does', async ({ page }) => {
+    let posts = 0
+    await page.route('**/api/magic-link/redeem', (route) => {
+      posts += 1
+      return route.continue()
+    })
+
+    await page.goto(`/magic/${'a'.repeat(64)}`)
+    await expect(page.getByTestId('magic-failed')).toBeVisible()
+    expect(posts, 'exactly one POST — and it came from the page, not from the navigation').toBe(1)
+
+    // No auto-retry loop: give it a beat and prove nothing else fired.
+    await page.waitForTimeout(1500)
+    expect(posts, 'no retry loop').toBe(1)
+  })
+
+  test('the failure page shows the neutral message and the way back', async ({ page }) => {
+    await page.goto(`/magic/${'b'.repeat(64)}`)
+
+    const card = page.getByTestId('magic-failed')
+    await expect(card).toBeVisible()
+    // ⚠ `innerText` applies `text-transform`, and this card's headline is uppercase —
+    // so the MESSAGE is asserted on its own element with `toHaveText` (textContent,
+    // untransformed) rather than swept out of the card's innerText.
+    await expect(page.getByTestId('magic-error')).toHaveText(
+      'Odkaz na prihlásenie už nie je platný. Požiadajte o nový na prihlasovacej obrazovke.'
+    )
+
+    // Nothing was stored — a failed redemption must not leave a half-session behind.
+    expect(await page.evaluate(() => localStorage.getItem('gorifi_friend_auth'))).toBeNull()
+
+    await page.getByRole('button', { name: 'Späť na prihlásenie' }).click()
+    await expect(page).toHaveURL(`${BASE_URL}/`)
+  })
+
+  test('the single-shot guard survives an IN-SPA re-navigation to the same token', async ({ page }) => {
+    // ⚠ THE GUARD IS MODULE-SCOPE, so what it protects against is a re-MOUNT inside one
+    // document — Back, or any in-SPA route change that returns here. A fresh document
+    // load legitimately re-attempts (new module state, and the server is the real
+    // single-use authority anyway); the case that must never happen is one page session
+    // firing the same single-use credential twice.
+    let posts = 0
+    await page.route('**/api/magic-link/redeem', (route) => {
+      posts += 1
+      return route.continue()
+    })
+
+    await page.goto(`/magic/${'d'.repeat(64)}`)
+    await expect(page.getByTestId('magic-failed')).toBeVisible()
+    expect(posts).toBe(1)
+
+    await page.getByRole('button', { name: 'Späť na prihlásenie' }).click()
+    await expect(page).toHaveURL(`${BASE_URL}/`)
+
+    // Back — a history pop, handled by vue-router without a document load.
+    await page.goBack()
+    await expect(page.getByTestId('magic-failed')).toBeVisible()
+    expect(posts, 'the guard held — no second POST for a token already attempted').toBe(1)
+  })
+
+  // ⚠ THE PAGE HAS EXACTLY ONE FAILURE VOCABULARY — it renders its own constant, never
+  // the thrown error's `.message`. `api.js`'s `request()` ALWAYS throws an Error with a
+  // non-empty message, so an `e?.message || NEUTRAL` fallback is unreachable and the
+  // page rendered raw English ("Failed to fetch") or the wrong sentence ("Chyba
+  // servera", a limiter message) on a public Slovak screen — to someone who by
+  // definition cannot log in, with no retry affordance. Without this test the fix is a
+  // one-token change nothing would notice being reverted.
+  for (const [label, handler] of [
+    ['a dead network', (route) => route.abort()],
+    ['a 500 from the server', (route) => route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'Chyba servera' }),
+    })],
+    ['a 429 with a limiter message', (route) => route.fulfill({
+      status: 429,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'Príliš veľa pokusov. Skúste to neskôr.' }),
+    })],
+  ]) {
+    test(`${label} still renders the ONE neutral sentence, not the error's own`, async ({ page }) => {
+      await page.route('**/api/magic-link/redeem', handler)
+      await page.goto(`/magic/${'e'.repeat(64)}`)
+
+      await expect(page.getByTestId('magic-error')).toHaveText(
+        'Odkaz na prihlásenie už nie je platný. Požiadajte o nový na prihlasovacej obrazovke.'
+      )
+      // Explicit absences: these are the exact strings the unreachable-fallback bug put
+      // on screen, and a passing text assertion above would not by itself prove they
+      // are gone if the copy were ever appended rather than replaced.
+      const card = page.getByTestId('magic-failed')
+      await expect(card).not.toContainText('Failed to fetch')
+      await expect(card).not.toContainText('Chyba servera')
+      await expect(card).not.toContainText('Príliš veľa pokusov')
+      await expect(card.getByRole('button', { name: 'Späť na prihlásenie' })).toBeVisible()
+    })
+  }
+
+  test('the mounting state announces itself while the POST is in flight', async ({ page }) => {
+    await page.route('**/api/magic-link/redeem', async (route) => {
+      await new Promise((r) => setTimeout(r, 1200))
+      return route.continue()
+    })
+    await page.goto(`/magic/${'c'.repeat(64)}`)
+    await expect(page.getByTestId('magic-verifying')).toBeVisible()
+    await expect(page.getByTestId('magic-verifying')).toHaveText('Overujem odkaz...')
+    await expect(page.getByTestId('magic-failed')).toBeVisible()
+  })
+})
+
+test.describe('UC-ML-005 — the /magic/:token page, full flow (throwaway backend)', () => {
+  test('clicking the mailed link logs the friend in — and replaces whoever was signed in', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const alice = await api.cleanFriend('alice', uniq)
+      const bob = await api.cleanFriend('bob', uniq)
+
+      let posts = 0
+      await page.route('**/api/magic-link/redeem', (route) => {
+        posts += 1
+        return route.continue()
+      })
+
+      // ── Alice is already signed in on this device ────────────────────────────
+      const aliceAuth = await api.passwordLogin(alice.username, CHOSEN_PASSWORD)
+      await page.goto(`${backend.baseUrl}/`)
+      await page.evaluate((payload) => {
+        localStorage.setItem('gorifi_friend_auth', payload)
+      }, JSON.stringify({
+        friendId: alice.id,
+        friendName: alice.name,
+        friendUid: alice.uid,
+        token: aliceAuth.token,
+        expiresAt: aliceAuth.expiresAt,
+        // ⚠ A SIBLING FLAG THAT ONLY ALICE SET. This is what makes the overwrite rule
+        // discriminating: every OTHER key is written by the redemption anyway, so a
+        // merge (`{...old, ...fresh}`) would look identical on all of them and only
+        // this one would betray it. `magicPromptDismissed` is not a hypothetical —
+        // it is the flag ML-T6 persists here, and inheriting Alice's dismissal would
+        // silently suppress Bob's prompt on his very first magic-link login.
+        magicPromptDismissed: true,
+      }))
+      await page.goto(`${backend.baseUrl}/`)
+      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+
+      // ── Bob's link is clicked on Alice's device ──────────────────────────────
+      const token = await captureToken(api, stub, bob.username)
+      await page.goto(`${backend.baseUrl}/magic/${token}`)
+
+      // Success replaces the page with the portal — `router.replace('/')`.
+      await expect(page).toHaveURL(`${backend.baseUrl}/`)
+      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      expect(posts, 'one POST per visit, fired by the page').toBe(1)
+
+      // ⚠ THE SIX-LEAK SURFACE. Clicking a valid login link means "log in as this
+      // link's owner", including when the device held someone else's session — so
+      // NOTHING of Alice may survive. Asserted on the whole storage blob, not just on
+      // the fields we happen to rewrite.
+      const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('gorifi_friend_auth') || 'null'))
+      expect(stored, 'a session was stored').toBeTruthy()
+      expect(stored.friendId).toBe(bob.id)
+      expect(stored.friendName).toBe(bob.name)
+      expect(stored.token).not.toBe(aliceAuth.token)
+      expect(stored.expiresAt - Date.now()).toBeGreaterThan(DAY_MS - 5 * 60_000)
+      expect(stored.expiresAt - Date.now()).toBeLessThan(DAY_MS + 60_000)
+      expect(
+        stored,
+        "the payload is OVERWRITTEN, not merged — none of Alice's sibling flags survive"
+      ).not.toHaveProperty('magicPromptDismissed')
+      expect(Object.keys(stored).sort()).toEqual(
+        ['expiresAt', 'friendId', 'friendName', 'friendUid', 'token', 'viaMagicLink']
+      )
+
+      const wholeStorage = await page.evaluate(() => JSON.stringify(localStorage))
+      expect(wholeStorage, "Alice's session token is gone from this device").not.toContain(aliceAuth.token)
+      expect(wholeStorage, "Alice's name is gone from this device").not.toContain(alice.name)
+
+      // The appbar renders the NEW friend, so the leak would be visible too.
+      await expect(page.locator('.appbar')).toContainText(bob.name)
+
+      // ── single use, seen from the UI ────────────────────────────────────────
+      // A FRESH DOCUMENT LOAD legitimately re-attempts (new module state — the
+      // in-document guard is pinned separately on the shared server above), and the
+      // server refuses it. So the second click of a mailed link shows the neutral page,
+      // which is the whole user-visible point of the single-use rule.
+      await page.goto(`${backend.baseUrl}/magic/${token}`)
+      await expect(page.getByTestId('magic-failed')).toBeVisible()
+      expect(posts, 'a new document attempted once more, and was refused').toBe(2)
+    })
+  })
+
+  // ⚠ THE FRONTEND HALF OF `mustChangePassword` (§UC-ML-005 / resolved conflict #4).
+  // The API half is asserted above, but it never opens a browser — and the two hunks
+  // that carry the flag from the 200 into 03 §UC-FL-012's gate live in
+  // `FriendPortal.vue`, on the session-RESTORE path (the documented six-leak surface).
+  // Deleting either left the whole suite green before this test existed:
+  //
+  //   · `beginSession({ mustChangePassword: !!parsed.mustChangePassword })` — without
+  //     it the gate never opens, and a friend whose password an admin just reset is
+  //     silently let into the app with the admin's password still live.
+  //   · `onForcedComplete`'s localStorage delete — without it `must_change_password`
+  //     is 0 server-side while the stored payload still says 1, so EVERY RELOAD of
+  //     that session re-opens a gate the friend already satisfied. Exactly the
+  //     "passes in a fresh test, rots in real use" shape. ⚠ BOTH the persisted-flag
+  //     assertion below AND the reload catch this, independently — measured, after an
+  //     earlier version of this comment claimed only the reload did. Neither is
+  //     redundant garnish: the flag assertion names the cause, the reload pins the
+  //     user-visible consequence (a satisfied gate must not re-open).
+  test('a `must_change_password` friend lands in the forced gate — and it does not come back', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      // `fullFriend` sets the password through the ADMIN reset route, which raises
+      // `must_change_password` — no `cleanFriend` here, deliberately.
+      const friend = await api.fullFriend('uiforced', uniq)
+      const token = await captureToken(api, stub, friend.username)
+
+      const stored = () => page.evaluate(
+        () => JSON.parse(localStorage.getItem('gorifi_friend_auth') || 'null'))
+      const gate = page.getByTestId('forced-password-change')
+
+      // ── redemption lands in the gate ────────────────────────────────────────
+      await page.goto(`${backend.baseUrl}/magic/${token}`)
+      await expect(page).toHaveURL(`${backend.baseUrl}/`)
+      await expect(gate, '03 §UC-FL-012\'s EXISTING gate, reached from a magic link').toBeVisible()
+      expect((await stored()).mustChangePassword, 'the flag rode in on the stored payload').toBe(true)
+
+      // ── satisfying it clears the flag, in the DB and on the device ──────────
+      const newPassword = 'magicSet12345'
+      await page.locator('#pp-forced-new-password').fill(newPassword)
+      await page.locator('#pp-forced-new-password-confirm').fill(newPassword)
+      await gate.getByRole('button', { name: /Nastaviť heslo a pokračovať/ }).click()
+      await expect(gate).toHaveCount(0)
+
+      const afterChange = await stored()
+      expect(
+        afterChange,
+        'the persisted flag is deleted — otherwise it outlives the server-side 0'
+      ).not.toHaveProperty('mustChangePassword')
+      // The re-mint really happened (the change-password path invalidates + re-mints),
+      // so the cleanup is running against a payload that was just rewritten by
+      // `onToken` — the ordering of the two emits matters and this pins it.
+      expect(afterChange.token, 'a fresh session token was stored').toBeTruthy()
+
+      // ── and it does not come back ───────────────────────────────────────────
+      await page.reload()
+      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expect(gate, 'a satisfied gate must not re-open on every reload').toHaveCount(0)
+
+      // Non-vacuity for the whole test: the new password is the one that now works,
+      // so the gate was a real credential change and not a dismissed dialog.
+      const relogin = await ctx.post('/api/friends/auth', {
+        data: { username: friend.username, password: newPassword },
+      })
+      expect(relogin.status(), 'the password the friend chose in the gate authenticates').toBe(200)
+      expect((await relogin.json()).mustChangePassword, 'and the server flag is cleared too').toBe(false)
     })
   })
 })

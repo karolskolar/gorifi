@@ -173,7 +173,13 @@ async function loadInitialData() {
             friendUid: parsed.friendUid
           })
           try {
-            await beginSession()
+            // ⚠ 09 §UC-ML-005 / resolved conflict #4 — the ONLY writer of this flag
+            // is `MagicLogin.vue`, which reaches the portal by a route change rather
+            // than through `authenticate*()`, so the stored payload is the only
+            // channel it has. It routes into 03 §UC-FL-012's EXISTING gate — no new
+            // gate code — exactly as a password login's `mustChangePassword` does.
+            // Absent on every payload written before ML-T3 ⇒ `false` ⇒ unchanged.
+            await beginSession({ mustChangePassword: !!parsed.mustChangePassword })
             hydrateCurrentFriend(parsed.friendId)
             return
           } catch {
@@ -418,7 +424,19 @@ async function authenticatePersonal() {
 // outlive any one session; the child never touches either directly.
 // ---------------------------------------------------------------------------
 
-/** A fresh session token from a password change / credential setup. */
+/** A fresh session token from a password change / credential setup.
+ *
+ *  ⚠ SEAM FOR ML-T6 (09 §UC-ML-008), verified live and recorded so it is not lost:
+ *  `viaMagicLink: true` in the stored payload SURVIVES this re-mint today — this
+ *  function only rewrites `token`/`expiresAt`. But change-password and
+ *  setup-credentials re-mint with `via` NULL on purpose (see the comments at
+ *  `friends.js`), and that NULL is exactly what retires the UC-ML-008
+ *  `currentPassword` waiver. So the stored flag would outlive the session property it
+ *  claims to describe, and the prompt would keep offering a waiver the server no
+ *  longer grants. **ML-T6 must clear `viaMagicLink` HERE, in `onToken` — not only in
+ *  its own prompt logic**, because this is the one place that learns a re-mint
+ *  happened. ML-T3 deliberately does not touch it: nothing reads the flag yet, and
+ *  clearing a flag whose consumer does not exist would ship an unpinned behaviour. */
 function onToken({ token, expiresAt } = {}) {
   if (!token) return
   setFriendsToken(token)
@@ -467,6 +485,23 @@ function onFriendMerged(fields) {
 /** UC-FL-012's gate is satisfied — drop the stashed plaintext password. */
 function onForcedComplete() {
   if (entry.value) entry.value = { ...entry.value, mustChangePassword: false, currentPassword: '' }
+
+  // ⚠ And clear the PERSISTED flag a magic-link redemption may have written
+  // (09 §UC-ML-005). Without this, `must_change_password` is 0 server-side but the
+  // stored payload still says 1, so every reload of this session would re-open a gate
+  // the friend has already satisfied — a nag with nothing behind it.
+  const stored = localStorage.getItem(STORAGE_KEY)
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored)
+      if (parsed.mustChangePassword) {
+        delete parsed.mustChangePassword
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+      }
+    } catch {
+      // A corrupt payload is already handled by the restore path; nothing to do.
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

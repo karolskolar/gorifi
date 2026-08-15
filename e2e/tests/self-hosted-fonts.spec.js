@@ -316,13 +316,20 @@ test.describe('No public route fetches a third-party subresource', () => {
 
   test.afterAll(async () => { await ctx?.dispose() })
 
-  test('/ , /invite/:code and /g/:token each fetch only same-origin subresources', async ({ page, baseURL }) => {
+  test('/ , /invite/:code, /g/:token and /magic/:token each fetch only same-origin subresources', async ({ page, baseURL }) => {
     const origin = new URL(baseURL).origin
     const offenders = {}
 
     // `/invite/:code` renders its logo OUTSIDE the loading/invalid/valid branch,
     // so an unknown code still exercises the chrome this test exists for.
-    const routes = ['/', `/invite/RDDS6-${uniq}`, `/g/${guestToken}`]
+    //
+    // `/magic/:token` (ML-T3, 09 §UC-ML-005) is a NEW public unauthenticated route
+    // that renders its own chrome (`BrandChrome`, per the RD-DS-6 rule: "any new
+    // public route must be added to that list"). A garbage 64-hex token is enough —
+    // the redemption POST 401s (neutral failure, any auth mode) and the failure card
+    // renders the same chrome the happy path would, which is what this sweep exists
+    // to exercise.
+    const routes = ['/', `/invite/RDDS6-${uniq}`, `/g/${guestToken}`, `/magic/${'f'.repeat(64)}`]
 
     for (const route of routes) {
       const external = watchExternal(page, origin)
