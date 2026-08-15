@@ -84,7 +84,7 @@ function redact(text, apiKey) {
   return str.split(apiKey).join('***');
 }
 
-export async function sendMail({ to, subject, text }) {
+export async function sendMail({ to, subject, text, html }) {
   // ⚠ THE ORDER OF THESE THREE CHECKS IS THREE SEPARATE RULES.
   //
   // 1. RECIPIENT PRESENCE FIRST, ahead of the config check. §UC-IA-009's acceptance
@@ -113,7 +113,30 @@ export async function sendMail({ to, subject, text }) {
   form.set('from', fromAddress(config.domain));
   form.set('to', recipient);
   form.set('subject', String(subject ?? ''));
-  form.set('text', String(text ?? ''));
+  const textPart = String(text ?? '');
+  form.set('text', textPart);
+
+  // Optional html part (08 §UC-EM-001). Mailgun assembles the MIME
+  // multipart/alternative from the `text` + `html` FORM FIELDS itself — this module
+  // never builds MIME.
+  //
+  // ⚠ THE PLAIN-TEXT PART IS ALWAYS PRESENT — the deliverability baseline. `html`
+  // with an empty/absent `text` is a programming error: the html field is DROPPED
+  // and the send degrades to text-only (today's behaviour), because per rule 3 an
+  // html-only message must neither go out nor throw — the caller (a template layer
+  // rendering inside try/catch) leans on exactly this contract.
+  if (typeof html === 'string' && html !== '' && textPart !== '') {
+    form.set('html', html);
+  }
+
+  // Tracking is disabled PER MESSAGE, on every send, text-only included
+  // (08 §UC-EM-001): open-tracking injects a remote pixel into the html (violating
+  // the no-remote-images rule) and click-tracking rewrites hrefs through the sending
+  // domain (violating the canonical podpultovka.biz URL in outbound mail). The
+  // per-message flags make the outcome deterministic regardless of the Mailgun
+  // account's domain-level settings.
+  form.set('o:tracking-clicks', 'no');
+  form.set('o:tracking-opens', 'no');
 
   try {
     const res = await fetch(`${config.baseUrl}/v3/${config.domain}/messages`, {

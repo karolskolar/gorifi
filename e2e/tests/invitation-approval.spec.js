@@ -6,7 +6,7 @@ import net from 'node:net'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   ADMIN_PASSWORD,
   TARGET_IS_LOCAL,
@@ -1189,6 +1189,215 @@ test.describe('Approval + Mailgun — the stubbed transport', () => {
         const bareBody = await bareRes.json()
         expect(bareBody.login_url).toBe('https://podpultovka.biz')
         expect(bareBody.credentials_message).toContain('Prihlás sa na https://podpultovka.biz -')
+      }
+    )
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EM-T1 / 08 §UC-EM-001 — `sendMail()` grows an optional `html` part, and EVERY send
+// (text-only included) carries the per-message tracking-disable flags.
+//
+// The mailer still has ZERO html callers (the template layer is EM-T2's), so the html
+// half cannot be exercised through any route — these tests drive `sendMail()` DIRECTLY:
+// a spawned Node child imports `backend/src/helpers/mailer.js` with the three MAILGUN_*
+// vars pointed at the same local stub the transport tests use. That is not a unit
+// runner sneaking in (01-architecture §Testing & gate): it is the same
+// stub-interception harness, minus the throwaway backend it does not need.
+//
+// What is pinned, and why:
+//   1. `html` present ⇒ ONE request whose multipart body carries BOTH a `text` and an
+//      `html` field. Mailgun assembles the MIME multipart/alternative itself — the
+//      mailer never builds MIME, so the FORM FIELDS are the whole contract.
+//   2. `o:tracking-clicks=no` + `o:tracking-opens=no` on EVERY send. Open-tracking
+//      injects a remote pixel (violating 08's no-remote-images rule) and
+//      click-tracking rewrites hrefs through the sending domain (violating the
+//      canonical-URL rule) — the per-message flags make the outcome deterministic
+//      regardless of the Mailgun account's domain-level settings.
+//   3. ⚠ `html` with an EMPTY/ABSENT `text` degrades to TEXT-ONLY and never throws.
+//      The plain-text part is the deliverability baseline; an html-only message is a
+//      programming error the mailer absorbs. EM-T2's render-inside-try/catch leans on
+//      exactly this contract.
+//   4. The sole current caller (the approve route) still sends TEXT-ONLY — byte-
+//      identical to before EM-T1 except the two flags the spec adds to every send.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const MAILER_ENTRY = path.resolve(E2E_DIR, '../backend/src/helpers/mailer.js')
+const CAN_SPAWN_MAILER = fs.existsSync(MAILER_ENTRY)
+
+// Extract the multipart/form-data fields from a stub-captured request:
+// boundary/`Content-Disposition: form-data; name="…"` parsing over the raw UTF-8
+// capture, exactly as 08 §UC-EM-005 item 1 prescribes. Returns { name: value }.
+function multipartFields(call) {
+  const boundaryMatch = call.contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/)
+  expect(boundaryMatch, `a multipart boundary in ${call.contentType}`).toBeTruthy()
+  const boundary = boundaryMatch[1] || boundaryMatch[2]
+  const fields = {}
+  for (const part of call.body.split(`--${boundary}`)) {
+    const headerEnd = part.indexOf('\r\n\r\n')
+    if (headerEnd === -1) continue
+    const name = part.slice(0, headerEnd).match(/Content-Disposition:[^\r\n]*\bname="([^"]*)"/i)?.[1]
+    if (name === undefined) continue
+    // The value runs to the CRLF that precedes the next boundary delimiter.
+    fields[name] = part.slice(headerEnd + 4).replace(/\r\n$/, '')
+  }
+  return fields
+}
+
+// Drive `sendMail()` directly against a stub: a child process imports the mailer with
+// MAILGUN_* pointing at 127.0.0.1 (the fake key, the stub base URL — same safety model
+// as `withMailHarness`, so nothing here can ever reach real Mailgun) and prints the
+// result object. `payload` travels as JSON in an env var, so Slovak diacritics and
+// angle brackets never meet shell quoting.
+async function sendViaMailer(stub, payload) {
+  const script = [
+    "const { sendMail } = await import(process.env.MAILER_URL)",
+    "const result = await sendMail(JSON.parse(process.env.MAIL_PAYLOAD))",
+    "process.stdout.write('\\nSENDMAIL_RESULT:' + JSON.stringify(result) + '\\n')",
+  ].join('\n')
+
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    env: {
+      ...process.env,
+      MAILER_URL: pathToFileURL(MAILER_ENTRY).href,
+      MAIL_PAYLOAD: JSON.stringify(payload),
+      MAILGUN_API_KEY: FAKE_MAILGUN_KEY,
+      MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN,
+      MAILGUN_BASE_URL: stub.baseUrl,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  let output = ''
+  child.stdout.on('data', (c) => { output += c })
+  child.stderr.on('data', (c) => { output += c })
+  const exitCode = await new Promise((resolve) => child.on('exit', resolve))
+
+  const match = output.match(/SENDMAIL_RESULT:(.*)/)
+  // Rule 3 of the mailer (it never throws) makes a non-zero exit or a missing result
+  // line a failure in its own right, not just a broken harness.
+  if (exitCode !== 0 || !match) {
+    throw new Error(`sendMail child failed (exit ${exitCode}) — did sendMail throw?\n${output}`)
+  }
+  return JSON.parse(match[1])
+}
+
+test.describe('EM-T1 / 08 §UC-EM-001 — sendMail() html part + tracking-disable flags', () => {
+  test('a send WITH html carries BOTH text and html fields, both tracking flags, and the result vocabulary is unchanged', async () => {
+    test.skip(!CAN_SPAWN_MAILER, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    const stub = await startMailgunStub()
+    try {
+      const payload = {
+        to: 'multipart@stub.invalid',
+        subject: 'Tvoj účet v Podpultovke je pripravený',
+        text: 'Prihlás sa — čšžľťďň v plain texte.',
+        html: '<p>Prihlás sa — <strong>čšžľťďň</strong> v html.</p>',
+      }
+      const result = await sendViaMailer(stub, payload)
+      // The result shape is the EXISTING vocabulary — the html part must not grow it.
+      expect(result).toEqual({ sent: true, to: payload.to })
+
+      expect(stub.requests, 'one request — multipart is ONE message, not two').toHaveLength(1)
+      const fields = multipartFields(stub.requests[0])
+      // ⚠ The text part is ALWAYS present and byte-exact — the deliverability baseline.
+      expect(fields.text, 'the text field, byte-exact incl. diacritics').toBe(payload.text)
+      expect(fields.html, 'the html field, byte-exact').toBe(payload.html)
+      expect(fields['o:tracking-clicks'], 'click-tracking disabled per message').toBe('no')
+      expect(fields['o:tracking-opens'], 'open-tracking disabled per message').toBe('no')
+      expect(fields.to).toBe(payload.to)
+      expect(fields.subject).toBe(payload.subject)
+    } finally {
+      await stub.stop()
+    }
+  })
+
+  test('a send WITHOUT html carries a text field and NO html field — and still both tracking flags', async () => {
+    test.skip(!CAN_SPAWN_MAILER, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    const stub = await startMailgunStub()
+    try {
+      const payload = {
+        to: 'textonly@stub.invalid',
+        subject: 'Len text',
+        text: 'Čisto textová správa.',
+      }
+      const result = await sendViaMailer(stub, payload)
+      expect(result).toEqual({ sent: true, to: payload.to })
+
+      expect(stub.requests).toHaveLength(1)
+      const fields = multipartFields(stub.requests[0])
+      expect(fields.text).toBe(payload.text)
+      // Existing text-only callers stay byte-unchanged: no html field at all, not an
+      // empty one.
+      expect('html' in fields, 'no html field on a text-only send').toBe(false)
+      // ⚠ The spec adds the flags to EVERY send, text-only included — open/click
+      // tracking is a property of the account unless disabled per message.
+      expect(fields['o:tracking-clicks']).toBe('no')
+      expect(fields['o:tracking-opens']).toBe('no')
+    } finally {
+      await stub.stop()
+    }
+  })
+
+  test('⚠ html with an EMPTY or ABSENT text degrades to TEXT-ONLY and never throws — the EM-T2 render contract', async () => {
+    test.skip(!CAN_SPAWN_MAILER, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    const stub = await startMailgunStub()
+    try {
+      // Empty-string text: the html field is DROPPED, the send still goes out (rule 3 —
+      // the caller is mid-approval and must not lose the mail over a template bug).
+      const emptyText = await sendViaMailer(stub, {
+        to: 'degrade1@stub.invalid',
+        subject: 'Degradácia',
+        text: '',
+        html: '<p>osirotené html</p>',
+      })
+      expect(emptyText).toEqual({ sent: true, to: 'degrade1@stub.invalid' })
+
+      // Absent text: same degrade, same non-throw.
+      const absentText = await sendViaMailer(stub, {
+        to: 'degrade2@stub.invalid',
+        subject: 'Degradácia',
+        html: '<p>osirotené html</p>',
+      })
+      expect(absentText).toEqual({ sent: true, to: 'degrade2@stub.invalid' })
+
+      expect(stub.requests).toHaveLength(2)
+      for (const call of stub.requests) {
+        const fields = multipartFields(call)
+        expect('html' in fields, 'an html-only message is never sent').toBe(false)
+        expect(fields.text, 'the text field stays first-class (empty, as today)').toBe('')
+        expect(fields['o:tracking-clicks']).toBe('no')
+        expect(fields['o:tracking-opens']).toBe('no')
+      }
+    } finally {
+      await stub.stop()
+    }
+  })
+
+  test('the approve route (the sole caller) still sends TEXT-ONLY — unchanged except the two flags', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    test.setTimeout(120_000)
+
+    await withMailHarness(
+      { MAILGUN_API_KEY: FAKE_MAILGUN_KEY, MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN },
+      async ({ stub }) => {
+        const inviter = await makeInviter('emflags')
+        const username = uniqueUsername('emflags')
+        const invitation = await registerInvitation(inviter, { username })
+
+        const res = await approve(invitation.id)
+        expect(res.status()).toBe(201)
+        const body = await res.json()
+        expect(body.email).toEqual({ sent: true, to: invitation.email })
+
+        expect(stub.requests).toHaveLength(1)
+        const fields = multipartFields(stub.requests[0])
+        // ⚠ Byte-identity, now as FIELD equality rather than a substring: the mailed
+        // text IS the returned credentials_message (the clipboard/mail contract).
+        expect(fields.text).toBe(body.credentials_message)
+        // EM-T2 is what wires html into this caller — until then it stays text-only.
+        expect('html' in fields, 'the credentials mail is still text-only').toBe(false)
+        expect(fields['o:tracking-clicks'], 'flags ride the real caller\'s send too').toBe('no')
+        expect(fields['o:tracking-opens']).toBe('no')
       }
     )
   })
