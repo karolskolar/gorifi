@@ -167,10 +167,16 @@ prototype's f-login screen (username + password only).
 **Business rules:**
 
 - Behavior is the existing `authenticatePersonal()` verbatim: username lowercased before
-  the call, token stored via `setFriendsToken`, localStorage written only when
-  `rememberMe`, `mustChangePassword` → UC-FL-012, error message shown from the thrown
+  the call, token stored via `setFriendsToken`, ~~localStorage written only when
+  `rememberMe`~~ **SUPERSEDED by 09 §UC-ML-007 (2026-08-14): localStorage is written in
+  BOTH cases — the session TTL (24 h vs 60 d), not the storage, is the remember-me
+  mechanism**, `mustChangePassword` → UC-FL-012, error message shown from the thrown
   `e.message`. Client-side empty-field message stays "Zadajte užívateľské meno a heslo".
-- `rememberMe` default stays `true` (repo + prototype's checked box agree).
+- ~~`rememberMe` default stays `true` (repo + prototype's checked box agree).~~
+  **SUPERSEDED by 09 §UC-ML-007: default flips to UNCHECKED** — remember-me became a
+  60-day session opt-in (product decision 2026-08-14), so a pre-checked box would make
+  the long session the default rather than the opt-in. `modern-login.spec.js`'s
+  default-ON and memory-only pins are retargeted by module 09 (case (a)).
 - **Error display:** `authError` renders as `.banner.danger.slim` at the top of the login
   card (prototype has no login-error state; `.banner danger` per 02 §UC-DS-013 semantic
   grammar; `.slim` keeps the card compact).

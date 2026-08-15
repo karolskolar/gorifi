@@ -38,6 +38,26 @@ Design is phone-first (378 px); desktop is the same layout centered at max-width
   list in the handoff README is a do-not-regress contract.
 - Voucher modal and admin app: out of scope (next task).
 
+## Scope extension — auth & e-mail (confirmed 2026-08-14)
+
+Modules 08–11 extend the spec beyond the redesign (like 07 did): branded transactional
+e-mail, magic-link password recovery, Google sign-in, and the `friends` field
+consolidation. All four include backend/schema changes; the "no backend change" rule
+above still scopes 02–06 only. Decisions confirmed with the product owner:
+
+- **Magic link = log in + non-blocking prompt to set a new password.** Passwords stay;
+  the link is a recovery/login path, not a reset ceremony.
+- **Google matching is explicit-link only** — a Google identity logs in only an account
+  that deliberately linked it (at registration or later). No silent matching on e-mail.
+  Admin Google access is an allowlist in settings; admin password auth remains as backup.
+- **Field mapping:** existing `friends.name` becomes "Meno a priezvisko" (relabel +
+  data-cleanup pass); `display_name` (already labelled Poznámka) is the admin note.
+  No destructive migration.
+- The **Applicant** (person registering via `/invite/:code`) gains a "sign up with
+  Google" path in module 10; guests are untouched by all four modules.
+- The Admin actor's "out of scope" note above predates this extension: modules 08–11
+  touch the admin login screen (Google + password backup) and AdminFriends.
+
 ## Specification files
 
 | File | Scope | UC prefix |
@@ -50,6 +70,10 @@ Design is phone-first (378 px); desktop is the same layout centered at max-width
 | `05-colleagues-panel.md` | f-guests panel, suborder cards, share dialog | UC-KG |
 | `06-guest-flow.md` | g-order, g-confirm, g-status ×4, g-dead, checkout + payment modals, invite CTA | UC-GX |
 | `07-invitation-approval.md` | Invitation → friend-with-login: registration username field, register hardening, atomic approve endpoint, admin approval dialog, AdminFriends relabel. ⚠ Unlike 02–06 this module INCLUDES backend/schema changes (added 2026-08-13, after the redesign shipped — the "no backend change" rule above scopes 02–06 only) | UC-IA |
+| `08-transactional-email.md` | Branded HTML e-mail layer: multipart text+html templates on top of `helpers/mailer.js`, canonical `podpultovka.biz` login URL in outbound mail, applied to the credentials mail; the shared foundation module 09 reuses. Backend + config changes | UC-EM |
+| `09-magic-link-recovery.md` | "Zabudli ste heslo?" → single-use, short-lived, hashed magic-link login e-mail (requires `friends.email`); passwords preserved; logging in via link prompts (does not force) a new password; "Zapamätať si ma na tomto zariadení" = 60-day session opt-in (default 24 h). Backend + schema changes | UC-ML |
+| `10-google-auth.md` | Sign in with Google on the friend AND admin portals: choose-Google at invite registration, link-to-existing prompt after friend login (áno / teraz nie / už sa nepýtať) + manual link/unlink in the profile, explicit-link-only matching (no silent e-mail matching), admin keeps password auth as backup. Backend + schema changes | UC-GA |
+| `11-friends-consolidation.md` | `friends` table + AdminFriends consolidation to the canonical field set: Meno a priezvisko (`name`), username, password state, Google auth on/off, mobil (`phone`), e-mail, admin note (`display_name`). Relabel/reconcile, no destructive migration | UC-FC |
 
 ## Glossary
 

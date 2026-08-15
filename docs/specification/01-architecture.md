@@ -16,6 +16,49 @@ spec, so this documents the **existing** system, not a greenfield design.
 - **Friends:** per-friend session tokens (`friend_sessions`, `crypto.randomBytes`) sent as `Authorization: Bearer`. Legacy shared global password (`X-Friends-Password`) still accepted in `auth_mode = legacy`; rejected in `modern`. `must_change_password` forces a password reset on next login. Ownership enforced by `requireFriendOwner`/`enforceOrderOwnership` (`middleware/friend-auth.js`).
 - Key tables: `friends`, `order_cycles`, `products`, `orders`, `order_items`, `transactions`, `vouchers`, `invitations`, `friend_sessions`, `settings`, `pickup_locations`, `bakery_products*`. Full model: `docs/data-model.md`.
 
+### Auth extensions (modules 08–11 — conventions the module specs must follow)
+
+- **Magic link (module 09):** new table `login_tokens` (`friend_id`, `token_hash`,
+  `expires_at`, `used_at`, `created_at`). The raw token is high-entropy
+  (`crypto.randomBytes(32)`), sent ONLY in the e-mail link, stored **hashed** (SHA-256 is
+  fine — the input is already 256-bit random, bcrypt's slow hash buys nothing here),
+  **single-use** (`used_at` set atomically on redemption), TTL **15 minutes**. Request
+  endpoint is public, rate-limited on its own or the `authLimiter` bucket, and its
+  response is **enumeration-safe**: identical 200 body whether the identifier matched a
+  friend, matched a friend without an e-mail, or matched nothing. Redemption mints a
+  normal `friend_sessions` row (and honours `must_change_password` exactly like password
+  login); `friend_sessions` gains a `via` provenance column so the non-blocking
+  "set a new password" prompt can key on magic-link sessions (09 §UC-ML-001/008).
+  Redeeming while `auth_mode = legacy` is out of scope — the feature is
+  modern-mode only.
+- **Remember me (module 09):** today every friend session is a flat 30-day token. The
+  checkbox introduces a **short default** (24 h) with **60 days** as the opt-in (product
+  decision 2026-08-14: cycles run ~monthly, so the remembered session must span two
+  cycles — a friend who orders every cycle never re-logs-in on a remembered device) —
+  `createFriendSession(friendId, { remember })` grows a TTL parameter; no schema change
+  (`expires_at` already exists). Frontend keeps using `localStorage` (`gorifi_friend_auth`)
+  in both cases; the TTL, not the storage, is the mechanism.
+- **Google sign-in (module 10):** Google Identity Services (GIS) button → ID token (JWT)
+  POSTed to the backend → verified server-side (signature against Google's JWKS,
+  `aud` = our OAuth client ID, `iss` = `accounts.google.com`/`https://accounts.google.com`,
+  `exp`). Identity key is the token's **`sub`** claim (stable, never reassigned) — never
+  the e-mail. New columns: `friends.google_sub` (UNIQUE, nullable), `friends.google_email`
+  (display only), `friends.google_prompt_dismissed` (the "už sa nepýtať" flag).
+  **Explicit-link only**: login matches `google_sub`; no row ⇒ no login (with a hint to
+  link first), never auto-link by e-mail. Admin: allowlisted Google identities in
+  `settings` (key `admin_google_subs` or e-mails confirmed at link time); admin password
+  auth stays as backup. Client ID is public config (`GOOGLE_CLIENT_ID` env → exposed to
+  the frontend); there is **no client secret** in the ID-token flow.
+- **E-mail layer (module 08):** `sendMail()` grows an optional `html` part —
+  **multipart/alternative, the plain-text part always present** (deliverability + the
+  mailer's existing contract). Templates are server-side (`backend/src/helpers/email-templates.js`
+  or similar), brand-styled with **inline CSS only, table layout, no remote images/fonts**
+  (mail clients strip `<style>`/external assets; the halftone/webfont brand chrome does
+  not survive e-mail — approximate with system-font stacks and the brand colors). The
+  login URL in any outbound mail comes from `resolveLoginUrl()` and production pins
+  `PUBLIC_BASE_URL=https://podpultovka.biz` in `/var/www/gorifi/.env` (deployment
+  requirement, part of module 08's acceptance).
+
 ## Permissions & roles
 
 - **Public:** health, friend login/auth-mode, cycle `/public` + `/auth`, product listing, pickup locations, payment-settings, invite-code lookup, onboarding self-signup.
@@ -84,6 +127,16 @@ Prototype copy is final — transcribe it verbatim, don't rewrite it.
   `POST /api/invitations/:id/approve`, after the transaction commits.
 - Fonts are self-hosted (`frontend/public/fonts`, RD-DS-6) — the CSP allows no external
   subresource host, so any *browser-side* third-party asset is out of the question.
+  ⚠ **Google sign-in (module 10) is the one sanctioned exception**: GIS requires loading
+  `https://accounts.google.com/gsi/client` and its iframe/popup, so the nginx CSP must
+  gain the GIS-specific allowances Google documents (`script-src`/`frame-src`/`connect-src`
+  for `accounts.google.com`) — scoped additions, not a relaxation of the self-hosted-fonts
+  rule, and `e2e/tests/self-hosted-fonts.spec.js`'s CSP copy must be updated in the same
+  change (its header is a verbatim copy of `deploy/nginx-gorifi.conf`).
+- **Google token verification (module 10)** is the backend's second outbound call
+  (after Mailgun): fetching Google's JWKS / verifying ID tokens. Same rules as the
+  mailer — timeout-bounded, never throws into a request handler unhandled, secrets (none
+  exist in this flow) never logged.
 
 ## NFRs
 
@@ -97,6 +150,13 @@ Prototype copy is final — transcribe it verbatim, don't rewrite it.
 ## Dependencies (pre-approved)
 
 Backend: `express`, `cors`, `express-rate-limit`, `bcryptjs`, `multer`, `sql.js`, `nanoid`, `csv-parse`. Frontend: `vue`, `vue-router`, `vite`, `tailwindcss`, `chart.js`/`vue-chartjs`, `radix-vue`, `qrcode`, `bysquare`, `@vueuse/core`. New established packages in these families are fine; flag anything niche.
+
+For module 10, **`google-auth-library`** (official, `verifyIdToken` with built-in JWKS
+caching) is pre-approved as the ID-token verifier; `jose` is the acceptable lighter
+alternative if the module spec prefers it. Do NOT hand-roll JWT signature verification.
+The Mailgun no-SDK rule stands — module 08 builds on the existing `fetch`-based mailer,
+no nodemailer/Mailgun SDK, and e-mail templates are plain template literals, not a
+templating engine dependency.
 
 ## Testing & gate
 
