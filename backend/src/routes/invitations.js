@@ -11,6 +11,7 @@ import { requireAdmin } from '../middleware/admin-auth.js';
 import { abuseLimiter } from '../middleware/rate-limit.js';
 import { getPlaceholderCycleId } from '../helpers/friend-create.js';
 import { sendMail } from '../helpers/mailer.js';
+import { renderEmail } from '../helpers/email-templates.js';
 import {
   CREDENTIALS_EMAIL_SUBJECT,
   credentialsMessage,
@@ -439,10 +440,40 @@ router.post('/:id/approve', requireAdmin, async (req, res) => {
     // programming error in the mailer degrades to "send it by hand".
     let email;
     try {
+      // 08 §UC-EM-003: the branded HTML part — a THIRD presentation of the same three
+      // variables (loginUrl, username, tempPassword), composed FROM them, never parsed
+      // out of the sentence, and never part of the clipboard. Content is fragments of
+      // the product-owner-signed sentence ONLY plus the URL-as-label button default —
+      // a real button label / footer / preheader would be new unsigned Slovak copy
+      // (the recorded §UC-EM-003 OPEN item).
+      //
+      // ⚠ The render sits INSIDE this try/catch on purpose (§UC-EM-002): renderEmail
+      // may throw, and a template bug must degrade to `email:{sent:false,error:
+      // 'network'}` and the dialog's "send it by hand" warning — never a failed
+      // approval, never a lost plaintext. The text part stays `message` VERBATIM
+      // (renderEmail passes it through `===`-identical), so the mail's text and the
+      // clipboard's `credentials_message` remain byte-identical by construction.
+      const { html } = renderEmail({
+        text: message,
+        blocks: [
+          { type: 'paragraph', text: 'Ahoj, tvoj účet je pripravený.' },
+          {
+            type: 'kv',
+            rows: [
+              { label: 'Užívateľské meno', value: username },
+              { label: 'Dočasné heslo', value: tempPassword },
+            ],
+          },
+          { type: 'paragraph', text: 'Prihlás sa na:' },
+          { type: 'button', url: loginUrl },
+          { type: 'paragraph', text: 'Po prvom prihlásení si nastav vlastné heslo.' },
+        ],
+      });
       email = await sendMail({
         to: invitation.email,
         subject: CREDENTIALS_EMAIL_SUBJECT,
         text: message,
+        html,
       });
     } catch (e) {
       // No key material can reach here (it never leaves the mailer), but stay terse:
