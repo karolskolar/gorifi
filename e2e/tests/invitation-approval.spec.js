@@ -1325,6 +1325,140 @@ test.describe('EM-T2 / 08 §UC-EM-003 — the credentials mail is branded multip
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// EM-T3 / 08 §UC-EM-004 — the `PUBLIC_BASE_URL` deployment pin: MECHANISM + BOOT LINE.
+//
+// The literal production value (`https://podpultovka.biz` in `/var/www/gorifi/.env`,
+// and the SAME value in staging's — resolved 2026-08-15, one Mailgun sending domain)
+// CANNOT be e2e'd: it is an operator edit outside the rsync tree, verified per the
+// spec's manual procedure (grep on the server, the boot line in out.log, one real
+// received mail). What CAN be proven is the mechanism the pin rides on, as an A/B:
+//
+//   A. With `PUBLIC_BASE_URL` set, `login_url` in the approve 201 AND the URL inside
+//      BOTH stub-captured mail parts (text + html href) equal the configured value
+//      while the request carries a DIFFERENT allowlisted Origin — the pin IGNORES the
+//      request Origin. This is what stops an approval made from the legacy
+//      gorifi.skolar.sk tab putting that domain into a third party's mail.
+//   B. The same request with `PUBLIC_BASE_URL` unset resolves to that Origin — which
+//      is what makes A non-vacuous (the Origin WOULD have won; the pin is what beat
+//      it), and is the fallback chain the unset boot line claims.
+//
+// Each side also pins its BOOT LINE (`[mail] PUBLIC_BASE_URL=…` / `… unset — …`):
+// per §UC-EM-004 it is the only signal that `--env-file-if-exists` actually delivered
+// the pin — without it a fresh container silently regresses to Origin-derived URLs,
+// the exact failure mode that opened module 08.
+//
+// ⚠ Do NOT patch `resolveLoginUrl()` to serve these — resolved conflict: pin, don't
+// patch. The resolver's own chain (env → allowlisted Origin → brand default) is
+// pinned above in 'the login URL echoed into the e-mail must be an ALLOWLISTED
+// origin'; this block adds only what EM-T3 owns.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// One pinned value + one DIFFERENT allowlisted origin, shared by both halves of the
+// A/B so the only variable between them is whether PUBLIC_BASE_URL is set.
+const EM_T3_PIN = 'https://canonical-pin.test'
+const EM_T3_ORIGIN = 'https://other-allowed.test'
+
+test.describe('EM-T3 / 08 §UC-EM-004 — PUBLIC_BASE_URL pins the login URL and reports at boot', () => {
+  test('⚠ the pin beats a DIFFERENT allowlisted Origin in login_url and BOTH mail parts, and the boot line names it', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    test.setTimeout(120_000)
+
+    await withMailHarness(
+      {
+        MAILGUN_API_KEY: FAKE_MAILGUN_KEY,
+        MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN,
+        // The pin under test — deliberately NOT the harness default (its own base URL),
+        // so equality below cannot be satisfied by the fallback chain by accident.
+        PUBLIC_BASE_URL: EM_T3_PIN,
+        // The Origin the request will carry IS allowlisted — i.e. it would be honoured
+        // by resolveLoginUrl step 2 (test B proves that) — and still must not win here.
+        CORS_ORIGIN: EM_T3_ORIGIN,
+      },
+      async ({ stub, backend }) => {
+        // ── the boot line (§UC-EM-004): printed at import time, so it is already in
+        //    the captured output by the time the health check passed ──
+        expect(backend.logs(), 'the boot line reports the resolved pin')
+          .toContain(`[mail] PUBLIC_BASE_URL=${EM_T3_PIN}`)
+
+        const inviter = await makeInviter('empinbase')
+        const username = uniqueUsername('empinbase')
+        const invitation = await registerInvitation(inviter, { username })
+
+        // The approve request carries the OTHER allowlisted origin.
+        const res = await ctx.post(`/api/invitations/${invitation.id}/approve`, {
+          headers: { 'X-Admin-Token': adminToken, Origin: EM_T3_ORIGIN },
+        })
+        expect(res.status()).toBe(201)
+        const body = await res.json()
+        expect(body.email).toEqual({ sent: true, to: invitation.email })
+
+        // ── the 201: login_url is the pin, and the signed sentence carries it ──
+        expect(body.login_url, 'PUBLIC_BASE_URL wins over the request Origin').toBe(EM_T3_PIN)
+        expect(body.credentials_message).toBe(credentialsMessage(EM_T3_PIN, username, body.tempPassword))
+
+        // ── BOTH stub-captured mail parts carry the pin… ──
+        expect(stub.requests).toHaveLength(1)
+        const fields = multipartFields(stub.requests[0])
+        expect(fields.text, 'the text part is the pinned sentence, byte-identical').toBe(body.credentials_message)
+        expect(fields.text, 'the pin in the text part').toContain(EM_T3_PIN)
+        expect(fields.html, 'the pin as the html button href — attribute position').toContain(`href="${EM_T3_PIN}"`)
+
+        // ── …and the request Origin appears in NEITHER, nor does any other host in
+        //    the html (§UC-EM-005 item 3's no-foreign-hosts sweep, under the pin) ──
+        expect(fields.text, 'the Origin is nowhere in the text part').not.toContain(EM_T3_ORIGIN)
+        expect(fields.html, 'the Origin is nowhere in the html part').not.toContain(EM_T3_ORIGIN)
+        const foreign = (fields.html.match(/https?:\/\/[^\s"'<>&]+/g) || []).filter((u) => !u.startsWith(EM_T3_PIN))
+        expect(foreign, 'no http(s) host other than the pin anywhere in the html').toEqual([])
+        expect(fields.html, 'non-vacuity: the pinned URL really is in the html').toContain(EM_T3_PIN)
+
+        // The credentials still work — the pin changed a URL, not the account.
+        expect((await loginAs(username, body.tempPassword)).status()).toBe(200)
+      }
+    )
+  })
+
+  test('unset ⇒ the boot line says so, and the SAME request resolves to the Origin (the A/B that makes the pin non-vacuous)', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    test.setTimeout(120_000)
+
+    await withMailHarness(
+      {
+        MAILGUN_API_KEY: FAKE_MAILGUN_KEY,
+        MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN,
+        // Everything identical to the test above EXCEPT the pin is absent (the harness
+        // default is its own base URL, so it must be blanked explicitly).
+        PUBLIC_BASE_URL: '',
+        CORS_ORIGIN: EM_T3_ORIGIN,
+      },
+      async ({ stub, backend }) => {
+        // ── the unset boot line, verbatim per §UC-EM-004 ──
+        expect(backend.logs(), 'the boot line admits the pin is not in effect')
+          .toContain('[mail] PUBLIC_BASE_URL unset — login URLs fall back to request Origin / brand default')
+        expect(backend.logs(), 'and no line claims a pin').not.toContain('[mail] PUBLIC_BASE_URL=')
+
+        const inviter = await makeInviter('emnobase')
+        const username = uniqueUsername('emnobase')
+        const invitation = await registerInvitation(inviter, { username })
+
+        const res = await ctx.post(`/api/invitations/${invitation.id}/approve`, {
+          headers: { 'X-Admin-Token': adminToken, Origin: EM_T3_ORIGIN },
+        })
+        expect(res.status()).toBe(201)
+        const body = await res.json()
+
+        // The Origin WOULD have won — which is what the pin beat in the test above.
+        expect(body.login_url, 'unset ⇒ the allowlisted Origin resolves').toBe(EM_T3_ORIGIN)
+        expect(body.credentials_message).toBe(credentialsMessage(EM_T3_ORIGIN, username, body.tempPassword))
+        expect(stub.requests).toHaveLength(1)
+        const fields = multipartFields(stub.requests[0])
+        expect(fields.text, 'the Origin in the mailed text part').toContain(EM_T3_ORIGIN)
+        expect(fields.html, 'the Origin as the mailed html href').toContain(`href="${EM_T3_ORIGIN}"`)
+      }
+    )
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // IA-T4 / 07 §UC-IA-006 — the approval DIALOG (the UI half).
 //
 // The endpoint above is only half the feature. The dialog is the part that handles a

@@ -341,7 +341,12 @@ Two gotchas in that recipe that look like app bugs when you skip them:
   The credential message (clipboard *and* e-mail body) is rendered by the server,
   and the dialog's copy assertion compares it against `window.location.origin`. A
   target that sets `PUBLIC_BASE_URL` to some other host makes that mismatch — a
-  real config difference, not a bug in the view.
+  real config difference, not a bug in the view. ⚠ Since 08 §UC-EM-004 the STAGING
+  `.env` pins `PUBLIC_BASE_URL=https://podpultovka.biz` (same value as prod —
+  resolved 2026-08-15), so against `BASE_URL=https://gorifi-dev.skolar.sk` that
+  mismatch is now the EXPECTED state, and the affected copy assertions fail there
+  by design; the server's boot line (`[mail] PUBLIC_BASE_URL=…` in out.log) tells
+  you which way the target resolved.
 - ⚠ **NEVER give the server under test any `MAILGUN_*` env var** (07 §UC-IA-009).
   `backend/src/helpers/mailer.js` is a no-op unless `MAILGUN_API_KEY`,
   `MAILGUN_DOMAIN` and `MAILGUN_BASE_URL` are ALL set, and that no-op is the only

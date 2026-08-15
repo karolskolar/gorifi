@@ -9,10 +9,29 @@
 //   MAILGUN_API_KEY    required to send. Never logged, never in an API response.
 //   MAILGUN_DOMAIN     the verified sending domain, e.g. mg.podpultovka.biz
 //   MAILGUN_BASE_URL   region endpoint, e.g. https://api.eu.mailgun.net (EU account)
-//   PUBLIC_BASE_URL    optional. The login URL printed in the credentials e-mail and in
-//                      the admin's copy-paste message. Unset ⇒ the admin browser's
-//                      `Origin` (allowlist-checked) ⇒ https://podpultovka.biz. Set it if
-//                      a non-browser caller must produce the canonical domain.
+//   PUBLIC_BASE_URL    ⚠ REQUIRED ON BOTH SERVERS (08 §UC-EM-004, part of module 08's
+//                      acceptance): PUBLIC_BASE_URL=https://podpultovka.biz in
+//                      /var/www/gorifi/.env AND /var/www/gorifi-staging/.env. Staging
+//                      pins the SAME value (resolved 2026-08-15 — the Mailgun free tier
+//                      permits one sending domain, so staging mail deliberately links
+//                      to production; staging normally runs with no Mailgun env at all,
+//                      so the pin only matters when staging mail is deliberately
+//                      enabled). It is the login URL in outbound mail and in the
+//                      admin's copy-paste message; unset, the fallback is the admin
+//                      browser's `Origin` (allowlist-checked) ⇒
+//                      https://podpultovka.biz — the Origin branch is how
+//                      gorifi.skolar.sk used to leak into e-mail.
+//                      Operator checklist after editing either .env (env is read at
+//                      boot — an edit alone changes nothing):
+//                        1. mode 600, owner `gorifi` (as for the Mailgun key above);
+//                        2. restart the backend (pm2 restart gorifi-backend / -staging);
+//                        3. `grep PUBLIC_BASE_URL /var/www/gorifi/.env` on the server;
+//                        4. the boot line in /var/log/gorifi/out.log reads
+//                           `[mail] PUBLIC_BASE_URL=https://podpultovka.biz`
+//                           (an `unset`/`invalid` boot line means the pin is NOT in
+//                           effect — judge the deploy by the artefact on the server);
+//                        5. one real approval whose received mail links
+//                           https://podpultovka.biz (08 §UC-EM-005 manual procedure).
 //   MAILGUN_FROM       optional. Overrides the default `Podpultovka <no-reply@DOMAIN>`;
 //                      only worth setting once a real reply-to mailbox exists.
 // (`DB_PATH`, `CORS_ORIGIN` and the four `RATE_LIMIT_*` vars also work here.)
