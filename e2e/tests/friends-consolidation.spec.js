@@ -336,6 +336,326 @@ test.describe('API — UC-FC-005 stripping + googleLinked', () => {
   })
 })
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// FC-T2 — UI half: AdminFriends table + modal (11 §UC-FC-002/003).
+//
+// ⚠ ONE admin token app-wide: `uiAdminLogin` re-mints the token through the UI, which
+// INVALIDATES whatever `beforeAll` (or a previous test's login) held — so it adopts
+// the browser's token into `adminToken` immediately, and every test logs in first,
+// THEN builds its API fixtures. Never call admin() before uiAdminLogin in these tests.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function uiAdminLogin(page) {
+  await page.goto('/admin')
+  await page.locator('#password').fill(ADMIN_PASSWORD)
+  await page.getByRole('button', { name: /Prihlásiť sa/ }).click()
+  await expect(page).toHaveURL(/\/admin\/dashboard/)
+  adminToken = await page.evaluate(() => localStorage.getItem('adminToken'))
+  expect(adminToken, 'browser admin token adopted').toBeTruthy()
+}
+
+function rowFor(page, name) {
+  return page.locator('tbody tr', { hasText: name })
+}
+
+async function gotoFriends(page) {
+  await page.goto('/admin/friends')
+  await expect(page.getByRole('heading', { name: /Priatelia/ }).first()).toBeVisible()
+}
+
+// Opens the row's action menu (the ⋮ icon is the row's first role=button — the
+// Switch is role=switch, the subscriptions are checkboxes) and clicks the named
+// item; the menu renders inside the row's own cell, so it stays row-scoped.
+async function rowMenuClick(row, itemName) {
+  await row.getByRole('button').first().click()
+  await row.getByRole('button', { name: itemName, exact: true }).click()
+}
+
+test.describe('UI — UC-FC-002 consolidated table', () => {
+  test('header set incl. "Meno a priezvisko"/"Kontakt"/"Google"; Google column is muted on a pre-module-10 DB', async ({ page }) => {
+    await uiAdminLogin(page)
+    const friend = await makeFriend('ui-headers')
+    await gotoFriends(page)
+
+    const header = page.locator('thead tr').first()
+    for (const h of ['ID', 'Meno a priezvisko', 'Poznámka', 'Kontakt', 'Prihlásenie', 'Google']) {
+      await expect(header.getByText(h, { exact: true }), `header "${h}"`).toBeVisible()
+    }
+    // The relabel really replaced "Meno" — an exact 'Meno' cell must be gone.
+    await expect(header.getByText('Meno', { exact: true })).toHaveCount(0)
+
+    // Not linked / column not shipped render identically: muted '-' (UC-FC-002).
+    const row = rowFor(page, friend.name)
+    await expect(row).toHaveCount(1)
+    await expect(row.getByTestId('google-cell')).toHaveText('-')
+    await expect(row.getByTestId('google-cell').getByText('Prepojené')).toHaveCount(0)
+  })
+
+  test('the three credential states render truthfully (07 follow-up #3 repro included)', async ({ page }) => {
+    await uiAdminLogin(page)
+
+    // State 3 (none): fresh friend, no credentials at all.
+    const none = await makeFriend('cred-none')
+    // State 2a (partial — the exact 07 follow-up #3 repro): password reset on a
+    // friend who never got a username. The old rendering showed green "Nastavené"
+    // while the friend could not log in under modern auth.
+    const pwOnly = await makeFriend('cred-pw-only')
+    expect((await admin(`/api/friends/${pwOnly.id}/reset-password`, { method: 'put', data: { password: 'tempPass1' } })).status()).toBe(200)
+    // State 2b (partial): username but no password.
+    const unOnly = await makeFriend('cred-un-only')
+    expect((await admin(`/api/friends/${unOnly.id}/admin-username`, { method: 'put', data: { username: uniqueUsername('credun') } })).status()).toBe(200)
+    // State 1 (full, temp password): username + reset password ⇒ must_change_password=1.
+    const full = await makeFriend('cred-full')
+    const fullUsername = uniqueUsername('credfull')
+    expect((await admin(`/api/friends/${full.id}/admin-username`, { method: 'put', data: { username: fullUsername } })).status()).toBe(200)
+    expect((await admin(`/api/friends/${full.id}/reset-password`, { method: 'put', data: { password: 'tempPass1' } })).status()).toBe(200)
+    // State 1 (full, settled): completed the forced change ⇒ no marker (non-vacuity
+    // for the "dočasné heslo" assertion above it).
+    const settled = await makeFriendWithSession('cred-settled')
+    const settledName = (await friendRow(settled.id)).name
+
+    await gotoFriends(page)
+
+    // none ⇒ muted '-'
+    await expect(rowFor(page, none.name).getByTestId('login-cell')).toHaveText('-')
+
+    // partial (password, no username) ⇒ amber "Neúplné", title names the missing half,
+    // and the old lying rendering is really gone.
+    const pwCell = rowFor(page, pwOnly.name).getByTestId('login-cell')
+    const pwBadge = pwCell.getByText('Neúplné', { exact: true })
+    await expect(pwBadge).toBeVisible()
+    await expect(pwBadge).toHaveAttribute('title', 'chýba užívateľské meno')
+    await expect(pwBadge).toHaveClass(/border-amber/)
+    await expect(pwCell.getByText('Nastavené')).toHaveCount(0)
+
+    // partial (username, no password) ⇒ same badge, the other missing half.
+    const unBadge = rowFor(page, unOnly.name).getByTestId('login-cell').getByText('Neúplné', { exact: true })
+    await expect(unBadge).toBeVisible()
+    await expect(unBadge).toHaveAttribute('title', 'chýba heslo')
+
+    // full ⇒ green badge with the username + the "dočasné heslo" marker.
+    const fullCell = rowFor(page, full.name).getByTestId('login-cell')
+    await expect(fullCell.getByText(fullUsername, { exact: true })).toBeVisible()
+    await expect(fullCell.getByText(fullUsername, { exact: true })).toHaveClass(/border-green/)
+    await expect(fullCell.getByText('dočasné heslo')).toBeVisible()
+
+    // full + completed change ⇒ username badge, NO marker.
+    const settledCell = rowFor(page, settledName).getByTestId('login-cell')
+    await expect(settledCell.getByText(settled.username, { exact: true })).toBeVisible()
+    await expect(settledCell.getByText('dočasné heslo')).toHaveCount(0)
+  })
+
+  test('Kontakt column: "Bez e-mailu" badge for a friend without email, email+phone lines otherwise, and the modal edit removes the badge', async ({ page }) => {
+    await uiAdminLogin(page)
+    const noEmail = await makeFriend('kontakt-none', { phone: '0900777888' })
+    const withEmail = await makeFriend('kontakt-mail', { email: 'kontakt-ma@example.test', phone: '0900555666' })
+    await gotoFriends(page)
+
+    const noRow = rowFor(page, noEmail.name)
+    const noCell = noRow.getByTestId('contact-cell')
+    await expect(noCell.getByText('Bez e-mailu', { exact: true })).toBeVisible()
+    await expect(noCell.getByText('Bez e-mailu', { exact: true })).toHaveClass(/border-amber/)
+    await expect(noCell.getByText('0900777888')).toBeVisible()
+
+    const withCell = rowFor(page, withEmail.name).getByTestId('contact-cell')
+    await expect(withCell.getByText('kontakt-ma@example.test')).toBeVisible()
+    await expect(withCell.getByText('0900555666')).toBeVisible()
+    await expect(withCell.getByText('Bez e-mailu')).toHaveCount(0)
+
+    // The surface IS the remedy (module 09 seam): set the email in the modal and
+    // the badge disappears.
+    await rowMenuClick(noRow, 'Upraviť')
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByText('Upraviť priateľa')).toBeVisible()
+    await dialog.locator('input[maxlength="160"]').fill('doplneny@example.test')
+    await dialog.getByRole('button', { name: 'Uložiť', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(noCell.getByText('doplneny@example.test')).toBeVisible()
+    await expect(noCell.getByText('Bez e-mailu')).toHaveCount(0)
+
+    // Reverse direction (the EDIT round-trip the test above didn't cover): clearing
+    // an EXISTING email through the same real modal must bring the badge back — not
+    // just the API null-clear FC-T1 already pins, the actual UI path an admin uses.
+    const withRow = rowFor(page, withEmail.name)
+    await rowMenuClick(withRow, 'Upraviť')
+    const editDialog = page.getByRole('dialog')
+    await expect(editDialog.getByText('Upraviť priateľa')).toBeVisible()
+    await editDialog.locator('input[maxlength="160"]').fill('')
+    await editDialog.getByRole('button', { name: 'Uložiť', exact: true }).click()
+    await expect(editDialog).toHaveCount(0)
+    await expect(withCell.getByText('Bez e-mailu', { exact: true })).toBeVisible()
+    await expect(withCell.getByText('kontakt-ma@example.test')).toHaveCount(0)
+  })
+
+  test('creating a friend via the modal end-to-end renders a row with every cell correct (create flow)', async ({ page }) => {
+    // Every other UI test seeds friends via the API and only ever checks rendering.
+    // Nothing exercised the actual "Pridať priateľa" happy path — fill all 4 fields,
+    // save, and confirm the new row's cells (Kontakt, Poznámka, the '-' fallbacks)
+    // are exactly what UC-FC-002 promises.
+    await uiAdminLogin(page)
+    await gotoFriends(page)
+
+    const name = uniqueName('ui-create')
+    await page.getByRole('button', { name: /Pridať priateľa|Pridať prvého priateľa/ }).first().click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByText('Nový priateľ')).toBeVisible()
+
+    await dialog.locator('input[maxlength="120"]').fill(name)
+    await dialog.locator('input[maxlength="200"]').fill('vytvorené cez UI')
+    await dialog.locator('input[maxlength="32"]').fill('0900123123')
+    await dialog.locator('input[maxlength="160"]').fill('ui-create@example.test')
+    await dialog.getByRole('button', { name: 'Pridať', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+
+    const row = rowFor(page, name)
+    await expect(row).toHaveCount(1)
+    await expect(row.getByText('vytvorené cez UI', { exact: true })).toBeVisible()
+    const contactCell = row.getByTestId('contact-cell')
+    await expect(contactCell.getByText('ui-create@example.test')).toBeVisible()
+    await expect(contactCell.getByText('0900123123')).toBeVisible()
+    await expect(contactCell.getByText('Bez e-mailu')).toHaveCount(0)
+    // A freshly-created friend has no credentials and no Google link yet.
+    await expect(row.getByTestId('login-cell')).toHaveText('-')
+    await expect(row.getByTestId('google-cell')).toHaveText('-')
+  })
+})
+
+test.describe('UI — UC-FC-003 consolidated modal', () => {
+  test('exactly 4 writable fields, exact labels, maxlength mirrors the server bounds, truthful hints', async ({ page }) => {
+    await uiAdminLogin(page)
+    await gotoFriends(page)
+    await page.getByRole('button', { name: /Pridať priateľa|Pridať prvého priateľa/ }).first().click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByText('Nový priateľ')).toBeVisible()
+
+    for (const label of ['Meno a priezvisko *', 'Poznámka (voliteľné)', 'Mobil', 'Email']) {
+      await expect(dialog.getByText(label, { exact: true }), `label "${label}"`).toBeVisible()
+    }
+    // The relabels really replaced the old copy.
+    await expect(dialog.getByText('Meno *', { exact: true })).toHaveCount(0)
+    await expect(dialog.getByText('Telefón', { exact: true })).toHaveCount(0)
+
+    // maxlength mirrors UC-FC-004's server bounds (the GSO-T3 mirror convention) —
+    // one input per bound, and no other inputs exist (no credential inputs, ever).
+    for (const [field, max] of Object.entries(BOUNDS)) {
+      await expect(dialog.locator(`input[maxlength="${max}"]`), `maxlength ${max} (${field})`).toHaveCount(1)
+    }
+    await expect(dialog.locator('input')).toHaveCount(4)
+
+    // The hints — worded to pass the `prihlasovac` grep guard, transcribed verbatim.
+    await expect(dialog.getByText('Celé meno. Vidí ho správca a kolegovia; na prihlásenie slúži užívateľské meno.')).toBeVisible()
+    await expect(dialog.getByText('Bez e-mailu sa priateľovi nedá poslať odkaz na obnovenie prístupu.')).toBeVisible()
+    await expect(dialog.getByText('Interná poznámka pre admina (nezobrazuje sa priateľovi)')).toBeVisible()
+  })
+
+  test('edit mode: read-only Prihlásenie line (three-state) + pointer copy, Google line omitted when not linked', async ({ page }) => {
+    await uiAdminLogin(page)
+    const partial = await makeFriend('modal-ro-partial')
+    expect((await admin(`/api/friends/${partial.id}/reset-password`, { method: 'put', data: { password: 'tempPass1' } })).status()).toBe(200)
+    const none = await makeFriend('modal-ro-none')
+    // Third fixture: the "full" state — UC-FC-003's own acceptance criterion is a
+    // THREE-state read-only line, but only partial/none were ever checked IN THE
+    // MODAL (full was only ever checked in the table).
+    const full = await makeFriend('modal-ro-full')
+    const fullUsername = uniqueUsername('modalrofull')
+    expect((await admin(`/api/friends/${full.id}/admin-username`, { method: 'put', data: { username: fullUsername } })).status()).toBe(200)
+    expect((await admin(`/api/friends/${full.id}/reset-password`, { method: 'put', data: { password: 'tempPass1' } })).status()).toBe(200)
+    await gotoFriends(page)
+
+    // Partial state renders "Neúplné — …".
+    await rowMenuClick(rowFor(page, partial.name), 'Upraviť')
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByText('Upraviť priateľa')).toBeVisible()
+    await expect(dialog.getByText('Prihlásenie', { exact: true })).toBeVisible()
+    await expect(dialog.getByText('Neúplné — chýba užívateľské meno')).toBeVisible()
+    await expect(dialog.getByText('Spravuje sa cez akcie Nastaviť username / Resetovať heslo.')).toBeVisible()
+    // Still only the 4 writable inputs — the modal never grows credential inputs.
+    await expect(dialog.locator('input')).toHaveCount(4)
+    // Google line omitted entirely when not linked (no empty label).
+    await expect(dialog.getByText('Google', { exact: true })).toHaveCount(0)
+    await dialog.getByRole('button', { name: 'Zrušiť', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+
+    // None state renders "Nenastavené".
+    await rowMenuClick(rowFor(page, none.name), 'Upraviť')
+    const noneDialog = page.getByRole('dialog')
+    await expect(noneDialog.getByText('Nenastavené', { exact: true })).toBeVisible()
+    await noneDialog.getByRole('button', { name: 'Zrušiť', exact: true }).click()
+    await expect(noneDialog).toHaveCount(0)
+
+    // Full state renders the username itself — neither "Neúplné" nor "Nenastavené".
+    await rowMenuClick(rowFor(page, full.name), 'Upraviť')
+    const fullDialog = page.getByRole('dialog')
+    await expect(fullDialog.getByText('Prihlásenie', { exact: true })).toBeVisible()
+    await expect(fullDialog.getByText(fullUsername, { exact: true })).toBeVisible()
+    await expect(fullDialog.getByText('Neúplné', { exact: true })).toHaveCount(0)
+    await expect(fullDialog.getByText('Nenastavené', { exact: true })).toHaveCount(0)
+  })
+
+  test('reset-password dialog: rejects a 7-char password with the enforced message, then a valid one updates the row live (dočasné heslo marker)', async ({ page }) => {
+    // The placeholder-only test above pins the COPY ("Minimálne 8 znakov"); this
+    // pins the BEHAVIOUR the copy claims — 07 follow-up #2 was exactly a copy/
+    // behaviour mismatch on this same screen, so an untested placeholder change
+    // would not have caught a regression the other way (behaviour drifting from
+    // the corrected copy). Also exercises the real "Resetovať heslo" submit path
+    // end-to-end, which every other credential-state test bypasses via the API.
+    await uiAdminLogin(page)
+    const friend = await makeFriend('reset-flow')
+    const username = uniqueUsername('resetflow')
+    expect((await admin(`/api/friends/${friend.id}/admin-username`, { method: 'put', data: { username } })).status()).toBe(200)
+    await gotoFriends(page)
+
+    const row = rowFor(page, friend.name)
+    await rowMenuClick(row, 'Resetovať heslo')
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByText(`Resetovať heslo — ${friend.name}`)).toBeVisible()
+
+    const input = dialog.locator('input')
+    await input.fill('abcdefg') // 7 chars — one under the enforced minimum
+    await dialog.getByRole('button', { name: 'Resetovať heslo', exact: true }).click()
+    await expect(dialog.getByText('Heslo musí mať aspoň 8 znakov')).toBeVisible()
+    await expect(dialog).toBeVisible() // rejected in place, not closed
+
+    await input.fill('longEnough1')
+    await dialog.getByRole('button', { name: 'Resetovať heslo', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+
+    // Row reflects the reset live: username badge + the temp-password marker,
+    // because a fresh reset always sets must_change_password.
+    const loginCell = row.getByTestId('login-cell')
+    await expect(loginCell.getByText(username, { exact: true })).toBeVisible()
+    await expect(loginCell.getByText(username, { exact: true })).toHaveClass(/border-green/)
+    await expect(loginCell.getByText('dočasné heslo')).toBeVisible()
+  })
+
+  test('a 400 from the save surfaces in the modal Alert and the modal stays open', async ({ page }) => {
+    await uiAdminLogin(page)
+    await gotoFriends(page)
+    await page.getByRole('button', { name: /Pridať priateľa|Pridať prvého priateľa/ }).first().click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByText('Nový priateľ')).toBeVisible()
+
+    await dialog.locator('input[maxlength="120"]').fill(uniqueName('ui-400'))
+    // The only 400 reachable past the maxlength mirror: the email `@` leniency check.
+    await dialog.locator('input[maxlength="160"]').fill('bez-zavinaca')
+    await dialog.getByRole('button', { name: 'Pridať', exact: true }).click()
+
+    await expect(dialog.getByText('Neplatný email')).toBeVisible()
+    await expect(dialog).toBeVisible()
+  })
+
+  test('reset-password modal placeholder tells the truth: "Minimálne 8 znakov" (07 follow-up #2)', async ({ page }) => {
+    await uiAdminLogin(page)
+    const friend = await makeFriend('reset-ph')
+    await gotoFriends(page)
+    await rowMenuClick(rowFor(page, friend.name), 'Resetovať heslo')
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByText(`Resetovať heslo — ${friend.name}`)).toBeVisible()
+    await expect(dialog.getByPlaceholder('Minimálne 8 znakov')).toBeVisible()
+    await expect(dialog.getByPlaceholder('Minimálne 4 znaky')).toHaveCount(0)
+  })
+})
+
 // ── UC-FC-007: no back-propagation into the invitations row ───────────────────
 test.describe('API — UC-FC-007 invitation stays frozen', () => {
   test('editing an approved friend leaves the source invitation row byte-identical', async () => {

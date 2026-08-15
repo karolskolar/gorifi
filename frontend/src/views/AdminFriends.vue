@@ -29,6 +29,31 @@ const friendName = ref('')        // friends.name — shown to the admin and to 
 const friendDisplayName = ref('') // friends.display_name — internal admin note (Poznámka)
 const friendPhone = ref('')
 const friendEmail = ref('')
+const modalError = ref('')        // save errors render inside the dialog (the page Alert sits behind the overlay)
+
+// UC-FC-002 — the truthful three-state credential derivation (fixes 07 follow-up #3).
+// Derived from fields the admin list already returns: `username`,
+// `hasCredentials = !!password_hash`, `must_change_password`. The old rendering
+// (`username || 'Nastavené'`, green) displayed a password-without-username friend as
+// credentialed while they could not log in under modern auth — that lie is retired here.
+function credentialState(friend) {
+  const hasUsername = !!friend.username
+  if (hasUsername && friend.hasCredentials) return 'full'
+  if (hasUsername || friend.hasCredentials) return 'partial'
+  return 'none'
+}
+
+function credentialMissingTitle(friend) {
+  return friend.username ? 'chýba heslo' : 'chýba užívateľské meno'
+}
+
+// The modal's read-only Prihlásenie line (UC-FC-003).
+function credentialLine(friend) {
+  const state = credentialState(friend)
+  if (state === 'full') return friend.username
+  if (state === 'partial') return `Neúplné — ${credentialMissingTitle(friend)}`
+  return 'Nenastavené'
+}
 
 // Credential management
 const showResetPasswordModal = ref(false)
@@ -84,12 +109,14 @@ function openModal(friend = null) {
   friendDisplayName.value = friend ? (friend.display_name || '') : ''
   friendPhone.value = friend ? (friend.phone || '') : ''
   friendEmail.value = friend ? (friend.email || '') : ''
+  modalError.value = ''
   showModal.value = true
 }
 
 async function saveFriend() {
   if (!friendName.value.trim()) return
 
+  modalError.value = ''
   try {
     const data = {
       name: friendName.value.trim(),
@@ -110,7 +137,7 @@ async function saveFriend() {
     editingFriend.value = null
     await loadFriends()
   } catch (e) {
-    error.value = e.message
+    modalError.value = e.message
   }
 }
 
@@ -281,11 +308,15 @@ async function logout() {
           <TableHeader>
             <TableRow>
               <TableHead>ID</TableHead>
-              <TableHead>Meno</TableHead>
+              <!-- Relabel "Meno" → "Meno a priezvisko" (11 §UC-FC-002) — the surface
+                   IS the manual data-cleanup tool, there is no migration. -->
+              <TableHead>Meno a priezvisko</TableHead>
               <TableHead>Poznámka</TableHead>
+              <TableHead>Kontakt</TableHead>
               <TableHead class="text-right">Zostatok</TableHead>
               <TableHead class="text-center">Stav</TableHead>
               <TableHead class="text-center">Prihlásenie</TableHead>
+              <TableHead class="text-center">Google</TableHead>
               <TableHead class="text-center">Káva</TableHead>
               <TableHead class="text-center">Pekáreň</TableHead>
               <TableHead class="text-right">Akcie</TableHead>
@@ -305,6 +336,21 @@ async function logout() {
                 </Badge>
               </TableCell>
               <TableCell class="text-muted-foreground">{{ friend.display_name || '-' }}</TableCell>
+              <!-- Kontakt (11 §UC-FC-002): a missing email blocks module 09's
+                   magic-link recovery — the amber badge is the admin's visibility. -->
+              <TableCell data-testid="contact-cell">
+                <div class="flex flex-col items-start gap-1">
+                  <span v-if="friend.email" class="text-sm">{{ friend.email }}</span>
+                  <Badge
+                    v-else
+                    variant="outline"
+                    class="border-amber-500 text-amber-700 bg-amber-50 text-xs"
+                  >
+                    Bez e-mailu
+                  </Badge>
+                  <span v-if="friend.phone" class="text-xs text-muted-foreground">{{ friend.phone }}</span>
+                </div>
+              </TableCell>
               <TableCell class="text-right">
                 <BalanceBadge :balance="friend.balance || 0" />
               </TableCell>
@@ -319,13 +365,37 @@ async function logout() {
                   </Badge>
                 </div>
               </TableCell>
-              <TableCell class="text-center">
+              <!-- Prihlásenie — three truthful states (11 §UC-FC-002, fixes 07
+                   follow-up #3). The old `username || 'Nastavené'` green badge showed
+                   a password-without-username friend as credentialed while they could
+                   not log in under modern auth. -->
+              <TableCell class="text-center" data-testid="login-cell">
                 <div class="flex flex-col items-center gap-1">
-                  <Badge v-if="friend.hasCredentials" variant="outline" class="border-green-500 text-green-700 text-xs">
-                    {{ friend.username || 'Nastavené' }}
+                  <template v-if="credentialState(friend) === 'full'">
+                    <Badge variant="outline" class="border-green-500 text-green-700 text-xs">
+                      {{ friend.username }}
+                    </Badge>
+                    <span v-if="friend.must_change_password" class="text-xs text-amber-600">dočasné heslo</span>
+                  </template>
+                  <Badge
+                    v-else-if="credentialState(friend) === 'partial'"
+                    variant="outline"
+                    class="border-amber-500 text-amber-700 text-xs"
+                    :title="credentialMissingTitle(friend)"
+                  >
+                    Neúplné
                   </Badge>
                   <span v-else class="text-xs text-muted-foreground">-</span>
                 </div>
+              </TableCell>
+              <!-- Google — read-only state (11 §UC-FC-002). "Not linked" and "column
+                   not shipped" render identically as a muted '-' by design (graceful
+                   pre-module-10 degradation; googleLinked comes from UC-FC-005). -->
+              <TableCell class="text-center" data-testid="google-cell">
+                <Badge v-if="friend.googleLinked" variant="outline" class="border-green-500 text-green-700 text-xs">
+                  {{ friend.google_email || 'Prepojené' }}
+                </Badge>
+                <span v-else class="text-xs text-muted-foreground">-</span>
               </TableCell>
               <TableCell class="text-center">
                 <input
@@ -411,31 +481,41 @@ async function logout() {
           <DialogTitle>{{ editingFriend ? 'Upraviť priateľa' : 'Nový priateľ' }}</DialogTitle>
         </DialogHeader>
         <div class="space-y-4 py-4">
+          <Alert v-if="modalError" variant="destructive">
+            <AlertDescription>{{ modalError }}</AlertDescription>
+          </Alert>
           <div v-if="editingFriend?.uid" class="space-y-2">
             <Label class="text-muted-foreground">Jedinečné ID</Label>
             <div class="font-mono text-sm bg-muted px-3 py-2 rounded">{{ editingFriend.uid }}</div>
           </div>
+          <!-- The 4 writable fields (11 §UC-FC-003); maxlength mirrors the server
+               bounds in friends.js (120/200/32/160 — the GSO-T3 mirror convention).
+               The modal contains NO credential inputs — a friend gets a login only
+               via approval (07) or the per-row actions below. -->
           <div class="space-y-2">
-            <Label>Meno *</Label>
+            <Label>Meno a priezvisko *</Label>
             <Input
               v-model="friendName"
+              maxlength="120"
               @keyup.enter="saveFriend"
             />
-            <p class="text-xs text-muted-foreground">Toto meno vidí správca a kolegovia.</p>
+            <p class="text-xs text-muted-foreground">Celé meno. Vidí ho správca a kolegovia; na prihlásenie slúži užívateľské meno.</p>
           </div>
           <div class="space-y-2">
             <Label>Poznámka (voliteľné)</Label>
             <Input
               v-model="friendDisplayName"
+              maxlength="200"
               placeholder="Napr. 'Ivet a Peto', interná poznámka"
               @keyup.enter="saveFriend"
             />
             <p class="text-xs text-muted-foreground">Interná poznámka pre admina (nezobrazuje sa priateľovi)</p>
           </div>
           <div class="space-y-2">
-            <Label>Telefón</Label>
+            <Label>Mobil</Label>
             <Input
               v-model="friendPhone"
+              maxlength="32"
               placeholder="napr. +421 900 000 000"
               @keyup.enter="saveFriend"
             />
@@ -445,9 +525,20 @@ async function logout() {
             <Input
               v-model="friendEmail"
               type="email"
+              maxlength="160"
               placeholder="napr. priatel@example.sk"
               @keyup.enter="saveFriend"
             />
+            <p class="text-xs text-muted-foreground">Bez e-mailu sa priateľovi nedá poslať odkaz na obnovenie prístupu.</p>
+          </div>
+          <div v-if="editingFriend" class="space-y-1">
+            <Label class="text-muted-foreground">Prihlásenie</Label>
+            <div class="text-sm font-medium">{{ credentialLine(editingFriend) }}</div>
+            <p class="text-xs text-muted-foreground">Spravuje sa cez akcie Nastaviť username / Resetovať heslo.</p>
+          </div>
+          <div v-if="editingFriend?.googleLinked" class="space-y-1">
+            <Label class="text-muted-foreground">Google</Label>
+            <div class="text-sm font-medium">{{ editingFriend.google_email || 'Prepojené' }}</div>
           </div>
           <div v-if="editingFriend?.onboarding_source" class="space-y-1">
             <Label class="text-muted-foreground">Pôvod onboardingu</Label>
@@ -480,7 +571,7 @@ async function logout() {
             <Input
               v-model="resetPasswordValue"
               type="text"
-              placeholder="Minimálne 4 znaky"
+              placeholder="Minimálne 8 znakov"
               :disabled="credentialSaving"
               @keyup.enter="resetPassword()"
             />
