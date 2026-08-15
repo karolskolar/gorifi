@@ -131,7 +131,48 @@ app.get(/^\/(?!api).*/, (req, res) => {
 });
 
 // Error handler
+//
+// ⚠ The 4-arg signature is what makes Express treat this as an ERROR handler —
+// `next` is unused on purpose, do not "clean it up".
+//
+// `express.json` is mounted above every router, so a body it refuses never reaches
+// a route: unparsable JSON, a scalar body (`null`, `"hi"` — its default `strict`
+// mode accepts only an object or an array), an oversized payload, an unsupported
+// charset. All of those are CLIENT mistakes, and this handler used to report them
+// as 500 on every JSON endpoint in the app (07 §Follow-ups item 1 / FUP-T3).
+//
+// Translation rule: PRESERVE a 4xx the error already carries, rather than forcing
+// every client error to 400. body-parser has already classified the failure and
+// picked the right status — 400 `entity.parse.failed`, 413 `entity.too.large`,
+// 415 `encoding.unsupported` / `charset.unsupported` — and 413/415 are strictly
+// more actionable for the caller than a blanket "bad request". Keying on the
+// status range rather than on a `type` allowlist is also the safer generalisation
+// here: `err.status` is only ever set by middleware that has decided the fault is
+// the caller's, and no route or helper in this codebase throws with a status (every
+// `throw` is a bare `Error`), so nothing that is genuinely a server fault can
+// reach the 4xx branch. Anything without a 4xx status keeps its 500 — including
+// the CORS rejection above, which rejects with a bare `Error`.
+const CLIENT_ERROR_MESSAGES = {
+  413: 'Poziadavka je prilis velka',
+  415: 'Nepodporovany format poziadavky',
+};
+
 app.use((err, req, res, next) => {
+  const status = Number(err && (err.status != null ? err.status : err.statusCode));
+  const isClientError = Number.isInteger(status) && status >= 400 && status < 500;
+
+  if (isClientError) {
+    // ⚠ Deliberately NOT `console.error(err.stack)`. This branch is reachable by
+    // any unauthenticated client with one malformed request, so a full stack per
+    // hit is a free remote log-flood on a box whose logs are not rotated per
+    // request volume. One compact line keeps what is actually diagnostic (which
+    // endpoint, which kind of bad body) at a bounded cost.
+    console.warn(`Chybna poziadavka: ${req.method} ${req.originalUrl} (${err.type || 'client-error'}, ${status})`);
+    // Never echo `err.message`: body-parser's text quotes the offending input and
+    // names a byte offset. Slovak and unaccented, matching the 500 below.
+    return res.status(status).json({ error: CLIENT_ERROR_MESSAGES[status] || 'Neplatna poziadavka' });
+  }
+
   console.error(err.stack);
   res.status(500).json({ error: 'Nieco sa pokazilo' });
 });
