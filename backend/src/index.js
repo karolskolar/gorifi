@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import multer from 'multer';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync } from 'fs';
@@ -157,8 +158,49 @@ const CLIENT_ERROR_MESSAGES = {
   415: 'Nepodporovany format poziadavky',
 };
 
+// FUP-T6: multer's `MulterError` is a client-error source the rule above cannot see.
+//
+// ⚠ It is not the LAST one. multer also raises PLAIN `Error`s for malformed or
+// aborted multipart ("Multipart: Boundary not found", "Unexpected end of form",
+// "Request aborted"), which carry no `code` either and so still take the 500
+// branch WITH a stack log — including the ordinary case of an admin's upload
+// dropping mid-flight. Deliberately not fixed here: matching on busboy message
+// strings is exactly the brittle coupling this status-based rule avoids, and all
+// five upload routes are admin-guarded, so it is authenticated-only. Recorded as
+// its own backlog row (FUP-T7) rather than widened into this one.
+//
+// A `MulterError` carries `code` and `field` but NO `status`, so an upload past
+// the 5 MB cap in `routes/products.js` / `routes/bakery-products.js` fell through
+// to the 500 branch — a pure client mistake answered as a server fault, and (worse)
+// a remotely triggerable full stack in the log on every hit, which is exactly what
+// the 4xx branch below exists to avoid.
+//
+// The translation lives HERE rather than per-route on purpose: multer is per-route
+// middleware but its errors are delivered with `next(err)`, and neither upload router
+// installs an error handler of its own, so every one of the five `upload.single(...)`
+// routes across the two routers already arrives at this handler (verified live — the
+// pre-fix 500s were logged from this branch). One mapping therefore covers all of
+// them, and future upload routes inherit it; five per-route copies would drift, and
+// each would have to re-state the two decisions documented above.
+//
+// Giving the error a status here — rather than answering it separately — is what
+// makes it flow through the 4xx branch, so it inherits BOTH of those decisions for
+// free: no stack log, and `err.message` never echoed (multer's text is terse, but
+// `LIMIT_UNEXPECTED_FILE`'s quotes the client-supplied field name back at it).
+//
+// LIMIT_FILE_SIZE is the only "too large" code; every other code (LIMIT_UNEXPECTED_FILE,
+// LIMIT_FILE_COUNT, LIMIT_PART_COUNT, LIMIT_FIELD_KEY/VALUE/COUNT) describes a
+// malformed multipart request, which is a plain 400.
+const MULTER_STATUS_BY_CODE = { LIMIT_FILE_SIZE: 413 };
+
+function multerStatus(err) {
+  if (!(err instanceof multer.MulterError)) return null;
+  return MULTER_STATUS_BY_CODE[err.code] || 400;
+}
+
 app.use((err, req, res, next) => {
-  const status = Number(err && (err.status != null ? err.status : err.statusCode));
+  const carried = err && (err.status != null ? err.status : err.statusCode);
+  const status = Number(carried != null ? carried : multerStatus(err));
   const isClientError = Number.isInteger(status) && status >= 400 && status < 500;
 
   if (isClientError) {
@@ -167,7 +209,10 @@ app.use((err, req, res, next) => {
     // hit is a free remote log-flood on a box whose logs are not rotated per
     // request volume. One compact line keeps what is actually diagnostic (which
     // endpoint, which kind of bad body) at a bounded cost.
-    console.warn(`Chybna poziadavka: ${req.method} ${req.originalUrl} (${err.type || 'client-error'}, ${status})`);
+    // `err.code` is the multer branch's diagnostic (LIMIT_FILE_SIZE, …) — a fixed
+    // enum from the library, never client text. `err.field` is client-supplied and
+    // deliberately not logged.
+    console.warn(`Chybna poziadavka: ${req.method} ${req.originalUrl} (${err.type || err.code || 'client-error'}, ${status})`);
     // Never echo `err.message`: body-parser's text quotes the offending input and
     // names a byte offset. Slovak and unaccented, matching the 500 below.
     return res.status(status).json({ error: CLIENT_ERROR_MESSAGES[status] || 'Neplatna poziadavka' });
