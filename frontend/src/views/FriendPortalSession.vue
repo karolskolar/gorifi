@@ -170,6 +170,15 @@ const error = ref('')
 const showProfileModal = ref(false)
 const profileName = ref('')
 const profilePacketaAddress = ref('')
+// UC-FC-009: the friend's own contact data. Seeded on modal OPEN from the
+// hydrated profile (the session-boundary rule — never module-level defaults),
+// with the open-time originals kept so `saveProfile` only sends a field the
+// friend actually CHANGED (PATCH semantics; also keeps the pinned
+// `{ name, packeta_address }` payload shape when contact is untouched).
+const profilePhone = ref('')
+const profileEmail = ref('')
+const profilePhoneOriginal = ref('')
+const profileEmailOriginal = ref('')
 const profileSaving = ref(false)
 const profileError = ref('')
 
@@ -497,6 +506,12 @@ function openProfileModal() {
   profileError.value = ''
   profileName.value = props.friendName || ''
   profilePacketaAddress.value = props.friend?.packeta_address || ''
+  // UC-FC-009: seeded per OPEN, from THIS session's hydrated friend — the
+  // session-boundary rule (nothing may survive from a previous friend's edit).
+  profilePhone.value = props.friend?.phone || ''
+  profileEmail.value = props.friend?.email || ''
+  profilePhoneOriginal.value = profilePhone.value
+  profileEmailOriginal.value = profileEmail.value
   showProfileModal.value = true
 }
 
@@ -507,10 +522,22 @@ async function saveProfile() {
   // A retry must not leave the previous attempt's banner standing (RD-FL-3).
   profileError.value = ''
   try {
-    const updated = await api.updateFriendProfile(props.friendId, {
+    const payload = {
       name: profileName.value.trim(),
       packeta_address: profilePacketaAddress.value.trim() || null
-    })
+    }
+    // UC-FC-009: contact fields ride along ONLY when changed (trim() || null —
+    // clearing is allowed, no confirm; the admin's "Bez e-mailu" badge is the
+    // operational signal). Untouched fields stay absent, so an admin's
+    // concurrent edit of them is not clobbered and the pinned
+    // `{ name, packeta_address }` payload is preserved.
+    if (profilePhone.value.trim() !== profilePhoneOriginal.value.trim()) {
+      payload.phone = profilePhone.value.trim() || null
+    }
+    if (profileEmail.value.trim() !== profileEmailOriginal.value.trim()) {
+      payload.email = profileEmail.value.trim() || null
+    }
+    const updated = await api.updateFriendProfile(props.friendId, payload)
     // The parent owns `currentFriend`, the login-list row and the stored display
     // name — all three outlive this component.
     emit('profile-saved', updated)
@@ -1224,6 +1251,37 @@ defineExpose({ openProfileModal, openInviteModal })
         :disabled="profileSaving"
       />
       <div class="field-help">Predvolená adresa pre doručenie Packetou (voliteľné).</div>
+    </div>
+
+    <!-- UC-FC-009: the friend's own contact data. Mobil keeps its format-example
+         placeholder (a format example, not a label substitute — the admin modal
+         does the same); Email has NO placeholder (the 2026-08-10 no-placeholder
+         login decision) and carries the vy-form recovery hint verbatim.
+         `maxlength` mirrors the server bounds (MAX_PHONE_LENGTH 32 /
+         MAX_EMAIL_LENGTH 160 — the GSO-T3 mirror convention). -->
+    <div>
+      <label class="field-lbl" for="pp-profile-phone">Mobil</label>
+      <input
+        id="pp-profile-phone"
+        v-model="profilePhone"
+        class="inp"
+        maxlength="32"
+        placeholder="+421 900 000 000"
+        :disabled="profileSaving"
+      />
+    </div>
+
+    <div>
+      <label class="field-lbl" for="pp-profile-email">Email</label>
+      <input
+        id="pp-profile-email"
+        v-model="profileEmail"
+        class="inp"
+        type="email"
+        maxlength="160"
+        :disabled="profileSaving"
+      />
+      <div class="field-help">Bez e-mailu vám nevieme poslať odkaz na obnovenie prístupu.</div>
     </div>
 
     <!-- Password-change fold — only for friends who HAVE a password (repo

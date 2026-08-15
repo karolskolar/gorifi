@@ -257,11 +257,32 @@ async function beginSession({ mustChangePassword = false, currentPassword = '', 
 }
 
 // Fill in the fields the login/restore payloads don't carry (packeta_address,
-// username, hasCredentials, display_name) from the owner-scoped profile
-// endpoint. Fire-and-forget: the portal works without it.
+// phone, email, username, hasCredentials, display_name) from the owner-scoped
+// profile endpoint. Fire-and-forget: the portal works without it, and no caller
+// may block a login on it.
+//
+// ⚠ Called from all FOUR entries into a session — both restore paths and, since
+// UC-FC-009, both fresh-login paths. `POST /friends/auth` (either mode) carries
+// no phone/email, so without the login-path calls the profile modal's Mobil and
+// Email render EMPTY for a whole freshly-logged-in session even when both are on
+// file — directly under the hint that says a missing e-mail costs the friend
+// their recovery link.
+//
+// ⚠ SESSION-BOUNDARY GUARD. Every call site is fire-and-forget, so a slow
+// response can land after a logout or after a DIFFERENT friend has logged in,
+// and the merge below would spread friend A's contact data onto friend B's
+// object — the six-leak class this file's `sessionSeq` exists for. `sessionSeq`
+// is bumped exactly once per handshake, one statement before `entry` (see its
+// declaration), so pinning it at call time — every call site is already past
+// `await beginSession()` — plus re-checking the id makes a late response a
+// no-op instead of a leak. Logout nulls `currentFriend`, which the id check
+// covers too.
 async function hydrateCurrentFriend(friendId) {
+  const seq = sessionSeq.value
   try {
     const full = await api.getFriendProfile(friendId)
+    if (seq !== sessionSeq.value) return
+    if (String(currentFriend.value?.id ?? '') !== String(friendId)) return
     currentFriend.value = { ...currentFriend.value, ...full }
   } catch {
     // non-fatal — keep the minimal object
@@ -320,6 +341,11 @@ async function authenticate(silent = false) {
       mustChangePassword: !!result.mustChangePassword,
       currentPassword: result.mustChangePassword ? password.value : '',
     })
+
+    // UC-FC-009: the auth payload carries no phone/email — hydrate them for THIS
+    // session. Fire-and-forget, exactly like the two restore call sites; a
+    // failure here must never turn a successful login into an error.
+    hydrateCurrentFriend(friendData.id)
   } catch (e) {
     if (!silent) {
       authError.value = e.message
@@ -375,6 +401,10 @@ async function authenticatePersonal() {
       mustChangePassword: !!result.mustChangePassword,
       currentPassword: result.mustChangePassword ? loginPassword.value : '',
     })
+
+    // UC-FC-009: same as the shared-password path above — `/friends/auth`
+    // personal login returns no phone/email either.
+    hydrateCurrentFriend(result.friend.id)
   } catch (e) {
     authError.value = e.message
   } finally {

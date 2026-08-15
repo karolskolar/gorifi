@@ -33,8 +33,9 @@ function sanitizeFriend(friend) {
 }
 
 // ── UC-FC-004: type guards + length bounds for the ADMIN write routes ─────────
-// (POST / and PATCH /:id only — the friend-owned PATCH /:id/profile belongs to
-// module 03 and keeps its own copy/behaviour.)
+// (POST / and PATCH /:id — plus, since UC-FC-009, the CONTACT half [phone/email]
+// of the friend-owned PATCH /:id/profile, which otherwise keeps module 03's own
+// copy/behaviour for name/packeta_address.)
 //
 // ⚠ LOCAL constants, deliberately NOT imported: guest.js's `validateIdentity` is
 // module-private and pinned to the GSO-T3 money path, and invitations.js's
@@ -81,9 +82,15 @@ const ADMIN_FRIEND_FIELDS = [
 // Email keeps the deliberate `includes('@')` leniency (accepted decision — real
 // deliverability surfaces via module 08's send outcomes, not input validation);
 // phone gets NO format validation, length only.
-function validateAdminFriendFields(body) {
+//
+// `only` (UC-FC-009): an optional field-name subset. The friend-owned
+// PATCH /:id/profile validates ONLY phone/email through here so the Slovak
+// messages and `field` markers cannot drift from the admin routes' — name and
+// packeta_address on that route keep module 03's own rules (pinned message).
+function validateAdminFriendFields(body, only = null) {
   const values = {};
   for (const [field, label, max, tooLong] of ADMIN_FRIEND_FIELDS) {
+    if (only && !only.includes(field)) continue;
     const value = adminString(body[field]);
     if (value === null) {
       return { error: `Neplatný formát údajov (${label})`, field };
@@ -630,7 +637,8 @@ router.patch('/:id', requireAdmin, (req, res) => {
   res.json(sanitizeFriend(updated));
 });
 
-// Update own profile (friend can update their login name only) - requires friends password
+// Update own profile (name, packeta address and — since UC-FC-009 — the friend's
+// own contact data) - requires friends password
 // Note: display_name is admin-only and cannot be changed by friends
 router.patch('/:id/profile', (req, res) => {
   const owner = requireFriendOwner(req, req.params.id);
@@ -641,15 +649,51 @@ router.patch('/:id/profile', (req, res) => {
   const { name, packeta_address } = req.body;
   const friendId = req.params.id;
 
+  // ⚠ UC-FC-009 CONTACT GATE — deliberately NARROWER than requireFriendOwner.
+  //
+  // requireFriendOwner resolves `friendId: null` for bare shared-password auth
+  // while auth_mode is 'legacy' (its migration window), which means ANY friend
+  // who knows the shared password can PATCH ANY other friend's row on this
+  // route. That is tolerable for `name` / `packeta_address` (module 03's shipped
+  // behaviour, cosmetic and self-correcting), but NOT for the contact half:
+  // module 09 resolves a recovery request by `lower(trim(email))` with "exactly
+  // one active match", so an address planted on a victim who has none of their
+  // own SURVIVES the flip to auth_mode 'modern' and becomes an account-takeover
+  // seam. The blast radius outlives the migration window, so the window does not
+  // get to cover it.
+  //
+  // Costs real users nothing: POST /friends/auth mints a per-friend session
+  // token in BOTH login modes (see the requireHost comment in
+  // middleware/friend-auth.js), so every friend who logged in through the portal
+  // has a resolved identity. Same 401 message requireFriendOwner uses for the
+  // no-identity case, so the client sees one consistent instruction.
+  const touchesContact = req.body.phone !== undefined || req.body.email !== undefined;
+  if (touchesContact && owner.friendId == null) {
+    return res.status(401).json({ error: 'Prihláste sa svojím menom a heslom' });
+  }
+
   const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(friendId);
   if (!friend) {
     return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
   }
 
+  // Module 03's own name rule — this message is pinned (friends-consolidation
+  // "module-03 pin"); UC-FC-004's relabel deliberately did not reach it.
+  if (name !== undefined && !name.trim()) {
+    return res.status(400).json({ error: 'Prihlasovacie meno je povinné' });
+  }
+
+  // UC-FC-009: phone/email self-edit with UC-FC-004's exact bounds/type guards
+  // ({error, field} 400s, trim, `@` leniency, null → '' → clears). Validated
+  // BEFORE any write so a rejected field leaves the whole row unchanged.
+  // Last write wins with the admin route — same as packeta_address today.
+  const contact = validateAdminFriendFields(req.body, ['phone', 'email']);
+  if (contact.error) {
+    return res.status(400).json({ error: contact.error, field: contact.field });
+  }
+  const { phone, email } = contact.values;
+
   if (name !== undefined) {
-    if (!name.trim()) {
-      return res.status(400).json({ error: 'Prihlasovacie meno je povinné' });
-    }
     db.prepare('UPDATE friends SET name = ? WHERE id = ?').run(name.trim(), friendId);
   }
 
@@ -658,7 +702,15 @@ router.patch('/:id/profile', (req, res) => {
       .run(packeta_address?.trim() || null, friendId);
   }
 
-  const updated = db.prepare('SELECT id, name, uid, packeta_address FROM friends WHERE id = ?').get(friendId);
+  if (phone !== undefined) {
+    db.prepare('UPDATE friends SET phone = ? WHERE id = ?').run(phone || null, friendId);
+  }
+
+  if (email !== undefined) {
+    db.prepare('UPDATE friends SET email = ? WHERE id = ?').run(email || null, friendId);
+  }
+
+  const updated = db.prepare('SELECT id, name, uid, packeta_address, phone, email FROM friends WHERE id = ?').get(friendId);
   res.json(updated);
 });
 

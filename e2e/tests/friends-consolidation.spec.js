@@ -692,3 +692,372 @@ test.describe('API — UC-FC-007 invitation stays frozen', () => {
     expect(after).toEqual(before)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FC-T4 — 11 §UC-FC-009: friend self-edit of Mobil + Email.
+// API half: `PATCH /friends/:id/profile` gains phone/email with UC-FC-004's EXACT
+// bounds/type guards. UI half: the portal "Upraviť profil" modal gains the two
+// fields, and the admin's "Bez e-mailu" badge round-trips a friend's own edit.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test.describe('API — UC-FC-009 profile contact fields', () => {
+  test('a friend sets and clears their own phone/email (null clears, no confirm)', async () => {
+    const friend = await makeFriendWithSession('fc9set')
+    const email = `fc9-${uniq}${seq}@example.test`
+    const set = await ctx.patch(`/api/friends/${friend.id}/profile`, {
+      headers: friend.auth,
+      data: { phone: '  0900101010  ', email: `  ${email}  ` },
+    })
+    expect(set.status()).toBe(200)
+    const setBody = await set.json()
+    // Trimmed, and the response carries the fields (the modal re-prefills off it).
+    expect(setBody.phone).toBe('0900101010')
+    expect(setBody.email).toBe(email)
+    let row = await friendRow(friend.id)
+    expect(row.phone).toBe('0900101010')
+    expect(row.email).toBe(email)
+
+    // Clearing is allowed with NO confirm — null-clears, same as the admin route.
+    const clear = await ctx.patch(`/api/friends/${friend.id}/profile`, {
+      headers: friend.auth,
+      data: { phone: null, email: null },
+    })
+    expect(clear.status()).toBe(200)
+    row = await friendRow(friend.id)
+    expect(row.phone).toBeNull()
+    expect(row.email).toBeNull()
+  })
+
+  test('type guards: non-string phone/email are 400 with field markers, never a 500', async () => {
+    const friend = await makeFriendWithSession('fc9type')
+    const badEmail = await ctx.patch(`/api/friends/${friend.id}/profile`, {
+      headers: friend.auth,
+      data: { email: {} },
+    })
+    expect(badEmail.status()).toBe(400)
+    const emailBody = await badEmail.json()
+    expect(emailBody.field).toBe('email')
+    expect(emailBody.error).toBe('Neplatný formát údajov (e-mail)')
+
+    const badPhone = await ctx.patch(`/api/friends/${friend.id}/profile`, {
+      headers: friend.auth,
+      data: { phone: 123 },
+    })
+    expect(badPhone.status()).toBe(400)
+    expect((await badPhone.json()).field).toBe('phone')
+  })
+
+  test('bounds: one-over-bound phone/email are 400 with the UC-FC-004 messages', async () => {
+    const friend = await makeFriendWithSession('fc9bound')
+    const phone = await ctx.patch(`/api/friends/${friend.id}/profile`, {
+      headers: friend.auth,
+      data: { phone: '9'.repeat(BOUNDS.phone + 1) },
+    })
+    expect(phone.status()).toBe(400)
+    const phoneBody = await phone.json()
+    expect(phoneBody.field).toBe('phone')
+    expect(phoneBody.error).toBe(`Telefónne číslo je príliš dlhé (najviac ${BOUNDS.phone} znakov)`)
+
+    const email = await ctx.patch(`/api/friends/${friend.id}/profile`, {
+      headers: friend.auth,
+      // Exactly BOUNDS.email + 1 (the file's own one-over convention above):
+      // local part + '@' + 'example.test' (12) = 161.
+      data: { email: `${'a'.repeat(BOUNDS.email - 12)}@example.test` },
+    })
+    expect(email.status()).toBe(400)
+    const emailBody = await email.json()
+    expect(emailBody.field).toBe('email')
+    expect(emailBody.error).toBe(`E-mail je príliš dlhý (najviac ${BOUNDS.email} znakov)`)
+  })
+
+  test('email @-leniency applies, and a rejected field writes NOTHING (validate-before-write)', async () => {
+    const friend = await makeFriendWithSession('fc9atomic')
+    const before = await friendRow(friend.id)
+    const res = await ctx.patch(`/api/friends/${friend.id}/profile`, {
+      headers: friend.auth,
+      // A valid name rides along — the 400 must reject the WHOLE request, or the
+      // name would be half-written under a rejected email.
+      data: { name: `${before.name} Zmenený`, phone: '0900202020', email: 'chyba-bez-zavinaca' },
+    })
+    expect(res.status()).toBe(400)
+    const body = await res.json()
+    expect(body.field).toBe('email')
+    expect(body.error).toBe('Neplatný email')
+    const after = await friendRow(friend.id)
+    expect(after.name).toBe(before.name)
+    expect(after.phone).toBe(before.phone)
+    expect(after.email).toBe(before.email)
+  })
+})
+
+// UI half. ⚠ ONE admin token app-wide: every test here logs into the admin UI
+// FIRST (uiAdminLogin adopts the browser's token), THEN builds fixtures.
+// The friend logs in on the MODERN card via the RD-FL-2 idiom: the shared seed
+// stays legacy and `GET /friends/auth-mode` is stubbed per page — flipping the
+// setting for real is global unserialized state (see modern-login.spec.js's
+// header for the three failure modes), and the backend's personal-login branch
+// is not gated on auth_mode, so the login itself is exercised for real.
+test.describe('UI — UC-FC-009 portal profile modal', () => {
+  async function uiFriendLogin(page, friend) {
+    await page.route('**/friends/auth-mode', (route) => route.fulfill({ json: { authMode: 'modern' } }))
+    // Kill the UC-FL-007 colleague-count storm (portal-profile-modal idiom):
+    // one fire-and-forget guest-links GET per open cycle starves the login's
+    // own XHRs on a full-suite database.
+    await page.route('**/api/guest-links/cycle/*', (route) => route.abort())
+    await page.goto('/')
+    await page.getByLabel(/^užívateľské meno$/i).fill(friend.username)
+    await page.getByLabel(/^heslo$/i).fill('ownPass1')
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+  }
+
+  // `hydrateCurrentFriend` is fire-and-forget; the username box only exists once
+  // the profile GET landed, so it is the hydration gate (portal-profile-modal idiom).
+  async function openProfile(page) {
+    await page.locator('.appbar .titles').click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.locator('.m-title')).toHaveText('Upraviť profil')
+    await expect(dialog.getByTestId('profile-username')).toBeVisible()
+    return dialog
+  }
+
+  test('field contract: labels, .inp skin, maxlength mirror, type=email, placeholder policy, vy-form help', async ({ page }) => {
+    await uiAdminLogin(page)
+    const friend = await makeFriendWithSession('fc9ui')
+    await uiFriendLogin(page, friend)
+    const dialog = await openProfile(page)
+
+    const mobil = dialog.getByLabel('Mobil')
+    await expect(mobil).toBeVisible()
+    await expect(mobil).toHaveClass(/\binp\b/)
+    await expect(mobil).toHaveAttribute('maxlength', String(BOUNDS.phone))
+    // A format example, not a label substitute — the admin modal does the same.
+    await expect(mobil).toHaveAttribute('placeholder', '+421 900 000 000')
+
+    const email = dialog.getByLabel('Email')
+    await expect(email).toBeVisible()
+    await expect(email).toHaveClass(/\binp\b/)
+    await expect(email).toHaveAttribute('type', 'email')
+    await expect(email).toHaveAttribute('maxlength', String(BOUNDS.email))
+    // NO placeholder on Email (the 2026-08-10 no-placeholder login decision).
+    await expect(email).not.toHaveAttribute('placeholder', /./)
+    // The pinned vy-form field-help, verbatim (11 §UC-FC-009).
+    await expect(dialog.getByText('Bez e-mailu vám nevieme poslať odkaz na obnovenie prístupu.')).toBeVisible()
+  })
+
+  test('round-trip: a friend setting their email removes the admin "Bez e-mailu" badge; clearing it restores it', async ({ page }) => {
+    await uiAdminLogin(page)
+    const friend = await makeFriendWithSession('fc9trip')
+    const friendName = (await friendRow(friend.id)).name
+    const newEmail = `fc9-trip-${uniq}${seq}@example.test`
+
+    // The friend fills BOTH fields and saves.
+    await uiFriendLogin(page, friend)
+    let dialog = await openProfile(page)
+    await dialog.getByLabel('Mobil').fill('0900303030')
+    await dialog.getByLabel('Email').fill(newEmail)
+    await dialog.getByRole('button', { name: 'Uložiť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    // The admin table reflects it: contact lines present, badge gone (UC-FC-002).
+    await gotoFriends(page)
+    const cell = rowFor(page, friendName).getByTestId('contact-cell')
+    await expect(cell.getByText(newEmail)).toBeVisible()
+    await expect(cell.getByText('0900303030')).toBeVisible()
+    await expect(cell.getByText('Bez e-mailu')).toHaveCount(0)
+
+    // Back on the portal ("remember me" defaults on, so the session restores):
+    // the modal PREFILLS from the saved values, and clearing the email is
+    // allowed with NO confirm (11 §UC-FC-009 — the badge is the signal).
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    dialog = await openProfile(page)
+    await expect(dialog.getByLabel('Email')).toHaveValue(newEmail)
+    await expect(dialog.getByLabel('Mobil')).toHaveValue('0900303030')
+    await dialog.getByLabel('Email').fill('')
+    await dialog.getByRole('button', { name: 'Uložiť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    await gotoFriends(page)
+    const cellAfter = rowFor(page, friendName).getByTestId('contact-cell')
+    await expect(cellAfter.getByText('Bez e-mailu', { exact: true })).toBeVisible()
+    await expect(cellAfter.getByText(newEmail)).toHaveCount(0)
+    // The phone was untouched by the clear and must survive it.
+    await expect(cellAfter.getByText('0900303030')).toBeVisible()
+  })
+
+  // ⚠ Fresh login only — NO intervening `page.goto('/')`. The round-trip test
+  // above re-opens the modal after a document load, i.e. through the SESSION
+  // RESTORE path, which is where `hydrateCurrentFriend` was already wired; that
+  // is exactly why an empty modal on a fresh login was invisible. Neither
+  // `POST /friends/auth` branch carries phone/email, so without the login-path
+  // hydration the friend sees blank Mobil/Email for a whole session — directly
+  // under the hint telling them a missing e-mail costs them their recovery link.
+  //
+  // The `profile-username` gate in `openProfile` does NOT cover this: the auth
+  // payload already carries `username`, so it renders without hydration. The
+  // profile GET is awaited explicitly instead — and that wait is itself half the
+  // assertion (the request must be made on a fresh login at all), because the
+  // modal seeds its fields ONCE at open time, so a late hydration would leave
+  // them empty forever rather than filling in on retry.
+  test('a FRESH login prefills Mobil + Email from the stored values (no document reload)', async ({ page }) => {
+    await uiAdminLogin(page)
+    const friend = await makeFriendWithSession('fc9fresh')
+    const storedEmail = `fc9-fresh-${uniq}${seq}@example.test`
+    expect((await admin(`/api/friends/${friend.id}`, {
+      method: 'patch',
+      data: { phone: '0900404040', email: storedEmail },
+    })).status()).toBe(200)
+
+    await page.route('**/friends/auth-mode', (route) => route.fulfill({ json: { authMode: 'modern' } }))
+    await page.route('**/api/guest-links/cycle/*', (route) => route.abort())
+    await page.goto('/')
+    await page.getByLabel(/^užívateľské meno$/i).fill(friend.username)
+    await page.getByLabel(/^heslo$/i).fill('ownPass1')
+
+    const hydrated = page.waitForResponse(
+      (r) => r.url().includes(`/api/friends/${friend.id}/profile`) && r.request().method() === 'GET' && r.status() === 200
+    )
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await hydrated
+
+    const dialog = await openProfile(page)
+    await expect(dialog.getByLabel('Mobil')).toHaveValue('0900404040')
+    await expect(dialog.getByLabel('Email')).toHaveValue(storedEmail)
+  })
+
+  // ⚠ THE RACE `hydrateCurrentFriend`'s `sessionSeq`/id GUARD EXISTS FOR.
+  // Every OTHER test in this file happens to await friend A's profile hydrate
+  // before friend B ever logs in (implicitly — a local request resolves in a
+  // few ms), so none of them can reach the window the guard actually defends:
+  // A's `GET /profile` landing AFTER B has already logged in on the same
+  // component instance. Held here with `page.route` so it resolves only once
+  // B's session is live. A regression that dropped the `seq !== sessionSeq`
+  // / id re-check (added by this same task, both new call sites) would spread
+  // friend A's phone/email straight onto friend B's screen — logout does NOT
+  // abort an in-flight browser fetch, only the app-level `currentFriend`.
+  test('a slow profile hydrate for a friend who has since logged out must not leak into the NEXT friend’s session', async ({ page }) => {
+    await uiAdminLogin(page)
+    const a = await makeFriendWithSession('fc9racea')
+    const b = await makeFriendWithSession('fc9raceb')
+    const aEmail = `fc9-race-${uniq}${seq}@example.test`
+    const aPhone = '0900909090'
+    expect((await admin(`/api/friends/${a.id}`, {
+      method: 'patch',
+      data: { phone: aPhone, email: aEmail },
+    })).status()).toBe(200)
+
+    await page.route('**/friends/auth-mode', (route) => route.fulfill({ json: { authMode: 'modern' } }))
+    await page.route('**/api/guest-links/cycle/*', (route) => route.abort())
+
+    // Hold A's own profile hydrate open — never let it resolve until after B
+    // has logged in on the same document.
+    let releaseA
+    const heldA = new Promise((resolve) => { releaseA = resolve })
+    await page.route(`**/api/friends/${a.id}/profile`, async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      await heldA
+      await route.continue()
+    })
+
+    await page.goto('/')
+    await page.getByLabel(/^užívateľské meno$/i).fill(a.username)
+    await page.getByLabel(/^heslo$/i).fill('ownPass1')
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+
+    // Log out WITHOUT ever letting A's hydrate resolve — the held GET is still
+    // pending in the browser's network layer; app-level logout does not abort it.
+    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+    await expect(page.getByRole('heading', { name: 'Kto klope?' })).toBeVisible()
+
+    // Log B in on the SAME document — no reload, so the pending request survives.
+    await page.getByLabel(/^užívateľské meno$/i).fill(b.username)
+    await page.getByLabel(/^heslo$/i).fill('ownPass1')
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+
+    // NOW let A's stale response land — straight into what is now B's session.
+    releaseA()
+    await page.waitForTimeout(300)
+
+    const dialog = await openProfile(page)
+    await expect(dialog.getByLabel('Mobil')).toHaveValue('')
+    await expect(dialog.getByLabel('Email')).toHaveValue('')
+    expect(await page.content(), 'friend A’s email must never render on B’s screen').not.toContain(aEmail)
+    expect(await page.content(), 'friend A’s phone must never render on B’s screen').not.toContain(aPhone)
+  })
+
+  // Minor: the "send only what changed" delta in `saveProfile` — asserted on the
+  // WIRE, because its whole rationale (an admin's concurrent contact edit is not
+  // clobbered, and the pinned `{name, packeta_address}` payload shape survives)
+  // is invisible in the response. Depends on the fresh-login hydration above:
+  // without it both fields open EMPTY, the delta would read as "cleared", and
+  // this test would catch that too.
+  test('saving without touching the contact fields OMITS phone and email from the PATCH', async ({ page }) => {
+    await uiAdminLogin(page)
+    const friend = await makeFriendWithSession('fc9delta')
+    const storedEmail = `fc9-delta-${uniq}${seq}@example.test`
+    expect((await admin(`/api/friends/${friend.id}`, {
+      method: 'patch',
+      data: { phone: '0900505050', email: storedEmail },
+    })).status()).toBe(200)
+
+    await page.route('**/friends/auth-mode', (route) => route.fulfill({ json: { authMode: 'modern' } }))
+    await page.route('**/api/guest-links/cycle/*', (route) => route.abort())
+    await page.goto('/')
+    await page.getByLabel(/^užívateľské meno$/i).fill(friend.username)
+    await page.getByLabel(/^heslo$/i).fill('ownPass1')
+    const hydrated = page.waitForResponse(
+      (r) => r.url().includes(`/api/friends/${friend.id}/profile`) && r.request().method() === 'GET' && r.status() === 200
+    )
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await hydrated
+
+    const dialog = await openProfile(page)
+    // Non-vacuity: both fields really are populated, so "absent" means the delta
+    // suppressed them and not that there was nothing to send.
+    await expect(dialog.getByLabel('Mobil')).toHaveValue('0900505050')
+    await expect(dialog.getByLabel('Email')).toHaveValue(storedEmail)
+
+    // Change something ELSE so there is a real save to inspect.
+    const packeta = dialog.getByLabel(/Adresa.*Packet/i)
+    await packeta.fill(`Odberné miesto ${uniq}${seq}`)
+
+    const saved = page.waitForRequest(
+      (r) => r.url().includes(`/api/friends/${friend.id}/profile`) && r.method() === 'PATCH'
+    )
+    await dialog.getByRole('button', { name: 'Uložiť' }).click()
+    const payload = (await saved).postDataJSON()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    expect(Object.keys(payload).sort()).toEqual(['name', 'packeta_address'])
+    expect('phone' in payload, 'untouched phone must not be sent').toBe(false)
+    expect('email' in payload, 'untouched email must not be sent').toBe(false)
+
+    // And nothing was clobbered server-side.
+    const row = await friendRow(friend.id)
+    expect(row.phone).toBe('0900505050')
+    expect(row.email).toBe(storedEmail)
+  })
+
+  test('a 400 from the save surfaces in the modal banner and the modal stays open', async ({ page }) => {
+    await uiAdminLogin(page)
+    const friend = await makeFriendWithSession('fc9err')
+    await uiFriendLogin(page, friend)
+    const dialog = await openProfile(page)
+
+    // `maxlength` blocks over-bound TYPING, so the reachable server rejection is
+    // the @-leniency one — a real 400 through the real modal.
+    await dialog.getByLabel('Email').fill('chyba-bez-zavinaca')
+    await dialog.getByRole('button', { name: 'Uložiť' }).click()
+    const banner = dialog.locator('.banner.danger.slim')
+    await expect(banner).toHaveCount(1)
+    await expect(banner).toContainText('Neplatný email')
+    await expect(dialog).toBeVisible()
+    // Nothing was written under the rejection.
+    expect((await friendRow(friend.id)).email).toBeNull()
+  })
+})
