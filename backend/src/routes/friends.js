@@ -12,12 +12,91 @@ const router = Router();
 // client. access_token is a live auth credential; password_hash enables
 // offline cracking; invite_code is a shareable secret. None are consumed by
 // the frontend from these endpoints. Mutates and returns the object.
+// This function stays the ONE home for friend response stripping (11 §UC-FC-005).
 function sanitizeFriend(friend) {
   if (!friend) return friend;
+  // Google state, derived BEFORE the strip (11 §UC-FC-005). On a pre-module-10 DB
+  // the `google_sub` column does not exist, so `friend.google_sub` is undefined ⇒
+  // `googleLinked: false` — same code path, no feature flag, no error (the graceful
+  // rule UC-FC-002 renders from). `google_email` (display-only) passes through
+  // untouched when it exists.
+  friend.googleLinked = !!friend.google_sub;
   delete friend.password_hash;
   delete friend.access_token;
   delete friend.invite_code;
+  // ⚠ Module 10 seam: the raw Google subject is an identity key, never display
+  // data — it never leaves the server. A harmless no-op delete until UC-GA-001
+  // adds the column. Module 10's own login/link endpoints INHERIT this strip rule
+  // (11 §UC-FC-005 ships it first); do not remove it as "dead code".
+  delete friend.google_sub;
   return friend;
+}
+
+// ── UC-FC-004: type guards + length bounds for the ADMIN write routes ─────────
+// (POST / and PATCH /:id only — the friend-owned PATCH /:id/profile belongs to
+// module 03 and keeps its own copy/behaviour.)
+//
+// ⚠ LOCAL constants, deliberately NOT imported: guest.js's `validateIdentity` is
+// module-private and pinned to the GSO-T3 money path, and invitations.js's
+// `registerString` documents the same convention for its own public form. One
+// convention (120/32/160), three local copies, zero shared code paths across the
+// money / public / admin surfaces. FC-T2's modal `maxlength` attributes mirror
+// these numbers (the GSO-T3 mirror convention).
+const MAX_NAME_LENGTH = 120;
+const MAX_PHONE_LENGTH = 32;
+const MAX_EMAIL_LENGTH = 160;
+// The admin note (`display_name`) had no precedent bound; 200 matches the modal's
+// practical size (11 §UC-FC-004).
+const MAX_NOTE_LENGTH = 200;
+
+// Trimmed string; `undefined` when the field is absent; `''` when the field is an
+// explicit `null` — the shipped admin UI clears a field by sending `null`
+// (AdminFriends.vue's `trim() || null`), and `''` flows through the routes'
+// existing `value || null` normalisation and writes NULL, preserving the old
+// null-clears-it behaviour verbatim (§UC-FC-004 — the type-guard list deliberately
+// excludes `null`). Returns `null` when present but not a string — the caller 400s
+// with a `field` marker instead of throwing inside the handler (the recorded
+// `POST {email: 123}` → 500: a number has no `.trim()`). Strict on purpose (the
+// UC-IA-003 precedent): no number/boolean coercion — the only writer is our own
+// admin form, which always sends strings or null.
+function adminString(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return '';
+  if (typeof value === 'string') return value.trim();
+  return null;
+}
+
+// The admin-writable fields with their Slovak type-guard label and length bound.
+const ADMIN_FRIEND_FIELDS = [
+  ['name', 'meno a priezvisko', MAX_NAME_LENGTH, `Meno a priezvisko je príliš dlhé (najviac ${MAX_NAME_LENGTH} znakov)`],
+  ['display_name', 'poznámka', MAX_NOTE_LENGTH, `Poznámka je príliš dlhá (najviac ${MAX_NOTE_LENGTH} znakov)`],
+  ['phone', 'telefón', MAX_PHONE_LENGTH, `Telefónne číslo je príliš dlhé (najviac ${MAX_PHONE_LENGTH} znakov)`],
+  ['email', 'e-mail', MAX_EMAIL_LENGTH, `E-mail je príliš dlhý (najviac ${MAX_EMAIL_LENGTH} znakov)`],
+];
+
+// Validates + normalises the admin-writable fields of a POST/PATCH body.
+// Returns `{ error, field }` on the first violation, else `{ values }` where each
+// key is `undefined` when absent from the body, otherwise the trimmed string
+// (possibly '' — the per-route required/empty rules stay with the caller).
+// Email keeps the deliberate `includes('@')` leniency (accepted decision — real
+// deliverability surfaces via module 08's send outcomes, not input validation);
+// phone gets NO format validation, length only.
+function validateAdminFriendFields(body) {
+  const values = {};
+  for (const [field, label, max, tooLong] of ADMIN_FRIEND_FIELDS) {
+    const value = adminString(body[field]);
+    if (value === null) {
+      return { error: `Neplatný formát údajov (${label})`, field };
+    }
+    if (value !== undefined && value.length > max) {
+      return { error: tooLong, field };
+    }
+    values[field] = value;
+  }
+  if (values.email && !values.email.includes('@')) {
+    return { error: 'Neplatný email', field: 'email' };
+  }
+  return { values };
 }
 
 // GET /friends/auth-mode - Public endpoint to get current auth mode
@@ -441,15 +520,17 @@ router.get('/:id/detail', requireAdmin, (req, res) => {
 
 // Create new friend (global, no cycle_id required) (admin)
 router.post('/', requireAdmin, (req, res) => {
-  const { name, display_name, phone, email } = req.body;
+  const check = validateAdminFriendFields(req.body || {});
+  if (check.error) {
+    return res.status(400).json({ error: check.error, field: check.field });
+  }
+  const { name, display_name, phone, email } = check.values;
 
   if (!name) {
-    return res.status(400).json({ error: 'Prihlasovacie meno je povinné' });
-  }
-
-  const trimmedEmail = email ? email.trim() : null;
-  if (trimmedEmail && !trimmedEmail.includes('@')) {
-    return res.status(400).json({ error: 'Neplatný email' });
+    // Relabelled from 'Prihlasovacie meno je povinné' (11 §UC-FC-004) — `name` is a
+    // display label and never was a login (07 §UC-IA-007 history). The module-03
+    // PATCH /:id/profile message below deliberately keeps the OLD copy.
+    return res.status(400).json({ error: 'Meno a priezvisko je povinné', field: 'name' });
   }
 
   // Generate unique access token (kept for backwards compatibility)
@@ -472,10 +553,13 @@ router.post('/', requireAdmin, (req, res) => {
   // (shared with onboarding + approval — see helpers/friend-create.js, 07 §UC-IA-002)
   const cycleId = getPlaceholderCycleId();
 
+  // Values are trimmed by validateAdminFriendFields; optional fields fall to NULL.
+  // Still sets NO credentials — approval (07) and the per-row actions are the only
+  // credential mints (11 §UC-FC-004: a rule, not an omission).
   const result = db.prepare(`
     INSERT INTO friends (cycle_id, name, display_name, uid, access_token, invite_code, active, phone, email)
     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-  `).run(cycleId, name, display_name || null, uid, access_token, invite_code, phone || null, trimmedEmail);
+  `).run(cycleId, name, display_name || null, uid, access_token, invite_code, phone || null, email || null);
 
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(sanitizeFriend(friend));
@@ -483,11 +567,30 @@ router.post('/', requireAdmin, (req, res) => {
 
 // Update friend (name, display_name, and/or active status) - Admin endpoint
 router.patch('/:id', requireAdmin, (req, res) => {
-  const { name, display_name, active, phone, email } = req.body;
+  const body = req.body || {};
+  // Deliberate: body validation runs BEFORE the existence lookup, so a malformed
+  // body on a nonexistent id 400s rather than 404s (fail-fast on the request
+  // shape; differs from the GSO-T5 existence-first convention, admin-only route).
+  const check = validateAdminFriendFields(body);
+  if (check.error) {
+    return res.status(400).json({ error: check.error, field: check.field });
+  }
+  const { name, display_name, phone, email } = check.values;
+  // `active` keeps its existing truthy coercion (11 §UC-FC-004) — 0/false/1/true
+  // are all in live use by shipped specs.
+  const { active } = body;
+
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
 
   if (!friend) {
     return res.status(404).json({ error: 'Priateľ nebol nájdený' });
+  }
+
+  // `name` present but blank after trim used to silently write '' — blanking the
+  // display name in every list the friend appears in (11 §UC-FC-004). Absent stays
+  // "untouched", as before.
+  if (name !== undefined && !name) {
+    return res.status(400).json({ error: 'Meno a priezvisko je povinné', field: 'name' });
   }
 
   const updates = [];
@@ -514,12 +617,8 @@ router.patch('/:id', requireAdmin, (req, res) => {
     values.push(phone || null);
   }
   if (email !== undefined) {
-    const trimmed = email ? email.trim() : null;
-    if (trimmed && !trimmed.includes('@')) {
-      return res.status(400).json({ error: 'Neplatný email' });
-    }
     updates.push('email = ?');
-    values.push(trimmed);
+    values.push(email || null);
   }
 
   if (updates.length > 0) {
