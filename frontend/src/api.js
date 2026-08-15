@@ -163,13 +163,25 @@ export const api = {
 
   // Friends auth
   getAuthMode: () => request('/friends/auth-mode'),
-  authenticateFriends: (password, friendId) => request('/friends/auth', {
+  // ⚠ 09 §UC-ML-007 (ML-T4): `remember` is what buys the 60-day session; without it
+  // the server issues its 24 h default (`createFriendSession`, ML-T1). BOTH branches
+  // carry it — the legacy shared-password card has the same checkbox as the modern
+  // one, and a friend who ticks it there must get the same horizon.
+  // `=== true` keeps the wire value a real boolean, which also makes `remember`
+  // strictly assertable in the e2e request interception.
+  // ⚠ It is NOT the load-bearing check — the server's strict test is (ML-T1,
+  // `createFriendSession`), and normalising a stray truthy to `false` here produces
+  // the same 24 h outcome the server would produce anyway. Both call sites pass
+  // `rememberMe.value`, which `NeoCheckbox` and native `v-model` guarantee is already
+  // a boolean, so **deleting this `=== true` leaves the entire suite green**. Do not
+  // read it as an invariant the way ML-T1's server-side pair should be read.
+  authenticateFriends: (password, friendId, remember) => request('/friends/auth', {
     method: 'POST',
-    body: { password, friendId }
+    body: { password, friendId, remember: remember === true }
   }),
-  authenticateFriendsPersonal: (username, password) => request('/friends/auth', {
+  authenticateFriendsPersonal: (username, password, remember) => request('/friends/auth', {
     method: 'POST',
-    body: { username, password }
+    body: { username, password, remember: remember === true }
   }),
   setupCredentials: (friendId, username, password) => request(`/friends/${friendId}/setup-credentials`, {
     method: 'POST',

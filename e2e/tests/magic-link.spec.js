@@ -34,7 +34,9 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { DatabaseSync } from 'node:sqlite'
 import crypto from 'node:crypto'
-import { ADMIN_PASSWORD } from '../fixtures.js'
+// FRIEND_NAME / FRIENDS_PASSWORD are ML-T4's: the §UC-ML-007 block at the bottom
+// drives the LEGACY shared-password card, which is the seed's real login screen.
+import { ADMIN_PASSWORD, FRIEND_NAME, FRIENDS_PASSWORD } from '../fixtures.js'
 import {
   CAN_SPAWN_BACKEND,
   FAKE_MAILGUN_KEY,
@@ -1251,5 +1253,236 @@ test.describe('UC-ML-005 — the /magic/:token page, full flow (throwaway backen
       expect(relogin.status(), 'the password the friend chose in the gate authenticates').toBe(200)
       expect((await relogin.json()).mustChangePassword, 'and the server flag is cleared too').toBe(false)
     })
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ML-T4 — 09 §UC-ML-007 (remember-me: checkbox semantics + the storage rule) and
+// resolved conflicts #1 and #2.
+//
+// ⚠ APPENDED HERE for the same reason ML-T3 appended: §UC-ML-010 obligation 1 names
+// this file for the UI criteria of §UC-ML-006/007/008, and ML-T2's header reserved it
+// for exactly this. Nothing above this line is touched.
+//
+// The three behaviours this block pins, none of which existed before ML-T4:
+//   1. the checkbox is UNCHECKED at rest (resolved conflict #2) — 60 days is the
+//      OPT-IN, so a pre-checked box would have made it the effective default;
+//   2. `remember` reaches `POST /friends/auth` from BOTH login paths — the modern
+//      personal branch AND the legacy shared-password branch;
+//   3. `gorifi_friend_auth` is written on EVERY successful login, checked or not
+//      (resolved conflict #1 — "the TTL, not the storage, is the mechanism"), so the
+//      only thing the checkbox moves is the server-issued `expiresAt`: 24 h vs 60 d.
+//
+// Both cards are covered because they are DIFFERENT MARKUP calling DIFFERENT api.js
+// functions: the modern card's `NeoCheckbox` + `authenticateFriendsPersonal`, and the
+// legacy card's native `<input type=checkbox>` + `authenticateFriends`. A change that
+// only reaches the personal path leaves the legacy half silently on 24 h forever.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const AUTH_STORAGE_KEY = 'gorifi_friend_auth'
+const REMEMBER_MS = 60 * DAY_MS
+
+// The five keys three other e2e suites write into this object directly. §UC-ML-007
+// freezes them; the payload MAY gain optional fields (ML-T6's flags), so this is a
+// presence check, never an exact-set one.
+const PINNED_STORAGE_KEYS = ['friendId', 'friendName', 'friendUid', 'token', 'expiresAt']
+
+/** The stored session payload, or null. */
+const readStored = (page) =>
+  page.evaluate((key) => JSON.parse(localStorage.getItem(key) || 'null'), AUTH_STORAGE_KEY)
+
+/**
+ * Assert the stored payload keeps its pinned shape and carries a server horizon
+ * `expected` ms away. The tolerance covers the request round-trip only — it is
+ * deliberately far tighter than the 24 h ↔ 60 d gap, so a horizon that silently
+ * reverts to the default cannot pass as "roughly right".
+ */
+function expectStoredHorizon(stored, expected, label) {
+  expect(stored, `${label}: localStorage MUST be written whether or not the box is ticked`)
+    .not.toBeNull()
+  for (const key of PINNED_STORAGE_KEYS) {
+    expect(Object.keys(stored), `${label}: pinned key ${key}`).toContain(key)
+  }
+  expect(typeof stored.token, `${label}: a real session token`).toBe('string')
+  const horizon = stored.expiresAt - Date.now()
+  expect(horizon, `${label}: expiresAt ${horizon} ms out, expected ≈ ${expected}`)
+    .toBeGreaterThan(expected - 10 * 60 * 1000)
+  expect(horizon, `${label}: expiresAt ${horizon} ms out, expected ≈ ${expected}`)
+    .toBeLessThanOrEqual(expected)
+}
+
+/**
+ * Capture the `remember` field of every `POST /api/friends/auth` body.
+ *
+ * ⚠ Matched on the EXACT path: `/api/friends/auth-mode` is a GET on a path this
+ * endpoint's name is a prefix of, and a substring match would fold the two together.
+ */
+function captureAuthBodies(page) {
+  const bodies = []
+  page.on('request', (req) => {
+    if (req.method() !== 'POST') return
+    if (new URL(req.url()).pathname !== '/api/friends/auth') return
+    try {
+      bodies.push(JSON.parse(req.postData() || '{}'))
+    } catch {
+      bodies.push({ unparseable: true })
+    }
+  })
+  return bodies
+}
+
+test.describe('UC-ML-007 — remember-me is a TTL, not a storage switch', () => {
+  let ctx
+  let api
+  let uniq
+
+  // ⚠ No localStorage clearing here, deliberately. Playwright gives every test a fresh
+  // browser context, so storage starts empty — and an `addInitScript` clear would
+  // re-run on EVERY navigation, including the `page.reload()` two tests below use to
+  // prove the stored session survives one. (It did: it wiped the payload and both
+  // reload assertions failed for a reason that had nothing to do with the product.)
+  test.beforeEach(async () => {
+    ctx = await playwrightRequest.newContext({ baseURL: BASE_URL })
+    uniq = uniqTag()
+    const adminToken = (await (await ctx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })).json()).token
+    api = makeApi(ctx, adminToken)
+  })
+
+  test.afterEach(async () => {
+    await ctx.dispose()
+  })
+
+  // ── the MODERN card ────────────────────────────────────────────────────────
+  //
+  // ⚠ The shared seed is LEGACY and must stay legacy (modern-login.spec.js documents
+  // why at length: a spec that writes `auth_mode` and dies breaks the rest of the
+  // suite). So the mode probe is STUBBED per page — every other request, including
+  // the login itself, still hits the real backend.
+  const stubModern = (page) =>
+    page.route('**/friends/auth-mode', (route) => route.fulfill({ json: { authMode: 'modern' } }))
+
+  async function modernLogin(page, friend, { remember }) {
+    await page.getByLabel(/^užívateľské meno$/i).fill(friend.username)
+    await page.getByLabel(/^heslo$/i).fill(friend.password)
+    if (remember) {
+      await page.getByRole('checkbox', { name: 'Zapamätať si ma na tomto zariadení' }).click()
+    }
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+  }
+
+  test('the modern card ships the box UNCHECKED at rest (resolved conflict #2)', async ({ page }) => {
+    await stubModern(page)
+    await page.goto('/')
+    const box = page.getByRole('checkbox', { name: 'Zapamätať si ma na tomto zariadení' })
+    await expect(box, '60 days is the OPT-IN — a pre-checked box makes it the default')
+      .toHaveAttribute('aria-checked', 'false')
+  })
+
+  test('modern login, box UNCHECKED: localStorage IS written, with a 24 h horizon that survives a reload', async ({ page }) => {
+    const friend = await api.cleanFriend('mlt4unchecked', uniq)
+    const bodies = captureAuthBodies(page)
+    await stubModern(page)
+    await page.goto('/')
+    await modernLogin(page, friend, { remember: false })
+
+    expect(bodies, 'exactly one auth POST').toHaveLength(1)
+    expect(bodies[0].remember, 'an untouched box sends a STRICT false, never undefined').toBe(false)
+
+    const stored = await readStored(page)
+    expectStoredHorizon(stored, DAY_MS, 'modern / unchecked')
+    expect(stored.friendId).toBe(friend.id)
+
+    // …and it is a REAL session, not just a written object: the reload restores it
+    // instead of falling back to the login card. This is the half the retired
+    // in-memory-only fallback could never do.
+    await page.reload()
+    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    const afterReload = await readStored(page)
+    expect(afterReload.token, 'the restore must not rewrite the token').toBe(stored.token)
+  })
+
+  test('modern login, box CHECKED: the same storage, a 60-day horizon', async ({ page }) => {
+    const friend = await api.cleanFriend('mlt4checked', uniq)
+    const bodies = captureAuthBodies(page)
+    await stubModern(page)
+    await page.goto('/')
+    await modernLogin(page, friend, { remember: true })
+
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0].remember, 'the ticked box is what buys 60 days').toBe(true)
+    expectStoredHorizon(await readStored(page), REMEMBER_MS, 'modern / checked')
+  })
+
+  // ── the LEGACY shared-password card ────────────────────────────────────────
+  //
+  // No stub at all: the shared server IS legacy, so this is the card an anonymous
+  // visitor actually gets. It is the half most likely to be forgotten, because it
+  // goes through a different api.js function (`authenticateFriends`).
+  async function legacyLogin(page, { remember }) {
+    await page.getByRole('combobox').click()
+    await page.getByRole('option', { name: FRIEND_NAME }).click()
+    await page.getByPlaceholder('Zadajte heslo').fill(FRIENDS_PASSWORD)
+    if (remember) {
+      await page.getByRole('checkbox', { name: /Zapamätať si ma na tomto zariadení/ }).check()
+    }
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+  }
+
+  test('the legacy card ships the box UNCHECKED at rest too — one ref, both cards', async ({ page }) => {
+    await page.goto('/')
+    await expect(page.getByText('Prihlásenie')).toBeVisible()
+    await expect(page.getByRole('checkbox', { name: /Zapamätať si ma na tomto zariadení/ }))
+      .not.toBeChecked()
+  })
+
+  test('legacy shared-password login, box UNCHECKED: localStorage written, 24 h horizon', async ({ page }) => {
+    const bodies = captureAuthBodies(page)
+    await page.goto('/')
+    await legacyLogin(page, { remember: false })
+
+    expect(bodies, 'exactly one auth POST').toHaveLength(1)
+    expect(bodies[0].friendId, 'the legacy branch — identified by friendId, not username').toBeTruthy()
+    expect(bodies[0].remember, 'the LEGACY path sends it too').toBe(false)
+    expectStoredHorizon(await readStored(page), DAY_MS, 'legacy / unchecked')
+
+    await page.reload()
+    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+  })
+
+  test('legacy shared-password login, box CHECKED: 60-day horizon', async ({ page }) => {
+    const bodies = captureAuthBodies(page)
+    await page.goto('/')
+    await legacyLogin(page, { remember: true })
+
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0].remember).toBe(true)
+    expectStoredHorizon(await readStored(page), REMEMBER_MS, 'legacy / checked')
+  })
+
+  // ── the on-device half of the split (03 §UC-FL-001, unchanged by this row) ──
+  test('a stored payload whose expiresAt has PASSED still falls back to the login screen', async ({ page }) => {
+    // Written directly, exactly as ~20 fixtures across the suite do — the pinned
+    // shape, with a horizon 24 h in the PAST. Always storing the payload must not
+    // turn a lapsed 24 h session into a permanent one.
+    await page.addInitScript(
+      ([key, payload]) => localStorage.setItem(key, payload),
+      [
+        AUTH_STORAGE_KEY,
+        JSON.stringify({
+          friendId: 1,
+          friendName: 'Expired Fixture',
+          friendUid: 'EXPIRED1',
+          token: 'a'.repeat(64),
+          expiresAt: Date.now() - DAY_MS,
+        }),
+      ]
+    )
+    await page.goto('/')
+
+    await expect(page.getByText('Prihlásenie')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toHaveCount(0)
+    expect(await readStored(page), 'the lapsed payload is dropped, not kept').toBeNull()
   })
 })

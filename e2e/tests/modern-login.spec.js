@@ -208,14 +208,18 @@ test.describe('Modern login — the redesigned card (UC-FL-002)', () => {
     await expect(password).toHaveAttribute('type', 'password')
     await expect(password).toHaveAttribute('autocomplete', 'current-password')
 
-    // NeoCheckbox (UC-DS-009) — remember-me, default ON.
+    // NeoCheckbox (UC-DS-009) — remember-me, default OFF.
+    // ⚠ RETARGETED by 09 §UC-ML-007 / resolved conflict #2 (case (a) of the
+    // e2e-immutability rule). 60 days is now the explicit OPT-IN and 24 h the default,
+    // so the box ships unchecked; the toggle sequence below is inverted with it and
+    // still exercises BOTH directions (pointer on, keyboard off).
     const remember = page.getByRole('checkbox', { name: 'Zapamätať si ma na tomto zariadení' })
     await expect(remember).toHaveClass(/\bcbox\b/)
-    await expect(remember).toHaveAttribute('aria-checked', 'true')
-    await remember.click()
     await expect(remember).toHaveAttribute('aria-checked', 'false')
-    await remember.press(' ')
+    await remember.click()
     await expect(remember).toHaveAttribute('aria-checked', 'true')
+    await remember.press(' ')
+    await expect(remember).toHaveAttribute('aria-checked', 'false')
 
     // The dashed invite explainer + its NeoIcon "lock" glyph.
     const explainer = page.locator('.card.dashed')
@@ -289,7 +293,9 @@ test.describe('Modern login — the redesigned card (UC-FL-002)', () => {
     await loginAs(page, cleanFriend, { viaEnter: true })
 
     await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
-    // Remember-me defaults to true ⇒ the pinned session shape is written.
+    // The pinned session shape is written on every successful login — the box's state
+    // no longer decides that (09 §UC-ML-007 / resolved conflict #1). Comment corrected
+    // with ML-T4; the assertions below are unchanged and still pass.
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('gorifi_friend_auth') || 'null'))
     expect(stored).toMatchObject({ friendId: cleanFriend.id, friendName: cleanFriend.name })
     expect(typeof stored.token).toBe('string')
@@ -298,13 +304,23 @@ test.describe('Modern login — the redesigned card (UC-FL-002)', () => {
     await expect(page).toHaveTitle(/Podpultovka/)
   })
 
-  test('remember-me off keeps the session in memory only', async ({ page }) => {
+  // ⚠ RETARGETED by 09 §UC-ML-007 / resolved conflict #1 (case (a) of the
+  // e2e-immutability rule). This test used to be "remember-me off keeps the session in
+  // memory only" and asserted `gorifi_friend_auth` was NULL. That behaviour is RETIRED:
+  // localStorage is now written on every successful login and the TTL — not the storage
+  // — is the mechanism. The box is left UNCHECKED here (its new default), so what the
+  // test pins is the replacement contract: the payload IS written, with the 24 h
+  // horizon. The 24 h ↔ 60 d split itself lives in `magic-link.spec.js` (§UC-ML-007).
+  test('remember-me off still stores the session — with the 24 h horizon', async ({ page }) => {
     await freshVisit(page)
-    await page.getByRole('checkbox', { name: 'Zapamätať si ma na tomto zariadení' }).click()
     await loginAs(page, cleanFriend)
 
     await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
-    expect(await page.evaluate(() => localStorage.getItem('gorifi_friend_auth'))).toBeNull()
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('gorifi_friend_auth') || 'null'))
+    expect(stored, 'the in-memory-only fallback is retired').not.toBeNull()
+    const horizon = stored.expiresAt - Date.now()
+    expect(horizon, 'an unticked box buys the 24 h default, not 60 days').toBeGreaterThan(23.5 * 60 * 60 * 1000)
+    expect(horizon).toBeLessThanOrEqual(24 * 60 * 60 * 1000)
   })
 
   test('no horizontal overflow at 320px', async ({ page }) => {

@@ -47,7 +47,14 @@ const friends = ref([])
 // --- Login form -------------------------------------------------------------
 const selectedFriendId = ref('')
 const password = ref('')
-const rememberMe = ref(true)
+// ⚠ 09 §UC-ML-007 / resolved conflict #2 — DEFAULT OFF, and the default is the whole
+// point. "Zapamätať si ma na tomto zariadení" no longer means "persist to
+// localStorage" (that now happens either way, resolved conflict #1); it means "keep me
+// signed in for 60 days instead of 24 hours". The 2026-08-14 product decision names 60
+// days the OPT-IN, so a pre-checked box would hand every friend the longest session
+// the app can issue — including on a shared office machine — and make the decision a
+// dead letter. Sent to the server as `remember` by BOTH login paths below.
+const rememberMe = ref(false)
 const authError = ref('')
 const loginTab = ref('shared') // 'shared' | 'personal'
 const loginUsername = ref('')
@@ -197,7 +204,20 @@ async function loadInitialData() {
         authState.value = 'login'
       }
     } else {
-      // Check for in-memory auth (when "remember me" was not checked)
+      // ⚠ 09 §UC-ML-007 (ML-T4) — this branch USED to be the restore half of the
+      // in-memory-only session an unticked "remember me" produced. That writer is
+      // gone: every login path (both branches of `authenticate*` below, MagicLogin,
+      // OnboardingPage) now writes `gorifi_friend_auth` unconditionally, so no
+      // SINGLE-TAB flow leaves an in-memory token with an empty localStorage.
+      // ⚠ Not unreachable in general: `switchUser()` is client-only (no server
+      // logout), so a SECOND tab logging out clears localStorage while this tab still
+      // holds `friendsToken` in api.js module scope — an in-SPA remount here then
+      // lands exactly on this branch. Harmless (the token is valid server-side either
+      // way, and logout never was global), but the branch is live. It is
+      // kept as a defensive reader ONLY — deliberately not deleted in this row, which
+      // is scoped to the write side and touches the six-leak session-boundary surface.
+      // If a future row removes it, `FriendOrder.vue`'s twin (its `getFriendsAuthInfo`
+      // fallback) goes with it, or the two disagree about what a session is.
       const memoryToken = getFriendsToken()
       const memoryPassword = getFriendsPassword()
       const memoryAuthInfo = getFriendsAuthInfo()
@@ -306,7 +326,7 @@ async function authenticate(silent = false) {
 
   try {
     // Validate password with server
-    const result = await api.authenticateFriends(password.value, selectedFriendId.value)
+    const result = await api.authenticateFriends(password.value, selectedFriendId.value, rememberMe.value)
 
     // Token-only auth: never store or replay the plaintext password (SEC-A1)
     if (result.token) {
@@ -326,8 +346,17 @@ async function authenticate(silent = false) {
       friendUid: friendData.uid
     })
 
-    // Save to localStorage if remember me is checked (token + expiry only)
-    if (rememberMe.value && result.token) {
+    // ⚠ 09 §UC-ML-007 / resolved conflict #1 — written on EVERY successful login, NOT
+    // only when the box is ticked (01-architecture, verbatim: "the TTL, not the
+    // storage, is the mechanism"). The in-memory-only session an unticked box used to
+    // produce is retired: it did not survive a reload, so an unremembered friend was
+    // logged out by a refresh rather than by the 24 h horizon that is supposed to be
+    // the mechanism. What the checkbox moves now is `result.expiresAt` — 24 h or 60 d,
+    // decided server-side from the `remember` flag sent above — and the restore-time
+    // `expiresAt` check (03 §UC-FL-001) is what enforces it on this device.
+    // ⚠ The five keys below are the PINNED shape; three other e2e suites write this
+    // object directly. Do not reorder, rename or drop one.
+    if (result.token) {
       const storageData = {
         friendId: friendData.id,
         friendName: friendData.name,
@@ -376,7 +405,11 @@ async function authenticatePersonal() {
   loading.value = true
 
   try {
-    const result = await api.authenticateFriendsPersonal(loginUsername.value.toLowerCase(), loginPassword.value)
+    const result = await api.authenticateFriendsPersonal(
+      loginUsername.value.toLowerCase(),
+      loginPassword.value,
+      rememberMe.value
+    )
 
     // Set token for subsequent requests
     setFriendsToken(result.token)
@@ -392,15 +425,16 @@ async function authenticatePersonal() {
       friendUid: result.friend.uid
     })
 
-    if (rememberMe.value) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        friendId: result.friend.id,
-        friendName: result.friend.name,
-        friendUid: result.friend.uid,
-        token: result.token,
-        expiresAt: result.expiresAt
-      }))
-    }
+    // 09 §UC-ML-007 / resolved conflict #1 — same rule as the shared-password branch
+    // above: stored unconditionally, the pinned five keys, and the horizon in
+    // `result.expiresAt` is what the checkbox actually bought.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      friendId: result.friend.id,
+      friendName: result.friend.name,
+      friendUid: result.friend.uid,
+      token: result.token,
+      expiresAt: result.expiresAt
+    }))
 
     await beginSession({
       // Admin reset this friend's password → force them to set a new one now.

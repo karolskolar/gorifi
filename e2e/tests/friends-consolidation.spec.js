@@ -866,7 +866,8 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
     await expect(cell.getByText('0900303030')).toBeVisible()
     await expect(cell.getByText('Bez e-mailu')).toHaveCount(0)
 
-    // Back on the portal ("remember me" defaults on, so the session restores):
+    // Back on the portal (the session payload is stored on every login — 09
+    // §UC-ML-007 — so it restores; comment corrected with ML-T4, assertions unchanged):
     // the modal PREFILLS from the saved values, and clearing the email is
     // allowed with NO confirm (11 §UC-FC-009 — the badge is the signal).
     await page.goto('/')

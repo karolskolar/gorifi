@@ -511,7 +511,14 @@ async function loadOrderData() {
       const parsed = JSON.parse(stored)
       friendId = parsed.friendId
     } else {
-      // Try in-memory auth info (when "remember me" was not checked)
+      // Fall back to the in-memory auth info.
+      // ⚠ This comment used to read "when 'remember me' was not checked" — stale since
+      // 09 §UC-ML-007 (ML-T4): remember-me no longer decides whether the session is
+      // stored (localStorage is written on EVERY login; the TTL is the mechanism), so
+      // an unticked box does not produce an in-memory-only session any more. Kept as a
+      // defensive reader — this is the twin `FriendPortal.vue`'s own annotation names;
+      // if one is ever removed the other goes with it, or the two views disagree about
+      // what a session is.
       const authInfo = getFriendsAuthInfo()
       if (authInfo) {
         friendId = authInfo.friendId
