@@ -1,17 +1,13 @@
 import { Router } from 'express';
-import multer from 'multer';
 import { parse } from 'csv-parse/sync';
 import db from '../db/schema.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { safeFetch } from '../helpers/safe-fetch.js';
 import { cycleAvailability } from '../helpers/stock.js';
 import { imageFromUpload, imageFromBody, detectImageMime } from '../helpers/image-upload.js';
+import { uploadSingle } from '../helpers/multipart.js';
 
 const router = Router();
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
-});
 
 // Get all products for a cycle
 router.get('/cycle/:cycleId', (req, res) => {
@@ -40,7 +36,7 @@ router.get('/cycle/:cycleId/availability', (req, res) => {
 });
 
 // Create single product (manual entry) - with optional image (admin)
-router.post('/', requireAdmin, upload.single('image'), (req, res) => {
+router.post('/', requireAdmin, uploadSingle('image'), (req, res) => {
   const { cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, roastery, stock_limit_g } = req.body;
 
   if (!cycle_id || !name) {
@@ -69,7 +65,7 @@ router.post('/', requireAdmin, upload.single('image'), (req, res) => {
 });
 
 // Import products from CSV (admin)
-router.post('/import/:cycleId', requireAdmin, upload.single('file'), (req, res) => {
+router.post('/import/:cycleId', requireAdmin, uploadSingle('file'), (req, res) => {
   const cycleId = req.params.cycleId;
   const roastery = req.body.roastery || null;
 
@@ -144,7 +140,7 @@ router.post('/import/:cycleId', requireAdmin, upload.single('file'), (req, res) 
 });
 
 // Upload image for existing product (admin)
-router.post('/:id/image', requireAdmin, upload.single('image'), (req, res) => {
+router.post('/:id/image', requireAdmin, uploadSingle('image'), (req, res) => {
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
 
   if (!product) {

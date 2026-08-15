@@ -1,13 +1,9 @@
 import { Router } from 'express';
-import multer from 'multer';
 import db from '../db/schema.js';
 import { imageFromUpload, imageFromBody } from '../helpers/image-upload.js';
+import { uploadSingle } from '../helpers/multipart.js';
 
 const router = Router();
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
-});
 
 // Get active bakery products with their active variants
 router.get('/', (req, res) => {
@@ -47,7 +43,7 @@ router.get('/:id', (req, res) => {
 });
 
 // Create product with variants
-router.post('/', upload.single('image'), (req, res) => {
+router.post('/', uploadSingle('image'), (req, res) => {
   const { name, description, subtitle, weight_grams, price, composition, category } = req.body;
   let variants = req.body.variants;
 
@@ -188,7 +184,7 @@ router.delete('/:id', (req, res) => {
 });
 
 // Upload/update image
-router.post('/:id/image', upload.single('image'), (req, res) => {
+router.post('/:id/image', uploadSingle('image'), (req, res) => {
   const product = db.prepare('SELECT * FROM bakery_products WHERE id = ?').get(req.params.id);
   if (!product) {
     return res.status(404).json({ error: 'Produkt nebol najdeny' });

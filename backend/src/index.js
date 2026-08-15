@@ -160,14 +160,14 @@ const CLIENT_ERROR_MESSAGES = {
 
 // FUP-T6: multer's `MulterError` is a client-error source the rule above cannot see.
 //
-// ⚠ It is not the LAST one. multer also raises PLAIN `Error`s for malformed or
-// aborted multipart ("Multipart: Boundary not found", "Unexpected end of form",
-// "Request aborted"), which carry no `code` either and so still take the 500
-// branch WITH a stack log — including the ordinary case of an admin's upload
-// dropping mid-flight. Deliberately not fixed here: matching on busboy message
-// strings is exactly the brittle coupling this status-based rule avoids, and all
-// five upload routes are admin-guarded, so it is authenticated-only. Recorded as
-// its own backlog row (FUP-T7) rather than widened into this one.
+// ⚠ It was not the LAST one, and the rest is deliberately NOT solved in this file.
+// multer also raises PLAIN `Error`s for malformed or aborted multipart, which carry
+// no `code` either and so also took the 500 branch WITH a stack log. Those cannot be
+// classified here: a bare `Error` with no status is exactly what a genuine server
+// fault looks like at this point (the CORS rejection above is one), so the missing
+// information — WHICH middleware failed — only exists at the call site. FUP-T7 tags
+// them in `helpers/multipart.js`, the wrapper every `uploadSingle(...)` route goes
+// through, and they arrive here already carrying a 400. See that file for the rule.
 //
 // A `MulterError` carries `code` and `field` but NO `status`, so an upload past
 // the 5 MB cap in `routes/products.js` / `routes/bakery-products.js` fell through
@@ -177,7 +177,7 @@ const CLIENT_ERROR_MESSAGES = {
 //
 // The translation lives HERE rather than per-route on purpose: multer is per-route
 // middleware but its errors are delivered with `next(err)`, and neither upload router
-// installs an error handler of its own, so every one of the five `upload.single(...)`
+// installs an error handler of its own, so every one of the five `uploadSingle(...)`
 // routes across the two routers already arrives at this handler (verified live — the
 // pre-fix 500s were logged from this branch). One mapping therefore covers all of
 // them, and future upload routes inherit it; five per-route copies would drift, and
