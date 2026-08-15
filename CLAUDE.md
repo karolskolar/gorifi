@@ -324,11 +324,18 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 
 ### Rate-limit buckets, and `backend/public` (follow-ups, 2026-08-04)
 
-**Rate-limit buckets — `middleware/rate-limit.js` exports FOUR, each a SEPARATE bucket. Do not collapse them.**
+**Rate-limit buckets — `middleware/rate-limit.js` exports FIVE, each a SEPARATE bucket. Do not collapse them.**
 - `authLimiter` (`RATE_LIMIT_AUTH_MAX`, 20) — admin login, friend auth.
 - `abuseLimiter` (`RATE_LIMIT_ABUSE_MAX`, 40) — invite-code lookup, onboarding submit.
 - `guestReadLimiter` (`RATE_LIMIT_GUEST_READ_MAX`, 300) — guest page loads.
 - `guestWriteLimiter` (`RATE_LIMIT_GUEST_WRITE_MAX`, 60) — guest submits, edits, invite requests.
+- `magicLinkLimiter` (`RATE_LIMIT_MAGIC_MAX`, 10) — `POST /api/magic-link/request` (ML-T2).
+
+⚠ The magic-link split has its own two reasons, neither shared by the others: an
+accepted request triggers an **outbound Mailgun send**, a cost profile no other
+bucket has; and on `authLimiter` the office-NAT coupling would let a recovery
+spammer behind the shared IP lock colleagues out of **password login** — at
+exactly the moment those colleagues need it — and vice versa.
 
 ⚠ The guest split exists because a guest link is shared privately **at office scale**, so a whole team usually arrives behind **one NAT'd IP**. While the guest routes sat on `abuseLimiter`, a busy order could exhaust the shared 40 and lock colleagues out of **registering** — and vice versa. Reads are generous because a page load is cheap and repeats (every colleague opening the link, every refresh); writes stay moderate and are additionally bounded by the T3 input caps. Pinned by `e2e/tests/rate-limit-isolation.spec.js`, which exhausts the guest **write** bucket and asserts guest reads, the invite-code lookup and registration all still reach their handlers. It self-skips unless started with a low `RATE_LIMIT_GUEST_WRITE_MAX` (the `rate-limit.spec.js` precedent), so a normal full-suite run reads **231 passed / 3 skipped**.
 
@@ -981,11 +988,16 @@ real regressions in code you just touched:
   is perfectly correct, and a manual check of the page looks like a broken route.
 - `guestReadLimiter` / `guestWriteLimiter` (300/60) — `guest-status.spec.js` alone
   runs enough guest writes that batching it with other guest files 429s ~15 tests.
+- `magicLinkLimiter` (10) — ⚠ **the newest, and the easiest to miss.**
+  `magic-link.spec.js`'s shared-server describe issues **20** requests to
+  `/api/magic-link/request`, and the limiter counts the 400s too, so from request
+  11 onward you get `429` and ~10 red tests that read exactly like a real
+  regression in the code you just touched.
 Every one of these passes when its file is run ALONE, which is the tell. Start the
 gate with `RATE_LIMIT_AUTH_MAX / RATE_LIMIT_ABUSE_MAX / RATE_LIMIT_GUEST_READ_MAX /
-RATE_LIMIT_GUEST_WRITE_MAX` raised — `rate-limit.spec.js` and
-`rate-limit-isolation.spec.js` then self-skip (they need LOW limits), which is
-exactly the documented "3 skipped".
+RATE_LIMIT_GUEST_WRITE_MAX / RATE_LIMIT_MAGIC_MAX` raised — `rate-limit.spec.js`,
+`rate-limit-isolation.spec.js` and `magic-link-rate-limit.spec.js` then self-skip
+(they need LOW limits), which is exactly the documented "4 skipped".
 ⚠ Also: pipe the run to a FILE, never `| tail -N`. A `tail -25` keeps the summary
 (which is honest about pass/fail) but discards every `✘` line above it, so a run
 with failures is indistinguishable from a clean one at a glance.

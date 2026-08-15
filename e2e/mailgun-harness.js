@@ -54,6 +54,13 @@ export function freePort() {
 export async function startMailgunStub() {
   const requests = []
   let reply = { status: 200, body: { id: '<stub.20260814@mg.stub.invalid>', message: 'Queued. Thank you.' } }
+  // ⚠ ML-T2: a deliberately SLOW Mailgun. `magic-link.js` must respond before the send
+  // settles (09 §UC-ML-003 rule 2 — awaiting it would make a matched identifier
+  // measurably slower than an unmatched one, i.e. the enumeration oracle by stopwatch).
+  // The request is RECORDED immediately and only the REPLY is delayed, so a test can
+  // still see that the send was attempted.
+  let replyDelayMs = 0
+  const pendingTimers = new Set()
 
   const server = http.createServer((req, res) => {
     let raw = ''
@@ -69,8 +76,17 @@ export async function startMailgunStub() {
         contentType: req.headers['content-type'] || '',
         body: raw,
       })
-      res.writeHead(reply.status, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(reply.body))
+      const send = () => {
+        if (res.writableEnded) return
+        res.writeHead(reply.status, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(reply.body))
+      }
+      if (replyDelayMs > 0) {
+        const timer = setTimeout(() => { pendingTimers.delete(timer); send() }, replyDelayMs)
+        pendingTimers.add(timer)
+      } else {
+        send()
+      }
     })
   })
 
@@ -81,7 +97,13 @@ export async function startMailgunStub() {
     baseUrl: `http://127.0.0.1:${port}`,
     requests,
     setReply(next) { reply = next },
+    // Delay every subsequent REPLY by `ms` (0 = immediate, the default).
+    setReplyDelay(ms) { replyDelayMs = ms },
     async stop() {
+      // ⚠ Clear any in-flight delayed reply first, or `server.close()` waits on a timer
+      // the test has already finished with and the whole spec hangs.
+      for (const timer of pendingTimers) clearTimeout(timer)
+      pendingTimers.clear()
       // undici keeps the connection alive, so close() alone would hang.
       server.closeAllConnections?.()
       await new Promise((resolve) => server.close(resolve))
@@ -107,6 +129,9 @@ export async function startBackend(mailEnv) {
       RATE_LIMIT_ABUSE_MAX: '100000',
       RATE_LIMIT_GUEST_READ_MAX: '100000',
       RATE_LIMIT_GUEST_WRITE_MAX: '100000',
+      // ⚠ FIVE buckets since ML-T2 — `magicLinkLimiter` defaults to 10/window, which a
+      // single enumeration test (7+ identifiers) would exhaust on its own.
+      RATE_LIMIT_MAGIC_MAX: '100000',
       // ⚠ Blanked FIRST, so an operator's real key in the ambient environment cannot be
       // inherited by a harness server. Only `mailEnv` can turn sending on.
       MAILGUN_API_KEY: '',
@@ -148,6 +173,11 @@ export async function startBackend(mailEnv) {
 
   return {
     baseUrl,
+    // ⚠ Exposed for ML-T2/T3: the magic-link raw token is never in any response, and
+    // `login_tokens` has no read endpoint, so the only way to assert what was stored
+    // (predecessor invalidation, the opportunistic GC, sha256(raw) === token_hash) is
+    // to open this file directly. WAL mode makes a concurrent reader/writer safe.
+    dbPath,
     logs: () => output.join(''),
     async stop() {
       if (child.exitCode === null) {
@@ -269,10 +299,21 @@ export async function sendViaMailer(stub, payload) {
 // `{ ok: false, threw: <message> }` when `renderEmail` threw — throwing is the one
 // acceptable failure mode at this layer (08 §UC-EM-002), so it is a first-class result
 // here, never a harness error.
-export async function renderViaTemplates(stub, { input, send }) {
+// `sparse` — an index (or array of indices) into `input.blocks` to turn into a GENUINE
+// ARRAY HOLE. ⚠ It has to be done HERE, inside the child, because the payload crosses a
+// JSON boundary: `JSON.stringify([,])` is `"[null]"`, so a hole written on the test side
+// arrives as a `null` entry — a different value, caught by a different check, and the
+// reason ML-T2's first attempt at pinning the sparse-array fix was vacuous. `delete
+// arr[i]` leaves length intact and the slot genuinely absent, which is what `.map()`
+// skips and `blocks[i]` reports as `undefined`.
+export async function renderViaTemplates(stub, { input, send, sparse }) {
   const script = [
     "const { renderEmail } = await import(process.env.TEMPLATES_URL)",
     "const payload = JSON.parse(process.env.RENDER_PAYLOAD)",
+    "if (payload.sparse !== undefined && payload.sparse !== null) {",
+    "  const holes = Array.isArray(payload.sparse) ? payload.sparse : [payload.sparse]",
+    "  for (const i of holes) delete payload.input.blocks[i]",
+    "}",
     "let out",
     "try {",
     "  const rendered = renderEmail(payload.input)",
@@ -292,7 +333,7 @@ export async function renderViaTemplates(stub, { input, send }) {
       ...process.env,
       TEMPLATES_URL: pathToFileURL(TEMPLATES_ENTRY).href,
       MAILER_URL: pathToFileURL(MAILER_ENTRY).href,
-      RENDER_PAYLOAD: JSON.stringify({ input, send }),
+      RENDER_PAYLOAD: JSON.stringify({ input, send, sparse }),
       MAILGUN_API_KEY: FAKE_MAILGUN_KEY,
       MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN,
       MAILGUN_BASE_URL: stub.baseUrl,

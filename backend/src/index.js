@@ -32,6 +32,7 @@ import onboardingRouter from './routes/onboarding.js';
 import guestLinksRouter from './routes/guest-links.js';
 import guestOrdersRouter from './routes/guest-orders.js';
 import guestRouter from './routes/guest.js';
+import magicLinkRouter from './routes/magic-link.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -87,6 +88,10 @@ app.use('/api/guest-orders', guestOrdersRouter);
 // Public guest ordering — the URL token is the whole credential, so this mount
 // stays bare (no admin, no friend auth). Every route inside is abuse-rate-limited.
 app.use('/api/guest', guestRouter);
+// Magic-link recovery (09 §UC-ML-003). ⚠ BARE ON PURPOSE — this is the path for
+// someone who cannot log in, so it can carry neither admin nor friend auth. Its own
+// rate-limit bucket (`magicLinkLimiter`) is applied per route inside the router.
+app.use('/api/magic-link', magicLinkRouter);
 
 // Fully-admin routers: every route is privileged, so gate the whole mount.
 app.use('/api/bakery-products', requireAdmin, bakeryProductsRouter);

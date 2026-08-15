@@ -196,9 +196,48 @@ test.describe('EM-T2 / 08 §UC-EM-002 — renderEmail: the seam module 09 builds
         ['non-array blocks', { text: 'ok', blocks: 'paragraph' }],
         ['button without url', { text: 'ok', blocks: [{ type: 'button' }] }],
         ['kv without rows', { text: 'ok', blocks: [{ type: 'kv' }] }],
+        // A null entry — pre-existing behaviour, refused by the `!block` check.
+        ['null block', { text: 'ok', blocks: [null] }],
+        // ── ⚠ SPARSE ARRAYS (EM-T2 review minor, closed by ML-T2 as the renderer's
+        //    second consumer) ────────────────────────────────────────────────────────
+        // `[,]` / `new Array(3)` / `[good, , good]` used to render an EMPTY (or
+        // silently short) branded card, because `.map()` SKIPS holes and never calls
+        // the callback for them. `renderEmail` now iterates indices and `renderBlock`
+        // refuses `undefined`.
+        //
+        // ⚠ THE HOLE IS BUILT INSIDE THE CHILD (`sparse:`), not here. The payload
+        // crosses a JSON boundary and `JSON.stringify([,])` is `"[null]"` — so a hole
+        // written on THIS side arrives as a `null` entry, which the pre-existing
+        // `!block` check already caught. That is why the first version of these cases
+        // was vacuous: all of them passed against pre-fix code. `sparse` calls
+        // `delete blocks[i]` after the JSON crossing, producing a genuine hole.
+        // MUTATION-VERIFIED, and the result is worth recording precisely: restoring
+        // `blocks.map(renderBlock)` reddens the three cases below (and nothing else),
+        // while removing `renderBlock`'s `undefined` guard alone leaves the suite GREEN
+        // — with the index loop in place, a hole arrives as `undefined` and the
+        // pre-existing `!block` check already refuses it. The LOOP is the fix; the
+        // guard is only a better error message.
+        ['a lone hole ([,])', { text: 'ok', blocks: [{ type: 'paragraph', text: 'a' }] }, 0],
+        [
+          'a hole after a good block ([good, ,])',
+          { text: 'ok', blocks: [{ type: 'paragraph', text: 'a' }, { type: 'paragraph', text: 'b' }] },
+          1,
+        ],
+        [
+          'a hole BETWEEN good blocks ([good, , good])',
+          {
+            text: 'ok',
+            blocks: [
+              { type: 'paragraph', text: 'a' },
+              { type: 'paragraph', text: 'b' },
+              { type: 'paragraph', text: 'c' },
+            ],
+          },
+          1,
+        ],
       ]
-      for (const [label, input] of cases) {
-        const result = await renderViaTemplates(stub, { input })
+      for (const [label, input, sparse] of cases) {
+        const result = await renderViaTemplates(stub, { input, sparse })
         expect(result.ok, `${label} ⇒ renderEmail throws`).toBe(false)
         expect(result.threw, `${label} ⇒ a named error, not a crash`).toBeTruthy()
       }

@@ -198,7 +198,17 @@ account, an e-mail, or anything else exists.
   3. **Username path:** `SELECT * FROM friends WHERE username = ? AND active = 1`
      with `lower`. (Usernames are `[a-z0-9._-]` — no `@`, so the paths cannot collide.)
   4. **E-mail path** (only when no username matched and `lower` contains `@`):
-     match `friends` rows with `active = 1` and `lower(trim(email)) = lower`. The match
+     match `friends` rows with `active = 1` and `lower(trim(email)) = lower`. ⚠ **AMENDED
+     BY ML-T2 — the implementation deliberately does NOT use this literal SQL.** SQLite's
+     `lower()` is **ASCII-only** and its `trim()` strips only U+0020, while the identifier
+     arrives through JS `toLowerCase()`, which is Unicode-aware: `lower('ŽOFIA@Example.TEST')`
+     is `'Žofia@example.test'` and can never equal the JS-lowercased form. A friend whose
+     stored address carries an uppercase diacritic — unremarkable for this user base — could
+     therefore never recover, and the enumeration guarantee below means **nothing could ever
+     tell them**: they would keep requesting links that are silently never sent. `friends` is
+     tens of rows, so `routes/magic-link.js` selects the active friends with a non-null e-mail
+     and normalises **both sides in JS**. The rule below (exactly one active match) is
+     unchanged. The match
      counts **only when exactly one** active friend has that e-mail — `friends.email`
      has no UNIQUE constraint, and mailing a shared inbox a login link for an ambiguous
      account would log in "whoever clicks first" as an arbitrary friend. Zero or ≥2

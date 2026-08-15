@@ -145,6 +145,13 @@ const BLOCK_RENDERERS = {
 };
 
 function renderBlock(block, index) {
+  // A hole reaches this function as `undefined` (see the index loop in `renderEmail`),
+  // which the `!block` check below would already refuse. ⚠ This line is therefore
+  // MESSAGE QUALITY, NOT A SECOND LINE OF DEFENCE — mutation-verified: removing it
+  // leaves the whole suite green, because `!block` catches the same case with the
+  // vaguer "must be an object". Kept because "blocks[1] is missing (a hole…)" names the
+  // actual mistake; do not mistake it for the mechanism, which is the loop.
+  if (block === undefined) fail(`blocks[${index}] is missing (a hole or an undefined entry)`);
   if (!block || typeof block !== 'object') fail(`blocks[${index}] must be an object`);
   const renderer = Object.prototype.hasOwnProperty.call(BLOCK_RENDERERS, block.type)
     ? BLOCK_RENDERERS[block.type]
@@ -189,7 +196,18 @@ export function renderEmail({ text, blocks } = {}) {
   if (!Array.isArray(blocks) || blocks.length === 0) {
     fail('`blocks` must be a non-empty array');
   }
-  const html = shell(blocks.map(renderBlock).join('\n'));
+  // ⚠ THIS LOOP IS THE FIX, not the guard in `renderBlock` (EM-T2 review minor, closed
+  // by ML-T2 as the renderer's second consumer). `blocks.map(renderBlock)` PRESERVES
+  // holes and never calls the callback for them, so `[,]` / `new Array(3)` /
+  // `[good, , good]` slipped past every check and rendered an empty — or silently
+  // short — branded card. A plain index loop visits every slot, so a hole arrives at
+  // `renderBlock` as `undefined` and is refused. Mutation-verified: restoring `.map()`
+  // reddens `email-templates.spec.js`'s sparse cases even with the guard left in place.
+  // Dense arrays render byte-identically, so this is not a behaviour change for any
+  // real caller.
+  const rendered = [];
+  for (let i = 0; i < blocks.length; i++) rendered.push(renderBlock(blocks[i], i));
+  const html = shell(rendered.join('\n'));
   // ⚠ `text` is returned by REFERENCE — the `===` pass-through the byte-identity
   // contract rides on. Never trim, normalise or append here.
   return { text, html };

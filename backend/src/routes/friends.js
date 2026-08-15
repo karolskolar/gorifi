@@ -677,8 +677,10 @@ router.patch('/:id/profile', (req, res) => {
   // who knows the shared password can PATCH ANY other friend's row on this
   // route. That is tolerable for `name` / `packeta_address` (module 03's shipped
   // behaviour, cosmetic and self-correcting), but NOT for the contact half:
-  // module 09 resolves a recovery request by `lower(trim(email))` with "exactly
-  // one active match", so an address planted on a victim who has none of their
+  // module 09 resolves a recovery request by a case-insensitive, trimmed e-mail
+  // match with "exactly one active match" (ML-T2 normalises both sides in JS —
+  // do not restore the SQL spelling this comment used to name; see
+  // `routes/magic-link.js`), so an address planted on a victim who has none of their
   // own SURVIVES the flip to auth_mode 'modern' and becomes an account-takeover
   // seam. The blast radius outlives the migration window, so the window does not
   // get to cover it.

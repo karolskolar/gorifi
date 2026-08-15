@@ -427,6 +427,11 @@ The same applies to the other limiters, each of which is its **own** bucket:
 - `guestReadLimiter` (`RATE_LIMIT_GUEST_READ_MAX`, default 300) — guest page loads.
 - `guestWriteLimiter` (`RATE_LIMIT_GUEST_WRITE_MAX`, default 60) — guest submits,
   edits and invite requests.
+- `magicLinkLimiter` (`RATE_LIMIT_MAGIC_MAX`, default 10) — `POST
+  /api/magic-link/request`; `magic-link-rate-limit.spec.js` self-skips above 10.
+  ⚠ The lowest default of the five, and the easiest to trip: `magic-link.spec.js`
+  issues **20** requests to that route and the limiter counts the 400s too, so
+  without this raised you get `429` from request 11 onward.
 
 The guest surface has its own buckets on purpose (a whole office shares one NAT'd
 IP, so it must not compete with registrations), but the suite still drives far more
@@ -438,6 +443,7 @@ limiter a generous budget:
 DB_PATH=/tmp/gorifi-e2e.sqlite PORT=3997 CORS_ORIGIN=http://localhost:3997 \
   RATE_LIMIT_AUTH_MAX=1000 RATE_LIMIT_ABUSE_MAX=2000 \
   RATE_LIMIT_GUEST_READ_MAX=5000 RATE_LIMIT_GUEST_WRITE_MAX=5000 \
+  RATE_LIMIT_MAGIC_MAX=5000 \
   node backend/src/index.js &
 ```
 
