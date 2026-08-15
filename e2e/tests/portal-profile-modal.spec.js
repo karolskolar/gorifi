@@ -344,7 +344,23 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
   })
 
   test('⚠ a blank Packeta address is sent as null, not ""', async ({ page }) => {
-    await signIn(page)
+    // ⚠ FUP-T5 sanctioned edit — the ASSERTION is untouched, its SETUP is not.
+    // `saveProfile` now sends `packeta_address` only when it CHANGED (FC-T4's
+    // open-time-original delta, extended to this field so an unhydrated modal
+    // cannot wipe a stored address). This test's intent is an INTENTIONALLY
+    // CLEARED address travelling as `null` and never as `''`, so the clear has
+    // to be a real change: it gets its own friend WITH an address stored. The
+    // shared read-only `friend` has none — and must keep none, because the
+    // label/prefill tests above assert that field opens empty.
+    const who = await makeFriend('pkt')
+    const stored = 'Z-BOX Testovacia 1, Bratislava'
+    expect((await ctx.patch(`/api/friends/${who.id}/profile`, {
+      headers: { Authorization: `Bearer ${who.token}` },
+      data: { name: who.name, packeta_address: stored },
+      timeout: TIMEOUT,
+    })).status(), 'seed a stored Packeta address').toBe(200)
+
+    await signIn(page, who)
     await openPortal(page)
 
     const bodies = []
@@ -354,12 +370,67 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
     })
 
     const dialog = await openProfile(page)
-    await dialog.getByLabel('Adresa Packeta výdajného miesta').fill('   ')
+    const packeta = dialog.getByLabel('Adresa Packeta výdajného miesta')
+    // Non-vacuity: the stored address really is on screen, so blanking it is a
+    // genuine clear and not an already-empty field.
+    await expect(packeta).toHaveValue(stored)
+    await packeta.fill('   ')
     await dialog.getByRole('button', { name: 'Uložiť' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
     expect(bodies.length, JSON.stringify(bodies)).toBe(1)
-    expect(bodies[0]).toEqual({ name: friend.name, packeta_address: null })
+    expect(bodies[0]).toEqual({ name: who.name, packeta_address: null })
+  })
+
+  // FUP-T5 — the bug this row exists for. `hydrateCurrentFriend` is
+  // fire-and-forget, so the modal is openable BEFORE the profile GET lands; the
+  // Packeta field then renders empty because `props.friend` has no
+  // `packeta_address` yet. Sending it unconditionally turned that empty render
+  // into a destructive `null` write.
+  test('⚠ an unhydrated modal must NOT wipe a stored Packeta address', async ({ page }) => {
+    const who = await makeFriend('unhyd')
+    const stored = 'Z-BOX Nezmazateľná 7, Košice'
+    expect((await ctx.patch(`/api/friends/${who.id}/profile`, {
+      headers: { Authorization: `Bearer ${who.token}` },
+      data: { name: who.name, packeta_address: stored },
+      timeout: TIMEOUT,
+    })).status(), 'seed a stored Packeta address').toBe(200)
+
+    await signIn(page, who)
+
+    // Stall hydration for the whole test: the GET never resolves, so the modal
+    // opens on the pre-hydration state the bug needs. The PATCH on the same URL
+    // pattern still goes through, and is what we inspect.
+    const bodies = []
+    await page.route('**/api/friends/*/profile', async (route) => {
+      if (route.request().method() !== 'GET') {
+        bodies.push(route.request().postDataJSON())
+        return route.continue()
+      }
+      // Never fulfilled, never continued — hydration simply does not land.
+    })
+
+    await openPortal(page)
+    const dialog = await openProfile(page, { hydrated: false })
+    // Precondition of the bug: the field is empty because nothing hydrated it.
+    await expect(dialog.getByLabel('Adresa Packeta výdajného miesta')).toHaveValue('')
+    // The name still prefills — it comes from the stored session, not the GET.
+    await expect(dialog.getByLabel('Prihlasovacie meno *')).toHaveValue(who.name)
+
+    await dialog.getByRole('button', { name: 'Uložiť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    // On the wire: an untouched, unhydrated field is simply absent.
+    expect(bodies.length, JSON.stringify(bodies)).toBe(1)
+    expect(bodies[0]).toEqual({ name: who.name })
+
+    // …and where it actually matters — the stored address survived the save.
+    const after = await ctx.get(`/api/friends/${who.id}/profile`, {
+      headers: { Authorization: `Bearer ${who.token}` },
+      timeout: TIMEOUT,
+    })
+    expect(after.status()).toBe(200)
+    expect((await after.json()).packeta_address, 'the stored address must survive').toBe(stored)
   })
 
   test('"Uložiť" is disabled while the required name is blank', async ({ page }) => {

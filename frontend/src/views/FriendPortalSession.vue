@@ -173,12 +173,19 @@ const profilePacketaAddress = ref('')
 // UC-FC-009: the friend's own contact data. Seeded on modal OPEN from the
 // hydrated profile (the session-boundary rule — never module-level defaults),
 // with the open-time originals kept so `saveProfile` only sends a field the
-// friend actually CHANGED (PATCH semantics; also keeps the pinned
-// `{ name, packeta_address }` payload shape when contact is untouched).
+// friend actually CHANGED (PATCH semantics; an untouched field is left to
+// whatever the server already holds). FUP-T5 put `packeta_address` on the same
+// rule, so `name` is now the only key always present.
 const profilePhone = ref('')
 const profileEmail = ref('')
 const profilePhoneOriginal = ref('')
 const profileEmailOriginal = ref('')
+// FUP-T5: `packeta_address` joins the same delta. `hydrateCurrentFriend` is
+// fire-and-forget, so this modal is openable BEFORE the profile GET lands — the
+// field then renders empty and an unconditional send WIPED a stored address.
+// Seeded per OPEN like every other original, so it carries no state across
+// friends (the session-boundary rule).
+const profilePacketaOriginal = ref('')
 const profileSaving = ref(false)
 const profileError = ref('')
 
@@ -512,6 +519,7 @@ function openProfileModal() {
   profileEmail.value = props.friend?.email || ''
   profilePhoneOriginal.value = profilePhone.value
   profileEmailOriginal.value = profileEmail.value
+  profilePacketaOriginal.value = profilePacketaAddress.value
   showProfileModal.value = true
 }
 
@@ -523,14 +531,21 @@ async function saveProfile() {
   profileError.value = ''
   try {
     const payload = {
-      name: profileName.value.trim(),
-      packeta_address: profilePacketaAddress.value.trim() || null
+      name: profileName.value.trim()
+    }
+    // FUP-T5: `packeta_address` rides along on the SAME rule as the contact
+    // fields below — only when the friend actually changed it. Sending it
+    // unconditionally meant a save from an UNHYDRATED modal (the field renders
+    // empty until `hydrateCurrentFriend` lands) wrote `null` over a stored
+    // address. An intentional clear is still a change, so it still travels as
+    // `null` — never as `''`.
+    if (profilePacketaAddress.value.trim() !== profilePacketaOriginal.value.trim()) {
+      payload.packeta_address = profilePacketaAddress.value.trim() || null
     }
     // UC-FC-009: contact fields ride along ONLY when changed (trim() || null —
     // clearing is allowed, no confirm; the admin's "Bez e-mailu" badge is the
     // operational signal). Untouched fields stay absent, so an admin's
-    // concurrent edit of them is not clobbered and the pinned
-    // `{ name, packeta_address }` payload is preserved.
+    // concurrent edit of them is not clobbered.
     if (profilePhone.value.trim() !== profilePhoneOriginal.value.trim()) {
       payload.phone = profilePhone.value.trim() || null
     }
