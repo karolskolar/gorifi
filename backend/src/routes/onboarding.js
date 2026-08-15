@@ -253,6 +253,22 @@ router.post('/onboarding/:token', abuseLimiter, (req, res) => {
   const friendId = insertFriendWithBakerySubscription();
 
   // Mint session for auto-login.
+  //
+  // ⚠ FIFTH mint site — NOT in 09 §UC-ML-002's checklist, which names only
+  // /friends/auth (both branches), setup-credentials and change-password. It
+  // takes the 24 h default, deliberately, and the decision is recorded here
+  // because "it just fell through" is indistinguishable from "nobody looked":
+  // the registration form offers no "keep me signed in" control, so there is no
+  // opt-in to honour, and 09's whole premise is that 60 days is something the
+  // friend ASKS for. Assuming it on their behalf — on a form that may well be
+  // filled in on a shared machine at the office — is the one outcome the split
+  // exists to prevent. Consequence, accepted: a friend who registers and does
+  // not return within 24 h logs in again, exactly like any other
+  // non-remembering login.
+  //
+  // Seam: if registration ever grows the checkbox, it passes
+  // `{ remember: req.body.remember === true }` here — the primitive already
+  // supports it and nothing else needs to change.
   const session = createFriendSession(friendId);
 
   res.status(201).json({

@@ -49,6 +49,37 @@ function generateTempPassword() {
   return randomCode(12);
 }
 
+// ── Magic-link login tokens (09 §UC-ML-001, ML-T1) ───────────────────────────
+// The raw token is 256 bits of CSPRNG entropy rendered as 64 lowercase hex
+// chars. It exists in exactly two places, ever: the URL inside the outbound
+// e-mail and, transiently, the redeeming request body — never persisted raw,
+// never logged, never in any API response (the temp-password discipline,
+// 07 §UC-IA-005).
+//
+// SEC-S2: this is the same `crypto.randomBytes` call `friend-auth.js` already
+// uses for session tokens, deliberately NOT `randomCode()` — the unambiguous
+// alphabet above exists so a human can retype a code, and nobody retypes a
+// login link. It is not a second RNG concept either way.
+function generateLoginToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+// At rest we store SHA-256 of the raw token, hex. ⚠ SHA-256, NOT bcrypt: the
+// input is already 256-bit random, so a slow hash buys nothing against a
+// search space no attacker can enumerate (01-architecture, verbatim). It also
+// has to stay deterministic — redemption looks the row up by
+// `WHERE token_hash = ?`, which a salted hash makes impossible.
+function hashLoginToken(rawToken) {
+  return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
+// 15 minutes. ⚠ A fixed constant on purpose — NOT env-tunable. Nothing in the
+// sources asks for tunability, and the e2e manufactures an expired token by
+// writing `login_tokens.expires_at` directly rather than by shrinking a knob
+// (09 §UC-ML-001 / §UC-ML-010 item 2), so a knob would exist only as a way to
+// weaken the TTL in production by accident.
+const LOGIN_TOKEN_TTL_MS = 15 * 60 * 1000;
+
 // `bdb` is the real better-sqlite3 (file-backed, WAL) connection used by the
 // query helpers. `db` is a thin shim exposing the sql.js-style methods the
 // migration code in initDb was written against, so that migration logic stays
@@ -608,6 +639,41 @@ function initDb() {
     )
   `);
 
+  // Migration: session provenance (09 §UC-ML-001, ML-T1).
+  // NULL — the default and every pre-existing row — means "password or legacy
+  // login". ML-T3 writes 'magic_link' at redemption, which is what the
+  // §UC-ML-008 `currentPassword` waiver keys on.
+  // ⚠ Deliberately value-agnostic: TEXT, no CHECK, no enum. Module 10 may add
+  // 'google', and a constraint here would turn that into a schema migration.
+  try {
+    db.run('ALTER TABLE friend_sessions ADD COLUMN via TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Create login_tokens table for magic-link recovery (09 §UC-ML-001, ML-T1).
+  // Only the SHA-256 of the token is stored (see hashLoginToken above), and
+  // lookups are by that hash alone — hence UNIQUE.
+  // ⚠ All three timestamps are ms-epoch INTEGERs, deviating from
+  // friend_sessions' `created_at DATETIME DEFAULT CURRENT_TIMESTAMP` on
+  // purpose: the per-friend cooldown (§UC-ML-003) compares in milliseconds, and
+  // second-resolution timestamps are this repo's documented tiebreak trap
+  // (CLAUDE.md, GSO-T8 — two rows written in the same second made "the newest"
+  // an arbitrary pick).
+  // `used_at` NULL = outstanding; setting it is the single-use mechanism.
+  // The CASCADE relies on `foreign_keys = ON`, set in initDb (GSO-T9 precedent).
+  db.run(`
+    CREATE TABLE IF NOT EXISTS login_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      friend_id INTEGER NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at INTEGER NOT NULL,
+      used_at INTEGER,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE
+    )
+  `);
+
   // Create vouchers table for friend discount vouchers
   db.run(`
     CREATE TABLE IF NOT EXISTS vouchers (
@@ -879,4 +945,13 @@ const dbHelpers = {
 initDb();
 
 export default dbHelpers;
-export { saveDb, generateUid, generateInviteCode, generateGuestToken, generateTempPassword };
+export {
+  saveDb,
+  generateUid,
+  generateInviteCode,
+  generateGuestToken,
+  generateTempPassword,
+  generateLoginToken,
+  hashLoginToken,
+  LOGIN_TOKEN_TTL_MS,
+};

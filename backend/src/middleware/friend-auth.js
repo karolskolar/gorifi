@@ -2,7 +2,13 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import db from '../db/schema.js';
 
-const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+// Session horizons (09 §UC-ML-002, ML-T1). ⚠ The flat 30-day session is
+// RETIRED: 24 h is the default and 60 days is the explicit "Zapamätať si ma na
+// tomto zariadení" opt-in. 60 days rather than 30 because cycles run ~monthly,
+// so a remembered session has to span two of them (product decision
+// 2026-08-14) — otherwise a friend who orders every cycle still re-logs-in.
+const SESSION_DURATION_MS = 24 * 60 * 60 * 1000;          // 24 hours — the default
+const SESSION_REMEMBER_MS = 60 * 24 * 60 * 60 * 1000;     // 60 days — the opt-in
 
 // Get current auth mode from settings
 export function getAuthMode() {
@@ -10,16 +16,55 @@ export function getAuthMode() {
   return (setting && setting.value) || 'legacy';
 }
 
-// Create a new session token for a friend
-export function createFriendSession(friendId) {
+// Create a new session token for a friend (09 §UC-ML-002).
+//
+// opts.remember === true  ⇒ 60 days. ⚠ STRICT boolean, never a truthy check:
+//   `remember` arrives from a JSON request body, and a mis-serialised checkbox
+//   sends the STRING "false" — which is truthy, and would silently buy the
+//   longest session the app can issue.
+// opts.expiresAt (ms epoch) ⇒ that exact expiry. Used by the two endpoints that
+//   invalidate and re-mint mid-session, so a remembered friend keeps the horizon
+//   they opted into. A missing/NaN value falls through to the default rather
+//   than writing a broken expiry.
+// opts.via (string) ⇒ the provenance column; NULL when absent. ML-T1 never
+//   passes it — ML-T3's redemption writes 'magic_link'. Kept value-agnostic
+//   (module 10 may add 'google').
+export function createFriendSession(friendId, opts = {}) {
   const token = crypto.randomBytes(32).toString('hex');
-  const expiresAt = Date.now() + SESSION_DURATION_MS;
-  db.prepare('INSERT INTO friend_sessions (friend_id, token, expires_at) VALUES (?, ?, ?)').run(friendId, token, expiresAt);
+  // ⚠ `> Date.now()` is not redundant with `Number.isFinite`. The opportunistic
+  // cleanup below deletes rows whose `expires_at` has passed, so honouring a PAST
+  // timestamp would delete the row this call just inserted and still return a
+  // token — a 200 carrying a session that authenticates nowhere. Unreachable
+  // today (`presentedSessionExpiry` already filters on `expires_at > Date.now()`,
+  // and no route reads `expiresAt` from a request body), so this is the guard
+  // matching what its comment claims rather than a live bug. (ML-T1 review.)
+  const expiresAt = Number.isFinite(opts.expiresAt) && opts.expiresAt > Date.now()
+    ? opts.expiresAt
+    : Date.now() + (opts.remember === true ? SESSION_REMEMBER_MS : SESSION_DURATION_MS);
+  const via = typeof opts.via === 'string' && opts.via ? opts.via : null;
+  db.prepare('INSERT INTO friend_sessions (friend_id, token, expires_at, via) VALUES (?, ?, ?, ?)')
+    .run(friendId, token, expiresAt, via);
 
   // Opportunistic cleanup of expired sessions
   db.prepare('DELETE FROM friend_sessions WHERE expires_at < ?').run(Date.now());
 
   return { token, expiresAt };
+}
+
+// The expiry of the session row the request is presenting, or null when the
+// caller has no session (the legacy X-Friends-Password header resolves no row).
+//
+// ⚠ Must be called BEFORE invalidateFriendSessions() — the row it reads is one
+// of the rows that call deletes. Only used by the two re-minting endpoints, to
+// carry an opted-in 60-day horizon across a password change instead of silently
+// shortening it to 24 h.
+export function presentedSessionExpiry(req) {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  const row = db
+    .prepare('SELECT expires_at FROM friend_sessions WHERE token = ? AND expires_at > ?')
+    .get(authHeader.slice(7), Date.now());
+  return row ? row.expires_at : null;
 }
 
 // Invalidate all sessions for a friend

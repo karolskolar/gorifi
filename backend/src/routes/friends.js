@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import db, { generateUid, generateInviteCode } from '../db/schema.js';
-import { validateFriendAuth, requireFriendOwner, createFriendSession, invalidateFriendSessions, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
+import { validateFriendAuth, requireFriendOwner, createFriendSession, presentedSessionExpiry, invalidateFriendSessions, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { authLimiter } from '../middleware/rate-limit.js';
 import { getPlaceholderCycleId } from '../helpers/friend-create.js';
@@ -127,7 +127,9 @@ router.post('/auth', authLimiter, (req, res) => {
       return res.status(401).json({ error: 'Nesprávne prihlasovacie údaje' });
     }
 
-    const session = createFriendSession(friend.id);
+    // Remember-me (09 §UC-ML-002): 60 days on an explicit opt-in, 24 h otherwise.
+    // ⚠ `=== true`, never a truthy check — the string "false" must not buy 60 days.
+    const session = createFriendSession(friend.id, { remember: req.body.remember === true });
     return res.json({
       success: true,
       friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username, packeta_address: friend.packeta_address },
@@ -159,7 +161,10 @@ router.post('/auth', authLimiter, (req, res) => {
       return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
     }
 
-    const session = createFriendSession(friend.id);
+    // Same remember-me contract as the personal branch above — the legacy
+    // shared-password login mints a per-friend session too, so it must honour
+    // the opt-in identically (09 §UC-ML-002 mint-site inventory item 1).
+    const session = createFriendSession(friend.id, { remember: req.body.remember === true });
     return res.json({
       success: true,
       friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username, packeta_address: friend.packeta_address },
@@ -247,9 +252,16 @@ router.post('/:id/setup-credentials', (req, res) => {
   db.prepare('UPDATE friends SET username = ?, password_hash = ?, must_change_password = 0 WHERE id = ?')
     .run(username.toLowerCase(), hashPassword(password), friendId);
 
-  // Create new session with credentials
+  // Create new session with credentials.
+  // ⚠ Read the presenting session's expiry BEFORE invalidating — that call
+  // deletes the very row we are reading. Carrying it over is what stops a friend
+  // who opted into 60 days being silently dropped to 24 h just because they set
+  // their own login mid-session (09 §UC-ML-002 item 2). Null (shared-password
+  // caller, no session row) falls through to the 24 h default.
+  const carryExpiry = presentedSessionExpiry(req);
   invalidateFriendSessions(friendId);
-  const session = createFriendSession(friendId);
+  // ⚠ `via` is deliberately NOT carried over — see change-password below.
+  const session = createFriendSession(friendId, { expiresAt: carryExpiry });
 
   const updated = db.prepare('SELECT id, name, uid, username FROM friends WHERE id = ?').get(friendId);
   res.json({ success: true, friend: updated, token: session.token, expiresAt: session.expiresAt });
@@ -291,9 +303,18 @@ router.put('/:id/change-password', (req, res) => {
 
   db.prepare('UPDATE friends SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(hashPassword(newPassword), friendId);
 
-  // Invalidate all sessions and create a new one
+  // Invalidate all sessions and create a new one.
+  // ⚠ Capture the presenting session's expiry BEFORE invalidating (that call
+  // deletes the row). A remembered friend who changes their password keeps the
+  // 60-day horizon they opted into — never extended, never silently shortened
+  // to 24 h (09 §UC-ML-002 item 2).
+  const carryExpiry = presentedSessionExpiry(req);
   invalidateFriendSessions(friendId);
-  const session = createFriendSession(friendId);
+  // ⚠ `via` is deliberately NOT carried over, and this is load-bearing: the
+  // re-minted session proves a FRESH password, so its NULL `via` is exactly what
+  // retires the §UC-ML-008 `currentPassword` waiver. Carrying 'magic_link'
+  // across a password change would keep the waiver alive indefinitely.
+  const session = createFriendSession(friendId, { expiresAt: carryExpiry });
 
   res.json({ success: true, token: session.token, expiresAt: session.expiresAt });
 });
