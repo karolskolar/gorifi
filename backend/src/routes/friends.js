@@ -245,7 +245,17 @@ router.post('/:id/setup-credentials', (req, res) => {
     return res.status(409).json({ error: 'Užívateľské meno je už obsadené' });
   }
 
-  if (!password || password.length < 8) {
+  // ⚠ Type-guard BEFORE `hashPassword` (FUP-T11), the HASH half of the split — see
+  // the note on `hashPassword` in `middleware/friend-auth.js` for why this rule lives
+  // at the route rather than in the helper. `!password || password.length < 8` read
+  // `.length` off whatever the body carried, so `{"password":{"length":12}}` cleared
+  // it — and so did a number and `true`, whose `.length` is `undefined` and
+  // `undefined < 8` is `false`. All of them reached `bcrypt.hashSync`, which throws
+  // `Illegal arguments` ⇒ 500 plus a stack log for a merely malformed body. This
+  // route is reachable with the shared friends password, so that stack was cheap to
+  // trigger. Nothing is loosened: the status and the message are unchanged, a short
+  // string and an absent one still 400s — only non-strings move 500 → 400.
+  if (typeof password !== 'string' || password.length < 8) {
     return res.status(400).json({ error: 'Heslo musí mať aspoň 8 znakov' });
   }
 
@@ -825,7 +835,9 @@ router.put('/:id/reset-password', requireAdmin, (req, res) => {
     return res.status(404).json({ error: 'Priateľ nebol nájdený' });
   }
 
-  if (!password || password.length < 8) {
+  // ⚠ Type-guard BEFORE `hashPassword` (FUP-T11) — the same rule and the same reason
+  // as `setup-credentials` above; requireAdmin bounds the exposure but not the class.
+  if (typeof password !== 'string' || password.length < 8) {
     return res.status(400).json({ error: 'Heslo musí mať aspoň 8 znakov' });
   }
 

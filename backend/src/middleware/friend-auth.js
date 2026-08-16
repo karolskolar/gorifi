@@ -245,12 +245,55 @@ export function isUsernameTaken(username, excludeFriendId = null) {
   return !!query;
 }
 
-// Hash a password
+// Hash a password.
+//
+// ⚠ NO TYPE GUARD HERE, AND THAT IS THE DELIBERATE HALF OF FUP-T11's SPLIT.
+// `bcrypt.hashSync` throws `Illegal arguments: <type>, number` on a non-string,
+// exactly like `compareSync` below — but unlike a comparison there is no
+// meaningful "no" to return, so a guard here could only throw or invent a value.
+// Both are worse than the alternative: every caller already has a length rule and
+// its own Slovak message (and sometimes a `field` marker), so the guard belongs
+// AT THE ROUTE, folded into that rule as `typeof password !== 'string' ||
+// password.length < N`. A helper that threw a 400-carrying error would answer with
+// the global handler's generic `Neplatna poziadavka` instead, silently replacing
+// five distinct messages with one — a loosening in everything but status.
+// ⚠ EIGHT call sites, not five — and the class is NOT fully closed. Guarded at the
+// route: `friends.js` ×3, `onboarding.js`, `admin.js:236` (change-password).
+// Safe by construction: `invitations.js` (hashes a server-generated password) and
+// `admin.js:94` (the login migration — `verifyAdminPassword` now refuses non-strings
+// before it can be reached).
+// ⚠ STILL OPEN, deliberately: `admin.js:68` (`POST /admin/setup`). It is the recorded
+// latent exception — the "Admin uz je nastaveny" check blocks it on any CONFIGURED
+// instance — but on an unconfigured one it really is an unauthenticated 500 with a
+// stack (measured: 1266 bytes). Left as scoped in FUP-T11 because an attacker who can
+// reach it can simply claim the admin account outright, which is strictly worse than
+// a log line. Do not read this comment as "the class is closed"; it is closed
+// everywhere an instance is actually configured.
 export function hashPassword(password) {
   return bcrypt.hashSync(password, 10);
 }
 
-// Compare password against hash
+// Compare a plaintext password against a stored hash.
+//
+// ⚠ THE TYPE GUARD LIVES HERE, INSIDE THE HELPER, ON PURPOSE (FUP-T11).
+// `bcrypt.compareSync` THROWS `Illegal arguments: <type>, string` on a non-string,
+// so before this guard ANY caller that reached it with a malformed body — an
+// object with a `length`, a number, an array, a boolean — turned a client mistake
+// into a 500 `Nieco sa pokazilo` PLUS a full stack in the server log. That pattern
+// reached EIGHT instances repo-wide precisely because it was fixed call site by
+// call site (ML-T6 ×2, FUP-T10 ×1); guarding the helper covers every caller at
+// once and is structurally impossible to miss on a ninth.
+//
+// A comparison can absorb the guard where a hash cannot: a non-string could never
+// have matched a bcrypt digest, so `false` is not merely convenient, it is the
+// arithmetically correct answer. It routes a malformed body into each caller's
+// EXISTING 401 with no new branch, no new message and — the point on the two
+// public login routes — NO NEW ORACLE: a malformed password is now indistinguishable
+// from a wrong one, and from an account that does not exist.
+//
+// `hash` is guarded for the same reason: a NULL/absent stored hash reaching here is
+// an account with no password, which must refuse, not throw.
 export function comparePassword(password, hash) {
+  if (typeof password !== 'string' || typeof hash !== 'string') return false;
   return bcrypt.compareSync(password, hash);
 }

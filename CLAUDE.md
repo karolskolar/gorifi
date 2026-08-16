@@ -1005,6 +1005,11 @@ real regressions in code you just touched:
   is perfectly correct, and a manual check of the page looks like a broken route.
 - `guestReadLimiter` / `guestWriteLimiter` (300/60) — `guest-status.spec.js` alone
   runs enough guest writes that batching it with other guest files 429s ~15 tests.
+- ⚠ **`bcrypt-nonstring-shape.spec.js` CANNOT pass on the default `RATE_LIMIT_AUTH_MAX=20`** —
+  it is the heaviest single consumer of `authLimiter` (~65 bucketed requests; each of
+  its 12 change-password tests adds a login to prove the password is untouched). For
+  this file the "raise all the buckets" recipe is a **hard requirement, not a
+  convenience**, and the failure looks like a broken auth fix rather than a budget.
 - `magicLinkLimiter` (10) — ⚠ **the newest, and the easiest to miss.**
   `magic-link.spec.js`'s shared-server describe issues **20** requests to
   `/api/magic-link/request`, and the limiter counts the 400s too, so from request

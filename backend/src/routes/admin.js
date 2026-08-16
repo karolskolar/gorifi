@@ -18,7 +18,24 @@ const legacySha256 = (password) => crypto.createHash('sha256').update(password).
 const isBcryptHash = (hash) => typeof hash === 'string' && hash.startsWith('$2');
 
 // Verify a plaintext admin password against a stored hash (bcrypt or legacy).
+//
+// ⚠ THE TYPE GUARD SITS ABOVE THE BRANCH, AND IT HAS TO (FUP-T11). `comparePassword`
+// now refuses a non-string itself, which covers the bcrypt branch — but the LEGACY
+// SHA-256 branch never touches bcrypt at all: `crypto.createHash().update(value)`
+// raises its own `TypeError: The "data" argument must be of type string…`. So a
+// guard placed only in the helper would have left every legacy-hashed instance
+// still answering 500 with a full stack, on `POST /api/admin/login`, which needs no
+// credentials and no precondition — a free remote log-flood (verified: both branches
+// throw on `{length:12}`, a number, an array and `true`; only the exception class
+// differs). Guarding here closes BOTH branches with one line, for both callers
+// (`/login` and `/change-password`'s `currentPassword`).
+//
+// `false` is the correct answer, not a convenient one: no non-string could ever have
+// matched a digest, so this cannot loosen anything. It lands on each caller's
+// existing 401 with each caller's existing message — the same message a merely wrong
+// password gets, so no new oracle appears on the app's most exposed endpoint.
 function verifyAdminPassword(password, storedHash) {
+  if (typeof password !== 'string') return false;
   if (isBcryptHash(storedHash)) {
     return bcryptCompare(password, storedHash);
   }
@@ -190,7 +207,19 @@ router.post('/change-password', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Obe hesla su povinne' });
   }
 
-  if (newPassword.length < ADMIN_MIN_LENGTH) {
+  // ⚠ Type-guard BEFORE `bcryptHash` (FUP-T11), the HASH half of the split — see the
+  // note on `hashPassword` in `middleware/friend-auth.js` for why this cannot live in
+  // the helper the way the compare guard does. `newPassword.length < ADMIN_MIN_LENGTH`
+  // read `.length` off whatever the body carried, so `{"newPassword":{"length":12}}`
+  // cleared it — and so did a number and `true`, whose `.length` is `undefined` and
+  // `undefined < 10` is `false`. All three reached `bcrypt.hashSync`, which throws
+  // `Illegal arguments` ⇒ 500 plus a stack log for a malformed body. `currentPassword`
+  // is already handled one branch below, by `verifyAdminPassword`'s own guard.
+  // Nothing is loosened: the status and the message are unchanged, a short string
+  // still 400s here, an empty/absent one still 400s with 'Obe hesla su povinne'
+  // above, and a valid one still changes the password — only non-strings move
+  // 500 → 400.
+  if (typeof newPassword !== 'string' || newPassword.length < ADMIN_MIN_LENGTH) {
     return res.status(400).json({ error: `Nové heslo musí mať aspoň ${ADMIN_MIN_LENGTH} znakov` });
   }
 
