@@ -118,6 +118,25 @@ router.post('/auth', authLimiter, (req, res) => {
 
   // Personal login: username + password
   if (username) {
+    // ⚠ FUP-T12 — the reported site, and the only `.toLowerCase()` on a body field in
+    // this file that is NOT already covered by `validateUsername`'s type guard (the
+    // other four sit behind it, which is why they are latent). A non-string reached
+    // `username.toLowerCase()` and threw a TypeError ⇒ 500 plus a full stack in the
+    // log, on a PUBLIC unauthenticated route: 677 bytes per request, i.e. exactly the
+    // free remote log-flood the FUP-T3/FUP-T7 rule exists to prevent.
+    //
+    // ⚠ 401 WITH THIS ROUTE'S EXISTING MESSAGE, not a 400 and not a new sentence.
+    // FUP-T11 REMOVED a username-existence oracle from this very endpoint; a distinct
+    // status or wording for "your username was not a string" would put a new one back.
+    // The reply is byte-identical to the unknown-username 401 three lines below.
+    //
+    // ⚠ AND IT MUST SIT INSIDE THE BRANCH. `if (username)` is the branch SELECTOR —
+    // rewriting it as `typeof username === 'string'` would send a non-string down the
+    // SHARED-PASSWORD path instead, so `{username: 123, password: <shared password>}`
+    // would authenticate. Falsy values must keep falling through; non-strings must not.
+    if (typeof username !== 'string') {
+      return res.status(401).json({ error: 'Nesprávne prihlasovacie údaje' });
+    }
     const friend = db.prepare('SELECT * FROM friends WHERE username = ? AND active = 1').get(username.toLowerCase());
     if (!friend || !friend.password_hash) {
       return res.status(401).json({ error: 'Nesprávne prihlasovacie údaje' });
@@ -791,7 +810,12 @@ router.patch('/:id/profile', (req, res) => {
 
   // Module 03's own name rule — this message is pinned (friends-consolidation
   // "module-03 pin"); UC-FC-004's relabel deliberately did not reach it.
-  if (name !== undefined && !name.trim()) {
+  //
+  // ⚠ FUP-T12: the type guard is FOLDED INTO the existing rule, exactly as ML-T6 /
+  // FUP-T10 / FUP-T11 folded theirs into a length rule — same status, same message,
+  // no new branch. `!name.trim()` threw on every non-string AND on an explicit
+  // `null` (`null !== undefined` is true), so `{name: null}` was a 500 too.
+  if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
     return res.status(400).json({ error: 'Prihlasovacie meno je povinné' });
   }
 
@@ -809,7 +833,17 @@ router.patch('/:id/profile', (req, res) => {
     db.prepare('UPDATE friends SET name = ? WHERE id = ?').run(name.trim(), friendId);
   }
 
-  if (packeta_address !== undefined) {
+  // ⚠ FUP-T12 — the OPTIONAL-FREE-TEXT case, and it is fixed differently from the
+  // required fields on purpose. `packeta_address` has NO rule of its own on this
+  // route, so there is no existing message to refuse a non-string with and the row
+  // forbids inventing one. A non-string is therefore treated as if the KEY WERE
+  // ABSENT: the write is skipped and the rest of the PATCH still applies.
+  //
+  // ⚠ NOT `typeof x === 'string' ? x.trim() : null` — that answers 200 while silently
+  // WIPING a real delivery address, which is strictly worse than the 500 it replaces.
+  // `null` stays in, because clearing by null is the shipped convention this route
+  // (and AdminFriends.vue's `trim() || null`) depends on.
+  if (packeta_address !== undefined && (packeta_address === null || typeof packeta_address === 'string')) {
     db.prepare('UPDATE friends SET packeta_address = ? WHERE id = ?')
       .run(packeta_address?.trim() || null, friendId);
   }

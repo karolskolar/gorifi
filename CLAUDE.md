@@ -1005,6 +1005,14 @@ real regressions in code you just touched:
   is perfectly correct, and a manual check of the page looks like a broken route.
 - `guestReadLimiter` / `guestWriteLimiter` (300/60) — `guest-status.spec.js` alone
   runs enough guest writes that batching it with other guest files 429s ~15 tests.
+- ⚠⚠ **KILL THE SERVER BY THE PID THAT OWNS THE PORT, and assert the port is free before
+  restarting.** `pgrep -f node | head -1`-style killing takes a *stale* process while the
+  one holding `:3997` survives; the replacement then fails to bind **silently**, and the
+  suite goes on measuring **the code you just deleted**. This produced a false green
+  during FUP-T12 — the fix was in the tree and the failures were still real.
+  Use `kill $(ss -lptnH 'sport = :3997' | grep -oP 'pid=\K[0-9]+')`, then check
+  `ss -ltn | grep -c ':3997'` is `0`, then start. Same class as the "confirm the port is
+  free first" note above, but this is the failure it actually causes.
 - ⚠ **`bcrypt-nonstring-shape.spec.js` CANNOT pass on the default `RATE_LIMIT_AUTH_MAX=20`** —
   it is the heaviest single consumer of `authLimiter` (~65 bucketed requests; each of
   its 12 change-password tests adds a login to prove the password is untouched). For

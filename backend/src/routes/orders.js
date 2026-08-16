@@ -303,7 +303,10 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
     if (!cycle.parcel_enabled) {
       return res.status(400).json({ error: 'Doručenie Packetou nie je pre tento cyklus dostupné' });
     }
-    if (!packeta_address?.trim()) {
+    // ⚠ FUP-T12: the type guard is folded into the route's EXISTING required rule —
+    // same status, same message. `?.` only covers null/undefined, so a number or an
+    // object reached `.trim()` and threw a TypeError ⇒ 500 plus a stack in the log.
+    if (typeof packeta_address !== 'string' || !packeta_address.trim()) {
       return res.status(400).json({ error: 'Adresa výdajného miesta je povinná' });
     }
     // Submit with parcel delivery — clear pickup fields

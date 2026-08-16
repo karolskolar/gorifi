@@ -58,8 +58,11 @@ router.post('/payment', requireAdmin, (req, res) => {
     }
   }
 
-  // Note max 160 chars
-  const truncatedNote = note ? note.substring(0, 160) : null;
+  // Note max 160 chars.
+  // ⚠ FUP-T12: `note` is OPTIONAL here and has no rule of its own, so a non-string is
+  // treated as if the key were absent (⇒ NULL on this INSERT) rather than refused with
+  // an invented message. `&& note` keeps `''` mapping to NULL exactly as before.
+  const truncatedNote = typeof note === 'string' && note ? note.substring(0, 160) : null;
 
   // Use provided date or default to now
   const createdAt = date ? new Date(date).toISOString() : new Date().toISOString();
@@ -94,7 +97,9 @@ router.post('/adjustment', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Suma je povinná a nemôže byť nula' });
   }
 
-  if (!note || !note.trim()) {
+  // ⚠ FUP-T12: folded into the existing required rule — same status, same message.
+  // (An adjustment's reason IS required, unlike the payment note above.)
+  if (typeof note !== 'string' || !note.trim()) {
     return res.status(400).json({ error: 'Dôvod (poznámka) je povinný' });
   }
 
@@ -159,7 +164,12 @@ router.patch('/:id', requireAdmin, (req, res) => {
     values.push(amount);
   }
 
-  if (note !== undefined) {
+  // ⚠ FUP-T12 — the optional-free-text shape on an UPDATE: a non-string is treated as
+  // if the key were absent and the column is left out of the SET list. It may NOT be
+  // coerced to NULL — that would answer 200 while erasing an admin's recorded reason.
+  // A request carrying ONLY a malformed note therefore builds no updates and falls
+  // through to this route's own `Žiadne údaje na aktualizáciu` 400.
+  if (note !== undefined && (note === null || typeof note === 'string')) {
     const truncatedNote = note ? note.substring(0, 160) : null;
     updates.push('note = ?');
     values.push(truncatedNote);

@@ -264,7 +264,12 @@ router.post('/import-gsheet/:cycleId', requireAdmin, async (req, res) => {
     return res.status(404).json({ error: 'Cyklus nebol najdeny' });
   }
 
-  if (!url) {
+  // ⚠ FUP-T12: a non-string reached `url.match(...)` below and threw a TypeError. The
+  // route's own try/catch already turned that into a 400, so the STATUS looked fine —
+  // but it ECHOED `url.match is not a function` to the client and still wrote ~1.2 KB
+  // of stack to the log per request. Folded into the existing presence rule: same
+  // status, same message, and a string url still reaches the parser unchanged.
+  if (typeof url !== 'string' || !url) {
     return res.status(400).json({ error: 'URL je povinne' });
   }
 
@@ -568,7 +573,12 @@ router.post('/import-gsheet-multirow/:cycleId', requireAdmin, async (req, res) =
     return res.status(404).json({ error: 'Cyklus nebol najdeny' });
   }
 
-  if (!url) {
+  // ⚠ FUP-T12: a non-string reached `url.match(...)` below and threw a TypeError. The
+  // route's own try/catch already turned that into a 400, so the STATUS looked fine —
+  // but it ECHOED `url.match is not a function` to the client and still wrote ~1.2 KB
+  // of stack to the log per request. Folded into the existing presence rule: same
+  // status, same message, and a string url still reaches the parser unchanged.
+  if (typeof url !== 'string' || !url) {
     return res.status(400).json({ error: 'URL je povinne' });
   }
 

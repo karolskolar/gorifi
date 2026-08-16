@@ -19,6 +19,55 @@ function generateLinkToken() {
   return crypto.randomBytes(12).toString('base64url');
 }
 
+// ⚠ FUP-T12 — ONE HOME for "what `(req.body.x || '').trim()` used to do", now type-safe.
+//
+// SEVEN call sites in this file read request text and called a method on it. All seven
+// were live 500s — `(123).trim` is `undefined`, `({trim:1}).trim()` is "1 is not a
+// function", and (the two found by this row's review) `String({toString:1})` throws
+// `Cannot convert object to primitive value` — i.e. a full stack in the log for a
+// merely malformed request. FIVE are PUBLIC:
+//
+//   `POST /onboarding/:token`            name / phone / email / username  ⚠ abuseLimiter
+//   `GET  /onboarding/:token/check-username`  `?u=`                       ⚠ NO LIMITER
+//   `PATCH /onboarding-links/:id`        note   (requireAdmin)
+//   `POST  /onboarding-links`            note   (requireAdmin)
+//
+// ⚠ AN EARLIER VERSION OF THIS COMMENT CLEARED THE LAST TWO AS "already safe … the
+// census is complete", and was wrong on both. `String(x)` and `x.toString()` are NOT
+// coercion guards — ToPrimitive calls `toString`, and a non-callable `toString`
+// property (`?u[toString]=1`, `{"note":{"toString":1}}`) throws. `guest.js:69-70` and
+// `helpers/stock.js:53` already say so; the claim contradicted existing canon. The
+// census below is what was PROBED against a running server, shape by shape, not what
+// was assumed from reading: all seven sites × the FUP-T12 shape matrix plus
+// `{toString:1}`, each measured for status AND bytes appended to the server log.
+//
+// ⚠ `{toString:1}` is why the matrix alone was not enough — `?u=abc` and `?u[0]=a`
+// both answer 200, so only that shape exposes the query-string site.
+//
+// The two return values are BOTH load-bearing:
+//   • falsy (absent / null / '' / 0 / false) ⇒ `''`, preserving the old `|| ''`
+//     fallback verbatim, so every "je povinné" refusal below is unchanged.
+//   • a non-string ⇒ `null`, which is falsy and therefore refused by each field's
+//     OWN existing rule and `field` marker.
+// ⚠ A non-string must NEVER become `''`. On the required fields that would still
+// refuse, but on the OPTIONAL e-mail it would mean "no e-mail supplied" and the
+// registration would be ACCEPTED — turning a refusal into a 201. That is why the
+// caller checks `email === null` explicitly.
+//
+// ⚠ DO NOT "UNIFY" THIS WITH THE OTHER THREE BODY-TEXT HELPERS. There are four in the
+// repo and their FALSY semantics differ deliberately, each preserving its own route's
+// shipped behaviour — a shared helper could only match one of them:
+//   • `guest.js` `asString`        — COERCES numbers/booleans to a string (the money path)
+//   • `friends.js` `adminString`   — `null → ''` (clears the column) but `undefined → undefined` (leaves it)
+//   • `invitations.js` `registerString` — BOTH `null` and `undefined → undefined`
+//   • this `bodyText`              — every falsy value → `''`, mirroring the old `|| ''`
+// (`friends.js`'s own comment already records the same "one convention, local copies"
+// decision for the bounds constants.)
+function bodyText(value) {
+  if (!value) return '';
+  return typeof value === 'string' ? value.trim() : null;
+}
+
 // Count of friends created via a given link's note. Free-text snapshot
 // (not an FK) so the count is computed on demand.
 function getRegistrationCount(note) {
@@ -47,7 +96,8 @@ router.get('/onboarding-links', requireAdmin, (req, res) => {
 
 // Create a new onboarding link. Body: { note }.
 router.post('/onboarding-links', requireAdmin, (req, res) => {
-  const note = (req.body?.note || '').trim();
+  // FUP-T12: a non-string arrives as `null` and is refused by this route's own rule.
+  const note = bodyText(req.body?.note);
   if (!note) {
     return res.status(400).json({ error: 'Popis je povinný' });
   }
@@ -84,7 +134,24 @@ router.patch('/onboarding-links/:id', requireAdmin, (req, res) => {
     params.push(req.body.active ? 1 : 0);
   }
   if (req.body.note !== undefined) {
-    const newNote = String(req.body.note).trim();
+    // ⚠ FUP-T12 (review MAJOR) — `String(x)` DOES NOT make this safe, and it failed in
+    // BOTH directions. ToPrimitive calls `toString`, so `{"note":{"toString":1}}` fell
+    // through to `valueOf` and threw `TypeError: Cannot convert object to primitive
+    // value` ⇒ 500 + a 10-frame stack. And every OTHER non-string was silently
+    // ACCEPTED and stringified into the row: `{}` and `{trim:1}` both stored the
+    // literal `"[object Object]"`, `["a","b"]` stored `"a,b"`, `true` stored `"true"`.
+    //
+    // ⚠ The write half is the worse one. `note` is the onboarding PROVENANCE label —
+    // `getRegistrationCount()` matches it against `friends.onboarding_source`, and the
+    // guard three lines below exists to stop exactly that audit trail being broken. A
+    // link renamed to `"[object Object]"` orphans every registration it ever sourced.
+    //
+    // `bodyText` refuses both halves through this route's OWN existing message, and
+    // matches the sibling `POST /onboarding-links` guard so the two ends of one
+    // resource agree. Behaviour shift, recorded: a non-string note used to 200 and
+    // write garbage, and now 400s — a tightening, never a loosening; a string note is
+    // trimmed and stored exactly as before.
+    const newNote = bodyText(req.body.note);
     if (!newNote) {
       return res.status(400).json({ error: 'Popis nemôže byť prázdny' });
     }
@@ -176,7 +243,22 @@ router.get('/onboarding/:token/check-username', (req, res) => {
     return res.status(403).json({ error: 'Tento odkaz už nie je aktívny' });
   }
 
-  const username = (req.query.u || '').toString().toLowerCase();
+  // ⚠ FUP-T12 (review BLOCKER) — `(req.query.u || '').toString()` is NOT a coercion
+  // guard. Express's extended query parser turns `?u[toString]=1` into the OBJECT
+  // `{toString: '1'}`, whose `toString` is a STRING, not a function — so the call
+  // threw `TypeError: … .toString is not a function` ⇒ 500 plus a 10-frame stack.
+  //
+  // ⚠ THIS IS THE CHEAPEST LOG-FLOOD IN THE APP, cheaper than the instance this row
+  // was opened for: the route is PUBLIC and — unlike `POST /onboarding/:token`
+  // (`abuseLimiter`) and `POST /friends/auth` (`authLimiter`) — it carries NO rate
+  // limiter at all (bare mount, index.js). 1156 bytes per unauthenticated GET.
+  //
+  // A non-string becomes `''`, which `validateUsername` already refuses with its own
+  // `Uzivatelske meno je povinne` — so the shipped `200 {available:false, reason}`
+  // contract is preserved and no new string is introduced. ⚠ `available` can never
+  // come back `true` from a malformed query, because `''` always fails validation.
+  const rawUsername = req.query.u;
+  const username = typeof rawUsername === 'string' ? rawUsername.toLowerCase() : '';
   const formatError = validateUsername(username);
   if (formatError) {
     return res.json({ available: false, reason: formatError });
@@ -199,15 +281,26 @@ router.post('/onboarding/:token', abuseLimiter, (req, res) => {
     return res.status(403).json({ error: 'Tento odkaz už nie je aktívny' });
   }
 
-  const name = (req.body.name || '').trim();
-  const phone = (req.body.phone || '').trim();
-  const email = (req.body.email || '').trim();
-  const usernameRaw = (req.body.username || '').toLowerCase().trim();
+  // FUP-T12: `bodyText` keeps the old `|| ''` fallback and hands back `null` for a
+  // non-string, so each field's own rule below does the refusing — one message and
+  // one `field` marker per input, exactly as the form renders them today. (A single
+  // shared "malformed" reply was rejected for the FUP-T11 reason: it would collapse
+  // four distinct 400s into one and the form would no longer know which input to
+  // redden.)
+  const name = bodyText(req.body.name);
+  const phone = bodyText(req.body.phone);
+  const email = bodyText(req.body.email);
+  const usernameText = bodyText(req.body.username);
+  const usernameRaw = usernameText === null ? null : usernameText.toLowerCase();
   const password = req.body.password || '';
 
   if (!name) return res.status(400).json({ error: 'Meno je povinné', field: 'name' });
   if (!phone) return res.status(400).json({ error: 'Mobil je povinný', field: 'phone' });
-  if (email && !email.includes('@')) {
+  // ⚠ `email === null` is the non-string case and it must land HERE. E-mail is
+  // OPTIONAL, so flattening a non-string to `''` would read as "no e-mail" and let
+  // the registration through — the one place in this handler where the malformed
+  // value would have been ACCEPTED rather than refused.
+  if (email === null || (email && !email.includes('@'))) {
     return res.status(400).json({ error: 'Neplatný email', field: 'email' });
   }
 
