@@ -33,7 +33,13 @@ add_header Permissions-Policy       "geolocation=(), microphone=(), camera=(), i
 # Content-Security-Policy. Gorifi is a Vue SPA served same-origin by the backend.
 # Policy below is derived from a live browser audit (2026-08-05), not a template —
 # see "CSP: audited findings" after this block before changing it.
-add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" always;
+#
+# ⚠ THIS IS THE THIRD COPY of the policy, and it must stay byte-identical to the
+# six lines in deploy/nginx-gorifi.conf and deploy/nginx-gorifi-staging.conf
+# (minus the -Report-Only suffix). It carries the module-10 Google Sign-In
+# sources: without them, promoting this to enforcing kills Google Sign-In at the
+# edge on BOTH prod and staging. See the ⚠ in the Notes below.
+add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" always;
 
 # --- Request size cap (matches the backend's 10mb JSON limit; images ≤ 5 MB) ---
 client_max_body_size 10m;
@@ -83,6 +89,18 @@ Notes:
 - Once the CSP report-only log is clean, rename `Content-Security-Policy-Report-Only`
   → `Content-Security-Policy`. **Read the audited findings below first** — as of
   2026-08-05 the report-only stage had never actually been armed.
+  - ⚠ **Do NOT promote this to enforcing unless the block above still carries the
+    four Google Sign-In sources** — `script-src …/gsi/client`,
+    `frame-src …/gsi/`, `connect-src …/gsi/`, `style-src …/gsi/style`
+    (GA-T3, spec module 10 §UC-GA-012). NPM is a real hop in front of **both**
+    prod and staging, so an edge policy of `script-src 'self'` **kills Google
+    Sign-In in production** even though the container confs are correct — and no
+    gate can see it, because the e2e suite runs against Express, which sends no
+    security headers at all. That is precisely the RD-DS-6 failure mode.
+    `deploy/nginx-gorifi.conf` is the source of truth for the policy string; copy
+    it from there rather than reconstructing it.
+  - ⚠ This warning is deliberately separate from the block above, because the
+    block is the part someone rewrites.
 
 ## 2b. CSP: audited findings (2026-08-05)
 

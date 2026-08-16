@@ -1,7 +1,7 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD, CYCLE_NAME } from '../fixtures.js'
 import { createServer } from 'node:http'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { dirname, join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -36,9 +36,92 @@ const DIST = resolve(HERE, '../../frontend/dist')
 // Copied verbatim from deploy/nginx-gorifi.conf (and identical in
 // deploy/nginx-gorifi-staging.conf). If that header ever changes, change it here
 // too — the whole point of this file is that the gate sees what the browser sees.
-const PROD_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-  "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; " +
-  "base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+//
+// ⚠ "change it here too" is no longer a HONOUR-SYSTEM instruction: the
+// `CSP copy is not a copy — it is checked against the real conf` describe below
+// reads both nginx files off disk and string-equals every `add_header` value
+// against this constant. Drift in EITHER direction reddens the gate.
+//
+// ⚠ THE POLICY LIVES IN THREE PLACES, not two: the two container confs (six
+// lines) AND the Nginx Proxy Manager block in docs/deploy/nginx-proxy-manager.md,
+// which is pasted into the EDGE proxy in front of both prod and staging. All
+// three files are checked below. What is NOT checkable is what an operator
+// actually pasted into NPM's web UI — see the NPM_DOC note.
+//
+// ⚠ GA-T3 / 10 §UC-GA-012 — the ONE sanctioned CSP exception (01 §Integrations).
+// Four scoped additions for Google Identity Services, verified 2026-08-16 against
+// Google's current published guidance at
+// https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid
+// ("Content Security Policy"). Nothing else is relaxed — `font-src 'self' data:`
+// and `img-src 'self' data:` are byte-identical to the RD-DS-6 policy.
+//
+// ⚠ `frame-src` is a NEW directive. Until GA-T3 the policy had none, so frames
+// fell back to `default-src 'self'` — i.e. same-origin frames were allowed and
+// cross-origin ones blocked, which is exactly why the GIS button iframe would
+// have been blocked. Declaring `frame-src` REPLACES that fallback: it is now the
+// only frame rule, and it deliberately omits `'self'` because this app renders no
+// iframe at all (the sole `'iframe'` string in the frontend is a focus-trap
+// selector in NeoModal.vue). If a same-origin iframe is ever added, `'self'` must
+// join this directive in BOTH confs — and the consequence test below will say so.
+const PROD_CSP = "default-src 'self'; " +
+  "script-src 'self' https://accounts.google.com/gsi/client; " +
+  "style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; " +
+  "img-src 'self' data:; font-src 'self' data:; " +
+  "connect-src 'self' https://accounts.google.com/gsi/; " +
+  "frame-src https://accounts.google.com/gsi/; " +
+  "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; " +
+  "upgrade-insecure-requests"
+
+// The GIS host. Allowed as a subresource origin on the two public routes that will
+// render a Google control (UC-GA-005 friend login, UC-GA-008 invite registration)
+// and NOWHERE else — `/g/:token` in particular stays at ZERO external requests,
+// because guests never see Google (UC-GA-012's loader rule).
+const GIS_HOST = 'accounts.google.com'
+
+const NGINX_CONFS = [
+  resolve(HERE, '../../deploy/nginx-gorifi.conf'),
+  resolve(HERE, '../../deploy/nginx-gorifi-staging.conf'),
+]
+
+// ⚠ THERE IS A THIRD COPY, and it is the one that can kill production.
+// `docs/deploy/nginx-proxy-manager.md` §2 holds a `Content-Security-Policy-Report-Only`
+// block the operator PASTES into Nginx Proxy Manager's "Advanced" tab, and the Notes
+// tell them to promote it to enforcing once the report log is clean. NPM is a real hop
+// in front of BOTH prod and staging, so if that copy lacks the GIS sources, promoting
+// it kills Google Sign-In at the edge while all six container-conf lines are perfectly
+// correct — invisible to every gate, because the e2e target is Express and Express
+// sends no security headers.
+//
+// The FILE is checked below, byte-for-byte (modulo the -Report-Only suffix).
+//
+// ⚠ What CANNOT be checked, and is the residual risk: whether what is actually
+// pasted into NPM's web UI matches this file. That lives in a database on the proxy
+// host, not in the repo. §2b of that doc records the probe
+// (`curl -sI https://gorifi.skolar.sk | grep -i content-security`) — it is a manual
+// step in GA-T4's staging walkthrough, not something this suite can assert.
+const NPM_DOC = resolve(HERE, '../../docs/deploy/nginx-proxy-manager.md')
+
+// The raw loader source is served by the CSP fixture at /__src/gis.js so the REAL
+// file can be exercised same-origin under the REAL policy. Nothing imports it yet
+// (GA-T4 onward own the button surfaces), so it is absent from the built bundle —
+// which is itself asserted, so wiring it up is a visible change.
+const GIS_LIB = resolve(HERE, '../../frontend/src/lib/gis.js')
+const FRONTEND_SRC = resolve(HERE, '../../frontend/src')
+
+function cspValuesIn(confPath) {
+  const text = readFileSync(confPath, 'utf8')
+  return [...text.matchAll(/add_header\s+Content-Security-Policy\s+"([^"]*)"\s+always;/g)]
+    .map((m) => m[1])
+}
+
+function walkFiles(dir, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) walkFiles(full, out)
+    else out.push(full)
+  }
+  return out
+}
 
 // ⚠ 'Noto Sans Cond' joined this list on 2026-08-13 (the product-description face,
 // `.pspec`/`.pnotes`). The exact-set assertion below is what forced this edit, which
@@ -212,6 +295,116 @@ async function assertSlovakRendersInBrandFace(page) {
 }
 
 // --------------------------------------------------------------------------
+// 0. the CSP copy is not a copy — it is CHECKED against the real conf
+//
+// GA-T3 / 10 §UC-GA-012. Every earlier version of this file carried `PROD_CSP` as
+// a hand-maintained transcription with a comment asking the next editor to keep it
+// in sync. That is the same honour system that let a `<link>` to fonts.googleapis
+// ship in the first place: nothing in the gate could see the real header, because
+// the e2e target is Express on :3997 and Express sends no security headers AT ALL.
+//
+// These tests close the last gap in that story. They read `deploy/nginx-*.conf`
+// off disk and string-equal what nginx would actually send against the constant
+// the browser fixture below serves. Drift in EITHER direction — an operator
+// editing the conf, or an editor "improving" the constant — reddens the gate, and
+// the failure message names the file and the differing value.
+// --------------------------------------------------------------------------
+
+test.describe('The CSP copy matches the deployed nginx confs', () => {
+  test('every add_header line in BOTH confs string-equals PROD_CSP', () => {
+    const seen = []
+    for (const conf of NGINX_CONFS) {
+      const values = cspValuesIn(conf)
+      // Per-file count, verified rather than assumed: the prod conf has three
+      // server blocks (two `location` blocks plus the server-level default) and
+      // staging mirrors it. A block added without its CSP line is a real hole —
+      // one unprotected route is all it takes — so the count is pinned, not just
+      // the values.
+      expect(values.length, `${conf}: expected 3 add_header Content-Security-Policy lines`).toBe(3)
+      for (const value of values) {
+        expect(value, `CSP in ${conf} differs from the copy in this spec file`).toBe(PROD_CSP)
+      }
+      seen.push(...values)
+    }
+    // Six lines, ONE policy string — the UC-GA-012 requirement stated directly.
+    expect(seen.length, 'six add_header Content-Security-Policy lines in total').toBe(6)
+    expect(new Set(seen).size, 'all six lines must carry one identical policy string').toBe(1)
+  })
+
+  test('the THIRD copy — the Nginx Proxy Manager block — carries the same policy', () => {
+    // See the NPM_DOC comment above for why this one is the dangerous copy: it is
+    // pasted into the edge proxy in front of BOTH environments, and the doc tells
+    // the operator to promote it from report-only to enforcing.
+    const text = readFileSync(NPM_DOC, 'utf8')
+    const values = [...text.matchAll(
+      /add_header\s+Content-Security-Policy(?:-Report-Only)?\s+"([^"]*)"\s+always;/g,
+    )].map((m) => m[1])
+
+    expect(values.length, `${NPM_DOC}: expected exactly one CSP block to keep in sync`).toBe(1)
+    expect(
+      values[0],
+      'The Nginx Proxy Manager block has drifted from deploy/nginx-gorifi.conf.\n' +
+      'It is report-only TODAY, so nothing is broken right now — but the doc instructs\n' +
+      'promoting it to enforcing, and without the GIS sources that kills Google Sign-In\n' +
+      'at the edge on prod AND staging, with every container conf still correct.',
+    ).toBe(PROD_CSP)
+
+    // The promote-step warning is the half that survives someone rewriting the
+    // block, so its presence is asserted too rather than trusted to review.
+    expect(text, 'the promote-to-enforcing step must carry the GIS warning')
+      .toMatch(/Do NOT promote this to enforcing/)
+  })
+
+  test('the four documented GIS allowances are present, each scoped to its directive', () => {
+    // Verified 2026-08-16 against Google's current guidance:
+    // https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid
+    //   script-src  += https://accounts.google.com/gsi/client   (the JS library)
+    //   frame-src   += https://accounts.google.com/gsi/         (button/One Tap iframes)
+    //   connect-src += https://accounts.google.com/gsi/         (GIS server endpoints)
+    //   style-src   += https://accounts.google.com/gsi/style    (GIS stylesheets)
+    // Google explicitly advises the PARENT url for connect-src rather than
+    // individual endpoints ("This helps minimize failures when GIS is updated"),
+    // which is also what covers the FedCM `/gsi/fedcm.json` fetch.
+    const directives = Object.fromEntries(
+      PROD_CSP.split(';').map((d) => d.trim()).filter(Boolean).map((d) => {
+        const [name, ...sources] = d.split(/\s+/)
+        return [name, sources]
+      }),
+    )
+    expect(directives['script-src']).toContain('https://accounts.google.com/gsi/client')
+    expect(directives['frame-src']).toContain('https://accounts.google.com/gsi/')
+    expect(directives['connect-src']).toContain('https://accounts.google.com/gsi/')
+    expect(directives['style-src']).toContain('https://accounts.google.com/gsi/style')
+
+    // ⚠ Scoped additions ONLY. A bare host (`https://accounts.google.com` with no
+    // path) would allow every script, frame and endpoint Google serves on it —
+    // that is the "relaxation" 01 §Integrations forbids, and it is a one-character
+    // slip away from the correct value.
+    for (const [name, sources] of Object.entries(directives)) {
+      for (const src of sources) {
+        if (!src.includes(GIS_HOST)) continue
+        expect(src, `${name}: a bare ${GIS_HOST} host source is a blanket allow, not a scoped addition`)
+          .toMatch(/^https:\/\/accounts\.google\.com\/gsi\/(client|style)?$/)
+      }
+    }
+  })
+
+  test('the self-hosted-fonts rule is NOT relaxed by the GIS exception', () => {
+    // RD-DS-6's whole discipline: a CSP problem is fixed by self-hosting, never by
+    // loosening. Module 10 is the one sanctioned exception and it must stay in its
+    // lane — these three directives are byte-identical to the pre-GA-T3 policy.
+    expect(PROD_CSP).toContain("font-src 'self' data:;")
+    expect(PROD_CSP).toContain("img-src 'self' data:;")
+    expect(PROD_CSP).toContain("default-src 'self';")
+    // No font/image host may ride in on the exception.
+    expect(PROD_CSP).not.toMatch(/font-src[^;]*accounts\.google\.com/)
+    expect(PROD_CSP).not.toMatch(/img-src[^;]*accounts\.google\.com/)
+    expect(PROD_CSP).not.toContain('fonts.googleapis.com')
+    expect(PROD_CSP).not.toContain('fonts.gstatic.com')
+  })
+})
+
+// --------------------------------------------------------------------------
 // 1. against whatever BASE_URL points at (local prod-like build, or staging)
 // --------------------------------------------------------------------------
 
@@ -223,7 +416,20 @@ test.describe('Brand fonts are self-hosted (BASE_URL target)', () => {
     await page.waitForLoadState('networkidle')
 
     await assertBrandFontsLoaded(page)
-    expect(external, `page requested non-same-origin URLs:\n${external.join('\n')}`).toEqual([])
+    // ⚠ GA-T4 WILL RED THIS TOO. `/` is the friend login screen, which is exactly
+    // where UC-GA-005's Google button goes — so the first real button turns this
+    // into "page requested non-same-origin URLs: …/gsi/client [script]". That is
+    // expected, not a regression: allow the GIS host here the way the route sweep
+    // below does (`EXTERNAL_ALLOWLIST`), and leave every other route at zero.
+    const disallowed = external.filter((entry) => new URL(entry.split('  [')[0]).hostname !== GIS_HOST)
+    expect(
+      disallowed,
+      `page requested non-same-origin URLs:\n${disallowed.join('\n')}`,
+    ).toEqual([])
+    // The allowance above is NOT a hole: that nothing loads GIS today is asserted
+    // on its own, for every route, by "no public route contacts Google TODAY".
+    // Keeping the zero-claim in exactly one place means GA-T4 has one test to
+    // update, with a message that tells it what to do.
   })
 
   test('a Slovak diacritic renders in the brand face, not a fallback', async ({ page }) => {
@@ -316,6 +522,19 @@ test.describe('No public route fetches a third-party subresource', () => {
 
   test.afterAll(async () => { await ctx?.dispose() })
 
+  // ⚠ GA-T3 / 10 §UC-GA-012 — the ONLY external host this sweep may ever allow, and
+  // only on the two routes that will render a Google control. `/g/:token` and
+  // `/magic/:token` stay at ZERO external requests: guests never see Google, and the
+  // loader (`frontend/src/lib/gis.js`) is what keeps that true — it is imported only
+  // by button surfaces, never by `index.html` and never by a guest route. THIS map is
+  // the assertion that stops a future row quietly loading GIS on the guest surface.
+  const EXTERNAL_ALLOWLIST = {
+    '/': [GIS_HOST],
+    '/invite/:code': [GIS_HOST],
+    '/g/:token': [],
+    '/magic/:token': [],
+  }
+
   test('/ , /invite/:code, /g/:token and /magic/:token each fetch only same-origin subresources', async ({ page, baseURL }) => {
     const origin = new URL(baseURL).origin
     const offenders = {}
@@ -329,17 +548,112 @@ test.describe('No public route fetches a third-party subresource', () => {
     // the redemption POST 401s (neutral failure, any auth mode) and the failure card
     // renders the same chrome the happy path would, which is what this sweep exists
     // to exercise.
-    const routes = ['/', `/invite/RDDS6-${uniq}`, `/g/${guestToken}`, `/magic/${'f'.repeat(64)}`]
+    const routes = [
+      { label: '/', url: '/' },
+      { label: '/invite/:code', url: `/invite/RDDS6-${uniq}` },
+      { label: '/g/:token', url: `/g/${guestToken}` },
+      { label: '/magic/:token', url: `/magic/${'f'.repeat(64)}` },
+    ]
 
-    for (const route of routes) {
+    for (const { label, url } of routes) {
       const external = watchExternal(page, origin)
-      await page.goto(route)
+      await page.goto(url)
       await page.waitForLoadState('networkidle')
-      if (external.length) offenders[route] = external
+      const allowed = EXTERNAL_ALLOWLIST[label]
+      // The allowlist is per-route and per-HOST: an allowed host on `/` is still an
+      // offender on `/g/:token`. Matched on the parsed hostname, never a substring
+      // of the URL — `https://evil.example/?x=accounts.google.com` must not pass.
+      const disallowed = external.filter((entry) => {
+        const host = new URL(entry.split('  [')[0]).hostname
+        return !allowed.includes(host)
+      })
+      if (disallowed.length) offenders[label] = disallowed
       page.removeAllListeners('request')
     }
 
     expect(offenders, `third-party subresources by route:\n${JSON.stringify(offenders, null, 2)}`).toEqual({})
+  })
+
+  // ⚠ GA-T3, constraint stated in 10 §UC-GA-012: the allowlist above is PERMISSION
+  // FOR LATER, not a prediction. Nothing imports `lib/gis.js` yet — no button
+  // renders until GA-T4 — so the honest current state is that EVERY route,
+  // including the two allowlisted ones, still makes zero requests to Google.
+  //
+  // Asserting that explicitly is what makes GA-T4 a visible change rather than a
+  // silent one: the moment a real GIS button ships on `/`, this test goes red and
+  // whoever landed it must come here and say so. Without it, the allowlist would
+  // quietly absorb the first Google request nobody reviewed.
+  test('no public route contacts Google TODAY — the allowlist is not yet exercised', async ({ page, baseURL }) => {
+    const origin = new URL(baseURL).origin
+    const contacted = {}
+    const routes = [
+      ['/', '/'],
+      ['/invite/:code', `/invite/RDDS6-${uniq}`],
+      ['/g/:token', `/g/${guestToken}`],
+      ['/magic/:token', `/magic/${'f'.repeat(64)}`],
+    ]
+
+    for (const [label, url] of routes) {
+      const external = watchExternal(page, origin)
+      await page.goto(url)
+      await page.waitForLoadState('networkidle')
+      const google = external.filter((e) => new URL(e.split('  [')[0]).hostname.endsWith('google.com'))
+      if (google.length) contacted[label] = google
+      page.removeAllListeners('request')
+    }
+
+    expect(
+      contacted,
+      'A route now contacts Google. If this is GA-T4+ landing a real GIS button, that is\n' +
+      'expected — update THIS test (and the ledger note beside RD-DS-6 in CLAUDE.md) to\n' +
+      'record which surfaces load GIS. If it is a guest or magic-link route, it is a BUG:\n' +
+      `${JSON.stringify(contacted, null, 2)}`,
+    ).toEqual({})
+  })
+
+  // The structural half of the same claim: the loader exists, is the one home, and
+  // is genuinely unreferenced. A grep-level assertion is the only thing that can
+  // see this — the runtime one above is satisfied by a loader that is imported but
+  // never called, which is a state GA-T4 will legitimately pass through.
+  test('lib/gis.js is the ONE home for GIS loading, and nothing imports it yet', () => {
+    expect(existsSync(GIS_LIB), 'frontend/src/lib/gis.js must exist (UC-GA-012)').toBe(true)
+
+    const src = readFileSync(GIS_LIB, 'utf8')
+    expect(src, 'the loader must inject the documented GIS client URL')
+      .toContain('https://accounts.google.com/gsi/client')
+
+    // ⚠ Never in index.html — the script must load only on surfaces that render a
+    // Google control, which is what keeps the guest sweep at zero.
+    const indexHtml = readFileSync(resolve(HERE, '../../frontend/index.html'), 'utf8')
+    expect(indexHtml, 'GIS must never be loaded from index.html').not.toContain(GIS_HOST)
+
+    // Exactly one file in frontend/src may name the GIS script URL: the loader.
+    const owners = walkFiles(FRONTEND_SRC)
+      .filter((f) => /\.(js|ts|vue)$/.test(f))
+      .filter((f) => readFileSync(f, 'utf8').includes('accounts.google.com/gsi/client'))
+    expect(owners.map((f) => f.replace(`${FRONTEND_SRC}/`, '')),
+      'GIS script loading belongs in lib/gis.js and nowhere else').toEqual(['lib/gis.js'])
+
+    // And today nothing imports it — so it cannot reach the bundle. Stated as the
+    // importer list so the failure message names the first importer.
+    const importers = walkFiles(FRONTEND_SRC)
+      .filter((f) => /\.(js|ts|vue)$/.test(f) && f !== GIS_LIB)
+      .filter((f) => /from\s+['"][^'"]*lib\/gis(\.js)?['"]/.test(readFileSync(f, 'utf8')))
+      .map((f) => f.replace(`${FRONTEND_SRC}/`, ''))
+    expect(importers,
+      'GA-T4+ wiring the loader up is expected — update this test and the sweep above together')
+      .toEqual([])
+
+    // Belt and braces at the build level: the shipped bundle must not mention the
+    // host while no surface uses it. This is what proves the "zero today" runtime
+    // result is real and not an artifact of the page failing to reach that code.
+    const assets = join(DIST, 'assets')
+    test.skip(!existsSync(assets), 'frontend/dist not built')
+    const hits = walkFiles(assets)
+      .filter((f) => f.endsWith('.js'))
+      .filter((f) => readFileSync(f, 'utf8').includes(GIS_HOST))
+      .map((f) => f.replace(`${DIST}/`, ''))
+    expect(hits, 'the built bundle names accounts.google.com — a surface is loading GIS').toEqual([])
   })
 
   // ⚠ This test used to assert the Goriffee logo decoded at `h-12` on this route.
@@ -420,6 +734,18 @@ test.describe('Brand fonts under the PRODUCTION CSP', () => {
         setHeaders()
         res.writeHead(404, { 'Content-Type': MIME['.json'] })
         return res.end('{"error":"no backend in this fixture"}')
+      }
+
+      // GA-T3: the REAL `frontend/src/lib/gis.js`, served same-origin so it can be
+      // dynamically imported and exercised UNDER THE PRODUCTION CSP. It cannot be
+      // reached through the bundle — nothing imports it yet, by design — and a
+      // data:/blob: module import would be blocked by `script-src 'self'`, which is
+      // the correct behaviour and not something to work around. So the fixture
+      // publishes the source file itself.
+      if (pathname === '/__src/gis.js') {
+        setHeaders()
+        res.writeHead(200, { 'Content-Type': MIME['.js'] })
+        return res.end(readFileSync(GIS_LIB))
       }
 
       // Resolve inside DIST only, then SPA-fallback like nginx's try_files.
@@ -578,5 +904,262 @@ test.describe('Brand fonts under the PRODUCTION CSP', () => {
       violations.some((v) => v.directive === 'style-src-elem' || v.directive === 'style-src'),
       `expected the fixture CSP to block a Google Fonts <link>; got ${JSON.stringify(violations)}`,
     ).toBe(true)
+  })
+
+  // ------------------------------------------------------------------------
+  // GA-T3 / 10 §UC-GA-012 — the GIS exception, exercised against the real policy
+  //
+  // ⚠ These never reach Google. Every accounts.google.com request is intercepted
+  // and failed at the NETWORK layer, because a CSP decision is made BEFORE the
+  // request is issued: a blocked URL never reaches the route handler at all, and
+  // an allowed one produces a network error rather than a violation. So the tests
+  // read identically online and offline — which matters, since the gate host has
+  // no egress and a connectivity-dependent CSP test would be flaky theatre.
+  // ------------------------------------------------------------------------
+
+  const RECORD_VIOLATIONS = () => {
+    window.__cspViolations = []
+    document.addEventListener('securitypolicyviolation', (e) => {
+      window.__cspViolations.push({ directive: e.effectiveDirective, blocked: e.blockedURI })
+    })
+  }
+
+  test('script-src admits the GIS client and NOTHING else on that host', async ({ page }) => {
+    await page.addInitScript(RECORD_VIOLATIONS)
+    await page.route('https://accounts.google.com/**', (r) => r.abort())
+    await page.goto(`${origin}/`)
+
+    await page.evaluate(async () => {
+      const inject = (src) => new Promise((resolve) => {
+        const el = document.createElement('script')
+        el.src = src
+        el.onload = el.onerror = () => setTimeout(resolve, 100)
+        document.head.appendChild(el)
+        setTimeout(resolve, 3000)
+      })
+      await inject('https://accounts.google.com/gsi/client')
+      // Same host, different path. The GIS allowance is an EXACT path source, so
+      // this must still be blocked — that is the difference between "scoped
+      // addition" and the blanket `https://accounts.google.com` a slip would give.
+      await inject('https://accounts.google.com/o/oauth2/iframe')
+    })
+
+    const violations = await page.evaluate(() => window.__cspViolations)
+    expect(
+      violations.filter((v) => v.blocked.includes('/gsi/client')),
+      `the GIS library URL must be permitted by script-src; got ${JSON.stringify(violations)}`,
+    ).toEqual([])
+    expect(
+      violations.some((v) => v.blocked.includes('/o/oauth2/')),
+      `a non-GIS path on accounts.google.com must STILL be blocked; got ${JSON.stringify(violations)}`,
+    ).toBe(true)
+  })
+
+  test('frame-src admits the GIS iframe — and, deliberately, no other frame', async ({ page }) => {
+    await page.addInitScript(RECORD_VIOLATIONS)
+    await page.route('https://accounts.google.com/**', (r) => r.abort())
+    await page.goto(`${origin}/`)
+
+    const frame = (src) => page.evaluate((s) => new Promise((resolve) => {
+      const el = document.createElement('iframe')
+      el.src = s
+      el.onload = el.onerror = () => setTimeout(resolve, 100)
+      document.body.appendChild(el)
+      setTimeout(resolve, 2000)
+    }), src)
+
+    await frame('https://accounts.google.com/gsi/button')
+    await frame('https://example.com/')
+    await frame(`${origin}/`)
+
+    const violations = await page.evaluate(() => window.__cspViolations)
+    const framed = violations.filter((v) => v.directive === 'frame-src')
+
+    expect(
+      framed.filter((v) => v.blocked.includes('accounts.google.com')),
+      `the GIS button iframe must be permitted; got ${JSON.stringify(violations)}`,
+    ).toEqual([])
+    expect(
+      framed.some((v) => v.blocked.includes('example.com')),
+      `an arbitrary third-party frame must be blocked; got ${JSON.stringify(violations)}`,
+    ).toBe(true)
+
+    // ⚠ THE NON-OBVIOUS CONSEQUENCE OF ADDING A NEW DIRECTIVE, pinned on purpose.
+    // Before GA-T3 there was no `frame-src`, so frames fell back to `default-src
+    // 'self'` and a SAME-ORIGIN iframe was allowed. Declaring `frame-src` replaces
+    // that fallback wholesale, and it omits `'self'` because this app renders no
+    // iframe anywhere (the only `'iframe'` token in frontend/src is a focus-trap
+    // selector in NeoModal.vue). That keeps the addition minimal.
+    //
+    // If a same-origin iframe is ever legitimately needed, the fix is to add
+    // `'self'` to `frame-src` in BOTH nginx confs and in PROD_CSP, and to delete
+    // this assertion — deliberately, with that reasoning written down. It is here
+    // so the choice is discovered by a red test rather than by a blank frame in
+    // production.
+    expect(
+      framed.some((v) => v.blocked === 'self' || v.blocked.startsWith(origin)),
+      'same-origin frames are blocked by the new frame-src (see comment) — ' +
+      `got ${JSON.stringify(violations)}`,
+    ).toBe(true)
+  })
+
+  test('lib/gis.js no-ops on a null client id, dedupes, and cleans up after a failure', async ({ page }) => {
+    await page.addInitScript(RECORD_VIOLATIONS)
+    // The script tag is permitted by CSP; the network is what fails here. That is
+    // precisely the "blocked or offline Google" case the loader must survive.
+    await page.route('https://accounts.google.com/**', (r) => r.abort())
+    await page.goto(`${origin}/`)
+
+    const out = await page.evaluate(async () => {
+      const mod = await import('/__src/gis.js')
+      const tags = () => document.querySelectorAll('script[src*="accounts.google.com"]').length
+      const r = {}
+
+      // 1. Unconfigured deployment: resolves null and injects NOTHING, so call
+      //    sites need no separate guard and no route can contact Google.
+      r.nullResolves = await mod.loadGis(null)
+      r.tagsAfterNull = tags()
+      r.emptyStringResolves = await mod.loadGis('')
+      r.tagsAfterEmpty = tags()
+
+      // 2. Configured: one tag, and concurrent callers share ONE promise.
+      const a = mod.loadGis('test.apps.googleusercontent.com', { timeoutMs: 4000 })
+      const b = mod.loadGis('test.apps.googleusercontent.com', { timeoutMs: 4000 })
+      r.sharedPromise = a === b
+      r.tagsWhileLoading = tags()
+
+      r.rejection = await a.then(() => null, (e) => String((e && e.message) || e))
+
+      // 3. After a failure the loader must be retryable — a friend who lost their
+      //    connection for one second must not be locked out of Google for the life
+      //    of the page. The failed tag is removed and a fresh attempt is made.
+      r.tagsAfterFailure = tags()
+      const c = mod.loadGis('test.apps.googleusercontent.com', { timeoutMs: 4000 })
+      r.retryIsFreshPromise = c !== a
+      await c.catch(() => {})
+      return r
+    })
+
+    expect(out.nullResolves, 'null client id must resolve null, not reject').toBe(null)
+    expect(out.tagsAfterNull, 'a null client id must inject no script').toBe(0)
+    expect(out.emptyStringResolves, 'an empty client id is also unconfigured').toBe(null)
+    expect(out.tagsAfterEmpty, 'an empty client id must inject no script').toBe(0)
+    expect(out.sharedPromise, 'concurrent callers must share one in-flight promise').toBe(true)
+    expect(out.tagsWhileLoading, 'exactly one GIS script tag, however many callers').toBe(1)
+    expect(out.rejection, 'an unreachable Google must REJECT, never hang').toBeTruthy()
+    expect(out.tagsAfterFailure, 'the failed tag must be cleaned up').toBe(0)
+    expect(out.retryIsFreshPromise, 'a failure must not be cached forever').toBe(true)
+
+    // The loader itself must raise no CSP violation — it is same-origin code
+    // injecting a URL the policy now permits.
+    const violations = await page.evaluate(() => window.__cspViolations)
+    expect(violations, `loader raised CSP violations:\n${JSON.stringify(violations, null, 2)}`).toEqual([])
+  })
+
+  // ⚠ THE SUCCESS PATH — the contract GA-T4/T6/T7/T8/T10 all consume. The two
+  // tests below it cover only failure (reject) and timeout (reject); without this
+  // one, a loader that resolved `undefined`, or the <script> element, or that
+  // never short-circuited on a second call, would ship green and break every
+  // button surface at once.
+  //
+  // Google is still never contacted: the route is fulfilled with a stub that
+  // defines the namespace the real client would define.
+  test('lib/gis.js resolves the GIS namespace, short-circuits, and reports ready', async ({ page }) => {
+    await page.route('https://accounts.google.com/**', (r) => r.fulfill({
+      status: 200,
+      contentType: 'text/javascript; charset=utf-8',
+      body: 'window.google = { accounts: { id: { initialize() {}, renderButton() {}, __stub: true } } }',
+    }))
+    await page.goto(`${origin}/`)
+
+    const out = await page.evaluate(async () => {
+      const mod = await import('/__src/gis.js')
+      const tags = () => document.querySelectorAll('script[src*="accounts.google.com"]').length
+      const r = {}
+
+      r.readyBefore = mod.isGisReady()
+
+      const ns = await mod.loadGis('test.apps.googleusercontent.com', { timeoutMs: 5000 })
+      // Identity, not shape: the resolved value must BE window.google.accounts.id,
+      // so a call site can hand it straight to `initialize()`/`renderButton()`.
+      r.isNamespace = ns === window.google.accounts.id
+      r.isStub = ns && ns.__stub === true
+      r.hasInitialize = typeof (ns && ns.initialize) === 'function'
+      r.notAnElement = !(ns instanceof HTMLElement)
+      r.readyAfter = mod.isGisReady()
+      r.tagsAfterLoad = tags()
+
+      // A later, entirely separate call must short-circuit: same object, no second
+      // <script>. This is the path every surface after the first one takes.
+      const again = await mod.loadGis('test.apps.googleusercontent.com')
+      r.secondCallSameObject = again === ns
+      r.tagsAfterSecondCall = tags()
+
+      // ...and the no-op rule still wins over an already-loaded namespace: an
+      // unconfigured deployment must get null even here.
+      r.nullStillNoOps = await mod.loadGis(null)
+      return r
+    })
+
+    expect(out.readyBefore, 'isGisReady() must be false before any load').toBe(false)
+    expect(out.isNamespace, 'must resolve window.google.accounts.id itself').toBe(true)
+    expect(out.isStub, 'must resolve the object the script defined').toBe(true)
+    expect(out.hasInitialize, 'the resolved namespace must be callable by GA-T4').toBe(true)
+    expect(out.notAnElement, 'must not resolve the <script> element').toBe(true)
+    expect(out.readyAfter, 'isGisReady() must be true after a successful load').toBe(true)
+    expect(out.tagsAfterLoad, 'exactly one GIS script tag').toBe(1)
+    expect(out.secondCallSameObject, 'a later call must short-circuit to the same namespace').toBe(true)
+    expect(out.tagsAfterSecondCall, 'a second call must not inject a second tag').toBe(1)
+    expect(out.nullStillNoOps, 'a null client id must resolve null even once GIS is loaded').toBe(null)
+  })
+
+  test('lib/gis.js recovers a namespace that appears AFTER the load event', async ({ page }) => {
+    // The poll in `startPolling()` exists for a script that loads and then finishes
+    // defining itself a tick later. Without it the loader would either resolve an
+    // undefined namespace or wait out the full timeout on a load that actually
+    // succeeded. Stubbed with a deliberate delay so the load event fires first.
+    await page.route('https://accounts.google.com/**', (r) => r.fulfill({
+      status: 200,
+      contentType: 'text/javascript; charset=utf-8',
+      body: 'setTimeout(() => { window.google = { accounts: { id: { late: true } } } }, 300)',
+    }))
+    await page.goto(`${origin}/`)
+
+    const out = await page.evaluate(async () => {
+      const mod = await import('/__src/gis.js')
+      const ns = await mod.loadGis('test.apps.googleusercontent.com', { timeoutMs: 5000 })
+      return { late: ns && ns.late === true, ready: mod.isGisReady() }
+    })
+
+    expect(out.late, 'a namespace defined after onload must still resolve').toBe(true)
+    expect(out.ready, 'isGisReady() must be true afterwards').toBe(true)
+  })
+
+  test('lib/gis.js times out rather than hanging when the script never initialises', async ({ page }) => {
+    // The nastier failure: Google answers 200 with something that never defines
+    // `window.google.accounts.id` (a captive portal, a corporate proxy serving an
+    // interstitial, a half-rolled-out GIS build). `onload` fires and a naive loader
+    // waits forever, freezing the login screen behind a spinner. UC-GA-012 requires
+    // it to degrade to the password form instead.
+    await page.route('https://accounts.google.com/**', (r) => r.fulfill({
+      status: 200,
+      contentType: 'text/javascript; charset=utf-8',
+      body: '/* 200 OK, but no window.google */',
+    }))
+    await page.goto(`${origin}/`)
+
+    const out = await page.evaluate(async () => {
+      const mod = await import('/__src/gis.js')
+      const started = performance.now()
+      const rejection = await mod
+        .loadGis('test.apps.googleusercontent.com', { timeoutMs: 600 })
+        .then(() => null, (e) => String((e && e.message) || e))
+      return { rejection, elapsed: performance.now() - started }
+    })
+
+    expect(out.rejection, 'a script that never initialises must reject, not hang').toBeTruthy()
+    expect(out.rejection.toLowerCase()).toContain('timeout')
+    // Bounded by the timeout it was given — i.e. the timer really is what fired.
+    expect(out.elapsed, `took ${out.elapsed}ms for a 600ms timeout`).toBeLessThan(5000)
   })
 })

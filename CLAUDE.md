@@ -672,6 +672,51 @@ typeface.
   filenames are **not** content-hashed, so `immutable` would pin a stale face forever if the
   subsets are ever refreshed from Google.
 
+### ⚠ GA-T3 — the ONE sanctioned CSP exception, and the THIRD policy copy (2026-08-16)
+
+Google Identity Services needs four **scoped** path sources. They are added to
+`script-src` / `style-src` / `connect-src` and a **new** `frame-src`, per Google's current
+docs (`developers.google.com/identity/gsi/web/guides/get-google-api-clientid`, §CSP —
+the older `/guides/csp` URL is stale). **Nothing else is relaxed**: `font-src 'self' data:`
+and `img-src 'self' data:` are byte-identical to RD-DS-6. Fixing a CSP problem by
+loosening is still forbidden; this is the one exception and it stays minimal.
+
+- ⚠ **THE POLICY LIVES IN THREE FILES, NOT TWO.** `deploy/nginx-gorifi.conf` (3 lines),
+  `deploy/nginx-gorifi-staging.conf` (3), **and `docs/deploy/nginx-proxy-manager.md`**
+  (report-only). That third one is the dangerous one: NPM is a real hop in front of
+  **both** prod and staging, and the runbook's own Notes tell the operator to promote it
+  from `-Report-Only` to enforcing. Promoting the pre-GIS version would have killed
+  Google sign-in in production — the RD-DS-6 failure mode exactly, invisible to every
+  gate. All seven lines are now machine-checked: `self-hosted-fonts.spec.js` reads all
+  three files off disk and string-equals every line against `PROD_CSP`, so drift in
+  either direction reddens and names the file.
+- ⚠ **The residual is what an operator PASTED into NPM's web UI** — that lives in a
+  database on the proxy host, not the repo, and no suite can reach it. The manual check
+  is `docs/deploy/nginx-proxy-manager.md` §2b's `curl -sI … | grep -i content-security`.
+- ⚠ **`frame-src` is a NEW directive and it REPLACES the `default-src 'self'` fallback**,
+  so **same-origin iframes are now blocked too**. Free today (the app renders none — the
+  only `'iframe'` token in `frontend/src` is `NeoModal.vue`'s focus-trap selector), and
+  pinned by a test, so the day someone legitimately needs one they get a red test rather
+  than a blank frame. Add `'self'` to all three copies if that day comes.
+- **`frontend/src/lib/gis.js` is the ONE home for GIS script loading** — never
+  `index.html`, never guest routes. Idempotent, dedupes concurrent callers onto one
+  promise and one tag, **times out rather than hanging** (a blocked Google must degrade
+  to the password form), clears itself after failure so a retry works, and **resolves
+  `null` when `googleClientId` is null** so call sites need no separate guard. It does
+  NOT call `initialize()`. ⚠ Options apply only to the call that *starts* the load.
+- Route sweep: `accounts.google.com` allowed on `/` and `/invite/:code` **only**;
+  **`/g/:token` and `/magic/:token` stay at ZERO external requests**. Nothing imports the
+  loader yet and *that zero is asserted*, so GA-T4 turning it on is a loud, self-
+  describing failure rather than a silent drift.
+- ⚠ **Use `BASE_URL=http://localhost:3997`, never the IP.** `CORS_ORIGIN` allows
+  `localhost` but not `127.0.0.1`, and the built `index.html` loads its assets with
+  `crossorigin` — so the IP gives a **500 on the stylesheet** and `document.fonts.size
+  === 0`, which reads exactly like a font regression.
+- For a future hardening pass: Google wants `Referrer-Policy:
+  strict-origin-when-cross-origin` (both confs already send it), and if anyone ever adds
+  `Cross-Origin-Opener-Policy` it **must** be `same-origin-allow-popups` or the GIS popup
+  goes blank. None is sent today.
+
 ### `.cat-tabs` scroll affordance — `CatScrollArrow.vue` (2026-08-10)
 
 The theme's only overflow signal on the category strip was `.cat-tabs::after`, a 28px
