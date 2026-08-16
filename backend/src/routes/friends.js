@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import db, { generateUid, generateInviteCode } from '../db/schema.js';
-import { validateFriendAuth, requireFriendOwner, createFriendSession, presentedSessionExpiry, presentedSessionVia, invalidateFriendSessions, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
+import { validateFriendAuth, requireFriendOwner, createFriendSession, presentedSessionExpiry, presentedSessionVia, invalidateFriendSessions, invalidateLoginTokens, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { authLimiter } from '../middleware/rate-limit.js';
 import { getPlaceholderCycleId } from '../helpers/friend-create.js';
@@ -249,8 +249,21 @@ router.post('/:id/setup-credentials', (req, res) => {
     return res.status(400).json({ error: 'Heslo musí mať aspoň 8 znakov' });
   }
 
-  db.prepare('UPDATE friends SET username = ?, password_hash = ?, must_change_password = 0 WHERE id = ?')
-    .run(username.toLowerCase(), hashPassword(password), friendId);
+  // ⚠ bcrypt runs ABOVE the transaction (the IA-T3 invariant: better-sqlite3
+  // transactions are synchronous, so a ~62 ms hash inside one holds the write lock for
+  // its whole duration). Everything below the boundary is pure SQL.
+  const passwordHash = hashPassword(password);
+
+  // §UC-ML-009 rule 2 — a `password_hash` write and the magic-link delete are ONE
+  // transaction, so no state exists in which the new password is live while a link
+  // mailed before it is still redeemable. Conservative hygiene only: §UC-ML-005's own
+  // `active`/`password_hash` checks remain the load-bearing gate (see
+  // `invalidateLoginTokens`).
+  db.transaction(() => {
+    db.prepare('UPDATE friends SET username = ?, password_hash = ?, must_change_password = 0 WHERE id = ?')
+      .run(username.toLowerCase(), passwordHash, friendId);
+    invalidateLoginTokens(friendId);
+  })();
 
   // Create new session with credentials.
   // ⚠ Read the presenting session's expiry BEFORE invalidating — that call
@@ -338,7 +351,17 @@ router.put('/:id/change-password', (req, res) => {
     return res.status(400).json({ error: 'Nové heslo musí mať aspoň 8 znakov' });
   }
 
-  db.prepare('UPDATE friends SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(hashPassword(newPassword), friendId);
+  // ⚠ bcrypt ABOVE the transaction (the IA-T3 invariant — see setup-credentials).
+  const newHash = hashPassword(newPassword);
+
+  // §UC-ML-009 rule 2, and this is the call site the rule was written for: the friend
+  // who just recovered by e-mail sets their own password here, and the link that got
+  // them in — plus any other outstanding one — dies with the same write. Conservative
+  // hygiene only (see `invalidateLoginTokens`).
+  db.transaction(() => {
+    db.prepare('UPDATE friends SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(newHash, friendId);
+    invalidateLoginTokens(friendId);
+  })();
 
   // Invalidate all sessions and create a new one.
   // ⚠ Capture the presenting session's expiry BEFORE invalidating (that call
@@ -669,12 +692,18 @@ router.patch('/:id', requireAdmin, (req, res) => {
     updates.push('display_name = ?');
     values.push(display_name || null);
   }
+  // ⚠ The invalidations MOVED down into the write transaction below (ML-T7). They used
+  // to run here, while the `updates` array was still being built — i.e. BEFORE the
+  // `active = 0` write they belong to, and outside any transaction. Same end state
+  // (both calls are synchronous with nothing between them), but now a failed UPDATE
+  // rolls the invalidations back with it instead of logging everyone out for a write
+  // that never happened.
+  let deactivating = false;
   if (active !== undefined) {
     updates.push('active = ?');
     values.push(active ? 1 : 0);
-    // Invalidate sessions when deactivating
     if (!active) {
-      invalidateFriendSessions(req.params.id);
+      deactivating = true;
     }
   }
   if (phone !== undefined) {
@@ -688,7 +717,20 @@ router.patch('/:id', requireAdmin, (req, res) => {
 
   if (updates.length > 0) {
     values.push(req.params.id);
-    db.prepare(`UPDATE friends SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    db.transaction(() => {
+      db.prepare(`UPDATE friends SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+      // §UC-ML-009 rule 3 — deactivation additionally deletes the friend's outstanding
+      // magic links, in the same statement group as the `active = 0` write.
+      // ⚠ Belt-and-braces: redemption's own `active = 1` check (§UC-ML-005) already
+      // refuses an inactive friend, and §UC-ML-003's match refuses to mail them a new
+      // one — those are the load-bearing gates and this delete is not a licence to
+      // weaken them. `deactivating` can only be true when `updates` is non-empty (it
+      // pushes `active = ?` itself), so nothing was lost by moving it in here.
+      if (deactivating) {
+        invalidateFriendSessions(req.params.id);
+        invalidateLoginTokens(req.params.id);
+      }
+    })();
   }
 
   const updated = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
@@ -787,9 +829,20 @@ router.put('/:id/reset-password', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Heslo musí mať aspoň 8 znakov' });
   }
 
+  // ⚠ bcrypt ABOVE the transaction (the IA-T3 invariant — see setup-credentials).
+  const passwordHash = hashPassword(password);
+
   // Set the password AND flag it must be changed: on next login the friend is
   // forced to choose their own password (SEC-A3 migration + forced-change #3).
-  db.prepare('UPDATE friends SET password_hash = ?, must_change_password = 1 WHERE id = ?').run(hashPassword(password), req.params.id);
+  //
+  // §UC-ML-009 rule 2 — the delete shares the `password_hash` write's transaction.
+  // An admin reset is the "this account is being recovered/secured" event, so a link
+  // mailed beforehand must not survive it. Conservative hygiene only (see
+  // `invalidateLoginTokens`).
+  db.transaction(() => {
+    db.prepare('UPDATE friends SET password_hash = ?, must_change_password = 1 WHERE id = ?').run(passwordHash, req.params.id);
+    invalidateLoginTokens(req.params.id);
+  })();
   invalidateFriendSessions(req.params.id);
 
   res.json({ success: true });
@@ -813,6 +866,20 @@ router.put('/:id/admin-username', requireAdmin, (req, res) => {
     return res.status(409).json({ error: 'Užívateľské meno je už obsadené' });
   }
 
+  // ⚠ NO `invalidateLoginTokens` HERE, DELIBERATELY (09 §UC-ML-009 rule 2, ML-T7 —
+  // the FIFTH `invalidateFriendSessions` call site, which the spec's inventory does not
+  // name). Rule 2 is scoped to writes of `friends.password_hash`; this route writes
+  // `username` and nothing else, so the rationale behind it — "a password change is the
+  // 'I have secured my account' event" — simply does not apply. Nor is the link at
+  // stake: a magic link is keyed on `friend_id` and anchored on `friends.email`, so a
+  // renamed login identifier neither invalidates it nor makes it point anywhere new.
+  // The session invalidation below is here for its own, older reason (the credential
+  // the friend logs in with just changed), not as a security event.
+  //
+  // The practical argument runs the same way: a friend whose username an admin just
+  // changed is precisely someone who may be locked out, and killing their outstanding
+  // recovery link would take away the way back in. Do not "fix" this omission without
+  // a spec change.
   db.prepare('UPDATE friends SET username = ? WHERE id = ?').run(username.toLowerCase(), req.params.id);
   invalidateFriendSessions(req.params.id);
   const updated = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);

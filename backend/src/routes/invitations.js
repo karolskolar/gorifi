@@ -379,6 +379,15 @@ router.post('/:id/approve', requireAdmin, async (req, res) => {
     //   • NO session mint — the friend logs in themselves with the temp password.
     //   • NO transactions row — creating an account is not a financial event (the
     //     GSO-T6 lesson: a stray ledger row corrupts a real balance).
+    //   • NO `invalidateLoginTokens` — and this one is an EXPLICIT EXEMPTION from
+    //     09 §UC-ML-009 rule 2, recorded here so nobody "fixes" the omission. That rule
+    //     makes every write to `friends.password_hash` delete the friend's outstanding
+    //     magic links; the INSERT below writes `password_hash` too, but it CREATES the
+    //     friend row, so `lastInsertRowid` is a brand-new id that no `login_tokens` row
+    //     can reference yet (they are keyed on `friend_id` with an FK to a friend that
+    //     did not exist a statement ago). The delete would be a guaranteed no-op, and
+    //     adding it would put a third write inside a transaction the IA-T3 invariant
+    //     pins at EXACTLY TWO.
     const approveInvitation = db.transaction(() => {
       const result = db.prepare(`
         INSERT INTO friends

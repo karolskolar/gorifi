@@ -920,20 +920,83 @@ test.describe('UC-ML-005 — redemption (throwaway backend, modern mode)', () =>
       ).toBeFalsy()
 
       // (2) the friend was deactivated after the link was issued.
-      //     ⚠ The token IS burned first even here — deliberate: a token that reached
-      //     an ineligible account must not stay redeemable.
+      //
+      // ⚠ RETARGETED BY ML-T7, NOT WEAKENED. This case used to assert that the token
+      // was BURNED (`used_at` stamped) on the way to its 401 — "a token that reached an
+      // ineligible account must not stay redeemable". §UC-ML-009 rule 3 now deletes the
+      // outstanding row AT DEACTIVATION, so redemption never finds a row to burn: the
+      // end state is strictly stronger (gone, not merely spent) and the 401 is
+      // unchanged. Asserting `[0].used_at` here would now read `undefined` — which is
+      // how ML-T7 found this. The burn-on-ineligible behaviour itself is real and still
+      // pinned, at case (2b) below.
       const goneFriend = await api.cleanFriend('gone', uniq)
       const goneToken = await captureToken(api, stub, goneFriend.username)
       await api.deactivate(goneFriend.id)
       bodies.push(await expectNeutral401(await api.redeem(goneToken), 'deactivated friend'))
       expect(
-        outstandingRows(backend.dbPath, goneFriend.id)[0].used_at,
-        'burned anyway — an ineligible account must not leave a redeemable token behind'
-      ).toBeTruthy()
+        outstandingRows(backend.dbPath, goneFriend.id).length,
+        'rule 3 removed the row outright — nothing redeemable is left behind'
+      ).toBe(0)
       expect(
         withDb(backend.dbPath, (db) =>
           db.prepare("SELECT COUNT(*) AS n FROM friend_sessions WHERE friend_id = ? AND via = 'magic_link'")
             .get(goneFriend.id).n),
+        'and no magic-link session was minted for the inactive friend'
+      ).toBe(0)
+
+      // (2b) INELIGIBLE BUT ACTIVE — the account lost its `password_hash` after the
+      //      link was issued. ⚠ Manufactured in the DB on purpose, the same licence
+      //      §UC-ML-010 obligation 2 gives the expired case: no route nulls a
+      //      `password_hash`, and §UC-ML-003's eligibility refuses to mail a link to a
+      //      friend who has none, so this is the one way to reach the second half of
+      //      §UC-ML-005 step 2 — THE BURN COMMITS EVEN WHEN THE ACCOUNT TURNS OUT TO BE
+      //      INELIGIBLE (returning null from the callback is not a rollback). Before
+      //      ML-T7 that property rode on case (2); rule 3's delete took that carrier
+      //      away, so it gets its own.
+      const nopwFriend = await api.cleanFriend('nopw', uniq)
+      const nopwToken = await captureToken(api, stub, nopwFriend.username)
+      withDb(backend.dbPath, (db) =>
+        db.prepare('UPDATE friends SET password_hash = NULL WHERE id = ?').run(nopwFriend.id))
+      bodies.push(await expectNeutral401(await api.redeem(nopwToken), 'credential-less friend'))
+      expect(
+        outstandingRows(backend.dbPath, nopwFriend.id)[0].used_at,
+        'burned anyway — a token that reached an ineligible account must not stay redeemable'
+      ).toBeTruthy()
+      expect(
+        withDb(backend.dbPath, (db) =>
+          db.prepare("SELECT COUNT(*) AS n FROM friend_sessions WHERE friend_id = ? AND via = 'magic_link'")
+            .get(nopwFriend.id).n),
+        'and no magic-link session was minted for the credential-less friend'
+      ).toBe(0)
+
+      // (2c) INACTIVE, reached with a LIVE token — §UC-ML-005's `active = 1` gate.
+      //
+      // ⚠ THIS CASE EXISTS BECAUSE ML-T7 RETIRED ITS ONLY OTHER CARRIER. Case (2) above
+      // used to reach this gate; §UC-ML-009 rule 3 now deletes the outstanding row AT
+      // deactivation, so "outstanding token + inactive friend" is unproducible through
+      // any API path — and with (2) zero-row, dropping `AND active = 1` from
+      // `redeemLoginToken`'s friend SELECT left the WHOLE SUITE GREEN. The rule 3
+      // deletes are conservative hygiene; THIS is the load-bearing gate, and hygiene
+      // must never be the reason a gate goes unpinned (see the comment on
+      // `invalidateLoginTokens`).
+      //
+      // Manufactured in the DB under the same §UC-ML-010 obligation-2 licence as the
+      // expired case and (2b): the admin route would delete the row on its way past.
+      // Mutation-verified — with `AND active = 1` removed this case returns 200 with a
+      // session, and it is the only test in the suite that reddens.
+      const offFriend = await api.cleanFriend('inactive', uniq)
+      const offToken = await captureToken(api, stub, offFriend.username)
+      withDb(backend.dbPath, (db) =>
+        db.prepare('UPDATE friends SET active = 0 WHERE id = ?').run(offFriend.id))
+      bodies.push(await expectNeutral401(await api.redeem(offToken), 'inactive friend'))
+      expect(
+        outstandingRows(backend.dbPath, offFriend.id)[0].used_at,
+        'burned anyway — the `active = 1` gate refuses AFTER the claim, not instead of it'
+      ).toBeTruthy()
+      expect(
+        withDb(backend.dbPath, (db) =>
+          db.prepare("SELECT COUNT(*) AS n FROM friend_sessions WHERE friend_id = ? AND via = 'magic_link'")
+            .get(offFriend.id).n),
         'and no magic-link session was minted for the inactive friend'
       ).toBe(0)
 
@@ -962,10 +1025,10 @@ test.describe('UC-ML-005 — redemption (throwaway backend, modern mode)', () =>
       ).toBeFalsy()
 
       // ⚠ THE cross-class assertion, and it is load-bearing precisely because
-      // `expectNeutral401` no longer compares bodies to the literal: each of the seven
+      // `expectNeutral401` no longer compares bodies to the literal: each of the nine
       // classes above could have answered 401-with-one-key and a DIFFERENT sentence,
       // and only this catches it.
-      expectOneNeutralShape(bodies, 'all seven failure classes')
+      expectOneNeutralShape(bodies, 'all nine failure classes')
     })
   })
 })
@@ -2302,6 +2365,269 @@ test.describe('UC-ML-008 — the non-blocking prompt (throwaway backend, modern 
       await page.reload()
       await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
       await expect(magicPrompt(page), 'nor after a reload').toHaveCount(0)
+    })
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ML-T7 · 09 §UC-ML-009 rules 2-5 — THE INVALIDATION MATRIX
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Rule 1 (a new request kills its predecessors) is ML-T2's and is pinned by
+// "cooldown, predecessor invalidation and the opportunistic GC" above; the matrix row
+// for it is repeated here in its ACCEPTANCE form (the first mail's token 401s, the
+// second redeems) because that round trip needs redemption, which did not exist yet
+// when ML-T2 wrote its DB-level assertion.
+//
+// ⚠ WHAT MAKES THESE TESTS NON-VACUOUS DIFFERS PER ROW, and it matters:
+//
+//  • password change / admin reset / setup-credentials — redemption's OWN gates
+//    (§UC-ML-005: `active = 1`, a non-null `password_hash`) are all still satisfied
+//    after the event, so the 401 can ONLY come from the row having been deleted. The
+//    401 is the whole proof.
+//  • deactivation — redemption's `active = 1` check refuses it anyway, so the 401
+//    proves nothing about the delete. The DB assertion (zero outstanding rows) is the
+//    only thing that can see rule 3, which is why every row below asserts BOTH.
+//
+// ⚠ The deletes are CONSERVATIVE HYGIENE, not the load-bearing gate — do not read a
+// green row here as permission to relax §UC-ML-005's own `active`/`password_hash`
+// checks (see the comments at the call sites in `friends.js`).
+
+/** Rows for this friend that are still redeemable (`used_at IS NULL`). */
+function outstandingOnly(dbPath, friendId) {
+  return outstandingRows(dbPath, friendId).filter((r) => r.used_at === null || r.used_at === undefined)
+}
+
+/** Age every row for this friend past the 60 s per-friend cooldown (§UC-ML-003). */
+function ageCooldown(dbPath, friendId) {
+  withDb(dbPath, (db) =>
+    db.prepare('UPDATE login_tokens SET created_at = ? WHERE friend_id = ?')
+      .run(Date.now() - 61_000, friendId))
+}
+
+test.describe('UC-ML-009 rules 2-5 — the invalidation matrix (throwaway backend, modern mode)', () => {
+  test('rule 2 — a friend changing their password kills the outstanding link (and only their own)', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const friend = await api.cleanFriend('chpw', uniq)
+      // A BYSTANDER with a link of their own, outstanding across the whole test: the
+      // delete is scoped `WHERE friend_id = ?`, and a missing scope would pass every
+      // other assertion in this file.
+      const bystander = await api.cleanFriend('chpwby', uniq)
+      const bystanderToken = await captureToken(api, stub, bystander.username)
+
+      const token = await captureToken(api, stub, friend.username)
+      expect(outstandingOnly(backend.dbPath, friend.id).length, 'the link is outstanding first').toBe(1)
+
+      const { token: session } = await api.passwordLogin(friend.username, CHOSEN_PASSWORD)
+      const changed = await ctx.put(`/api/friends/${friend.id}/change-password`, {
+        headers: { Authorization: `Bearer ${session}` },
+        data: { currentPassword: CHOSEN_PASSWORD, newPassword: 'afterChange77' },
+      })
+      expect(changed.status(), 'the password change itself succeeds').toBe(200)
+
+      expect(
+        outstandingOnly(backend.dbPath, friend.id).length,
+        'the outstanding row was deleted alongside the password_hash write'
+      ).toBe(0)
+      // ⚠ The account is still active and still has a password_hash, so §UC-ML-005's
+      // own gates would have let this through — the 401 is the delete, nothing else.
+      const body = await expectNeutral401(await api.redeem(token), 'after a password change')
+      expect(body, 'and it is the ONE neutral sentence').toBe(NEUTRAL_401_BODY)
+
+      expect(
+        outstandingOnly(backend.dbPath, bystander.id).length,
+        "another friend's outstanding link is untouched"
+      ).toBe(1)
+      expect((await api.redeem(bystanderToken)).status(), 'and it still redeems').toBe(200)
+    })
+  })
+
+  test('rule 2 — an admin reset-password kills the outstanding link', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const friend = await api.cleanFriend('reset', uniq)
+      const token = await captureToken(api, stub, friend.username)
+      expect(outstandingOnly(backend.dbPath, friend.id).length).toBe(1)
+
+      await api.setPassword(friend.id, 'adminReset123')
+
+      expect(
+        outstandingOnly(backend.dbPath, friend.id).length,
+        'the admin reset deleted the outstanding row'
+      ).toBe(0)
+      const body = await expectNeutral401(await api.redeem(token), 'after an admin reset')
+      expect(body).toBe(NEUTRAL_401_BODY)
+    })
+  })
+
+  test('rule 2 — setup-credentials kills the outstanding link (password_hash without a username IS reachable)', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      // ⚠ THE REACHABILITY ARGUMENT, spelled out because it is not obvious.
+      // `setup-credentials` 409s once BOTH `password_hash` and `username` are set, and
+      // §UC-ML-003's eligibility refuses a friend with no `password_hash` — so the one
+      // state in which an outstanding link and a live setup-credentials route coexist
+      // is PASSWORD BUT NO USERNAME, which the admin reset route creates. Such a friend
+      // cannot password-log-in (no username), so the magic link is their ONLY way to
+      // hold a session — i.e. the route is reached exactly by the recovery flow this
+      // module ships. Not a hypothetical.
+      const email = `ml7.setup.${uniq}@example.test`
+      const friend = await api.createFriend({ name: `ML7 setup ${uniq}`, email })
+      await api.setPassword(friend.id, INITIAL_PASSWORD)
+
+      const firstToken = await captureToken(api, stub, email)
+      const redeemed = await api.redeem(firstToken)
+      expect(redeemed.status(), 'the link is the only way in for a username-less friend').toBe(200)
+      const session = (await redeemed.json()).token
+
+      // A second link, so one is OUTSTANDING while the session does the write.
+      ageCooldown(backend.dbPath, friend.id)
+      const token = await captureToken(api, stub, email)
+      expect(outstandingOnly(backend.dbPath, friend.id).length).toBe(1)
+
+      const setup = await ctx.post(`/api/friends/${friend.id}/setup-credentials`, {
+        headers: { Authorization: `Bearer ${session}` },
+        data: { username: `e2e_ml7_setup_${uniq}`.toLowerCase().slice(0, 30), password: 'chosenByMe9' },
+      })
+      expect(setup.status(), 'setup-credentials succeeds').toBe(200)
+
+      expect(
+        outstandingOnly(backend.dbPath, friend.id).length,
+        'the outstanding row went with the password_hash write'
+      ).toBe(0)
+      // ⚠ The BURNED row survives, and that is the predicate talking: the delete is
+      // scoped `used_at IS NULL`, matching ML-T2's predecessor invalidation. It keeps
+      // the `created_at` of burned rows, which a blanket delete would discard — it does
+      // NOT make the 60 s cooldown survive a password change (the cooldown reads
+      // `MAX(created_at)` over all rows, and the outstanding row it just deleted is
+      // normally the newest one). See the note on `invalidateLoginTokens`.
+      expect(
+        outstandingRows(backend.dbPath, friend.id).length,
+        'the already-used row is left alone (the delete is scoped to outstanding rows)'
+      ).toBe(1)
+      const body = await expectNeutral401(await api.redeem(token), 'after setup-credentials')
+      expect(body).toBe(NEUTRAL_401_BODY)
+    })
+  })
+
+  test('rule 3 — deactivation deletes the outstanding link as well as the sessions', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const friend = await api.cleanFriend('deact', uniq)
+      const token = await captureToken(api, stub, friend.username)
+      expect(outstandingOnly(backend.dbPath, friend.id).length).toBe(1)
+
+      await api.deactivate(friend.id)
+
+      // ⚠ THE ONLY ASSERTION THAT CAN SEE RULE 3. The 401 below is produced by
+      // §UC-ML-005's own `active = 1` check whether or not the row was deleted — it is
+      // reasserted because it is the spec's acceptance criterion, not because it is
+      // evidence of the delete.
+      expect(
+        outstandingOnly(backend.dbPath, friend.id).length,
+        'deactivation deleted the outstanding row'
+      ).toBe(0)
+      const body = await expectNeutral401(await api.redeem(token), 'after deactivation')
+      expect(body).toBe(NEUTRAL_401_BODY)
+
+      // Belt-and-braces both ways: an inactive friend cannot request a new one either.
+      const before = stub.requests.length
+      expect(await (await api.request(friend.username)).text(), 'still the neutral 200').toBe(NEUTRAL_BODY)
+      await expectNoFurtherCalls(stub, before)
+    })
+  })
+
+  test('rule 1 (acceptance form) — request twice: the first mail 401s, the second redeems', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const friend = await api.cleanFriend('twice', uniq)
+      const first = await captureToken(api, stub, friend.username)
+      ageCooldown(backend.dbPath, friend.id)
+      const second = await captureToken(api, stub, friend.username)
+      expect(second, 'a fresh token, not a re-send').not.toBe(first)
+
+      const body = await expectNeutral401(await api.redeem(first), "the first mail's token")
+      expect(body).toBe(NEUTRAL_401_BODY)
+      expect((await api.redeem(second)).status(), 'the newest link is the redeemable one').toBe(200)
+    })
+  })
+
+  test('rule 4 — a hard delete takes the tokens with it (FK cascade, foreign_keys = ON)', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const friend = await api.cleanFriend('cascade', uniq)
+      const token = await captureToken(api, stub, friend.username)
+      expect(outstandingRows(backend.dbPath, friend.id).length, 'a row exists to cascade').toBe(1)
+
+      // No explicit `DELETE FROM login_tokens` exists anywhere in the delete route —
+      // `ON DELETE CASCADE` plus the `foreign_keys = ON` pragma is the whole mechanism.
+      const removed = await ctx.delete(`/api/friends/${friend.id}`, { headers: { 'X-Admin-Token': adminToken } })
+      expect(removed.status(), 'the friend is hard-deleted').toBe(204)
+
+      expect(
+        outstandingRows(backend.dbPath, friend.id).length,
+        'the login_tokens row cascaded away — no orphan is left behind'
+      ).toBe(0)
+      const body = await expectNeutral401(await api.redeem(token), "a deleted friend's token")
+      expect(body).toBe(NEUTRAL_401_BODY)
+    })
+  })
+
+  test('rule 5 — a USED row is collected opportunistically once expired; no scheduler exists', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      // The EXPIRED-row half of rule 5 is pinned by the cooldown/GC test above. This is
+      // the USED half: a burned row is not deleted at redemption (the `used_at` stamp
+      // IS the single-use mechanism), so the GC — `DELETE FROM login_tokens WHERE
+      // expires_at < ?` on the request path — is the only thing that ever reclaims it.
+      const friend = await api.cleanFriend('gcused', uniq)
+      const token = await captureToken(api, stub, friend.username)
+      expect((await api.redeem(token)).status()).toBe(200)
+
+      const burned = outstandingRows(backend.dbPath, friend.id)
+      expect(burned.length, 'the burned row survives redemption').toBe(1)
+      expect(burned[0].used_at, 'stamped, not deleted').toBeTruthy()
+
+      // Expire it, then let ANY request run the opportunistic GC. A different friend's
+      // request is used on purpose: the GC is table-wide, not per-friend.
+      withDb(backend.dbPath, (db) =>
+        db.prepare('UPDATE login_tokens SET expires_at = ? WHERE id = ?').run(Date.now() - 1_000, burned[0].id))
+      const sweeper = await api.cleanFriend('gcsweep', uniq)
+      await captureToken(api, stub, sweeper.username)
+
+      expect(
+        outstandingRows(backend.dbPath, friend.id).length,
+        'the expired-and-used row was collected by another friend\'s request'
+      ).toBe(0)
     })
   })
 })

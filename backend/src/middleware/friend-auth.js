@@ -97,6 +97,39 @@ export function invalidateFriendSessions(friendId) {
   db.prepare('DELETE FROM friend_sessions WHERE friend_id = ?').run(friendId);
 }
 
+// Drop every OUTSTANDING magic link for a friend (09 §UC-ML-009 rules 2-3, ML-T7).
+// THE one home for this delete outside `magic-link.js`'s own predecessor invalidation
+// — every caller is a `friends.password_hash` write or a deactivation, and each one
+// runs it INSIDE the same transaction as that write (see the call sites in
+// `friends.js`). Rationale: a password change is the "I have secured my account"
+// event, so a link mailed before it must not outlive it.
+//
+// ⚠ THIS IS CONSERVATIVE HYGIENE, NOT THE LOAD-BEARING GATE. Redemption's own checks
+// (§UC-ML-005: `active = 1` and a non-null `password_hash`, re-read inside the burn
+// transaction in `magic-link.js`) are what actually refuse an inactive or ineligible
+// friend, and an inactive friend can neither request nor redeem. Do not relax those
+// on the strength of these deletes.
+//
+// ⚠ Scoped `used_at IS NULL`, matching `magic-link.js`'s predecessor invalidation
+// verbatim: "outstanding" is this module's word for a redeemable row, and a burned row
+// is already unredeemable (the `used_at IS NULL` predicate in the redeem UPDATE refuses
+// it), so deleting it would buy nothing. What the scope preserves is exactly the
+// `created_at` of BURNED rows, which a blanket delete would additionally discard.
+//
+// ⚠ IT DOES NOT MAKE THE 60 s COOLDOWN SURVIVE THIS EVENT, and do not read it that
+// way. The cooldown is `MAX(created_at)` over ALL of the friend's rows, and in the
+// normal sequence (request → password change) the newest row IS the outstanding one —
+// so the scoped delete resets the cooldown exactly as a blanket delete would, and a
+// request immediately afterwards mints a new row inside the 60 s window (measured).
+// That is harmless: every route calling this requires the friend's own session or an
+// admin token, so there is no anonymous abuse vector behind it.
+//
+// Burned rows are reclaimed by the opportunistic GC once they expire (§UC-ML-009
+// rule 5; no scheduler exists in this stack and none is added).
+export function invalidateLoginTokens(friendId) {
+  db.prepare('DELETE FROM login_tokens WHERE friend_id = ? AND used_at IS NULL').run(friendId);
+}
+
 // Validate friend authentication from request headers
 // Returns { valid: true, friendId } on success, or { error, status } on failure
 export function validateFriendAuth(req) {
