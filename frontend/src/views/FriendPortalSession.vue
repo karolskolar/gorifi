@@ -104,6 +104,10 @@ const emit = defineEmits([
   'token',
   // UC-FL-012's gate is satisfied; the parent may drop the stashed plaintext.
   'forced-complete',
+  // 09 §UC-ML-008 "Teraz nie": persist `magicPromptDismissed` into the stored payload.
+  // ⚠ An emit rather than a write, for the same reason `token` is one — the parent is
+  // the single owner of localStorage, and this component must never touch it.
+  'magic-prompt-dismissed',
 ])
 
 // ---------------------------------------------------------------------------
@@ -249,6 +253,51 @@ const forcedNewPassword = ref('')
 const forcedNewPasswordConfirm = ref('')
 const forcedError = ref('')
 const forcedSaving = ref(false)
+
+// ---------------------------------------------------------------------------
+// Magic-link session provenance (09 §UC-ML-008)
+// ---------------------------------------------------------------------------
+
+// "This session was born of a magic link AND still carries the server's
+// `currentPassword` waiver." Seeded ONCE from the handshake, like every other piece of
+// session state in this file, so it dies with the instance — the six-leak rule.
+//
+// ⚠ The `!mustChangePassword` term is the resolved-conflict-#4 suppression, and it
+// belongs in the SEED rather than in a computed over `props.entry`. In the forced flow
+// the friend never reaches the profile modal's password fold (the gate is
+// focus-trapped and non-dismissable), and satisfying that gate re-mints with NULL
+// `via` — so from the very first paint to the last, a forced session genuinely has no
+// waiver to offer. Reading the prop reactively instead would flip this to `true` the
+// moment `onForcedComplete` clears it upstream, i.e. it would show the prompt exactly
+// once the waiver was gone: the one state it must never appear in.
+//
+// It is cleared by the two writers that consume the waiver — `changePassword()` and
+// `submitForcedPasswordChange()` — because both re-mint, and the parent's `onToken`
+// drops the same flag from the stored payload in the same tick. Keeping the two in
+// step is what stops the modal hiding a field the server has started requiring again.
+const magicLinkSession = ref(!!props.entry?.viaMagicLink && !props.entry?.mustChangePassword)
+
+// Dismissal is a SIBLING of the provenance, never a replacement for it: "Teraz nie"
+// silences the invitation, it does not retire the waiver, so the hidden
+// current-password field must survive a dismissal. Seeded from the stored payload so a
+// dismissal made before a reload is still in force after it.
+const magicPromptDismissed = ref(!!props.entry?.magicPromptDismissed)
+
+// §UC-ML-008's visibility rule, verbatim: `viaMagicLink && !magicPromptDismissed`.
+const showMagicPrompt = computed(() => magicLinkSession.value && !magicPromptDismissed.value)
+
+function dismissMagicPrompt() {
+  magicPromptDismissed.value = true
+  // The ref alone would die with the reload, which is the exact case a dismissal is
+  // for; the parent persists it into `gorifi_friend_auth`.
+  emit('magic-prompt-dismissed')
+}
+
+/** The prompt's call to action: the EXISTING change-password UI, already unfolded. */
+function openMagicPasswordChange() {
+  openProfileModal()
+  showPasswordChange.value = true
+}
 
 // Invite modal
 const showInviteModal = ref(false)
@@ -568,7 +617,13 @@ async function changePassword() {
   changePasswordError.value = ''
   changePasswordSuccess.value = ''
 
-  if (!changeCurrentPassword.value) {
+  // ⚠ 09 §UC-ML-008 — CONDITIONAL, because the field it guards is conditionally
+  // hidden. On a magic-link session the friend by definition does not know the current
+  // password, so demanding it client-side would make the waiver unreachable from the
+  // one UI it exists for. The SERVER is authoritative regardless: it reads
+  // `friend_sessions.via` itself, so a client that skipped this check without the
+  // waiver still gets a 401 it renders in the banner below.
+  if (!magicLinkSession.value && !changeCurrentPassword.value) {
     changePasswordError.value = 'Zadajte aktuálne heslo'
     return
   }
@@ -590,6 +645,12 @@ async function changePassword() {
     if (result.token) {
       emit('token', { token: result.token, expiresAt: result.expiresAt })
     }
+
+    // ⚠ 09 §UC-ML-008 — the change re-minted with NULL `via`, so the waiver is gone
+    // server-side. Clearing it here in the same tick brings the "Aktuálne heslo" field
+    // back and retires the prompt for good; the parent's `onToken` (already emitted
+    // above) drops the matching flags from the stored payload, so a reload agrees.
+    magicLinkSession.value = false
 
     changePasswordSuccess.value = 'Heslo bolo úspešne zmenené'
     changeCurrentPassword.value = ''
@@ -685,6 +746,15 @@ async function saveCredentials() {
   try {
     const result = await api.setupCredentials(props.friendId, username, setupPassword.value)
 
+    // ⚠ This is the THIRD `onToken` emitter and — unlike `changePassword()` and
+    // `submitForcedPasswordChange()` — it deliberately does NOT clear
+    // `magicLinkSession` (09 §UC-ML-008). It cannot need to: §UC-ML-003 eligibility
+    // requires a `password_hash`, so a magic-link session implies credentials already
+    // exist, and `POST /friends/:id/setup-credentials` answers 409 in that case and
+    // emits no token at all. Even if it were somehow reached, the parent's `onToken`
+    // drops the stored flags anyway, so the two halves stay consistent — the local ref
+    // would merely lag until the next load. Recorded rather than "fixed" so a future
+    // reader does not mistake the asymmetry for an oversight. (ML-T6 review.)
     if (result.token) {
       emit('token', { token: result.token, expiresAt: result.expiresAt })
     }
@@ -736,6 +806,10 @@ async function submitForcedPasswordChange() {
     forcedNewPassword.value = ''
     forcedNewPasswordConfirm.value = ''
     forcedPasswordChange.value = false
+    // 09 §UC-ML-008: this change re-minted with NULL `via` too. `magicLinkSession` is
+    // already false in the forced flow (see its seed), so this is belt-and-braces
+    // against a future edit that loosens the seed — not a live state change.
+    magicLinkSession.value = false
     // The parent drops the stashed plaintext password with this.
     emit('forced-complete')
   } catch (e) {
@@ -849,6 +923,43 @@ defineExpose({ openProfileModal, openInviteModal })
       >
         <NeoIcon name="close" />
       </button>
+    </div>
+
+    <!-- The magic-link prompt (09 §UC-ML-008).
+
+         ⚠ PLAIN `.banner` — INFORMATIONAL, per 02 §UC-DS-013's semantic grammar.
+         Not `danger`, not `warn`: the friend just logged in successfully and nothing
+         is wrong. It is an invitation, and it is non-blocking by product decision
+         (resolved conflict #4: a magic link is a LOGIN, not a reset — the old password
+         keeps working until they change it).
+
+         ⚠ Suppressed ENTIRELY in the forced flow — see `magicLinkSession`'s seed. That
+         is not merely tidiness: 03 §UC-FL-012's gate is focus-trapped, so a banner
+         behind it would be an unreachable control offering a choice the friend does
+         not have. -->
+    <div v-if="showMagicPrompt" class="banner mb-5" data-testid="magic-prompt">
+      <span class="dot"></span>
+      <div style="min-width:0;display:flex;flex-direction:column;gap:10px">
+        <div>Prihlásenie cez e-mailový odkaz prebehlo úspešne. Chcete si nastaviť nové heslo?</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button
+            type="button"
+            class="btn sm dark"
+            data-testid="magic-prompt-set"
+            @click="openMagicPasswordChange"
+          >
+            Nastaviť nové heslo
+          </button>
+          <button
+            type="button"
+            class="btn ghost sm"
+            data-testid="magic-prompt-dismiss"
+            @click="dismissMagicPrompt"
+          >
+            Teraz nie
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- Balance Card -->
@@ -1330,7 +1441,13 @@ defineExpose({ openProfileModal, openInviteModal })
           <div style="min-width:0">{{ changePasswordSuccess }}</div>
         </div>
 
-        <div>
+        <!-- ⚠ 09 §UC-ML-008 — CONDITIONALLY HIDDEN, never removed. A friend who came
+             in on a magic link does not know this password; that is why they used the
+             link. `portal-profile-modal.spec.js` pins this modal heavily and passes
+             UNCHANGED precisely because `magicLinkSession` is false on every
+             password-login session, so that spec renders the byte-identical markup it
+             always did. Only a redeemed session sees the difference. -->
+        <div v-if="!magicLinkSession">
           <label class="field-lbl" for="pp-profile-current-password">Aktuálne heslo</label>
           <input
             id="pp-profile-current-password"
@@ -1361,10 +1478,13 @@ defineExpose({ openProfileModal, openInviteModal })
             @keyup.enter="changePassword()"
           />
         </div>
+        <!-- ⚠ The `!changeCurrentPassword` term drops WITH the field (§UC-ML-008).
+             Leaving it in would leave the submit permanently disabled on exactly the
+             sessions the waiver exists for — the form would render and never submit. -->
         <button
           type="button"
           class="btn sm dark"
-          :disabled="changePasswordSaving || !changeCurrentPassword || !changeNewPassword || !changeNewPasswordConfirm"
+          :disabled="changePasswordSaving || (!magicLinkSession && !changeCurrentPassword) || !changeNewPassword || !changeNewPasswordConfirm"
           @click="changePassword()"
         >
           {{ changePasswordSaving ? 'Mením heslo...' : 'Zmeniť heslo' }}

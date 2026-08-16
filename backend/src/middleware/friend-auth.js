@@ -67,6 +67,31 @@ export function presentedSessionExpiry(req) {
   return row ? row.expires_at : null;
 }
 
+// The PROVENANCE of the session row the request is presenting (`friend_sessions.via`),
+// or null when there is none — no Bearer header, an unknown/expired token, or a row
+// minted by an ordinary login (09 §UC-ML-001: `via` is NULL everywhere except ML-T3's
+// redemption, which writes 'magic_link').
+//
+// ⚠ THE ONLY INPUT TO §UC-ML-008's `currentPassword` WAIVER, and it reads the SESSION
+// ROW on purpose. A body field would be a one-line bypass of password proof for anyone
+// holding any friend session — which is precisely why resolved conflict #5 chose a
+// provenance COLUMN over a parallel session type or a client flag. Nothing here may
+// ever consult `req.body`.
+//
+// Value-agnostic, exactly like `createFriendSession`'s `via`: it hands back whatever
+// the column holds so module 10 can add 'google' without touching this reader. The
+// `expires_at > ?` predicate keeps it consistent with `validateFriendAuth` — an expired
+// row authenticates nothing, so it must not carry a waiver either. That is the second
+// of the waiver's two deaths (the first being the NULL-via re-mint on change-password).
+export function presentedSessionVia(req) {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  const row = db
+    .prepare('SELECT via FROM friend_sessions WHERE token = ? AND expires_at > ?')
+    .get(authHeader.slice(7), Date.now());
+  return row ? row.via : null;
+}
+
 // Invalidate all sessions for a friend
 export function invalidateFriendSessions(friendId) {
   db.prepare('DELETE FROM friend_sessions WHERE friend_id = ?').run(friendId);

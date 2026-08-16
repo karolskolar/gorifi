@@ -1833,3 +1833,475 @@ test.describe('UC-ML-006 — LEGACY mode renders no recovery UI at all', () => {
     await expect(page.getByText(RECOVERY_SUCCESS)).toHaveCount(0)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ML-T6 — 09 §UC-ML-008 (the `currentPassword` waiver + the non-blocking prompt)
+// and resolved conflicts #4 and #5.
+//
+// ⚠ APPENDED HERE for the reason ML-T2's header set out and ML-T3/T4/T5 followed:
+// §UC-ML-010 obligation 1 names this file for the UI criteria of §UC-ML-006/007/008,
+// and — load-bearing — a magic-link SESSION can only be produced by redeeming a token,
+// whose only observable source is the stub-captured mail body. Every test below
+// therefore has to sit inside the same `withMailHarness` + `makeApi` scaffolding.
+// Nothing above this line is touched.
+//
+// The two halves, and why neither is optional:
+//
+//  • THE SERVER WAIVER. Without it the prompt is a dead end: a friend who came in on a
+//    link by definition does not know their password, so `PUT /friends/:id/change-password`
+//    would answer "Aktuálne heslo nie je správne" to the one action the whole module
+//    exists to enable. ⚠ The waiver keys on the PRESENTING SESSION ROW's `via`, never on
+//    a body field — `a body-supplied via/viaMagicLink` below is the bypass test that
+//    makes that rule an assertion instead of a comment.
+//  • THE PROMPT. Rendered while `viaMagicLink && !magicPromptDismissed` in the stored
+//    payload, suppressed entirely when `mustChangePassword` routed into 03 §UC-FL-012's
+//    forced gate (resolved conflict #4), and retired for good by the re-mint — which is
+//    the same event that retires the waiver, so the two can never disagree.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ⚠ COPY STATUS: PROPOSED, NOT SIGNED (the consolidated §UC-ML-006 OPEN).
+const PROMPT_TEXT =
+  'Prihlásenie cez e-mailový odkaz prebehlo úspešne. Chcete si nastaviť nové heslo?'
+const PROMPT_SET = 'Nastaviť nové heslo'
+const PROMPT_DISMISS = 'Teraz nie'
+
+// The repo's existing message for a failed current-password proof. Asserting it (rather
+// than a bare 401) is what makes "the waiver is RETIRED" distinguishable from "the token
+// stopped working".
+const WRONG_CURRENT = 'Aktuálne heslo nie je správne'
+
+const magicPrompt = (page) => page.getByTestId('magic-prompt')
+
+/** Redeem a freshly mailed link for `friend` and hand back the raw token. */
+async function redeemInBrowser(page, backend, api, stub, friend) {
+  const token = await captureToken(api, stub, friend.username)
+  await page.goto(`${backend.baseUrl}/magic/${token}`)
+  await expect(page).toHaveURL(`${backend.baseUrl}/`)
+  return token
+}
+
+/** Open the profile modal and unfold its password section.
+ *
+ *  The appbar `.titles` block is the trigger (UC-FL-004), and `hydrateCurrentFriend`
+ *  is fire-and-forget — the password fold is gated on `friend?.hasCredentials`, which
+ *  only arrives with the profile GET, so wait for the toggle rather than the dialog. */
+async function openPasswordFold(page) {
+  await page.locator('.appbar .titles').click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.locator('.m-title')).toHaveText('Upraviť profil')
+  await dialog.getByRole('button', { name: 'Zmeniť heslo' }).click()
+  return dialog
+}
+
+test.describe('UC-ML-008 — the server waiver (throwaway backend, modern mode)', () => {
+  test.beforeEach(() => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+  })
+
+  test('a magic-link session sets a new password with NO currentPassword — and the re-mint retires the waiver', async () => {
+    test.setTimeout(120_000)
+
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const friend = await api.cleanFriend('waiver', uniq)
+      const token = await captureToken(api, stub, friend.username)
+
+      const redeemed = await ctx.post('/api/magic-link/redeem', { data: { token } })
+      expect(redeemed.status(), 'the link redeems').toBe(200)
+      const session = await redeemed.json()
+      expect(session.viaMagicLink, 'the 200 declares the provenance').toBe(true)
+
+      // ⚠ The session row really carries the provenance the waiver keys on. Read from
+      // the DB, not inferred from the response, because the response field and the
+      // column are written by different code.
+      withDb(backend.dbPath, (db) => {
+        const row = db.prepare('SELECT via FROM friend_sessions WHERE token = ?').get(session.token)
+        expect(row.via, "the presenting session row is the waiver's only input").toBe('magic_link')
+      })
+
+      // ── the waiver: no currentPassword at all ──────────────────────────────
+      const NEW_PASSWORD = 'magicWaived123'
+      const changed = await ctx.put(`/api/friends/${friend.id}/change-password`, {
+        headers: { Authorization: `Bearer ${session.token}` },
+        data: { newPassword: NEW_PASSWORD },
+      })
+      expect(changed.status(), 'a magic-link session may set a password it cannot prove').toBe(200)
+      const remint = await changed.json()
+      expect(remint.token, 'the change re-mints a session').toBeTruthy()
+
+      // The password really moved — this is the non-vacuity gate for everything above.
+      const oldLogin = await ctx.post('/api/friends/auth', {
+        data: { username: friend.username, password: CHOSEN_PASSWORD },
+      })
+      expect(oldLogin.status(), 'the old password stops working').toBe(401)
+      await api.passwordLogin(friend.username, NEW_PASSWORD)
+
+      // ── the waiver DIES with the re-mint (§UC-ML-002 item 2) ───────────────
+      withDb(backend.dbPath, (db) => {
+        const row = db.prepare('SELECT via FROM friend_sessions WHERE token = ?').get(remint.token)
+        expect(row.via, 'the re-minted session carries NULL via — that is the retirement').toBe(null)
+      })
+
+      const secondTry = await ctx.put(`/api/friends/${friend.id}/change-password`, {
+        headers: { Authorization: `Bearer ${remint.token}` },
+        data: { newPassword: 'anotherOne123' },
+      })
+      expect(secondTry.status(), 'one successful change puts the account back on password proof').toBe(401)
+      expect((await secondTry.json()).error).toBe(WRONG_CURRENT)
+
+      // ...and the same session succeeds the moment it proves the current password, so
+      // the 401 above is the waiver being gone, not the token being dead.
+      const withProof = await ctx.put(`/api/friends/${friend.id}/change-password`, {
+        headers: { Authorization: `Bearer ${remint.token}` },
+        data: { currentPassword: NEW_PASSWORD, newPassword: 'anotherOne123' },
+      })
+      expect(withProof.status(), 'the re-minted session is alive — it just has to prove').toBe(200)
+    })
+  })
+
+  // ⚠⚠ THE BYPASS TEST. `via` is a SESSION-ROW property; if the endpoint ever consulted
+  // the request body for it, anyone holding any friend session could set a new password
+  // without knowing the old one — password proof would be optional app-wide, opt-out by
+  // the attacker. This is exactly the shape resolved conflict #5 chose a provenance
+  // COLUMN over a body flag to prevent.
+  test('a body-supplied `via` / `viaMagicLink` cannot buy the waiver', async () => {
+    test.setTimeout(120_000)
+
+    await withMailHarness(MAIL_ENV, async ({ ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const friend = await api.cleanFriend('bypass', uniq)
+      // A PASSWORD login — `via` is NULL on this row, so the waiver must not apply.
+      const { token } = await api.passwordLogin(friend.username, CHOSEN_PASSWORD)
+
+      const forgedBodies = [
+        { newPassword: 'forged123456', via: 'magic_link' },
+        { newPassword: 'forged123456', viaMagicLink: true },
+        { newPassword: 'forged123456', session: { via: 'magic_link' } },
+        { newPassword: 'forged123456', currentPassword: '', via: 'magic_link', viaMagicLink: true },
+      ]
+      for (const data of forgedBodies) {
+        const res = await ctx.put(`/api/friends/${friend.id}/change-password`, {
+          headers: { Authorization: `Bearer ${token}` },
+          data,
+        })
+        expect(res.status(), `a body flag must not waive password proof: ${JSON.stringify(data)}`).toBe(401)
+        expect((await res.json()).error).toBe(WRONG_CURRENT)
+      }
+
+      // Nothing was written by any of them.
+      await api.passwordLogin(friend.username, CHOSEN_PASSWORD)
+      const forgedLogin = await ctx.post('/api/friends/auth', {
+        data: { username: friend.username, password: 'forged123456' },
+      })
+      expect(forgedLogin.status(), 'no forged body changed the password').toBe(401)
+
+      // Non-vacuity: this very session CAN change the password, with proof.
+      const honest = await ctx.put(`/api/friends/${friend.id}/change-password`, {
+        headers: { Authorization: `Bearer ${token}` },
+        data: { currentPassword: CHOSEN_PASSWORD, newPassword: 'honestOne123' },
+      })
+      expect(honest.status(), 'the endpoint still works for a proving caller').toBe(200)
+    })
+  })
+
+  // ⚠ THE SYMMETRIC CASE to the `currentPassword` type-guard (ML-T6 review finding).
+  // `!newPassword || newPassword.length < 8` accepted ANY object carrying a `length`,
+  // so `{"newPassword":{"length":12}}` reached `hashPassword`, which throws on a
+  // non-string ⇒ 500 `Nieco sa pokazilo` and a server-log entry for a merely malformed
+  // body. The waiver above is what made that path reachable WITHOUT password proof —
+  // own account only, so a wrong status and log noise rather than an authz hole, but
+  // the same defect class. Driven from a magic-link session precisely because that is
+  // the reachability the waiver introduced.
+  test('a malformed `newPassword` is a 400, not a 500 — and nothing else moved', async () => {
+    test.setTimeout(120_000)
+
+    await withMailHarness(MAIL_ENV, async ({ stub, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const friend = await api.cleanFriend('newpwshape', uniq)
+      const token = await captureToken(api, stub, friend.username)
+      const session = await (await ctx.post('/api/magic-link/redeem', { data: { token } })).json()
+      const auth = { Authorization: `Bearer ${session.token}` }
+      const TOO_SHORT = 'Nové heslo musí mať aspoň 8 znakov'
+
+      // The reported shape, plus the other non-strings that took the same 500 path.
+      for (const newPassword of [{ length: 12 }, { length: 99 }, 12345678, ['abcdefghij'], true]) {
+        const res = await ctx.put(`/api/friends/${friend.id}/change-password`, {
+          headers: auth,
+          data: { newPassword },
+        })
+        expect(res.status(), `malformed newPassword ${JSON.stringify(newPassword)} is a 400`).toBe(400)
+        // ⚠ THE SAME MESSAGE AS TODAY — three shipped specs pin this string
+        // (`portal-profile-modal.spec.js` ×2, `modern-login.spec.js`), and none was
+        // touched. A new message would have been a silent copy change.
+        expect((await res.json()).error).toBe(TOO_SHORT)
+      }
+
+      // ── NOTHING LOOSENED ────────────────────────────────────────────────────
+      // A short STRING still 400s with the identical message...
+      for (const newPassword of ['', 'short7c', undefined, null]) {
+        const res = await ctx.put(`/api/friends/${friend.id}/change-password`, {
+          headers: auth,
+          data: { newPassword },
+        })
+        expect(res.status(), `short/absent newPassword ${JSON.stringify(newPassword)} still 400s`).toBe(400)
+        expect((await res.json()).error).toBe(TOO_SHORT)
+      }
+
+      // ...and none of the refusals wrote anything: the session is still a live,
+      // still-waived magic-link session, and a VALID string still succeeds through it.
+      const ACCEPTED = 'shapeGuard123'
+      const ok = await ctx.put(`/api/friends/${friend.id}/change-password`, {
+        headers: auth,
+        data: { newPassword: ACCEPTED },
+      })
+      expect(ok.status(), 'a correct string still succeeds — and still without proof').toBe(200)
+      await api.passwordLogin(friend.username, ACCEPTED)
+    })
+  })
+
+  // The waiver relaxes ONE check and nothing else: `validateFriendAuth`'s ownership
+  // rule is untouched, so a magic-link session is still confined to its own account.
+  test('a magic-link session still cannot touch another friend\'s password', async () => {
+    test.setTimeout(120_000)
+
+    await withMailHarness(MAIL_ENV, async ({ stub, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const attacker = await api.cleanFriend('idora', uniq)
+      const victim = await api.cleanFriend('idorb', uniq)
+
+      const token = await captureToken(api, stub, attacker.username)
+      const session = await (await ctx.post('/api/magic-link/redeem', { data: { token } })).json()
+
+      const res = await ctx.put(`/api/friends/${victim.id}/change-password`, {
+        headers: { Authorization: `Bearer ${session.token}` },
+        data: { newPassword: 'takenOver123' },
+      })
+      expect(res.status(), 'ownership is unchanged by the waiver').toBe(403)
+      await api.passwordLogin(victim.username, CHOSEN_PASSWORD)
+    })
+  })
+})
+
+test.describe('UC-ML-008 — the non-blocking prompt (throwaway backend, modern mode)', () => {
+  test.beforeEach(() => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+  })
+
+  test('the prompt appears after redemption and survives a reload', async ({ page }) => {
+    test.setTimeout(120_000)
+
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const friend = await api.cleanFriend('prompt', uniq)
+      await redeemInBrowser(page, backend, api, stub, friend)
+
+      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expect(magicPrompt(page)).toBeVisible()
+      await expect(magicPrompt(page)).toContainText(PROMPT_TEXT)
+      await expect(magicPrompt(page).getByRole('button', { name: PROMPT_SET })).toHaveCount(1)
+      await expect(magicPrompt(page).getByRole('button', { name: PROMPT_DISMISS })).toHaveCount(1)
+
+      // ⚠ INFORMATIONAL, not `danger`/`warn` (02 §UC-DS-013's semantic grammar —
+      // nothing is wrong). A wrong modifier would still render a banner, so the class
+      // is asserted rather than the presence.
+      await expect(magicPrompt(page)).toHaveClass(/\bbanner\b/)
+      await expect(magicPrompt(page)).not.toHaveClass(/\b(danger|warn)\b/)
+
+      // "re-appears on every portal load of that session until dismissed"
+      await page.reload()
+      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expect(magicPrompt(page), 'the prompt survives a reload').toBeVisible()
+    })
+  })
+
+  test('"Teraz nie" hides it, and the dismissal survives a reload', async ({ page }) => {
+    test.setTimeout(120_000)
+
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const friend = await api.cleanFriend('dismiss', uniq)
+      await redeemInBrowser(page, backend, api, stub, friend)
+      await expect(magicPrompt(page)).toBeVisible()
+
+      await magicPrompt(page).getByRole('button', { name: PROMPT_DISMISS }).click()
+      await expect(magicPrompt(page)).toHaveCount(0)
+
+      // ⚠ PERSISTED, not merely hidden: a ref alone dies with the reload, which is the
+      // exact case a dismissal is for.
+      const stored = await page.evaluate(
+        () => JSON.parse(localStorage.getItem('gorifi_friend_auth') || 'null'))
+      expect(stored.magicPromptDismissed, 'the dismissal is written into the payload').toBe(true)
+      expect(stored.viaMagicLink, 'the provenance itself is untouched by a dismissal').toBe(true)
+
+      await page.reload()
+      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expect(magicPrompt(page), 'a dismissed prompt stays dismissed').toHaveCount(0)
+    })
+  })
+
+  test('"Nastaviť nové heslo" opens the modal WITHOUT the current-password field, and one field is enough', async ({ page }) => {
+    test.setTimeout(120_000)
+
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const friend = await api.cleanFriend('setnew', uniq)
+      await redeemInBrowser(page, backend, api, stub, friend)
+      await expect(magicPrompt(page)).toBeVisible()
+
+      await magicPrompt(page).getByRole('button', { name: PROMPT_SET }).click()
+      const dialog = page.getByRole('dialog')
+      await expect(dialog).toBeVisible()
+
+      // The password section is already unfolded — the prompt's whole promise.
+      await expect(dialog.locator('#pp-profile-new-password')).toBeVisible()
+      await expect(
+        dialog.getByLabel('Aktuálne heslo'),
+        'a friend who came in on a link does not know it — hidden, not disabled'
+      ).toHaveCount(0)
+
+      const NEW_PASSWORD = 'promptSet1234'
+      await dialog.locator('#pp-profile-new-password').fill(NEW_PASSWORD)
+      await dialog.locator('#pp-profile-new-password-confirm').fill(NEW_PASSWORD)
+      // ⚠ The submit's `:disabled` must drop its `!changeCurrentPassword` term with the
+      // field, or the waiver is unreachable from the UI it exists for.
+      const submit = dialog.getByRole('button', { name: 'Zmeniť heslo' })
+      await expect(submit).toBeEnabled()
+      await submit.click()
+      await expect(dialog.getByText('Heslo bolo úspešne zmenené')).toBeVisible()
+
+      // ── the banner never comes back ────────────────────────────────────────
+      await page.keyboard.press('Escape')
+      await expect(page.getByRole('dialog')).toHaveCount(0)
+      await expect(magicPrompt(page), 'the prompt is answered — it must not linger').toHaveCount(0)
+
+      const stored = await page.evaluate(
+        () => JSON.parse(localStorage.getItem('gorifi_friend_auth') || 'null'))
+      expect(
+        stored,
+        '⚠ THE ML-T3 SEAM: `onToken` must clear the flag, or the payload outlives the session property it describes'
+      ).not.toHaveProperty('viaMagicLink')
+
+      await page.reload()
+      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expect(magicPrompt(page), 'and it is gone for good').toHaveCount(0)
+
+      // The modal's field comes back too — the waiver is retired on both halves.
+      const dialog2 = await openPasswordFold(page)
+      await expect(dialog2.getByLabel('Aktuálne heslo')).toBeVisible()
+
+      // ── and the server agrees: the waiver is retired ───────────────────────
+      const again = await ctx.put(`/api/friends/${friend.id}/change-password`, {
+        headers: { Authorization: `Bearer ${stored.token}` },
+        data: { newPassword: 'yetAnother123' },
+      })
+      expect(again.status(), 'the re-minted session must prove the current password').toBe(401)
+      expect((await again.json()).error).toBe(WRONG_CURRENT)
+
+      // Non-vacuity: the password the friend chose in the modal is the live one.
+      await api.passwordLogin(friend.username, NEW_PASSWORD)
+    })
+  })
+
+  test('a password-login session shows no banner and an unmodified modal', async ({ page }) => {
+    test.setTimeout(120_000)
+
+    await withMailHarness(MAIL_ENV, async ({ backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      const friend = await api.cleanFriend('pwlogin', uniq)
+      const auth = await api.passwordLogin(friend.username, CHOSEN_PASSWORD)
+
+      // ⚠ The stored payload is the ONLY difference between this session and a
+      // redeemed one — `viaMagicLink` is simply absent, exactly as every login path
+      // outside `MagicLogin.vue` writes it. Seeded via `addInitScript` (the
+      // `portal-profile-modal.spec.js` pattern) rather than goto → evaluate → goto:
+      // the two-load form raced the first load's own `loadInitialData` on a busy
+      // machine and intermittently landed on the login card.
+      await page.addInitScript((payload) => {
+        localStorage.clear()
+        localStorage.setItem('gorifi_friend_auth', payload)
+      }, JSON.stringify({
+        friendId: friend.id,
+        friendName: friend.name,
+        friendUid: friend.uid,
+        token: auth.token,
+        expiresAt: auth.expiresAt,
+      }))
+      await page.goto(`${backend.baseUrl}/`)
+      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+
+      await expect(magicPrompt(page), 'no prompt without the provenance').toHaveCount(0)
+      await expect(page.getByText(PROMPT_TEXT)).toHaveCount(0)
+
+      // ⚠ `portal-profile-modal.spec.js` passes UNCHANGED because of this: the field is
+      // CONDITIONALLY HIDDEN, never removed.
+      const dialog = await openPasswordFold(page)
+      await expect(dialog.getByLabel('Aktuálne heslo')).toBeVisible()
+      await expect(dialog.getByLabel('Aktuálne heslo')).toHaveAttribute('type', 'password')
+      // And the submit still refuses until it is filled — the guard a password session keeps.
+      await dialog.locator('#pp-profile-new-password').fill('somethingNew1')
+      await dialog.locator('#pp-profile-new-password-confirm').fill('somethingNew1')
+      await expect(dialog.getByRole('button', { name: 'Zmeniť heslo' })).toBeDisabled()
+    })
+  })
+
+  // Resolved conflict #4: the FORCED flow wins outright. A friend an admin has just
+  // reset must not be offered a dismissible invitation to do the thing they are being
+  // required to do — and the gate is focus-trapped, so a banner behind it would be an
+  // unreachable control claiming otherwise.
+  test('a `must_change_password` friend redeeming sees the forced gate and NO banner', async ({ page }) => {
+    test.setTimeout(120_000)
+
+    await withMailHarness(MAIL_ENV, async ({ stub, backend, ctx, adminToken }) => {
+      const api = makeApi(ctx, adminToken)
+      const uniq = uniqTag()
+      await api.setModernMode()
+
+      // `fullFriend` sets the password through the ADMIN reset route — that is what
+      // raises `must_change_password`.
+      const friend = await api.fullFriend('forcedprompt', uniq)
+      await redeemInBrowser(page, backend, api, stub, friend)
+
+      const gate = page.getByTestId('forced-password-change')
+      await expect(gate, "03 §UC-FL-012's gate, reached from a link").toBeVisible()
+      await expect(magicPrompt(page), 'the forced flow wins — no dismissible prompt').toHaveCount(0)
+      await expect(page.getByText(PROMPT_TEXT)).toHaveCount(0)
+
+      // Satisfying the gate must not reveal the prompt either: the change re-mints with
+      // NULL `via`, so there is no waiver left for a prompt to offer.
+      const NEW_PASSWORD = 'forcedThenSet1'
+      await page.locator('#pp-forced-new-password').fill(NEW_PASSWORD)
+      await page.locator('#pp-forced-new-password-confirm').fill(NEW_PASSWORD)
+      await gate.getByRole('button', { name: /Nastaviť heslo a pokračovať/ }).click()
+      await expect(gate).toHaveCount(0)
+      await expect(magicPrompt(page), 'and it does not appear once the gate is satisfied').toHaveCount(0)
+
+      await page.reload()
+      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expect(magicPrompt(page), 'nor after a reload').toHaveCount(0)
+    })
+  })
+})

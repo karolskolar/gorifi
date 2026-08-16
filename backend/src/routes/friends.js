@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import db, { generateUid, generateInviteCode } from '../db/schema.js';
-import { validateFriendAuth, requireFriendOwner, createFriendSession, presentedSessionExpiry, invalidateFriendSessions, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
+import { validateFriendAuth, requireFriendOwner, createFriendSession, presentedSessionExpiry, presentedSessionVia, invalidateFriendSessions, getAuthMode, validateUsername, isUsernameTaken, hashPassword, comparePassword } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { authLimiter } from '../middleware/rate-limit.js';
 import { getPlaceholderCycleId } from '../helpers/friend-create.js';
@@ -287,17 +287,54 @@ router.put('/:id/change-password', (req, res) => {
     return res.status(400).json({ error: 'Nemáte nastavené osobné heslo' });
   }
 
+  // ⚠ THE WAIVER, read from the SESSION ROW and from nowhere else (09 §UC-ML-008,
+  // resolved conflict #5). `presentedSessionVia` resolves `friend_sessions.via` for the
+  // token this request presented; a `via`/`viaMagicLink` in the BODY is ignored, and
+  // must stay ignored — honouring one would let any friend session skip password proof.
+  // The ownership check above (`validation.friendId` vs `req.params.id`) is unchanged,
+  // so the waiver relaxes exactly one check and confines it to the caller's own account.
+  //
+  // Justification is the one the `must_change_password` branch already states below:
+  // the valid session token proves the friend just authenticated — here it proves
+  // control of the account's e-mail, which is the recovery trust anchor.
+  //
+  // ⚠ It is short-lived BY CONSTRUCTION, in two ways, and neither is incidental:
+  //   1. the re-mint at the bottom of this handler deliberately writes NULL `via`, so
+  //      ONE successful change puts the account back on password proof;
+  //   2. `presentedSessionVia` filters on `expires_at > now`, and a magic-link session
+  //      is a fixed 24 h (§UC-ML-005) with no remember-me opt-in.
+  // The residual 24 h window is a RECORDED ACCEPTED RISK (§UC-ML-008 / §Accepted
+  // risks) — inherent to the trust model, since holding the mailbox already grants
+  // exactly this power via a fresh link. Do not "harden" it with a re-authentication
+  // prompt; that would make the recovery flow a dead end again.
+  const viaMagicLink = presentedSessionVia(req) === 'magic_link';
+
   // Normal change requires the current password. But when an admin reset the
   // password (must_change_password), the valid session token already proves the
   // friend just authenticated with the admin-issued password, so skip the
   // re-entry and let them pick their own password directly (forced-change #3).
-  if (!friend.must_change_password) {
-    if (!comparePassword(currentPassword, friend.password_hash)) {
+  if (!friend.must_change_password && !viaMagicLink) {
+    // ⚠ Type-guard BEFORE `comparePassword`: bcryptjs THROWS on a non-string, so an
+    // absent `currentPassword` used to leave this route on the 500 path — an
+    // unhandled-exception shape for what is simply a failed proof. Refusing it as the
+    // 401 it always was cannot loosen anything (a non-string could never have matched
+    // a hash), and it is what makes the body-flag bypass test assert ONE clean status.
+    if (typeof currentPassword !== 'string' ||
+        !comparePassword(currentPassword, friend.password_hash)) {
       return res.status(401).json({ error: 'Aktuálne heslo nie je správne' });
     }
   }
 
-  if (!newPassword || newPassword.length < 8) {
+  // ⚠ Type-guard, the SYMMETRIC CASE to `currentPassword` above (ML-T6 review).
+  // `!newPassword || newPassword.length < 8` let any object with a `length` ≥ 8 —
+  // `{"newPassword":{"length":12}}` — through to `hashPassword`, which throws
+  // `Illegal arguments: object, string` ⇒ 500 `Nieco sa pokazilo` plus a server-log
+  // entry, for what is simply a malformed body. The §UC-ML-008 waiver above made that
+  // path reachable WITHOUT password proof (own account only, so log noise and a wrong
+  // status rather than an authz hole), which is what promoted it from latent to worth
+  // fixing. Nothing is loosened: the message and status are unchanged, a short string
+  // still 400s and a valid string still succeeds — only non-strings move 500 → 400.
+  if (typeof newPassword !== 'string' || newPassword.length < 8) {
     return res.status(400).json({ error: 'Nové heslo musí mať aspoň 8 znakov' });
   }
 

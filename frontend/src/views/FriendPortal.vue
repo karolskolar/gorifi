@@ -200,7 +200,18 @@ async function loadInitialData() {
             // channel it has. It routes into 03 §UC-FL-012's EXISTING gate — no new
             // gate code — exactly as a password login's `mustChangePassword` does.
             // Absent on every payload written before ML-T3 ⇒ `false` ⇒ unchanged.
-            await beginSession({ mustChangePassword: !!parsed.mustChangePassword })
+            //
+            // ⚠ 09 §UC-ML-008 — the two provenance flags ride in on the SAME channel
+            // and for the same reason: `MagicLogin.vue` reaches the portal by a route
+            // change, so the stored payload is the only way a redemption can tell this
+            // component anything. They are read HERE (a restore) rather than in
+            // `authenticate*()` because a magic-link session can only ever arrive this
+            // way — every password path writes a payload without them.
+            await beginSession({
+              mustChangePassword: !!parsed.mustChangePassword,
+              viaMagicLink: !!parsed.viaMagicLink,
+              magicPromptDismissed: !!parsed.magicPromptDismissed,
+            })
             hydrateCurrentFriend(parsed.friendId)
             return
           } catch {
@@ -271,7 +282,15 @@ async function loadInitialData() {
  * `authState` flips only after it resolves, so the authenticated shell never
  * flashes on an expired token — the behaviour this file has always had.
  */
-async function beginSession({ mustChangePassword = false, currentPassword = '', needsCredentialSetup = false } = {}) {
+async function beginSession({
+  mustChangePassword = false,
+  currentPassword = '',
+  needsCredentialSetup = false,
+  // 09 §UC-ML-008: the provenance of THIS session and whether its prompt was already
+  // dismissed. Default false, so every non-magic entry point is unchanged.
+  viaMagicLink = false,
+  magicPromptDismissed = false,
+} = {}) {
   const cycles = await api.getFriendsCycles(selectedFriendId.value)
 
   // ⚠ Fetched HERE rather than on the child's mount, and the ordering is the
@@ -291,7 +310,10 @@ async function beginSession({ mustChangePassword = false, currentPassword = '', 
   // ⚠ Bumped HERE, one statement before the payload it keys. Every fresh
   // handshake re-creates the session view; see `sessionSeq`'s declaration.
   sessionSeq.value++
-  entry.value = { cycles, subscriptions, mustChangePassword, currentPassword, needsCredentialSetup }
+  entry.value = {
+    cycles, subscriptions, mustChangePassword, currentPassword, needsCredentialSetup,
+    viaMagicLink, magicPromptDismissed,
+  }
   authState.value = 'authenticated'
   window.scrollTo(0, 0)
 }
@@ -545,17 +567,19 @@ async function requestMagicLink() {
 
 /** A fresh session token from a password change / credential setup.
  *
- *  ⚠ SEAM FOR ML-T6 (09 §UC-ML-008), verified live and recorded so it is not lost:
- *  `viaMagicLink: true` in the stored payload SURVIVES this re-mint today — this
- *  function only rewrites `token`/`expiresAt`. But change-password and
- *  setup-credentials re-mint with `via` NULL on purpose (see the comments at
- *  `friends.js`), and that NULL is exactly what retires the UC-ML-008
- *  `currentPassword` waiver. So the stored flag would outlive the session property it
- *  claims to describe, and the prompt would keep offering a waiver the server no
- *  longer grants. **ML-T6 must clear `viaMagicLink` HERE, in `onToken` — not only in
- *  its own prompt logic**, because this is the one place that learns a re-mint
- *  happened. ML-T3 deliberately does not touch it: nothing reads the flag yet, and
- *  clearing a flag whose consumer does not exist would ship an unpinned behaviour. */
+ *  ⚠ ML-T3 LEFT THIS SEAM AND ML-T6 CLOSES IT (09 §UC-ML-008). Both re-mint sites —
+ *  `PUT /friends/:id/change-password` and `POST /friends/:id/setup-credentials` — write
+ *  `via` NULL on purpose (see the comments at `friends.js`), and that NULL is exactly
+ *  what retires the UC-ML-008 `currentPassword` waiver server-side. This function is
+ *  the ONE place the client learns a re-mint happened, so the two provenance flags are
+ *  dropped HERE and not only in the prompt's own logic. Without it the stored payload
+ *  would outlive the session property it describes: the banner would keep inviting the
+ *  friend to use a waiver that is gone, and the profile modal would keep HIDING a field
+ *  the server has started requiring again — a form that cannot succeed.
+ *
+ *  `magicPromptDismissed` goes with it: it is meaningless without `viaMagicLink`, and a
+ *  fresh redemption OVERWRITES the whole payload (`MagicLogin.vue`) rather than merging,
+ *  so leaving a stale `true` behind could only ever confuse a later reader. */
 function onToken({ token, expiresAt } = {}) {
   if (!token) return
   setFriendsToken(token)
@@ -565,7 +589,28 @@ function onToken({ token, expiresAt } = {}) {
     parsed.token = token
     if (expiresAt) parsed.expiresAt = expiresAt
     delete parsed.password // Remove old password
+    delete parsed.viaMagicLink      // 09 §UC-ML-008 — the re-mint retires the waiver.
+    delete parsed.magicPromptDismissed
     localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+  }
+}
+
+/** "Teraz nie" on the UC-ML-008 prompt: persist the dismissal so it survives a reload.
+ *
+ *  ⚠ The PARENT writes it, because the parent is the single owner of the credential
+ *  store (the same rule `onToken`/`onProfileSaved` follow) — the session view never
+ *  touches localStorage directly. A fresh redemption writes a fresh payload without
+ *  this key, which is what makes "a new link brings the prompt back" true by
+ *  construction rather than by a reset somebody has to remember. */
+function onMagicPromptDismissed() {
+  const stored = localStorage.getItem(STORAGE_KEY)
+  if (!stored) return
+  try {
+    const parsed = JSON.parse(stored)
+    parsed.magicPromptDismissed = true
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+  } catch {
+    // A corrupt payload is already handled by the restore path; nothing to do.
   }
 }
 
@@ -1257,6 +1302,7 @@ const dropdownFriends = computed(() => {
       @friend-merged="onFriendMerged"
       @token="onToken"
       @forced-complete="onForcedComplete"
+      @magic-prompt-dismissed="onMagicPromptDismissed"
     />
   </div>
 </template>
