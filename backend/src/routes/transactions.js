@@ -5,6 +5,48 @@ import { requireFriendOwner } from '../middleware/friend-auth.js';
 
 const router = Router();
 
+// ⚠ FUP-T14 — `created_at` on a LEDGER ROW, so this refuses rather than guesses.
+//
+// `new Date(date).toISOString()` carried TWO bugs, and neither is the FUP-T12
+// non-string class (a `typeof === 'string'` guard alone closes neither):
+//   (1) it THROWS `RangeError: Invalid time value` for any unparsable value — and
+//       `{"date":"garbage"}`, an ordinary well-typed STRING, is enough. That was a
+//       500 plus ~1071 B of stack per request on both routes below.
+//   (2) it silently ACCEPTED a number: `{"date":12345678}` stored `1970-01-01T…`,
+//       and `{"date":true}` stored `1970-01-01T00:00:00.001Z`. A plausible-looking
+//       wrong date, in the right column, in the ledger friends' balances are summed
+//       from, with no error anywhere. That is the worse of the two.
+//
+// THE ACCEPTED SURFACE IS "A STRING `Date` CAN PARSE", and that is not a narrowing
+// invented here — it is what the only two callers send. `AddPaymentDialog.vue` and
+// `EditTransactionDialog.vue` both emit `selectedDate.value.toISOString()`, i.e. a
+// full ISO 8601 string, through `api.js` `addPayment` / `updateTransaction`. A
+// number is therefore refused deliberately: no caller produces one, so accepting it
+// buys nothing and costs a wrong date nobody can see.
+//
+// ⚠ FALSY IS NOT REFUSED — it keeps its shipped meaning of "no date given", and each
+// call site keeps its own default (now on the POST, unchanged on the PATCH). `null`,
+// `''` and `0` all took that branch before this row and must keep taking it;
+// tightening them would be a behaviour change hiding inside a bug fix. The PATCH's
+// `date !== undefined` gate is likewise untouched: a present-but-falsy date still
+// enters the branch (200, no-op) rather than falling to `Žiadne údaje na aktualizáciu`.
+//
+// `Date.parse` and `new Date(str)` are the same algorithm on a string, so every date
+// that worked before still stores the exact same value.
+function parseDate(value) {
+  if (typeof value !== 'string') return null;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toISOString();
+}
+
+// The refusal message is REUSED, never invented: `index.js`'s client-error branch
+// already answers exactly this on a 400 for these routes (it is what an unparsable
+// body gets today). Module 09's copy sign-off is still outstanding, so a
+// date-specific sentence would be a new user-visible string. These two routes carry
+// no `field` marker in any of their other 400s, so this one does not either.
+const BAD_REQUEST = 'Neplatna poziadavka';
+
 // GET /transactions/friend/:friendId - Get all transactions for a friend
 // Friend-facing: shown in the friend portal's balance card. Enforces per-friend
 // ownership (SEC-A2) — a friend's token may only read their own history.
@@ -64,8 +106,14 @@ router.post('/payment', requireAdmin, (req, res) => {
   // an invented message. `&& note` keeps `''` mapping to NULL exactly as before.
   const truncatedNote = typeof note === 'string' && note ? note.substring(0, 160) : null;
 
-  // Use provided date or default to now
-  const createdAt = date ? new Date(date).toISOString() : new Date().toISOString();
+  // Use provided date or default to now (see `parseDate` above — FUP-T14).
+  let createdAt = new Date().toISOString();
+  if (date) {
+    createdAt = parseDate(date);
+    if (createdAt === null) {
+      return res.status(400).json({ error: BAD_REQUEST });
+    }
+  }
 
   const result = db.prepare(`
     INSERT INTO transactions (friend_id, order_id, type, amount, note, created_at)
@@ -175,8 +223,20 @@ router.patch('/:id', requireAdmin, (req, res) => {
     values.push(truncatedNote);
   }
 
+  // ⚠ FUP-T14 — see `parseDate` above. The `date !== undefined` gate is UNCHANGED:
+  // a present-but-falsy date still enters here and writes `created_at` back to
+  // itself, so it stays a 200 no-op rather than falling to the "nothing to update"
+  // 400 below. The refusal returns from inside this block, which is safe precisely
+  // because the UPDATE is executed only after every field has been collected — so a
+  // rejected date cannot leave a half-applied `amount`/`note` behind.
   if (date !== undefined) {
-    const createdAt = date ? new Date(date).toISOString() : transaction.created_at;
+    let createdAt = transaction.created_at;
+    if (date) {
+      createdAt = parseDate(date);
+      if (createdAt === null) {
+        return res.status(400).json({ error: BAD_REQUEST });
+      }
+    }
     updates.push('created_at = ?');
     values.push(createdAt);
   }
