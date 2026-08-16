@@ -222,6 +222,15 @@ router.post('/onboarding/:token', abuseLimiter, (req, res) => {
     return res.status(409).json({ error: 'Užívateľské meno je už obsadené', field: 'username' });
   }
 
+  // ⚠ ORDERING RULE (the IA-T3 invariant): bcrypt and the two collision-retry loops
+  // run BEFORE the transaction. `hashPassword` is bcrypt cost 10 — ~62 ms of blocking
+  // CPU — and better-sqlite3 transactions are synchronous, so hashing inside one would
+  // hold the write lock for that whole time (measured against a 0.13–0.21 ms
+  // transaction, i.e. ~400× longer than needed). Load-bearing, not stylistic: no test
+  // in this repo can catch the regression. Everything below the transaction boundary
+  // is pure SQL.
+  const passwordHash = hashPassword(password);
+
   // Generate unique uid + invite_code (collision-retry, mirrors friends.js).
   let uid = generateUid();
   while (db.prepare('SELECT id FROM friends WHERE uid = ?').get(uid)) {
@@ -234,6 +243,16 @@ router.post('/onboarding/:token', abuseLimiter, (req, res) => {
   const accessToken = nanoid(12);
   const cycleId = getPlaceholderCycleId();
 
+  // DELIBERATE NON-WRITE:
+  //   • NO `invalidateLoginTokens` — an EXPLICIT EXEMPTION from 09 §UC-ML-009 rule 2,
+  //     recorded here so nobody "fixes" the omission (same ground as 07's approve).
+  //     That rule makes every write to `friends.password_hash` delete the friend's
+  //     outstanding magic links; the INSERT below writes `password_hash` too, but it
+  //     CREATES the friend row, so `lastInsertRowid` is a brand-new id that no
+  //     `login_tokens` row can reference yet (they are keyed on `friend_id`, and
+  //     `friends.id` is AUTOINCREMENT so ids are never reused). The delete would be a
+  //     guaranteed no-op, and adding it would put a third write inside this
+  //     transaction.
   const insertFriendWithBakerySubscription = db.transaction(() => {
     const result = db.prepare(`
       INSERT INTO friends
@@ -242,7 +261,7 @@ router.post('/onboarding/:token', abuseLimiter, (req, res) => {
       VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
     `).run(
       cycleId, name, uid, accessToken, inviteCode,
-      phone, email || null, link.note, usernameRaw, hashPassword(password)
+      phone, email || null, link.note, usernameRaw, passwordHash
     );
     const newId = result.lastInsertRowid;
     db.prepare(
