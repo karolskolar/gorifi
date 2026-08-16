@@ -627,6 +627,45 @@ function initDb() {
     // Index already exists or other error, ignore
   }
 
+  // Migration (GA-T1, 10 §UC-GA-001): Google sign-in identity on a friend.
+  // `google_sub` is the ID token's `sub` claim — the ONLY identity key
+  // (01 §Auth extensions: stable, never reassigned; NEVER the e-mail). NULL
+  // means "not linked". ⚠ It must never appear in any API response (the module
+  // 11 §UC-FC-005 strip rule).
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN google_sub TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Display only — refreshed on Google login and on re-link; never used for
+  // matching. NULL when the token's `email_verified` was false.
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN google_email TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // The "už sa nepýtať" flag behind the post-login link prompt (§UC-GA-006).
+  // One-way by design: the manual profile trigger is the way back, not a reset.
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN google_prompt_dismissed INTEGER DEFAULT 0');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // ⚠ Its OWN try/catch, deliberately NOT folded into the ALTER above: on an
+  // already-migrated database the ALTER throws "duplicate column", and a shared
+  // catch would swallow that and skip the CREATE INDEX entirely — leaving the
+  // index on freshly created databases only. Same shape as idx_friends_username.
+  // A bare ALTER TABLE cannot add UNIQUE, so the partial index is the mechanism
+  // behind every "already linked" 409 in module 10.
+  try {
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_friends_google_sub ON friends(google_sub) WHERE google_sub IS NOT NULL');
+  } catch (e) {
+    // Index already exists or other error, ignore
+  }
+
   // Create friend_sessions table for token-based authentication
   db.run(`
     CREATE TABLE IF NOT EXISTS friend_sessions (
@@ -783,6 +822,29 @@ function initDb() {
   // behaviour on it resolving.
   try {
     db.run('ALTER TABLE invitations ADD COLUMN created_friend_id INTEGER');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Migration (GA-T1, 10 §UC-GA-001): the Google identity an applicant attached
+  // while registering on /invite/:code. Verified once at registration time and
+  // frozen thereafter — approval copies these onto the friend row (UNLESS the
+  // admin re-submits with `drop_google_link: true` after an interim-collision
+  // 409, in which case the friend is created with no Google link at all, and on
+  // the 409 itself no friend row is written — §UC-GA-009) and NEVER rewrites
+  // them back here (the 07 resolved-conflict-#4 convention: the invitation row
+  // stays the historical record of what the applicant attached).
+  // ⚠ NO unique index here, by design: the authoritative uniqueness check is
+  // idx_friends_google_sub at approval (§UC-GA-009); the registration-time
+  // checks are courtesy only (§UC-GA-008).
+  try {
+    db.run('ALTER TABLE invitations ADD COLUMN google_sub TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  try {
+    db.run('ALTER TABLE invitations ADD COLUMN google_email TEXT');
   } catch (e) {
     // Column already exists, ignore
   }
