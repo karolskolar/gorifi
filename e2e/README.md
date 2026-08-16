@@ -357,6 +357,25 @@ Two gotchas in that recipe that look like app bugs when you skip them:
   first so an operator's real key cannot be inherited from the ambient
   environment. They self-skip when the backend source is not beside `e2e/`
   (i.e. when `BASE_URL` points at a deployment).
+- **`GOOGLE_CLIENT_ID` / `GOOGLE_AUTH_TEST_MODE` (10 §UC-GA-002, GA-T2).** The
+  second outbound dependency follows the mailer's model: with `GOOGLE_CLIENT_ID`
+  absent the whole feature is off and `helpers/google-auth.js` makes **no network
+  call at all**, so a gate server with neither var set is Google-free by
+  construction. `google-auth-verifier.spec.js` needs BOTH states, so it never
+  depends on how the gate server is configured — it spawns its own throwaway
+  backends (`startBackend`, which now blanks both vars first, the `MAILGUN_*`
+  rule) and drives the helper itself in a child process (the `sendViaMailer`
+  precedent; there is no unit runner). ⚠ Once module 10 ships an ENDPOINT
+  (GA-T4 onward) the gate server does need `GOOGLE_CLIENT_ID=test-client` +
+  `GOOGLE_AUTH_TEST_MODE=1` per §UC-GA-013 — that is additive and does not move
+  anything asserted here. ⚠ `GOOGLE_AUTH_TEST_MODE` must NEVER appear in a
+  deployed `.env`: it makes `TEST:<sub>:<email>` tokens verify without any
+  signature check. The audit signal is the boot line, which always names the
+  resolved mode (`mode=off` / `mode=google` / `mode=TEST`). ⚠ The var is an
+  **allow-list** — only `1` and `true` turn it on, so `GOOGLE_AUTH_TEST_MODE=off`
+  is genuinely off. Two further vars are honoured **only** while it is on and
+  exist purely for this spec: `GOOGLE_AUTH_TEST_CERTS_URL` (⚠ **loopback hosts
+  only**) and `GOOGLE_AUTH_TEST_TIMEOUT_MS`.
 
 ### Friend-portal UI specs and the friends-list stub
 

@@ -6,6 +6,10 @@ import { requireAdmin } from '../middleware/admin-auth.js';
 import { authLimiter } from '../middleware/rate-limit.js';
 import { getPlaceholderCycleId } from '../helpers/friend-create.js';
 import { bindValue } from '../helpers/bind-value.js';
+// 10 §UC-GA-002. Imported here (rather than only where tokens are verified) so the
+// module's ONE boot line prints at server start — it is the only audit signal that the
+// `GOOGLE_AUTH_TEST_MODE` seam is off in production.
+import { getGoogleClientId } from '../helpers/google-auth.js';
 
 const router = Router();
 
@@ -110,8 +114,19 @@ function validateAdminFriendFields(body, only = null) {
 }
 
 // GET /friends/auth-mode - Public endpoint to get current auth mode
+//
+// ⚠ PUBLIC AND UNAUTHENTICATED. Everything added here is published to the world, so
+// this handler stays a two-field literal — never a row, never a spread.
+//
+// `googleClientId` (10 §UC-GA-002, resolved decision #4): the Google OAuth client id is
+// SERVED config, not a Vite build-time var — `deploy.sh` builds the frontend locally, so
+// a `VITE_*` var would live on the operator's machine and fork the staging/prod
+// artifacts. It is public by construction (the browser sends it to Google in the GIS
+// flow) and NO CLIENT SECRET EXISTS in this flow, so there is nothing here to leak.
+// ⚠ `null` — not absent, not `''` — is the "feature is off" value every frontend Google
+// control keys on, so the key must always be present.
 router.get('/auth-mode', (req, res) => {
-  res.json({ authMode: getAuthMode() });
+  res.json({ authMode: getAuthMode(), googleClientId: getGoogleClientId() });
 });
 
 // POST /friends/auth - Authentication for friends (shared password or personal credentials)

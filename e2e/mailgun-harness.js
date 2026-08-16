@@ -111,8 +111,13 @@ export async function startMailgunStub() {
   }
 }
 
-// A second, throwaway backend process with its own DB and its own Mailgun env.
-export async function startBackend(mailEnv) {
+// A second, throwaway backend process with its own DB and its own env overrides.
+//
+// ⚠ `extraEnv` was `mailEnv` until GA-T2: `google-auth-verifier.spec.js` needs the same
+// throwaway-server trick for `GOOGLE_CLIENT_ID`, because the configured and unconfigured
+// cases are two different servers and the gate server can only be one of them. Nothing
+// about the Mailgun safety model changed — the parameter was always a plain env spread.
+export async function startBackend(extraEnv) {
   const port = await freePort()
   const dbPath = path.join(os.tmpdir(), `gorifi-mailer-${Date.now()}-${Math.floor(Math.random() * 1e6)}.sqlite`)
   const baseUrl = `http://127.0.0.1:${port}`
@@ -137,7 +142,13 @@ export async function startBackend(mailEnv) {
       MAILGUN_API_KEY: '',
       MAILGUN_DOMAIN: '',
       MAILGUN_BASE_URL: '',
-      ...mailEnv,
+      // ⚠ GA-T2: the SAME rule for the backend's second outbound dependency. An
+      // operator's real `GOOGLE_CLIENT_ID` (or a stray `GOOGLE_AUTH_TEST_MODE`) in the
+      // ambient environment must not decide what a harness server reports — the
+      // unconfigured case is a first-class assertion (§UC-GA-002: `googleClientId: null`).
+      GOOGLE_CLIENT_ID: '',
+      GOOGLE_AUTH_TEST_MODE: '',
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
