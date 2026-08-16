@@ -672,6 +672,46 @@ typeface.
   filenames are **not** content-hashed, so `immutable` would pin a stale face forever if the
   subsets are ever refreshed from Google.
 
+### ⚠ GA-T5 — shared-password mode is a credential-planting surface (2026-08-16)
+
+`PUT /api/friends/:id/google-link` carries a **modern-mode guard** (409
+`field:'auth_mode'`). It is not decoration and it is not symmetry with the login route —
+without it, **two requests using only the office-wide shared password plant an
+attacker-controlled Google credential on any friend's row**, reproduced live:
+
+```
+POST /api/friends/auth {password: <shared>, friendId: <victim>}  → 200, Bearer token
+PUT  /api/friends/<victim>/google-link {id_token: <attacker's>}  → 200, google_sub planted
+```
+
+The legacy dropdown login mints a per-friend session for **anybody** from the shared
+password alone (`friends.js:226`), so `requireFriendOwner` + a resolved-identity gate stop
+only the ONE-request (`X-Friends-Password`) form. The planted link is inert while legacy —
+then becomes a **permanent alternative credential the moment `auth_mode` flips to modern**,
+surviving the victim's own password change, which no other legacy primitive does. The
+migration window does not cover it, because the blast radius outlives the window (the
+UC-FC-009 reasoning at `friends.js:967-990`).
+
+- ⚠ **Any future route that writes a CREDENTIAL needs this guard**, not just an ownership
+  guard. Ownership is meaningless while a shared password can mint anyone's session.
+- ⚠ **Recorded residual:** the same two-request form still reaches **unlink** and
+  **prompt-dismiss** in legacy mode. Neither plants a credential (sever a login method,
+  silence a prompt — both recoverable, and in legacy nobody logs in via Google anyway), and
+  §UC-GA-004 mandates no mode guard on either. Revisit if either gains destructive weight.
+- ⚠ `requireFriendOwner` returns `{friendId: null}` for bare shared-password auth whenever
+  `auth_mode !== 'modern'` — **the spec's "guarded … with a RESOLVED friendId" describes a
+  guard that does not exist.** `friends.js:398/745/958`, `subscriptions.js:10,21` and
+  `transactions.js:55` share the hole; all read or write self-correcting data, which is why
+  only the contact half of `PATCH /:id/profile` was hardened before.
+- ⚠ **The app-level 409 pre-check is load-bearing independently of `instances: 1`:**
+  `schema.js:663-667` creates `idx_friends_google_sub` inside a **swallowing** try/catch, so
+  on any DB where creation ever failed the pre-check is the ONLY defence. The two layers are
+  HTTP-**indistinguishable** (deleting the pre-check leaves every HTTP test green — the
+  single-statement UPDATE rolls back atomically), so layer 2 is provable only by calling
+  `writeGoogleLink()` directly against a real migrated DB.
+- The 409 body is frozen at `{error, field}` and names **no** friend — id, name, uid, email
+  and sub are all asserted absent, or linking becomes a friend-table enumeration oracle.
+
 ### ⚠ GA-T3 — the ONE sanctioned CSP exception, and the THIRD policy copy (2026-08-16)
 
 Google Identity Services needs four **scoped** path sources. They are added to

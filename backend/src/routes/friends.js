@@ -1046,6 +1046,327 @@ router.patch('/:id/profile', (req, res) => {
   res.json(updated);
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 10 §UC-GA-004 — the FRIEND-OWNED Google link / unlink / prompt-dismiss routes
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// ⚠ THESE ARE NOT THE ADMIN UNLINK. `DELETE /:id/google` (11 §UC-FC-006, further
+// down, `requireAdmin`) is a DIFFERENT PATH on a DIFFERENT auth boundary,
+// deliberately: an admin acting on somebody else's row and a friend acting on their
+// own are not the same authorization question, so neither guard has to multiplex and
+// `api-security.spec.js`'s anonymous-401 sweep stays unambiguous. Never merge them,
+// and never build shared middleware between them.
+//
+// ⚠ THE GUARD ORDER IS OWNERSHIP → CONFIG, not config → ownership — the OPPOSITE of
+// `POST /auth/google` above, and for a reason that only applies here. That route is
+// PUBLIC, so "the feature is off" is the first thing it can honestly say. These three
+// are owner-guarded, so authenticating first means (a) an anonymous caller gets the
+// same 401 on every deployment, configured or not — which is what makes the
+// target-agnostic anonymous sweep in `api-security.spec.js` correct rather than
+// accidentally true of this gate — and (b) an unauthenticated stranger learns nothing
+// about how the deployment is configured.
+
+// The 409 body, ONCE. ⚠ It names NO friend — not the id, not the name, not the uid,
+// not the address on the colliding account. Anything more turns "link my Google
+// account" into a lookup oracle across the whole friend table for anyone who can
+// obtain a Google token. Frozen because BOTH layers of the dual-layer 409 answer with
+// this same object, and the whole point of one constant is that they cannot drift.
+export const GOOGLE_LINK_CONFLICT = Object.freeze({
+  error: 'Tento Google účet je už prepojený s iným účtom',
+  field: 'google'
+});
+
+// Does this error come from `idx_friends_google_sub` (10 §UC-GA-001)?
+//
+// ⚠ BOTH halves are required. `friends.uid` and `friends.username` have unique
+// indexes of their own, and a collision on either is a genuine 500 (nothing in this
+// route writes them, so it would mean something is very wrong) — translating those
+// into "your Google account is taken" would be a lie the caller cannot act on. The
+// message half is what makes it specific; the code half is what keeps a message-only
+// match from firing on some unrelated error text. The IA-T3 precedent.
+function isGoogleSubConflict(e) {
+  return typeof e?.code === 'string'
+    && e.code.startsWith('SQLITE_CONSTRAINT')
+    && /UNIQUE constraint failed: friends\.google_sub/.test(String(e?.message || ''));
+}
+
+/**
+ * The link write — ONE `UPDATE`, and the SECOND layer of §UC-GA-004's dual-layer 409.
+ *
+ * ⚠ WHY THE TRANSLATION EXISTS AT ALL, AND WHICH LAYER IS LOAD-BEARING. Under
+ * `instances: 1` with synchronous better-sqlite3, the route's app-level pre-check and
+ * this UPDATE are separated by nothing — the route's only `await` (the verifier) is
+ * already behind them — so no request can interleave and the PRE-CHECK is what fires
+ * on every reachable path. This catch covers the PM2-cluster scenario the standing
+ * concurrency caveat warns about, where a second process can link the sub between our
+ * SELECT and our UPDATE. The GSO-T10 pattern: keep both, know which is which.
+ *
+ * ⚠ CONSEQUENCE FOR TESTING, recorded because it is not obvious: this branch is
+ * UNREACHABLE OVER HTTP, so an HTTP test of "409 on a taken sub" proves the pre-check
+ * and says nothing about this code. That is why it is a separate exported function —
+ * `google-auth.spec.js` imports it into a throwaway process and calls it with a sub
+ * that is already taken, i.e. with the pre-check skipped, against the real index.
+ *
+ * Exported for that test and for nothing else; the route is its only production
+ * caller.
+ *
+ * @returns {{ok: true} | {conflict: typeof GOOGLE_LINK_CONFLICT}}
+ */
+export function writeGoogleLink(friendId, sub, email) {
+  try {
+    // ⚠ ONE UPDATE, and it names exactly two columns. A friend who is already linked
+    // to a DIFFERENT account is REPLACED here with no unlink ceremony (§UC-GA-004) —
+    // there is no delete-then-insert to half-apply, and no branch to get wrong.
+    // ⚠ `google_prompt_dismissed` is not in this statement, in either direction.
+    db.prepare('UPDATE friends SET google_sub = ?, google_email = ? WHERE id = ?')
+      .run(sub, email ?? null, friendId);
+    return { ok: true };
+  } catch (e) {
+    if (isGoogleSubConflict(e)) return { conflict: GOOGLE_LINK_CONFLICT };
+    throw e;
+  }
+}
+
+// The identity gate these three routes add ON TOP of `requireFriendOwner`.
+//
+// `requireFriendOwner` resolves `{ friendId: null }` for bare shared-password auth
+// while `auth_mode` is 'legacy' (its documented migration window), so without this gate
+// the `X-Friends-Password` header alone would authorise a write to ANY friend's row.
+// This is the `requireHost` precedent, which §UC-GA-004 names explicitly.
+//
+// ⚠⚠ AND IT IS NOT, BY ITSELF, A DEFENCE AGAINST THE SHARED PASSWORD — do not read it
+// as one. It closes only the ONE-REQUEST form (the bare header). The TWO-REQUEST form
+// survives it completely, because the legacy dropdown login mints a per-friend session
+// for ANY friend from the shared password alone (`POST /friends/auth` with
+// `{ password: <shared>, friendId: <anyone> }`, ~line 226) — so a holder of the office
+// password can obtain a token that IS the victim's resolved identity, and every check
+// in this function then passes. Reproduced end to end on the gate.
+//
+// What actually closes credential PLANTING is the modern-mode guard on
+// `PUT /:id/google-link` below (resolved decision #2): in legacy mode a Google link
+// cannot be used to log in at all, so refusing to create one costs nothing and removes
+// the only write here whose blast radius OUTLIVES the migration window — a planted link
+// is inert while legacy and becomes a permanent alternative credential the moment the
+// admin flips to modern, surviving the victim's own password change (no other
+// legacy-mode primitive does that: `setup-credentials` is first-time-only and
+// `change-password` demands `currentPassword`). Same reasoning UC-FC-009 applied to the
+// contact half of `PATCH /:id/profile` one screen up.
+//
+// ⚠ RESIDUAL, RECORDED RATHER THAN GUESSED AT: the two-request form still reaches the
+// UNLINK and the PROMPT-DISMISS in legacy mode. Neither is credential planting — one
+// severs a login method (recoverable: re-link from the profile), the other silences a
+// prompt (recoverable: §UC-GA-007's manual trigger) — and §UC-GA-004 puts a mode guard
+// on neither. Left as-is deliberately; a spec change is the way to move it, not a
+// guess here.
+function requireGoogleLinkOwner(req, res) {
+  const owner = requireFriendOwner(req, req.params.id);
+  if (owner.error) {
+    res.status(owner.status).json({ error: owner.error });
+    return null;
+  }
+  if (owner.friendId == null) {
+    // The same sentence `requireFriendOwner` uses for the no-identity case in modern
+    // mode, so the client sees one consistent instruction in both modes.
+    res.status(401).json({ error: 'Prihláste sa svojím menom a heslom' });
+    return null;
+  }
+  return owner;
+}
+
+// PUT /friends/:id/google-link — the friend links (or re-links) their own Google
+// account (§UC-GA-004). Owner-guarded, `authLimiter`.
+//
+// ⚠ `authLimiter`, NOT a new bucket (§UC-GA-013's one-sentence rule): this endpoint
+// ACCEPTS an ID token for verification, i.e. it performs the credential-check step, so
+// forged-token probing is credential guessing and belongs in the strict 20/window
+// bucket. The unlink and the prompt-dismiss below verify NOTHING and get no limiter
+// beyond their auth guard — do not "harmonise" them onto one.
+//
+// ⚠ THE TRY/CATCH IS THE MODULE-10 PATTERN, INHERITED VERBATIM FROM
+// `POST /auth/google` — see its comment. Express 4 does not forward a rejected handler
+// promise, and the process runs under Node 20's `--unhandled-rejections=throw`, so on
+// an `async` route a throw ANYWHERE AFTER THE `await` would leave the client with no
+// response at all AND kill the process. Every async handler this module adds gets it.
+router.put('/:id/google-link', authLimiter, async (req, res) => {
+  try {
+    const owner = requireGoogleLinkOwner(req, res);
+    if (!owner) return;
+
+    const notConfigured = requireGoogleAuthConfigured();
+    if (notConfigured) {
+      return res.status(notConfigured.status).json({ error: notConfigured.error });
+    }
+
+    // ⚠⚠ MODERN MODE ONLY — resolved decision #2, and on THIS route it is a security
+    // control, not merely a consistency rule. `POST /auth/google` refuses in legacy
+    // mode (line ~292, this response is byte-identical), so a link created here could
+    // never be used to log in while legacy — but it would sit on the row waiting, and
+    // the legacy shared-password login hands ANY holder of the office password a
+    // session for ANY friend (see `requireGoogleLinkOwner` above). Refusing the WRITE
+    // is what stops an attacker planting an alternative credential that activates on
+    // the flip to modern. It costs a legitimate friend nothing they could have used.
+    //
+    // ⚠ It sits AFTER the ownership/identity gate so an anonymous caller still gets a
+    // uniform 401 (the api-security sweep), and after the config guard so the
+    // relative order of "feature off" vs "wrong mode" matches `POST /auth/google`.
+    if (getAuthMode() !== 'modern') {
+      return res.status(409).json({
+        error: 'Prihlásenie cez Google je dostupné až po prechode na osobné prihlasovanie',
+        field: 'auth_mode'
+      });
+    }
+
+    // Cheap, and it runs BEFORE the network call: with a resolved owner this row
+    // essentially must exist (the session points at it), but "essentially" is how an
+    // UPDATE that matches zero rows gets to answer 200. The two Google columns come
+    // along because the e-mail rule below needs the CURRENT state.
+    const friend = db.prepare('SELECT id, google_sub, google_email FROM friends WHERE id = ?').get(req.params.id);
+    if (!friend) {
+      return res.status(404).json({ error: 'Priateľ nebol nájdený' });
+    }
+
+    // ⚠ network I/O — MUST stay outside any db.transaction (helpers/google-auth.js).
+    // The IA-T3 structural rule: better-sqlite3 transactions are synchronous, and a
+    // JWKS fetch inside one would hold the write lock across a network round trip.
+    // Verify FIRST, then write with the resolved `sub` in hand. No test can hold this.
+    // ⚠ The result is ALWAYS TRUTHY — branch on `.error`, never on falsiness.
+    const v = await verifyGoogleIdToken(req.body?.id_token);
+    if (v.error) {
+      return res.status(v.status).json({ error: v.error, ...(v.field && { field: v.field }) });
+    }
+
+    // Layer 1 of the dual-layer 409: the app-level pre-check, and the one that
+    // actually fires under `instances: 1`.
+    //
+    // ⚠ NO `active` FILTER. A deactivated friend still OWNS their `sub`: scoping this
+    // to active rows would let anyone holding a deactivated colleague's Google account
+    // take over their identity key, and would leave the partial index — the layer that
+    // is NOT load-bearing here — as the only thing in the way.
+    //
+    // ⚠ `String(...)` on both sides: `req.params.id` is a string and the column is an
+    // integer, and `!==` across those types would report a collision with the friend's
+    // OWN row — turning the idempotent re-link (§UC-GA-004: same sub, same friend ⇒
+    // 200) into a permanent 409 nobody could clear.
+    const holder = db.prepare('SELECT id FROM friends WHERE google_sub = ?').get(v.identity.sub);
+    if (holder && String(holder.id) !== String(friend.id)) {
+      return res.status(409).json(GOOGLE_LINK_CONFLICT);
+    }
+
+    // ⚠ THE E-MAIL RULE, AND WHY IT IS NOT JUST `v.identity.email`. `google_email` is
+    // NULL whenever the token's address was not `email_verified` (§UC-GA-002), so a
+    // literal reading of §UC-GA-004's `SET google_sub = ?, google_email = ?` would let
+    // a re-link with an unverified address SILENTLY WIPE a display address the friend
+    // already has. `POST /auth/google` guards the same column for the same reason
+    // (line ~333, "refresh only when the token carries one"), and the two Google write
+    // paths must not disagree about it.
+    //
+    // ⚠ BUT ONLY FOR THE SAME `sub`. On a REPLACE (a different Google account) keeping
+    // the old address would be actively wrong — the profile would show the PREVIOUS
+    // account's e-mail beside the new link — so there it clears to NULL, which is the
+    // honest "linked, no address to show" state §UC-GA-007 renders as "Prepojené".
+    const sameSub = friend.google_sub != null && friend.google_sub === v.identity.sub;
+    const email = v.identity.email ?? (sameSub ? friend.google_email ?? null : null);
+
+    // Everything else is the same single UPDATE: an unlinked friend gets linked, the
+    // same sub on the same friend refreshes the display-only address (idempotent 200),
+    // and a different sub REPLACES the link outright.
+    const written = writeGoogleLink(friend.id, v.identity.sub, email);
+    if (written.conflict) {
+      return res.status(409).json(written.conflict);
+    }
+
+    // ⚠ HAND-PICKED, NEVER A ROW SPREAD — `google_sub` never appears in any API
+    // response (11 §UC-FC-005's strip rule, inherited by this module and pinned by a
+    // raw-text regex in `google-auth.spec.js`). `googleEmail` is what was actually
+    // STORED, not what the token carried, so the UI never shows an address the row
+    // does not have.
+    return res.json({ googleLinked: true, googleEmail: email });
+  } catch (e) {
+    // The token is never logged (it is a live credential); `e.message` only, the
+    // FUP-T3/FUP-T7 bounded-log rule.
+    console.error(`[friends] google link failed: ${String(e?.message || e).slice(0, 300)}`);
+    return res.status(500).json({ error: 'Prepojenie Google účtu zlyhalo' });
+  }
+});
+
+// DELETE /friends/:id/google-link — the friend severs their own link (§UC-GA-004).
+// Owner-guarded, NO limiter (it verifies nothing), synchronous (no `await`, so no
+// module-10 try/catch is needed — a sync throw still reaches Express).
+router.delete('/:id/google-link', (req, res) => {
+  const owner = requireGoogleLinkOwner(req, res);
+  if (!owner) return;
+
+  const notConfigured = requireGoogleAuthConfigured();
+  if (notConfigured) {
+    return res.status(notConfigured.status).json({ error: notConfigured.error });
+  }
+
+  const friend = db.prepare('SELECT id, password_hash FROM friends WHERE id = ?').get(req.params.id);
+  if (!friend) {
+    return res.status(404).json({ error: 'Priateľ nebol nájdený' });
+  }
+
+  // ⚠ 200 EVEN WHEN ALREADY UNLINKED — never 409 (the GSO-T5 DELETE-convergence
+  // precedent): a DELETE converges on the requested END STATE, and here that state is
+  // simply already current. The UPDATE is itself idempotent, so there is no branch.
+  //
+  // ⚠ THE UPDATE NAMES `google_sub` AND `google_email` ONLY, and the request body is
+  // NEVER spread into it (the GSO-T5 single-owner-per-flag rule).
+  //
+  // ⚠ `google_prompt_dismissed` IS DELIBERATELY UNTOUCHED (module 10 §Resolved
+  // decisions #3, which this route shares with the admin unlink below): the friend
+  // switched the "prepojiť Google" prompt off themselves, and severing the LINK does
+  // not get to re-enable the nagging. Their way back is the manual trigger in the
+  // profile modal (§UC-GA-007), not a flag reset.
+  db.prepare('UPDATE friends SET google_sub = NULL, google_email = NULL WHERE id = ?').run(req.params.id);
+
+  // ⚠ NO `invalidateFriendSessions` HERE, DELIBERATELY — same reasoning as the admin
+  // unlink below (11 §UC-FC-006, mirrored by §UC-GA-004): a Google link is a login
+  // METHOD, not the session. Password auth is untouched by this write, so an existing
+  // `friend_sessions` row still points at a credential that works. Logging a friend
+  // out of the very screen they are standing on to unlink would be gratuitous.
+  return res.json({
+    googleLinked: false,
+    googleEmail: null,
+    // ⚠ A WARNING, NOT A REFUSAL (§UC-GA-004). A friend with no `password_hash` — a
+    // Google-attached registration that never set one — has just removed their only
+    // way in. It is still their account and the admin reset is the recovery path, so
+    // the endpoint allows it and hands the UI the marker; GA-T7's confirm copy is the
+    // consumer.
+    ...(!friend.password_hash && { warning: 'no_password' })
+  });
+});
+
+// POST /friends/:id/google-prompt-dismissed — "už sa nepýtať" (§UC-GA-004/006).
+// Owner-guarded, no body, no limiter.
+//
+// ⚠ NO CONFIG GUARD, AND THAT ASYMMETRY IS THE SPEC'S (§UC-GA-004: "all answer 503
+// when unconfigured EXCEPT prompt-dismiss, which has no Google dependency"). Recording
+// that a friend does not want to be asked again is a local UI preference, not a Google
+// operation — a deployment with the feature switched off must still be able to store
+// it, or a later reconfiguration would resurrect a prompt the friend already silenced.
+//
+// ⚠ ONE-WAY BY DESIGN. Nothing in this module clears the flag: the manual profile
+// trigger (§UC-GA-007) is the way back, not a reset. "Teraz nie" is client-side only
+// and never reaches the server (§UC-GA-006) — do not add a body, and do not add an
+// endpoint that unsets this.
+router.post('/:id/google-prompt-dismissed', (req, res) => {
+  const owner = requireGoogleLinkOwner(req, res);
+  if (!owner) return;
+
+  const friend = db.prepare('SELECT id FROM friends WHERE id = ?').get(req.params.id);
+  if (!friend) {
+    return res.status(404).json({ error: 'Priateľ nebol nájdený' });
+  }
+
+  // Idempotent by construction, and it touches NOTHING else — in particular not
+  // `google_sub` / `google_email`, which is the same single-owner rule the unlink
+  // above obeys in the other direction.
+  db.prepare('UPDATE friends SET google_prompt_dismissed = 1 WHERE id = ?').run(req.params.id);
+
+  return res.json({ googlePromptDismissed: true });
+});
+
 // Admin: Reset friend password
 router.put('/:id/reset-password', requireAdmin, (req, res) => {
   const { password } = req.body;

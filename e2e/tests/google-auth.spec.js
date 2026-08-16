@@ -40,7 +40,12 @@
 
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { DatabaseSync } from 'node:sqlite'
-import { ADMIN_PASSWORD } from '../fixtures.js'
+import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { CAN_SPAWN_BACKEND, startBackend } from '../mailgun-harness.js'
 
 const NEEDS_SOURCE = 'needs the backend source beside e2e/ (skipped against a deployment)'
@@ -166,6 +171,64 @@ function makeApi(ctx, adminToken, dbPath) {
     passwordLogin(username, password) {
       return ctx.post('/api/friends/auth', { data: { username, password } })
     },
+
+    // ── GA-T5 (§UC-GA-004) ───────────────────────────────────────────────────
+    /** A friend with NO credentials at all — the `warning: 'no_password'` fixture. */
+    async plainFriend(label) {
+      const created = await ctx.post('/api/friends', { headers: admin(), data: { name: `GA5 ${label}` } })
+      expect(created.status(), 'friend create').toBe(201)
+      return created.json()
+    },
+    async givePassword(id, password = 'somePass123') {
+      const r = await ctx.put(`/api/friends/${id}/reset-password`, { headers: admin(), data: { password } })
+      expect(r.status(), 'reset-password').toBe(200)
+    },
+    /**
+     * A per-friend session for a friend who may have NO password.
+     *
+     * ⚠ The legacy shared-password branch of `POST /friends/auth` mints a per-friend
+     * session too (`friends.js:225`), which is the ONLY way to get a Bearer token for a
+     * credential-less friend — and a credential-less friend is exactly the
+     * `warning: 'no_password'` fixture. The harness backend is seeded legacy, and
+     * §UC-GA-004 puts no auth-mode guard on these three routes (unlike §UC-GA-003's
+     * login), so legacy is a legitimate place to exercise them.
+     */
+    async sessionFor(friendId) {
+      const r = await ctx.post('/api/friends/auth', { data: { password: FRIENDS_PASSWORD, friendId } })
+      expect(r.status(), 'legacy per-friend session mint').toBe(200)
+      const body = await r.json()
+      expect(typeof body.token, 'the legacy mint really returns a token').toBe('string')
+      return body.token
+    },
+    /**
+     * A session for a friend from `friendWithLogin` — works in EITHER mode, and is the
+     * only way to get one in modern mode (where `sessionFor`'s shared-password mint is
+     * refused, which is the whole point of modern mode).
+     */
+    async loginToken(friend) {
+      const r = await ctx.post('/api/friends/auth', { data: { username: friend.username, password: friend.password } })
+      expect(r.status(), `personal login for ${friend.username}`).toBe(200)
+      return (await r.json()).token
+    },
+    bearer: (token) => ({ Authorization: `Bearer ${token}` }),
+    linkReq(id, token, body) {
+      return ctx.put(`/api/friends/${id}/google-link`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        data: body,
+      })
+    },
+    unlinkReq(id, token) {
+      return ctx.delete(`/api/friends/${id}/google-link`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+    },
+    dismissReq(id, token) {
+      return ctx.post(`/api/friends/${id}/google-prompt-dismissed`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+    },
+    /** Identity-less shared-password auth — the requireHost precedent's reject case. */
+    sharedPasswordHeaders: () => ({ 'X-Friends-Password': FRIENDS_PASSWORD }),
   }
   return { api }
 }
@@ -659,5 +722,682 @@ test.describe('§UC-GA-012 — the guest and magic-link surfaces stay Google-fre
       expect(hits, `${url} must never load GIS`).toEqual([])
       await page.unrouteAll()
     }
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GA-T5 — §UC-GA-004: the friend-owned link / unlink / prompt-dismiss endpoints
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠ WHICH MODE EACH HALF RUNS IN, AND WHY IT IS NOT ARBITRARY.
+//
+// `PUT /:id/google-link` is MODERN-ONLY (resolved decision #2, the same guard
+// `POST /auth/google` carries), so its accept-path tests need a modern throwaway
+// backend — GA-T4's pattern, in this same file, for the same reason (`e2e/seed.mjs`
+// pins the shared gate to legacy and `modern-login.spec.js` asserts nobody wrote
+// `auth_mode`).
+//
+// ⚠ THE GUARD IS A SECURITY CONTROL, NOT HOUSEKEEPING, AND THE FIRST VERSION OF THIS
+// FILE PINNED THE HOLE AS ALLOWED. The legacy dropdown login mints a per-friend
+// session for ANY friend from the shared office password alone (`POST /friends/auth`
+// with `{ password: <shared>, friendId: <victim> }`), so the "resolved identity"
+// requirement §UC-GA-004 states is satisfied by an attacker in TWO requests. A link
+// planted that way is inert while legacy — and becomes a permanent alternative
+// credential the instant the admin flips to modern, surviving the victim's own
+// password change. Hence: every legacy `PUT` is refused, and there is an explicit
+// test below asserting the 409 so the hole stays closed BY ASSERTION rather than by
+// the absence of a test.
+//
+// The unlink and the prompt-dismiss have NO mode guard (§UC-GA-004 puts one on
+// neither, and neither creates a credential), so they are exercised in LEGACY — which
+// is the stricter place for them, because legacy is the only mode in which
+// `requireFriendOwner` resolves `friendId: null` at all, i.e. the only mode where the
+// identity-less reject case (the `requireHost` precedent) is reachable. Their link
+// fixtures are seeded by direct column write (`api.linkGoogle`, GA-T4's helper) so
+// they do not depend on the route that is now mode-gated.
+//
+// The 409 collision message, verbatim. Asserted as a literal for the same reason the
+// UC-GA-003 strings are: the whole point of "no information about WHICH friend, ever"
+// is that this one sentence is the entire body.
+const LINK_CONFLICT = 'Tento Google účet je už prepojený s iným účtom'
+const NO_IDENTITY_401 = 'Prihláste sa svojím menom a heslom'
+const FORBIDDEN_403 = 'Nemáte oprávnenie na tento účet'
+
+test.describe('§UC-GA-004 — PUT /api/friends/:id/google-link (modern mode)', () => {
+  test('links an unlinked friend: 200 {googleLinked,googleEmail}, the row carries sub + email, and the body never names google_sub', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      await api.setModernMode()
+      const friend = await api.friendWithLogin(tag('link'))
+      const token = await api.loginToken(friend)
+      const sub = tag('sub-link')
+
+      const res = await api.linkReq(friend.id, token, { id_token: `TEST:${sub}:me@example.test` })
+      expect(res.status(), 'the owner links their own account').toBe(200)
+
+      const raw = await res.text()
+      // ⚠ The strip pin on RAW BYTES (§UC-GA-004's last acceptance criterion, the
+      // UC-IA-005 pattern): a future `SELECT *` spread would add the identity key back
+      // under its own name, and a key-list assertion over the fields we happen to know
+      // about would not notice.
+      expect(raw.match(STRIP_RE) || [], 'google_sub must appear zero times').toEqual([])
+
+      const body = JSON.parse(raw)
+      expect(Object.keys(body).sort(), 'the exact response §UC-GA-004 specifies').toEqual([
+        'googleEmail', 'googleLinked',
+      ])
+      expect(body.googleLinked).toBe(true)
+      expect(body.googleEmail).toBe('me@example.test')
+
+      const row = api.row(friend.id)
+      expect(row.google_sub, 'the identity key is stored').toBe(sub)
+      expect(row.google_email, 'the display address is stored').toBe('me@example.test')
+      expect(Number(row.google_prompt_dismissed), 'linking does not touch the prompt flag').toBe(0)
+    })
+  })
+
+  test('the SAME sub on THIS friend is idempotent 200 and refreshes google_email', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      await api.setModernMode()
+      const friend = await api.friendWithLogin(tag('idem'))
+      const token = await api.loginToken(friend)
+      const sub = tag('sub-idem')
+
+      expect((await api.linkReq(friend.id, token, { id_token: `TEST:${sub}:first@example.test` })).status()).toBe(200)
+      const again = await api.linkReq(friend.id, token, { id_token: `TEST:${sub}:second@example.test` })
+      expect(again.status(), 're-linking the same account is not a conflict with itself').toBe(200)
+      expect((await again.json()).googleEmail).toBe('second@example.test')
+
+      const row = api.row(friend.id)
+      expect(row.google_sub, 'the identity key is unchanged').toBe(sub)
+      expect(row.google_email, 'the display-only column follows the newest token').toBe('second@example.test')
+    })
+  })
+
+  test('an UNVERIFIED address never wipes a stored one on the same sub — but a REPLACE clears it', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      await api.setModernMode()
+      const friend = await api.friendWithLogin(tag('mailkeep'))
+      const token = await api.loginToken(friend)
+      const sub = tag('sub-mailkeep')
+
+      expect((await api.linkReq(friend.id, token, { id_token: `TEST:${sub}:keep@example.test` })).status()).toBe(200)
+
+      // ⚠ `TEST:<sub>:` with an EMPTY address half is the seam's way of producing what
+      // an `email_verified: false` token produces on the real path: `email: null`
+      // (`helpers/google-auth.js` `parseTestToken`). §UC-GA-004's literal
+      // `SET google_sub = ?, google_email = ?` would silently blank the address the
+      // friend already has — `POST /auth/google` guards the same column, and the two
+      // Google write paths must not disagree.
+      const again = await api.linkReq(friend.id, token, { id_token: `TEST:${sub}:` })
+      expect(again.status()).toBe(200)
+      expect((await again.json()).googleEmail, 'the response reports what was STORED').toBe('keep@example.test')
+      expect(api.row(friend.id).google_email, 'the stored address survives').toBe('keep@example.test')
+
+      // ⚠ The other half: on a DIFFERENT account the old address must go, or the
+      // profile would show the PREVIOUS account's e-mail beside the new link.
+      const other = tag('sub-mailother')
+      const replaced = await api.linkReq(friend.id, token, { id_token: `TEST:${other}:` })
+      expect(replaced.status()).toBe(200)
+      expect((await replaced.json()).googleEmail).toBeNull()
+      const row = api.row(friend.id)
+      expect(row.google_sub).toBe(other)
+      expect(row.google_email, 'a replace does not inherit the old address').toBeNull()
+    })
+  })
+
+  test('a DIFFERENT sub REPLACES the link in one write — no unlink ceremony, and the old sub is freed', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      await api.setModernMode()
+      const friend = await api.friendWithLogin(tag('replace'))
+      const token = await api.loginToken(friend)
+      const oldSub = tag('sub-old')
+      const newSub = tag('sub-new')
+
+      expect((await api.linkReq(friend.id, token, { id_token: `TEST:${oldSub}:old@example.test` })).status()).toBe(200)
+      const res = await api.linkReq(friend.id, token, { id_token: `TEST:${newSub}:new@example.test` })
+      expect(res.status(), 'a friend re-linking a new Google account needs no unlink first').toBe(200)
+
+      const row = api.row(friend.id)
+      expect(row.google_sub).toBe(newSub)
+      expect(row.google_email).toBe('new@example.test')
+
+      // ⚠ The replacement really RELEASED the old sub — otherwise "replace" would be
+      // "add", and the partial UNIQUE index would eventually refuse a legitimate link.
+      const other = await api.friendWithLogin(tag('replaceother'))
+      const otherToken = await api.loginToken(other)
+      expect((await api.linkReq(other.id, otherToken, { id_token: `TEST:${oldSub}:x@example.test` })).status(),
+        'the released sub is linkable by somebody else').toBe(200)
+    })
+  })
+
+  test('a sub held by ANOTHER friend ⇒ 409 whose body names no friend at all', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      await api.setModernMode()
+      const holder = await api.friendWithLogin(tag('holder'))
+      const holderToken = await api.loginToken(holder)
+      const sub = tag('sub-collide')
+      expect((await api.linkReq(holder.id, holderToken, { id_token: `TEST:${sub}:holder@example.test` })).status()).toBe(200)
+
+      const other = await api.friendWithLogin(tag('collider'))
+      const otherToken = await api.loginToken(other)
+      const res = await api.linkReq(other.id, otherToken, { id_token: `TEST:${sub}:holder@example.test` })
+      expect(res.status()).toBe(409)
+
+      const raw = await res.text()
+      const body = JSON.parse(raw)
+      expect(Object.keys(body).sort(), 'error + field, and NOTHING else').toEqual(['error', 'field'])
+      expect(body.error).toBe(LINK_CONFLICT)
+      expect(body.field).toBe('google')
+
+      // ⚠ THE ENUMERATION-ORACLE PIN. Naming the holder — id, name, uid, username, or
+      // the address on their account — would turn linking into a lookup across the
+      // whole friend table for anyone who can obtain a Google token.
+      const holderRow = api.row(holder.id)
+      for (const secret of [String(holder.id), holder.name, holder.uid, holder.username, 'holder@example.test', sub]) {
+        expect(raw, `the 409 must not disclose ${JSON.stringify(secret)}`).not.toContain(secret)
+      }
+      expect(raw.match(STRIP_RE) || []).toEqual([])
+
+      // Neither row moved.
+      expect(holderRow.google_sub, "the holder's link survives the attempt").toBe(sub)
+      expect(api.row(other.id).google_sub, 'the refused friend gained nothing').toBeNull()
+    })
+  })
+
+  test('the collision is NOT scoped to active friends — a deactivated holder still blocks the sub', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      await api.setModernMode()
+      const holder = await api.friendWithLogin(tag('deadholder'))
+      const holderToken = await api.loginToken(holder)
+      const sub = tag('sub-dead')
+      expect((await api.linkReq(holder.id, holderToken, { id_token: `TEST:${sub}:x@example.test` })).status()).toBe(200)
+      await api.deactivate(holder.id)
+
+      const other = await api.friendWithLogin(tag('deadcollider'))
+      const otherToken = await api.loginToken(other)
+      const res = await api.linkReq(other.id, otherToken, { id_token: `TEST:${sub}:x@example.test` })
+      // ⚠ An `AND active = 1` in the pre-check would let anyone holding a deactivated
+      // colleague's Google account inherit their identity key — and would then rely on
+      // the partial index to refuse it, i.e. on the layer that is NOT load-bearing.
+      expect(res.status(), 'a deactivated friend still owns their sub').toBe(409)
+      expect((await res.json()).error).toBe(LINK_CONFLICT)
+    })
+  })
+
+  test('friend A cannot link for friend B (403), and nothing is written', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      await api.setModernMode()
+      const a = await api.friendWithLogin(tag('ownera'))
+      const b = await api.friendWithLogin(tag('ownerb'))
+      const aToken = await api.loginToken(a)
+      const bToken = await api.loginToken(b)
+
+      const ab = await api.linkReq(b.id, aToken, { id_token: `TEST:${tag('sub-ab')}:x@example.test` })
+      expect(ab.status(), "A on B's row").toBe(403)
+      expect((await ab.json()).error).toBe(FORBIDDEN_403)
+      expect(api.row(b.id).google_sub).toBeNull()
+
+      // ⚠ BOTH DIRECTIONS. A one-way test passes against a guard that compares the
+      // wrong pair of ids in exactly one order.
+      const ba = await api.linkReq(a.id, bToken, { id_token: `TEST:${tag('sub-ba')}:x@example.test` })
+      expect(ba.status(), "B on A's row").toBe(403)
+      expect(api.row(a.id).google_sub).toBeNull()
+    })
+  })
+
+  test('the token guards answer 400 / 401 without writing — and never a 500', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      await api.setModernMode()
+      const friend = await api.friendWithLogin(tag('guards'))
+      const token = await api.loginToken(friend)
+
+      for (const [label, body, status, field] of [
+        ['a number', { id_token: 123 }, 400, 'id_token'],
+        ['an object', { id_token: {} }, 400, 'id_token'],
+        ['absent', {}, 400, 'id_token'],
+        ['over 4096 chars', { id_token: 'x'.repeat(4097) }, 400, 'id_token'],
+        ['a junk string (real verifier path)', { id_token: 'not-a-jwt-at-all' }, 401, undefined],
+      ]) {
+        const res = await api.linkReq(friend.id, token, body)
+        expect(res.status(), `${label}`).toBe(status)
+        const json = await res.json()
+        if (field) expect(json.field, label).toBe(field)
+        expect(api.row(friend.id).google_sub, `${label} wrote nothing`).toBeNull()
+      }
+    })
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// §UC-GA-004 / resolved decision #2 — the LEGACY refusal, and the guard ORDER
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠ THIS DESCRIBE IS THE CLOSED HOLE. Without the mode guard, `PUT …/google-link`
+// answered 200 in legacy mode to a session minted from the shared office password —
+// planting a Google credential on a colleague's row that activates on the flip to
+// modern. Every test here runs on the harness default (legacy), which is what
+// production is today.
+test.describe('§UC-GA-004 — PUT /api/friends/:id/google-link is refused in legacy mode', () => {
+  test('a friend linking their OWN account in legacy mode gets the 409, and nothing is written', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      // Deliberately NOT switching to modern — the seeded default is legacy.
+      const friend = await api.plainFriend(tag('legacylink'))
+      const token = await api.sessionFor(friend.id)
+
+      const res = await api.linkReq(friend.id, token, { id_token: `TEST:${tag('sub-legacy')}:x@example.test` })
+      expect(res.status(), 'resolved decision #2, applied to the link write').toBe(409)
+      const body = await res.json()
+      expect(body.error, 'byte-identical to POST /auth/google').toBe(LEGACY_409)
+      expect(body.field).toBe('auth_mode')
+      expect(api.row(friend.id).google_sub, 'no link exists to activate on the flip').toBeNull()
+    })
+  })
+
+  test('THE ATTACK: the shared office password alone cannot plant a link on somebody else', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api, ctx }) => {
+      const victim = await api.plainFriend(tag('victim'))
+
+      // ⚠ STEP 1 IS THE WHOLE POINT: the legacy dropdown login mints a per-friend
+      // session for ANY friend from the shared password alone, so an attacker HAS a
+      // resolved identity for the victim. `requireFriendOwner` and the identity gate
+      // both pass here — they are not what closes this.
+      const stolen = await api.sessionFor(victim.id)
+      expect(typeof stolen, 'the attacker really holds a victim-scoped session').toBe('string')
+
+      const res = await api.linkReq(victim.id, stolen, { id_token: 'TEST:ATTACKER-SUB:attacker@evil.example' })
+      expect(res.status(), 'the mode guard is what refuses it').toBe(409)
+
+      const row = api.row(victim.id)
+      expect(row.google_sub, "the victim's row is untouched").toBeNull()
+      expect(row.google_email).toBeNull()
+
+      // …and the planted credential would have worked after the flip, which is why the
+      // write and not the login is the thing that has to be refused.
+      await api.setModernMode()
+      const login = await ctx.post('/api/friends/auth/google', {
+        data: { id_token: 'TEST:ATTACKER-SUB:attacker@evil.example' },
+      })
+      expect(login.status(), 'nothing to log in as').toBe(401)
+      expect((await login.json()).code).toBe('not_linked')
+    })
+  })
+
+  test('the ownership and config guards still precede the mode guard', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api, ctx }) => {
+      const friend = await api.plainFriend(tag('legacyorder'))
+
+      // ⚠ Anonymous ⇒ 401, NOT 409: the ownership guard runs first, so this route's
+      // anonymous answer is the same on every deployment — which is what keeps
+      // `api-security.spec.js`'s target-agnostic sweep correct rather than accidental.
+      const anon = await ctx.put(`/api/friends/${friend.id}/google-link`, { data: { id_token: 'TEST:x:y@z.test' } })
+      expect(anon.status()).toBe(401)
+
+      // ⚠ Identity-less shared-password auth ⇒ 401, NOT 409: the identity gate is
+      // ahead of the mode guard, so the `requireHost`-precedent refusal stays
+      // observable (and would stay observable if the mode guard were ever relaxed).
+      const shared = await ctx.put(`/api/friends/${friend.id}/google-link`, {
+        headers: api.sharedPasswordHeaders(),
+        data: { id_token: 'TEST:x:y@z.test' },
+      })
+      expect(shared.status()).toBe(401)
+      expect((await shared.json()).error).toBe(NO_IDENTITY_401)
+      expect(api.row(friend.id).google_sub).toBeNull()
+    })
+  })
+
+  test('an unconfigured deployment answers 503 — config precedes the mode guard, mirroring POST /auth/google', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({ GOOGLE_CLIENT_ID: '', GOOGLE_AUTH_TEST_MODE: '' }, async ({ api }) => {
+      const friend = await api.plainFriend(tag('off'))
+      const token = await api.sessionFor(friend.id)
+
+      const res = await api.linkReq(friend.id, token, { id_token: 'TEST:whoever:x@example.test' })
+      // ⚠ 503, not the 409 the same request gets on a CONFIGURED legacy backend: an
+      // unconfigured deployment says "the feature is off" and stops.
+      expect(res.status()).toBe(503)
+      expect((await res.json()).error).toBe(NOT_CONFIGURED)
+    })
+  })
+})
+
+test.describe('§UC-GA-013 — the link endpoint sits on authLimiter', () => {
+  test('it shares the strict bucket with /friends/auth — no new bucket for the link', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    // Room for the harness's own admin login plus the fixture's two friend logins,
+    // which are on this same bucket.
+    await withGoogleBackend({ RATE_LIMIT_AUTH_MAX: '30' }, async ({ api, ctx }) => {
+      await api.setModernMode()
+      const friend = await api.friendWithLogin(tag('rl'))
+      const token = await api.loginToken(friend)
+      api.linkGoogle(friend.id, { sub: tag('sub-rl'), email: 'rl@example.test' })
+
+      let limited = false
+      let sawHandler = false
+      for (let i = 0; i < 60 && !limited; i++) {
+        const res = await api.linkReq(friend.id, token, { id_token: 'not-a-jwt-at-all' })
+        if (res.status() === 401) sawHandler = true
+        if (res.status() === 429) limited = true
+      }
+      // ⚠ §UC-GA-013's rule: this endpoint ACCEPTS an ID token for verification, so
+      // forged-token probing is credential guessing and belongs in the strict bucket.
+      expect(sawHandler, 'the route was really reached before the bucket ran out').toBe(true)
+      expect(limited, 'the link endpoint must be rate limited at all').toBe(true)
+
+      const pw = await ctx.post('/api/friends/auth', { data: { username: 'nobody', password: 'nope' } })
+      expect(pw.status(), 'the SAME bucket, not a private one').toBe(429)
+
+      // ⚠ And the two routes that verify NOTHING are deliberately NOT limited beyond
+      // their auth guard — with the auth bucket exhausted they still answer.
+      expect((await api.unlinkReq(friend.id, token)).status(), 'unlink needs no limiter').toBe(200)
+      expect((await api.dismissReq(friend.id, token)).status(), 'prompt-dismiss needs no limiter').toBe(200)
+    })
+  })
+})
+
+test.describe('§UC-GA-004 — DELETE /api/friends/:id/google-link', () => {
+  test('unlink twice ⇒ 200 + 200 with BOTH columns NULL in the row, and the prompt flag untouched', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const friend = await api.plainFriend(tag('unlink'))
+      await api.givePassword(friend.id)
+      const token = await api.sessionFor(friend.id)
+      const sub = tag('sub-unlink')
+      // Seeded directly: the unlink has no mode guard and must not depend on the route
+      // that does (GA-T4's `linkGoogle` helper, the friends-consolidation precedent).
+      api.linkGoogle(friend.id, { sub, email: 'me@example.test' })
+
+      // ⚠ Resolved decision #3, the friend half: the friend said "už sa nepýtať", and
+      // severing the LINK must not re-enable the nagging. Symmetric with FC-T3's admin
+      // unlink, which carries the same rule.
+      expect((await api.dismissReq(friend.id, token)).status()).toBe(200)
+      expect(Number(api.row(friend.id).google_prompt_dismissed), 'fixture really is dismissed').toBe(1)
+
+      const first = await api.unlinkReq(friend.id, token)
+      expect(first.status()).toBe(200)
+      const raw = await first.text()
+      expect(raw.match(STRIP_RE) || [], 'google_sub must appear zero times').toEqual([])
+      const body = JSON.parse(raw)
+      expect(body.googleLinked).toBe(false)
+      expect(body.googleEmail).toBeNull()
+      expect(body.warning, 'this friend HAS a password, so no warning').toBeUndefined()
+
+      let row = api.row(friend.id)
+      expect(row.google_sub, 'read back from the DB, not from the response').toBeNull()
+      expect(row.google_email).toBeNull()
+      expect(Number(row.google_prompt_dismissed), 'unlink NEVER touches google_prompt_dismissed').toBe(1)
+
+      // ⚠ 200, never 409 (the GSO-T5 DELETE-convergence precedent): a double click, a
+      // retry or a second tab must not be answered with an error nobody can act on.
+      const second = await api.unlinkReq(friend.id, token)
+      expect(second.status(), 'idempotent').toBe(200)
+      expect((await second.json()).googleLinked).toBe(false)
+      row = api.row(friend.id)
+      expect(row.google_sub).toBeNull()
+      expect(row.google_email).toBeNull()
+      expect(Number(row.google_prompt_dismissed)).toBe(1)
+    })
+  })
+
+  test('the session survives the unlink — a link is a login METHOD, not the session', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api, ctx }) => {
+      const friend = await api.plainFriend(tag('nosessionkill'))
+      await api.givePassword(friend.id)
+      const token = await api.sessionFor(friend.id)
+      api.linkGoogle(friend.id, { sub: tag('sub-keep'), email: 'x@example.test' })
+
+      expect((await api.unlinkReq(friend.id, token)).status()).toBe(200)
+
+      // ⚠ A REAL authenticated request, not a second call to the unlink route: the
+      // claim is that the session still works, not that this one route tolerates it.
+      const cycles = await ctx.get('/api/friends/cycles', { headers: api.bearer(token) })
+      expect(cycles.status(), 'the pre-existing session still authenticates').toBe(200)
+      const profile = await ctx.get(`/api/friends/${friend.id}/profile`, { headers: api.bearer(token) })
+      expect(profile.status(), 'and still resolves the same identity').toBe(200)
+    })
+  })
+
+  test("warning:'no_password' appears exactly when the friend has no password_hash — and the unlink still happens", async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const bare = await api.plainFriend(tag('nopass'))
+      const bareToken = await api.sessionFor(bare.id)
+      api.linkGoogle(bare.id, { sub: tag('sub-nopass'), email: 'x@example.test' })
+
+      const res = await api.unlinkReq(bare.id, bareToken)
+      // ⚠ It is ALLOWED, not refused (§UC-GA-004): the friend's own account, and the
+      // admin reset is the recovery path. GA-T7's confirm copy consumes this marker.
+      expect(res.status(), 'the endpoint still allows it').toBe(200)
+      expect((await res.json()).warning).toBe('no_password')
+      expect(api.row(bare.id).google_sub, 'and the link really is severed').toBeNull()
+
+      // The counter-case, in the same test, so the marker cannot be unconditional.
+      const withPass = await api.plainFriend(tag('haspass'))
+      await api.givePassword(withPass.id)
+      const t = await api.sessionFor(withPass.id)
+      api.linkGoogle(withPass.id, { sub: tag('sub-haspass'), email: 'x@example.test' })
+      expect((await (await api.unlinkReq(withPass.id, t)).json()).warning).toBeUndefined()
+    })
+  })
+
+  test('cross-friend unlink is 403 in both directions, identity-less auth is 401, and neither writes', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api, ctx }) => {
+      const a = await api.plainFriend(tag('ua'))
+      const b = await api.plainFriend(tag('ub'))
+      const aToken = await api.sessionFor(a.id)
+      const bToken = await api.sessionFor(b.id)
+      const subA = tag('sub-ua')
+      const subB = tag('sub-ub')
+      api.linkGoogle(a.id, { sub: subA })
+      api.linkGoogle(b.id, { sub: subB })
+
+      expect((await api.unlinkReq(b.id, aToken)).status(), 'A unlinking B').toBe(403)
+      expect((await api.unlinkReq(a.id, bToken)).status(), 'B unlinking A').toBe(403)
+      const shared = await ctx.delete(`/api/friends/${a.id}/google-link`, { headers: api.sharedPasswordHeaders() })
+      expect(shared.status(), 'identity-less shared password').toBe(401)
+
+      expect(api.row(a.id).google_sub, "A's link survived").toBe(subA)
+      expect(api.row(b.id).google_sub, "B's link survived").toBe(subB)
+    })
+  })
+
+  test('an unconfigured deployment answers 503 (unlike prompt-dismiss)', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({ GOOGLE_CLIENT_ID: '', GOOGLE_AUTH_TEST_MODE: '' }, async ({ api }) => {
+      const friend = await api.plainFriend(tag('offunlink'))
+      const token = await api.sessionFor(friend.id)
+      const res = await api.unlinkReq(friend.id, token)
+      expect(res.status()).toBe(503)
+      expect((await res.json()).error).toBe(NOT_CONFIGURED)
+    })
+  })
+})
+
+test.describe('§UC-GA-004 — POST /api/friends/:id/google-prompt-dismissed', () => {
+  test('sets the flag, is idempotent, persists across logins, and touches nothing else', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const friend = await api.friendWithLogin(tag('dismiss'))
+      const token = await api.sessionFor(friend.id)
+      const sub = tag('sub-dismiss')
+      api.linkGoogle(friend.id, { sub, email: 'me@example.test' })
+
+      const first = await api.dismissReq(friend.id, token)
+      expect(first.status()).toBe(200)
+      const raw = await first.text()
+      expect(raw.match(STRIP_RE) || []).toEqual([])
+      expect(JSON.parse(raw).googlePromptDismissed).toBe(true)
+      expect(Number(api.row(friend.id).google_prompt_dismissed)).toBe(1)
+
+      expect((await api.dismissReq(friend.id, token)).status(), 'idempotent').toBe(200)
+      expect(Number(api.row(friend.id).google_prompt_dismissed)).toBe(1)
+
+      // One-way by design: it is not a link write.
+      const row = api.row(friend.id)
+      expect(row.google_sub, 'the link is untouched').toBe(sub)
+      expect(row.google_email).toBe('me@example.test')
+
+      // ⚠ PERSISTS ACROSS LOGINS — a fresh login handshake reports it, which is what
+      // UC-GA-006's prompt keys on (no extra request).
+      const relogin = await api.passwordLogin(friend.username, friend.password)
+      expect(relogin.status()).toBe(200)
+      expect((await relogin.json()).googlePromptDismissed, 'a new login sees the flag').toBe(true)
+    })
+  })
+
+  test('it has NO Google dependency — 200 on a deployment where link and unlink answer 503', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({ GOOGLE_CLIENT_ID: '', GOOGLE_AUTH_TEST_MODE: '' }, async ({ api }) => {
+      const friend = await api.plainFriend(tag('offdismiss'))
+      const token = await api.sessionFor(friend.id)
+
+      // ⚠ THE ASYMMETRY IS THE POINT (§UC-GA-004): dismissing a prompt is a local UI
+      // preference, not a Google operation, so a deployment with the feature off must
+      // still be able to record it. Both halves in ONE test so the pair cannot drift.
+      expect((await api.linkReq(friend.id, token, { id_token: 'TEST:x:y@z.test' })).status(), 'link 503').toBe(503)
+      expect((await api.unlinkReq(friend.id, token)).status(), 'unlink 503').toBe(503)
+      const res = await api.dismissReq(friend.id, token)
+      expect(res.status(), 'prompt-dismiss has no Google dependency').toBe(200)
+      expect((await res.json()).googlePromptDismissed).toBe(true)
+      expect(Number(api.row(friend.id).google_prompt_dismissed)).toBe(1)
+    })
+  })
+
+  test('friend A cannot dismiss for friend B (403 both ways), and identity-less auth is 401', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api, ctx }) => {
+      const a = await api.plainFriend(tag('da'))
+      const b = await api.plainFriend(tag('db'))
+      const aToken = await api.sessionFor(a.id)
+      const bToken = await api.sessionFor(b.id)
+
+      expect((await api.dismissReq(b.id, aToken)).status()).toBe(403)
+      expect((await api.dismissReq(a.id, bToken)).status()).toBe(403)
+      const shared = await ctx.post(`/api/friends/${a.id}/google-prompt-dismissed`, { headers: api.sharedPasswordHeaders() })
+      expect(shared.status()).toBe(401)
+
+      expect(Number(api.row(a.id).google_prompt_dismissed), 'nobody else could silence A').toBe(0)
+      expect(Number(api.row(b.id).google_prompt_dismissed), 'nobody else could silence B').toBe(0)
+    })
+  })
+})
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// §UC-GA-004 — the SECOND layer of the dual-layer 409, exercised on its own
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠ WHY THIS NEEDS A SUBPROCESS PROBE AND CANNOT BE AN HTTP TEST.
+//
+// The handler's collision pre-check and its UPDATE are separated by NOTHING: the one
+// `await` on the route (the verifier) happens BEFORE both, and better-sqlite3 is
+// synchronous, so with `instances: 1` no request can interleave between them. The app
+// pre-check is therefore what fires on every reachable path — the `SQLITE_CONSTRAINT`
+// translation exists for the PM2-cluster scenario the CLAUDE.md concurrency note
+// already warns about, and over HTTP it is UNREACHABLE BY CONSTRUCTION. An HTTP test
+// asserting "409 on a taken sub" proves the pre-check and says nothing about the
+// translation — which is exactly the GSO-T10 trap ("deleting the app check leaves the
+// suite green").
+//
+// So the translation is exercised where it lives: `writeGoogleLink()` is imported from
+// the REAL route module into a throwaway process, against a REAL migrated database with
+// the REAL partial UNIQUE index, and called with a sub that is already taken — the
+// pre-check never runs. It must RETURN the conflict, not throw, and the object it
+// returns must be the exact body the route's pre-check branch answers with (they are
+// one frozen constant, so the two layers cannot drift).
+test.describe('§UC-GA-004 — the SQLITE_CONSTRAINT → 409 translation, without the app pre-check', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+  const SCHEMA_URL = 'file://' + join(REPO_ROOT, 'backend', 'src', 'db', 'schema.js')
+  const FRIENDS_ROUTE_URL = 'file://' + join(REPO_ROOT, 'backend', 'src', 'routes', 'friends.js')
+  const HAS_SOURCE = existsSync(join(REPO_ROOT, 'backend', 'src', 'routes', 'friends.js'))
+
+  function probe(body) {
+    const dir = mkdtempSync(join(tmpdir(), 'ga-t5-probe-'))
+    const script = join(dir, 'probe.mjs')
+    const dbFile = join(dir, 'probe.sqlite')
+    writeFileSync(
+      script,
+      `import db from '${SCHEMA_URL}';\n` +
+        `import { writeGoogleLink, GOOGLE_LINK_CONFLICT } from '${FRIENDS_ROUTE_URL}';\n` +
+        `const out = (() => {\n${body}\n})();\n` +
+        `console.log('@@PROBE@@' + JSON.stringify(out));\n`
+    )
+    try {
+      const stdout = execFileSync(process.execPath, [script], {
+        env: { ...process.env, DB_PATH: dbFile, GOOGLE_CLIENT_ID: '', GOOGLE_AUTH_TEST_MODE: '' },
+        encoding: 'utf8',
+        cwd: REPO_ROOT,
+      })
+      const m = stdout.match(/@@PROBE@@(.*)/)
+      if (!m) throw new Error(`probe produced no marker. stdout:\n${stdout}`)
+      return JSON.parse(m[1])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  test('a taken sub makes the UPDATE itself answer the conflict — returned, never thrown, and byte-identical to the pre-check 409', () => {
+    test.skip(!CAN_SPAWN_BACKEND || !HAS_SOURCE, NEEDS_SOURCE)
+    const out = probe(`
+      db.exec('PRAGMA foreign_keys = OFF');
+      db.run("INSERT INTO order_cycles (name) VALUES ('GA-T5 probe cycle')");
+      const cyc = db.get('SELECT id FROM order_cycles ORDER BY id DESC LIMIT 1').id;
+      db.run("INSERT INTO friends (name, cycle_id, access_token, google_sub, google_email) VALUES ('Holder', ?, 'ga5-holder', 'sub-taken', 'holder@example.test')", [cyc]);
+      db.run("INSERT INTO friends (name, cycle_id, access_token) VALUES ('Other', ?, 'ga5-other')", [cyc]);
+      const other = db.get("SELECT id FROM friends WHERE access_token = 'ga5-other'").id;
+
+      const res = {};
+      // The index really is there — otherwise every assertion below is vacuous.
+      res.indexSql = (db.get("SELECT sql FROM sqlite_master WHERE type='index' AND name = 'idx_friends_google_sub'") || {}).sql || null;
+
+      // ⚠ NO PRE-CHECK. This is the call the route makes AFTER its own check has
+      // passed — the PM2-cluster state where another process linked the sub in between.
+      try {
+        res.conflict = writeGoogleLink(other, 'sub-taken', 'other@example.test');
+      } catch (e) {
+        res.threw = { code: e && e.code, message: String(e && e.message) };
+      }
+      res.constant = GOOGLE_LINK_CONFLICT;
+      res.otherRow = db.get('SELECT google_sub, google_email FROM friends WHERE id = ?', [other]);
+      res.holderRow = db.get("SELECT google_sub, google_email FROM friends WHERE access_token = 'ga5-holder'");
+
+      // Non-vacuity control: a FREE sub goes through the same function and writes.
+      res.ok = writeGoogleLink(other, 'sub-free', 'other@example.test');
+      res.otherAfter = db.get('SELECT google_sub, google_email FROM friends WHERE id = ?', [other]);
+      return res;
+    `)
+
+    expect(out.indexSql, 'the partial UNIQUE index is the mechanism').toMatch(/UNIQUE INDEX/i)
+    expect(out.threw, 'the constraint must be TRANSLATED, not propagated as a 500').toBeUndefined()
+    expect(out.conflict, 'the write reports the conflict').toBeTruthy()
+    expect(out.conflict.conflict, 'and carries the SAME frozen body the pre-check answers with').toEqual({
+      error: LINK_CONFLICT,
+      field: 'google',
+    })
+    expect(out.constant, 'one constant, two layers — they cannot drift').toEqual(out.conflict.conflict)
+
+    // Nothing was written on the refused path, and the holder is untouched.
+    expect(out.otherRow.google_sub).toBeNull()
+    expect(out.otherRow.google_email).toBeNull()
+    expect(out.holderRow.google_sub).toBe('sub-taken')
+    expect(out.holderRow.google_email).toBe('holder@example.test')
+
+    // …and the same function on a free sub really does write, so "conflict" above is
+    // a decision, not a function that never works.
+    expect(out.ok).toEqual({ ok: true })
+    expect(out.otherAfter.google_sub).toBe('sub-free')
+    expect(out.otherAfter.google_email).toBe('other@example.test')
   })
 })
