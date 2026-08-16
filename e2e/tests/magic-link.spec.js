@@ -31,7 +31,8 @@
 // Fixtures are built per test, never in a shared `beforeAll` (the GSO-T8
 // worker-restart lesson).
 
-import { test, expect, request as playwrightRequest } from '@playwright/test'
+// `devices` is ML-T5's: §UC-ML-006's A12 case needs a coarse-pointer descriptor.
+import { test, expect, devices, request as playwrightRequest } from '@playwright/test'
 import { DatabaseSync } from 'node:sqlite'
 import crypto from 'node:crypto'
 // FRIEND_NAME / FRIENDS_PASSWORD are ML-T4's: the §UC-ML-007 block at the bottom
@@ -1484,5 +1485,351 @@ test.describe('UC-ML-007 — remember-me is a TTL, not a storage switch', () => 
     await expect(page.getByText('Prihlásenie')).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toHaveCount(0)
     expect(await readStored(page), 'the lapsed payload is dropped, not kept').toBeNull()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ML-T5 — 09 §UC-ML-006: the login-screen recovery affordance, the one-field
+// request form, and the neutral success state.
+//
+// The client half of the enumeration guarantee ML-T2 built server-side. Three
+// properties are load-bearing and each is asserted for its own reason:
+//
+//  1. ⚠ ONE SUCCESS SENTENCE FOR EVERY 200. The real backend already answers with a
+//     byte-identical body on every path, so a test that only drives real requests
+//     would pass even on a client that branched — it would simply never see two
+//     different bodies. The non-vacuous half therefore STUBS a 200 carrying obvious
+//     match details (`matched`, `email`, `sent`) and asserts the same sentence
+//     still renders. That is the assertion a future "helpful" edit reddens.
+//  2. ⚠ AUTH-MODE GATING. In legacy/transition the recovery UI does not exist. The
+//     shared seed IS legacy, so the absence is asserted against the card an
+//     anonymous visitor really gets — no stub involved.
+//  3. ⚠ THE ZERO-PIXEL ARIA LAYER (RD-FO-1). The affordance is a bare `<span>`, so
+//     Enter and Space are keyboard parity, not decoration — both are driven.
+//
+// The mode probe is stubbed per page, exactly as the §UC-ML-007 block above does
+// (modern-login.spec.js documents at length why nothing may write `auth_mode` on
+// the shared server). Every other request still hits the real backend.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ⚠ THE literal. §UC-ML-006's neutral sentence, asserted as an exact string so a
+// reworded or a second, "more helpful" variant reddens.
+// ⚠ Copy status: PROPOSED, NOT SIGNED (the consolidated §UC-ML-006 OPEN).
+const RECOVERY_SUCCESS =
+  'Ak máme k vášmu účtu e-mail, poslali sme naň odkaz na prihlásenie. Skontrolujte si schránku.'
+
+const RECOVERY_LABEL = 'Zabudli ste heslo?'
+const RECOVERY_FIELD_LABEL = 'Užívateľské meno alebo e-mail'
+const RECOVERY_SUBMIT = 'Poslať odkaz na prihlásenie'
+const RECOVERY_BACK = 'Späť na prihlásenie'
+
+// `--ink-dim` (friends-theme.css:11), resolved.
+const INK_DIM = 'rgba(10, 10, 10, 0.66)'
+
+// A12: 15.99px zooms mobile Safari, 16px does not.
+const IOS_ZOOM_THRESHOLD = 16
+// `defaultBrowserType` must be stripped — see ios-input-zoom.spec.js's note.
+const { defaultBrowserType: _ML5_UNUSED, ...IPHONE_ML5 } = devices['iPhone 13']
+
+const stubModernMode = (page) =>
+  page.route('**/friends/auth-mode', (route) => route.fulfill({ json: { authMode: 'modern' } }))
+
+const forgotLink = (page) => page.getByTestId('forgot-password')
+const recoveryForm = (page) => page.getByTestId('recovery-form')
+const recoveryField = (page) => page.getByTestId('recovery-identifier')
+
+/** Open the modern login card, then swap it to the recovery form. */
+async function openRecovery(page) {
+  await expect(forgotLink(page)).toBeVisible()
+  await forgotLink(page).click()
+  await expect(recoveryForm(page)).toBeVisible()
+}
+
+test.describe('UC-ML-006 — the recovery affordance + request form (modern card)', () => {
+  let ctx
+  let api
+  let uniq
+
+  test.beforeEach(async ({ page }) => {
+    ctx = await playwrightRequest.newContext({ baseURL: BASE_URL })
+    uniq = uniqTag()
+    const adminToken = (await (await ctx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })).json()).token
+    api = makeApi(ctx, adminToken)
+    await stubModernMode(page)
+  })
+
+  test.afterEach(async () => {
+    await ctx.dispose()
+  })
+
+  test('the modern card shows the affordance UNDER the remember-me row and ABOVE the submit button', async ({ page }) => {
+    await page.goto('/')
+
+    const link = forgotLink(page)
+    await expect(link).toHaveText(RECOVERY_LABEL)
+
+    // Placement is the acceptance criterion, so it is measured rather than assumed
+    // from source order: geometry is what a reader actually sees.
+    const remember = page.getByRole('checkbox', { name: 'Zapamätať si ma na tomto zariadení' })
+    const submit = page.getByRole('button', { name: 'Prihlásiť sa' })
+    const [linkBox, rememberBox, submitBox] = await Promise.all([
+      link.boundingBox(), remember.boundingBox(), submit.boundingBox(),
+    ])
+    expect(linkBox.y, 'the affordance sits UNDER the remember-me row').toBeGreaterThan(rememberBox.y)
+    expect(linkBox.y, 'the affordance sits ABOVE the submit button').toBeLessThan(submitBox.y)
+
+    // 02's small-print treatment, verbatim from §UC-ML-006.
+    await expect(link).toHaveCSS('font-size', '13.5px')
+    await expect(link).toHaveCSS('color', INK_DIM)
+    await expect(link).toHaveCSS('text-decoration-line', 'underline')
+    // ⚠ A10 / RD-FL-8b: unclassed plain text inside `.app` is out of the theme's
+    // reach, so preflight's `html{line-height:1.5}` applies unless the call site
+    // says otherwise.
+    await expect(link).toHaveCSS('line-height', 'normal')
+  })
+
+  // ⚠ ALL FOUR plain-text sites this row adds, not just the affordance. Each
+  // carries its own inline `line-height:normal` and each would drift to
+  // preflight's 1.5 on its own if that declaration were dropped — silently, since
+  // A10's class list cannot reach any of them (RD-FL-8b). The affordance alone was
+  // pinned first; a removal in the other three would have gone unnoticed.
+  test('every plain-text site this row adds declares line-height:normal (A10)', async ({ page }) => {
+    await page.goto('/')
+
+    // 1 — the affordance, on the login form.
+    await expect(forgotLink(page)).toHaveCSS('line-height', 'normal')
+
+    // 2 — "Späť na prihlásenie" on the REQUEST FORM.
+    await openRecovery(page)
+    await expect(recoveryForm(page).getByRole('button', { name: RECOVERY_BACK }))
+      .toHaveCSS('line-height', 'normal')
+
+    // 3 + 4 — the success sentence and the SUCCESS state's own back link. They are
+    // a different pair of nodes from the two above (separate `v-else` branch), so
+    // reaching them needs a real submit.
+    await page.route('**/api/magic-link/request', (route) => route.fulfill({ json: { success: true } }))
+    await recoveryField(page).fill('someone')
+    await page.getByRole('button', { name: RECOVERY_SUBMIT }).click()
+
+    await expect(page.getByTestId('recovery-sent')).toHaveCSS('line-height', 'normal')
+    await expect(page.getByRole('button', { name: RECOVERY_BACK }))
+      .toHaveCSS('line-height', 'normal')
+  })
+
+  test('⚠ a reply that settles AFTER "Späť na prihlásenie" must not yank the card back', async ({ page }) => {
+    // The race, driven for real: hold the POST open, leave the form, then let it
+    // settle. Before the `stillOnRecoveryForm()` guard this flipped the card to the
+    // success state on top of a login form the friend is plausibly typing into —
+    // `#pp-login-username` 1 → 0, `recovery-sent` 0 → 1.
+    let release
+    const held = new Promise((resolve) => { release = resolve })
+    await page.route('**/api/magic-link/request', async (route) => {
+      await held
+      await route.fulfill({ json: { success: true } })
+    })
+
+    await page.goto('/')
+    await openRecovery(page)
+    await recoveryField(page).fill('someone')
+
+    const inFlight = page.waitForRequest((r) =>
+      r.method() === 'POST' && new URL(r.url()).pathname === '/api/magic-link/request')
+    await page.getByRole('button', { name: RECOVERY_SUBMIT }).click()
+    await inFlight
+
+    // Leave while it is still open.
+    await page.getByRole('button', { name: RECOVERY_BACK }).click()
+    await expect(page.locator('#pp-login-username')).toBeVisible()
+
+    // …now let the reply land, and wait until it really has.
+    const settled = page.waitForResponse((r) =>
+      new URL(r.url()).pathname === '/api/magic-link/request')
+    release()
+    await settled
+
+    // The login form must still be the thing on screen.
+    await expect(page.locator('#pp-login-username'), 'a settled reply must not replace the login form')
+      .toBeVisible()
+    await expect(page.getByTestId('recovery-sent'), 'the stale reply must not re-arm the success state')
+      .toHaveCount(0)
+    await expect(recoveryForm(page)).toHaveCount(0)
+    // And the flow is not wedged: the in-flight flag is request-scoped, so the
+    // affordance still opens a usable form afterwards.
+    await openRecovery(page)
+    await recoveryField(page).fill('again')
+    await expect(page.getByRole('button', { name: RECOVERY_SUBMIT })).toBeEnabled()
+  })
+
+  test('the affordance carries the house zero-pixel ARIA layer (RD-FO-1)', async ({ page }) => {
+    await page.goto('/')
+    const link = forgotLink(page)
+    await expect(link).toHaveRole('button')
+    await expect(link).toHaveAttribute('tabindex', '0')
+    // A bare span is NOT a submit control — that is the whole reason it is a span
+    // (the eye toggle's precedent one field up).
+    expect(await link.evaluate((el) => el.tagName.toLowerCase())).toBe('span')
+  })
+
+  test('Enter on the focused affordance opens the request form', async ({ page }) => {
+    await page.goto('/')
+    await forgotLink(page).focus()
+    await page.keyboard.press('Enter')
+    await expect(recoveryForm(page)).toBeVisible()
+  })
+
+  test('Space on the focused affordance opens the request form', async ({ page }) => {
+    await page.goto('/')
+    await forgotLink(page).focus()
+    await page.keyboard.press('Space')
+    await expect(recoveryForm(page)).toBeVisible()
+  })
+
+  test('clicking swaps the CARD CONTENT to the one-field form — same route, same card', async ({ page }) => {
+    await page.goto('/')
+    const before = page.url()
+    await openRecovery(page)
+
+    expect(page.url(), 'no route change — the card swaps in place').toBe(before)
+    // The login form is gone from the card…
+    await expect(page.getByLabel(/^užívateľské meno$/i)).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Prihlásiť sa' })).toHaveCount(0)
+    // …and the form lives in the SAME `.card`, inside the same 480px column.
+    await expect(recoveryForm(page).locator('xpath=ancestor::*[contains(@class,"card")][1]')).toHaveCount(1)
+
+    const field = recoveryField(page)
+    await expect(page.getByText(RECOVERY_FIELD_LABEL, { exact: true })).toBeVisible()
+    await expect(field).toHaveAttribute('type', 'text')
+    await expect(field).toHaveAttribute('maxlength', '160')
+    await expect(field).toHaveAttribute('autocapitalize', 'none')
+    await expect(field).toHaveAttribute('autocorrect', 'off')
+    // ⚠ A12: `.inp` is what carries the ≥16px coarse-pointer rule.
+    await expect(field).toHaveClass(/\binp\b/)
+    // The 2026-08-10 no-placeholder decision.
+    expect(await field.getAttribute('placeholder'), 'no placeholder on this screen').toBeNull()
+
+    const submit = page.getByRole('button', { name: RECOVERY_SUBMIT })
+    await expect(submit).toHaveClass(/\bbtn\b/)
+    await expect(submit).toHaveClass(/\baccent\b/)
+    await expect(submit).toHaveClass(/\bblock\b/)
+    await expect(submit, 'disabled while the field is empty').toBeDisabled()
+    await field.fill('someone');
+    await expect(submit).toBeEnabled()
+  })
+
+  test('"Späť na prihlásenie" restores the login form with its state preserved', async ({ page }) => {
+    await page.goto('/')
+    await page.getByLabel(/^užívateľské meno$/i).fill('typed-username')
+    await page.getByLabel(/^heslo$/i).fill('typed-password')
+
+    await openRecovery(page)
+    await page.getByRole('button', { name: RECOVERY_BACK }).click()
+
+    await expect(recoveryForm(page)).toHaveCount(0)
+    await expect(page.getByLabel(/^užívateľské meno$/i)).toHaveValue('typed-username')
+    await expect(page.getByLabel(/^heslo$/i)).toHaveValue('typed-password')
+    await expect(forgotLink(page), 'the affordance comes back with the card').toBeVisible()
+  })
+
+  test('an UNKNOWN identifier and a KNOWN one render the identical success sentence', async ({ page }) => {
+    const friend = await api.fullFriend('mlt5known', uniq)
+
+    const sentences = []
+    for (const identifier of [`nobody-${uniq}@example.test`, friend.username]) {
+      await page.goto('/')
+      await openRecovery(page)
+      await recoveryField(page).fill(identifier)
+      await page.getByRole('button', { name: RECOVERY_SUBMIT }).click()
+
+      const banner = page.getByTestId('recovery-sent')
+      await expect(banner).toBeVisible()
+      sentences.push((await banner.textContent()).trim())
+      // The way back is offered from the success state too.
+      await expect(page.getByRole('button', { name: RECOVERY_BACK })).toBeVisible()
+    }
+
+    expect(sentences[0], 'the neutral sentence, verbatim').toBe(RECOVERY_SUCCESS)
+    expect(sentences[1], 'a known identifier must read EXACTLY the same').toBe(sentences[0])
+  })
+
+  test('⚠ the client never branches on server data — a 200 carrying match details reads the same', async ({ page }) => {
+    // Non-vacuity for the rule above: the real backend is byte-identical on every
+    // path, so only a fabricated "helpful" body can catch a client that branches.
+    await page.route('**/api/magic-link/request', (route) =>
+      route.fulfill({ json: { success: true, matched: true, sent: true, email: 'z***@example.test' } })
+    )
+    await page.goto('/')
+    await openRecovery(page)
+    await recoveryField(page).fill('whoever')
+    await page.getByRole('button', { name: RECOVERY_SUBMIT }).click()
+
+    const banner = page.getByTestId('recovery-sent')
+    await expect(banner).toHaveText(RECOVERY_SUCCESS)
+    // Nothing the server volunteered may reach the screen.
+    const card = await page.locator('.card').first().textContent()
+    expect(card, 'a masked address is still an existence signal').not.toContain('example.test')
+    expect(card).not.toContain('matched')
+  })
+
+  test('a 400 renders the SERVER message in the card\'s .banner.danger.slim slot', async ({ page }) => {
+    await page.route('**/api/magic-link/request', (route) =>
+      route.fulfill({ status: 400, json: { error: 'Zadajte užívateľské meno alebo e-mail.', field: 'identifier' } })
+    )
+    await page.goto('/')
+    await openRecovery(page)
+    await recoveryField(page).fill('x')
+    await page.getByRole('button', { name: RECOVERY_SUBMIT }).click()
+
+    await expect(recoveryForm(page).locator('.banner.danger.slim'))
+      .toHaveText('Zadajte užívateľské meno alebo e-mail.')
+    await expect(page.getByTestId('recovery-sent'), 'a 400 is not a success').toHaveCount(0)
+    await expect(page.getByRole('button', { name: RECOVERY_SUBMIT }), 'the form stays usable').toBeEnabled()
+  })
+
+  test('a 429 renders the SERVER message in the same slot', async ({ page }) => {
+    await page.route('**/api/magic-link/request', (route) =>
+      route.fulfill({ status: 429, json: { error: 'Priveľa pokusov. Skúste to o chvíľu.' } })
+    )
+    await page.goto('/')
+    await openRecovery(page)
+    await recoveryField(page).fill('x')
+    await page.getByRole('button', { name: RECOVERY_SUBMIT }).click()
+
+    await expect(recoveryForm(page).locator('.banner.danger.slim'))
+      .toHaveText('Priveľa pokusov. Skúste to o chvíľu.')
+    await expect(page.getByTestId('recovery-sent')).toHaveCount(0)
+  })
+
+  test.describe('on a phone (coarse pointer)', () => {
+    test.use({ ...IPHONE_ML5 })
+
+    test('the request field computes at least 16px — A12', async ({ page }) => {
+      await page.goto('/')
+      await openRecovery(page)
+
+      const m = await page.evaluate(() => ({
+        coarse: matchMedia('(pointer: coarse)').matches,
+        fontSize: parseFloat(getComputedStyle(document.querySelector('[data-testid="recovery-identifier"]')).fontSize),
+      }))
+      expect(m.coarse, 'the emulated device must report pointer: coarse').toBe(true)
+      expect(m.fontSize, `the recovery field would trigger iOS zoom at ${m.fontSize}px`)
+        .toBeGreaterThanOrEqual(IOS_ZOOM_THRESHOLD)
+    })
+  })
+})
+
+test.describe('UC-ML-006 — LEGACY mode renders no recovery UI at all', () => {
+  // ⚠ No stub: the shared seed IS legacy (e2e/seed.mjs), so this is the card an
+  // anonymous visitor really gets. The confirmed decision is that in
+  // legacy/transition the recovery affordance does not exist.
+  test('the legacy login screen carries ZERO recovery affordance', async ({ page }) => {
+    await page.goto('/')
+    await expect(page.getByText('Prihlásenie')).toBeVisible()
+
+    await expect(forgotLink(page)).toHaveCount(0)
+    await expect(page.getByText(RECOVERY_LABEL)).toHaveCount(0)
+    await expect(page.getByText(RECOVERY_FIELD_LABEL)).toHaveCount(0)
+    await expect(page.getByRole('button', { name: RECOVERY_SUBMIT })).toHaveCount(0)
+    await expect(recoveryForm(page)).toHaveCount(0)
+    await expect(page.getByText(RECOVERY_SUCCESS)).toHaveCount(0)
   })
 })

@@ -68,6 +68,20 @@ const loginPassword = ref('')
 // (RD-FL-6). Same for the three credential fields above it.
 const showLoginPassword = ref(false)
 
+// --- Magic-link recovery (09 §UC-ML-006) -------------------------------------
+//
+// MODERN CARD ONLY. In legacy/transition the recovery UI does not exist at all
+// (confirmed decision) — see the `authMode === 'modern'` gate on the markup.
+//
+// Three states, one card: 'off' renders the login form, 'form' the one-field
+// request, 'sent' the neutral success sentence. No route change — §UC-ML-006 is
+// explicit that only the CARD'S CONTENT swaps, so `loginUsername`/`loginPassword`
+// stay in their refs and come back untouched via "Späť na prihlásenie".
+const recoveryView = ref('off') // 'off' | 'form' | 'sent'
+const recoveryIdentifier = ref('')
+const recoveryError = ref('')
+const recoverySending = ref(false)
+
 // --- Page state -------------------------------------------------------------
 const loading = ref(true)
 // ⚠ Initial-load failure only. Its sole writer is `loadInitialData`'s outer
@@ -452,6 +466,77 @@ async function authenticatePersonal() {
   }
 }
 
+// --- Magic-link recovery (09 §UC-ML-006) -------------------------------------
+
+function openRecovery() {
+  // A stale login error must not ride along into a different form; the recovery
+  // branch renders its own message in its own copy of the same banner slot.
+  authError.value = ''
+  recoveryError.value = ''
+  recoveryIdentifier.value = ''
+  recoveryView.value = 'form'
+}
+
+function closeRecovery() {
+  recoveryError.value = ''
+  recoveryView.value = 'off'
+}
+
+/** ⚠ THE SEQUENCE GUARD for the single-flight request below.
+ *
+ *  The hazard, reproduced: submit → click "Späť na prihlásenie" while the POST is
+ *  still in flight → the response settles and yanks the card back to the success
+ *  state, on top of a login form the friend is plausibly already typing into. The
+ *  refs survive; their keystrokes and their screen do not.
+ *
+ *  ⚠ A STATE PREDICATE, not the `let seq = ++loadSeq` counter `GuestShareDialog` /
+ *  `GuestSubOrders` / `loadGuestUnpaid` use — deliberately, and the difference is
+ *  not stylistic. A counter answers "is a NEWER REQUEST outstanding?", which is the
+ *  right question when one component is reused across several entities. Here there
+ *  is only ever one request in flight (`recoverySending` early-returns the second),
+ *  and the thing that invalidates the reply is not another request but THE USER
+ *  LEAVING — via `closeRecovery()` or `switchUser()`, neither of which mints a
+ *  request and so neither of which would bump a counter. A counter would therefore
+ *  have to be bumped by hand in both, i.e. two more lines someone can forget; this
+ *  predicate asks the question that actually matters ("am I still showing the form
+ *  this reply belongs to?") and covers both exits for free.
+ */
+function stillOnRecoveryForm() {
+  return recoveryView.value === 'form'
+}
+
+async function requestMagicLink() {
+  const identifier = recoveryIdentifier.value.trim()
+  if (!identifier || recoverySending.value) return
+
+  recoveryError.value = ''
+  recoverySending.value = true
+  try {
+    await api.requestMagicLink(identifier)
+    // ⚠ 09 §UC-ML-006 — THE ENUMERATION GUARANTEE HAS A CLIENT HALF.
+    //
+    // Every 200 lands here and nothing about the response is read. ML-T2 made the
+    // server's body byte-identical across match / no match / no e-mail / no
+    // password / inactive / ambiguous e-mail / cooldown / legacy mode / every
+    // mailer outcome — and that work is undone the moment this branch consults
+    // `result` for anything. There is deliberately no variable to branch on: the
+    // await's value is not even bound. A future edit that renders a second, "more
+    // helpful" sentence re-opens account enumeration on a public, unauthenticated
+    // screen. Pinned by the stubbed-200 test in `magic-link.spec.js`.
+    if (stillOnRecoveryForm()) recoveryView.value = 'sent'
+  } catch (e) {
+    // 400 (input shape) and 429 (magicLinkLimiter) only — every other outcome is
+    // a 200 above. The server's own Slovak message goes into the card's existing
+    // `.banner.danger.slim` slot (03 §UC-FL-002's error convention).
+    if (stillOnRecoveryForm()) recoveryError.value = e.message
+  } finally {
+    // ⚠ NOT guarded, deliberately: the in-flight flag belongs to the request, not
+    // to the screen. Left stuck at `true` after the user walked away, the submit
+    // button would come back permanently disabled on the next visit.
+    recoverySending.value = false
+  }
+}
+
 // ---------------------------------------------------------------------------
 // What the session view sends back up. The parent is the single owner of the
 // credential store (token + localStorage) and of `currentFriend`, because both
@@ -583,6 +668,21 @@ function switchUser() {
   loginUsername.value = ''
   loginPassword.value = ''
   showLoginPassword.value = false
+  // ⚠ 09 §UC-ML-006 — kind 3 (THE LOGIN FORM). The recovery view is part of the
+  // login card, so nothing unmounts it either, and `recoveryIdentifier` holds a
+  // username or an e-mail the PREVIOUS person typed.
+  //
+  // ⚠ DO NOT DELETE THIS AS DEAD CODE. It looks redundant, and along the ordinary
+  // path it is: `openRecovery()` blanks the identifier on entry, and the only
+  // route from the recovery view to an authenticated session runs through
+  // `closeRecovery()`. What it actually guards is the RACE — an in-flight
+  // `requestMagicLink()` settling after a logout. `stillOnRecoveryForm()` reads
+  // `recoveryView`, so this reset is precisely what makes that reply a no-op;
+  // without it the settle would re-arm `'sent'` past the logout and put the
+  // previous person's flow back on screen. The two halves are one mechanism.
+  recoveryView.value = 'off'
+  recoveryIdentifier.value = ''
+  recoveryError.value = ''
   entry.value = null
   error.value = ''
   authState.value = 'login'
@@ -737,6 +837,13 @@ const dropdownFriends = computed(() => {
       </div>
 
       <div class="card flex flex-col gap-4 p-[18px] sm:p-6">
+        <!-- ==============================================================
+             09 §UC-ML-006 — the card has THREE contents, not one. Only the
+             card's inside swaps; the 480px column, the headline and the
+             dashed footnote below are untouched, and there is no route
+             change. `v-if`/`v-else-if`/`v-else` over `recoveryView`.
+             ============================================================== -->
+        <template v-if="recoveryView === 'off'">
         <!-- The prototype has no login-error state; `.banner danger slim`
              follows 02 §UC-DS-013's semantic grammar and keeps the card compact. -->
         <div v-if="authError" class="banner danger slim">
@@ -824,6 +931,37 @@ const dropdownFriends = computed(() => {
           <span @click="rememberMe = !rememberMe">Zapamätať si ma na tomto zariadení</span>
         </label>
 
+        <!-- ⚠⚠ 09 §UC-ML-006 — THE LAYOUT SEAM FOR MODULE 10 (GA-T4). ⚠⚠
+             This affordance is the LAST MEMBER OF THE PASSWORD FIELD GROUP:
+             username → password → remember-me → "Zabudli ste heslo?" →
+             "Prihlásiť sa". It belongs to password login and to nothing else,
+             which is why it sits INSIDE the group rather than at the bottom of
+             the card. GA-T4 adds a Google button to this same card; its "alebo"
+             divider and button therefore go BELOW the submit button — AFTER this
+             whole group — so the two never contest one slot. Do not move this
+             span down to make room; move the Google block further down instead.
+
+             Bare `<span>` + the house zero-pixel ARIA layer (role/tabindex/
+             Enter/Space), exactly like the eye toggle above: a `<button>` inside
+             this card could act as a submit control, and a pointer-only span
+             would be an accessibility regression (RD-FO-1).
+
+             ⚠ `line-height:normal`: PLAIN TEXT with no theme class, so A10's
+             class list cannot reach it and preflight's `html{line-height:1.5}`
+             applies. This is the fifth site in RD-FL-8b's count (the third on
+             this screen, after the dashed footnote and the remember-me label);
+             every unclassed string this row adds — here, both "Späť na
+             prihlásenie" spans and the success sentence — carries it. -->
+        <span
+          data-testid="forgot-password"
+          role="button"
+          tabindex="0"
+          style="align-self:flex-start;font-size:13.5px;line-height:normal;color:var(--ink-dim);text-decoration:underline;cursor:pointer"
+          @click="openRecovery()"
+          @keydown.enter.prevent="openRecovery()"
+          @keydown.space.prevent="openRecovery()"
+        >Zabudli ste heslo?</span>
+
         <button
           class="btn accent block"
           :disabled="loading || !loginUsername || !loginPassword"
@@ -831,6 +969,77 @@ const dropdownFriends = computed(() => {
         >
           {{ loading ? 'Overujem...' : 'Prihlásiť sa' }}
         </button>
+        </template>
+
+        <!-- ── The request form (09 §UC-ML-006) ───────────────────────────
+             ONE field, because the friend may not remember which of the two
+             they registered with; the server tries both. -->
+        <template v-else-if="recoveryView === 'form'">
+        <div data-testid="recovery-form" class="flex flex-col gap-4">
+          <div v-if="recoveryError" class="banner danger slim">
+            <span class="dot"></span>
+            <div>{{ recoveryError }}</div>
+          </div>
+
+          <div>
+            <label class="field-lbl" for="pp-recovery-identifier">Užívateľské meno alebo e-mail</label>
+            <!-- ⚠ `.inp` is MANDATORY (A12): it is the only selector the
+                 `@media (pointer: coarse)` block raises to 16px, and a field
+                 under 16px re-scales the whole app on iOS for the rest of the
+                 session. No placeholder (the 2026-08-10 decision). -->
+            <input
+              id="pp-recovery-identifier"
+              v-model="recoveryIdentifier"
+              data-testid="recovery-identifier"
+              class="inp"
+              type="text"
+              maxlength="160"
+              autocapitalize="none"
+              autocorrect="off"
+              autocomplete="username"
+              @keydown.enter.prevent="requestMagicLink()"
+            />
+          </div>
+
+          <button
+            class="btn accent block"
+            :disabled="recoverySending || !recoveryIdentifier.trim()"
+            @click="requestMagicLink()"
+          >
+            Poslať odkaz na prihlásenie
+          </button>
+
+          <span
+            role="button"
+            tabindex="0"
+            style="align-self:center;font-size:13.5px;line-height:normal;color:var(--ink-dim);text-decoration:underline;cursor:pointer"
+            @click="closeRecovery()"
+            @keydown.enter.prevent="closeRecovery()"
+            @keydown.space.prevent="closeRecovery()"
+          >Späť na prihlásenie</span>
+        </div>
+        </template>
+
+        <!-- ── The neutral success state (09 §UC-ML-006) ──────────────────
+             ⚠ ONE SENTENCE FOR EVERY 200. See `requestMagicLink()` — nothing
+             from the response reaches this branch, by construction. -->
+        <template v-else>
+        <div class="flex flex-col gap-4">
+          <div
+            data-testid="recovery-sent"
+            style="font-size:14px;line-height:normal;color:var(--ink)"
+          >Ak máme k vášmu účtu e-mail, poslali sme naň odkaz na prihlásenie. Skontrolujte si schránku.</div>
+
+          <span
+            role="button"
+            tabindex="0"
+            style="align-self:center;font-size:13.5px;line-height:normal;color:var(--ink-dim);text-decoration:underline;cursor:pointer"
+            @click="closeRecovery()"
+            @keydown.enter.prevent="closeRecovery()"
+            @keydown.space.prevent="closeRecovery()"
+          >Späť na prihlásenie</span>
+        </div>
+        </template>
       </div>
 
       <!-- ⚠ `line-height:normal` is NOT in the prototype and is not decoration:
