@@ -333,7 +333,7 @@ router.post('/:id/approve', requireAdmin, async (req, res) => {
     }
 
     // ⚠ ORDERING RULE (UC-IA-005): bcrypt and the two collision-retry loops run
-    // BEFORE the transaction. `hashPassword` is bcrypt cost 10 — ~100 ms of blocking
+    // BEFORE the transaction. `hashPassword` is bcrypt cost 10 — ~62 ms of blocking
     // CPU — and better-sqlite3 transactions are synchronous, so hashing inside one
     // would hold the write lock for the whole time. Everything below the transaction
     // boundary is pure SQL.

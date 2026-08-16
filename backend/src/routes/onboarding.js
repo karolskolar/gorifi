@@ -215,7 +215,26 @@ router.post('/onboarding/:token', abuseLimiter, (req, res) => {
   if (usernameError) {
     return res.status(400).json({ error: usernameError, field: 'username' });
   }
-  if (!password || password.length < 8) {
+  // ⚠ Type-guard BEFORE `hashPassword` — the THIRD instance of one defect class, not
+  // a third coincidence (ML-T6 fixed the same shape twice on `friends.js`:
+  // `currentPassword`, then `newPassword` one line below it). `!password ||
+  // password.length < 8` read `.length` off whatever the body carried, so any object
+  // with a `length` ≥ 8 — `{"password":{"length":12}}` — was truthy, cleared the
+  // comparison and reached `hashPassword`, which is `bcrypt.hashSync` and THROWS
+  // `Illegal arguments: object, string` on a non-string ⇒ 500 plus a full stack in the
+  // server log, for a merely malformed body.
+  //
+  // ⚠ AND THIS SITE IS THE PUBLIC, UNAUTHENTICATED ONE. ML-T6's two both sat behind a
+  // friend session; this handler is reachable by anyone holding the shared onboarding
+  // link, so the stack-log half was REMOTELY TRIGGERABLE — a free remote log-flood,
+  // which is exactly what the FUP-T3/FUP-T7 rule ("no stack on a client-triggerable
+  // branch") exists to prevent. The wrong status was the bug; the stack was the abuse
+  // surface, and it is the reason this was worth fixing rather than tidying.
+  //
+  // Nothing is loosened: the status, the message and the `field` marker are unchanged,
+  // a short string still 400s, an absent password still arrives as `''` through the
+  // `|| ''` fallback above and still 400s — only non-strings move 500 → 400.
+  if (typeof password !== 'string' || password.length < 8) {
     return res.status(400).json({ error: 'Heslo musí mať aspoň 8 znakov', field: 'password' });
   }
   if (isUsernameTaken(usernameRaw)) {
