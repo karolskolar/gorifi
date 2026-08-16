@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
+import { bindValue } from '../helpers/bind-value.js';
 
 const router = Router();
 
@@ -75,18 +76,30 @@ router.patch('/batch-assign', (req, res) => {
       return res.status(400).json({ error: 'Zoznam priateľov je prázdny' });
     }
 
+    // ⚠ FUP-T15 — `rootFriendId` and every element of the client-supplied
+    // `friendIds` reached binds here (only `Array.isArray` was checked, never the
+    // elements). The PRESENCE test below deliberately stays on the RAW value: if an
+    // unbindable root were treated as "absent" it would skip this validation and
+    // fall through to `rootFriendId || null`, i.e. answer 200 while silently
+    // UNASSIGNING every friend in the batch. Present-but-unbindable resolves to no
+    // root and takes this route's existing 400.
+    const rootFriendIdValue = bindValue(rootFriendId);
     if (rootFriendId !== null && rootFriendId !== undefined) {
-      const root = db.get('SELECT id, is_root FROM friends WHERE id = ?', [rootFriendId]);
+      const root = db.get('SELECT id, is_root FROM friends WHERE id = ?', [rootFriendIdValue]);
       if (!root || !root.is_root) {
         return res.status(400).json({ error: 'Cieľový priateľ nie je hlavný priateľ' });
       }
     }
 
     const runBatch = db.transaction(() => {
-      for (const friendId of friendIds) {
+      for (const rawFriendId of friendIds) {
+        // An element that resolves to no friend is skipped, exactly as an unknown id
+        // already was. (`rootFriendIdValue` reaching the UPDATE is already proved
+        // bindable by the gate above — an unbindable one returned 400.)
+        const friendId = bindValue(rawFriendId);
         const friend = db.get('SELECT id, is_root FROM friends WHERE id = ?', [friendId]);
         if (!friend || friend.is_root) continue;
-        db.run('UPDATE friends SET root_friend_id = ? WHERE id = ?', [rootFriendId || null, friendId]);
+        db.run('UPDATE friends SET root_friend_id = ? WHERE id = ?', [rootFriendIdValue || null, friendId]);
       }
     });
     runBatch();
@@ -113,14 +126,18 @@ router.patch('/:id/assign-root', (req, res) => {
       return res.status(400).json({ error: 'Hlavný priateľ nemôže byť priradený do skupiny' });
     }
 
+    // ⚠ FUP-T15 — same rule as `/batch-assign` above: the presence test stays on the
+    // RAW value so an unbindable root is refused, never quietly turned into an
+    // unassignment.
+    const rootFriendIdValue = bindValue(rootFriendId);
     if (rootFriendId !== null && rootFriendId !== undefined) {
-      const root = db.get('SELECT id, is_root FROM friends WHERE id = ?', [rootFriendId]);
+      const root = db.get('SELECT id, is_root FROM friends WHERE id = ?', [rootFriendIdValue]);
       if (!root || !root.is_root) {
         return res.status(400).json({ error: 'Cieľový priateľ nie je hlavný priateľ' });
       }
     }
 
-    db.run('UPDATE friends SET root_friend_id = ? WHERE id = ?', [rootFriendId || null, id]);
+    db.run('UPDATE friends SET root_friend_id = ? WHERE id = ?', [rootFriendIdValue || null, id]);
 
     res.json({ success: true });
   } catch (e) {

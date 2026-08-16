@@ -9,6 +9,7 @@ import {
 } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { abuseLimiter } from '../middleware/rate-limit.js';
+import { bindValue } from '../helpers/bind-value.js';
 import { getPlaceholderCycleId } from '../helpers/friend-create.js';
 import { sendMail } from '../helpers/mailer.js';
 import { renderEmail } from '../helpers/email-templates.js';
@@ -215,7 +216,12 @@ router.get('/my-code', (req, res) => {
   }
 
   try {
-    const friend = db.get('SELECT invite_code FROM friends WHERE id = ?', [friendId]);
+    // ⚠ FUP-T15 — `?friendId[a]=1` was bound here and threw. The catch below logs
+    // `e.message` only, so this site never cost a stack — but it still answered 500
+    // `Chyba servera` for a malformed query string. Unbindable ⇒ `undefined` ⇒ binds
+    // as NULL ⇒ no friend ⇒ this route's own 404. The presence test above stays on
+    // the raw value, so a missing id keeps its own 400.
+    const friend = db.get('SELECT invite_code FROM friends WHERE id = ?', [bindValue(friendId)]);
     if (!friend) {
       return res.status(404).json({ error: 'Priateľ nebol nájdený' });
     }
@@ -230,7 +236,10 @@ router.get('/my-code', (req, res) => {
 // GET / — List invitations (admin)
 router.get('/', requireAdmin, (req, res) => {
   try {
-    const { status } = req.query;
+    // ⚠ FUP-T15 — a query-string filter is client-shaped (`?status[a]=1` is an
+    // object). Unbindable ⇒ `undefined` ⇒ falsy ⇒ the filter is not applied, which
+    // is what an absent `?status` already does.
+    const status = bindValue(req.query.status);
 
     let sql = `
       SELECT i.*, f.name as inviter_name, f.uid as inviter_uid
@@ -521,7 +530,18 @@ router.post('/:id/approve', requireAdmin, async (req, res) => {
 router.patch('/:id', requireAdmin, (req, res) => {
   try {
     const { id } = req.params;
-    const { status, admin_note } = req.body;
+    // ⚠ FUP-T15 — both fields were pushed into `params` and bound. Unbindable ⇒
+    // `undefined`, which for `status` is falsy (the column is left out of the SET
+    // list) and for `admin_note` fails the shipped `!== undefined` gate — so a
+    // malformed body updates NOTHING and falls to this route's own "Žiadne zmeny"
+    // 400, instead of 500-ing or, worse, wiping a recorded admin note.
+    //
+    // ⚠ This guards the BIND, not the value space: `status: 'bogus'` is a perfectly
+    // bindable string that the table's CHECK constraint still refuses exactly as it
+    // always has. Inventing a status enum here would be a behaviour change hiding
+    // inside a bug fix.
+    const status = bindValue(req.body.status);
+    const admin_note = bindValue(req.body.admin_note);
 
     const invitation = db.get('SELECT * FROM invitations WHERE id = ?', [id]);
     if (!invitation) {

@@ -1921,3 +1921,1109 @@ test.describe('FUP-T13 — no stack reaches the log for any site in this row', (
     expect(log, 'the 500 branch keeps its stack').toMatch(STACK_FRAME)
   })
 })
+
+// ════════════════════════════════════════════════════════════════════════════
+// FUP-T15 — the SAME bind class, in the files FUP-T13 did not touch.
+//
+// FUP-T13 closed `cycles.js`, `products.js`, `bakery-products.js`, `admin.js` and
+// `rewards.js` with `helpers/bind-value.js`. It also ENUMERATED, with routes and
+// auth levels, the sites of the same class living in the other route files and
+// recorded them as this row. The mechanism is unchanged and so is the matrix
+// (`UNBINDABLE` above, plus the one-element array's own block) — what is new here
+// is WHERE, and two of the sites are reachable WITHOUT a session:
+//
+//   • `POST /api/guest/:token/orders` and `PUT /api/guest/:token/orders/:orderToken`
+//     — the app's only unauthenticated WRITE surface. `items[i].product_id` went
+//     straight into a bind, so `{"product_id":{}}` was a 500 plus ~870 bytes of
+//     stack per request, from anyone holding an office-wide share link.
+//   • `POST /api/friends/auth` with the shared password — `friendId` bound
+//     directly, ~770 bytes of stack per request.
+//
+// ⚠ THE STORED VALUE IS THE ASSERTION, NOT THE STATUS, and this row found the
+// sharpest instance of that rule so far: `PATCH /api/transactions/:id` with
+// `{"amount":["abc"]}` answered a clean **200** and OVERWROTE a real €42.50
+// adjustment with the TEXT `"abc"` — a one-element array spreads to exactly the
+// arity the statement wants (the FUP-T13 trap), so the ledger silently took a
+// value that `SUM(amount)` then reads as 0. Every write site below is read back.
+//
+// ⚠ IT ALSO FOUND A HALF-WRITE. `PUT /api/orders/cycle/:c/friend/:f` creates the
+// order row BEFORE it looks at `items`, so a malformed `product_id` 500'd with an
+// empty `draft` order already committed — visible to the admin in the cycle's
+// order list as a friend who "ordered nothing". Asserted below by reading the
+// order back after the refusal.
+//
+// ⚠ TWO RECORDED "LATENT" BLOCKERS DID NOT HOLD, and both are asserted here:
+//   • `products.js` CSV import — the blocker was "the route requires `req.file`, so
+//     the body is multipart and every field is a string". It is not: multer parses
+//     fields with the `append-field` package, which honours `roastery[a]=1` and
+//     repeated keys. The route answered **400 while ECHOING the binder's own
+//     sentence to the client** ("Chyba pri parsovani CSV: Too few parameter values
+//     were provided") and logged a full stack.
+//   • `vouchers.js` resolve — the blocker was "`voucher.friend_id !== Number(friendId)`
+//     is NaN-true ⇒ 403 first". It holds for `{}` and multi-element arrays, but
+//     `?friendId[toString]=1` throws INSIDE that very `Number()` call ⇒ 500 + stack,
+//     and `?friendId[]=5` passes it and reaches the INSERT.
+// (`admin.js:58/68`, FUP-T11's bcrypt exception, WAS re-probed and still holds:
+// every shape answers 401 with the route's own message.)
+
+// Messages copied verbatim from the handlers — never re-worded here.
+const GUEST_CART_EMPTY = 'Košík je prázdny'
+const GUEST_NOTHING_PRICED = 'Žiadnu z položiek sa nepodarilo spracovať. Obnovte stránku a skúste to znova.'
+const FRIEND_NOT_FOUND_OR_INACTIVE = 'Priateľ nebol nájdený alebo je neaktívny'
+const FRIEND_NOT_FOUND = 'Priateľ nebol nájdený'
+const PICKUP_NOT_FOUND = 'Vybrané miesto vyzdvihnutia neexistuje alebo nie je aktívne'
+const TX_ORDER_NOT_FOUND = 'Objednávka nebola nájdená alebo nepatrí tomuto priateľovi'
+const TX_PAYMENT_AMOUNT = 'Suma musí byť kladné číslo'
+const TX_ADJUSTMENT_AMOUNT = 'Suma je povinná a nemôže byť nula'
+const VOUCHER_CYCLE_NOT_FOUND = 'Cyklus nebol nájdený'
+const VOUCHER_NOT_YOURS = 'Tento voucher nepatrí vám'
+const INV_NO_CHANGES = 'Žiadne zmeny'
+const FG_NOT_A_ROOT = 'Cieľový priateľ nie je hlavný priateľ'
+
+// T15 fixtures.
+let t15Friend // the guest-link host / cart owner / ledger subject
+let t15Bearer
+let t15Cycle
+let t15Product
+let t15Pickup
+let t15LinkToken
+let t15OrderToken // a live guest sub-order under that link
+let t15Voucher // a PENDING voucher belonging to t15Friend
+let t15Invitation // a pending invitation row
+const T15_SHARED = 'e2e-friends-pass'
+
+const t15Bear = () => ({ Authorization: `Bearer ${t15Bearer}` })
+
+test.beforeAll(async () => {
+  t15Friend = await createFriend('t15host')
+  const username = uniqueUsername('fup15host')
+  const setup = await ctx.post(`/api/friends/${t15Friend}/setup-credentials`, {
+    headers: shared(),
+    data: { username, password: 'fup15HostPass' },
+  })
+  expect(setup.status(), 'T15 host credentials').toBe(200)
+  t15Bearer = (await setup.json()).token
+
+  const cycle = await ctx.post('/api/cycles', {
+    headers: admin(),
+    data: { name: `FUP15 cycle ${uniq}`, cycle_type: 'coffee' },
+  })
+  expect(cycle.status(), 'T15 cycle fixture').toBe(201)
+  t15Cycle = (await cycle.json()).id
+
+  const product = await ctx.post('/api/products', {
+    headers: admin(),
+    data: { cycle_id: t15Cycle, name: `FUP15 product ${uniq}`, price_250g: 10, purpose: 'Filter' },
+  })
+  expect(product.status(), 'T15 product fixture').toBe(201)
+  t15Product = (await product.json()).id
+
+  const pickup = await ctx.post('/api/pickup-locations', {
+    headers: admin(),
+    data: { name: `FUP15 pickup ${uniq}`, address: 'FUP15 adresa' },
+  })
+  expect(pickup.status(), 'T15 pickup fixture').toBe(201)
+  t15Pickup = (await pickup.json()).id
+
+  const link = await ctx.post(`/api/guest-links/cycle/${t15Cycle}`, { headers: t15Bear(), data: {} })
+  expect(link.status(), 'T15 guest link fixture').toBe(201)
+  t15LinkToken = (await link.json()).link.token
+
+  const sub = await ctx.post(`/api/guest/${t15LinkToken}/orders`, {
+    data: {
+      guest_name: `FUP15 Hosť ${uniq}`,
+      guest_phone: '0900111222',
+      items: [{ product_id: t15Product, variant: '250g', quantity: 1 }],
+    },
+  })
+  expect(sub.status(), 'T15 guest sub-order fixture').toBe(201)
+  t15OrderToken = (await sub.json()).order.order_token
+
+  // A pending voucher for the resolve block: the friend needs a SUBMITTED order in
+  // its own cycle, or `/generate` skips them.
+  const vCycle = await ctx.post('/api/cycles', {
+    headers: admin(),
+    data: { name: `FUP15 voucher ${uniq}`, cycle_type: 'coffee' },
+  })
+  const vCycleId = (await vCycle.json()).id
+  const vProduct = await ctx.post('/api/products', {
+    headers: admin(),
+    data: { cycle_id: vCycleId, name: `FUP15 vproduct ${uniq}`, price_250g: 10 },
+  })
+  const vProductId = (await vProduct.json()).id
+  await ctx.put(`/api/orders/cycle/${vCycleId}/friend/${t15Friend}`, {
+    headers: shared(),
+    data: { items: [{ product_id: vProductId, variant: '250g', quantity: 2 }] },
+  })
+  const submitted = await ctx.post(`/api/orders/cycle/${vCycleId}/friend/${t15Friend}/submit`, {
+    headers: shared(),
+    data: {},
+  })
+  expect(submitted.status(), 'T15 voucher source order submitted').toBe(200)
+  const generated = await ctx.post('/api/vouchers/generate', {
+    headers: admin(),
+    data: { source_cycle_id: vCycleId, supplier_discount: 40, applied_discount: 30, friend_ids: [t15Friend] },
+  })
+  expect(generated.status(), 'T15 voucher fixture').toBe(201)
+  t15Voucher = (await generated.json()).vouchers[0].id
+
+  // A pending invitation for the PATCH block. `/register` needs a real invite code,
+  // which only the friend's own `/my-code` can produce (friends.js strips it).
+  const code = await ctx.get('/api/invitations/my-code', { headers: t15Bear() })
+  expect(code.status(), 'T15 invite code').toBe(200)
+  const registered = await ctx.post('/api/invitations/register', {
+    data: { invite_code: (await code.json()).inviteCode, name: `FUP15 Uchádzač ${uniq}`, phone: uniquePhone() },
+  })
+  expect(registered.status(), 'T15 invitation fixture').toBe(201)
+  const list = await ctx.get('/api/invitations?status=pending', { headers: admin() })
+  t15Invitation = (await list.json()).find((i) => i.name === `FUP15 Uchádzač ${uniq}`).id
+  expect(t15Invitation, 'T15 invitation row found').toBeTruthy()
+})
+
+// Read-back helpers. Each returns the row a write site actually persisted.
+const t15Order = async (friendId, cycleId = t15Cycle) =>
+  (await ctx.get(`/api/orders/cycle/${cycleId}/friend/${friendId}`, { headers: shared() })).json()
+const t15GuestStatus = async () =>
+  (await ctx.get(`/api/guest/${t15LinkToken}/orders/${t15OrderToken}`)).json()
+const t15Transaction = async (id) => {
+  const rows = await (await ctx.get(`/api/transactions/friend/${t15Friend}`, { headers: t15Bear() })).json()
+  return rows.find((t) => t.id === id)
+}
+const t15Invitations = async () => (await ctx.get('/api/invitations', { headers: admin() })).json()
+const t15FriendRow = async (id) =>
+  (await (await ctx.get('/api/friends', { headers: admin() })).json()).find((f) => f.id === id)
+
+// ── T15.1 POST /api/guest/:token/orders — ⚠ PUBLIC, THE UNAUTHENTICATED WRITE ──
+test.describe('FUP-T15 — public guest submit with a non-string items[].product_id', () => {
+  for (const productId of UNBINDABLE) {
+    test(`product_id ${label(productId)} is a 400, never a 500`, async () => {
+      const res = await ctx.post(`/api/guest/${t15LinkToken}/orders`, {
+        data: {
+          guest_name: `FUP15 shape ${uniq}`,
+          guest_phone: '0900111222',
+          items: [{ product_id: productId, variant: '250g', quantity: 1 }],
+        },
+      })
+      expect(res.status(), `${label(productId)} must not be a server fault`).toBe(400)
+      const body = await res.json()
+      // The line is DROPPED (an unresolvable product always was), so the cart is
+      // empty and the route answers with its own empty-cart message.
+      expect(body.error, "the route's existing empty-cart message").toBe(GUEST_CART_EMPTY)
+      expectNoInternals(body)
+    })
+  }
+
+  test('a MIXED cart still prices the good line and silently drops the malformed one', async () => {
+    const res = await ctx.post(`/api/guest/${t15LinkToken}/orders`, {
+      data: {
+        guest_name: `FUP15 mixed ${uniq}`,
+        guest_phone: '0900111333',
+        items: [
+          { product_id: {}, variant: '250g', quantity: 1 },
+          { product_id: t15Product, variant: '250g', quantity: 2 },
+        ],
+      },
+    })
+    expect(res.status(), 'the good line still buys').toBe(201)
+    const body = await res.json()
+    expect(body.items.length, 'exactly one line survived').toBe(1)
+    expect(body.items[0].quantity).toBe(2)
+    expect(Number(body.order.total), 'only the surviving line is charged').toBeGreaterThan(0)
+  })
+
+  test('NOTHING LOOSENED: a well-formed guest order still succeeds', async () => {
+    const res = await ctx.post(`/api/guest/${t15LinkToken}/orders`, {
+      data: {
+        guest_name: `FUP15 ok ${uniq}`,
+        guest_phone: '0900111444',
+        items: [{ product_id: t15Product, variant: '250g', quantity: 1 }],
+      },
+    })
+    expect(res.status()).toBe(201)
+    const body = await res.json()
+    expect(body.items[0].product_id).toBe(t15Product)
+    expect(body.payment, 'the payment reference is still returned on submit').toBeTruthy()
+  })
+})
+
+// ── T15.2 PUT /api/guest/:token/orders/:orderToken — the same helper, the EDIT ──
+//
+// ⚠ The edit is the destructive half: before this fix a malformed `product_id`
+// 500'd, and after it the line is dropped — which must NOT be read as "the guest
+// sent an empty cart", or a typo would cancel a real order. GSO-T4's own guard
+// already answers that case; this block proves it is the one that fires.
+test.describe('FUP-T15 — public guest EDIT with a non-string items[].product_id', () => {
+  for (const productId of UNBINDABLE) {
+    test(`product_id ${label(productId)} is a NON-DESTRUCTIVE 400`, async () => {
+      const before = await t15GuestStatus()
+      const res = await ctx.put(`/api/guest/${t15LinkToken}/orders/${t15OrderToken}`, {
+        data: { items: [{ product_id: productId, variant: '250g', quantity: 1 }] },
+      })
+      expect(res.status(), `${label(productId)} must not be a server fault`).toBe(400)
+      const body = await res.json()
+      expect(body.error, "GSO-T4's existing nothing-priced message").toBe(GUEST_NOTHING_PRICED)
+      expect(body.field).toBe('items')
+      expectNoInternals(body)
+
+      // ⚠ THE STORED VALUE: the sub-order must be untouched — same status, same
+      // total, same items. A "fix" that let the empty line list through would have
+      // CANCELLED it (terminal, per GSO-T4).
+      const after = await t15GuestStatus()
+      expect(after.order.status, 'still not cancelled').toBe(before.order.status)
+      expect(after.order.total, 'the total is unmoved').toBe(before.order.total)
+      expect(after.items.length, 'the items survive').toBe(before.items.length)
+    })
+  }
+
+  test('NOTHING LOOSENED: a real edit still rewrites the cart, and [] still cancels', async () => {
+    const edited = await ctx.put(`/api/guest/${t15LinkToken}/orders/${t15OrderToken}`, {
+      data: { items: [{ product_id: t15Product, variant: '250g', quantity: 3 }] },
+    })
+    expect(edited.status()).toBe(200)
+    const after = await t15GuestStatus()
+    expect(after.items[0].quantity, 'the real edit persisted').toBe(3)
+  })
+})
+
+// ── T15.3 POST /api/friends/auth — ⚠ PUBLIC behind the shared password ─────────
+test.describe('FUP-T15 — shared-password login with a non-string friendId', () => {
+  for (const friendId of UNBINDABLE) {
+    test(`friendId ${label(friendId)} is a 404, never a 500`, async () => {
+      const res = await ctx.post('/api/friends/auth', {
+        data: { password: T15_SHARED, friendId },
+      })
+      expect(res.status(), `${label(friendId)} is refused as an unknown friend`).toBe(404)
+      const body = await res.json()
+      expect(body.error, "the route's existing message").toBe(FRIEND_NOT_FOUND_OR_INACTIVE)
+      expectNoInternals(body)
+    })
+  }
+
+  test('NOTHING LOOSENED: the real pair still authenticates, and no friendId still succeeds', async () => {
+    const ok = await ctx.post('/api/friends/auth', {
+      data: { password: T15_SHARED, friendId: t15Friend },
+    })
+    expect(ok.status(), 'a real friendId still mints a session').toBe(200)
+    const body = await ok.json()
+    expect(body.friend.id).toBe(t15Friend)
+    expect(body.token, 'the session token is still issued').toBeTruthy()
+
+    // ⚠ A PRESENT-but-malformed friendId must still ENTER the friend branch. If the
+    // guard mapped it to "absent" the route would answer this endpoint's bare
+    // `{ success: true }` — a 200 for a login that resolved nobody.
+    const absent = await ctx.post('/api/friends/auth', { data: { password: T15_SHARED } })
+    expect(absent.status(), 'no friendId is still the shipped password-only check').toBe(200)
+    expect((await absent.json()).friend, 'and it resolves no friend').toBeUndefined()
+
+    const wrong = await ctx.post('/api/friends/auth', { data: { password: 'not-it', friendId: {} } })
+    expect(wrong.status(), 'password first: a malformed friendId is not an oracle').toBe(401)
+  })
+})
+
+// ── T15.4 GET /api/friends/cycles?friendId — friend-auth ──────────────────────
+test.describe('FUP-T15 — the cycle list with a non-string ?friendId', () => {
+  for (const [query, name] of [
+    ['friendId[a]=1', '{a:1}'],
+    ['friendId=1&friendId=2', "['1','2']"],
+    ['friendId[toString]=1', '{toString:1}'],
+  ]) {
+    test(`?${name} is a 200, never a 500`, async () => {
+      const res = await ctx.get(`/api/friends/cycles?${query}`, { headers: shared() })
+      expect(res.status()).toBe(200)
+      const body = await res.json()
+      expect(Array.isArray(body), 'the ordinary cycle list').toBe(true)
+      expectNoInternals(body)
+    })
+  }
+
+  test('NOTHING LOOSENED: a real ?friendId still carries that friend\'s own order', async () => {
+    const res = await ctx.get(`/api/friends/cycles?friendId=${t15Friend}`, { headers: shared() })
+    expect(res.status()).toBe(200)
+    const rows = await res.json()
+    const withOrder = rows.filter((c) => c.hasOrder)
+    expect(withOrder.length, 'the submitted voucher-source order is still reported').toBeGreaterThan(0)
+    expect(withOrder[0].orderTotal).toBeGreaterThan(0)
+  })
+})
+
+// ── T15.5 GET /api/vouchers/pending?friendId — friend-auth ────────────────────
+test.describe('FUP-T15 — pending vouchers with a non-string ?friendId', () => {
+  for (const [query, name] of [
+    ['friendId[a]=1', '{a:1}'],
+    ['friendId=1&friendId=2', "['1','2']"],
+    ['friendId[toString]=1', '{toString:1}'],
+  ]) {
+    test(`?${name} is a 200 empty list, never a 500`, async () => {
+      const res = await ctx.get(`/api/vouchers/pending?${query}`, { headers: shared() })
+      expect(res.status()).toBe(200)
+      const body = await res.json()
+      expect(Array.isArray(body)).toBe(true)
+      expect(body.length, 'an unresolvable friend owns no vouchers').toBe(0)
+      expectNoInternals(body)
+    })
+  }
+
+  test('NOTHING LOOSENED: a real ?friendId still lists the pending voucher', async () => {
+    const res = await ctx.get(`/api/vouchers/pending?friendId=${t15Friend}`, { headers: shared() })
+    expect(res.status()).toBe(200)
+    const rows = await res.json()
+    expect(rows.some((v) => v.id === t15Voucher), 'the fixture voucher is still visible').toBe(true)
+  })
+})
+
+// ── T15.6 GET /api/invitations/my-code?friendId — friend-auth, a CAUGHT 500 ────
+//
+// ⚠ This site's throw is already inside a try/catch that logs `e.message` only, so
+// it never cost a stack — but it still answered 500 `Chyba servera` for a malformed
+// query string. The status is the bug here; the log was already clean.
+test.describe('FUP-T15 — the invite code with a non-string ?friendId', () => {
+  for (const [query, name] of [
+    ['friendId[a]=1', '{a:1}'],
+    ['friendId=1&friendId=2', "['1','2']"],
+    ['friendId[toString]=1', '{toString:1}'],
+  ]) {
+    test(`?${name} is a 404, never a 500`, async () => {
+      const res = await ctx.get(`/api/invitations/my-code?${query}`, { headers: shared() })
+      expect(res.status()).toBe(404)
+      const body = await res.json()
+      expect(body.error, "the route's existing not-found message").toBe(FRIEND_NOT_FOUND)
+      expectNoInternals(body)
+    })
+  }
+
+  test('NOTHING LOOSENED: a real friend still gets their invite code', async () => {
+    const res = await ctx.get('/api/invitations/my-code', { headers: t15Bear() })
+    expect(res.status()).toBe(200)
+    expect((await res.json()).inviteCode, 'the code is still returned').toBeTruthy()
+  })
+})
+
+// ── T15.7 POST /api/vouchers/:id/resolve?friendId — the recorded LATENT site ───
+test.describe('FUP-T15 — resolving a voucher with a non-string ?friendId', () => {
+  for (const [query, name] of [
+    ['friendId[a]=1', '{a:1}'],
+    ['friendId=1&friendId=2', "['1','2']"],
+    ['friendId[toString]=1', '{toString:1}'],
+    [`friendId[]=${'PLACEHOLDER'}`, "['<the owner>'] one-element"],
+  ]) {
+    test(`?${name} is a 403 and mints NO transaction`, async () => {
+      const q = query.replace('PLACEHOLDER', String(t15Friend))
+      const before = await (await ctx.get(`/api/transactions/friend/${t15Friend}`, { headers: t15Bear() })).json()
+      const res = await ctx.post(`/api/vouchers/${t15Voucher}/resolve?${q}`, {
+        headers: shared(),
+        data: { action: 'accept' },
+      })
+      expect(res.status(), `${name} must not be a server fault`).toBe(403)
+      const body = await res.json()
+      expect(body.error, "the route's existing ownership message").toBe(VOUCHER_NOT_YOURS)
+      expectNoInternals(body)
+
+      // ⚠ THE STORED VALUE: accepting a voucher CREDITS MONEY. The voucher must
+      // still be pending and the ledger must be untouched.
+      const pending = await (await ctx.get(`/api/vouchers/pending?friendId=${t15Friend}`, { headers: shared() })).json()
+      expect(pending.some((v) => v.id === t15Voucher), 'the voucher is still pending').toBe(true)
+      const after = await (await ctx.get(`/api/transactions/friend/${t15Friend}`, { headers: t15Bear() })).json()
+      expect(after.length, 'no ledger row was minted').toBe(before.length)
+    })
+  }
+
+  test('NOTHING LOOSENED: the real owner can still accept, and it credits exactly once', async () => {
+    const before = await (await ctx.get(`/api/transactions/friend/${t15Friend}`, { headers: t15Bear() })).json()
+    const res = await ctx.post(`/api/vouchers/${t15Voucher}/resolve?friendId=${t15Friend}`, {
+      headers: shared(),
+      data: { action: 'accept' },
+    })
+    expect(res.status(), 'the real owner still resolves').toBe(200)
+    expect((await res.json()).status).toBe('accepted')
+    const after = await (await ctx.get(`/api/transactions/friend/${t15Friend}`, { headers: t15Bear() })).json()
+    expect(after.length, 'exactly one credit was written').toBe(before.length + 1)
+    expect(after.find((t) => !before.some((b) => b.id === t.id)).friend_id, 'credited to the real friend').toBe(t15Friend)
+  })
+})
+
+// ── T15.8 PUT /api/orders/cycle/:c/friend/:f — the cart, and the HALF-WRITE ────
+test.describe('FUP-T15 — the friend cart with a malformed item', () => {
+  // A friend of its own, so the half-write assertion is not confused by a cart the
+  // other blocks left behind.
+  let cartFriend
+  test.beforeAll(async () => {
+    cartFriend = await createFriend('t15cart')
+  })
+
+  for (const productId of UNBINDABLE) {
+    test(`product_id ${label(productId)} drops the line and leaves NO order row`, async () => {
+      const res = await ctx.put(`/api/orders/cycle/${t15Cycle}/friend/${cartFriend}`, {
+        headers: shared(),
+        data: { items: [{ product_id: productId, variant: '250g', quantity: 1 }] },
+      })
+      expect(res.status(), `${label(productId)} must not be a server fault`).toBe(200)
+      expectNoInternals(await res.json())
+
+      // ⚠ THE HALF-WRITE. The handler creates the order row BEFORE it reads
+      // `items`, so the pre-fix 500 committed an empty `draft` order that then
+      // appeared in the admin's cycle list as a friend who ordered nothing. With
+      // the line dropped the cart totals 0 and the route's own "empty cart deletes
+      // the order" branch runs, exactly as it does for an unknown product id.
+      const row = await t15Order(cartFriend)
+      expect(row.order, 'no orphan order row survives the refusal').toBeNull()
+      // ⚠ The admin list carries EVERY active friend, with `id: null` for those who
+      // have no order — so the assertion is on the order ID, not on the row's
+      // presence. Before the fix this friend appeared with a real order id and an
+      // empty `items` array.
+      const listed = await (await ctx.get(`/api/orders/cycle/${t15Cycle}`, { headers: admin() })).json()
+      const seen = listed.find((o) => o.friend_id === cartFriend)
+      expect(seen, 'the friend is listed as a placeholder').toBeTruthy()
+      expect(seen.id, 'and carries NO order row').toBeNull()
+    })
+  }
+
+  for (const quantity of UNBINDABLE) {
+    test(`quantity ${label(quantity)} drops the line, never a 500`, async () => {
+      const res = await ctx.put(`/api/orders/cycle/${t15Cycle}/friend/${cartFriend}`, {
+        headers: shared(),
+        data: { items: [{ product_id: t15Product, variant: '250g', quantity }] },
+      })
+      expect(res.status()).toBe(200)
+      expect((await t15Order(cartFriend)).order, 'nothing was bought').toBeNull()
+    })
+  }
+
+  test('a NULL element in items is a 200, never a 500', async () => {
+    // ⚠ Not a binder throw but the same body and the same route: `item.quantity`
+    // on `null` was a TypeError ⇒ 500 + full stack. `guest.js` already reads its
+    // items with `item?.`; these two disagreed about the same shape.
+    const res = await ctx.put(`/api/orders/cycle/${t15Cycle}/friend/${cartFriend}`, {
+      headers: shared(),
+      data: { items: [null] },
+    })
+    expect(res.status()).toBe(200)
+    expectNoInternals(await res.json())
+  })
+
+  test('NOTHING LOOSENED: a real cart still saves, and a mixed one keeps the good line', async () => {
+    const ok = await ctx.put(`/api/orders/cycle/${t15Cycle}/friend/${cartFriend}`, {
+      headers: shared(),
+      data: {
+        items: [
+          { product_id: {}, variant: '250g', quantity: 1 },
+          { product_id: t15Product, variant: '250g', quantity: 2 },
+        ],
+      },
+    })
+    expect(ok.status()).toBe(200)
+    const row = await t15Order(cartFriend)
+    expect(row.items.length, 'exactly the good line').toBe(1)
+    expect(row.items[0].quantity).toBe(2)
+    expect(row.order.total, 'and it is charged').toBeGreaterThan(0)
+
+    const still = await ctx.put(`/api/orders/cycle/${t15Cycle}/friend/${cartFriend}`, {
+      headers: shared(),
+      data: { items: [{ product_id: t15Product, variant: '250g', quantity: 1 }] },
+    })
+    expect(still.status()).toBe(200)
+    expect((await t15Order(cartFriend)).items[0].quantity).toBe(1)
+  })
+})
+
+// ── T15.9 POST .../submit — pickup_location_id and pickup_location_note ────────
+test.describe('FUP-T15 — order submit with a malformed pickup field', () => {
+  let submitFriend
+  test.beforeAll(async () => {
+    submitFriend = await createFriend('t15submit')
+  })
+  const seedCart = async () => {
+    const res = await ctx.put(`/api/orders/cycle/${t15Cycle}/friend/${submitFriend}`, {
+      headers: shared(),
+      data: { items: [{ product_id: t15Product, variant: '250g', quantity: 1 }] },
+    })
+    expect(res.status(), 'cart seeded for the submit').toBe(200)
+  }
+
+  for (const pickupId of UNBINDABLE) {
+    test(`pickup_location_id ${label(pickupId)} is the route's own 400`, async () => {
+      await seedCart()
+      const res = await ctx.post(`/api/orders/cycle/${t15Cycle}/friend/${submitFriend}/submit`, {
+        headers: shared(),
+        data: { pickup_location_id: pickupId },
+      })
+      expect(res.status(), `${label(pickupId)} must not be a server fault`).toBe(400)
+      const body = await res.json()
+      expect(body.error, "the route's existing message").toBe(PICKUP_NOT_FOUND)
+      expectNoInternals(body)
+      // ⚠ THE STORED VALUE: the refusal must not have submitted the order anyway.
+      expect((await t15Order(submitFriend)).order.status, 'still a draft').toBe('draft')
+    })
+  }
+
+  for (const note of UNBINDABLE) {
+    test(`pickup_location_note ${label(note)} stores exactly what an ABSENT note stores`, async () => {
+      await seedCart()
+      const res = await ctx.post(`/api/orders/cycle/${t15Cycle}/friend/${submitFriend}/submit`, {
+        headers: shared(),
+        data: { pickup_location_note: note },
+      })
+      expect(res.status()).toBe(200)
+      const body = await res.json()
+      expect(body.order.pickup_location_note, 'unbindable ⇒ absent ⇒ NULL').toBeNull()
+      expectNoInternals(body)
+    })
+  }
+
+  test('NOTHING LOOSENED: a real pickup id and a real note both still persist', async () => {
+    await seedCart()
+    const withNote = await ctx.post(`/api/orders/cycle/${t15Cycle}/friend/${submitFriend}/submit`, {
+      headers: shared(),
+      data: { pickup_location_note: 'Pri fontáne' },
+    })
+    expect(withNote.status()).toBe(200)
+    expect((await withNote.json()).order.pickup_location_note).toBe('Pri fontáne')
+
+    await seedCart()
+    const withPickup = await ctx.post(`/api/orders/cycle/${t15Cycle}/friend/${submitFriend}/submit`, {
+      headers: shared(),
+      data: { pickup_location_id: t15Pickup },
+    })
+    expect(withPickup.status()).toBe(200)
+    expect((await withPickup.json()).order.pickup_location_id).toBe(t15Pickup)
+
+    // The absent-note baseline the block above compares against.
+    await seedCart()
+    const bare = await ctx.post(`/api/orders/cycle/${t15Cycle}/friend/${submitFriend}/submit`, {
+      headers: shared(),
+      data: {},
+    })
+    expect(bare.status()).toBe(200)
+    expect((await bare.json()).order.pickup_location_note, 'an absent note is NULL').toBeNull()
+  })
+})
+
+// ── T15.10 /api/transactions — ⚠ THE LEDGER, and the 200-that-overwrote-money ──
+test.describe('FUP-T15 — the transaction ledger with a non-string field', () => {
+  for (const friendId of UNBINDABLE) {
+    test(`POST /payment friend_id ${label(friendId)} is a 404`, async () => {
+      const res = await ctx.post('/api/transactions/payment', {
+        headers: admin(),
+        data: { friend_id: friendId, amount: 5 },
+      })
+      expect(res.status()).toBe(404)
+      expect((await res.json()).error).toBe(FRIEND_NOT_FOUND)
+    })
+
+    test(`POST /adjustment friend_id ${label(friendId)} is a 404`, async () => {
+      const res = await ctx.post('/api/transactions/adjustment', {
+        headers: admin(),
+        data: { friend_id: friendId, amount: 5, note: 'FUP15' },
+      })
+      expect(res.status()).toBe(404)
+      expect((await res.json()).error).toBe(FRIEND_NOT_FOUND)
+    })
+  }
+
+  for (const orderId of UNBINDABLE) {
+    test(`POST /payment order_id ${label(orderId)} is a 404`, async () => {
+      const res = await ctx.post('/api/transactions/payment', {
+        headers: admin(),
+        data: { friend_id: t15Friend, order_id: orderId, amount: 5 },
+      })
+      expect(res.status()).toBe(404)
+      expect((await res.json()).error).toBe(TX_ORDER_NOT_FOUND)
+    })
+  }
+
+  for (const amount of UNBINDABLE) {
+    test(`POST /payment amount ${label(amount)} is the route's own 400`, async () => {
+      const res = await ctx.post('/api/transactions/payment', {
+        headers: admin(),
+        data: { friend_id: t15Friend, amount },
+      })
+      expect(res.status()).toBe(400)
+      expect((await res.json()).error).toBe(TX_PAYMENT_AMOUNT)
+    })
+
+    test(`POST /adjustment amount ${label(amount)} is the route's own 400`, async () => {
+      const res = await ctx.post('/api/transactions/adjustment', {
+        headers: admin(),
+        data: { friend_id: t15Friend, amount, note: 'FUP15' },
+      })
+      expect(res.status()).toBe(400)
+      expect((await res.json()).error).toBe(TX_ADJUSTMENT_AMOUNT)
+    })
+  }
+
+  // ⚠ THE FINDING OF THIS ROW. A one-element array spreads to exactly the arity
+  // the statement wants, so `{"amount":["abc"]}` answered 200 and REPLACED a real
+  // €42.50 adjustment with the text "abc" — invisible to every status assertion,
+  // and `SUM(amount)` then reads it as 0, i.e. the friend's balance silently moves.
+  test('⚠ PATCH /:id amount NEVER overwrites a recorded amount', async () => {
+    const seeded = await ctx.post('/api/transactions/adjustment', {
+      headers: admin(),
+      data: { friend_id: t15Friend, amount: 42.5, note: 'FUP15 skutočná suma' },
+    })
+    expect(seeded.status()).toBe(201)
+    const txId = (await seeded.json()).transaction.id
+    expect((await t15Transaction(txId)).amount, 'the fixture really carries the money').toBe(42.5)
+
+    for (const amount of [...UNBINDABLE, ['abc'], ['9999']]) {
+      const res = await ctx.patch(`/api/transactions/${txId}`, { headers: admin(), data: { amount } })
+      expect(res.status(), `${label(amount)} may not be a server fault`).toBeLessThan(500)
+      // The column is left out of the SET list, so a request carrying ONLY a
+      // malformed amount has nothing to update and falls to the route's own 400.
+      expect(res.status(), `${label(amount)} updates nothing`).toBe(400)
+      expect((await res.json()).error).toBe(TX_NOTHING_TO_UPDATE)
+      expect(
+        (await t15Transaction(txId)).amount,
+        `⚠ ${label(amount)} must NOT have rewritten the ledger`,
+      ).toBe(42.5)
+    }
+
+    // NOTHING LOOSENED: a real edit still writes, and the note still edits alone.
+    const real = await ctx.patch(`/api/transactions/${txId}`, { headers: admin(), data: { amount: 7.25 } })
+    expect(real.status()).toBe(200)
+    expect((await t15Transaction(txId)).amount).toBe(7.25)
+  })
+
+  test('⚠ a ONE-element array amount is no longer stored bare on the INSERTs either', async () => {
+    for (const [path, message] of [
+      ['/api/transactions/payment', TX_PAYMENT_AMOUNT],
+      ['/api/transactions/adjustment', TX_ADJUSTMENT_AMOUNT],
+    ]) {
+      const res = await ctx.post(path, {
+        headers: admin(),
+        data: { friend_id: t15Friend, amount: ['abc'], note: 'FUP15' },
+      })
+      expect(res.status(), `${path} refuses a one-element array amount`).toBe(400)
+      expect((await res.json()).error).toBe(message)
+    }
+  })
+
+  test('NOTHING LOOSENED: real payments and adjustments still post', async () => {
+    const pay = await ctx.post('/api/transactions/payment', {
+      headers: admin(),
+      data: { friend_id: t15Friend, amount: 3.5, note: 'FUP15 platba' },
+    })
+    expect(pay.status()).toBe(201)
+    expect((await pay.json()).transaction.amount).toBe(3.5)
+
+    const zero = await ctx.post('/api/transactions/payment', {
+      headers: admin(),
+      data: { friend_id: t15Friend, amount: 0 },
+    })
+    expect(zero.status(), 'the shipped positive-amount rule is unchanged').toBe(400)
+    expect((await zero.json()).error).toBe(TX_PAYMENT_AMOUNT)
+  })
+})
+
+// ── T15.11 /api/vouchers — generate + the list filters ────────────────────────
+test.describe('FUP-T15 — voucher generation with a non-string field', () => {
+  for (const cycleId of UNBINDABLE) {
+    test(`source_cycle_id ${label(cycleId)} is a 404`, async () => {
+      const res = await ctx.post('/api/vouchers/generate', {
+        headers: admin(),
+        data: { source_cycle_id: cycleId, supplier_discount: 40, applied_discount: 30, friend_ids: [t15Friend] },
+      })
+      expect(res.status()).toBe(404)
+      expect((await res.json()).error).toBe(VOUCHER_CYCLE_NOT_FOUND)
+    })
+  }
+
+  for (const friendId of UNBINDABLE) {
+    test(`a malformed friend_ids element ${label(friendId)} is skipped, never a 500`, async () => {
+      const res = await ctx.post('/api/vouchers/generate', {
+        headers: admin(),
+        data: { source_cycle_id: t15Cycle, supplier_discount: 40, applied_discount: 30, friend_ids: [friendId] },
+      })
+      expect(res.status()).toBe(201)
+      const body = await res.json()
+      expect(body.count, 'an unresolvable friend earns no voucher').toBe(0)
+    })
+  }
+
+  for (const [query, name] of [
+    ['status[a]=1', 'status {a:1}'],
+    ['status=a&status=b', "status ['a','b']"],
+    ['source_cycle_id[a]=1', 'source_cycle_id {a:1}'],
+  ]) {
+    test(`GET / with ?${name} is a 200, never a 500`, async () => {
+      const res = await ctx.get(`/api/vouchers?${query}`, { headers: admin() })
+      expect(res.status()).toBe(200)
+      expect(Array.isArray(await res.json())).toBe(true)
+    })
+  }
+
+  test('NOTHING LOOSENED: a real ?status filter still filters', async () => {
+    const all = await (await ctx.get('/api/vouchers', { headers: admin() })).json()
+    const declined = await (await ctx.get('/api/vouchers?status=declined', { headers: admin() })).json()
+    expect(all.length, 'the fixture voucher exists').toBeGreaterThan(0)
+    expect(declined.every((v) => v.status === 'declined'), 'the filter is still applied').toBe(true)
+    expect(declined.length, 'and it really narrows').toBeLessThan(all.length)
+  })
+})
+
+// ── T15.12 /api/invitations — the ?status filter and the PATCH ────────────────
+test.describe('FUP-T15 — invitations with a non-string field', () => {
+  for (const [query, name] of [
+    ['status[a]=1', '{a:1}'],
+    ['status=a&status=b', "['a','b']"],
+    ['status[toString]=1', '{toString:1}'],
+  ]) {
+    test(`GET / with ?status ${name} is a 200, never a 500`, async () => {
+      const res = await ctx.get(`/api/invitations?${query}`, { headers: admin() })
+      expect(res.status()).toBe(200)
+      expect(Array.isArray(await res.json())).toBe(true)
+    })
+  }
+
+  for (const status of UNBINDABLE) {
+    test(`PATCH /:id status ${label(status)} changes nothing`, async () => {
+      const before = (await t15Invitations()).find((i) => i.id === t15Invitation)
+      const res = await ctx.patch(`/api/invitations/${t15Invitation}`, {
+        headers: admin(),
+        data: { status },
+      })
+      expect(res.status(), `${label(status)} must not be a server fault`).toBe(400)
+      expect((await res.json()).error, "the route's existing message").toBe(INV_NO_CHANGES)
+      const after = (await t15Invitations()).find((i) => i.id === t15Invitation)
+      expect(after.status, '⚠ the invitation status is unmoved').toBe(before.status)
+      expect(after.processed_at, 'and it was not marked processed').toBe(before.processed_at)
+    })
+  }
+
+  for (const note of UNBINDABLE) {
+    test(`PATCH /:id admin_note ${label(note)} leaves the note alone`, async () => {
+      const before = (await t15Invitations()).find((i) => i.id === t15Invitation)
+      const res = await ctx.patch(`/api/invitations/${t15Invitation}`, {
+        headers: admin(),
+        data: { admin_note: note },
+      })
+      expect(res.status()).toBe(400)
+      expect((await res.json()).error).toBe(INV_NO_CHANGES)
+      const after = (await t15Invitations()).find((i) => i.id === t15Invitation)
+      expect(after.admin_note, '⚠ the recorded note is unmoved').toBe(before.admin_note)
+    })
+  }
+
+  test('NOTHING LOOSENED: real values still update, and a bad status STRING keeps its answer', async () => {
+    const noted = await ctx.patch(`/api/invitations/${t15Invitation}`, {
+      headers: admin(),
+      data: { admin_note: 'FUP15 poznámka správcu' },
+    })
+    expect(noted.status()).toBe(200)
+    expect((await t15Invitations()).find((i) => i.id === t15Invitation).admin_note).toBe('FUP15 poznámka správcu')
+
+    // ⚠ This row guards the BIND, not the value space: `status: 'bogus'` is a
+    // perfectly bindable string that the table's CHECK constraint refuses, and it
+    // keeps the answer it has always had. Inventing a status enum here would be a
+    // behaviour change hiding inside a bug fix.
+    const bogus = await ctx.patch(`/api/invitations/${t15Invitation}`, {
+      headers: admin(),
+      data: { status: 'bogus' },
+    })
+    expect(bogus.status(), 'unchanged: a bindable-but-invalid status still fails as before').toBe(500)
+
+    const real = await ctx.patch(`/api/invitations/${t15Invitation}`, {
+      headers: admin(),
+      data: { status: 'rejected' },
+    })
+    expect(real.status()).toBe(200)
+    expect((await t15Invitations()).find((i) => i.id === t15Invitation).status).toBe('rejected')
+  })
+})
+
+// ── T15.13 /api/friend-groups — assignment must never silently UNASSIGN ────────
+test.describe('FUP-T15 — friend groups with a non-string field', () => {
+  let root
+  let member
+  test.beforeAll(async () => {
+    root = await createFriend('t15root')
+    member = await createFriend('t15member')
+    const promoted = await ctx.patch(`/api/friend-groups/${root}/root-status`, {
+      headers: admin(),
+      data: { isRoot: true },
+    })
+    expect(promoted.status(), 'T15 root fixture').toBe(200)
+    const assigned = await ctx.patch(`/api/friend-groups/${member}/assign-root`, {
+      headers: admin(),
+      data: { rootFriendId: root },
+    })
+    expect(assigned.status(), 'T15 membership fixture').toBe(200)
+    expect((await t15FriendRow(member)).root_friend_id, 'the member really belongs to the root').toBe(root)
+  })
+
+  for (const rootFriendId of UNBINDABLE) {
+    test(`PATCH /:id/assign-root rootFriendId ${label(rootFriendId)} keeps the membership`, async () => {
+      const res = await ctx.patch(`/api/friend-groups/${member}/assign-root`, {
+        headers: admin(),
+        data: { rootFriendId },
+      })
+      expect(res.status(), `${label(rootFriendId)} must not be a server fault`).toBe(400)
+      expect((await res.json()).error, "the route's existing message").toBe(FG_NOT_A_ROOT)
+      // ⚠ A guard that treated the value as ABSENT would fall through to
+      // `rootFriendId || null` and UNASSIGN the friend with a 200.
+      expect((await t15FriendRow(member)).root_friend_id, '⚠ still in the group').toBe(root)
+    })
+
+    test(`PATCH /batch-assign rootFriendId ${label(rootFriendId)} keeps every membership`, async () => {
+      const res = await ctx.patch('/api/friend-groups/batch-assign', {
+        headers: admin(),
+        data: { friendIds: [member], rootFriendId },
+      })
+      expect(res.status()).toBe(400)
+      expect((await res.json()).error).toBe(FG_NOT_A_ROOT)
+      expect((await t15FriendRow(member)).root_friend_id, '⚠ still in the group').toBe(root)
+    })
+  }
+
+  for (const friendId of UNBINDABLE) {
+    test(`PATCH /batch-assign friendIds element ${label(friendId)} is skipped`, async () => {
+      const res = await ctx.patch('/api/friend-groups/batch-assign', {
+        headers: admin(),
+        data: { friendIds: [friendId], rootFriendId: root },
+      })
+      expect(res.status(), `${label(friendId)} must not be a server fault`).toBe(200)
+      expect((await res.json()).success).toBe(true)
+    })
+  }
+
+  test('NOTHING LOOSENED: real assignment, real batch assignment and an explicit null still work', async () => {
+    const cleared = await ctx.patch(`/api/friend-groups/${member}/assign-root`, {
+      headers: admin(),
+      data: { rootFriendId: null },
+    })
+    expect(cleared.status()).toBe(200)
+    expect((await t15FriendRow(member)).root_friend_id, 'an explicit null still unassigns').toBeNull()
+
+    const batched = await ctx.patch('/api/friend-groups/batch-assign', {
+      headers: admin(),
+      data: { friendIds: [member], rootFriendId: root },
+    })
+    expect(batched.status()).toBe(200)
+    expect((await t15FriendRow(member)).root_friend_id, 'and a real batch assign still assigns').toBe(root)
+  })
+})
+
+// ── T15.14 POST /api/products/import/:cycleId — ⚠ the FALSE "multipart" blocker ─
+//
+// The recorded blocker was "the route requires `req.file`, so the body is multipart
+// and every field is a string". multer parses fields through `append-field`, which
+// honours bracket notation and repeated keys — so `roastery[a]=1` really did arrive
+// as an object, was bound into the per-row INSERT, and the route's own try/catch
+// answered 400 with the BINDER'S SENTENCE echoed to the client, after logging a
+// full stack.
+test.describe('FUP-T15 — the CSV import with a non-string multipart roastery', () => {
+  const BOUNDARY = '----fup15boundary'
+  const CSV = 'Name,Price250g\nFUP15 CSV Produkt,9.90\n'
+  const multipart = (fieldParts) =>
+    fieldParts +
+    `--${BOUNDARY}\r\nContent-Disposition: form-data; name="file"; filename="p.csv"\r\n` +
+    `Content-Type: text/csv\r\n\r\n${CSV}\r\n--${BOUNDARY}--\r\n`
+  const post = (cycleId, body) =>
+    ctx.post(`/api/products/import/${cycleId}`, {
+      headers: { ...admin(), 'Content-Type': `multipart/form-data; boundary=${BOUNDARY}` },
+      data: Buffer.from(body, 'utf8'),
+    })
+
+  for (const [name, part] of [
+    ['roastery[a]=1 ⇒ {a:"1"}', `--${BOUNDARY}\r\nContent-Disposition: form-data; name="roastery[a]"\r\n\r\n1\r\n`],
+    [
+      "a repeated roastery ⇒ ['a','b']",
+      `--${BOUNDARY}\r\nContent-Disposition: form-data; name="roastery"\r\n\r\na\r\n` +
+        `--${BOUNDARY}\r\nContent-Disposition: form-data; name="roastery"\r\n\r\nb\r\n`,
+    ],
+    ["roastery[]=a ⇒ ['a']", `--${BOUNDARY}\r\nContent-Disposition: form-data; name="roastery[]"\r\n\r\na\r\n`],
+  ]) {
+    test(`${name} imports with NO roastery and leaks nothing`, async () => {
+      const cycle = await ctx.post('/api/cycles', { headers: admin(), data: { name: `FUP15 csv ${uniq} ${nextSeq()}` } })
+      const cycleId = (await cycle.json()).id
+      const res = await post(cycleId, multipart(part))
+      expect(res.status(), `${name} still imports`).toBe(201)
+      const body = await res.json()
+      // ⚠ The old 400 said "Chyba pri parsovani CSV: Too few parameter values were
+      // provided" — the binder's own words, on an admin screen.
+      expect(JSON.stringify(body), 'no binder text reaches the client').not.toMatch(
+        /parameter values|can only bind|convert object to primitive/i,
+      )
+      expect(body.products.length, 'the row really imported').toBe(1)
+      expect(body.products[0].roastery, 'unbindable ⇒ absent ⇒ NULL').toBeNull()
+    })
+  }
+
+  test('NOTHING LOOSENED: a real roastery string still lands on every imported row', async () => {
+    const cycle = await ctx.post('/api/cycles', { headers: admin(), data: { name: `FUP15 csv ok ${uniq}` } })
+    const cycleId = (await cycle.json()).id
+    const part = `--${BOUNDARY}\r\nContent-Disposition: form-data; name="roastery"\r\n\r\nFUP15 Pražiareň\r\n`
+    const res = await post(cycleId, multipart(part))
+    expect(res.status()).toBe(201)
+    expect((await res.json()).products[0].roastery).toBe('FUP15 Pražiareň')
+  })
+})
+
+// ── T15.16 The ONE-element array — the SILENT SUCCESSES, recorded not hidden ───
+//
+// ⚠ `UNBINDABLE` deliberately excludes `['abc']`, because it does not crash: an
+// ARRAY argument is SPREAD into the positional slots, so a one-element array
+// supplies exactly the arity a single-`?` statement wants and the bare string
+// lands in the column. Every site in this row therefore had a shape that was a
+// silent SUCCESS rather than a 500, and closing the class necessarily changes it.
+// The ledger's case has its own block above (it OVERWROTE money); these are the
+// remaining ones that actually did something, each asserted by outcome.
+test.describe('FUP-T15 — a ONE-element array is no longer silently unwrapped', () => {
+  test('the public shared-password login no longer signs in ["<friend id>"]', async () => {
+    const res = await ctx.post('/api/friends/auth', {
+      data: { password: T15_SHARED, friendId: [String(t15Friend)] },
+    })
+    // Before: `.get(['5'])` spread to the statement's single slot, matched friend 5
+    // and MINTED A SESSION for them.
+    expect(res.status(), 'refused as an unknown friend').toBe(404)
+    const body = await res.json()
+    expect(body.error).toBe(FRIEND_NOT_FOUND_OR_INACTIVE)
+    expect(body.token, 'and no session token is issued').toBeUndefined()
+  })
+
+  test('the friend cart no longer buys a product identified as ["<product id>"]', async () => {
+    const buyer = await createFriend('t15onearr')
+    const res = await ctx.put(`/api/orders/cycle/${t15Cycle}/friend/${buyer}`, {
+      headers: shared(),
+      data: { items: [{ product_id: [String(t15Product)], variant: '250g', quantity: 1 }] },
+    })
+    expect(res.status()).toBe(200)
+    expect((await t15Order(buyer)).order, 'the line was dropped, nothing was bought').toBeNull()
+  })
+
+  test('the invite code is no longer handed out for ?friendId[]=<friend id>', async () => {
+    const res = await ctx.get(`/api/invitations/my-code?friendId[]=${t15Friend}`, { headers: shared() })
+    expect(res.status()).toBe(404)
+    const body = await res.json()
+    expect(body.error).toBe(FRIEND_NOT_FOUND)
+    expect(body.inviteCode, 'the shareable secret is not returned').toBeUndefined()
+  })
+
+  test('a batch assignment no longer moves a friend identified as ["<friend id>"]', async () => {
+    const root2 = await createFriend('t15root2')
+    const member2 = await createFriend('t15member2')
+    expect((await ctx.patch(`/api/friend-groups/${root2}/root-status`, {
+      headers: admin(), data: { isRoot: true },
+    })).status()).toBe(200)
+
+    const res = await ctx.patch('/api/friend-groups/batch-assign', {
+      headers: admin(),
+      data: { friendIds: [[String(member2)]], rootFriendId: root2 },
+    })
+    expect(res.status()).toBe(200)
+    expect((await t15FriendRow(member2)).root_friend_id, 'the element resolved nobody').toBeNull()
+
+    // NOTHING LOOSENED: the same call with a plain id still assigns.
+    expect((await ctx.patch('/api/friend-groups/batch-assign', {
+      headers: admin(), data: { friendIds: [member2], rootFriendId: root2 },
+    })).status()).toBe(200)
+    expect((await t15FriendRow(member2)).root_friend_id).toBe(root2)
+  })
+})
+
+// ── T15.15 The log half ───────────────────────────────────────────────────────
+test.describe('FUP-T15 — no stack reaches the log for any site in this row', () => {
+  test.skip(!SERVER_LOG, 'set SERVER_LOG=<backend log path> to exercise the log assertions')
+
+  test.beforeAll(() => {
+    expect(
+      test.info().config.workers,
+      'the log assertions read a shared appended file — run this spec with --workers=1',
+    ).toBe(1)
+  })
+
+  let fs
+  test.beforeAll(async () => { fs = await import('node:fs') })
+
+  async function appended(run) {
+    const before = (await fs.promises.stat(SERVER_LOG)).size
+    await run()
+    await new Promise((r) => setTimeout(r, 400))
+    const fh = await fs.promises.open(SERVER_LOG, 'r')
+    const size = (await fh.stat()).size
+    const buf = Buffer.alloc(Math.max(0, size - before))
+    if (buf.length) await fh.read(buf, 0, buf.length, before)
+    await fh.close()
+    return buf.toString('utf8')
+  }
+
+  const noBinderText = (log) => {
+    expect(log, 'no stack frames on a client-triggerable branch').not.toMatch(STACK_FRAME)
+    expect(log, 'and nothing from the binder').not.toMatch(
+      /parameter values|can only bind|convert object to primitive/i,
+    )
+  }
+
+  // ⚠ The two UNAUTHENTICATED sites get their own windows. `POST /api/guest/:token/orders`
+  // is the app's only anonymous write; before this row each malformed body cost ~870
+  // bytes of stack, and the link is shared at office scale.
+  test('the PUBLIC guest submit and edit cost no stack at all', async () => {
+    const log = await appended(async () => {
+      for (const bad of UNBINDABLE) {
+        const submit = await ctx.post(`/api/guest/${t15LinkToken}/orders`, {
+          data: {
+            guest_name: `FUP15 log ${uniq}`,
+            guest_phone: '0900111555',
+            items: [{ product_id: bad, variant: '250g', quantity: 1 }],
+          },
+        })
+        expect(submit.status(), 'the anonymous write is refused cleanly').toBe(400)
+        const edit = await ctx.put(`/api/guest/${t15LinkToken}/orders/${t15OrderToken}`, {
+          data: { items: [{ product_id: bad, variant: '250g', quantity: 1 }] },
+        })
+        expect(edit.status(), 'and so is the anonymous edit').toBe(400)
+      }
+    })
+    noBinderText(log)
+  })
+
+  test('the PUBLIC shared-password login costs no stack at all', async () => {
+    const log = await appended(async () => {
+      for (const bad of UNBINDABLE) {
+        const res = await ctx.post('/api/friends/auth', { data: { password: T15_SHARED, friendId: bad } })
+        expect(res.status(), 'refused as an unknown friend').toBe(404)
+      }
+    })
+    noBinderText(log)
+  })
+
+  test('one window over every remaining site in this row appends no stack either', async () => {
+    const log = await appended(async () => {
+      for (const bad of UNBINDABLE) {
+        await ctx.get(`/api/friends/cycles?friendId[a]=1`, { headers: shared() })
+        await ctx.get('/api/vouchers/pending?friendId[toString]=1', { headers: shared() })
+        await ctx.get('/api/invitations/my-code?friendId[a]=1', { headers: shared() })
+        await ctx.post(`/api/vouchers/${t15Voucher}/resolve?friendId[toString]=1`, {
+          headers: shared(),
+          data: { action: 'accept' },
+        })
+        await ctx.put(`/api/orders/cycle/${t15Cycle}/friend/${t15Friend}`, {
+          headers: shared(),
+          data: { items: [{ product_id: bad, variant: '250g', quantity: bad }, null] },
+        })
+        await ctx.post('/api/transactions/payment', { headers: admin(), data: { friend_id: bad, amount: bad } })
+        await ctx.post('/api/transactions/adjustment', { headers: admin(), data: { friend_id: t15Friend, order_id: bad, amount: bad, note: 'x' } })
+        await ctx.patch(`/api/transactions/${1}`, { headers: admin(), data: { amount: bad } })
+        await ctx.post('/api/vouchers/generate', {
+          headers: admin(),
+          data: { source_cycle_id: bad, supplier_discount: 40, applied_discount: 30, friend_ids: [bad] },
+        })
+        await ctx.get('/api/vouchers?status[a]=1', { headers: admin() })
+        await ctx.get('/api/invitations?status[a]=1', { headers: admin() })
+        await ctx.patch(`/api/invitations/${t15Invitation}`, { headers: admin(), data: { status: bad, admin_note: bad } })
+        await ctx.patch('/api/friend-groups/batch-assign', { headers: admin(), data: { friendIds: [bad], rootFriendId: bad } })
+        await ctx.patch(`/api/friend-groups/${t15Friend}/assign-root`, { headers: admin(), data: { rootFriendId: bad } })
+      }
+    })
+    noBinderText(log)
+  })
+
+  // The counter-assertion that makes the three windows above non-vacuous.
+  test('a genuine server fault still logs its full stack', async () => {
+    const log = await appended(async () => {
+      const res = await ctx.get('/api/cycles', {
+        headers: { Origin: 'http://not-an-allowed-origin.example' },
+      })
+      expect(res.status()).toBe(500)
+    })
+    expect(log, 'the 500 branch keeps its stack').toMatch(STACK_FRAME)
+  })
+})

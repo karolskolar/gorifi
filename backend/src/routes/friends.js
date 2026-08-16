@@ -5,6 +5,7 @@ import { validateFriendAuth, requireFriendOwner, createFriendSession, presentedS
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { authLimiter } from '../middleware/rate-limit.js';
 import { getPlaceholderCycleId } from '../helpers/friend-create.js';
+import { bindValue } from '../helpers/bind-value.js';
 
 const router = Router();
 
@@ -174,8 +175,18 @@ router.post('/auth', authLimiter, (req, res) => {
     return res.status(401).json({ error: 'Nesprávne heslo' });
   }
 
+  // ⚠ FUP-T15 — PUBLIC (the shared password is the only credential), and `friendId`
+  // went straight into this bind: `{"friendId":{}}` was a 500 plus ~770 bytes of
+  // stack per request.
+  //
+  // ⚠ THE TRUTHINESS TEST STAYS ON THE RAW VALUE, deliberately. `bindValue` maps an
+  // unbindable value to `undefined`, and gating on THAT would make a present-but-
+  // malformed friendId fall out of this branch entirely and answer the bare
+  // `{ success: true }` below — a 200 for a login that resolved nobody. Present but
+  // unbindable must still ENTER here and be refused as an unknown friend, which is
+  // exactly what an unresolvable id has always got.
   if (friendId) {
-    const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(friendId);
+    const friend = db.prepare('SELECT * FROM friends WHERE id = ? AND active = 1').get(bindValue(friendId));
     if (!friend) {
       return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
     }
@@ -426,7 +437,12 @@ router.get('/cycles', (req, res) => {
     return res.status(validation.status).json({ error: validation.error });
   }
 
-  const friendId = req.query.friendId;
+  // ⚠ FUP-T15 — `?friendId[a]=1` on a query string reaches two binds below (the
+  // per-friend order lookup and the subscription filter) and was a 500 + ~1 KB of
+  // stack. Here "unbindable ⇒ absent" is the right branch and needs no extra gate:
+  // both consumers are already `if (friendId)`, and an absent `?friendId` is the
+  // shipped "list the cycles, carry no per-friend order" answer.
+  const friendId = bindValue(req.query.friendId);
 
   // Get all cycles (open, locked, completed) with stored total_friends
   const cycles = db.prepare(`

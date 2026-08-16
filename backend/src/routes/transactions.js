@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
+import { bindValue } from '../helpers/bind-value.js';
 import { requireFriendOwner } from '../middleware/friend-auth.js';
 
 const router = Router();
@@ -77,7 +78,17 @@ router.get('/friend/:friendId', (req, res) => {
 
 // POST /transactions/payment - Record a payment from friend (admin only)
 router.post('/payment', requireAdmin, (req, res) => {
-  const { friend_id, order_id, amount, note, date } = req.body;
+  // ⚠ FUP-T15 — `friend_id`, `order_id` and `amount` all reach binds here, and each
+  // lands in a rule this route ALREADY has. The two IDS keep their presence tests on
+  // the RAW value (a present-but-unbindable id must still be looked up and answered
+  // with the route's 404, not silently treated as "no id given"); only the value
+  // that reaches the bind is sanitized. `amount` is the opposite case: "unbindable"
+  // genuinely is "no usable amount", so it falls into the route's own required-and-
+  // positive 400. No new message anywhere.
+  const { friend_id, order_id, note, date } = req.body;
+  const friendIdValue = bindValue(friend_id);
+  const orderIdValue = bindValue(order_id);
+  const amount = bindValue(req.body.amount);
 
   if (!friend_id) {
     return res.status(400).json({ error: 'friend_id je povinný' });
@@ -87,14 +98,14 @@ router.post('/payment', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Suma musí byť kladné číslo' });
   }
 
-  const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(friend_id);
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(friendIdValue);
   if (!friend) {
     return res.status(404).json({ error: 'Priateľ nebol nájdený' });
   }
 
   // Validate order if provided
   if (order_id) {
-    const order = db.prepare('SELECT * FROM orders WHERE id = ? AND friend_id = ?').get(order_id, friend_id);
+    const order = db.prepare('SELECT * FROM orders WHERE id = ? AND friend_id = ?').get(orderIdValue, friendIdValue);
     if (!order) {
       return res.status(404).json({ error: 'Objednávka nebola nájdená alebo nepatrí tomuto priateľovi' });
     }
@@ -118,14 +129,14 @@ router.post('/payment', requireAdmin, (req, res) => {
   const result = db.prepare(`
     INSERT INTO transactions (friend_id, order_id, type, amount, note, created_at)
     VALUES (?, ?, 'payment', ?, ?, ?)
-  `).run(friend_id, order_id || null, amount, truncatedNote, createdAt);
+  `).run(friendIdValue, orderIdValue || null, amount, truncatedNote, createdAt);
 
   const transaction = db.prepare('SELECT * FROM transactions WHERE id = ?').get(result.lastInsertRowid);
 
   // Calculate new balance
   const balanceResult = db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as balance FROM transactions WHERE friend_id = ?
-  `).get(friend_id);
+  `).get(friendIdValue);
 
   res.status(201).json({
     transaction,
@@ -135,7 +146,13 @@ router.post('/payment', requireAdmin, (req, res) => {
 
 // POST /transactions/adjustment - Add credit/adjustment for a friend (admin only)
 router.post('/adjustment', requireAdmin, (req, res) => {
-  const { friend_id, order_id, amount, note } = req.body;
+  // ⚠ FUP-T15 — see the payment route above: the two IDs keep their presence tests
+  // on the RAW value and are sanitized only where they reach a bind; an unbindable
+  // `amount` falls into this route's own required-and-non-zero 400.
+  const { friend_id, order_id, note } = req.body;
+  const friendIdValue = bindValue(friend_id);
+  const orderIdValue = bindValue(order_id);
+  const amount = bindValue(req.body.amount);
 
   if (!friend_id) {
     return res.status(400).json({ error: 'friend_id je povinný' });
@@ -151,14 +168,14 @@ router.post('/adjustment', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Dôvod (poznámka) je povinný' });
   }
 
-  const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(friend_id);
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(friendIdValue);
   if (!friend) {
     return res.status(404).json({ error: 'Priateľ nebol nájdený' });
   }
 
   // Validate order if provided
   if (order_id) {
-    const order = db.prepare('SELECT * FROM orders WHERE id = ? AND friend_id = ?').get(order_id, friend_id);
+    const order = db.prepare('SELECT * FROM orders WHERE id = ? AND friend_id = ?').get(orderIdValue, friendIdValue);
     if (!order) {
       return res.status(404).json({ error: 'Objednávka nebola nájdená alebo nepatrí tomuto priateľovi' });
     }
@@ -170,14 +187,14 @@ router.post('/adjustment', requireAdmin, (req, res) => {
   const result = db.prepare(`
     INSERT INTO transactions (friend_id, order_id, type, amount, note)
     VALUES (?, ?, 'adjustment', ?, ?)
-  `).run(friend_id, order_id || null, amount, truncatedNote);
+  `).run(friendIdValue, orderIdValue || null, amount, truncatedNote);
 
   const transaction = db.prepare('SELECT * FROM transactions WHERE id = ?').get(result.lastInsertRowid);
 
   // Calculate new balance
   const balanceResult = db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as balance FROM transactions WHERE friend_id = ?
-  `).get(friend_id);
+  `).get(friendIdValue);
 
   res.status(201).json({
     transaction,
@@ -188,7 +205,16 @@ router.post('/adjustment', requireAdmin, (req, res) => {
 // PATCH /transactions/:id - Update a transaction (admin only)
 router.patch('/:id', requireAdmin, (req, res) => {
   const { id } = req.params;
-  const { amount, note, date } = req.body;
+  const { note, date } = req.body;
+  // ⚠ FUP-T15 — THE SHARPEST STORED-VALUE CASE IN THIS ROW. `amount` was bound
+  // unchecked, and a ONE-ELEMENT ARRAY spreads to exactly the arity the built
+  // statement wants — so `{"amount":["abc"]}` answered a clean **200** and REPLACED
+  // a real 42.50 EUR adjustment with the text "abc", which `SUM(amount)` then reads
+  // as 0. `bindValue` yields `undefined`, and the gate below is `!== undefined`, so
+  // the column is left out of the SET list and the recorded amount survives — the
+  // "treat as absent, never coerce" rule, on the ledger. An explicit `null` still
+  // takes the shipped "not an update to amount" branch, exactly as before.
+  const amount = bindValue(req.body.amount);
 
   const transaction = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);
   if (!transaction) {

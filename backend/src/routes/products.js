@@ -97,7 +97,16 @@ router.post('/', requireAdmin, uploadSingle('image'), (req, res) => {
 // Import products from CSV (admin)
 router.post('/import/:cycleId', requireAdmin, uploadSingle('file'), (req, res) => {
   const cycleId = req.params.cycleId;
-  const roastery = req.body.roastery || null;
+  // ⚠ FUP-T15 — THE RECORDED "LATENT" BLOCKER ON THIS ROUTE WAS FALSE. It read
+  // "the route requires `req.file`, so the body is multipart and every field is a
+  // string". multer parses fields with the `append-field` package, which honours
+  // bracket notation and repeated keys — so `roastery[a]=1` really did arrive as an
+  // OBJECT, was bound into the per-row INSERT below, and this route's own try/catch
+  // answered 400 with the BINDER'S OWN SENTENCE echoed to the client ("Chyba pri
+  // parsovani CSV: Too few parameter values were provided") after `console.error`
+  // wrote ~1.1 KB of stack. Unbindable ⇒ `undefined` ⇒ `|| null` ⇒ exactly what an
+  // absent `roastery` field already stores.
+  const roastery = bindValue(req.body.roastery) || null;
 
   // Check cycle exists
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
@@ -307,7 +316,14 @@ router.delete('/:id', requireAdmin, (req, res) => {
 // Import products from Google Sheets URL (admin)
 router.post('/import-gsheet/:cycleId', requireAdmin, async (req, res) => {
   const cycleId = req.params.cycleId;
-  const { url, roastery } = req.body;
+  // ⚠ FUP-T15 — same class and same file as the CSV import above: `roastery` is bound
+  // into every inserted row. Reaching it needs a live public sheet, so it is not
+  // exercisable from the e2e suite — but the shape is identical and so is the cost
+  // (this route's catch logs the whole Error, i.e. a full stack, and echoes
+  // `error.message` to the client). Unbindable ⇒ absent, exactly as `|| null` already
+  // treats an empty field.
+  const { url } = req.body;
+  const roastery = bindValue(req.body.roastery);
 
   // Check cycle exists
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
@@ -616,7 +632,14 @@ function parseMultiRowProducts(csvContent) {
 // Import products from Google Sheets with multi-row format (3 rows per product) (admin)
 router.post('/import-gsheet-multirow/:cycleId', requireAdmin, async (req, res) => {
   const cycleId = req.params.cycleId;
-  const { url, roastery } = req.body;
+  // ⚠ FUP-T15 — same class and same file as the CSV import above: `roastery` is bound
+  // into every inserted row. Reaching it needs a live public sheet, so it is not
+  // exercisable from the e2e suite — but the shape is identical and so is the cost
+  // (this route's catch logs the whole Error, i.e. a full stack, and echoes
+  // `error.message` to the client). Unbindable ⇒ absent, exactly as `|| null` already
+  // treats an empty field.
+  const { url } = req.body;
+  const roastery = bindValue(req.body.roastery);
 
   // Check cycle exists
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
