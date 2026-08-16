@@ -107,8 +107,8 @@ async function admin(path, opts = {}) {
 // `subscriptions` proves the `friend_subscriptions` non-write, and
 // `GET /api/friends/:id/detail` proves the `transactions` non-write. These direct
 // reads add only what no route exposes: that the stored hash is a bcrypt digest and
-// not the plaintext, that no `friend_sessions` row exists, and GLOBAL row counts
-// (which catch a row written with a NULL/foreign `friend_id`).
+// not the plaintext, that no `friend_sessions` row exists, and — via `newRowsFor`
+// below — that no row was written for a friend OTHER than the one the API can see.
 const DB_PATH = process.env.DB_PATH || ''
 
 function withDb(fn) {
@@ -126,8 +126,38 @@ function withDb(fn) {
   }
 }
 
-function countAll(table) {
-  return withDb((db) => Number(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n))
+// ⚠ FUP-T17 replaces the former `countAll(table)` global-count baselines. A count
+// delta over a WHOLE table straddling an HTTP round trip is a value claim over rows
+// this test does not own: any other spec file minting a session or posting a ledger
+// entry concurrently (`fullyParallel: false` serialises only WITHIN a file; different
+// files still interleave once `workers > 1`) reddens it while the approval endpoint
+// is blameless.
+//
+// The re-scoped form keeps everything the global count was actually buying:
+//  • `MAX(id)` watermark ⇒ only rows created AFTER the fixtures are considered, which
+//    is exactly what the old "baseline taken here, not at the top" comment wanted;
+//  • filtered to the friend ids THIS test owns (the new friend + the inviter), so a
+//    concurrent spec's rows are invisible while every row the approval could plausibly
+//    write is still caught — the approval holds no other friend identity.
+//
+// ⚠ Correction to the comment this replaces: a "row written with a NULL `friend_id`"
+// is NOT a real blind spot. Both `friend_sessions.friend_id` and
+// `transactions.friend_id` are declared `INTEGER NOT NULL` (schema.js), so SQLite
+// refuses such an insert outright. The blind spot the API genuinely cannot see is a
+// row credited to a DIFFERENT friend — here, the inviter — and that is what the id
+// filter below covers.
+function newRowsFor(table, watermark, friendIds) {
+  if (watermark === null) return null
+  const list = friendIds.map((n) => Number(n)).join(',')
+  return withDb((db) =>
+    db
+      .prepare(`SELECT id, friend_id FROM ${table} WHERE id > ? AND friend_id IN (${list})`)
+      .all(watermark)
+  )
+}
+
+function maxId(table) {
+  return withDb((db) => Number(db.prepare(`SELECT COALESCE(MAX(id), 0) AS n FROM ${table}`).get().n))
 }
 
 // ── Fixture builders ─────────────────────────────────────────────────────────
@@ -429,12 +459,12 @@ test.describe('Approval API — the three deliberate non-writes', () => {
     const inviter = await makeInviter('nonwrites')
     const invitation = await registerInvitation(inviter, { username: uniqueUsername('nowrite') })
 
-    // ⚠ The baselines are taken HERE, after the fixtures — not at the top of the
+    // ⚠ The watermarks are taken HERE, after the fixtures — not at the top of the
     // test. `makeInviter` logs a friend in, so it legitimately mints
-    // `friend_sessions` rows; a baseline captured before it would attribute the
+    // `friend_sessions` rows; a watermark captured before it would attribute the
     // fixture's own sessions to the approval and fail for the wrong reason.
-    const beforeTransactions = countAll('transactions')
-    const beforeSessions = countAll('friend_sessions')
+    const txWatermark = maxId('transactions')
+    const sessionWatermark = maxId('friend_sessions')
 
     const res = await approve(invitation.id, { note: 'nič navyše' })
     expect(res.status()).toBe(201)
@@ -457,15 +487,25 @@ test.describe('Approval API — the three deliberate non-writes', () => {
       Number(db.prepare('SELECT COUNT(*) AS n FROM friend_sessions WHERE friend_id = ?').get(body.friend.id).n)
     )
     if (sessionsForFriend !== null) expect(sessionsForFriend, 'no session minted by the approval').toBe(0)
-    if (beforeSessions !== null) expect(countAll('friend_sessions'), 'global friend_sessions unmoved').toBe(beforeSessions)
+    // FUP-T17: was a whole-table count delta. Now: no session row created since the
+    // watermark for EITHER friend this test owns — which additionally covers a session
+    // minted for the INVITER, something the per-friend check above cannot see.
+    const newSessions = newRowsFor('friend_sessions', sessionWatermark, [body.friend.id, inviter.id])
+    if (newSessions !== null) {
+      expect(newSessions, `no session row for the new friend or the inviter: ${JSON.stringify(newSessions)}`).toEqual([])
+    }
 
     // (3) NO transactions ROW — creation is not a financial event (GSO-T6). Checked
-    // per-friend through the API AND as a global count, which is the only way to see
-    // a row written with a NULL or foreign friend_id.
+    // per-friend through the API AND, via `newRowsFor`, for the INVITER — the one
+    // friend identity the approval can reach that no route surfaces from here.
     expect(await friendTransactions(body.friend.id), 'no ledger entry for a new friend').toEqual([])
     expect(friend.balance, 'balance starts at zero').toBe(0)
-    if (beforeTransactions !== null) {
-      expect(countAll('transactions'), 'no transactions row anywhere').toBe(beforeTransactions)
+    // FUP-T17: was a whole-table count delta. Now: no ledger row created since the
+    // watermark for either friend this test owns — the new friend (already covered
+    // through the API above) and the inviter (which no route surfaces from here).
+    const newTx = newRowsFor('transactions', txWatermark, [body.friend.id, inviter.id])
+    if (newTx !== null) {
+      expect(newTx, `no transactions row for the new friend or the inviter: ${JSON.stringify(newTx)}`).toEqual([])
     }
   })
 

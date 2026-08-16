@@ -26,9 +26,11 @@ function sanitizeFriend(friend) {
   delete friend.access_token;
   delete friend.invite_code;
   // ⚠ Module 10 seam: the raw Google subject is an identity key, never display
-  // data — it never leaves the server. A harmless no-op delete until UC-GA-001
-  // adds the column. Module 10's own login/link endpoints INHERIT this strip rule
-  // (11 §UC-FC-005 ships it first); do not remove it as "dead code".
+  // data — it never leaves the server. This was a no-op delete when FC-T1 shipped,
+  // but GA-T1 has since added `friends.google_sub`, so it now strips a REAL value
+  // off every row this function touches (FUP-T17). Module 10's own login/link
+  // endpoints INHERIT this strip rule (11 §UC-FC-005 ships it first); it is
+  // load-bearing, not dead code.
   delete friend.google_sub;
   return friend;
 }

@@ -48,12 +48,32 @@ let ctx
 let adminToken
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
-// OPTIONAL, strictly-extra assertion only (same rationale as
-// guest-admin-view.spec.js): a GLOBAL `transactions` row count catches a row
-// written with a NULL `friend_id`, which no API surface can see. NO default path.
+// OPTIONAL, strictly-extra assertion only (same rationale, and the same FUP-T17
+// re-scoping, as guest-admin-view.spec.js — the long form of the reasoning lives
+// there). In short: a GLOBAL `transactions` count delta straddling the PATCH was a
+// value claim over rows this test does not own, so a concurrent spec's ledger entry
+// reddened it while the guest item toggle was blameless; and the "NULL `friend_id`"
+// blind spot it claimed to close does not exist, because `transactions.friend_id` is
+// `INTEGER NOT NULL`. What replaces it is a `MAX(id)` watermark, filtered to
+// `friend_id = host` (the only friend identity a guest bag can reach) OR
+// `order_id = <the guest sub-order>` (a row credited to the WRONG friend but tagged
+// with the order, which is what a copy of the friend handler
+// `PATCH /api/orders/:id/paid` in `orders.js` produces). NO default path.
+//
+// ⚠ Only the SECOND clause is additive. `friend_id = host` is redundant with the API
+// check below — `GET /api/friends/:id/detail` returns every row `WHERE t.friend_id = ?`
+// unfiltered and the test compares `.count`, so even a self-netting pair reds that
+// assertion first. `order_id` is the sole thing here that sees a row the API cannot.
+// ⚠ And it carries the SAME THREE residuals recorded at length in
+// guest-admin-view.spec.js — read them there before changing this: the FK makes it
+// fire only when the id exists in `orders`; it compares a `guest_orders.id` against an
+// `orders.id`, which are INDEPENDENT AUTOINCREMENT sequences (the GSO-T7
+// `order_items` vs `guest_order_items` hazard), so a colliding concurrent pack inside
+// the watermark window can red it innocently; and a row for an unrelated friend with
+// no `order_id` is not caught (nothing in this route can produce one).
 const DB_PATH = process.env.DB_PATH || ''
 
-function transactionCountFromDb() {
+function withDb(fn) {
   if (!DB_PATH) return null
   let db
   try {
@@ -62,10 +82,26 @@ function transactionCountFromDb() {
     return null
   }
   try {
-    return Number(db.prepare('SELECT COUNT(*) AS n FROM transactions').get().n)
+    return fn(db)
   } finally {
     db.close()
   }
+}
+
+function transactionWatermark() {
+  return withDb((db) => Number(db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM transactions').get().n))
+}
+
+function txRowsFor(watermark, friendId, orderId) {
+  if (watermark === null) return null
+  return withDb((db) =>
+    db
+      .prepare(
+        'SELECT id, friend_id, order_id, type, amount, note FROM transactions ' +
+          'WHERE id > ? AND (friend_id = ? OR order_id = ?)'
+      )
+      .all(watermark, Number(friendId), Number(orderId))
+  )
 }
 
 async function admin(path, opts = {}) {
@@ -393,9 +429,10 @@ test.describe('Money: a guest checkbox posts nothing, an auto-unpack still rever
     })
 
     const before = await friendMoney(host.id)
-    const globalBefore = transactionCountFromDb()
+    const txWatermark = transactionWatermark()
 
     const party = await partyFor(cycle.id, host.id)
+    const guestOrderId = party.guest_orders[0].id
     for (const item of party.guest_orders[0].items) {
       expect((await toggleGuestItem(item.id)).status()).toBe(200)
       expect((await toggleGuestItem(item.id)).status()).toBe(200)
@@ -405,8 +442,12 @@ test.describe('Money: a guest checkbox posts nothing, an auto-unpack still rever
     expect(after.count, 'no transaction was written for a guest bag').toBe(before.count)
     expect(after.balance, 'the host\'s balance did not move').toBeCloseTo(before.balance, 2)
 
-    if (globalBefore !== null) {
-      expect(transactionCountFromDb(), 'not even a NULL-friend_id row').toBe(globalBefore)
+    // FUP-T17: the host half is redundant with the API check above; what this ADDS is
+    // the `order_id` half — a ledger row tagged with this sub-order but credited to
+    // some other friend, which `/detail` filters out by `friend_id` and cannot show.
+    const txRows = txRowsFor(txWatermark, host.id, guestOrderId)
+    if (txRows !== null) {
+      expect(txRows, `guest item toggles wrote a ledger row: ${JSON.stringify(txRows)}`).toEqual([])
     }
   })
 

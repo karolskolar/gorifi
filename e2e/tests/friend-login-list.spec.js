@@ -20,6 +20,31 @@ test.describe('public login list', () => {
     expect(typeof tester.hasCredentials).toBe('boolean')
 
     // Strictly minimal payload — nothing an admin list would carry.
+    //
+    // ⚠ FUP-T17 reviewed this exact-key-set sweep and DELIBERATELY LEFT IT AS IS.
+    // It looks like the whole-database defect FUP-T16 fixed, and it is not:
+    //  • FUP-T16's rule is "a VALUE claim over an unbounded set is a latent flake, a
+    //    SHAPE claim over the same set is legitimately global — do not narrow those."
+    //    `Object.keys(f).sort()` is a SHAPE claim. It also cannot be broken by another
+    //    spec creating a friend: every row here is built by ONE `.map()` in
+    //    `friends.js`, so this is an invariant of the ENDPOINT, not of the database
+    //    contents. Row-scoping it to `tester` would weaken it for nothing.
+    //  • The strictness is the point. `/api/friends/login-list` is the app's only
+    //    PUBLIC, UNAUTHENTICATED endpoint that enumerates real people (03 §UC-FL-003:
+    //    "id + name + hasCredentials only"). A denylist regex catches
+    //    `password_hash`/`invite_code`; only an exact key set catches a `SELECT *`
+    //    widening or a well-meant new field (phone, e-mail, balance, a Google hint).
+    //
+    // ⚠ MODULE 10, READ THIS BEFORE "FIXING" A RED HERE. If a Google hint is ever
+    // added to this payload, it publishes a per-friend linked/unlinked oracle to
+    // anonymous visitors for EVERY friend at once — a strictly worse version of the
+    // `not_linked` login-hint oracle 10 §Accepted risks already flags for a single
+    // probed account. And it should not arise: Google login is modern-mode only
+    // (10 resolved decision #2) while this route returns `[]` in modern mode, so the
+    // Google path never reads it. Forcing that to be an EXPLICIT decision — spec
+    // amendment + this line — rather than a silently-widened public payload is
+    // exactly what this assertion is for. Widen it only together with the module 10
+    // spec section that mandates the new key.
     for (const f of list) {
       expect(Object.keys(f).sort()).toEqual(['hasCredentials', 'id', 'name'])
     }

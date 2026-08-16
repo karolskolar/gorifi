@@ -516,20 +516,97 @@ test.describe('UC-ML-002 session TTL split', () => {
     expect(body.via).toBeUndefined()
   })
 
-  test('NOBODY writes via in this row — every mint site leaves it NULL', () => {
+  // ⚠ FUP-T17 — re-scoped, and the ROW'S OWN PREMISE WAS WRONG. The backlog filed
+  // this as "green only because nothing writes `via` yet". Nothing of the sort:
+  // ML-T3 shipped `createFriendSession(friend.id, { via: 'magic_link' })` at
+  // `magic-link.js:347`, which is the ONLY writer in the codebase. What actually
+  // kept the old whole-table `WHERE via IS NOT NULL → 0` sweep green is a pair of
+  // accidents, neither of them an invariant:
+  //   1. every redemption in the suite runs against a THROWAWAY spawned backend with
+  //      its own DB file (`withMailHarness` in magic-link.spec.js), so `via` is never
+  //      written into the shared `DB_PATH` database this test opens; and
+  //   2. file order — `magic-link-schema` sorts before `magic-link.spec` ('-' < '.'),
+  //      so even a redemption against the shared server would land after this test.
+  // Either accident is one task away from ending (ML-T6's UI flow, a spec that
+  // redeems against the shared server, a `workers > 1` box reordering files), and the
+  // sweep would then red for whoever ships it — pointing at ML-T1 code that is fine.
+  //
+  // The invariant worth keeping is narrower, and this test pins exactly it and no
+  // more: NO ML-T1 MINT SITE WRITES A NON-NULL `via` — 'magic_link' is ML-T3's alone.
+  // Each of the five sessions is minted BY THIS TEST and located by its own token, so
+  // no other spec's magic-link session can perturb it.
+  //
+  // ⚠ What this test does NOT pin, stated so nobody reads more into it: the
+  // CARRY-OVER case. `friends.js`'s change-password re-mint deliberately writes NULL
+  // `via`, which is one of the two deaths of a magic-link session's waiver — but the
+  // fixture below presents a session minted by a PASSWORD login, whose `via` is
+  // already NULL, so a re-mint that started copying `via` forward is structurally
+  // invisible here. That half is pinned where a magic-link session actually exists to
+  // carry over: `magic-link.spec.js` §"the waiver DIES with the re-mint"
+  // (§UC-ML-002 item 2). The two tests are complementary; neither subsumes the other.
+  test('the five ML-T1 mint sites all leave via NULL (magic_link is ML-T3\'s alone)', async () => {
     test.skip(!DB_PATH, 'requires DB_PATH — no route lists sessions, so via is invisible over HTTP')
-    // ⚠ Non-vacuous only because the TTL tests above have already minted sessions
-    // through auth (both branches), change-password, setup-credentials and
-    // onboarding by the time this runs — but assert the mints exist rather than
-    // trusting ordering.
-    const db = new DatabaseSync(DB_PATH)
+
+    // ── mint one session at each site, keeping the token that identifies its row ──
+    const minted = []
+
+    const personal = await makeFriendWithLogin('vperso')
+    minted.push(['personal password login', (await authPersonal(personal, { remember: true })).token])
+
+    const shared = await makeBareFriend('vshared')
+    minted.push(['legacy shared-password login', (await authShared(shared.id)).token])
+
+    const cp = await makeFriendWithLogin('vcp')
+    const cpLogin = await authPersonal(cp)
+    const cpRes = await ctx.put(`/api/friends/${cp.id}/change-password`, {
+      headers: { Authorization: `Bearer ${cpLogin.token}` },
+      data: { currentPassword: cp.password, newPassword: 'newPass12345' },
+    })
+    expect(cpRes.status(), 'change-password').toBe(200)
+    minted.push(['change-password re-mint', (await cpRes.json()).token])
+
+    const setup = await makeBareFriend('vsetup')
+    const setupLogin = await authShared(setup.id)
+    const setupRes = await ctx.post(`/api/friends/${setup.id}/setup-credentials`, {
+      headers: { Authorization: `Bearer ${setupLogin.token}` },
+      data: { username: `e2e_ml1_vsetup_${uniq}`.toLowerCase().slice(0, 30), password: 'setupPass123' },
+    })
+    expect(setupRes.status(), 'setup-credentials').toBe(200)
+    minted.push(['setup-credentials re-mint', (await setupRes.json()).token])
+
+    const link = await ctx.post('/api/onboarding-links', {
+      headers: admin(),
+      data: { note: `E2E FUPT17 via ${uniq}` },
+    })
+    expect(link.status(), 'onboarding link create').toBe(201)
+    const signup = await ctx.post(`/api/onboarding/${(await link.json()).token}`, {
+      data: {
+        name: `ML1 Via Onboard ${uniq}`,
+        phone: `+4218${uniq.replace(/\D/g, '').slice(0, 8).padEnd(8, '0')}`,
+        username: `e2e_ml1_vonb_${uniq}`.toLowerCase().slice(0, 30),
+        password: 'onboardPass1',
+      },
+    })
+    expect(signup.status(), 'onboarding signup').toBe(201)
+    minted.push(['onboarding auto-login', (await signup.json()).token])
+
+    const db = new DatabaseSync(DB_PATH, { readOnly: true })
     try {
-      const total = Number(db.prepare('SELECT COUNT(*) AS n FROM friend_sessions').get().n)
-      expect(total, 'sessions exist to inspect').toBeGreaterThan(0)
-      const withVia = Number(
-        db.prepare('SELECT COUNT(*) AS n FROM friend_sessions WHERE via IS NOT NULL').get().n
-      )
-      expect(withVia, "ML-T1 writes no via; 'magic_link' is ML-T3's").toBe(0)
+      // Whole-table SHAPE sweep — legitimately global per FUP-T16's rule, and
+      // deliberately NOT narrowed: the migrated column exists and every row's `via`
+      // is either NULL or a string, whoever wrote it.
+      for (const row of db.prepare('SELECT id, via FROM friend_sessions').all()) {
+        expect(row.via === null || typeof row.via === 'string', `via shape on session ${row.id}`).toBe(true)
+      }
+
+      // VALUE claim — scoped to the five rows this test just created, found by token.
+      expect(minted.length, 'all five ML-T1 mint sites were exercised').toBe(5)
+      for (const [site, token] of minted) {
+        expect(typeof token, `${site}: minted a Bearer`).toBe('string')
+        const row = db.prepare('SELECT id, via FROM friend_sessions WHERE token = ?').get(token)
+        expect(row, `${site}: its session row exists`).toBeTruthy()
+        expect(row.via, `${site} must leave via NULL — 'magic_link' is ML-T3's alone`).toBeNull()
+      }
     } finally {
       db.close()
     }
