@@ -32,6 +32,11 @@ const ADMIN_ENDPOINTS = [
   // are public), so its guard is per-route rather than on the mount. Anonymous must
   // never reach the handler.
   { method: 'post', path: '/api/invitations/1/approve', data: { username: 'evil.admin' } },
+  // 11 §UC-FC-006 / §UC-FC-008 item 2: the admin unlink of a friend's Google link.
+  // ⚠ `/api/friends` is a MIXED mount (friend auth, public login-list, admin), so the
+  // guard is per-route. Deliberately a DIFFERENT path from module 10's friend-owned
+  // `DELETE /api/friends/:id/google-link` — never multiplexed.
+  { method: 'delete', path: '/api/friends/1/google' },
   { method: 'post', path: '/api/cycles', data: { name: 'evil' } },
 ]
 

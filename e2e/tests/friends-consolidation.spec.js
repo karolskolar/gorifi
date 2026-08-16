@@ -1,4 +1,5 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD, fixtureEmail } from '../fixtures.js'
 
 // FC-T1 / 11 §UC-FC-004,005,007 — the API half of the friends-consolidation module:
@@ -1060,5 +1061,225 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
     await expect(dialog).toBeVisible()
     // Nothing was written under the rejection.
     expect((await friendRow(friend.id)).email).toBeNull()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FC-T3 — admin unlink Google (11 §UC-FC-006), API + UI.
+//
+// ⚠ There is no route that CREATES a Google link yet (module 10's GA-T2/GA-T5 own
+// that half), so every "linked friend" fixture is manufactured by a direct write to
+// the shared DB_PATH database — the established pattern for a state no route can
+// reach (guest-rewards' dangling-pointer test, guest-distribution's id collision).
+// Those tests self-skip without DB_PATH; the ones that need no link (404, the
+// idempotent call on an unlinked friend, the no-body-spread pin, the menu-item
+// absence) run unconditionally.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const DB_PATH = process.env.DB_PATH || ''
+
+function withDb(fn) {
+  const db = new DatabaseSync(DB_PATH)
+  try {
+    return fn(db)
+  } finally {
+    db.close()
+  }
+}
+
+// ⚠ Every manufactured link MUST be torn down, including after a FAILING test.
+// FC-T1's UC-FC-005 test asserts `googleLinked === false` on EVERY row of the whole
+// admin list — a global-database assertion — so a linked row left behind by a failure
+// here reds an unrelated test in this same file on the next run. (Observed exactly
+// that during this task's red phase: four fixtures survived and UC-FC-005 failed.)
+const linkedFixtures = new Set()
+
+// The link module 10 will write. `google_prompt_dismissed` is seeded to 1 on purpose:
+// UC-FC-006's resolved decision is that an admin unlink must NOT re-enable the prompt
+// the friend switched off, and only a row re-read can see that.
+function linkGoogle(id, { sub, email, dismissed = 1 }) {
+  linkedFixtures.add(Number(id))
+  withDb((db) => {
+    db.prepare('UPDATE friends SET google_sub = ?, google_email = ?, google_prompt_dismissed = ? WHERE id = ?')
+      .run(sub, email, dismissed, Number(id))
+  })
+}
+
+function clearLinkedFixtures() {
+  if (!DB_PATH || linkedFixtures.size === 0) return
+  withDb((db) => {
+    const stmt = db.prepare('UPDATE friends SET google_sub = NULL, google_email = NULL WHERE id = ?')
+    for (const id of linkedFixtures) stmt.run(id)
+  })
+  linkedFixtures.clear()
+}
+
+function googleRow(id) {
+  return withDb((db) =>
+    db
+      .prepare('SELECT name, username, active, google_sub, google_email, google_prompt_dismissed FROM friends WHERE id = ?')
+      .get(Number(id))
+  )
+}
+
+function uniqueGoogleSub(label) {
+  return `sub-${label}-${uniq}${++seq}`
+}
+
+async function unlinkGoogleApi(id, opts = {}) {
+  return admin(`/api/friends/${id}/google`, { method: 'delete', ...opts })
+}
+
+test.describe('API — UC-FC-006 admin unlink Google', () => {
+  // Tear down manufactured links even when the test above failed (see linkGoogle).
+  test.afterEach(clearLinkedFixtures)
+
+  test('unknown friend id ⇒ 404, before any write', async () => {
+    const res = await unlinkGoogleApi(99999999)
+    expect(res.status()).toBe(404)
+    expect((await res.json()).error).toBeTruthy()
+  })
+
+  test('an unlinked friend converges on the requested end state: 200, not 409 (GSO-T5 DELETE precedent)', async () => {
+    const friend = await makeFriend('unlink-noop')
+    const res = await unlinkGoogleApi(friend.id)
+    expect(res.status(), 'idempotent DELETE never 409s').toBe(200)
+    expect(await res.text(), 'the response is stripped like every friend payload').not.toMatch(STRIP_RE)
+    expect((await friendRow(friend.id)).googleLinked).toBe(false)
+  })
+
+  test('the request BODY is never spread into the UPDATE — only google columns are named', async () => {
+    const friend = await makeFriend('unlink-body', { phone: '0900111222' })
+    const res = await unlinkGoogleApi(friend.id, {
+      data: { name: 'HACKED BY BODY', active: 0, phone: '0000', must_change_password: 1, username: 'hacked' },
+    })
+    expect(res.status()).toBe(200)
+    const row = await friendRow(friend.id)
+    expect(row.name, 'name untouched by the body').toBe(friend.name)
+    expect(row.phone).toBe('0900111222')
+    expect(row.username).toBeNull()
+    expect(row.active).toBeTruthy()
+  })
+
+  test('unlinking a LINKED friend nulls both columns (row re-read), keeps google_prompt_dismissed, and a second call is 200', async () => {
+    test.skip(!DB_PATH, 'requires DB_PATH to manufacture a Google link (no route creates one yet)')
+    const friend = await makeFriend('unlink-linked')
+    linkGoogle(friend.id, { sub: uniqueGoogleSub('linked'), email: 'linked@example.test', dismissed: 1 })
+
+    // Precondition through the API surface the admin actually sees.
+    const before = await friendRow(friend.id)
+    expect(before.googleLinked, 'fixture really linked').toBe(true)
+    expect(before.google_email).toBe('linked@example.test')
+
+    const res = await unlinkGoogleApi(friend.id)
+    expect(res.status()).toBe(200)
+    expect(await res.text()).not.toMatch(STRIP_RE)
+
+    // ⚠ Verified by RE-READING THE ROW, not the response (UC-FC-006 acceptance).
+    const row = googleRow(friend.id)
+    expect(row.google_sub, 'google_sub nulled').toBeNull()
+    expect(row.google_email, 'google_email nulled').toBeNull()
+    // ⚠ Module 10 §Resolved decisions #3: the friend said "už sa nepýtať"; an admin
+    // support action on the LINK must not re-enable the nagging. A response-shape
+    // assertion cannot see this.
+    expect(Number(row.google_prompt_dismissed), 'google_prompt_dismissed untouched').toBe(1)
+
+    expect((await friendRow(friend.id)).googleLinked).toBe(false)
+
+    const second = await unlinkGoogleApi(friend.id)
+    expect(second.status(), 'idempotent: already in the requested end state').toBe(200)
+    const after = googleRow(friend.id)
+    expect(after.google_sub).toBeNull()
+    expect(Number(after.google_prompt_dismissed)).toBe(1)
+  })
+
+  test('NO session invalidation — an existing friend session still authenticates after the unlink', async () => {
+    test.skip(!DB_PATH, 'requires DB_PATH to manufacture a Google link')
+    const friend = await makeFriendWithSession('unlink-session')
+    linkGoogle(friend.id, { sub: uniqueGoogleSub('session'), email: 'session@example.test' })
+
+    // Non-vacuity: the probe endpoint really is session-guarded.
+    expect((await ctx.get(`/api/friends/${friend.id}/profile`)).status(), 'profile needs a session').toBe(401)
+    expect((await ctx.get(`/api/friends/${friend.id}/profile`, { headers: friend.auth })).status()).toBe(200)
+
+    expect((await unlinkGoogleApi(friend.id)).status()).toBe(200)
+
+    // The Google link is a login METHOD, not the session; password auth is untouched,
+    // so the session stays valid. Deliberate asymmetry with `admin-username` (which DOES
+    // invalidate, because a username change orphans the credential it was minted against).
+    const after = await ctx.get(`/api/friends/${friend.id}/profile`, { headers: friend.auth })
+    expect(after.status(), 'the session survives an unlink').toBe(200)
+  })
+})
+
+test.describe('UI — UC-FC-006 "Odpojiť Google" row action', () => {
+  // Tear down manufactured links even when the test above failed (see linkGoogle).
+  test.afterEach(clearLinkedFixtures)
+
+  test('the menu item is ABSENT for a friend who is not linked', async ({ page }) => {
+    await uiAdminLogin(page)
+    const friend = await makeFriend('ui-unlink-absent')
+    await gotoFriends(page)
+
+    const row = rowFor(page, friend.name)
+    await row.getByRole('button').first().click()
+    await expect(row.getByRole('button', { name: 'Resetovať heslo', exact: true }), 'menu is open').toBeVisible()
+    await expect(row.getByRole('button', { name: 'Odpojiť Google', exact: true })).toHaveCount(0)
+  })
+
+  test('a linked friend WITH a password: the confirm warns about Google only, and accepting clears the cell', async ({ page }) => {
+    test.skip(!DB_PATH, 'requires DB_PATH to manufacture a Google link')
+    await uiAdminLogin(page)
+    const friend = await makeFriendWithSession('ui-unlink-pw')
+    const name = (await friendRow(friend.id)).name
+    linkGoogle(friend.id, { sub: uniqueGoogleSub('uipw'), email: 'uipw@example.test' })
+    await gotoFriends(page)
+
+    const row = rowFor(page, name)
+    await expect(row.getByTestId('google-cell').getByText('uipw@example.test')).toBeVisible()
+
+    let message = null
+    const accept = async (d) => { message = d.message(); await d.accept() }
+    page.on('dialog', accept)
+    await rowMenuClick(row, 'Odpojiť Google')
+    await expect.poll(() => message, { message: 'confirm() was asked' }).toBeTruthy()
+    page.off('dialog', accept)
+
+    expect(message).toMatch(/Google/)
+    // This friend HAS a password, so the lock-out sentence must NOT appear — the two
+    // messages have to genuinely differ, or the warning is decoration.
+    expect(message, 'no lock-out warning for a friend who can still log in with a password').not.toMatch(/heslo/i)
+
+    await expect(row.getByTestId('google-cell')).toHaveText('-')
+    expect(googleRow(friend.id).google_sub).toBeNull()
+  })
+
+  test('a linked friend WITHOUT a password: the confirm additionally warns about the lock-out; dismissing it changes nothing', async ({ page }) => {
+    test.skip(!DB_PATH, 'requires DB_PATH to manufacture a Google link')
+    await uiAdminLogin(page)
+    const friend = await makeFriend('ui-unlink-nopw')
+    expect((await friendRow(friend.id)).hasCredentials, 'fixture has no password').toBe(false)
+    linkGoogle(friend.id, { sub: uniqueGoogleSub('uinopw'), email: 'uinopw@example.test' })
+    await gotoFriends(page)
+
+    const row = rowFor(page, friend.name)
+
+    // (1) Dismiss ⇒ nothing happens.
+    let asked = null
+    const decline = async (d) => { asked = d.message(); await d.dismiss() }
+    page.on('dialog', decline)
+    await rowMenuClick(row, 'Odpojiť Google')
+    await expect.poll(() => asked, { message: 'confirm() was asked' }).toBeTruthy()
+    page.off('dialog', decline)
+
+    expect(asked, 'the extra lock-out warning').toMatch(/heslo/i)
+    await expect(row.getByTestId('google-cell').getByText('uinopw@example.test')).toBeVisible()
+    expect(googleRow(friend.id).google_sub, 'dismissing performs no write').toBeTruthy()
+
+    // (2) Accept ⇒ the endpoint allows it (admin authority; the reset is the way back).
+    page.once('dialog', (d) => d.accept())
+    await rowMenuClick(row, 'Odpojiť Google')
+    await expect(row.getByTestId('google-cell')).toHaveText('-')
+    expect(googleRow(friend.id).google_sub).toBeNull()
   })
 })

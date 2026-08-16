@@ -948,6 +948,51 @@ router.put('/:id/admin-username', requireAdmin, (req, res) => {
   res.json(sanitizeFriend(updated));
 });
 
+// Admin: sever a friend's Google link (11 §UC-FC-006).
+//
+// Support cases: the friend lost the Google account, the wrong account got linked,
+// or they are being offboarded. The FRIEND-side link/unlink UX is module 10's
+// (§UC-GA-007) — ⚠ that one is a DIFFERENT route on a DIFFERENT auth boundary
+// (`DELETE /:id/google-link`, friend-owned). The two are deliberately separate paths
+// and must never be multiplexed into one handler: an admin acting on somebody else's
+// row and a friend acting on their own are not the same authorization question.
+//
+// Status codes:
+//   404 — no such friend (checked before any write)
+//   200 — unlinked, or already unlinked (idempotent, see below)
+router.delete('/:id/google', requireAdmin, (req, res) => {
+  const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
+  if (!friend) {
+    return res.status(404).json({ error: 'Priateľ nebol nájdený' });
+  }
+
+  // Already unlinked ⇒ 200, never 409 (the GSO-T5 `DELETE /guest-orders/:id`
+  // precedent): a DELETE converges on the requested END STATE, and here that state is
+  // simply already current. A double click, a retry or a second admin tab must not be
+  // answered with an error nobody can act on. The UPDATE below is itself idempotent,
+  // so there is no branch to take — it is written unconditionally.
+  //
+  // ⚠ THE UPDATE NAMES `google_sub` AND `google_email` ONLY, and the request BODY is
+  // NEVER spread into it (the GSO-T5 single-owner-per-flag rule — a body-driven update
+  // on a route whose name says "google" would be an arbitrary-column write).
+  //
+  // ⚠ `google_prompt_dismissed` is DELIBERATELY untouched (module 10 §Resolved
+  // decisions #3, restated in 11 §UC-FC-006): the friend switched the "prepojiť Google"
+  // prompt off themselves, and an admin support action on the LINK does not get to
+  // re-enable the nagging. Their way back is module 10's manual link in the profile
+  // modal (§UC-GA-007).
+  db.prepare('UPDATE friends SET google_sub = NULL, google_email = NULL WHERE id = ?').run(req.params.id);
+
+  // ⚠ NO `invalidateFriendSessions` HERE, DELIBERATELY. A Google link is a login
+  // METHOD, not the session: password auth is untouched by this write, so an existing
+  // `friend_sessions` row still points at a credential that works. This is a deliberate
+  // asymmetry with `PUT /:id/admin-username` above, which DOES invalidate — a username
+  // change orphans the very credential the session was minted against, an unlink does
+  // not. Do not "harmonise" the two without a spec change.
+  const updated = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
+  res.json(sanitizeFriend(updated));
+});
+
 // Delete friend (blocked if balance is non-zero) (admin)
 router.delete('/:id', requireAdmin, (req, res) => {
   const friend = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);

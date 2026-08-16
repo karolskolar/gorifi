@@ -239,6 +239,10 @@ export const api = {
   updateFriendProfile: (id, data) => request(`/friends/${id}/profile`, { method: 'PATCH', body: data }),
   adminResetFriendPassword: (id, password) => adminRequest(`/friends/${id}/reset-password`, { method: 'PUT', body: { password } }),
   adminSetFriendUsername: (id, username) => adminRequest(`/friends/${id}/admin-username`, { method: 'PUT', body: { username } }),
+  // 11 §UC-FC-006 — admin severs a friend's Google link. ⚠ Deliberately a different
+  // path from module 10's friend-owned `/friends/:id/google-link`; never merge them.
+  // No body: the route names its two columns itself and ignores anything sent.
+  adminUnlinkFriendGoogle: (id) => adminRequest(`/friends/${id}/google`, { method: 'DELETE' }),
 
   // Orders (password-protected, for friends)
   getOrderByFriend: (cycleId, friendId) => request(`/orders/cycle/${cycleId}/friend/${friendId}`),

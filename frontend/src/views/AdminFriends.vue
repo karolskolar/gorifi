@@ -245,6 +245,32 @@ async function setUsername() {
   }
 }
 
+// 11 §UC-FC-006 — admin severs a friend's Google link (friend lost the account, the
+// wrong one got linked, offboarding). Rendered only when `googleLinked`, so a
+// pre-module-10 deployment simply never shows it — the gating is DATA-driven, there is
+// no feature flag.
+//
+// ⚠ The two confirm texts must genuinely DIFFER: for a friend with no password this
+// unlink removes their last way in. The endpoint still allows it (admin authority — the
+// recovery path is the existing "Resetovať heslo"), so the warning IS the guard.
+// Copy is vy-form / impersonal, like the rest of this screen.
+async function unlinkGoogle(friend) {
+  let message = `Naozaj odpojiť účet Google od priateľa „${friend.name}“? Prihlásenie cez Google prestane fungovať.`
+  if (!friend.hasCredentials) {
+    message += ' Tento priateľ nemá nastavené heslo, takže sa po odpojení nebude môcť prihlásiť. Prístup mu obnovíte akciou Resetovať heslo.'
+  }
+  if (!confirm(message)) return
+
+  // Row-menu actions surface failures in the PAGE-level Alert (see `deleteFriend`) —
+  // this is not a dialog action, so FC-T2's in-dialog `modalError` does not apply here.
+  try {
+    await api.adminUnlinkFriendGoogle(friend.id)
+    await loadFriends()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
 function goToDashboard() {
   router.push('/admin/dashboard')
 }
@@ -449,6 +475,15 @@ async function logout() {
                       @click="openResetPassword(friend); closeMenu()"
                     >
                       Resetovať heslo
+                    </button>
+                    <!-- UC-FC-006 — only for a linked friend. On a pre-module-10 DB
+                         `googleLinked` is always false, so the item never renders. -->
+                    <button
+                      v-if="friend.googleLinked"
+                      class="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors"
+                      @click="unlinkGoogle(friend); closeMenu()"
+                    >
+                      Odpojiť Google
                     </button>
                     <button
                       class="w-full text-left px-3 py-2 text-sm text-destructive hover:bg-muted transition-colors"
