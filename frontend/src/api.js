@@ -271,6 +271,15 @@ export const api = {
     method: 'PUT',
     body: { id_token: idToken }
   }),
+  // GA-T7 (§UC-GA-007) — the friend severs their OWN link from the profile modal.
+  // ⚠ Deliberately NOT `adminUnlinkFriendGoogle` above: that one is `DELETE
+  // /friends/:id/google` under `requireAdmin` (11 §UC-FC-006). Two paths, two guards,
+  // never multiplexed — §UC-GA-004's path note. Idempotent 200 on an already-unlinked
+  // friend, and the body carries `warning: 'no_password'` when the friend has no
+  // password left to log in with, which §UC-GA-007 renders.
+  unlinkFriendGoogle: (friendId) => request(`/friends/${friendId}/google-link`, {
+    method: 'DELETE'
+  }),
   // "Už sa nepýtať". No body, and no Google dependency — it answers on an
   // unconfigured deployment too. ("Teraz nie" has NO counterpart here on purpose:
   // §UC-GA-006 makes it client-side only.)

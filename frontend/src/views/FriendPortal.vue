@@ -320,20 +320,36 @@ async function beginSession({
   // The link prompt's trigger is the LITERAL `googleLinked === false &&
   // googlePromptDismissed === false`, so "this handshake did not say" (`undefined`)
   // has to be distinguishable from "this handshake said no". Only ONE caller passes
-  // them — `authenticatePersonal()`, the non-Google modern login §UC-GA-006 names.
-  // Every other entry into a session leaves them absent on purpose:
+  // BOTH — `authenticatePersonal()`, the non-Google modern login §UC-GA-006 names.
+  // Every other entry into a session leaves `googlePromptDismissed` absent on purpose:
   //
   //   · the two RESTORE paths — a restore is not a login (§UC-GA-006, verbatim);
-  //   · `onGoogleCredential()` — a Google login is already linked;
   //   · the shared-password branch of `authenticate()` — legacy/transition, and
   //     `POST /friends/auth` publishes no Google state on that branch at all;
   //   · a magic-link session, which arrives through the restore path because
   //     `POST /magic-link/redeem` deliberately does not publish the two fields
   //     (recorded at `magic-link.js:378`).
   //
-  // ⚠ Writing `googleLinked = false` here would make `undefined` unreachable and fire
-  // the prompt on every one of those — including for a friend who IS already linked,
-  // stacked on ML-T6's magic prompt. Do not "tidy" these two into defaults.
+  // ⚠ ONE EXCEPTION, added by GA-T7: `onGoogleCredential()` passes
+  // `googleLinked: true` — and ONLY that field. A Google login is definitionally
+  // linked (`friends.js:372` returns `googleLinked: true` at the top level), and
+  // §UC-GA-007's profile section needs to know it WITHOUT waiting on
+  // `hydrateCurrentFriend()`, which is fire-and-forget and documented as allowed to
+  // fail silently. Before this, a hydrate failure on that one login path offered the
+  // friend a GIS button to link the account they had just logged in WITH, hid the
+  // unlink for the rest of the session, and — since `hasCredentials` IS seeded
+  // immediately — showed a credential-less Google friend the "no password" warning,
+  // which is false for them: they can still log in with Google.
+  //
+  // ⚠ The prompt does NOT move, and this is the line the next reader will worry
+  // about: the trigger needs `googleLinked === false`, and `true !== false`, so
+  // §UC-GA-006's prompt stays shut on this path exactly as it did when the field was
+  // absent — belt and braces, since `googlePromptDismissed` is still `undefined` here
+  // and that term fails on its own too.
+  //
+  // ⚠ Writing `googleLinked = false` as a DEFAULT would make `undefined` unreachable
+  // and fire the prompt on every path above — including for a friend who IS already
+  // linked, stacked on ML-T6's magic prompt. Do not "tidy" these two into defaults.
   googleLinked,
   googlePromptDismissed,
 } = {}) {
@@ -666,6 +682,14 @@ async function onGoogleCredential(response) {
     await beginSession({
       // Resolved decision #1 — the SAME forced gate, no new gate code.
       mustChangePassword: !!result.mustChangePassword,
+      // ⚠ 10 §UC-GA-007 (GA-T7). A Google login IS linked — `friends.js:372` says so
+      // in this very response — and the profile section seeds from the handshake, so
+      // stating it here is what stops a fire-and-forget `hydrateCurrentFriend()`
+      // failure from offering to link the account the friend just logged in with.
+      // ⚠ `googlePromptDismissed` stays ABSENT: it is unknown on this path and
+      // §UC-GA-006's prompt must not trigger on it. `true !== false` already shuts
+      // the prompt; see `beginSession`'s enumeration for the full reasoning.
+      googleLinked: true,
       // ⚠ NO `currentPassword`, and it must stay absent: a Google login never handled
       // one. `submitForcedPasswordChange()` sends `entry?.currentPassword || ''` and
       // the backend skips the current-password check while `must_change_password` is

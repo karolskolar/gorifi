@@ -718,9 +718,12 @@ test.describe('No public route fetches a third-party subresource', () => {
     //     DOES add is a way to reach `/` with no login card in sight (restore /
     //     magic-link redirect) — see the sweep's note above for why that is still
     //     zero and where that is pinned.
+    //     ⚠ GA-T7 UPDATE: §UC-GA-007's profile-modal section is a SECOND Google
+    //     control inside this SAME file, so the list below is unchanged — the
+    //     "third importer" this note used to anticipate never materialised as a new
+    //     row, and no assertion here moves.
     // Still to come, each on its own row when it lands: AdminLogin (§UC-GA-011),
-    // InviteRegister (§UC-GA-008), the profile modal (§UC-GA-007, which will be a
-    // THIRD importer inside this same view), AdminSettings (§UC-GA-010). ⚠ A guest
+    // InviteRegister (§UC-GA-008), AdminSettings (§UC-GA-010). ⚠ A guest
     // view (`GuestOrder`, `GuestOrderStatus`, `GuestProductGrid`) or `MagicLogin`
     // appearing here is a BUG, not an update — those routes are pinned at zero
     // external requests by the sweep above.

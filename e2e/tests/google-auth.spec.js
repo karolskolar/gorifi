@@ -2047,3 +2047,573 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
     })
   })
 })
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GA-T7 — §UC-GA-007: the profile modal's Google section (manual link / unlink)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The always-available manual trigger the brief asks for. Everything here runs on
+// THROWAWAY BACKENDS serving their own copy of the SPA, for the same two reasons the
+// GA-T6 block above states: the section is modern-mode only and the gate is pinned to
+// legacy, and a pre-existing link is a direct column write.
+//
+// ⚠ THREE CONSTRAINTS THIS BLOCK EXISTS TO PIN, none of them in §UC-GA-007's own text:
+//
+//  1. `gis.initialize()` is called UNCONDITIONALLY before this section's
+//     `renderButton`, never behind an "already initialised" flag. GIS keeps ONE GLOBAL
+//     callback and the §UC-GA-006 prompt, this section and the login card can all
+//     exist within one session — whichever rendered LAST owns it. GA-T6 found the live
+//     version of this: the prompt re-registered the callback and the login card's
+//     guard then skipped `initialize`, so its button rendered perfectly and did
+//     nothing. Counting calls is NOT proof; the proof is FIRING a credential at the
+//     other surface's callback and watching where the answer lands.
+//
+//  2. The mode gate is on the LINK half, not on the section. GA-T5 put a modern-only
+//     guard on `PUT /:id/google-link` (409 `field:'auth_mode'`), so §UC-GA-007's
+//     literal "googleClientId alone" would ship a GIS button whose every attempt 409s
+//     on a legacy or transition deployment. But `DELETE /:id/google-link` has NO mode
+//     guard, so gating the whole section would ALSO strip a linked friend's
+//     self-service unlink there — a capability the spec grants and the server honours,
+//     reachable whenever a deployment rolls modern back to transition. Two tests pin
+//     the pair: the unlinked friend gets nothing in transition, the linked one keeps
+//     the section and really does unlink. §UC-GA-007 is amended to match.
+//
+//  3. The no-password warning. §UC-GA-007 keys it on `hasCredentials === false` — and
+//     the affordance that value gates elsewhere (the CHANGE-password fold) is HIDDEN
+//     when it is false, so such a friend has no on-screen path to set a password at
+//     all. GA-T7 ships the WARNING, which tells the truth §UC-GA-004 states (the admin
+//     reset is the recovery path); building a set-a-password flow is a follow-up row,
+//     not this one. The absence of the fold is asserted below so the follow-up has a
+//     pin to delete.
+//
+// ⚠ SESSION BOUNDARY (§UC-GA-006, which §UC-GA-007 says applies identically): the
+// section's state is a per-instance ref seeded from the handshake, and the last test
+// here runs BOTH leak directions (a true override reaching an unlinked friend, a false
+// one reaching a linked friend) in ONE document with no reload.
+
+const GOOGLE_SECTION_HELPER = 'Prepojte si Google účet a prihlasujte sa jedným klikom.'
+const GOOGLE_LINKED_FALLBACK = 'Prepojené'
+const GOOGLE_UNLINK = 'Odpojiť Google účet'
+const GOOGLE_UNLINK_CONFIRM = 'Áno, odpojiť'
+const GOOGLE_UNLINK_CANCEL = 'Nechať prepojené'
+const GOOGLE_UNLINK_QUESTION = 'Naozaj chcete odpojiť Google účet?'
+const NO_PASSWORD_WARNING =
+  'Bez hesla sa nebudete môcť prihlásiť, kým vám správca nenastaví nové heslo.'
+
+const sectionOf = (page) => page.getByTestId('profile-google')
+
+/**
+ * Open the profile modal from the appbar and return the section (never the dialog).
+ *
+ * ⚠ The portal heading FIRST. `.appbar .titles` exists on the login card too — it reads
+ * "Členský vstup" there and its `titles-action` is empty, so clicking it while a login
+ * is still in flight silently does nothing and the failure surfaces ten seconds later
+ * as "no .m-title", which looks like a broken modal rather than a race.
+ */
+async function openProfileSection(page) {
+  await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+  await page.locator('.appbar .titles').click()
+  await expect(page.getByRole('dialog').locator('.m-title')).toHaveText('Upraviť profil')
+  return sectionOf(page)
+}
+
+/** The §UC-GA-013 boundary: hand a credential to whoever owns GIS's ONE callback. */
+function fireCredential(page, token) {
+  return page.evaluate((t) => window.__gisCallback({ credential: t }), token)
+}
+
+test.describe('§UC-GA-007 — the profile modal Google section', () => {
+  test('an unlinked friend links from the profile and the section flips in place — no reload, no prompt flag touched', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('psec'))
+      const sub = tag('sub-profile')
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await loginModern(page, backend, friend)
+      // The §UC-GA-006 prompt is a different surface; decline it so what follows is
+      // unambiguously the profile's own section.
+      await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
+      await expect(promptOf(page)).toHaveCount(0)
+
+      const initBefore = (await page.evaluate(() => window.__gisCalls.initialize)).length
+      const section = await openProfileSection(page)
+
+      await expect(section).toBeVisible()
+      await expect(section).toContainText(GOOGLE_SECTION_HELPER)
+      await expect(section.getByRole('button', { name: GOOGLE_UNLINK, exact: true })).toHaveCount(0)
+      await expect(section.getByTestId('gis-stub-button')).toBeVisible()
+
+      const calls = await page.evaluate(() => window.__gisCalls)
+      expect(calls.initialize.length, 'the section registers its OWN callback').toBe(initBefore + 1)
+      expect(calls.initialize.at(-1).client_id).toBe(TEST_CLIENT_ID)
+      expect(calls.initialize.at(-1).hasCallback).toBe(true)
+      expect(calls.renderButton.at(-1).testid, 'into the section\'s own container')
+        .toBe('google-profile-signin')
+
+      const [res] = await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/google-link')),
+        fireCredential(page, `TEST:${sub}:profile@example.test`),
+      ])
+      expect(res.status()).toBe(200)
+      expect(res.request().method()).toBe('PUT')
+
+      // Flipped IN PLACE: same modal, same document.
+      await expect(section.getByTestId('profile-google-email')).toHaveText('profile@example.test')
+      await expect(section.getByRole('button', { name: GOOGLE_UNLINK, exact: true })).toBeVisible()
+      await expect(section.getByTestId('google-profile-signin'), 'the offer is gone once taken')
+        .toHaveCount(0)
+      await expect(section).not.toContainText(GOOGLE_SECTION_HELPER)
+
+      const row = api.row(friend.id)
+      expect(row.google_sub).toBe(sub)
+      expect(row.google_email).toBe('profile@example.test')
+      expect(row.google_prompt_dismissed, 'linking here is not dismissing (§UC-GA-007)').toBe(0)
+
+      // The pre-existing modal is untouched around it (the additive requirement).
+      const dialog = page.getByRole('dialog')
+      await expect(dialog.getByRole('button', { name: 'Zmeniť heslo' })).toBeVisible()
+      await expect(dialog.locator('#pp-profile-name')).toBeVisible()
+
+      // Closing and reopening the modal keeps the new state — it is session state, not
+      // modal state, and nothing here reloaded the document.
+      await dialog.getByRole('button', { name: 'Zrušiť' }).click()
+      await expect(page.getByRole('dialog')).toHaveCount(0)
+      const again = await openProfileSection(page)
+      await expect(again.getByRole('button', { name: GOOGLE_UNLINK, exact: true })).toBeVisible()
+    })
+  })
+
+  test('a link with no stored address reads "Prepojené" — the section never renders an empty line', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('noaddr'))
+      api.linkGoogle(friend.id, { sub: tag('sub-noaddr'), email: null })
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await loginModern(page, backend, friend)
+      const section = await openProfileSection(page)
+      await expect(promptOf(page), 'a linked friend is never prompted').toHaveCount(0)
+      await expect(section.getByTestId('profile-google-email')).toHaveText(GOOGLE_LINKED_FALLBACK)
+      await expect(section.getByRole('button', { name: GOOGLE_UNLINK, exact: true })).toBeVisible()
+    })
+  })
+
+  test('unlink: confirm → DELETE → the section flips back with a FRESH GIS button, and a friend WITH a password gets no warning', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('unl'))
+      const sub = tag('sub-unlink')
+      api.linkGoogle(friend.id, { sub, email: 'unl@example.test' })
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await loginModern(page, backend, friend)
+      const section = await openProfileSection(page)
+      await expect(section.getByTestId('profile-google-email')).toHaveText('unl@example.test')
+
+      // ── the confirm, and the ABSENCE half of the no-password rule ──────────
+      await section.getByRole('button', { name: GOOGLE_UNLINK, exact: true }).click()
+      await expect(section).toContainText(GOOGLE_UNLINK_QUESTION)
+      await expect(section, 'this friend HAS a password — no warning may appear')
+        .not.toContainText(NO_PASSWORD_WARNING)
+
+      // Backing out writes nothing.
+      await section.getByRole('button', { name: GOOGLE_UNLINK_CANCEL, exact: true }).click()
+      await expect(section.getByTestId('profile-google-email')).toHaveText('unl@example.test')
+      expect(api.row(friend.id).google_sub, 'a cancelled confirm is not a request').toBe(sub)
+
+      const initBefore = (await page.evaluate(() => window.__gisCalls.initialize)).length
+      await section.getByRole('button', { name: GOOGLE_UNLINK, exact: true }).click()
+      const [res] = await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/google-link')),
+        section.getByRole('button', { name: GOOGLE_UNLINK_CONFIRM, exact: true }).click(),
+      ])
+      expect(res.status()).toBe(200)
+      expect(res.request().method()).toBe('DELETE')
+
+      await expect(section).toContainText(GOOGLE_SECTION_HELPER)
+      await expect(section.getByRole('button', { name: GOOGLE_UNLINK, exact: true })).toHaveCount(0)
+      // ⚠ A FRESH button, freshly initialised: the section is usable again without a
+      // reload, and it takes GIS's global callback back on the way.
+      await expect(section.getByTestId('gis-stub-button')).toBeVisible()
+      await expect
+        .poll(async () => (await page.evaluate(() => window.__gisCalls.initialize)).length,
+          { message: 'the re-rendered button re-registers the callback' })
+        .toBeGreaterThan(initBefore)
+
+      const row = api.row(friend.id)
+      expect(row.google_sub).toBeNull()
+      expect(row.google_email).toBeNull()
+      expect(row.google_prompt_dismissed, 'unlinking is not un-dismissing (§UC-GA-007)').toBe(0)
+      await expect(section, 'a friend WITH a password is never warned, before or after')
+        .not.toContainText(NO_PASSWORD_WARNING)
+    })
+  })
+
+  test('the no-password warning appears exactly when hasCredentials is false — in the confirm AND after the unlink', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      // A friend whose ONLY login is Google — no username, no password_hash. They can
+      // only get into the portal the way a real one does: the login card's Google
+      // button. That is also the only realistic way to reach this state in modern mode.
+      const friend = await api.plainFriend(tag('nopass'))
+      const sub = tag('sub-nopass')
+      api.linkGoogle(friend.id, { sub, email: 'nopass@example.test' })
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await page.goto(`${backend.baseUrl}/`)
+      await expect(page.getByTestId('google-signin')).toBeVisible()
+      await fireCredential(page, `TEST:${sub}:nopass@example.test`)
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+
+      const section = await openProfileSection(page)
+      // ⚠ THE MISSING AFFORDANCE, pinned as an absence (constraint 3 above): this
+      // friend has no password, the change-password fold is keyed on `hasCredentials`
+      // and therefore hidden, and NOTHING replaces it — the profile offers no way to
+      // set a first password. Delete this assertion when the follow-up row lands.
+      //
+      // ⚠ Asserted as "no password control AT ALL", not as the absence of the string
+      // "Zmeniť heslo". That narrower form would (a) merely duplicate
+      // `portal-profile-modal.spec.js:265`, same locator and same condition, and
+      // (b) FAIL TO DETECT THE GAP CLOSING: a first-password affordance would be
+      // labelled "Nastaviť heslo", so it would sail straight past a check that only
+      // looks for "Zmeniť". `/heslo/i` catches both, and anything else somebody names
+      // it in Slovak.
+      const passwordControls = page.getByRole('dialog').getByRole('button', { name: /heslo/i })
+      await expect(passwordControls,
+        'a credential-less friend has NO password-setting control in the profile')
+        .toHaveCount(0)
+
+      await expect(section.getByTestId('profile-google-email')).toHaveText('nopass@example.test')
+      await section.getByRole('button', { name: GOOGLE_UNLINK, exact: true }).click()
+      await expect(section, 'the client already knows hasCredentials is false')
+        .toContainText(NO_PASSWORD_WARNING)
+
+      const [res] = await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/google-link')),
+        section.getByRole('button', { name: GOOGLE_UNLINK_CONFIRM, exact: true }).click(),
+      ])
+      expect(res.status()).toBe(200)
+      expect((await res.json()).warning, 'GA-T5 ships the server half').toBe('no_password')
+
+      // The unlink HAPPENS (the friend's own account, §UC-GA-004) — and the warning
+      // stays on screen afterwards, now backed by the endpoint's own answer.
+      await expect(section).toContainText(GOOGLE_SECTION_HELPER)
+      await expect(section.getByTestId('profile-google-warning')).toContainText(NO_PASSWORD_WARNING)
+      expect(api.row(friend.id).google_sub).toBeNull()
+    })
+  })
+
+  test('⚠ a Google login seeds googleLinked from the HANDSHAKE: a failed profile fetch cannot offer to link the account you just signed in with', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    // ⚠ `hydrateCurrentFriend()` is fire-and-forget and documented as allowed to fail
+    // silently, so on the ONE login path where the friend is definitionally linked the
+    // section must not depend on it. Before `onGoogleCredential()` passed
+    // `googleLinked: true` into `beginSession()`, a failed profile fetch left this
+    // friend looking UNLINKED for the whole session: a GIS button offering to link the
+    // account they had just logged in with, no unlink affordance at all, and — because
+    // `hasCredentials` IS seeded immediately from the login response — the "Bez hesla
+    // sa nebudete môcť prihlásiť" banner, which is FALSE for them; they can still log
+    // in with Google.
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.plainFriend(tag('hydratefail'))
+      const sub = tag('sub-hydratefail')
+      api.linkGoogle(friend.id, { sub, email: 'hydrate@example.test' })
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      // The failure, reproduced honestly: the owner-scoped profile GET never lands.
+      await page.route('**/api/friends/*/profile', (route) => (
+        route.request().method() === 'GET' ? route.abort() : route.continue()
+      ))
+
+      await page.goto(`${backend.baseUrl}/`)
+      await expect(page.getByTestId('google-signin')).toBeVisible()
+      await fireCredential(page, `TEST:${sub}:hydrate@example.test`)
+
+      const section = await openProfileSection(page)
+      // Linked, from the handshake alone. No address is available (the handshake
+      // publishes `googleLinked` only, §UC-GA-003), so the NULL-email fallback is
+      // exactly the right thing to render.
+      await expect(section.getByTestId('profile-google-email')).toHaveText(GOOGLE_LINKED_FALLBACK)
+      await expect(section.getByRole('button', { name: GOOGLE_UNLINK, exact: true })).toBeVisible()
+      await expect(section, 'never offer to link what this very login used')
+        .not.toContainText(GOOGLE_SECTION_HELPER)
+      await expect(section.getByTestId('google-profile-signin')).toHaveCount(0)
+      await expect(section.getByTestId('profile-google-warning'),
+        'the no-password banner is FALSE while the Google link is live').toHaveCount(0)
+
+      // ⚠ And §UC-GA-006 does not move: `true !== false`, so the prompt stays shut on
+      // this path exactly as it did when the field was absent.
+      await expect(promptOf(page), 'a Google login is already linked').toHaveCount(0)
+    })
+  })
+
+  test('⚠ UNCONDITIONAL gis.initialize(): the section takes the ONE global callback from the prompt, and the login card takes it back', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(180_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      // A sub already held by somebody else, so the credential this test fires produces
+      // a 409 — the ONLY observable that distinguishes WHICH surface's callback ran,
+      // because the two callbacks render their error in different places.
+      const holder = await api.plainFriend(tag('holder7'))
+      const takenSub = tag('sub-taken7')
+      api.linkGoogle(holder.id, { sub: takenSub, email: 'holder7@example.test' })
+      const friend = await api.friendWithLogin(tag('own7'))
+      const mySub = tag('sub-own7')
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await loginModern(page, backend, friend)
+
+      // ── 1. the PROMPT registers the callback ──────────────────────────────
+      await promptOf(page).getByRole('button', { name: PROMPT_YES, exact: true }).click()
+      await expect(promptOf(page).getByTestId('gis-stub-button')).toBeVisible()
+      const afterPrompt = (await page.evaluate(() => window.__gisCalls.initialize)).length
+      await promptOf(page).getByRole('button', { name: 'Zatvoriť dialóg' }).click()
+      await expect(promptOf(page)).toHaveCount(0)
+
+      // ── 2. the SECTION must take it, unconditionally ──────────────────────
+      const section = await openProfileSection(page)
+      await expect(section.getByTestId('gis-stub-button')).toBeVisible()
+      const calls = await page.evaluate(() => window.__gisCalls)
+      expect(calls.initialize.length,
+        'a guard flag here would skip initialize and leave the prompt owning the callback')
+        .toBe(afterPrompt + 1)
+      expect(calls.renderButton.at(-1).testid).toBe('google-profile-signin')
+
+      // ⚠ THE PROOF, and it is not a call count. Fire a colliding credential: if the
+      // closed prompt still owned the callback, its 409 would render into an unmounted
+      // modal and this section would show nothing at all.
+      const [conflict] = await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/google-link')),
+        fireCredential(page, `TEST:${takenSub}:thief@example.test`),
+      ])
+      expect(conflict.status()).toBe(409)
+      await expect(page.getByRole('dialog'), 'the 409 lands in the modal\'s existing error slot')
+        .toContainText(LINK_CONFLICT)
+      await expect(promptOf(page), 'the prompt is gone — it cannot be the one that answered')
+        .toHaveCount(0)
+      await expect(page.getByRole('dialog'), 'and it names no friend').not.toContainText(holder.name)
+
+      // The section still works after the refusal.
+      await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/google-link')),
+        fireCredential(page, `TEST:${mySub}:own7@example.test`),
+      ])
+      await expect(section.getByTestId('profile-google-email')).toHaveText('own7@example.test')
+
+      // ── 3. the LOGIN CARD takes it back when it re-renders ────────────────
+      await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
+      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await expect(page.getByTestId('google-signin')).toBeVisible()
+      await expect
+        .poll(async () => (await page.evaluate(() => window.__gisCalls.initialize)).length,
+          // `calls.initialize.length` already INCLUDES the section's own registration
+          // (it was read after it), so "one more than that" is the card's.
+          { message: 'the login card re-registers after a session used the callback' })
+        .toBeGreaterThan(calls.initialize.length)
+
+      // Proof rather than inference: the callback it now owns is a LOGIN callback.
+      await fireCredential(page, `TEST:${mySub}:own7@example.test`)
+      await expect(page.locator('.appbar')).toContainText(friend.name)
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+    })
+  })
+
+  test('SESSION BOUNDARY: a link and an unlink made in one session reach neither the next friend nor the one after', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(180_000)
+
+    // ⚠ BOTH leak directions, in ONE document, with NO reload anywhere — a reload
+    // rebuilds module scope for free and would wash a leak away before the second leg
+    // could see it. Direction 1: A links (a TRUE override) and B, who is unlinked, must
+    // still be offered the button. Direction 2: B links then unlinks (a FALSE override)
+    // and A, who really is linked, must still read linked.
+    await withPortal({}, async ({ backend, api }) => {
+      const a = await api.friendWithLogin(tag('boundA'))
+      const b = await api.friendWithLogin(tag('boundB'))
+      const subA = tag('sub-boundA')
+      const subB = tag('sub-boundB')
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      const loginInPlace = async (friend) => {
+        await page.getByLabel(/^užívateľské meno$/i).fill(friend.username)
+        await page.getByLabel(/^heslo$/i).fill(friend.password)
+        await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+      }
+      const declinePrompt = async () => {
+        await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
+        await expect(promptOf(page)).toHaveCount(0)
+      }
+      const closeModal = async () => {
+        await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
+        await expect(page.getByRole('dialog')).toHaveCount(0)
+      }
+
+      // The ONLY navigation in this test.
+      await page.goto(`${backend.baseUrl}/`)
+
+      // A links from their profile.
+      await loginInPlace(a)
+      await declinePrompt()
+      let section = await openProfileSection(page)
+      await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/google-link')),
+        fireCredential(page, `TEST:${subA}:a@example.test`),
+      ])
+      await expect(section.getByTestId('profile-google-email')).toHaveText('a@example.test')
+      await closeModal()
+
+      // ── direction 1: A's TRUE state must not reach B, who is unlinked ─────
+      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await loginInPlace(b)
+      await expect(page.locator('.appbar')).toContainText(b.name)
+      await declinePrompt()
+      section = await openProfileSection(page)
+      await expect(section, "A's link must not reach B").toContainText(GOOGLE_SECTION_HELPER)
+      await expect(section.getByRole('button', { name: GOOGLE_UNLINK, exact: true })).toHaveCount(0)
+      await expect(section.getByTestId('profile-google-email')).toHaveCount(0)
+
+      // B links, then unlinks — a FALSE override in this session.
+      await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/google-link')),
+        fireCredential(page, `TEST:${subB}:b@example.test`),
+      ])
+      await expect(section.getByTestId('profile-google-email')).toHaveText('b@example.test')
+      await section.getByRole('button', { name: GOOGLE_UNLINK, exact: true }).click()
+      await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/google-link')),
+        section.getByRole('button', { name: GOOGLE_UNLINK_CONFIRM, exact: true }).click(),
+      ])
+      await expect(section).toContainText(GOOGLE_SECTION_HELPER)
+      await closeModal()
+
+      // ── direction 2: B's FALSE state must not reach A, who IS linked ──────
+      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await loginInPlace(a)
+      await expect(page.locator('.appbar')).toContainText(a.name)
+      await expect(promptOf(page), 'A is linked now — no prompt').toHaveCount(0)
+      section = await openProfileSection(page)
+      await expect(section.getByTestId('profile-google-email'), "B's unlink must not reach A")
+        .toHaveText('a@example.test')
+      await expect(section, 'and no offer to link what is already linked')
+        .not.toContainText(GOOGLE_SECTION_HELPER)
+
+      expect(api.row(a.id).google_sub, 'the server agrees with A').toBe(subA)
+      expect(api.row(b.id).google_sub, 'and with B').toBeNull()
+    })
+  })
+
+  test('⚠ but UNLINK is not mode-gated: a LINKED friend on a transition deployment still severs it', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    // ⚠ THE ASYMMETRY, and why the gate is on the link half only. GA-T5's
+    // `field:'auth_mode'` 409 guards `PUT /:id/google-link` and NOTHING else —
+    // `DELETE /:id/google-link` has no mode guard and works on every deployment. A
+    // deployment that rolls modern back to transition after friends have linked would,
+    // under a section-wide mode gate, silently strip those friends of the self-service
+    // unlink §UC-GA-007 grants them and the server still honours.
+    await withPortal({ mode: 'transition' }, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('translinked'))
+      const sub = tag('sub-translinked')
+      api.linkGoogle(friend.id, { sub, email: 'trans@example.test' })
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await page.goto(`${backend.baseUrl}/`)
+      await page.getByRole('button', { name: 'Osobné prihlásenie' }).click()
+      await page.getByPlaceholder('Zadajte užívateľské meno').fill(friend.username)
+      await page.getByPlaceholder('Zadajte heslo').fill(friend.password)
+      await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+
+      const section = await openProfileSection(page)
+      await expect(section, 'a linked friend keeps the section outside modern mode').toBeVisible()
+      await expect(section.getByTestId('profile-google-email')).toHaveText('trans@example.test')
+      // …but no OFFER: the helper line and the GIS mount belong to the link half.
+      await expect(section).not.toContainText(GOOGLE_SECTION_HELPER)
+      await expect(section.getByTestId('google-profile-signin')).toHaveCount(0)
+
+      await section.getByRole('button', { name: GOOGLE_UNLINK, exact: true }).click()
+      const [res] = await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/google-link')),
+        section.getByRole('button', { name: GOOGLE_UNLINK_CONFIRM, exact: true }).click(),
+      ])
+      expect(res.status(), 'DELETE has no mode guard').toBe(200)
+      expect(api.row(friend.id).google_sub).toBeNull()
+
+      // And once unlinked, the section withdraws entirely on this deployment — there
+      // is nothing left to show and no link it could honestly offer.
+      await expect(sectionOf(page), 'no bare heading over an offer that would 409')
+        .toHaveCount(0)
+      await expect(page.getByRole('dialog').locator('#pp-profile-name'),
+        'non-vacuity: the rest of the modal is still there').toBeVisible()
+    })
+  })
+
+  test('the section requires MODERN mode: absent in transition, present on the same backend once flipped', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    // ⚠ Constraint 2 above, in its NARROWED form. §UC-GA-007 says "rendered only when
+    // googleClientId is non-null" — full stop — but GA-T5's modern-only guard on PUT
+    // /:id/google-link means the spec's literal condition ships a button whose every
+    // attempt 409s. This test is the UNLINKED friend, for whom the section is entirely
+    // an offer; the test above is the linked one, who keeps it. The two together are
+    // what pin the gate to the link half rather than to the section.
+    await withPortal({ mode: 'transition' }, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('modeonly'))
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await page.goto(`${backend.baseUrl}/`)
+      await page.getByRole('button', { name: 'Osobné prihlásenie' }).click()
+      await page.getByPlaceholder('Zadajte užívateľské meno').fill(friend.username)
+      await page.getByPlaceholder('Zadajte heslo').fill(friend.password)
+      await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+
+      await openProfileSection(page)
+      await expect(sectionOf(page), 'not modern ⇒ no link offer the server would refuse')
+        .toHaveCount(0)
+      // Non-vacuity: the rest of the modal really did render.
+      await expect(page.getByRole('dialog').locator('#pp-profile-name')).toBeVisible()
+      await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
+
+      // ── flip the SAME backend to modern: the absence above cannot be vacuous ──
+      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await api.setAuthMode('modern')
+      await loginModern(page, backend, friend)
+      await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
+      await openProfileSection(page)
+      await expect(sectionOf(page), 'modern ⇒ the very same friend gets the section')
+        .toBeVisible()
+    })
+  })
+
+  test('an UNCONFIGURED deployment shows no trace of the section and contacts Google zero times', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({ env: { GOOGLE_CLIENT_ID: '', GOOGLE_AUTH_TEST_MODE: '' } }, async ({ backend, ctx, api }) => {
+      expect((await (await ctx.get('/api/friends/auth-mode')).json()).googleClientId).toBeNull()
+      const friend = await api.friendWithLogin(tag('noconf7'))
+      const hits = await trackGoogle(page)
+
+      await loginModern(page, backend, friend)
+      const dialog = await openProfileSection(page).then(() => page.getByRole('dialog'))
+      await expect(sectionOf(page)).toHaveCount(0)
+      await expect(dialog, 'no trace at all').not.toContainText('Google')
+      await page.waitForLoadState('networkidle')
+      expect(hits, 'an unconfigured deployment must be Google-free').toEqual([])
+    })
+  })
+})

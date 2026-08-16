@@ -453,6 +453,13 @@ async function onGoogleLinkCredential(response) {
     // clause's intent — the prompt does not linger as an offer once it has been
     // taken — is met by the three options being REMOVED in this stage.
     googlePromptStage.value = 'done'
+    // ⚠ GA-T7 DISCHARGES THIS SEAM'S FIRST OBLIGATION, right here: the profile
+    // section reads the SAME session-scoped state, so a link taken from the prompt
+    // must show up there without a reload (§UC-GA-007's "stays consistent within the
+    // session"). The second obligation — the unconditional `initialize()` — is
+    // discharged in `mountGoogleProfileButton()` below.
+    googleLinkedInSession.value = true
+    googleEmailInSession.value = result.googleEmail || ''
     // ⚠ Seam for GA-T7 (§UC-GA-007), TWO obligations:
     //   1. The profile modal's Google section links and unlinks the SAME friend within
     //      this session, and §UC-GA-007 requires the two to agree. When it lands, the
@@ -487,6 +494,184 @@ async function dismissGooglePromptForever() {
     googleLinkError.value = e.message
   } finally {
     googlePromptBusy.value = false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Google section in the profile modal (10 §UC-GA-007)
+// ---------------------------------------------------------------------------
+//
+// The always-available MANUAL trigger, as opposed to the once-per-login prompt above.
+// It shares that prompt's state and its hazards; what is new here is the unlink.
+//
+// ⚠ SESSION BOUNDARY (§UC-GA-006, which §UC-GA-007 says applies identically). This is
+// the ONE piece of "is this friend linked" state in this component, seeded ONCE at
+// setup from the handshake and written by BOTH surfaces (the prompt and this section),
+// which is what keeps them consistent within a session. Per-instance `ref`s in a
+// `<script setup>` that is keyed on the handshake — NO module scope, NO localStorage,
+// NO map keyed on the friend id. A link made by friend A must not make friend B look
+// linked on this same page, and A's unlink must not un-link B.
+//
+// `null` = "this session has not decided", which is the honest state on a session
+// RESTORE and a magic-link login — neither publishes the two Google fields (the strict
+// `=== false` note above says why the omission is deliberate). The display then follows
+// the owner-scoped profile fetch (`props.friend`, hydrated by the parent under its own
+// sessionSeq guard), exactly as `hasCredentials`/`username` already do in this modal.
+const googleLinkedInSession = ref(
+  typeof props.entry?.googleLinked === 'boolean' ? props.entry.googleLinked : null
+)
+const googleEmailInSession = ref('')
+
+const googleSectionLinked = computed(() => (
+  googleLinkedInSession.value === null
+    ? !!props.friend?.googleLinked
+    : googleLinkedInSession.value
+))
+// Only meaningful while linked. The handshake carries no address (§UC-GA-003 publishes
+// `googleLinked` alone), so a seeded-true session falls through to the profile fetch
+// until an action in this session produces one.
+const googleSectionEmail = computed(() => (
+  googleSectionLinked.value
+    ? (googleEmailInSession.value || props.friend?.google_email || '')
+    : ''
+))
+
+// ⚠⚠ THE MODE GATE IS ON THE *LINK* HALF ONLY, and the asymmetry is the whole point.
+//
+// GA-T5's `field:'auth_mode'` 409 guards `PUT /:id/google-link` — and nothing else.
+// `DELETE /:id/google-link` (`friends.js:1295`) carries NO mode guard and works on
+// every deployment. So gating the whole section on modern mode (as this row first
+// shipped) would take a linked friend's self-service UNLINK away on a legacy or
+// transition deployment — a capability §UC-GA-007 grants and the server still honours
+// — for a reason that applies only to the other half. That state is reachable: a
+// deployment can roll modern back to transition after friends have already linked.
+//
+// Hence: OFFERING a link needs modern mode, because otherwise every attempt 409s;
+// SEVERING one needs only a client id, because the endpoint accepts it.
+const googleCanLink = computed(
+  () => !!props.googleClientId && props.authMode === 'modern'
+)
+
+// The section renders when it has something to say: an existing link to show and
+// sever, or (in modern mode) an offer to make. An unlinked friend outside modern mode
+// gets no trace — a bare "Google" heading over nothing is worse than absence, and
+// §UC-GA-007's "unconfigured deployments show no trace" spirit covers it.
+const googleSectionVisible = computed(
+  () => !!props.googleClientId && (googleSectionLinked.value || googleCanLink.value)
+)
+
+// ⚠ The no-password warning, driven by EITHER of §UC-GA-007's two sources. STRICT
+// `=== false` on the client half: `hasCredentials` is absent until the profile fetch
+// lands, and `!undefined` would cry wolf at a friend who has a perfectly good password
+// (the same trap `googlePromptEligible` documents). The server half is the backstop —
+// GA-T5 answers `warning: 'no_password'` on the unlink itself, which covers the case
+// where this client never learned the friend's credential state at all.
+const googleUnlinkWarned = ref(false)
+const googleNoPassword = computed(
+  () => googleUnlinkWarned.value || props.friend?.hasCredentials === false
+)
+
+// The confirm §UC-GA-007 requires, inline in the section rather than a second modal —
+// the `GuestShareDialog` regenerate precedent. A NeoModal on top of a NeoModal would
+// stack two `.modal-layer`s, and the profile modal is closable, so the friend could
+// dismiss the one UNDERNEATH the confirm.
+const googleConfirmUnlink = ref(false)
+const googleSectionBusy = ref(false)
+const googleProfileButtonEl = ref(null)
+
+/**
+ * Render Google's own button into the section.
+ *
+ * ⚠⚠ `gis.initialize()` IS CALLED UNCONDITIONALLY, never behind an "already
+ * initialised" flag — the second obligation of GA-T6's seam, and the one live bug this
+ * whole area has already produced. GIS registers ONE GLOBAL callback and the LAST
+ * `initialize()` owns it; the login card, the post-login prompt and this section can
+ * all run within a single session. A guard flag here would leave the callback with
+ * whichever surface registered first, so this button would render perfectly and do
+ * nothing — the exact failure GA-T6 found on the login card after a logout. The login
+ * card takes it back through `beginSession()`'s `googleInitialised = false` reset.
+ */
+async function mountGoogleProfileButton() {
+  // `googleCanLink`, not `googleSectionVisible`: the section is also visible to a
+  // LINKED friend outside modern mode, and there is no button to render for them.
+  if (!googleCanLink.value || googleSectionLinked.value) return
+  await nextTick()
+
+  let gis
+  try {
+    gis = await loadGis(props.googleClientId)
+  } catch {
+    // ⚠ SILENT, unlike the prompt's loud failure — and the difference is deliberate.
+    // The prompt is a modal the friend opened to do exactly one thing; this is a
+    // section of a form they opened to edit their name, so an empty box beside four
+    // working fields is a degradation, not a dead end. `loadGis` is timeout-bounded.
+    return
+  }
+  if (!gis) return
+
+  // ⚠ RE-READ after the await: the friend may have closed the modal, or linked from
+  // somewhere else, while the script was in flight — `renderButton` would then throw
+  // on a null element.
+  await nextTick()
+  const el = googleProfileButtonEl.value
+  if (!el || !showProfileModal.value || !googleCanLink.value || googleSectionLinked.value) return
+
+  gis.initialize({ client_id: props.googleClientId, callback: onGoogleProfileCredential })
+  el.innerHTML = ''
+  gis.renderButton(el, {
+    theme: 'outline',
+    size: 'large',
+    text: 'continue_with',
+    shape: 'rectangular',
+    logo_alignment: 'center',
+    locale: 'sk',
+    // Same clamp as the login card and the prompt: GIS caps at 400 and refuses
+    // anything under 200.
+    width: Math.max(200, Math.min(Math.round(el.clientWidth) || 320, 400)),
+  })
+}
+
+/** The GIS credential, handed to the friend-owned link route (§UC-GA-004). */
+async function onGoogleProfileCredential(response) {
+  const credential = response && response.credential
+  if (!credential) return
+
+  profileError.value = ''
+  googleSectionBusy.value = true
+  try {
+    const result = await api.linkFriendGoogle(props.friendId, credential)
+    // In place, no reload, and the prompt's view of this session moves with it.
+    googleLinkedInSession.value = true
+    googleEmailInSession.value = result.googleEmail || ''
+    googleConfirmUnlink.value = false
+    // ⚠ NOT `google_prompt_dismissed` — §UC-GA-007 says this section touches that flag
+    // in NEITHER direction, and there is no call to `api.dismissGooglePrompt` here.
+  } catch (e) {
+    // §UC-GA-007: "A 409 renders in the modal's existing error slot." The server's own
+    // sentence, verbatim — it names no friend and a rewrite could only make that worse.
+    profileError.value = e.message
+  } finally {
+    googleSectionBusy.value = false
+  }
+}
+
+async function confirmGoogleUnlink() {
+  profileError.value = ''
+  googleSectionBusy.value = true
+  try {
+    const result = await api.unlinkFriendGoogle(props.friendId)
+    if (result && result.warning === 'no_password') googleUnlinkWarned.value = true
+    googleLinkedInSession.value = false
+    googleEmailInSession.value = ''
+    googleConfirmUnlink.value = false
+    // The section is usable again immediately: a fresh button, freshly initialised.
+    mountGoogleProfileButton()
+  } catch (e) {
+    // Keep the confirm open on failure — closing it would claim a severance that did
+    // not happen, and the section would still be showing the link it failed to remove.
+    profileError.value = e.message
+  } finally {
+    googleSectionBusy.value = false
   }
 }
 
@@ -760,7 +945,14 @@ function openProfileModal() {
   profilePhoneOriginal.value = profilePhone.value
   profileEmailOriginal.value = profileEmail.value
   profilePacketaOriginal.value = profilePacketaAddress.value
+  // §UC-GA-007: the CONFIRM is per-open UI state — an unlink the friend backed out of
+  // (or closed the modal on) must not be half-armed when they come back. The link
+  // state itself is NOT reset here: it belongs to the session, not to the modal.
+  googleConfirmUnlink.value = false
   showProfileModal.value = true
+  // Fire-and-forget: the GIS script load must not delay the modal, and its own failure
+  // path is silent by design.
+  mountGoogleProfileButton()
 }
 
 async function saveProfile() {
@@ -1681,6 +1873,100 @@ defineExpose({ openProfileModal, openInviteModal })
           {{ changePasswordSaving ? 'Mením heslo...' : 'Zmeniť heslo' }}
         </button>
       </div>
+    </div>
+
+    <!-- Google section (10 §UC-GA-007) — PURELY ADDITIVE, and that is a requirement,
+         not a nicety: `portal-profile-modal.spec.js` pins this modal's labels ~10×
+         and must pass unmodified. It sits UNDER the existing fields, adds no
+         `.copyrow` (that count is asserted), reuses the fold's own separator style,
+         and its cancel is "Nechať prepojené" rather than a second "Zrušiť" — the
+         shipped spec resolves `dialog.getByRole('button', { name: 'Zrušiť' })`
+         unscoped, and a second match would break it in strict mode.
+
+         ⚠ The mode gate sits on the LINK branch only (`googleCanLink`), never on the
+         section: unlink has no server-side mode guard, so a linked friend keeps it on
+         every deployment. See `googleCanLink`'s declaration. -->
+    <div
+      v-if="googleSectionVisible"
+      data-testid="profile-google"
+      style="border-top:2px solid rgba(10,10,10,0.12);padding-top:12px"
+    >
+      <label class="field-lbl">Google</label>
+
+      <!-- LINKED: the address (or "Prepojené" when the token carried none) + the
+           unlink, behind a confirm. -->
+      <template v-if="googleSectionLinked">
+        <div class="sub" data-testid="profile-google-email" style="overflow-wrap:anywhere">
+          {{ googleSectionEmail || 'Prepojené' }}
+        </div>
+        <div v-if="!googleConfirmUnlink" style="margin-top:10px">
+          <button
+            type="button"
+            class="btn sm"
+            :disabled="googleSectionBusy"
+            @click="googleConfirmUnlink = true"
+          >
+            Odpojiť Google účet
+          </button>
+        </div>
+        <!-- ⚠ `.confirmbox` + `.confirmbox .row` are the THEME's own inline-confirm
+             classes (friends-theme.css:285-286), used by `GuestShareDialog.vue` — the
+             precedent this confirm is modelled on. 02 §UC-DS-004 rule 1 puts a theme
+             class ahead of hand-rolled utilities, and it matters here beyond fidelity:
+             the destructive question was a `.field-help` (13px `--ink-dim`), i.e. it
+             read as dimmed helper text rather than a decision. `.confirmbox` also
+             carries A10's `line-height:normal`, so no call-site override is needed. -->
+        <div v-else class="confirmbox" style="margin-top:10px">
+          <!-- ⚠ §UC-GA-007: when the friend has no password, the confirm must say so
+               BEFORE they act. §UC-GA-004 names the recovery path — the admin reset —
+               and this sentence states it rather than implying the account is lost. -->
+          <div v-if="googleNoPassword" class="banner warn slim" data-testid="profile-google-warning">
+            <span class="dot"></span>
+            <div style="min-width:0">
+              Bez hesla sa nebudete môcť prihlásiť, kým vám správca nenastaví nové heslo.
+            </div>
+          </div>
+          <span><b>Naozaj chcete odpojiť Google účet?</b></span>
+          <div class="row">
+            <button
+              type="button"
+              class="btn sm dark"
+              :disabled="googleSectionBusy"
+              @click="confirmGoogleUnlink"
+            >
+              {{ googleSectionBusy ? 'Odpájam...' : 'Áno, odpojiť' }}
+            </button>
+            <button
+              type="button"
+              class="btn sm ghost"
+              :disabled="googleSectionBusy"
+              @click="googleConfirmUnlink = false"
+            >
+              Nechať prepojené
+            </button>
+          </div>
+        </div>
+      </template>
+
+      <!-- UNLINKED: the helper line + Google's own cross-origin iframe button. Brand
+           guidelines forbid restyling it, so the container carries the layout only.
+           ⚠ `v-else-if`, not `v-else`: outside modern mode there is no link to offer
+           and this branch must render NOTHING (the section itself is then absent too,
+           but a defensive `v-else` here could resurrect an empty box). -->
+      <template v-else-if="googleCanLink">
+        <div v-if="googleNoPassword" class="banner warn slim" data-testid="profile-google-warning">
+          <span class="dot"></span>
+          <div style="min-width:0">
+            Bez hesla sa nebudete môcť prihlásiť, kým vám správca nenastaví nové heslo.
+          </div>
+        </div>
+        <div class="field-help">Prepojte si Google účet a prihlasujte sa jedným klikom.</div>
+        <div
+          ref="googleProfileButtonEl"
+          data-testid="google-profile-signin"
+          style="margin-top:10px;display:flex;justify-content:center;min-height:44px"
+        ></div>
+      </template>
     </div>
 
     <template #footer>

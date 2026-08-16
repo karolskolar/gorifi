@@ -402,6 +402,19 @@ possible to invoke somewhere under their account").
 
 - A **"Google"** section under the existing fields, rendered only when `googleClientId`
   is non-null (unconfigured deployments show no trace):
+  - ⚠ **AMENDED (GA-T7, 2026-08-16) — the mode gate sits on the LINK half only.**
+    UC-GA-005's button and UC-GA-006's prompt both additionally require
+    `authMode === 'modern'`, because UC-GA-004's `PUT /:id/google-link` answers 409
+    `field: 'auth_mode'` outside it — offering a link every attempt refuses. The
+    **unlinked** branch below inherits that condition. The **linked** branch does
+    **not**: `DELETE /:id/google-link` carries no mode guard and works on every
+    deployment, so a friend who linked while modern keeps self-service unlink if the
+    deployment is later rolled back to transition. Consequence: the section is
+    rendered when `googleClientId` is non-null **and** (the friend is linked **or**
+    `authMode === 'modern'`) — an unlinked friend outside modern mode sees no trace,
+    since the section would otherwise be an empty heading. GA-T8/T10 face the same
+    question on their own surfaces and should re-derive it from which endpoint they
+    call, not copy this line.
   - **Unlinked:** helper line **"Prepojte si Google účet a prihlasujte sa jedným
     klikom."** + the GIS button → `PUT /api/friends/:id/google-link`. A 409 renders in
     the modal's existing error slot.
