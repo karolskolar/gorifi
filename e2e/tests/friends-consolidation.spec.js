@@ -25,8 +25,9 @@ const BOUNDS = { name: 120, phone: 32, email: 160, display_name: 200 }
 
 // UC-FC-005 / UC-IA-005-style raw-text pin: run against the FULL response body so a
 // future `SELECT *` widening cannot leak credential material or the raw Google
-// subject. `google_sub` is in the list from this module on (a no-op until module 10
-// adds the column — module 10 INHERITS this rule).
+// subject. `google_sub` is in the list from this module on — it was a no-op delete when
+// FC-T1 shipped, but GA-T1 has since added the column, so the KEY now exists on every
+// row object and its NAME alone would match this regex; module 10 INHERITS the rule.
 const STRIP_RE = /(password_hash|access_token|invite_code|google_sub)/
 
 let ctx
@@ -303,18 +304,49 @@ test.describe('API — UC-FC-004 name required', () => {
 // ── UC-FC-005: response invariants ────────────────────────────────────────────
 test.describe('API — UC-FC-005 stripping + googleLinked', () => {
   test('GET /api/friends: raw body never leaks credential material, every row carries googleLinked', async () => {
-    await makeFriend('strip-list') // at least one row exists
+    const mine = await makeFriend('strip-list') // at least one row exists
     const res = await admin('/api/friends')
     expect(res.status()).toBe(200)
     expect(await res.text()).not.toMatch(STRIP_RE)
     const rows = await res.json()
     expect(rows.length).toBeGreaterThan(0)
+    // Whole-list SHAPE sweep — legitimately global. UC-FC-005: EVERY row carries a
+    // boolean `googleLinked`, and that stays true regardless of which friend some
+    // other spec has linked. Deliberately NOT narrowed.
     for (const row of rows) {
       expect(typeof row.googleLinked, `googleLinked on friend ${row.id}`).toBe('boolean')
-      // Pre-module-10 DB: the column does not exist, so the derivation must land
-      // on false via the same code path — no flag, no error (graceful rule).
-      expect(row.googleLinked).toBe(false)
     }
+    // ⚠ FUP-T16 (11 §UC-FC-005, e2e-immutability case (a)) — the RULE this test encodes,
+    // and the half to preserve in any future edit:
+    //  • a SHAPE claim over every row is legitimately global — keep it swept (above);
+    //  • a VALUE claim is scoped to a row the test itself created (below).
+    // The `false` below is not a formality: a brand-new friend has no Google link, so it
+    // proves the derivation RAN — delete `friend.googleLinked = !!friend.google_sub` from
+    // `sanitizeFriend` and this reddens on `undefined`. The opposite pole,
+    // `googleLinked === true` for a linked row, is pinned by FC-T3's unlink test below
+    // (⚠ `DB_PATH`-gated — in a run without `DB_PATH` that pole skips and a hard-coded
+    // `false` would pass the whole suite), so it takes the FULL gate for the two poles
+    // together to rule a hard-coded `false` out.
+    // ⚠ The genuinely pre-migration case is NOT reachable from any HTTP test: schema.js
+    // migrates on import (a bare top-level `initDb()`), so any process able to serve
+    // `GET /api/friends` has already added the column. **Nothing asserts the graceful
+    // derivation any more** — the only place a pre-migration DB can exist is
+    // `google-auth-schema.spec.js`'s child-process probe, and that tests the MIGRATION,
+    // not `sanitizeFriend`. UC-FC-005's third acceptance criterion is therefore uncovered;
+    // covering it would need `sanitizeFriend` exported, which is a production change.
+    //
+    // History — why the `=== false` sweep was retired (see the FUP-T16 PROGRESS row):
+    // its comment claimed a "pre-module-10 DB: the column does not exist", but GA-T1
+    // shipped `friends.google_sub`, so the sweep was passing for a different reason (no
+    // row happened to be linked); and it was a value claim over rows the test does not
+    // own — `fullyParallel: false` (playwright.config.js) serialises tests only WITHIN a
+    // file, while different FILES still run concurrently once `workers` > 1 (default
+    // "50%" of cores — 1 on this 2-core box, more elsewhere), so GA-T4+ manufacturing a
+    // real link in another spec would have reddened it non-deterministically. `afterEach`
+    // teardown is no fix there: a link merely existing CONCURRENTLY is enough.
+    const row = rows.find((f) => f.id === mine.id)
+    expect(row, 'the friend this test created is in the admin list').toBeTruthy()
+    expect(row.googleLinked, 'a brand-new friend is not Google-linked').toBe(false)
   })
 
   test('GET /api/friends/:id/detail: same raw-text pin + googleLinked on the friend', async () => {
@@ -1088,10 +1120,12 @@ function withDb(fn) {
 }
 
 // ⚠ Every manufactured link MUST be torn down, including after a FAILING test.
-// FC-T1's UC-FC-005 test asserts `googleLinked === false` on EVERY row of the whole
-// admin list — a global-database assertion — so a linked row left behind by a failure
-// here reds an unrelated test in this same file on the next run. (Observed exactly
-// that during this task's red phase: four fixtures survived and UC-FC-005 failed.)
+// This used to be load-bearing for FC-T1's UC-FC-005 sweep, which asserted
+// `googleLinked === false` on EVERY row of the whole admin list — four fixtures
+// survived a failure during FC-T3's red phase and reddened it. FUP-T16 row-scoped that
+// claim, so a leaked link no longer reds anything in THIS file; the teardown stays
+// because it keeps the shared DB clean for module 10's own specs (and for anyone
+// eyeballing the admin list), not because a sibling test depends on it.
 const linkedFixtures = new Set()
 
 // The link module 10 will write. `google_prompt_dismissed` is seeded to 1 on purpose:
