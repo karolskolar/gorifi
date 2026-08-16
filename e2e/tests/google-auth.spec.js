@@ -119,6 +119,14 @@ function makeApi(ctx, adminToken, dbPath) {
       expect(r.status(), 'switch to modern auth mode').toBe(200)
       expect((await r.json()).authMode).toBe('modern')
     },
+    /** GA-T6: `transition` is the only mode in which a PERSONAL login (the one that
+     *  publishes `googleLinked`/`googlePromptDismissed`) happens OUTSIDE modern mode —
+     *  i.e. the only place the §UC-GA-006 `authMode === 'modern'` term is discriminating. */
+    async setAuthMode(mode) {
+      const r = await ctx.put('/api/admin/settings', { headers: admin(), data: { authMode: mode } })
+      expect(r.status(), `switch to ${mode} auth mode`).toBe(200)
+      expect((await r.json()).authMode).toBe(mode)
+    },
     /** Friend with a username + a password whose forced-change flag is CLEARED. */
     async friendWithLogin(label, { keepForcedChange = false } = {}) {
       const name = `GA4 ${label}`
@@ -583,7 +591,16 @@ const GIS_HOST = 'accounts.google.com'
 const GIS_STUB = `
   window.__gisCalls = { initialize: [], renderButton: [] };
   window.google = { accounts: { id: {
-    initialize: (cfg) => { window.__gisCalls.initialize.push({ client_id: cfg.client_id, hasCallback: typeof cfg.callback === 'function' }) },
+    initialize: (cfg) => {
+      window.__gisCalls.initialize.push({ client_id: cfg.client_id, hasCallback: typeof cfg.callback === 'function' })
+      // ⚠ GA-T6 addition. The real GIS keeps ONE global callback, registered by the
+      // LAST \`initialize()\` — so recording it here is not a convenience, it is the
+      // only way a test can (a) fire a credential at whoever currently owns the
+      // callback and (b) observe that ownership moving between the login card and
+      // the post-login prompt. GA-T4's assertions read only the two fields above and
+      // are unaffected.
+      window.__gisCallback = cfg.callback
+    },
     renderButton: (el, opts) => {
       window.__gisCalls.renderButton.push({ testid: el && el.getAttribute('data-testid'), opts })
       const marker = document.createElement('div')
@@ -1399,5 +1416,634 @@ test.describe('§UC-GA-004 — the SQLITE_CONSTRAINT → 409 translation, withou
     expect(out.ok).toEqual({ ok: true })
     expect(out.otherAfter.google_sub).toBe('sub-free')
     expect(out.otherAfter.google_email).toBe('other@example.test')
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GA-T6 — §UC-GA-006: the post-login link prompt (áno / teraz nie / už sa nepýtať)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠ THE ONE THING THIS BLOCK EXISTS TO PIN. The trigger is
+// `googleLinked === false && googlePromptDismissed === false` — STRICT EQUALITY, never
+// `!entry.googleLinked`. `POST /magic-link/redeem` deliberately does NOT publish either
+// field (recorded at `magic-link.js:378`), and neither does the legacy shared-password
+// branch of `POST /friends/auth`, so on those logins the fields are ABSENT. `!undefined`
+// is `true` — a truthiness trigger would open the link prompt for a friend who is
+// ALREADY LINKED, stacked on ML-T6's magic prompt, which is exactly the "one modal per
+// login, maximum" §UC-GA-006 forbids. The omission is the ENFORCEMENT MECHANISM; the
+// magic-link test below is the proof, and it is deliberately non-vacuous (it asserts the
+// session really IS a magic-link session and the friend really IS unlinked and
+// un-dismissed, so a `!entry.googleLinked` trigger cannot pass it).
+//
+// ⚠ A SECOND TERM THE SPEC DOES NOT STATE: `authMode === 'modern'`. GA-T5 put a
+// modern-only guard on `PUT /:id/google-link` (409 `field:'auth_mode'`), so on a legacy
+// deployment §UC-GA-006's literal condition would offer a link whose every attempt 409s.
+// The spec predates that guard. Pinned by the transition-mode test, which flips the SAME
+// backend to modern afterwards so the absence cannot be vacuous.
+//
+// Everything here runs on THROWAWAY BACKENDS serving their own copy of the SPA
+// (`backend/public`) — the `magic-link.spec.js` precedent. The gate is pinned to legacy
+// (`modern-login.spec.js` asserts nobody wrote `auth_mode`) and this prompt only exists
+// in modern mode, so there is no way to test it on the shared server.
+
+const PROMPT_TITLE = 'Prepojiť Google účet?'
+const PROMPT_BODY = 'Nabudúce sa prihlásite jedným klikom, bez hesla.'
+const PROMPT_YES = 'Áno, teraz'
+const PROMPT_LATER = 'Teraz nie'
+const PROMPT_NEVER = 'Už sa nepýtať'
+const PROMPT_FOOTNOTE = 'Prepojenie nájdete kedykoľvek v profile.'
+
+const PORTAL_HEADING = 'Objednávkové cykly'
+
+/** Start a throwaway backend, put it in `mode`, and hand the test its API + a page. */
+async function withPortal({ mode = 'modern', env = {} } = {}, fn) {
+  await withGoogleBackend(env, async (bundle) => {
+    if (mode !== 'legacy') await bundle.api.setAuthMode(mode)
+    await fn(bundle)
+  })
+}
+
+/** The modern login card's personal form. */
+async function loginModern(page, backend, friend) {
+  await page.goto(`${backend.baseUrl}/`)
+  await page.getByLabel(/^užívateľské meno$/i).fill(friend.username)
+  await page.getByLabel(/^heslo$/i).fill(friend.password)
+  await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+}
+
+const promptOf = (page) => page.getByTestId('google-link-prompt')
+
+test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
+  test('a fresh modern password login of an unlinked friend opens it, with exactly the confirmed labels', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('prompt'))
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      // 320px: the narrowest supported width, and the one that matters here —
+      // `.m-foot .btn` is `nowrap; flex:1` with no degradation signal (CLAUDE.md),
+      // so a three-option footer that does not fit paints OUTSIDE the modal border
+      // and nothing in the DOM says so.
+      await page.setViewportSize({ width: 320, height: 800 })
+      await loginModern(page, backend, friend)
+
+      const prompt = promptOf(page)
+      await expect(prompt).toBeVisible()
+      await expect(page.getByRole('heading', { name: PROMPT_TITLE })).toBeVisible()
+      await expect(prompt).toContainText(PROMPT_BODY)
+      await expect(prompt).toContainText(PROMPT_FOOTNOTE)
+
+      for (const label of [PROMPT_YES, PROMPT_LATER, PROMPT_NEVER]) {
+        await expect(prompt.getByRole('button', { name: label, exact: true })).toBeVisible()
+      }
+
+      // The friend IS logged in behind it — the prompt is a prompt, not a gate.
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+
+      // ⚠ One modal at a time: the credential-setup dialog and the forced gate must
+      // not be up, and neither must a second copy of this one.
+      await expect(prompt).toHaveCount(1)
+      await expect(page.getByTestId('forced-password-change')).toHaveCount(0)
+
+      // Geometry: every option inside the modal box, and no document overflow.
+      const box = await prompt.boundingBox()
+      for (const label of [PROMPT_YES, PROMPT_LATER, PROMPT_NEVER]) {
+        const b = await prompt.getByRole('button', { name: label, exact: true }).boundingBox()
+        expect(b.x, `${label} starts inside the modal`).toBeGreaterThanOrEqual(box.x - 0.5)
+        expect(b.x + b.width, `${label} ends inside the modal`).toBeLessThanOrEqual(box.x + box.width + 0.5)
+      }
+      const overflow = await page.evaluate(() =>
+        document.documentElement.scrollWidth - document.documentElement.clientWidth)
+      expect(overflow, 'the three-option footer must not scroll the page sideways').toBeLessThanOrEqual(0)
+    })
+  })
+
+  test('"Teraz nie" closes it, writes NOTHING to the server, and the prompt returns at the next login', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('later'))
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      // Every write to the two prompt endpoints, counted. "Teraz nie" is
+      // client-side ONLY (§UC-GA-006), so this must stay empty.
+      const writes = []
+      await page.route('**/api/friends/*/google-prompt-dismissed', (route) => {
+        writes.push(route.request().url())
+        return route.continue()
+      })
+
+      await loginModern(page, backend, friend)
+      await expect(promptOf(page)).toBeVisible()
+      await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
+      await expect(promptOf(page)).toHaveCount(0)
+
+      expect(writes, '"Teraz nie" makes no request').toEqual([])
+      expect(api.row(friend.id).google_prompt_dismissed, 'and writes nothing to the DB').toBe(0)
+
+      // ── the next login shows it again ──────────────────────────────────────
+      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await loginModern(page, backend, friend)
+      await expect(promptOf(page), 'a declined prompt returns at the next login').toBeVisible()
+    })
+  })
+
+  test('"Už sa nepýtať" persists to the DB and silences the prompt for good', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('never'))
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await loginModern(page, backend, friend)
+      await expect(promptOf(page)).toBeVisible()
+
+      const [res] = await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/google-prompt-dismissed')),
+        promptOf(page).getByRole('button', { name: PROMPT_NEVER, exact: true }).click(),
+      ])
+      expect(res.status(), 'the dismiss endpoint answers 200').toBe(200)
+      await expect(promptOf(page)).toHaveCount(0)
+
+      // ⚠ In the DB, not just in the response — the flag is the whole point.
+      expect(api.row(friend.id).google_prompt_dismissed).toBe(1)
+      expect(api.row(friend.id).google_sub, 'dismissing is not linking').toBeNull()
+
+      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await loginModern(page, backend, friend)
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expect(promptOf(page), 'a dismissed prompt never auto-opens again').toHaveCount(0)
+    })
+  })
+
+  test('an ALREADY-LINKED friend never sees it — and neither does an already-dismissed one', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      const linked = await api.friendWithLogin(tag('linked'))
+      api.linkGoogle(linked.id, { sub: tag('sub-linked'), email: 'linked@example.test' })
+      const dismissed = await api.friendWithLogin(tag('dsm'))
+      api.linkGoogle(dismissed.id, { sub: null, dismissed: 1 })
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await loginModern(page, backend, linked)
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expect(promptOf(page), 'googleLinked === true ⇒ nothing to offer').toHaveCount(0)
+
+      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await loginModern(page, backend, dismissed)
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expect(promptOf(page), 'googlePromptDismissed === true ⇒ silenced').toHaveCount(0)
+    })
+  })
+
+  test('a MAGIC-LINK session shows no prompt, and neither does a session restore — the absent fields are the mechanism', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('magic'))
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      // ⚠ NON-VACUITY, asserted before anything else: this friend is UNLINKED and
+      // UN-DISMISSED, so a `!entry.googleLinked` trigger WOULD fire here.
+      const before = api.row(friend.id)
+      expect(before.google_sub, 'the fixture is genuinely unlinked').toBeNull()
+      expect(before.google_prompt_dismissed, 'and genuinely un-dismissed').toBe(0)
+
+      // The session `MagicLogin.vue` produces: it reaches the portal by a ROUTE
+      // change, so the stored payload is its only channel — `viaMagicLink` rides in,
+      // and `googleLinked`/`googlePromptDismissed` cannot, because
+      // `POST /magic-link/redeem` never publishes them. Reproduced by writing the
+      // payload (the `magic-link.spec.js` precedent) rather than by standing up the
+      // whole mail harness: the restore path is where the fields are absent, and
+      // that is exactly what is under test.
+      const session = await (await api.passwordLogin(friend.username, friend.password)).json()
+      await page.goto(`${backend.baseUrl}/`)
+      await page.evaluate((payload) => localStorage.setItem('gorifi_friend_auth', payload), JSON.stringify({
+        friendId: friend.id,
+        friendName: friend.name,
+        friendUid: friend.uid,
+        token: session.token,
+        expiresAt: session.expiresAt,
+        viaMagicLink: true,
+      }))
+      await page.goto(`${backend.baseUrl}/`)
+
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expect(
+        page.getByTestId('magic-prompt'),
+        'the session really IS a magic-link session — ML-T6\'s own prompt is on screen'
+      ).toBeVisible()
+      await expect(
+        promptOf(page),
+        'and the Google prompt must NOT stack on it: `!undefined` is the bug this pins'
+      ).toHaveCount(0)
+
+      // ── a plain RESTORE is not a login either ──────────────────────────────
+      await page.evaluate(() => localStorage.removeItem('gorifi_friend_auth'))
+      await page.goto(`${backend.baseUrl}/`)
+      await loginModern(page, backend, friend)
+      await expect(promptOf(page), 'the login itself does show it').toBeVisible()
+      await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
+
+      await page.reload()
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expect(promptOf(page), 'a restore is not a login (§UC-GA-006)').toHaveCount(0)
+    })
+  })
+
+  // ⚠ THE HALF `self-hosted-fonts.spec.js` CANNOT REACH, and the reason this test is
+  // here rather than there (§UC-GA-012's route sweep says so in its own comment).
+  //
+  // GA-T6 makes `FriendPortalSession.vue` a SECOND sanctioned GIS importer. That is
+  // safe only while the session view loads GIS from a user GESTURE and never on mount,
+  // because the session is reachable at `/` with NO LOGIN CARD IN SIGHT — a token
+  // restore, or `/magic/:token` succeeding and `router.replace('/')`-ing straight into
+  // an authenticated portal. If the view ever called `loadGis()` during setup, that
+  // path would contact Google with no card and no gesture, and the sweep's
+  // `/magic/:token` zero would be holding only for the FAILURE token it happens to use.
+  //
+  // The sweep cannot see it: the shared gate is legacy (so the prompt cannot exist
+  // there) and its visits are anonymous (so the session never mounts). Hence: modern
+  // throwaway backend, both halves, measured with two different instruments.
+  test('the session surface loads GIS only on a GESTURE — a session-only "/" contacts Google zero times', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('gesture'))
+
+      // ── HALF 1: network. A session-only arrival, in a FRESH DOCUMENT. ──────────
+      // `authState` starts at 'loading' and the restore branch never passes through
+      // 'login', so the card's `showGoogleButton` is false for this whole document —
+      // which is what makes the network instrument valid here: `lib/gis.js`'s module
+      // singleton is also fresh, so ANY request to Google can only have come from the
+      // session view mounting.
+      const session = await (await api.passwordLogin(friend.username, friend.password)).json()
+      let hits = await trackGoogle(page, { fulfilWith: GIS_STUB })
+      await page.goto(`${backend.baseUrl}/`)
+
+      // ⚠ LIVENESS of the instrument, and THE ORDERING IS LOAD-BEARING — this assertion
+      // must complete BEFORE the payload is written, not after.
+      //
+      // `page.goto` resolves on `load`, while `FriendPortal`'s `onMounted` →
+      // `loadInitialData()` is still pending. Seeding localStorage first therefore RACES
+      // that read: win the race and the app restores a session immediately, the login
+      // card never renders, and this first visit contacts Google zero times. The
+      // original version of this test did exactly that — so `hits.length = 0` was a
+      // no-op on an already-empty array and the `[]` below held trivially, proving
+      // nothing. Waiting for the card's own GIS button is what pins the phase down: the
+      // recorder is demonstrably wired up, and only then is a session introduced.
+      await expect(page.getByTestId('gis-stub-button'),
+        'the anonymous login card rendered and loaded GIS').toBeVisible()
+      expect(hits.length, 'the recorder is live — the login card just used it')
+        .toBeGreaterThan(0)
+
+      await page.evaluate((payload) => localStorage.setItem('gorifi_friend_auth', payload), JSON.stringify({
+        friendId: friend.id,
+        friendName: friend.name,
+        friendUid: friend.uid,
+        token: session.token,
+        expiresAt: session.expiresAt,
+      }))
+      hits.length = 0
+      await page.goto(`${backend.baseUrl}/`)
+
+      // Non-vacuity: the portal really rendered. "Zero requests" is otherwise
+      // satisfied by a page that failed to mount at all.
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expect(page.locator('.appbar')).toContainText(friend.name)
+      await expect(page.getByTestId('google-signin'), 'the login card never rendered').toHaveCount(0)
+      await page.waitForLoadState('networkidle')
+      expect(hits,
+        'a session-only "/" must contact Google zero times — this is the path a successful\n' +
+        '/magic/:token lands on, and the guest-surface argument in self-hosted-fonts.spec.js\n' +
+        'rests on it').toEqual([])
+
+      // ── HALF 2: the stub's call record, which survives the loader's cache. ─────
+      // On a FRESH login the card legitimately loads GIS, so no network assertion can
+      // separate "the card loaded it" from "the session loaded it" — and `loadGis()`
+      // is a module singleton, so a session-mount call would issue no request at all.
+      // `renderButton` is the instrument that still sees it.
+      await page.evaluate(() => localStorage.removeItem('gorifi_friend_auth'))
+      await loginModern(page, backend, friend)
+      await expect(promptOf(page)).toBeVisible()
+
+      const targets = () => page.evaluate(
+        () => window.__gisCalls.renderButton.map((c) => c.testid))
+      expect(await targets(),
+        'the prompt is on screen and UNTOUCHED — nothing may have rendered into it yet')
+        .toEqual(['google-signin'])
+
+      await promptOf(page).getByRole('button', { name: PROMPT_YES, exact: true }).click()
+      await expect(promptOf(page).getByTestId('gis-stub-button')).toBeVisible()
+      expect(await targets(), 'and the gesture is what puts a button in the modal')
+        .toEqual(['google-signin', 'google-prompt-signin'])
+    })
+  })
+
+  test('the trigger requires MODERN mode: the same friend gets nothing in transition and the prompt in modern', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({ mode: 'transition' }, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('trans'))
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      // Transition mode still runs the PERSONAL branch of `POST /friends/auth`, which
+      // publishes `googleLinked: false, googlePromptDismissed: false` — so without the
+      // `authMode === 'modern'` term this WOULD open, and it would offer a link that
+      // GA-T5's guard answers 409 `field:'auth_mode'` to.
+      await page.goto(`${backend.baseUrl}/`)
+      await page.getByRole('button', { name: 'Osobné prihlásenie' }).click()
+      await page.getByPlaceholder('Zadajte užívateľské meno').fill(friend.username)
+      await page.getByPlaceholder('Zadajte heslo').fill(friend.password)
+      await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expect(promptOf(page), 'not modern ⇒ no link offer').toHaveCount(0)
+
+      const handshake = await (await api.passwordLogin(friend.username, friend.password)).json()
+      expect(handshake.googleLinked, 'the handshake really did say false…').toBe(false)
+      expect(handshake.googlePromptDismissed, '…and false').toBe(false)
+
+      // ── flip the SAME backend to modern: the absence above cannot be vacuous ──
+      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await api.setAuthMode('modern')
+      await loginModern(page, backend, friend)
+      await expect(promptOf(page), 'modern ⇒ the very same friend is offered the link').toBeVisible()
+    })
+  })
+
+  test('the legacy shared-password handshake carries neither field, so nothing can trigger on it', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    // The mirror of the magic-link rule at the API level: the shared-password branch is
+    // identity-less honour-system auth, and it publishes no Google state at all. A
+    // truthiness trigger would read `undefined` here too.
+    await withPortal({ mode: 'legacy' }, async ({ ctx, api }) => {
+      const friend = await api.plainFriend(tag('shared'))
+      const res = await ctx.post('/api/friends/auth', { data: { password: FRIENDS_PASSWORD, friendId: friend.id } })
+      expect(res.status()).toBe(200)
+      const body = await res.json()
+      expect(body).not.toHaveProperty('googleLinked')
+      expect(body).not.toHaveProperty('googlePromptDismissed')
+    })
+  })
+
+  test('a blocking gate wins: a must_change_password login sees the forced gate and NO prompt, that login through', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('forcedui'), { keepForcedChange: true })
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await loginModern(page, backend, friend)
+      const gate = page.getByTestId('forced-password-change')
+      await expect(gate).toBeVisible()
+      await expect(promptOf(page), 'one modal per login, maximum').toHaveCount(0)
+
+      // ⚠ AND IT DOES NOT ARRIVE AFTERWARDS. §UC-GA-006: when a gate fired the prompt
+      // "simply skips this login" — not "waits its turn".
+      await gate.getByLabel(/^nové heslo$/i).fill('gatePass12345')
+      await gate.getByLabel(/^potvrdiť nové heslo$/i).fill('gatePass12345')
+      await gate.getByRole('button', { name: /Nastaviť heslo a pokračovať/ }).click()
+      await expect(gate).toHaveCount(0)
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expect(promptOf(page), 'the prompt skips this login entirely').toHaveCount(0)
+
+      // The next login has no gate, so it does get the prompt — the absence above is
+      // about the gate, not about this friend.
+      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await loginModern(page, backend, { ...friend, password: 'gatePass12345' })
+      await expect(promptOf(page)).toBeVisible()
+    })
+  })
+
+  test('SESSION BOUNDARY: friend A declines, friend B logs in on the SAME page instance, B gets their own prompt', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    // ⚠ The six-leak surface, restated by §UC-GA-006 as a requirement. A declined-ref
+    // that outlives the handshake — module scope, localStorage, or state keyed on the
+    // friend id — silently suppresses the NEXT person's prompt.
+    //
+    // ⚠ NO DOCUMENT RELOAD ANYWHERE IN THIS TEST, in EITHER direction — that is the
+    // whole point, and it is why the logins are inlined rather than routed through
+    // `loginModern()`, whose first statement is a `page.goto()`. A reload rebuilds
+    // module scope for free, so a leak that lives there would survive an A→B leg and
+    // then be washed away before the B→A leg could see it. Both legs must run against
+    // ONE document for the pair to mean anything.
+    await withPortal({}, async ({ backend, api }) => {
+      const alice = await api.friendWithLogin(tag('alice'))
+      const bob = await api.friendWithLogin(tag('bob'))
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      // In-SPA login: fill the card that is already on screen, never navigate to it.
+      const loginInPlace = async (friend) => {
+        await page.getByLabel(/^užívateľské meno$/i).fill(friend.username)
+        await page.getByLabel(/^heslo$/i).fill(friend.password)
+        await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+      }
+
+      // The ONLY navigation in this test.
+      await page.goto(`${backend.baseUrl}/`)
+      await loginInPlace(alice)
+      await expect(promptOf(page)).toBeVisible()
+      await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
+      await expect(promptOf(page)).toHaveCount(0)
+
+      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await loginInPlace(bob)
+
+      await expect(page.locator('.appbar')).toContainText(bob.name)
+      await expect(promptOf(page), "Alice's decision must not reach Bob").toBeVisible()
+
+      // …and back the other way, still in the same document: Bob dismissing must not
+      // re-arm — or re-silence — Alice.
+      await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
+      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await loginInPlace(alice)
+      await expect(page.locator('.appbar')).toContainText(alice.name)
+      await expect(promptOf(page), 'each handshake owns its own decision').toBeVisible()
+    })
+  })
+
+  test('"Áno, teraz" swaps the body to the GIS button and links the account', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('link'))
+      const sub = tag('sub-prompt')
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await loginModern(page, backend, friend)
+      await expect(promptOf(page)).toBeVisible()
+
+      const initBefore = (await page.evaluate(() => window.__gisCalls.initialize)).length
+      await promptOf(page).getByRole('button', { name: PROMPT_YES, exact: true }).click()
+
+      // The body swaps to the GIS mount — and the offer is gone from it, so there is
+      // no way to fire the same flow twice from one modal.
+      await expect(promptOf(page).getByTestId('google-prompt-signin')).toBeVisible()
+      await expect(promptOf(page).getByTestId('gis-stub-button')).toBeVisible()
+      await expect(promptOf(page).getByRole('button', { name: PROMPT_YES, exact: true })).toHaveCount(0)
+
+      const calls = await page.evaluate(() => window.__gisCalls)
+      expect(calls.initialize.length, 'the prompt registers its OWN callback').toBe(initBefore + 1)
+      expect(calls.initialize.at(-1).client_id, 'the served client id').toBe(TEST_CLIENT_ID)
+      expect(calls.renderButton.at(-1).testid, 'rendered into the modal\'s own container')
+        .toBe('google-prompt-signin')
+
+      // The e2e boundary (§UC-GA-013): fire a credential at whoever owns the callback.
+      const [res] = await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/google-link')),
+        page.evaluate((token) => window.__gisCallback({ credential: token }), `TEST:${sub}:me@example.test`),
+      ])
+      expect(res.status(), 'the link succeeds').toBe(200)
+      expect(res.request().method()).toBe('PUT')
+
+      await expect(promptOf(page).getByTestId('google-prompt-linked')).toContainText('me@example.test')
+
+      const row = api.row(friend.id)
+      expect(row.google_sub, 'the link is written').toBe(sub)
+      expect(row.google_email).toBe('me@example.test')
+      expect(row.google_prompt_dismissed, 'linking is not dismissing (§UC-GA-004)').toBe(0)
+
+      // ── and the login card takes its callback back ────────────────────────
+      // ⚠ `google.accounts.id.initialize()` registers ONE GLOBAL callback. The prompt
+      // re-registered it, so without a reset the login card after a logout would hand
+      // Google's credential to an UNMOUNTED component and the Google button would be
+      // silently dead. Nothing else in the suite can see this.
+      await promptOf(page).getByRole('button', { name: 'Zatvoriť dialóg' }).click()
+      await expect(promptOf(page)).toHaveCount(0)
+      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await expect(page.getByTestId('google-signin')).toBeVisible()
+      await expect
+        .poll(async () => (await page.evaluate(() => window.__gisCalls.initialize)).length,
+          { message: 'the login card re-registers its own GIS callback after a session used one' })
+        .toBeGreaterThan(initBefore + 1)
+
+      // Proof rather than inference: the callback the login card now owns really is a
+      // LOGIN callback — firing it signs the (now linked) friend straight in.
+      await page.evaluate((token) => window.__gisCallback({ credential: token }), `TEST:${sub}:me@example.test`)
+      await expect(page.locator('.appbar')).toContainText(friend.name)
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+
+      // ⚠ "NEVER FOR A GOOGLE LOGIN" (§UC-GA-006) — the one trigger branch that had no
+      // assertion of its own. The two lines above do NOT cover it: the portal heading
+      // and the appbar stay `visible` behind a NeoModal scrim, so a prompt that DID
+      // open would leave both green. `onGoogleCredential()` passes no Google fields to
+      // `beginSession()`, so the trigger reads `undefined` — the same structural
+      // mechanism the magic-link test pins, and it deserves the same assertion.
+      await expect(
+        promptOf(page),
+        'a Google login is already linked — offering to link it is the absurd case'
+      ).toHaveCount(0)
+    })
+  })
+
+  // ⚠ The one user-visible string in this row that no other test reaches, on a branch a
+  // real friend hits whenever Google is blocked, offline or behind a captive portal.
+  // The message is half of it; the RECOVERY is the load-bearing half — the stage must
+  // fall back to 'ask' so the three options are on screen again, or the friend is left
+  // in a modal whose only content is an error and whose GIS box will never fill.
+  test('a blocked GIS shows the loader-failure sentence and returns the modal to its three options', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.friendWithLogin(tag('gisdown'))
+
+      // ⚠ Google is aborted for the WHOLE document, from the first byte — the honest
+      // reproduction of a blocked/offline/captive-portal client, and the only way to
+      // reach the catch without touching internals. `loadGis` memoises a SUCCESSFUL
+      // load in module scope (`namespace()` short-circuits before `pending`), so had
+      // the login card loaded the stub first, the prompt's call would return the cached
+      // namespace and never fail. It memoises a FAILURE differently — `fail()` sets
+      // `pending = null` — which is exactly what lets the prompt genuinely retry here
+      // and fail on its own. The card's own silent degradation (documented in
+      // `renderGoogleButton`) is what still lets the friend log in with a password.
+      const hits = await trackGoogle(page)
+      await loginModern(page, backend, friend)
+      await expect(promptOf(page), 'the prompt needs only googleClientId, never GIS').toBeVisible()
+      expect(hits.length, 'the card really did try Google, and really was refused')
+        .toBeGreaterThan(0)
+
+      await promptOf(page).getByRole('button', { name: PROMPT_YES, exact: true }).click()
+
+      await expect(promptOf(page), 'the sentence the friend actually sees')
+        .toContainText('Google sa nepodarilo načítať. Skúste to prosím neskôr.')
+      // The recovery: back to 'ask', so the modal is usable rather than a dead end.
+      await expect(promptOf(page).getByTestId('google-prompt-signin'),
+        'the empty GIS box is gone').toHaveCount(0)
+      for (const label of [PROMPT_YES, PROMPT_LATER, PROMPT_NEVER]) {
+        await expect(promptOf(page).getByRole('button', { name: label, exact: true }),
+          `${label} is back — the modal returned to its three options`).toBeVisible()
+      }
+      // And nothing was written on a path that never reached the server.
+      expect(api.row(friend.id).google_sub).toBeNull()
+      expect(api.row(friend.id).google_prompt_dismissed).toBe(0)
+    })
+  })
+
+  test('a 409 renders inline in the modal, the modal stays open, and nothing is written', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    await withPortal({}, async ({ backend, api }) => {
+      const holder = await api.plainFriend(tag('holder'))
+      const sub = tag('sub-taken')
+      api.linkGoogle(holder.id, { sub, email: 'holder@example.test' })
+      const friend = await api.friendWithLogin(tag('collide'))
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await loginModern(page, backend, friend)
+      await promptOf(page).getByRole('button', { name: PROMPT_YES, exact: true }).click()
+      await expect(promptOf(page).getByTestId('gis-stub-button')).toBeVisible()
+
+      const [res] = await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/google-link')),
+        page.evaluate((token) => window.__gisCallback({ credential: token }), `TEST:${sub}:thief@example.test`),
+      ])
+      expect(res.status()).toBe(409)
+
+      // Verbatim from §UC-GA-004, and it names no friend — ever.
+      await expect(promptOf(page)).toContainText(LINK_CONFLICT)
+      await expect(promptOf(page), 'no information about WHICH friend').not.toContainText(holder.name)
+      await expect(promptOf(page), 'the modal stays open — no retry loop, no auto-close').toBeVisible()
+
+      expect(api.row(friend.id).google_sub, 'nothing was written for the loser').toBeNull()
+      expect(api.row(holder.id).google_sub, 'and the holder is untouched').toBe(sub)
+    })
+  })
+
+  test('an UNCONFIGURED deployment shows no prompt and makes zero requests to Google', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    // ⚠ `GOOGLE_CLIENT_ID: ''` — `startBackend` blanks it and this keeps it blank, so
+    // `auth-mode` reports `googleClientId: null` for real. Not a `page.route` stub: this
+    // is the deployment state §UC-GA-002 describes, observed end to end.
+    await withPortal({ env: { GOOGLE_CLIENT_ID: '', GOOGLE_AUTH_TEST_MODE: '' } }, async ({ backend, ctx, api }) => {
+      expect((await (await ctx.get('/api/friends/auth-mode')).json()).googleClientId).toBeNull()
+      const friend = await api.friendWithLogin(tag('noconf'))
+      const hits = await trackGoogle(page)
+
+      await loginModern(page, backend, friend)
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expect(promptOf(page)).toHaveCount(0)
+      await page.waitForLoadState('networkidle')
+      expect(hits, 'an unconfigured deployment must be Google-free').toEqual([])
+    })
   })
 })

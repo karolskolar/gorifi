@@ -603,6 +603,39 @@ test.describe('No public route fetches a third-party subresource', () => {
   // The presence half — the button DOES render and DOES load GIS when modern +
   // configured — is pinned in `google-auth.spec.js`, which can stub the auth-mode
   // response and therefore reach a state this file's real-target sweep cannot.
+  //
+  // ⚠ GA-T6 UPDATE (10 §UC-GA-006), a case (a) edit. `views/FriendPortalSession.vue`
+  // is now a SECOND sanctioned GIS importer (see the list below), so state the
+  // expectations again rather than leave them inferred:
+  //
+  //   · `/` — UNCHANGED, and the reason is structural, not incidental. The session
+  //     view calls `loadGis()` from ONE place: the `@click` handler behind the link
+  //     prompt's "Áno, teraz". Nothing in its `setup()`/`onMounted` touches Google, so
+  //     an authenticated `/` contacts Google only after a deliberate user gesture. The
+  //     route's allowance here is still the LOGIN CARD's, exactly as GA-T4 left it.
+  //   · The genuinely new shape this row introduces is an arrival at `/` where the
+  //     login card NEVER RENDERS — a token restore, or `/magic/:token` succeeding and
+  //     `router.replace('/')`-ing into an authenticated session. If the session view
+  //     ever loaded GIS on mount, that path would contact Google with no card and no
+  //     gesture, and `/magic/:token`'s zero below would hold only for the FAILURE
+  //     token this sweep happens to use. ⚠ This sweep cannot see it (the gate is
+  //     legacy, and these visits are anonymous) — it is pinned in `google-auth.spec.js`
+  //     under §UC-GA-006, on a modern throwaway backend, by loading `/` with a stored
+  //     session and asserting ZERO requests to Google while the prompt is on screen.
+  //   · `/g/:token` and `/magic/:token` — UNCONDITIONAL zero, unchanged by this row.
+  //     ⚠ Be precise about WHY, because the obvious phrasing is false: it is NOT that
+  //     these routes can never mount `FriendPortal*`. `MagicLogin.vue` does
+  //     `router.replace('/')` on a SUCCESSFUL redemption and mounts both — which is
+  //     exactly the no-login-card arrival the bullet above is about. What holds here is
+  //     narrower: AS THIS SWEEP VISITS THEM — a garbage 64-hex token, so the redemption
+  //     401s and the failure card renders — neither route ever leaves its own view, and
+  //     `/g/:token` never can. The success path's zero is the bullet above's business,
+  //     pinned in `google-auth.spec.js`, not this line's.
+  //     The independent mechanism is bundle containment (below): the GIS host must not
+  //     appear in a `Guest*`/`MagicLogin*` chunk or an entry chunk.
+  //     `FriendPortalSession.vue` is a STATIC import of `FriendPortal.vue`, so Vite
+  //     inlines it into the existing `FriendPortal-*` route chunk — no new chunk, and
+  //     nothing new reaches an entry chunk.
   test('a public route contacts Google only where its config says a Google control renders', async ({ page, baseURL, request }) => {
     const origin = new URL(baseURL).origin
     const mode = await (await request.get('/api/friends/auth-mode')).json()
@@ -678,12 +711,23 @@ test.describe('No public route fetches a third-party subresource', () => {
     // ⚠ THE SANCTIONED IMPORTER LIST (10 §UC-GA-012's "only on surfaces that render a
     // Google control"). One row per surface, each named by the UC that put it there:
     //   · views/FriendPortal.vue — GA-T4, §UC-GA-005, the modern login card.
+    //   · views/FriendPortalSession.vue — GA-T6, §UC-GA-006, the post-login link
+    //     prompt's "Áno, teraz" button. ⚠ Same ROUTE as the row above (`/`): this
+    //     component is only ever rendered by `FriendPortal.vue`, so it adds a
+    //     surface, not a route, and the sweep's per-route map is unchanged. What it
+    //     DOES add is a way to reach `/` with no login card in sight (restore /
+    //     magic-link redirect) — see the sweep's note above for why that is still
+    //     zero and where that is pinned.
     // Still to come, each on its own row when it lands: AdminLogin (§UC-GA-011),
-    // InviteRegister (§UC-GA-008), the profile modal (§UC-GA-007), AdminSettings
-    // (§UC-GA-010). ⚠ A guest view (`GuestOrder`, `GuestOrderStatus`,
-    // `GuestProductGrid`) or `MagicLogin` appearing here is a BUG, not an update —
-    // those routes are pinned at zero external requests by the sweep above.
-    const SANCTIONED_GIS_IMPORTERS = ['views/FriendPortal.vue']
+    // InviteRegister (§UC-GA-008), the profile modal (§UC-GA-007, which will be a
+    // THIRD importer inside this same view), AdminSettings (§UC-GA-010). ⚠ A guest
+    // view (`GuestOrder`, `GuestOrderStatus`, `GuestProductGrid`) or `MagicLogin`
+    // appearing here is a BUG, not an update — those routes are pinned at zero
+    // external requests by the sweep above.
+    const SANCTIONED_GIS_IMPORTERS = [
+      'views/FriendPortal.vue',
+      'views/FriendPortalSession.vue',
+    ]
     const importers = walkFiles(FRONTEND_SRC)
       .filter((f) => /\.(js|ts|vue)$/.test(f) && f !== GIS_LIB)
       .filter((f) => /from\s+['"][^'"]*lib\/gis(\.js)?['"]/.test(readFileSync(f, 'utf8')))

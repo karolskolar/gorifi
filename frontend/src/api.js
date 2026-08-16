@@ -261,6 +261,23 @@ export const api = {
   // No body: the route names its two columns itself and ignores anything sent.
   adminUnlinkFriendGoogle: (id) => adminRequest(`/friends/${id}/google`, { method: 'DELETE' }),
 
+  // 10 §UC-GA-004 — the FRIEND-OWNED half, called from the §UC-GA-006 post-login
+  // prompt (and, from GA-T7, the profile modal). ⚠ Not `adminRequest`: both routes are
+  // `requireFriendOwner`-guarded, so they need the friend's Bearer token, which
+  // `request()` attaches. The 409s (`field:'google'` collision, `field:'auth_mode'`
+  // legacy) arrive as a thrown Error whose message is the server's own Slovak
+  // sentence — §UC-GA-006 renders it verbatim, so nothing here may rewrite it.
+  linkFriendGoogle: (friendId, idToken) => request(`/friends/${friendId}/google-link`, {
+    method: 'PUT',
+    body: { id_token: idToken }
+  }),
+  // "Už sa nepýtať". No body, and no Google dependency — it answers on an
+  // unconfigured deployment too. ("Teraz nie" has NO counterpart here on purpose:
+  // §UC-GA-006 makes it client-side only.)
+  dismissGooglePrompt: (friendId) => request(`/friends/${friendId}/google-prompt-dismissed`, {
+    method: 'POST'
+  }),
+
   // Orders (password-protected, for friends)
   getOrderByFriend: (cycleId, friendId) => request(`/orders/cycle/${cycleId}/friend/${friendId}`),
   updateOrderByFriend: (cycleId, friendId, items) => request(`/orders/cycle/${cycleId}/friend/${friendId}`, {

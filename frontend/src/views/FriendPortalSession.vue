@@ -48,9 +48,11 @@
 // `switchUser()`.
 // =============================================================================
 
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api, { getFriendsAuthInfo } from '../api'
+// 10 §UC-GA-012 — the ONE home for the GIS script. Never a second injector.
+import { loadGis } from '../lib/gis'
 // ⚠ No `@/components/ui/*` import remains in this file. The credential-setup
 // dialog was the last radix consumer on the authenticated friend surface; it now
 // composes on `NeoModal`, so `Input`/`Label`/`Button`/`Alert`/`Dialog*` are gone.
@@ -90,7 +92,15 @@ const props = defineProps({
   //     parent already holds it in `password`/`loginPassword`); this component
   //     reads it at submit time and never copies it into a ref of its own.
   //   · `needsCredentialSetup` — transition mode, `hasCredentials === false`.
+  //   · `googleLinked` + `googlePromptDismissed` — 10 §UC-GA-006. ⚠ These may be
+  //     ABSENT, and absence is meaningful: see `googlePromptEligible` below.
   entry: { type: Object, default: () => ({}) },
+  // ⚠ CONFIGURATION, not handshake state — the parent's two `GET /friends/auth-mode`
+  // values, passed down rather than re-fetched. They are props (not `entry` keys)
+  // because they belong to the DEPLOYMENT, not to this login: `entry` dies with the
+  // session by design, and these two are identical for every friend on the device.
+  authMode: { type: String, default: 'legacy' },
+  googleClientId: { type: String, default: null },
 })
 
 const emit = defineEmits([
@@ -297,6 +307,187 @@ function dismissMagicPrompt() {
 function openMagicPasswordChange() {
   openProfileModal()
   showPasswordChange.value = true
+}
+
+// ---------------------------------------------------------------------------
+// Google link prompt (10 §UC-GA-006)
+// ---------------------------------------------------------------------------
+
+// ⚠⚠ THE TRIGGER, and every term in it is load-bearing.
+//
+// STRICT `=== false`, never `!props.entry?.googleLinked`. The two fields are ABSENT on
+// every handshake that is not a fresh non-Google modern login (see `beginSession`'s
+// note in `FriendPortal.vue`), and `!undefined` is `true` — a truthiness test would
+// open this modal for a friend who is ALREADY LINKED, on top of ML-T6's magic prompt,
+// which is precisely the "one modal per login, maximum" §UC-GA-006 forbids. The
+// omission upstream IS the enforcement mechanism.
+//
+// ⚠ `authMode === 'modern'` is NOT in §UC-GA-006's literal condition and is required
+// anyway: GA-T5 put a modern-only guard on `PUT /:id/google-link` (409
+// `field:'auth_mode'`), so on a legacy/transition deployment the spec's own condition
+// would offer a link whose every attempt 409s. The spec predates that guard.
+//
+// ⚠ The blocking gates are the "one modal per login" rule: when either fired, the
+// prompt SKIPS this login entirely rather than queueing behind it. Reading them from
+// the SEED (not reactively) is what makes that true — `forcedPasswordChange` clears
+// itself when the friend satisfies the gate, and a reactive read would pop this modal
+// open at that exact moment.
+//
+// ⚠ SESSION BOUNDARY (§UC-GA-006, restated as a requirement after this file's six
+// leaks): everything below is `ref`s seeded ONCE at setup from the handshake. NO
+// module-level state, NO localStorage, NO state keyed on the friend id — the component
+// is keyed on the auth handshake (`:key="sessionSeq"`), so a "Teraz nie" dies with the
+// session and the next friend on this device gets their own decision. `<script setup>`
+// compiles into `setup()`, so these consts are genuinely per-instance (the ML-T3
+// hazard, working FOR us here) — do not "fix" them into a plain `<script>` block.
+// ⚠ ACCEPTED RESIDUAL — the voucher overlay, and why it is NOT fixed here. GA-T7 will
+// face the same temptation, so the reasoning lives with the seed rather than in a
+// commit message.
+//
+// `onMounted` awaits `checkPendingVouchers()`, which raises `showVoucherModal` with NO
+// user action. That overlay is a hand-rolled `fixed inset-0 z-50` teleport while
+// `NeoModal`'s `.modal-layer` is `z-index: 200`, so a friend who is unlinked,
+// un-dismissed AND has a pending voucher gets this prompt painted OVER the voucher
+// modal, whose buttons stay unreachable behind our scrim until the prompt is closed.
+// Recoverable (close the prompt and the voucher is there), and it needs both
+// conditions to coincide.
+//
+// The obvious fix — a `!hasPendingVoucher` term — is the one thing that must not be
+// done: the voucher check is ASYNC, so the term could only be evaluated after it
+// resolves, which turns this seed into a `watch`. SEEDED-ONCE-AT-SETUP is precisely
+// what makes the session boundary safe here (the six leaks in this file were all state
+// that outlived or re-evaluated across a handshake), and a `watch` reintroduces the
+// async-flush hazard for a z-order overlap. Wrong trade; leave it.
+const googlePromptEligible = ref(
+  !!props.googleClientId &&
+  props.authMode === 'modern' &&
+  props.entry?.googleLinked === false &&
+  props.entry?.googlePromptDismissed === false &&
+  !props.entry?.mustChangePassword &&
+  !props.entry?.needsCredentialSetup
+)
+
+// "Teraz nie" (and the ×, and a completed link) live here — CLIENT-SIDE ONLY, no
+// server write, so the prompt may return at the next login (§UC-GA-006).
+const googlePromptClosed = ref(false)
+
+const showGooglePrompt = computed(() => googlePromptEligible.value && !googlePromptClosed.value)
+
+// 'ask' → the three options · 'link' → the GIS button · 'done' → the linked address.
+const googlePromptStage = ref('ask')
+const googlePromptButtonEl = ref(null)
+const googlePromptBusy = ref(false)
+// ONE error surface for this action (the RD-FL-8a rule): the 409 renders HERE,
+// verbatim from the server, and never in the page banner behind the scrim.
+const googleLinkError = ref('')
+const googleLinkedEmail = ref('')
+
+function closeGooglePrompt() {
+  googlePromptClosed.value = true
+}
+
+/** "Áno, teraz" — swap the body to Google's own button (§UC-GA-006). */
+async function startGoogleLink() {
+  googleLinkError.value = ''
+  googlePromptStage.value = 'link'
+  await nextTick()
+
+  let gis
+  try {
+    gis = await loadGis(props.googleClientId)
+  } catch {
+    // ⚠ NOT silent, unlike the login card's loader. There the friend still has the
+    // password form in front of them; here they asked for exactly one thing and an
+    // empty box would be the whole answer. `loadGis` is timeout-bounded, so this
+    // branch is reached in bounded time.
+    googleLinkError.value = 'Google sa nepodarilo načítať. Skúste to prosím neskôr.'
+    googlePromptStage.value = 'ask'
+    return
+  }
+  if (!gis) return
+
+  // ⚠ RE-READ after the await: the friend may have closed the modal while the script
+  // was in flight, in which case `googlePromptButtonEl` is null and `renderButton`
+  // would throw.
+  await nextTick()
+  const el = googlePromptButtonEl.value
+  if (!el || googlePromptStage.value !== 'link') return
+
+  // ⚠ Unconditional, and it takes over GIS's ONE global callback. That is why
+  // `beginSession()` resets the parent's `googleInitialised` — otherwise the login
+  // card after a logout would render a button wired to this unmounted component.
+  gis.initialize({ client_id: props.googleClientId, callback: onGoogleLinkCredential })
+  el.innerHTML = ''
+  gis.renderButton(el, {
+    theme: 'outline',
+    size: 'large',
+    text: 'continue_with',
+    shape: 'rectangular',
+    logo_alignment: 'center',
+    locale: 'sk',
+    // Same clamp as the login card: GIS caps at 400 and refuses anything under 200.
+    width: Math.max(200, Math.min(Math.round(el.clientWidth) || 320, 400)),
+  })
+}
+
+/**
+ * The GIS credential, handed to the friend-owned link route (§UC-GA-004).
+ *
+ * ⚠ NO RETRY LOOP (§UC-GA-006). A 409 means the account belongs to someone else —
+ * re-firing the same credential can only produce the same answer, so the message is
+ * rendered inline and the modal stays open for the friend to decide.
+ */
+async function onGoogleLinkCredential(response) {
+  const credential = response && response.credential
+  if (!credential) return
+
+  googleLinkError.value = ''
+  googlePromptBusy.value = true
+  try {
+    const result = await api.linkFriendGoogle(props.friendId, credential)
+    googleLinkedEmail.value = result.googleEmail || ''
+    // ⚠ DELIBERATE DEVIATION from §UC-GA-006, which says success "shows the linked
+    // `google_email` + closes". It shows it and waits for an explicit `Zavrieť`: an
+    // auto-close flashes the one confirmation the friend ever gets for this action,
+    // and it would race any assertion that the address was displayed at all. The
+    // clause's intent — the prompt does not linger as an offer once it has been
+    // taken — is met by the three options being REMOVED in this stage.
+    googlePromptStage.value = 'done'
+    // ⚠ Seam for GA-T7 (§UC-GA-007), TWO obligations:
+    //   1. The profile modal's Google section links and unlinks the SAME friend within
+    //      this session, and §UC-GA-007 requires the two to agree. When it lands, the
+    //      handshake-scoped "is this friend linked" state it introduces must be
+    //      written here too.
+    //   2. ⚠ That section must call `gis.initialize()` UNCONDITIONALLY before its
+    //      `renderButton`, exactly as `startGoogleLink()` does — never behind a
+    //      "already initialised" flag. GIS keeps ONE global callback, and the profile
+    //      modal and this prompt can both exist within a single session, so whichever
+    //      rendered last owns it. That is the same hazard `beginSession()`'s
+    //      `googleInitialised = false` reset covers for the login card.
+  } catch (e) {
+    // The server's own sentence, verbatim — §UC-GA-004's 409 says nothing about WHICH
+    // friend holds the account, and a rewrite here could only make that worse.
+    googleLinkError.value = e.message
+  } finally {
+    googlePromptBusy.value = false
+  }
+}
+
+/** "Už sa nepýtať" — the one option that writes (§UC-GA-004, one-way by design). */
+async function dismissGooglePromptForever() {
+  googleLinkError.value = ''
+  googlePromptBusy.value = true
+  try {
+    await api.dismissGooglePrompt(props.friendId)
+    closeGooglePrompt()
+  } catch (e) {
+    // Keep the modal open on failure: closing it would claim a persistence that did
+    // not happen, and the prompt would then be back at the next login with no
+    // explanation.
+    googleLinkError.value = e.message
+  } finally {
+    googlePromptBusy.value = false
+  }
 }
 
 // Invite modal
@@ -1680,6 +1871,102 @@ defineExpose({ openProfileModal, openInviteModal })
     </template>
   </NeoModal>
 
+  <!-- Google link prompt (10 §UC-GA-006). Shown at most ONCE per login, and only for
+       a successful non-Google modern login of an unlinked, un-silenced friend — the
+       whole trigger lives in `googlePromptEligible`, seeded once at setup.
+
+       ⚠ `title-heading`: the spec's acceptance criteria are written against the
+       title, and `NeoModal`'s `.m-title` is a `<div>` by default.
+
+       ⚠ THE FOOTER IS A COLUMN, and that is not a style preference. `.m-foot` is
+       `display:flex` and `.m-foot .btn` is `flex:1` with `white-space:nowrap` and no
+       `min-width` — a three-option row has NO degradation signal (CLAUDE.md): it
+       neither shrinks nor wraps nor ellipsises, it paints outside the modal border
+       and hands the scrim a horizontal scrollbar. Measured min-content for these
+       three labels is ~340px against the ~224px a 320px viewport leaves inside the
+       footer. The wrapper is deliberately NOT a `.btn`, so the theme's `flex:1` does
+       not reach it and no specificity race is created. -->
+  <NeoModal
+    v-if="showGooglePrompt"
+    data-testid="google-link-prompt"
+    title="Prepojiť Google účet?"
+    title-heading
+    @close="closeGooglePrompt"
+  >
+    <div class="sub">Nabudúce sa prihlásite jedným klikom, bez hesla.</div>
+
+    <div v-if="googleLinkError" class="banner danger slim">
+      <span class="dot"></span>
+      <div style="min-width:0">{{ googleLinkError }}</div>
+    </div>
+
+    <!-- Google's own cross-origin iframe button. Brand guidelines forbid restyling
+         it, so this stays a bare mount point with no theme class (§UC-GA-005's rule,
+         which applies wherever the button is rendered). -->
+    <div
+      v-if="googlePromptStage === 'link'"
+      ref="googlePromptButtonEl"
+      data-testid="google-prompt-signin"
+    ></div>
+
+    <div
+      v-else-if="googlePromptStage === 'done'"
+      class="banner ok slim"
+      data-testid="google-prompt-linked"
+    >
+      <span class="dot"></span>
+      <div style="min-width:0">
+        Účet je prepojený<template v-if="googleLinkedEmail"> s {{ googleLinkedEmail }}</template>.
+      </div>
+    </div>
+
+    <div class="field-help">Prepojenie nájdete kedykoľvek v profile.</div>
+
+    <template #footer>
+      <div class="gp-actions">
+        <!-- ⚠ After a successful link the three options are GONE, not merely
+             disabled: re-firing the same credential can only repeat the same answer,
+             and "Už sa nepýtať" on a linked account would silence a prompt that
+             already has nothing left to offer. -->
+        <button
+          v-if="googlePromptStage === 'done'"
+          type="button"
+          class="btn accent"
+          @click="closeGooglePrompt"
+        >
+          Zavrieť
+        </button>
+        <template v-else>
+          <button
+            v-if="googlePromptStage === 'ask'"
+            type="button"
+            class="btn accent"
+            :disabled="googlePromptBusy"
+            @click="startGoogleLink"
+          >
+            Áno, teraz
+          </button>
+          <button
+            type="button"
+            class="btn"
+            :disabled="googlePromptBusy"
+            @click="closeGooglePrompt"
+          >
+            Teraz nie
+          </button>
+          <button
+            type="button"
+            class="btn"
+            :disabled="googlePromptBusy"
+            @click="dismissGooglePromptForever"
+          >
+            Už sa nepýtať
+          </button>
+        </template>
+      </div>
+    </template>
+  </NeoModal>
+
   <!-- Invite modal (UC-FL-011) — `portal.jsx:162-167`. The title keeps its
        familiar "Pozvi priateľa" (resolved conflict #5); the body copy is
        vy-form.
@@ -1767,3 +2054,21 @@ defineExpose({ openProfileModal, openInviteModal })
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+/* 10 §UC-GA-006 — the three-option footer, stacked.
+ *
+ * ⚠ Scoped to this view rather than added to `friends-theme.css`: that file is a
+ * byte-for-byte port of the design canon with a numbered adaptation list (A1..A12)
+ * this belongs to none of (the `CatScrollArrow.vue` / cart-line precedent).
+ *
+ * ⚠ Nothing here re-declares a property the theme sets on `.m-foot .btn` — the
+ * wrapper is not a `.btn`, so the theme's `flex:1` (0,3,0) is never in contention and
+ * this needs no specificity bet. */
+.gp-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+</style>

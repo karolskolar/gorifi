@@ -315,6 +315,27 @@ async function beginSession({
   // dismissed. Default false, so every non-magic entry point is unchanged.
   viaMagicLink = false,
   magicPromptDismissed = false,
+  // ⚠⚠ 10 §UC-GA-006 — NO DEFAULT VALUE, and that is the whole mechanism.
+  //
+  // The link prompt's trigger is the LITERAL `googleLinked === false &&
+  // googlePromptDismissed === false`, so "this handshake did not say" (`undefined`)
+  // has to be distinguishable from "this handshake said no". Only ONE caller passes
+  // them — `authenticatePersonal()`, the non-Google modern login §UC-GA-006 names.
+  // Every other entry into a session leaves them absent on purpose:
+  //
+  //   · the two RESTORE paths — a restore is not a login (§UC-GA-006, verbatim);
+  //   · `onGoogleCredential()` — a Google login is already linked;
+  //   · the shared-password branch of `authenticate()` — legacy/transition, and
+  //     `POST /friends/auth` publishes no Google state on that branch at all;
+  //   · a magic-link session, which arrives through the restore path because
+  //     `POST /magic-link/redeem` deliberately does not publish the two fields
+  //     (recorded at `magic-link.js:378`).
+  //
+  // ⚠ Writing `googleLinked = false` here would make `undefined` unreachable and fire
+  // the prompt on every one of those — including for a friend who IS already linked,
+  // stacked on ML-T6's magic prompt. Do not "tidy" these two into defaults.
+  googleLinked,
+  googlePromptDismissed,
 } = {}) {
   const cycles = await api.getFriendsCycles(selectedFriendId.value)
 
@@ -338,8 +359,20 @@ async function beginSession({
   entry.value = {
     cycles, subscriptions, mustChangePassword, currentPassword, needsCredentialSetup,
     viaMagicLink, magicPromptDismissed,
+    googleLinked, googlePromptDismissed,
   }
   authState.value = 'authenticated'
+
+  // ⚠ 10 §UC-GA-006 — `google.accounts.id.initialize()` registers ONE GLOBAL callback,
+  // and the session view registers its OWN when the friend accepts the link prompt.
+  // Without this reset, `renderGoogleButton()` after a logout would skip `initialize`
+  // (the flag is still true) and Google's credential would be delivered to a callback
+  // belonging to an UNMOUNTED component — a login button that renders perfectly and
+  // silently does nothing. Re-registering is documented as harmless above; the one
+  // shipped assertion that counts initialize calls (the recovery round trip) never
+  // leaves the login card, so it is unaffected.
+  googleInitialised = false
+
   window.scrollTo(0, 0)
 }
 
@@ -501,6 +534,12 @@ async function authenticatePersonal() {
       // Admin reset this friend's password → force them to set a new one now.
       mustChangePassword: !!result.mustChangePassword,
       currentPassword: result.mustChangePassword ? loginPassword.value : '',
+      // ⚠ 10 §UC-GA-006 — THE ONLY call site that forwards these, because this is the
+      // only "successful non-Google modern login" there is. Passed THROUGH, not
+      // normalised: `!!result.googleLinked` would turn a server that never sent the
+      // field (a pre-GA-T4 backend) into a definite `false` and open the prompt on it.
+      googleLinked: result.googleLinked,
+      googlePromptDismissed: result.googlePromptDismissed,
     })
 
     // UC-FC-009: same as the shared-password path above — `/friends/auth`
@@ -1512,6 +1551,8 @@ const dropdownFriends = computed(() => {
       :friend-name="currentFriendName"
       :friend-uid="currentFriendUid"
       :entry="entry"
+      :auth-mode="authMode"
+      :google-client-id="googleClientId"
       @profile-saved="onProfileSaved"
       @friend-merged="onFriendMerged"
       @token="onToken"
