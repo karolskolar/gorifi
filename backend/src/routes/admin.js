@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { authLimiter } from '../middleware/rate-limit.js';
 import { hashPassword as bcryptHash, comparePassword as bcryptCompare } from '../middleware/friend-auth.js';
+import { bindValue } from '../helpers/bind-value.js';
 
 const router = Router();
 
@@ -167,7 +168,18 @@ router.get('/payment-settings', (req, res) => {
 
 // Update admin settings — admin only (can change friends password + payment IBAN)
 router.put('/settings', requireAdmin, (req, res) => {
-  const { friendsPassword, paymentIban, paymentRevolutUsername } = req.body;
+  // ⚠ FUP-T13 — THE MOST DANGEROUS COERCION IN THAT ROW, which is why the guard is
+  // `bindValue` and not a `|| ''` tidy-up. All three go straight into an
+  // INSERT OR REPLACE, so `{}` / `true` / an array was a 500 + stack — but mapping
+  // them to `''` instead would have answered a clean 200 while BLANKING THE FRIENDS
+  // PASSWORD for the whole instance, a live credential, with nothing in the status to
+  // show for it. Unbindable ⇒ `undefined` ⇒ the `!== undefined` gate below skips the
+  // write entirely and the stored setting survives. The response still echoes
+  // `x || ''`, which is exactly what it already answered for an ABSENT field, so that
+  // line needs no change. `authMode` is allow-listed below and is not bound raw.
+  const friendsPassword = bindValue(req.body.friendsPassword);
+  const paymentIban = bindValue(req.body.paymentIban);
+  const paymentRevolutUsername = bindValue(req.body.paymentRevolutUsername);
 
   if (friendsPassword !== undefined) {
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('friends_password', ?)").run(friendsPassword || '');

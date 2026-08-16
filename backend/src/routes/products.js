@@ -6,6 +6,7 @@ import { safeFetch } from '../helpers/safe-fetch.js';
 import { cycleAvailability } from '../helpers/stock.js';
 import { imageFromUpload, imageFromBody, detectImageMime } from '../helpers/image-upload.js';
 import { uploadSingle } from '../helpers/multipart.js';
+import { bindValue } from '../helpers/bind-value.js';
 
 const router = Router();
 
@@ -32,12 +33,41 @@ router.get('/cycle/:cycleId/availability', (req, res) => {
   // No excludeGuestOrderId here on purpose: this endpoint is public, and a guest
   // editing their own sub-order (GSO-T4) reads availability through their own
   // token-scoped payload, not through an id anyone could pass in a query string.
-  res.json(cycleAvailability(req.params.cycleId, { excludeFriendId: req.query.excludeFriendId }));
+  //
+  // ⚠ FUP-T13 — THE SHARPEST SITE IN THAT ROW: this endpoint is PUBLIC, carries NO
+  // rate limiter, and `excludeFriendId` was handed straight to a bind in
+  // `helpers/stock.js`. `?excludeFriendId[a]=1` — a plain GET, no credential, no body
+  // — appended 1120 bytes of stack per request, i.e. a cheaper log-flood than the one
+  // FUP-T12 was opened for. Guarded HERE rather than in `stock.js` because this is the
+  // only caller that takes the value from a client: `orders.js` passes a route param
+  // (always a string) and `guest.js` passes a row id. Unbindable ⇒ `undefined`, which
+  // `orderedGramsByProduct` already treats as "no exclusion" — the absent-param answer.
+  res.json(cycleAvailability(req.params.cycleId, { excludeFriendId: bindValue(req.query.excludeFriendId) }));
 });
 
 // Create single product (manual entry) - with optional image (admin)
 router.post('/', requireAdmin, uploadSingle('image'), (req, res) => {
-  const { cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, roastery, stock_limit_g } = req.body;
+  // FUP-T13 — every field below is bound directly into the INSERT, so ANY of them
+  // carrying an object/array/boolean was a 500 + ~1.1 KB of stack, not just `name`.
+  // `bindValue` maps an unbindable value to `undefined`, which binds as NULL — byte
+  // for byte what an absent field already stored — so the optional columns need no new
+  // branch and `cycle_id`/`name` fall into the route's existing required-field 400.
+  // ⚠ A numeric STRING must still pass through untouched: the admin form posts prices
+  // and the stock limit as strings, so this deliberately does NOT demand a number.
+  const cycle_id = bindValue(req.body.cycle_id);
+  const name = bindValue(req.body.name);
+  const description1 = bindValue(req.body.description1);
+  const description2 = bindValue(req.body.description2);
+  const roast_type = bindValue(req.body.roast_type);
+  const purpose = bindValue(req.body.purpose);
+  const price_150g = bindValue(req.body.price_150g);
+  const price_200g = bindValue(req.body.price_200g);
+  const price_250g = bindValue(req.body.price_250g);
+  const price_500g = bindValue(req.body.price_500g);
+  const price_1kg = bindValue(req.body.price_1kg);
+  const price_20pc5g = bindValue(req.body.price_20pc5g);
+  const roastery = bindValue(req.body.roastery);
+  const stock_limit_g = bindValue(req.body.stock_limit_g);
 
   if (!cycle_id || !name) {
     return res.status(400).json({ error: 'cycle_id a nazov su povinne' });
@@ -209,7 +239,28 @@ router.post('/:id/image-from-url', requireAdmin, async (req, res) => {
 
 // Update product (admin)
 router.patch('/:id', requireAdmin, (req, res) => {
-  const { name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, image, active, roastery, stock_limit_g } = req.body;
+  // FUP-T13 — as on POST, plus the half a status check cannot see. Every gate below
+  // is `!== undefined`, so an unbindable value now SKIPS its write and the stored
+  // column survives; an explicit null still clears. ⚠ `stock_limit_g` was already
+  // silently destructive before this: `{}` is truthy, `parseInt({})` is NaN, and
+  // better-sqlite3 binds NaN as NULL — so a malformed body answered 200 and REMOVED a
+  // product's stock limit. `active` is `? 1 : 0` and never bound raw, so it is left
+  // exactly as it was.
+  const name = bindValue(req.body.name);
+  const description1 = bindValue(req.body.description1);
+  const description2 = bindValue(req.body.description2);
+  const roast_type = bindValue(req.body.roast_type);
+  const purpose = bindValue(req.body.purpose);
+  const price_150g = bindValue(req.body.price_150g);
+  const price_200g = bindValue(req.body.price_200g);
+  const price_250g = bindValue(req.body.price_250g);
+  const price_500g = bindValue(req.body.price_500g);
+  const price_1kg = bindValue(req.body.price_1kg);
+  const price_20pc5g = bindValue(req.body.price_20pc5g);
+  const image = bindValue(req.body.image);
+  const roastery = bindValue(req.body.roastery);
+  const stock_limit_g = bindValue(req.body.stock_limit_g);
+  const { active } = req.body;
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
 
   if (!product) {

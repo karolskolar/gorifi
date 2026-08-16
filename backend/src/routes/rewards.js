@@ -2,13 +2,22 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { variantToKg } from '../helpers/analytics.js';
 import { guestCycleItems } from '../helpers/guest-aggregation.js';
+import { bindValue } from '../helpers/bind-value.js';
 
 const router = Router();
 
 // GET /api/analytics/rewards — aggregated group × cycle report
 router.get('/', (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 12;
+    // FUP-T13 — `?limit[toString]=1` makes `parseInt` call ToPrimitive on a
+    // non-callable `toString`, which throws. ⚠ DELIBERATELY NOT A LOG-FLOOD SITE, and
+    // the distinction matters: this route's own try/catch logs `e.message` only —
+    // 72 bytes, NO stack — so unlike every other site in this row the defect was
+    // purely the WRONG STATUS (a malformed query string is a client mistake, not a
+    // server fault). Fixed for correctness, not hygiene; nobody should later "harden"
+    // it as if it leaked a stack. `undefined` reproduces what `?limit=abc` already
+    // did: NaN, then the `|| 12` default.
+    const limit = parseInt(bindValue(req.query.limit)) || 12;
 
     // Get recent completed/locked coffee cycles
     const cycles = db.all(

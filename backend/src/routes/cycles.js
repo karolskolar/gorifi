@@ -4,6 +4,7 @@ import { variantToKg } from '../helpers/analytics.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { cycleSubOrdersByHost, guestOrderStatus } from '../helpers/guest-orders.js';
 import { guestCycleItems } from '../helpers/guest-aggregation.js';
+import { bindValue } from '../helpers/bind-value.js';
 
 const router = Router();
 
@@ -163,7 +164,14 @@ router.get('/:id/public', (req, res) => {
 
 // Authenticate for cycle (validates password and friend selection)
 router.post('/:id/auth', (req, res) => {
-  const { password, friendId } = req.body;
+  // FUP-T13 — `friendId` is bound straight into the friend lookup below, so an
+  // object/array/boolean raised a binder error ⇒ 500 + ~1.1 KB of stack. This route
+  // is NOT admin-guarded (bare mount): anyone holding the cycle's shared password
+  // could trigger it. `bindValue` yields `undefined`, which binds as NULL, matches no
+  // friend and lands on the route's OWN 404 — the same answer an unknown id gets, so
+  // no new oracle. The password check above it is untouched and still runs first.
+  const { password } = req.body;
+  const friendId = bindValue(req.body.friendId);
 
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
@@ -193,7 +201,17 @@ router.post('/:id/auth', (req, res) => {
 
 // Create new order cycle (admin)
 router.post('/', requireAdmin, (req, res) => {
-  const { name, expected_date, type, bakery_product_ids, plan_note, status } = req.body;
+  // FUP-T13 — every one of these is bound directly into the INSERT below, so any
+  // non-bindable shape was a 500 + stack. `bindValue` maps such a value to
+  // `undefined`, which better-sqlite3 binds as NULL — i.e. EXACTLY what an absent
+  // field already stored, so no new branch and no new message. `name` then falls into
+  // the route's existing `!name` refusal. `status` is enum-checked below and
+  // `bakery_product_ids` is `Array.isArray`-gated, so neither needs this.
+  const name = bindValue(req.body.name);
+  const expected_date = bindValue(req.body.expected_date);
+  const type = bindValue(req.body.type);
+  const plan_note = bindValue(req.body.plan_note);
+  const { bakery_product_ids, status } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Nazov je povinny' });
   }
@@ -210,8 +228,11 @@ router.post('/', requireAdmin, (req, res) => {
 
   // For bakery cycles, snapshot selected bakery products into the products table
   if (cycleType === 'bakery' && Array.isArray(bakery_product_ids) && bakery_product_ids.length > 0) {
-    for (const bpId of bakery_product_ids) {
-      const bp = db.get('SELECT * FROM bakery_products WHERE id = ? AND active = 1', [bpId]);
+    for (const rawId of bakery_product_ids) {
+      // The ARRAY was checked, its ELEMENTS never were — `[{}]` / `[true]` bound
+      // straight into this lookup and 500'd (FUP-T13).
+      const bpId = bindValue(rawId);
+      const bp = bpId === undefined ? null : db.get('SELECT * FROM bakery_products WHERE id = ? AND active = 1', [bpId]);
       if (!bp) continue;
 
       // Insert into cycle_bakery_products junction
@@ -250,7 +271,19 @@ router.post('/', requireAdmin, (req, res) => {
 
 // Update cycle (lock/unlock/complete/password/markup_ratio/expected_date) (admin)
 router.patch('/:id', requireAdmin, (req, res) => {
-  const { status, name, shared_password, markup_ratio, expected_date, plan_note, parcel_enabled, parcel_fee } = req.body;
+  // FUP-T13 — same binder hazard as POST, plus the half a status check cannot see:
+  // an UPDATE that coerced an unbindable value to NULL would answer 200 while WIPING
+  // the column. `bindValue` returns `undefined` for those, so every `!== undefined`
+  // gate below SKIPS the write and the stored value survives; an EXPLICIT null still
+  // returns `null` and still clears. `status` is enum-checked and `parcel_enabled` is
+  // `? 1 : 0`, so neither is bound raw and neither is touched here.
+  const name = bindValue(req.body.name);
+  const shared_password = bindValue(req.body.shared_password);
+  const markup_ratio = bindValue(req.body.markup_ratio);
+  const expected_date = bindValue(req.body.expected_date);
+  const plan_note = bindValue(req.body.plan_note);
+  const parcel_fee = bindValue(req.body.parcel_fee);
+  const { status, parcel_enabled } = req.body;
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
 
   if (!cycle) {
@@ -330,7 +363,11 @@ router.get('/:id/summary', requireAdmin, (req, res) => {
     return res.status(404).json({ error: 'Cyklus nebol najdeny' });
   }
 
-  const roasteryFilter = req.query.roastery;
+  // FUP-T13 — `?roastery[a]=1` and a repeated `?roastery=` yield an object/array from
+  // the qs parser and were bound into the WHERE below ⇒ 500. Unbindable ⇒ `undefined`
+  // ⇒ the `!roasteryFilter` branch, i.e. the unfiltered sheet an absent param already
+  // returns. The `'_default'` chip is a string and is unaffected.
+  const roasteryFilter = bindValue(req.query.roastery);
 
   let summaryQuery = `
     SELECT p.id as product_id, p.name, p.purpose, p.description1, p.roast_type, p.variant_label, p.roastery, oi.variant, SUM(oi.quantity) as total_quantity,
