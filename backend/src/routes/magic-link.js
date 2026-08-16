@@ -375,10 +375,32 @@ router.post('/redeem', authLimiter, (req, res) => {
 
   const { friend, session } = redeemed;
 
-  // ⚠ MIRRORS `POST /friends/auth`'s personal branch (friends.js) field for field, so
-  // the frontend reuses its login handling verbatim — plus `viaMagicLink`, which
+  // ⚠ Mirrors `POST /friends/auth`'s personal branch (friends.js) closely enough that
+  // the frontend reuses its login handling verbatim, plus `viaMagicLink`, which
   // ML-T6's prompt keys off. HAND-PICKED FIELDS, never the row itself: `invite_code`,
   // `access_token`, `password_hash` and `google_sub` stay unpublished (07 §UC-IA-005).
+  //
+  // ⚠⚠ IT IS NO LONGER "FIELD FOR FIELD", AND THE DIFFERENCE IS DELIBERATE (GA-T4).
+  // Since 10 §UC-GA-003 the personal branch also carries `googleLinked` +
+  // `googlePromptDismissed`. THIS RESPONSE MUST NOT GAIN THEM.
+  //
+  // Why: §UC-GA-006's post-login link prompt opens when `googleLinked === false` and
+  // `googlePromptDismissed === false`, both read off the login handshake. Publishing
+  // them here would make both true for an unlinked friend who just recovered by
+  // e-mail — so the Google prompt would open ON TOP OF ML-T6's own `showMagicPrompt`
+  // (`FriendPortalSession.vue:287`), which is exactly the modal stacking §UC-GA-006
+  // forbids with its "one modal per login, maximum" and its blocking-gate skip rule.
+  // A friend who arrived by magic link is already being asked to set a password;
+  // asking them to link Google in the same breath is the worse of the two prompts.
+  //
+  // ⚠ SO THE SAFETY OF THIS OMISSION LIVES IN THE CONSUMER, and it is one keystroke
+  // wide: the trigger MUST be written as the spec's literal `googleLinked === false`.
+  // A natural-looking `!entry.googleLinked` reads `undefined` as "not linked" and
+  // would fire the link prompt after a magic-link login **even for a friend who is
+  // already linked** — the absence of the field says nothing, and only `=== false`
+  // treats it that way. Any future consumer of these two fields inherits that rule.
+  // (Same reasoning covers `/friends/auth`'s legacy shared-password branch, which
+  // also omits them: the prompt is modern-mode only.)
   res.json({
     success: true,
     friend: {

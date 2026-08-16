@@ -183,6 +183,23 @@ export const api = {
     method: 'POST',
     body: { username, password, remember: remember === true }
   }),
+  // 10 §UC-GA-003 / §UC-GA-005 — the GIS callback's credential goes straight here.
+  //
+  // ⚠ Same `request()` transport as the two login methods above, deliberately. The
+  // endpoint is PUBLIC and ignores every auth header, so this is not the guest
+  // surface's problem (`guestRequest` exists because a stray admin token there would
+  // change what a guest is ALLOWED to do). Using `request()` keeps all three login
+  // paths on one transport, which is what makes the response handling in
+  // `FriendPortal.vue` identical for all three — the error message a failed Google
+  // login shows is the server's own sentence, including the `not_linked` hint.
+  //
+  // `remember` rides along exactly as it does on password login (module 09
+  // §UC-ML-007): the same checkbox, on the same card, must buy the same horizon
+  // whichever credential the friend used.
+  authenticateFriendsGoogle: (idToken, remember) => request('/friends/auth/google', {
+    method: 'POST',
+    body: { id_token: idToken, remember: remember === true }
+  }),
   setupCredentials: (friendId, username, password) => request(`/friends/${friendId}/setup-credentials`, {
     method: 'POST',
     body: { username, password }

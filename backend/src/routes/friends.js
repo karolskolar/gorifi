@@ -9,7 +9,7 @@ import { bindValue } from '../helpers/bind-value.js';
 // 10 §UC-GA-002. Imported here (rather than only where tokens are verified) so the
 // module's ONE boot line prints at server start — it is the only audit signal that the
 // `GOOGLE_AUTH_TEST_MODE` seam is off in production.
-import { getGoogleClientId } from '../helpers/google-auth.js';
+import { getGoogleClientId, requireGoogleAuthConfigured, verifyGoogleIdToken } from '../helpers/google-auth.js';
 
 const router = Router();
 
@@ -174,7 +174,19 @@ router.post('/auth', authLimiter, (req, res) => {
       expiresAt: session.expiresAt,
       hasCredentials: true,
       // Forced-change: set when an admin reset this friend's password.
-      mustChangePassword: !!friend.must_change_password
+      mustChangePassword: !!friend.must_change_password,
+      // ⚠ 10 §UC-GA-003 — ADDITIVE, and they ride on THIS response on purpose.
+      // UC-GA-006's post-login link prompt keys on the LOGIN HANDSHAKE, not on an
+      // extra request: the prompt has to decide whether to appear before the portal
+      // paints, and a second round trip would either delay that or race it. The
+      // Google login response below carries the same two fields, so both login
+      // paths hand the frontend the same state.
+      //
+      // ⚠ `google_sub` itself is NEVER published (§UC-GA-003, inheriting 11
+      // §UC-FC-005's rule). These are DERIVED booleans, which is why they can be —
+      // `googleLinked` says a link exists, never which account it is.
+      googleLinked: !!friend.google_sub,
+      googlePromptDismissed: !!friend.google_prompt_dismissed
     });
   }
 
@@ -225,6 +237,147 @@ router.post('/auth', authLimiter, (req, res) => {
   }
 
   res.json({ success: true });
+});
+
+// POST /friends/auth/google - Google sign-in for a friend who has LINKED their
+// Google account (10 §UC-GA-003). Public, `authLimiter`.
+//
+// ⚠ `authLimiter`, NOT a new bucket (§UC-GA-013): this endpoint accepts an ID token
+// for verification, i.e. it performs the credential-check step, so forged-token
+// probing is credential guessing and belongs in the strict 20/window bucket beside
+// `/friends/auth` and `/admin/login`. The four-bucket set and its NAT'd-office
+// reasoning are untouched.
+//
+// ⚠⚠ THE ORDER OF THE FOUR CHECKS BELOW IS NORMATIVE (§UC-GA-003), because each one
+// that runs early leaks a fact the one before it was supposed to withhold:
+//   1. config    — an unconfigured deployment says "the feature is off" and stops.
+//   2. auth mode — a legacy deployment refuses BEFORE verification, so an attacker
+//                  cannot use it as a free "is this token valid?" oracle on a
+//                  deployment where Google login is switched off.
+//   3. verify    — 401 for an invalid token, 503 for a Google outage (never a 401:
+//                  an outage must not read as "wrong credentials").
+//   4. lookup    — and only then does the row exist to talk about.
+// Moving 3 above 2, or folding the two-step lookup in 4 into one query, each turns a
+// deliberate silence into an answer.
+//
+// ⚠⚠ THE TRY/CATCH IS THE MODULE-10 PATTERN — GA-T5/T8/T10 INHERIT IT VERBATIM.
+// This is the first `async` handler in this file, and the asymmetry with the
+// synchronous `/auth` beside it is not cosmetic: **Express 4 does not forward a
+// rejected handler promise to the error middleware**, and the process runs under
+// Node 20's default `--unhandled-rejections=throw`. So on this route — unlike every
+// synchronous one around it — a throw ANYWHERE AFTER THE `await` (the SELECT, the
+// `google_email` UPDATE, `createFriendSession`'s INSERT under `SQLITE_BUSY`) would
+// leave the client with NO RESPONSE AT ALL **and kill the process**. On a public,
+// unauthenticated endpoint.
+//
+// No attacker-reachable throw exists today — `verifyGoogleIdToken` returns on every
+// path and `v.identity.sub` is a guaranteed non-empty string on both the seam and the
+// real path — so this is infrastructure-fault-only. It is here because "no reachable
+// throw" is a property of code four other rows are about to extend, not a property of
+// the route. Follows `invitations.js:287`'s precedent. Module 10 adds five async
+// handlers, one of them on the public `POST /invitations/register`: every one of them
+// gets this wrapper.
+router.post('/auth/google', authLimiter, async (req, res) => {
+  try {
+    // 1. The uniform feature-off guard (§UC-GA-002) — one decision, one place.
+    const notConfigured = requireGoogleAuthConfigured();
+    if (notConfigured) {
+      return res.status(notConfigured.status).json({ error: notConfigured.error });
+    }
+
+    // 2. Modern mode only (resolved decision #2, consistent with module 09's magic
+    //    link). The legacy shared password and a per-person Google identity are
+    //    contradictory models; a friend on a shared-password deployment has no personal
+    //    account for Google to be an alternative credential FOR.
+    if (getAuthMode() !== 'modern') {
+      return res.status(409).json({
+        error: 'Prihlásenie cez Google je dostupné až po prechode na osobné prihlasovanie',
+        field: 'auth_mode'
+      });
+    }
+
+    // 3. ⚠ network I/O — MUST stay outside any db.transaction (helpers/google-auth.js).
+    //    The IA-T3 structural rule: better-sqlite3 transactions are synchronous, and a
+    //    JWKS fetch inside one would hold the write lock across a network round trip.
+    //    Verify FIRST, then touch the database with the resolved `sub` in hand.
+    //    ⚠ The result is ALWAYS TRUTHY — branch on `.error`, never on falsiness.
+    const v = await verifyGoogleIdToken(req.body?.id_token);
+    if (v.error) {
+      return res.status(v.status).json({ error: v.error, ...(v.field && { field: v.field }) });
+    }
+
+    // 4. ⚠ TWO STEPS, AND NO `active` FILTER — deliberately (§UC-GA-003). A single
+    //    `WHERE google_sub = ? AND active = 1` would collapse the two cases below into
+    //    one message: a deactivated friend (or anyone holding their Google account)
+    //    would be told "not linked", which is both false and an inactive-account oracle
+    //    in the other direction. The linked/unlinked hint is a recorded, accepted
+    //    disclosure for accounts that exist and are usable; the state of a DEACTIVATED
+    //    account is not.
+    const friend = db.prepare('SELECT * FROM friends WHERE google_sub = ?').get(v.identity.sub);
+    if (!friend) {
+      return res.status(401).json({
+        error: 'Tento Google účet nie je prepojený so žiadnym účtom. Prihláste sa menom a heslom a prepojte ho v profile.',
+        code: 'not_linked'
+      });
+    }
+    if (!friend.active) {
+      // The same generic message password login gives, byte for byte, and with no
+      // `code`: an inactive friend must neither log in nor learn their linked state.
+      return res.status(401).json({ error: 'Nesprávne prihlasovacie údaje' });
+    }
+
+    // `google_email` is a DISPLAY-ONLY column (§UC-GA-001) — never a matching key — so
+    // refreshing it here is free of identity consequences. `sub` is what identity is,
+    // and a login never rewrites it. ⚠ AFTER the active check, so a refused login
+    // writes nothing at all.
+    if (v.identity.email && v.identity.email !== friend.google_email) {
+      db.prepare('UPDATE friends SET google_email = ? WHERE id = ?').run(v.identity.email, friend.id);
+    }
+
+    // Same remember-me contract as both password branches above (module 09
+    // §UC-ML-002): `=== true`, never a truthy check — the string "false" must not buy 60
+    // days. (`?.` where the password branches use a bare `req.body`: unreachable with an
+    // absent body, since `verifyGoogleIdToken(undefined)` 400s above, but this is a
+    // PUBLIC unauthenticated route and the FUP-T13/T15 family is exactly about the
+    // dereference nobody thought was reachable.)
+    const session = createFriendSession(friend.id, { remember: req.body?.remember === true });
+
+    // ⚠ HAND-PICKED, NEVER A `SELECT *` SPREAD. `friend` above is a full row and holds
+    // `password_hash`, `access_token`, `invite_code` and `google_sub`; every one of them
+    // is a credential or an identity key. This literal is byte-compatible with the
+    // personal branch of `POST /friends/auth` plus the two additive Google fields — the
+    // frontend takes the EXACT post-login path of a password login, so any divergence
+    // here is a divergence in that path.
+    return res.json({
+      success: true,
+      friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username, packeta_address: friend.packeta_address },
+      token: session.token,
+      expiresAt: session.expiresAt,
+      // ⚠ NOT the hardcoded `true` the password branch can afford: a friend created by
+      // a Google-attached registration may have no password at all.
+      //
+      // ⚠ AND THE OBVIOUS CONSUMER DOES NOT EXIST YET — do not assume it does.
+      // `FriendPortalSession.vue:1416` uses `hasCredentials` to gate the CHANGE-password
+      // fold, which is HIDDEN when false, and `needsCredentialSetup` only fires in
+      // transition mode. So a friend with no `password_hash` currently has **no
+      // on-screen path to set one at all** (`PUT /:id/change-password` 400s for them).
+      // The value here is right and stays; GA-T7 is specced to key its profile-modal
+      // "set a password" affordance on it and will find that affordance missing —
+      // building it is GA-T7's work, not an assumption this line can make.
+      hasCredentials: !!friend.password_hash,
+      // Resolved decision #1 — a Google login honours the forced-change gate exactly
+      // like a password login. The flag means an ADMIN-KNOWN password exists on the
+      // row; a login path that bypassed the gate would leave it valid indefinitely.
+      mustChangePassword: !!friend.must_change_password,
+      googleLinked: true,
+      googlePromptDismissed: !!friend.google_prompt_dismissed
+    });
+  } catch (e) {
+    // The token is never logged (it is a live credential); `e.message` only, the
+    // FUP-T3/FUP-T7 bounded-log rule for public routes.
+    console.error(`[friends] google login failed: ${String(e?.message || e).slice(0, 300)}`);
+    return res.status(500).json({ error: 'Prihlásenie zlyhalo' });
+  }
 });
 
 // GET /friends/login-list - Public minimal list for the legacy/transition login

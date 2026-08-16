@@ -502,14 +502,43 @@ test.describe('UC-ML-002 session TTL split', () => {
     expectTtl((await signup.json()).expiresAt, DEFAULT_TTL, 'onboarding auto-login')
   })
 
+  // ⚠ GA-T4 UPDATE (10 §UC-GA-003), an e2e-immutability case (a) edit — and this is
+  // the FUP-T17 item-5 class the backlog filed a whole row about: an EXACT-KEY-SET pin
+  // on a response a later module is specified to extend. It is updated here in the
+  // same change that extends the response, which is the only way that stays honest.
+  //
+  // ⚠ IT STAYS AN EXACT SET. Downgrading to `toContain` / a subset check would make
+  // this test pass for every future field anyone adds, which is precisely the property
+  // it exists to deny — ML-T1's claim is that these mints have a PINNED, REVIEWED
+  // shape, not merely a sufficient one. The two new keys are listed explicitly, so the
+  // next addition still has to come here and be argued for.
+  //
+  // §UC-GA-003 mandates `googleLinked` + `googlePromptDismissed` on the PASSWORD
+  // login's personal branch (not just on the Google login) because UC-GA-006's
+  // post-login link prompt keys on the LOGIN HANDSHAKE and must not cost a second
+  // round trip — it has to decide whether to open before the portal paints.
+  //
+  // The ML-T1 claim this test was written for is untouched by that: only the TTL
+  // moves, `expiresAt`/`token` still mean what they meant, and `remember`/`via` are
+  // still unpublished (asserted below).
   test('the response shape of every minting endpoint is unchanged', async () => {
     // UC-ML-002: only the TTL moves. The frontend's local expiry check keys on these
     // two fields and must keep working with zero changes.
     const friend = await makeFriendWithLogin('shape')
     const body = await authPersonal(friend, { remember: true })
     expect(Object.keys(body).sort()).toEqual(
-      ['expiresAt', 'friend', 'hasCredentials', 'mustChangePassword', 'success', 'token'].sort()
+      [
+        'expiresAt', 'friend', 'hasCredentials', 'mustChangePassword', 'success', 'token',
+        // GA-T4 / 10 §UC-GA-003 — additive, and additive ONLY.
+        'googleLinked', 'googlePromptDismissed',
+      ].sort()
     )
+    // ⚠ And they are BOOLEANS, never the raw column. `google_sub` is an identity key
+    // that must never appear in any API response (§UC-GA-003, inheriting 11
+    // §UC-FC-005) — the key set alone cannot see a value smuggled under a new name.
+    expect(typeof body.googleLinked).toBe('boolean')
+    expect(typeof body.googlePromptDismissed).toBe('boolean')
+
     // `remember` must not leak into the response, and nothing about the session's
     // provenance is published.
     expect(body.remember).toBeUndefined()

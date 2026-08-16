@@ -574,48 +574,89 @@ test.describe('No public route fetches a third-party subresource', () => {
     expect(offenders, `third-party subresources by route:\n${JSON.stringify(offenders, null, 2)}`).toEqual({})
   })
 
-  // ⚠ GA-T3, constraint stated in 10 §UC-GA-012: the allowlist above is PERMISSION
-  // FOR LATER, not a prediction. Nothing imports `lib/gis.js` yet — no button
-  // renders until GA-T4 — so the honest current state is that EVERY route,
-  // including the two allowlisted ones, still makes zero requests to Google.
+  // ⚠ GA-T4 UPDATE (10 §UC-GA-005), an e2e-immutability case (a) edit.
   //
-  // Asserting that explicitly is what makes GA-T4 a visible change rather than a
-  // silent one: the moment a real GIS button ships on `/`, this test goes red and
-  // whoever landed it must come here and say so. Without it, the allowlist would
-  // quietly absorb the first Google request nobody reviewed.
-  test('no public route contacts Google TODAY — the allowlist is not yet exercised', async ({ page, baseURL }) => {
+  // This test used to read "no public route contacts Google TODAY — the allowlist is
+  // not yet exercised", and its own failure message asked whoever landed a real GIS
+  // button to come here and say so. GA-T4 landed one, on the MODERN friend login card
+  // (`FriendPortal.vue`), so this is that update.
+  //
+  // ⚠ AND YET IT DID NOT RED. `e2e/seed.mjs` pins the shared gate to
+  // `auth_mode = 'legacy'`, the Google button is modern-mode only (resolved decision
+  // #2), so `/` on this target still renders the legacy card and still makes zero
+  // requests to Google. The old assertion stayed green for a reason that has nothing
+  // to do with what it claimed to be protecting — which is exactly the silent state it
+  // existed to prevent. Left alone it would have gone on passing while covering
+  // nothing.
+  //
+  // So it is retargeted rather than deleted, and NOTHING IS WEAKENED:
+  //   · `/g/:token` and `/magic/:token` keep an UNCONDITIONAL zero. Guests and
+  //     magic-link recipients never see Google — that was the load-bearing half all
+  //     along, and it is now stated as its own expectation instead of being one entry
+  //     in a map that a legacy-mode target satisfies by accident.
+  //   · `/` and `/invite/:code` are asserted against what this target's CONFIG says
+  //     should happen: a Google request is permitted on `/` only when the target is
+  //     both modern and configured (the two conditions §UC-GA-005 names), and is an
+  //     offence otherwise. On the legacy gate that is still "zero", but now because
+  //     the config says zero — not because nobody wired anything up.
+  //   · `/invite/:code` stays at zero until GA-T8 gives it a control of its own.
+  // The presence half — the button DOES render and DOES load GIS when modern +
+  // configured — is pinned in `google-auth.spec.js`, which can stub the auth-mode
+  // response and therefore reach a state this file's real-target sweep cannot.
+  test('a public route contacts Google only where its config says a Google control renders', async ({ page, baseURL, request }) => {
     const origin = new URL(baseURL).origin
-    const contacted = {}
+    const mode = await (await request.get('/api/friends/auth-mode')).json()
+    const googleOnLoginCard = mode.authMode === 'modern' && mode.googleClientId !== null
+
     const routes = [
-      ['/', '/'],
-      ['/invite/:code', `/invite/RDDS6-${uniq}`],
-      ['/g/:token', `/g/${guestToken}`],
-      ['/magic/:token', `/magic/${'f'.repeat(64)}`],
+      ['/', '/', googleOnLoginCard],
+      // GA-T8 owns the invite screen's Google control; until it lands, zero.
+      ['/invite/:code', `/invite/RDDS6-${uniq}`, false],
+      // ⚠ UNCONDITIONAL, on every target and in every auth mode.
+      ['/g/:token', `/g/${guestToken}`, false],
+      ['/magic/:token', `/magic/${'f'.repeat(64)}`, false],
     ]
 
-    for (const [label, url] of routes) {
+    const offenders = {}
+    const missing = []
+    for (const [label, url, allowed] of routes) {
       const external = watchExternal(page, origin)
       await page.goto(url)
       await page.waitForLoadState('networkidle')
       const google = external.filter((e) => new URL(e.split('  [')[0]).hostname.endsWith('google.com'))
-      if (google.length) contacted[label] = google
+      if (!allowed && google.length) offenders[label] = google
+      if (allowed && google.length === 0) missing.push(label)
       page.removeAllListeners('request')
     }
 
     expect(
-      contacted,
-      'A route now contacts Google. If this is GA-T4+ landing a real GIS button, that is\n' +
-      'expected — update THIS test (and the ledger note beside RD-DS-6 in CLAUDE.md) to\n' +
-      'record which surfaces load GIS. If it is a guest or magic-link route, it is a BUG:\n' +
-      `${JSON.stringify(contacted, null, 2)}`,
+      offenders,
+      'A route contacted Google where its configuration says no Google control renders.\n' +
+      'On /g/:token or /magic/:token this is a BUG — guests never see Google (UC-GA-012).\n' +
+      `auth-mode: ${JSON.stringify(mode)}\n${JSON.stringify(offenders, null, 2)}`,
     ).toEqual({})
+
+    expect(
+      missing,
+      `This target is modern + configured, so ${JSON.stringify(mode)} says the login card\n` +
+      'should render the GIS button — but nothing was requested from Google. Either the\n' +
+      'button regressed or the loader stopped being reached.',
+    ).toEqual([])
   })
 
-  // The structural half of the same claim: the loader exists, is the one home, and
-  // is genuinely unreferenced. A grep-level assertion is the only thing that can
-  // see this — the runtime one above is satisfied by a loader that is imported but
-  // never called, which is a state GA-T4 will legitimately pass through.
-  test('lib/gis.js is the ONE home for GIS loading, and nothing imports it yet', () => {
+  // The structural half of the same claim: the loader exists and is the ONE home for
+  // GIS script loading. A grep-level assertion is the only thing that can see this —
+  // the runtime one above is satisfied by a loader that is imported but never called.
+  //
+  // ⚠ GA-T4 UPDATE: this test used to end "…and nothing imports it yet", which is the
+  // assertion that DID red on this row (`views/FriendPortal.vue` now imports it, by
+  // design, per §UC-GA-005). It is retargeted to an EXACT SANCTIONED IMPORTER LIST,
+  // which is strictly stronger than the empty list it replaces was ever going to be:
+  // the empty list could only be satisfied once, whereas this one keeps failing every
+  // time a surface starts loading GIS without anyone recording it — which is the
+  // property that actually protects the guest sweep above. Add a row here ONLY
+  // together with the sweep's expectation for the route it serves.
+  test('lib/gis.js is the ONE home for GIS loading, and only sanctioned surfaces import it', () => {
     expect(existsSync(GIS_LIB), 'frontend/src/lib/gis.js must exist (UC-GA-012)').toBe(true)
 
     const src = readFileSync(GIS_LIB, 'utf8')
@@ -634,26 +675,51 @@ test.describe('No public route fetches a third-party subresource', () => {
     expect(owners.map((f) => f.replace(`${FRONTEND_SRC}/`, '')),
       'GIS script loading belongs in lib/gis.js and nowhere else').toEqual(['lib/gis.js'])
 
-    // And today nothing imports it — so it cannot reach the bundle. Stated as the
-    // importer list so the failure message names the first importer.
+    // ⚠ THE SANCTIONED IMPORTER LIST (10 §UC-GA-012's "only on surfaces that render a
+    // Google control"). One row per surface, each named by the UC that put it there:
+    //   · views/FriendPortal.vue — GA-T4, §UC-GA-005, the modern login card.
+    // Still to come, each on its own row when it lands: AdminLogin (§UC-GA-011),
+    // InviteRegister (§UC-GA-008), the profile modal (§UC-GA-007), AdminSettings
+    // (§UC-GA-010). ⚠ A guest view (`GuestOrder`, `GuestOrderStatus`,
+    // `GuestProductGrid`) or `MagicLogin` appearing here is a BUG, not an update —
+    // those routes are pinned at zero external requests by the sweep above.
+    const SANCTIONED_GIS_IMPORTERS = ['views/FriendPortal.vue']
     const importers = walkFiles(FRONTEND_SRC)
       .filter((f) => /\.(js|ts|vue)$/.test(f) && f !== GIS_LIB)
       .filter((f) => /from\s+['"][^'"]*lib\/gis(\.js)?['"]/.test(readFileSync(f, 'utf8')))
       .map((f) => f.replace(`${FRONTEND_SRC}/`, ''))
+      .sort()
     expect(importers,
-      'GA-T4+ wiring the loader up is expected — update this test and the sweep above together')
-      .toEqual([])
+      'A surface started loading GIS. If that is a Google-control row landing, add it to\n' +
+      'SANCTIONED_GIS_IMPORTERS *and* state the route\'s expectation in the sweep above.\n' +
+      'If it is a guest or magic-link surface, it is a bug (UC-GA-012).')
+      .toEqual([...SANCTIONED_GIS_IMPORTERS].sort())
 
-    // Belt and braces at the build level: the shipped bundle must not mention the
-    // host while no surface uses it. This is what proves the "zero today" runtime
-    // result is real and not an artifact of the page failing to reach that code.
+    // ⚠ GA-T4 UPDATE, and the honest version of what this build-level check can claim.
+    // It used to assert the shipped bundle names `accounts.google.com` ZERO times,
+    // which was true only while nothing imported the loader. Now that a surface does,
+    // the host legitimately appears in the chunk that surface is in — so the assertion
+    // becomes CONTAINMENT rather than absence: the host may appear only in chunks the
+    // sanctioned importers pull it into, and must never reach the entry chunk (which
+    // every route loads, including `/g/:token`). That is the property the original
+    // zero was standing in for.
     const assets = join(DIST, 'assets')
     test.skip(!existsSync(assets), 'frontend/dist not built')
     const hits = walkFiles(assets)
       .filter((f) => f.endsWith('.js'))
       .filter((f) => readFileSync(f, 'utf8').includes(GIS_HOST))
-      .map((f) => f.replace(`${DIST}/`, ''))
-    expect(hits, 'the built bundle names accounts.google.com — a surface is loading GIS').toEqual([])
+      .map((f) => f.replace(`${DIST}/assets/`, ''))
+    expect(hits.length, 'GIS must be in the bundle somewhere — a surface imports it').toBeGreaterThan(0)
+    // Vite names a route chunk after its component; the entry chunks are `index-*.js`.
+    // ⚠ If GIS ever lands in an `index-*` chunk, EVERY route downloads it and the
+    // guest sweep's zero survives only by luck (nothing calls it) rather than by
+    // construction.
+    const inEntry = hits.filter((f) => /^index-/.test(f))
+    expect(inEntry,
+      'GIS reached an entry chunk — every route, including /g/:token, now ships it.\n' +
+      'Keep the loader behind a lazily-imported view.').toEqual([])
+    expect(hits.filter((f) => /^(Guest|MagicLogin)/.test(f)),
+      'GIS reached a guest / magic-link chunk (UC-GA-012)').toEqual([])
   })
 
   // ⚠ This test used to assert the Goriffee logo decoded at `h-12` on this route.

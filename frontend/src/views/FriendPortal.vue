@@ -16,8 +16,12 @@
 // row added one to the wrong side.
 // =============================================================================
 
-import { ref, computed, onMounted, watchEffect } from 'vue'
+import { ref, computed, onMounted, watch, watchEffect, nextTick } from 'vue'
 import api, { clearFriendsPassword, getFriendsPassword, setFriendsAuthInfo, getFriendsAuthInfo, setFriendsToken, getFriendsToken } from '../api'
+// 10 §UC-GA-012 — the ONE home for GIS script loading. It resolves `null` when the
+// client id is falsy, so no call-site guard is needed for the unconfigured case; the
+// `v-if` on the markup is about not rendering an empty container, not about safety.
+import { loadGis } from '../lib/gis'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -92,6 +96,21 @@ const error = ref('')
 // Server auth mode — configuration, not session state.
 const authMode = ref('legacy') // 'legacy' | 'transition' | 'modern'
 
+// --- Google sign-in (10 §UC-GA-005) -----------------------------------------
+//
+// ⚠ SERVED config, not a build-time var (resolved decision #4): `deploy.sh` builds the
+// frontend locally, so a `VITE_*` value would live on the operator's machine and fork
+// the staging/prod artifacts. It arrives on the SAME public `GET /friends/auth-mode`
+// response `authMode` does — one request, two pieces of configuration — and `null`
+// means "this deployment has no Google", which is what hides every control.
+//
+// Configuration, not session state, exactly like `authMode` beside it.
+const googleClientId = ref(null)
+// The mount point GIS renders its own cross-origin iframe button into. Google's brand
+// guidelines forbid restyling that button, so this container stays a bare div — the
+// one accepted visual divergence from the Podpultovka language on this card.
+const googleButtonEl = ref(null)
+
 // ⚠ WHAT THE HANDSHAKE PRODUCED, handed to the session view once at mount:
 //   · `cycles`  — the payload of `GET /friends/cycles`, which is ALSO the
 //     request that decides whether the token is good (see `beginSession`). The
@@ -155,9 +174,15 @@ async function loadInitialData() {
     // failing friends-list call can never poison it back to the 'legacy'
     // default (that regression showed anonymous users an empty name dropdown).
     try {
-      authMode.value = (await api.getAuthMode()).authMode
+      const mode = await api.getAuthMode()
+      authMode.value = mode.authMode
+      // ⚠ `|| null`, not the raw value: 10 §UC-GA-002 pins `null` as the "feature is
+      // off" value, and a server predating this module answers with the key ABSENT.
+      // Normalising here means every consumer below tests one thing.
+      googleClientId.value = mode.googleClientId || null
     } catch {
-      // keep the 'legacy' default
+      // keep the 'legacy' default (and no Google — the safe direction: a failed
+      // config probe must never leave a Google control on screen with no id behind it)
     }
 
     // The name dropdown only exists in legacy/transition mode. Modern login
@@ -482,6 +507,138 @@ async function authenticatePersonal() {
     // personal login returns no phone/email either.
     hydrateCurrentFriend(result.friend.id)
   } catch (e) {
+    authError.value = e.message
+  } finally {
+    loading.value = false
+  }
+}
+
+// --- Google sign-in (10 §UC-GA-005) -----------------------------------------
+
+// The button renders on the MODERN card only, and only when the deployment has a
+// client id (resolved decision #2 + §UC-GA-002). In legacy/transition mode and on an
+// unconfigured deployment the card must be byte-identical to what it was before this
+// row — which is what `v-if` on this one computed buys.
+//
+// `recoveryView === 'off'` is not a Google rule: the card has three contents
+// (09 §UC-ML-006) and only one of them is a login form. A GIS button under the
+// "we sent you a link" sentence would be offering a second way in to somebody who is
+// mid-way through a first.
+const showGoogleButton = computed(() =>
+  authState.value === 'login' &&
+  authMode.value === 'modern' &&
+  recoveryView.value === 'off' &&
+  !!googleClientId.value
+)
+
+// ⚠ Per-INSTANCE, and that is correct here — unlike the ML-T3 hazard, where a
+// `<script setup>` const only LOOKED module-scope and a single-shot guard silently ran
+// twice. `google.accounts.id.initialize()` registers ONE global callback; re-calling it
+// on a re-render would re-register the same handler, which is harmless but pointless.
+// The genuinely global part (one script tag, one in-flight promise) lives in
+// `lib/gis.js`, which is a real module.
+let googleInitialised = false
+
+async function renderGoogleButton() {
+  if (!showGoogleButton.value) return
+  let gis
+  try {
+    gis = await loadGis(googleClientId.value)
+  } catch {
+    // ⚠ SILENT, and deliberately. A blocked, offline or slow Google must DEGRADE to
+    // the password form, never hang the login screen and never shout at a friend who
+    // was about to type their password anyway. `loadGis` is timeout-bounded, so this
+    // branch is reached in bounded time; the container simply stays empty.
+    return
+  }
+  // `null` = no client id. Cannot happen behind `showGoogleButton`, but the loader
+  // documents it and a future caller of this function should not have to know.
+  if (!gis) return
+
+  // ⚠ RE-READ after the await: the friend may have opened the recovery form, or the
+  // token restore may have finished and swapped the whole card away, while the script
+  // was in flight. `googleButtonEl` is then null and `renderButton` would throw.
+  await nextTick()
+  const el = googleButtonEl.value
+  if (!el || !showGoogleButton.value) return
+
+  if (!googleInitialised) {
+    gis.initialize({ client_id: googleClientId.value, callback: onGoogleCredential })
+    googleInitialised = true
+  }
+  el.innerHTML = ''
+  gis.renderButton(el, {
+    theme: 'outline',
+    size: 'large',
+    text: 'signin_with',
+    shape: 'rectangular',
+    logo_alignment: 'center',
+    locale: 'sk',
+    // §UC-GA-005: full available width up to GIS's 400px cap. GIS also refuses widths
+    // under 200, so the floor is not cosmetic — at 320px the card's content box is
+    // narrower than that and an unclamped value would render nothing at all.
+    width: Math.max(200, Math.min(Math.round(el.clientWidth) || 320, 400)),
+  })
+}
+
+// `immediate` so a card that is already showing when this runs gets its button; the
+// watcher then covers every later transition (token restore failing into the login
+// card, the recovery form closing, the auth-mode probe landing late).
+watch(showGoogleButton, (show) => { if (show) renderGoogleButton() }, { immediate: true })
+
+/**
+ * The GIS credential callback. §UC-GA-005: success takes the EXACT post-login path of
+ * `authenticatePersonal()` — same token store, same localStorage payload, same
+ * handshake, same forced-change gate. Anything that diverges here diverges for one
+ * login method only, which is the kind of bug nobody finds.
+ */
+async function onGoogleCredential(response) {
+  const credential = response && response.credential
+  if (!credential) return
+
+  authError.value = ''
+  loading.value = true
+
+  try {
+    const result = await api.authenticateFriendsGoogle(credential, rememberMe.value)
+
+    setFriendsToken(result.token)
+
+    // ⚠ `result.hasCredentials`, not the password path's hardcoded `true`: a friend
+    // who signed up through Google may have no password at all.
+    currentFriend.value = { ...result.friend, hasCredentials: !!result.hasCredentials }
+    selectedFriendId.value = String(result.friend.id)
+
+    setFriendsAuthInfo({
+      friendId: result.friend.id,
+      friendName: result.friend.name,
+      friendUid: result.friend.uid
+    })
+
+    // The pinned five keys, identical to both password paths (09 §UC-ML-007).
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      friendId: result.friend.id,
+      friendName: result.friend.name,
+      friendUid: result.friend.uid,
+      token: result.token,
+      expiresAt: result.expiresAt
+    }))
+
+    await beginSession({
+      // Resolved decision #1 — the SAME forced gate, no new gate code.
+      mustChangePassword: !!result.mustChangePassword,
+      // ⚠ NO `currentPassword`, and it must stay absent: a Google login never handled
+      // one. `submitForcedPasswordChange()` sends `entry?.currentPassword || ''` and
+      // the backend skips the current-password check while `must_change_password` is
+      // set, so the gate works on an empty string — exactly as it already does for a
+      // magic-link session (ML-T3).
+    })
+
+    hydrateCurrentFriend(result.friend.id)
+  } catch (e) {
+    // The server's own sentence, verbatim: the `not_linked` hint tells the friend
+    // what to do next ("log in with your password and link it in your profile"), and
+    // a generic replacement would throw that away. §UC-GA-005.
     authError.value = e.message
   } finally {
     loading.value = false
@@ -1014,6 +1171,63 @@ const dropdownFriends = computed(() => {
         >
           {{ loading ? 'Overujem...' : 'Prihlásiť sa' }}
         </button>
+
+        <!-- ==============================================================
+             10 §UC-GA-005 — Google sign-in.
+
+             ⚠ BELOW the whole password group, per the ML-T5 seam comment
+             above: username → password → remember-me → "Zabudli ste heslo?"
+             → "Prihlásiť sa" belong to password login, and this block is an
+             ALTERNATIVE to all of it. This row adds only these two elements;
+             nothing above was moved, restyled or reordered.
+
+             ⚠ `v-if` on the whole block: in legacy/transition mode and on a
+             deployment with no `GOOGLE_CLIENT_ID` the card must be
+             byte-identical to what it was before this row (§UC-GA-005), and
+             NO REQUEST TO accounts.google.com OCCURS — `showGoogleButton` is
+             false, so `renderGoogleButton()` never runs and `loadGis()` is
+             never called.
+
+             ⚠ That is the whole claim, and it is deliberately not a claim
+             about the bundle. `lib/gis.js` is a STATIC top-level import
+             (`:24`), so it ships and is evaluated with this chunk on every
+             visit to `/`, in every auth mode — `self-hosted-fonts.spec.js`
+             asserts exactly that (`hits.length > 0`, plus the containment
+             rule that keeps it out of the entry chunk and out of every guest
+             chunk). Importing the loader costs nothing; CALLING it is what
+             contacts Google, and that is what this gate withholds.
+
+             The divider is composed from the theme's own `.divider` rule
+             (there is no text-in-a-rule variant) rather than added to
+             `friends-theme.css` — the CatScrollArrow precedent: that file is
+             a byte-for-byte canon port with a numbered adaptation list this
+             belongs to none of.
+
+             ⚠ `line-height:normal` on "alebo": plain text with no theme
+             class, so A10's selector list cannot reach it and preflight's
+             `html{line-height:1.5}` applies (RD-FL-8b).
+             ============================================================== -->
+        <template v-if="showGoogleButton">
+          <div
+            data-testid="google-divider"
+            style="display:flex;align-items:center;gap:12px"
+          >
+            <hr class="divider" style="flex:1" />
+            <span style="font-size:13px;line-height:normal;color:var(--ink-dim)">alebo</span>
+            <hr class="divider" style="flex:1" />
+          </div>
+
+          <!-- ⚠ A BARE MOUNT POINT — no `.btn`, no theme class, no width
+               override. GIS renders its own cross-origin iframe here and
+               Google's brand guidelines forbid restyling it; the container is
+               centred so the capped 400px button does not sit off-axis in a
+               wider card. -->
+          <div
+            ref="googleButtonEl"
+            data-testid="google-signin"
+            style="display:flex;justify-content:center;min-height:44px"
+          ></div>
+        </template>
         </template>
 
         <!-- ── The request form (09 §UC-ML-006) ───────────────────────────
