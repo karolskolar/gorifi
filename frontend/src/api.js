@@ -145,6 +145,32 @@ export const api = {
   verify: (token) => request('/admin/verify', { method: 'POST', body: { token } }),
   logout: () => request('/admin/logout', { method: 'POST' }),
 
+  // 10 §UC-GA-011 — the admin logs in with Google. ⚠ PUBLIC, exactly like
+  // `login()` above: the endpoint carries no admin guard (an anonymous caller has to
+  // reach it or nobody could ever log in with it), and its response is the SAME
+  // `{ token }` the password login returns, stored in the same `localStorage.adminToken`.
+  // ⚠ There is exactly ONE admin token app-wide, so this REPLACES any token a password
+  // login minted earlier — known behaviour (§UC-GA-011), not a bug.
+  adminGoogleLogin: (idToken) => request('/admin/google-login', {
+    method: 'POST',
+    body: { id_token: idToken }
+  }),
+
+  // 10 §UC-GA-010 — the admin Google allowlist. All three are `requireAdmin`.
+  // ⚠ The GET never carries a `sub`; the e-mail is both the display value and the
+  // deletion handle, which is why `removeAdminGoogleAccount` takes one.
+  // ⚠ Adding requires an ID TOKEN, never a typed address: the admin proves possession
+  // of the account being added (01's "e-mails confirmed at link time").
+  getAdminGoogleAllowlist: () => adminRequest('/admin/google-allowlist'),
+  addAdminGoogleAccount: (idToken) => adminRequest('/admin/google-allowlist', {
+    method: 'POST',
+    body: { id_token: idToken }
+  }),
+  removeAdminGoogleAccount: (email) => adminRequest('/admin/google-allowlist', {
+    method: 'DELETE',
+    body: { email }
+  }),
+
   // Cycles
   getCycles: () => request('/cycles'),
   getCycle: (id) => request(`/cycles/${id}`),
@@ -163,13 +189,42 @@ export const api = {
 
   // Friends auth
   getAuthMode: () => request('/friends/auth-mode'),
-  authenticateFriends: (password, friendId) => request('/friends/auth', {
+  // ⚠ 09 §UC-ML-007 (ML-T4): `remember` is what buys the 60-day session; without it
+  // the server issues its 24 h default (`createFriendSession`, ML-T1). BOTH branches
+  // carry it — the legacy shared-password card has the same checkbox as the modern
+  // one, and a friend who ticks it there must get the same horizon.
+  // `=== true` keeps the wire value a real boolean, which also makes `remember`
+  // strictly assertable in the e2e request interception.
+  // ⚠ It is NOT the load-bearing check — the server's strict test is (ML-T1,
+  // `createFriendSession`), and normalising a stray truthy to `false` here produces
+  // the same 24 h outcome the server would produce anyway. Both call sites pass
+  // `rememberMe.value`, which `NeoCheckbox` and native `v-model` guarantee is already
+  // a boolean, so **deleting this `=== true` leaves the entire suite green**. Do not
+  // read it as an invariant the way ML-T1's server-side pair should be read.
+  authenticateFriends: (password, friendId, remember) => request('/friends/auth', {
     method: 'POST',
-    body: { password, friendId }
+    body: { password, friendId, remember: remember === true }
   }),
-  authenticateFriendsPersonal: (username, password) => request('/friends/auth', {
+  authenticateFriendsPersonal: (username, password, remember) => request('/friends/auth', {
     method: 'POST',
-    body: { username, password }
+    body: { username, password, remember: remember === true }
+  }),
+  // 10 §UC-GA-003 / §UC-GA-005 — the GIS callback's credential goes straight here.
+  //
+  // ⚠ Same `request()` transport as the two login methods above, deliberately. The
+  // endpoint is PUBLIC and ignores every auth header, so this is not the guest
+  // surface's problem (`guestRequest` exists because a stray admin token there would
+  // change what a guest is ALLOWED to do). Using `request()` keeps all three login
+  // paths on one transport, which is what makes the response handling in
+  // `FriendPortal.vue` identical for all three — the error message a failed Google
+  // login shows is the server's own sentence, including the `not_linked` hint.
+  //
+  // `remember` rides along exactly as it does on password login (module 09
+  // §UC-ML-007): the same checkbox, on the same card, must buy the same horizon
+  // whichever credential the friend used.
+  authenticateFriendsGoogle: (idToken, remember) => request('/friends/auth/google', {
+    method: 'POST',
+    body: { id_token: idToken, remember: remember === true }
   }),
   setupCredentials: (friendId, username, password) => request(`/friends/${friendId}/setup-credentials`, {
     method: 'POST',
@@ -180,6 +235,23 @@ export const api = {
     body: { currentPassword, newPassword }
   }),
   checkUsername: (username) => request(`/friends/check-username/${username}`),
+
+  // Magic-link recovery (09 §UC-ML-003 / §UC-ML-005). Both go through the standard
+  // `request()`: the endpoints are public and anonymous, and an ambient Bearer header
+  // is harmless on either — `/redeem` in particular is REACHED by someone who may
+  // already be signed in as a DIFFERENT friend, and the server ignores the header
+  // entirely (the URL token is the whole credential).
+  // ⚠ The raw token travels in the BODY of a POST, never as a GET side effect: mail
+  // scanners and link-prefetchers follow GET links, and a burned token would make the
+  // human's own click land on "already used".
+  requestMagicLink: (identifier) => request('/magic-link/request', {
+    method: 'POST',
+    body: { identifier }
+  }),
+  redeemMagicLink: (token) => request('/magic-link/redeem', {
+    method: 'POST',
+    body: { token }
+  }),
   getFriendsCycles: (friendId) => request(`/friends/cycles${friendId ? `?friendId=${friendId}` : ''}`),
 
   // Admin settings
@@ -210,6 +282,36 @@ export const api = {
   updateFriendProfile: (id, data) => request(`/friends/${id}/profile`, { method: 'PATCH', body: data }),
   adminResetFriendPassword: (id, password) => adminRequest(`/friends/${id}/reset-password`, { method: 'PUT', body: { password } }),
   adminSetFriendUsername: (id, username) => adminRequest(`/friends/${id}/admin-username`, { method: 'PUT', body: { username } }),
+  // 11 §UC-FC-006 — admin severs a friend's Google link. ⚠ Deliberately a different
+  // path from module 10's friend-owned `/friends/:id/google-link`; never merge them.
+  // No body: the route names its two columns itself and ignores anything sent.
+  adminUnlinkFriendGoogle: (id) => adminRequest(`/friends/${id}/google`, { method: 'DELETE' }),
+
+  // 10 §UC-GA-004 — the FRIEND-OWNED half, called from the §UC-GA-006 post-login
+  // prompt (and, from GA-T7, the profile modal). ⚠ Not `adminRequest`: both routes are
+  // `requireFriendOwner`-guarded, so they need the friend's Bearer token, which
+  // `request()` attaches. The 409s (`field:'google'` collision, `field:'auth_mode'`
+  // legacy) arrive as a thrown Error whose message is the server's own Slovak
+  // sentence — §UC-GA-006 renders it verbatim, so nothing here may rewrite it.
+  linkFriendGoogle: (friendId, idToken) => request(`/friends/${friendId}/google-link`, {
+    method: 'PUT',
+    body: { id_token: idToken }
+  }),
+  // GA-T7 (§UC-GA-007) — the friend severs their OWN link from the profile modal.
+  // ⚠ Deliberately NOT `adminUnlinkFriendGoogle` above: that one is `DELETE
+  // /friends/:id/google` under `requireAdmin` (11 §UC-FC-006). Two paths, two guards,
+  // never multiplexed — §UC-GA-004's path note. Idempotent 200 on an already-unlinked
+  // friend, and the body carries `warning: 'no_password'` when the friend has no
+  // password left to log in with, which §UC-GA-007 renders.
+  unlinkFriendGoogle: (friendId) => request(`/friends/${friendId}/google-link`, {
+    method: 'DELETE'
+  }),
+  // "Už sa nepýtať". No body, and no Google dependency — it answers on an
+  // unconfigured deployment too. ("Teraz nie" has NO counterpart here on purpose:
+  // §UC-GA-006 makes it client-side only.)
+  dismissGooglePrompt: (friendId) => request(`/friends/${friendId}/google-prompt-dismissed`, {
+    method: 'POST'
+  }),
 
   // Orders (password-protected, for friends)
   getOrderByFriend: (cycleId, friendId) => request(`/orders/cycle/${cycleId}/friend/${friendId}`),

@@ -203,7 +203,13 @@ labelled, bounded, with hints that tell the truth.
 **Business rules:**
 
 - Save behaviour unchanged: `name` required (button disabled while blank), other fields
-  trim-to-null. Errors from UC-FC-004 render via the existing error `Alert`.
+  trim-to-null. ~~Errors from UC-FC-004 render via the existing error `Alert`.~~
+  **AMENDED (FC-T2 review, 2026-08-15):** save errors render in a dedicated
+  **in-dialog Alert** (`modalError`) — the radix overlay hides the page-level
+  `Alert`, so the original letter would render errors invisibly (the FriendPortal
+  suppressed-shared-`error` precedent). `error` keeps its non-modal writers
+  (load/toggle/delete); nothing writes both. Do not "fix" the code back to the
+  page-level Alert.
 - ⚠ `@keyup.enter` on these inputs predates the 07 keydown lesson but these dialogs are
   opened by pointer, not by an Enter-activated button, and the action is a non-destructive
   save — leave as-is; do NOT copy this pattern into any dialog that can open via Enter.

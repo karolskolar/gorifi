@@ -341,7 +341,12 @@ Two gotchas in that recipe that look like app bugs when you skip them:
   The credential message (clipboard *and* e-mail body) is rendered by the server,
   and the dialog's copy assertion compares it against `window.location.origin`. A
   target that sets `PUBLIC_BASE_URL` to some other host makes that mismatch — a
-  real config difference, not a bug in the view.
+  real config difference, not a bug in the view. ⚠ Since 08 §UC-EM-004 the STAGING
+  `.env` pins `PUBLIC_BASE_URL=https://podpultovka.biz` (same value as prod —
+  resolved 2026-08-15), so against `BASE_URL=https://gorifi-dev.skolar.sk` that
+  mismatch is now the EXPECTED state, and the affected copy assertions fail there
+  by design; the server's boot line (`[mail] PUBLIC_BASE_URL=…` in out.log) tells
+  you which way the target resolved.
 - ⚠ **NEVER give the server under test any `MAILGUN_*` env var** (07 §UC-IA-009).
   `backend/src/helpers/mailer.js` is a no-op unless `MAILGUN_API_KEY`,
   `MAILGUN_DOMAIN` and `MAILGUN_BASE_URL` are ALL set, and that no-op is the only
@@ -352,6 +357,25 @@ Two gotchas in that recipe that look like app bugs when you skip them:
   first so an operator's real key cannot be inherited from the ambient
   environment. They self-skip when the backend source is not beside `e2e/`
   (i.e. when `BASE_URL` points at a deployment).
+- **`GOOGLE_CLIENT_ID` / `GOOGLE_AUTH_TEST_MODE` (10 §UC-GA-002, GA-T2).** The
+  second outbound dependency follows the mailer's model: with `GOOGLE_CLIENT_ID`
+  absent the whole feature is off and `helpers/google-auth.js` makes **no network
+  call at all**, so a gate server with neither var set is Google-free by
+  construction. `google-auth-verifier.spec.js` needs BOTH states, so it never
+  depends on how the gate server is configured — it spawns its own throwaway
+  backends (`startBackend`, which now blanks both vars first, the `MAILGUN_*`
+  rule) and drives the helper itself in a child process (the `sendViaMailer`
+  precedent; there is no unit runner). ⚠ Once module 10 ships an ENDPOINT
+  (GA-T4 onward) the gate server does need `GOOGLE_CLIENT_ID=test-client` +
+  `GOOGLE_AUTH_TEST_MODE=1` per §UC-GA-013 — that is additive and does not move
+  anything asserted here. ⚠ `GOOGLE_AUTH_TEST_MODE` must NEVER appear in a
+  deployed `.env`: it makes `TEST:<sub>:<email>` tokens verify without any
+  signature check. The audit signal is the boot line, which always names the
+  resolved mode (`mode=off` / `mode=google` / `mode=TEST`). ⚠ The var is an
+  **allow-list** — only `1` and `true` turn it on, so `GOOGLE_AUTH_TEST_MODE=off`
+  is genuinely off. Two further vars are honoured **only** while it is on and
+  exist purely for this spec: `GOOGLE_AUTH_TEST_CERTS_URL` (⚠ **loopback hosts
+  only**) and `GOOGLE_AUTH_TEST_TIMEOUT_MS`.
 
 ### Friend-portal UI specs and the friends-list stub
 
@@ -422,6 +446,11 @@ The same applies to the other limiters, each of which is its **own** bucket:
 - `guestReadLimiter` (`RATE_LIMIT_GUEST_READ_MAX`, default 300) — guest page loads.
 - `guestWriteLimiter` (`RATE_LIMIT_GUEST_WRITE_MAX`, default 60) — guest submits,
   edits and invite requests.
+- `magicLinkLimiter` (`RATE_LIMIT_MAGIC_MAX`, default 10) — `POST
+  /api/magic-link/request`; `magic-link-rate-limit.spec.js` self-skips above 10.
+  ⚠ The lowest default of the five, and the easiest to trip: `magic-link.spec.js`
+  issues **20** requests to that route and the limiter counts the 400s too, so
+  without this raised you get `429` from request 11 onward.
 
 The guest surface has its own buckets on purpose (a whole office shares one NAT'd
 IP, so it must not compete with registrations), but the suite still drives far more
@@ -433,6 +462,7 @@ limiter a generous budget:
 DB_PATH=/tmp/gorifi-e2e.sqlite PORT=3997 CORS_ORIGIN=http://localhost:3997 \
   RATE_LIMIT_AUTH_MAX=1000 RATE_LIMIT_ABUSE_MAX=2000 \
   RATE_LIMIT_GUEST_READ_MAX=5000 RATE_LIMIT_GUEST_WRITE_MAX=5000 \
+  RATE_LIMIT_MAGIC_MAX=5000 \
   node backend/src/index.js &
 ```
 

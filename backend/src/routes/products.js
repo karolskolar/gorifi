@@ -1,17 +1,14 @@
 import { Router } from 'express';
-import multer from 'multer';
 import { parse } from 'csv-parse/sync';
 import db from '../db/schema.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { safeFetch } from '../helpers/safe-fetch.js';
 import { cycleAvailability } from '../helpers/stock.js';
 import { imageFromUpload, imageFromBody, detectImageMime } from '../helpers/image-upload.js';
+import { uploadSingle } from '../helpers/multipart.js';
+import { bindValue } from '../helpers/bind-value.js';
 
 const router = Router();
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
-});
 
 // Get all products for a cycle
 router.get('/cycle/:cycleId', (req, res) => {
@@ -36,12 +33,41 @@ router.get('/cycle/:cycleId/availability', (req, res) => {
   // No excludeGuestOrderId here on purpose: this endpoint is public, and a guest
   // editing their own sub-order (GSO-T4) reads availability through their own
   // token-scoped payload, not through an id anyone could pass in a query string.
-  res.json(cycleAvailability(req.params.cycleId, { excludeFriendId: req.query.excludeFriendId }));
+  //
+  // ⚠ FUP-T13 — THE SHARPEST SITE IN THAT ROW: this endpoint is PUBLIC, carries NO
+  // rate limiter, and `excludeFriendId` was handed straight to a bind in
+  // `helpers/stock.js`. `?excludeFriendId[a]=1` — a plain GET, no credential, no body
+  // — appended 1120 bytes of stack per request, i.e. a cheaper log-flood than the one
+  // FUP-T12 was opened for. Guarded HERE rather than in `stock.js` because this is the
+  // only caller that takes the value from a client: `orders.js` passes a route param
+  // (always a string) and `guest.js` passes a row id. Unbindable ⇒ `undefined`, which
+  // `orderedGramsByProduct` already treats as "no exclusion" — the absent-param answer.
+  res.json(cycleAvailability(req.params.cycleId, { excludeFriendId: bindValue(req.query.excludeFriendId) }));
 });
 
 // Create single product (manual entry) - with optional image (admin)
-router.post('/', requireAdmin, upload.single('image'), (req, res) => {
-  const { cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, roastery, stock_limit_g } = req.body;
+router.post('/', requireAdmin, uploadSingle('image'), (req, res) => {
+  // FUP-T13 — every field below is bound directly into the INSERT, so ANY of them
+  // carrying an object/array/boolean was a 500 + ~1.1 KB of stack, not just `name`.
+  // `bindValue` maps an unbindable value to `undefined`, which binds as NULL — byte
+  // for byte what an absent field already stored — so the optional columns need no new
+  // branch and `cycle_id`/`name` fall into the route's existing required-field 400.
+  // ⚠ A numeric STRING must still pass through untouched: the admin form posts prices
+  // and the stock limit as strings, so this deliberately does NOT demand a number.
+  const cycle_id = bindValue(req.body.cycle_id);
+  const name = bindValue(req.body.name);
+  const description1 = bindValue(req.body.description1);
+  const description2 = bindValue(req.body.description2);
+  const roast_type = bindValue(req.body.roast_type);
+  const purpose = bindValue(req.body.purpose);
+  const price_150g = bindValue(req.body.price_150g);
+  const price_200g = bindValue(req.body.price_200g);
+  const price_250g = bindValue(req.body.price_250g);
+  const price_500g = bindValue(req.body.price_500g);
+  const price_1kg = bindValue(req.body.price_1kg);
+  const price_20pc5g = bindValue(req.body.price_20pc5g);
+  const roastery = bindValue(req.body.roastery);
+  const stock_limit_g = bindValue(req.body.stock_limit_g);
 
   if (!cycle_id || !name) {
     return res.status(400).json({ error: 'cycle_id a nazov su povinne' });
@@ -69,9 +95,18 @@ router.post('/', requireAdmin, upload.single('image'), (req, res) => {
 });
 
 // Import products from CSV (admin)
-router.post('/import/:cycleId', requireAdmin, upload.single('file'), (req, res) => {
+router.post('/import/:cycleId', requireAdmin, uploadSingle('file'), (req, res) => {
   const cycleId = req.params.cycleId;
-  const roastery = req.body.roastery || null;
+  // ⚠ FUP-T15 — THE RECORDED "LATENT" BLOCKER ON THIS ROUTE WAS FALSE. It read
+  // "the route requires `req.file`, so the body is multipart and every field is a
+  // string". multer parses fields with the `append-field` package, which honours
+  // bracket notation and repeated keys — so `roastery[a]=1` really did arrive as an
+  // OBJECT, was bound into the per-row INSERT below, and this route's own try/catch
+  // answered 400 with the BINDER'S OWN SENTENCE echoed to the client ("Chyba pri
+  // parsovani CSV: Too few parameter values were provided") after `console.error`
+  // wrote ~1.1 KB of stack. Unbindable ⇒ `undefined` ⇒ `|| null` ⇒ exactly what an
+  // absent `roastery` field already stores.
+  const roastery = bindValue(req.body.roastery) || null;
 
   // Check cycle exists
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
@@ -144,7 +179,7 @@ router.post('/import/:cycleId', requireAdmin, upload.single('file'), (req, res) 
 });
 
 // Upload image for existing product (admin)
-router.post('/:id/image', requireAdmin, upload.single('image'), (req, res) => {
+router.post('/:id/image', requireAdmin, uploadSingle('image'), (req, res) => {
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
 
   if (!product) {
@@ -213,7 +248,28 @@ router.post('/:id/image-from-url', requireAdmin, async (req, res) => {
 
 // Update product (admin)
 router.patch('/:id', requireAdmin, (req, res) => {
-  const { name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, image, active, roastery, stock_limit_g } = req.body;
+  // FUP-T13 — as on POST, plus the half a status check cannot see. Every gate below
+  // is `!== undefined`, so an unbindable value now SKIPS its write and the stored
+  // column survives; an explicit null still clears. ⚠ `stock_limit_g` was already
+  // silently destructive before this: `{}` is truthy, `parseInt({})` is NaN, and
+  // better-sqlite3 binds NaN as NULL — so a malformed body answered 200 and REMOVED a
+  // product's stock limit. `active` is `? 1 : 0` and never bound raw, so it is left
+  // exactly as it was.
+  const name = bindValue(req.body.name);
+  const description1 = bindValue(req.body.description1);
+  const description2 = bindValue(req.body.description2);
+  const roast_type = bindValue(req.body.roast_type);
+  const purpose = bindValue(req.body.purpose);
+  const price_150g = bindValue(req.body.price_150g);
+  const price_200g = bindValue(req.body.price_200g);
+  const price_250g = bindValue(req.body.price_250g);
+  const price_500g = bindValue(req.body.price_500g);
+  const price_1kg = bindValue(req.body.price_1kg);
+  const price_20pc5g = bindValue(req.body.price_20pc5g);
+  const image = bindValue(req.body.image);
+  const roastery = bindValue(req.body.roastery);
+  const stock_limit_g = bindValue(req.body.stock_limit_g);
+  const { active } = req.body;
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
 
   if (!product) {
@@ -260,7 +316,14 @@ router.delete('/:id', requireAdmin, (req, res) => {
 // Import products from Google Sheets URL (admin)
 router.post('/import-gsheet/:cycleId', requireAdmin, async (req, res) => {
   const cycleId = req.params.cycleId;
-  const { url, roastery } = req.body;
+  // ⚠ FUP-T15 — same class and same file as the CSV import above: `roastery` is bound
+  // into every inserted row. Reaching it needs a live public sheet, so it is not
+  // exercisable from the e2e suite — but the shape is identical and so is the cost
+  // (this route's catch logs the whole Error, i.e. a full stack, and echoes
+  // `error.message` to the client). Unbindable ⇒ absent, exactly as `|| null` already
+  // treats an empty field.
+  const { url } = req.body;
+  const roastery = bindValue(req.body.roastery);
 
   // Check cycle exists
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
@@ -268,7 +331,12 @@ router.post('/import-gsheet/:cycleId', requireAdmin, async (req, res) => {
     return res.status(404).json({ error: 'Cyklus nebol najdeny' });
   }
 
-  if (!url) {
+  // ⚠ FUP-T12: a non-string reached `url.match(...)` below and threw a TypeError. The
+  // route's own try/catch already turned that into a 400, so the STATUS looked fine —
+  // but it ECHOED `url.match is not a function` to the client and still wrote ~1.2 KB
+  // of stack to the log per request. Folded into the existing presence rule: same
+  // status, same message, and a string url still reaches the parser unchanged.
+  if (typeof url !== 'string' || !url) {
     return res.status(400).json({ error: 'URL je povinne' });
   }
 
@@ -564,7 +632,14 @@ function parseMultiRowProducts(csvContent) {
 // Import products from Google Sheets with multi-row format (3 rows per product) (admin)
 router.post('/import-gsheet-multirow/:cycleId', requireAdmin, async (req, res) => {
   const cycleId = req.params.cycleId;
-  const { url, roastery } = req.body;
+  // ⚠ FUP-T15 — same class and same file as the CSV import above: `roastery` is bound
+  // into every inserted row. Reaching it needs a live public sheet, so it is not
+  // exercisable from the e2e suite — but the shape is identical and so is the cost
+  // (this route's catch logs the whole Error, i.e. a full stack, and echoes
+  // `error.message` to the client). Unbindable ⇒ absent, exactly as `|| null` already
+  // treats an empty field.
+  const { url } = req.body;
+  const roastery = bindValue(req.body.roastery);
 
   // Check cycle exists
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
@@ -572,7 +647,12 @@ router.post('/import-gsheet-multirow/:cycleId', requireAdmin, async (req, res) =
     return res.status(404).json({ error: 'Cyklus nebol najdeny' });
   }
 
-  if (!url) {
+  // ⚠ FUP-T12: a non-string reached `url.match(...)` below and threw a TypeError. The
+  // route's own try/catch already turned that into a 400, so the STATUS looked fine —
+  // but it ECHOED `url.match is not a function` to the client and still wrote ~1.2 KB
+  // of stack to the log per request. Folded into the existing presence rule: same
+  // status, same message, and a string url still reaches the parser unchanged.
+  if (typeof url !== 'string' || !url) {
     return res.status(400).json({ error: 'URL je povinne' });
   }
 

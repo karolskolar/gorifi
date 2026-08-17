@@ -40,17 +40,61 @@ let ctx
 let adminToken
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
-// OPTIONAL, and only ever used for a strictly-extra assertion: a GLOBAL
-// `transactions` row count. The per-friend checks below already prove no balance
-// moved for anybody involved, but a naive copy of the friend handler could insert
-// a row with a NULL `friend_id` — a row no API surface can see. When the server's
-// own SQLite file is reachable (local runs export DB_PATH, see e2e/README.md) that
-// blind spot is closed too; against staging the test still runs, one assertion
-// lighter. NO default path: guessing one can open a leftover database that is not
-// the one under test.
+// OPTIONAL, and only ever used for a strictly-extra assertion. The per-friend checks
+// below already prove no balance moved for anybody the API can show; the direct read
+// adds the rows no API surface can see. When the server's own SQLite file is reachable
+// (local runs export DB_PATH, see e2e/README.md) that blind spot is closed too;
+// against staging the test still runs, one assertion lighter. NO default path:
+// guessing one can open a leftover database that is not the one under test.
+//
+// ⚠ FUP-T17 replaced a GLOBAL `SELECT COUNT(*) FROM transactions` delta straddling the
+// PATCH. That is a value claim over rows this test does not own: any other spec file
+// posting a ledger entry concurrently (`fullyParallel: false` serialises only WITHIN a
+// file; different files still interleave once `workers > 1`) reddened it while the
+// guest paid route was blameless.
+//
+// ⚠ And the reason the old comment gave for the global count was wrong:
+// `transactions.friend_id` is declared `INTEGER NOT NULL` (schema.js), so a row "with
+// a NULL friend_id" cannot be inserted at all — SQLite refuses it. What `txRowsFor`
+// keeps is a `MAX(id)` watermark (only rows written after it count) filtered to the
+// two things this test owns, which between them cover every shape a wrong ledger row
+// can take here:
+//   • `friend_id = host` — the only friend identity this endpoint can reach (a guest
+//     sub-order has none of its own; the host comes from `guest_order_links`), so this
+//     is the row a naive copy of the friend handler `PATCH /api/orders/:id/paid`
+//     (orders.js) would write; and
+//   • `order_id = <this guest sub-order>` — a row credited to the WRONG friend but
+//     tagged with the order, which is what a copy of that handler produces when it
+//     passes the guest order id straight through.
+//
+// ⚠ Be precise about which half is worth anything, or the next reader will mis-scope
+// this. The `friend_id = host` clause is REDUNDANT with the API check above:
+// `GET /api/friends/:id/detail` selects every row `WHERE t.friend_id = ?` with no
+// LIMIT and no type/note filter (friends.js), and the test compares `.count` before
+// and after, so even a charge/reversal pair that nets the balance to zero reds the API
+// assertion first. **`order_id` is the only ADDITIVE clause** — it is the sole thing
+// here that sees a row the API cannot. The redundant clause is kept because it costs
+// nothing and names the row in the failure message.
+//
+// ⚠ THREE residuals, stated rather than glossed.
+//  (1) The `order_id` clause fires only when the guest order id also happens to exist
+//      in `orders`: `initDb` runs `PRAGMA foreign_keys = ON` and `transactions.order_id`
+//      REFERENCES `orders(id)`, so otherwise the insert is refused outright — which
+//      surfaces as a 500 and reds the status assertions above instead.
+//  (2) ⚠ And that same clause compares a `guest_orders.id` against an `orders.id`.
+//      They are INDEPENDENT AUTOINCREMENT sequences — the documented `order_items.id`
+//      vs `guest_order_items.id` hazard (GSO-T7), same class. So a concurrent spec
+//      packing an order whose `orders.id` happens to equal this test's `guest_orders.id`
+//      inside the watermark window reds this for an innocent reason. Kept anyway,
+//      because it is the only additive half; the collision is narrow (one id, one
+//      window) where the whole-table count it replaces flaked on ANY concurrent ledger
+//      write. If it ever does flake, tighten it — do not delete it.
+//  (3) A row credited to an unrelated friend AND carrying no `order_id` is not caught.
+//      Nothing in this route can produce one: `findSubOrderWithLink` exposes only
+//      `host_friend_id`, and an invented friend id is refused by the FK.
 const DB_PATH = process.env.DB_PATH || ''
 
-function transactionCountFromDb() {
+function withDb(fn) {
   if (!DB_PATH) return null
   let db
   try {
@@ -59,10 +103,26 @@ function transactionCountFromDb() {
     return null
   }
   try {
-    return Number(db.prepare('SELECT COUNT(*) AS n FROM transactions').get().n)
+    return fn(db)
   } finally {
     db.close()
   }
+}
+
+function transactionWatermark() {
+  return withDb((db) => Number(db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM transactions').get().n))
+}
+
+function txRowsFor(watermark, friendId, orderId) {
+  if (watermark === null) return null
+  return withDb((db) =>
+    db
+      .prepare(
+        'SELECT id, friend_id, order_id, type, amount, note FROM transactions ' +
+          'WHERE id > ? AND (friend_id = ? OR order_id = ?)'
+      )
+      .all(watermark, Number(friendId), Number(orderId))
+  )
 }
 
 async function admin(path, opts = {}) {
@@ -265,7 +325,7 @@ test.describe('PATCH /api/guest-orders/:id/paid — the admin marks a guest paym
     expect(created.order.total, '2 × 250g at 10').toBe(20)
 
     const before = await friendTransactions(host.id)
-    const globalBefore = transactionCountFromDb()
+    const txWatermark = transactionWatermark()
 
     expect((await setPaid(created.order.id, true)).status()).toBe(200)
     const afterPaid = await friendTransactions(host.id)
@@ -278,10 +338,13 @@ test.describe('PATCH /api/guest-orders/:id/paid — the admin marks a guest paym
     expect(afterUnpaid.count).toBe(before.count)
     expect(afterUnpaid.balance).toBe(before.balance)
 
-    // Extra, only when the server's DB file is reachable: no row appeared
-    // ANYWHERE — including one keyed to a NULL friend_id, which no API can see.
-    if (globalBefore !== null) {
-      expect(transactionCountFromDb(), 'no transactions row at all for a guest payment').toBe(globalBefore)
+    // Extra, only when the server's DB file is reachable. The host half is redundant
+    // with the API checks above (see FUP-T17 in the header); what this ADDS is the
+    // `order_id` half — a ledger row tagged with this sub-order but credited to some
+    // other friend, which `/detail` filters out by `friend_id` and cannot show.
+    const txRows = txRowsFor(txWatermark, host.id, created.order.id)
+    if (txRows !== null) {
+      expect(txRows, `no transactions row at all for a guest payment: ${JSON.stringify(txRows)}`).toEqual([])
     }
 
     // And the response is the sub-order shape, not the friend endpoint's

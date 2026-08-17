@@ -23,10 +23,24 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 // Verified by partial revert (placeholder only): `listCopy` passes, `modalCopy` fails.
 // So do not "simplify" this back to `document.body.innerText`.
 //
-// ⚠ SCOPE: `FriendPortalSession.vue` has an identical "Prihlasovacie meno" label that is
-// correct there (that field IS the login) and is pinned ~10× by
-// `portal-profile-modal.spec.js`. Nothing here touches the friend surface — every
-// assertion is scoped to `/admin/friends`.
+// ⚠⚠ SCOPE — AND THE COMMENT THAT WAS WRONG (corrected by FUP-T20). This block used to
+// read: "`FriendPortalSession.vue` has an identical 'Prihlasovacie meno' label that is
+// correct there (that field IS the login)". It was NOT the login. That label sat on the
+// field binding `profileName`, which writes `friends.name` — the same DISPLAY column this
+// file's whole reason for existing is about — and its own help line one row below said so
+// ("Toto meno vidí správca a kolegovia."). So the friend portal shipped the identical lie
+// to production while this file guarded the admin half, because §UC-FC-002's grep guard
+// named ONE file.
+//
+// The guard is now BOTH views: `grep -i prihlasovac frontend/src/views/AdminFriends.vue
+// frontend/src/views/FriendPortalSession.vue` must return nothing, and the friend half is
+// machine-checked by the copy sweep in `portal-profile-modal.spec.js` (which owns that
+// modal). Nothing here touches the friend surface — every assertion below is still scoped
+// to `/admin/friends`.
+//
+// ⚠ The substring is legitimately present in `AdminInvitations.vue` and
+// `InviteRegister.vue`, where it labels a real `friends.username` field. The guard is
+// "no view that edits `friends.name` may call it a login", not "the word is banned".
 //
 // ⚠ "Prihlásenie" (the credentials column header) is NOT a violation and is asserted
 // present below: it labels the column showing whether a friend HAS credentials, which is
@@ -67,10 +81,13 @@ test.describe('AdminFriends — the name field no longer claims to be a login', 
     await expect(page.getByRole('heading', { name: /Priatelia/ }).first()).toBeVisible()
   })
 
-  test('the table header reads "Meno", not "Prihlasovacie meno"', async ({ page }) => {
+  test('the table header reads "Meno a priezvisko", not "Prihlasovacie meno"', async ({ page }) => {
     const header = page.locator('thead tr').first()
     await expect(header).toBeVisible()
-    await expect(header.getByText('Meno', { exact: true })).toBeVisible()
+    // RETARGETED (e2e-immutability case (a), 11 §UC-FC-008 #1): FC-T2 mandates the
+    // relabel "Meno" → "Meno a priezvisko" (11 §UC-FC-002). The absence assertions
+    // below — the property this file exists for — stay verbatim.
+    await expect(header.getByText('Meno a priezvisko', { exact: true })).toBeVisible()
     // The absence is the actual acceptance criterion.
     await expect(header.getByText(/Prihlasovacie/i)).toHaveCount(0)
     // Non-vacuity + the deliberate keep: the credentials column still says "Prihlásenie",
@@ -78,12 +95,16 @@ test.describe('AdminFriends — the name field no longer claims to be a login', 
     await expect(header.getByText('Prihlásenie', { exact: true })).toBeVisible()
   })
 
-  test('the "Nový priateľ" modal labels the field "Meno *", with no placeholder and the new hint', async ({ page }) => {
+  test('the "Nový priateľ" modal labels the field "Meno a priezvisko *", with no placeholder and the new hint', async ({ page }) => {
     await page.getByRole('button', { name: /Pridať priateľa|Pridať prvého priateľa/ }).first().click()
     const dialog = page.getByRole('dialog')
     await expect(dialog.getByText('Nový priateľ')).toBeVisible()
 
-    await expect(dialog.getByText('Meno *', { exact: true })).toBeVisible()
+    // RETARGETED (e2e-immutability case (a), 11 §UC-FC-008 #1): "Meno *" →
+    // "Meno a priezvisko *" and the hint follows 11 §UC-FC-003's verbatim wording
+    // (chosen specifically to pass the `prihlasovac` grep guard). The
+    // /Prihlasovacie meno/i and /pri prihlasovaní/i ABSENCE assertions stay verbatim.
+    await expect(dialog.getByText('Meno a priezvisko *', { exact: true })).toBeVisible()
     await expect(dialog.getByText(/Prihlasovacie meno/i)).toHaveCount(0)
 
     // The name input is the first one in the dialog and carries NO placeholder at all
@@ -91,7 +112,7 @@ test.describe('AdminFriends — the name field no longer claims to be a login', 
     const nameInput = dialog.locator('input').first()
     await expect(nameInput).toHaveJSProperty('placeholder', '')
 
-    await expect(dialog.getByText('Toto meno vidí správca a kolegovia.')).toBeVisible()
+    await expect(dialog.getByText('Celé meno. Vidí ho správca a kolegovia; na prihlásenie slúži užívateľské meno.')).toBeVisible()
     await expect(dialog.getByText(/pri prihlasovaní/i)).toHaveCount(0)
   })
 

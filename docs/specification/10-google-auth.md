@@ -158,20 +158,41 @@ index without error, idempotently; inserting two friends with the same non-NULL
   `new OAuth2Client()` + `verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID })`, which
   performs signature-against-JWKS (with built-in key caching), `aud`, `iss`
   (`accounts.google.com` both bare and `https://` forms) and `exp` checks. **Never
-  hand-roll JWT verification** (01's rule).
-- Exports `verifyGoogleIdToken(idToken)` → `{ sub, email, emailVerified }` on success;
-  on any verification failure returns `null` (callers map to 401) — it **never throws
+  hand-roll JWT verification** (01's rule). ⚠ **Pinned to `^10.9.1` (GA-T2): v11
+  declares `engines: {"node": ">=22"}` and production runs Node 20.20.2**
+  (`deploy/setup-server.sh` installs the Node 20 line; 07 §UC-IA-009 records the
+  version). `npm ci --omit=dev` treats that as an EBADENGINE *warning*, so a v11 deploy
+  would proceed and could start failing login silently on a patch bump. 10.9.1 is the
+  newest line whose `engines` covers Node 20 (`>=18`), and its `OAuth2Client` /
+  `verifyIdToken` / `transporterOptions` / `endpoints` / `getFederatedSignonCertsAsync`
+  surface is identical to v11's. Revisit only when the server moves to Node 22.
+- Exports `verifyGoogleIdToken`. ⚠ **AMENDED AT IMPLEMENTATION (GA-T2, 2026-08-16) — the
+  paragraph below described a `… | null` return that cannot carry this UC's own
+  401-vs-503 distinction, and GA-T4/T5/T8/T10 point here.** The SHIPPED shape is the
+  repo's standard guard shape (`requireHost` / `requireFriendOwner`):
+  `verifyGoogleIdToken(idToken, { field? })` → **`{ identity: { sub, email,
+  emailVerified } }`** on success, else **`{ error, status, reason, field? }`** with
+  `reason ∈ 'not_configured' (503) | 'bad_request' (400) | 'invalid' (401) |
+  'unavailable' (503)`. ⚠ **The result is ALWAYS TRUTHY — branch on `.error`, never on
+  falsiness; `if (!v) return 401` is now never true** and would let an unverified request
+  through. The original intent is unchanged and still binding:
+  on any verification failure callers answer 401 — it **never throws
   into a request handler unhandled** (01 §Integrations: this is the backend's second
   outbound call; same rules as the mailer). The JWKS fetch is timeout-bounded (~10 s,
   `AbortSignal`-style or the library's transport timeout); a timeout/network failure is
   a **503** `{ error: 'Overenie Google účtu momentálne nie je dostupné, skúste to
   neskôr' }`, distinguished from a 401 (an invalid token) — a Google outage must not
-  read as "wrong credentials".
+  read as "wrong credentials". ⚠ Also shipped, and required for that distinction to
+  survive: a JWKS response that succeeds but carries **no usable keys** (captive portal,
+  proxy error page) is an **outage**, not an invalid token; and the ~10 s is ONE budget
+  for the whole call, not one per awaited step.
 - `email` is used ONLY when `email_verified` is true in the token; otherwise the stored
   `google_email` is NULL. `sub` is the key regardless.
-- Type guard at every call site: `id_token` must be a non-empty string ≤ **4096** chars
+- Type guard: `id_token` must be a non-empty string ≤ **4096** chars
   ⇒ else 400 `field:'id_token'` (the GSO-T3 bounded-inputs convention; ID tokens are
-  ~1–2 KB).
+  ~1–2 KB). ⚠ **Shipped inside `verifyGoogleIdToken`, not "at every call site"** — a
+  future route cannot forget a guard it never has to write. The 400's `field` is
+  overridable (`{ field: 'google_id_token' }`) for §UC-GA-008's register attach.
 - ⚠ **Structural rule (the IA-T3 class):** verification is network I/O and MUST run
   outside any `db.transaction` on every call site in this module. No test can hold this
   — it is a rule, recorded here and as a code comment at each call site.
@@ -180,11 +201,20 @@ index without error, idempotently; inserting two friends with the same non-NULL
 
 - When `GOOGLE_AUTH_TEST_MODE=1` is set, `verifyGoogleIdToken` accepts tokens of the
   literal form `TEST:<sub>:<email>` without any network call, returning
-  `{ sub, email, emailVerified: true }`; any other input still takes the real path.
+  `{ identity: { sub, email, emailVerified: true } }` (shape per the amendment above);
+  any other input still takes the real path.
   Honoured ONLY when the var is set — production/staging `.env` files must never
   contain it, and the boot line names the mode so a misconfigured prod is visible in
   logs. The e2e suite starts the gate with `GOOGLE_CLIENT_ID=test-client` +
   `GOOGLE_AUTH_TEST_MODE=1` (UC-GA-013).
+- ⚠ **Shipped detail (GA-T2): the var is parsed as a STRICT ALLOW-LIST** — only `1` and
+  `true` (case-insensitive) enable the seam. A deny-list reads `off` / `no` / `disabled`
+  as ON, which is a total authentication bypass, and this parser is the only barrier
+  (the boot line is an audit signal, not a gate). Two further test-mode-gated vars exist
+  for e2e observability and nothing else: `GOOGLE_AUTH_TEST_CERTS_URL` (⚠ **loopback
+  hosts only** — an attacker-hosted JWKS would turn "test mode accidentally on" from a
+  loud bypass into a silent one, since they could then sign a token with our `aud` and
+  `iss` for any `sub`) and `GOOGLE_AUTH_TEST_TIMEOUT_MS`.
 
 **Acceptance criteria:** with no `GOOGLE_CLIENT_ID`, every module endpoint returns 503
 and `auth-mode` carries `googleClientId: null`; with test mode on, `TEST:sub1:a@b.c`
@@ -372,6 +402,19 @@ possible to invoke somewhere under their account").
 
 - A **"Google"** section under the existing fields, rendered only when `googleClientId`
   is non-null (unconfigured deployments show no trace):
+  - ⚠ **AMENDED (GA-T7, 2026-08-16) — the mode gate sits on the LINK half only.**
+    UC-GA-005's button and UC-GA-006's prompt both additionally require
+    `authMode === 'modern'`, because UC-GA-004's `PUT /:id/google-link` answers 409
+    `field: 'auth_mode'` outside it — offering a link every attempt refuses. The
+    **unlinked** branch below inherits that condition. The **linked** branch does
+    **not**: `DELETE /:id/google-link` carries no mode guard and works on every
+    deployment, so a friend who linked while modern keeps self-service unlink if the
+    deployment is later rolled back to transition. Consequence: the section is
+    rendered when `googleClientId` is non-null **and** (the friend is linked **or**
+    `authMode === 'modern'`) — an unlinked friend outside modern mode sees no trace,
+    since the section would otherwise be an empty heading. GA-T8/T10 face the same
+    question on their own surfaces and should re-derive it from which endpoint they
+    call, not copy this line.
   - **Unlinked:** helper line **"Prepojte si Google účet a prihlasujte sa jedným
     klikom."** + the GIS button → `PUT /api/friends/:id/google-link`. A 409 renders in
     the modal's existing error slot.

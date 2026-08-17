@@ -29,13 +29,19 @@ router.get('/all', requireAdmin, (req, res) => {
 router.post('/', requireAdmin, (req, res) => {
   const { name, address, for_coffee, for_bakery } = req.body;
 
-  if (!name || !name.trim()) {
+  // ⚠ FUP-T12: folded into the existing required rule — same status, same message.
+  if (typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'Názov je povinný' });
   }
 
+  // `address` is OPTIONAL and has no rule of its own, so a non-string is treated as
+  // if the key were absent (⇒ NULL on this INSERT) rather than refused with an
+  // invented message. See the PATCH below for why it may not be coerced there.
+  const addressValue = typeof address === 'string' ? address.trim() || null : null;
+
   const result = db.prepare(
     'INSERT INTO pickup_locations (name, address, for_coffee, for_bakery) VALUES (?, ?, ?, ?)'
-  ).run(name.trim(), address?.trim() || null, for_coffee !== undefined ? (for_coffee ? 1 : 0) : 1, for_bakery !== undefined ? (for_bakery ? 1 : 0) : 1);
+  ).run(name.trim(), addressValue, for_coffee !== undefined ? (for_coffee ? 1 : 0) : 1, for_bakery !== undefined ? (for_bakery ? 1 : 0) : 1);
 
   const location = db.prepare('SELECT * FROM pickup_locations WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(location);
@@ -51,10 +57,18 @@ router.patch('/:id', requireAdmin, (req, res) => {
   const { name, address, active, for_coffee, for_bakery } = req.body;
 
   if (name !== undefined) {
-    if (!name.trim()) return res.status(400).json({ error: 'Názov je povinný' });
+    // ⚠ FUP-T12: folded into the existing required rule — same status, same message.
+    if (typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'Názov je povinný' });
+    }
     db.prepare('UPDATE pickup_locations SET name = ? WHERE id = ?').run(name.trim(), req.params.id);
   }
-  if (address !== undefined) {
+  // ⚠ FUP-T12 — the optional-free-text shape (same as `friends.js`'s packeta_address):
+  // a non-string is treated as if the key were absent and the write is SKIPPED. It may
+  // not be coerced to NULL here — this is an UPDATE, so that would answer 200 while
+  // silently wiping a real address. `null` stays in, because clearing by null is the
+  // shipped convention.
+  if (address !== undefined && (address === null || typeof address === 'string')) {
     db.prepare('UPDATE pickup_locations SET address = ? WHERE id = ?').run(address?.trim() || null, req.params.id);
   }
   if (active !== undefined) {

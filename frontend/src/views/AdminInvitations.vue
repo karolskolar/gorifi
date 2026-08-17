@@ -229,12 +229,39 @@ const emailOutcome = computed(() => {
   }
 })
 
+// ── 10 §UC-GA-009 — the invitation's attached Google identity ─────────────────
+//
+// ⚠ KEYED ON `google_sub`, NEVER ON `google_email`. `google_email` is display only
+// and is NULL whenever Google reported the address unverified (§UC-GA-002), so an
+// e-mail-only test would render nothing for a link that really exists. This is
+// exactly why `GET /api/invitations` deliberately keeps the raw sub (GA-T8's
+// recorded decision at the route); if it is ever stripped, it must be replaced with
+// a derived `googleLinked` boolean — never with the e-mail alone.
+const approveGoogleSub = computed(() => approveInv.value?.google_sub || null)
+
+// ⚠ THE FALLBACK IS `AdminFriends.vue`'s WORD, NOT `InviteRegister.vue`'s SENTENCE,
+// and the split is deliberate rather than incidental. `AdminFriends.vue:422/576`
+// renders `{{ friend.google_email || 'Prepojené' }}` for exactly this state, so an
+// admin moving between the invitations screen and the friends screen reads ONE word
+// for one fact. `InviteRegister.vue`'s 'Google účet je pripojený' is a full sentence
+// on a PUBLIC form addressed to an applicant who has never seen this app before —
+// different reader, different register. Divergence by audience, not by screen.
+const GOOGLE_LINKED_FALLBACK = 'Prepojené'
+const approveGoogleLabel = computed(
+  () => `Google: ${approveInv.value?.google_email || GOOGLE_LINKED_FALLBACK}`
+)
+// Set only by a `field: 'google'` 409, which is the ONLY state where dropping the
+// link is the right remedy — a taken username is a different problem and offering
+// the drop there would invite the admin to discard an identity for nothing.
+const approveGoogleConflict = ref(false)
+
 function openApproveDialog(invitation) {
   approveInv.value = invitation
   // The applicant's own request wins; the slug is only the fallback.
   approveUsername.value = invitation.username || slugifyUsername(invitation.name)
   approveNote.value = invitation.inviter_name ? `Pozval/a: ${invitation.inviter_name}` : ''
   approveError.value = ''
+  approveGoogleConflict.value = false
   approveResult.value = null
   approveCopied.value = false
   approveSaving.value = false
@@ -251,19 +278,40 @@ function setApproveOpen(open) {
     approveUsername.value = ''
     approveNote.value = ''
     approveError.value = ''
+    approveGoogleConflict.value = false
     approveCopied.value = false
   }
 }
 
-async function confirmApprove() {
+// ⚠ `confirmApprove` takes NO arguments on purpose: it is bound as `@click`, which
+// would hand it a MouseEvent, and `@keydown.enter` hands it a KeyboardEvent. The
+// drop-the-link variant is therefore its own named entry point rather than a
+// parameter that a stray event object could make truthy.
+function confirmApprove() {
+  return submitApprove(false)
+}
+
+// 10 §UC-GA-009's secondary action (product owner, 2026-08-15): approval is never
+// dead-ended on a collision. The applicant can link Google themselves later
+// (§UC-GA-004 / §UC-GA-007), and they still get the temp-password credentials.
+function approveWithoutGoogle() {
+  return submitApprove(true)
+}
+
+async function submitApprove(dropGoogleLink) {
   if (!approveInv.value || approveSaving.value || approveResult.value) return
   const username = approveUsername.value.trim().toLowerCase()
   approveSaving.value = true
   approveError.value = ''
+  approveGoogleConflict.value = false
   try {
     approveResult.value = await api.approveInvitation(approveInv.value.id, {
       username,
       note: approveNote.value.trim(),
+      // ⚠ Sent ONLY when the admin explicitly chose it — the server reads a literal
+      // `true` and nothing else, so an always-present `false` would be harmless but
+      // would also make the request body lie about what the admin was offered.
+      ...(dropGoogleLink ? { drop_google_link: true } : {}),
     })
     // ⚠ The list refreshes BEHIND the still-open dialog: the row must leave the
     // pending queue (the approval really happened) while the credentials stay on
@@ -274,6 +322,10 @@ async function confirmApprove() {
     // username and retries without reopening (the "two pending invitations request
     // the same username" race lands here).
     approveError.value = e.message || 'Pozvánku sa nepodarilo schváliť'
+    // The server's sentence already explains the collision without naming the other
+    // friend (§UC-GA-009) — it is rendered verbatim above; this only decides whether
+    // the remedy is offered.
+    if (e.field === 'google') approveGoogleConflict.value = true
   } finally {
     approveSaving.value = false
   }
@@ -507,6 +559,25 @@ const pendingCount = computed(() => {
                   <Badge v-if="inv.status === 'pending'" variant="outline" class="ml-2 text-xs text-yellow-600 border-yellow-600/30">Čaká</Badge>
                   <Badge v-else-if="inv.status === 'processed'" variant="outline" class="ml-2 text-xs text-green-600 border-green-600/30">Spracované</Badge>
                   <Badge v-else-if="inv.status === 'rejected'" variant="outline" class="ml-2 text-xs text-red-600 border-red-600/30">Zamietnuté</Badge>
+                  <!-- 10 §UC-GA-009: the applicant attached a Google account at
+                       registration. Keyed on `google_sub`, never on `google_email`,
+                       which is NULL for an unverified address. Green outline is the
+                       app-wide Google-link colour (AdminFriends.vue's badge).
+                       ⚠ The address goes in the `title`, not the label, because the
+                       row already carries the applicant's CONTACT e-mail in its own
+                       column and the two need not be the same address — a second
+                       e-mail printed inline in a row would read as a correction of
+                       the first. The label stays the one word that says which fact
+                       this is. -->
+                  <Badge
+                    v-if="inv.google_sub"
+                    variant="outline"
+                    class="ml-2 text-xs border-green-500 text-green-700"
+                    data-testid="invitation-google"
+                    :title="inv.google_email || GOOGLE_LINKED_FALLBACK"
+                  >
+                    Google
+                  </Badge>
                 </TableCell>
                 <TableCell>
                   <a :href="'tel:' + inv.phone" class="text-primary hover:underline">{{ inv.phone }}</a>
@@ -599,6 +670,17 @@ const pendingCount = computed(() => {
             >
               Prišiel cez hosťovskú objednávku
             </div>
+            <!-- 10 §UC-GA-009: the admin sees WHICH Google account they are about to
+                 put on the new friend row. Falls back to the neutral wording when the
+                 address is NULL (unverified — §UC-GA-002), which is the state the
+                 raw `google_sub` in this payload exists to make visible. -->
+            <div
+              v-if="approveGoogleSub"
+              class="text-xs text-green-700"
+              data-testid="approve-google"
+            >
+              {{ approveGoogleLabel }}
+            </div>
           </div>
 
           <!-- 400/409 render INLINE, with the username field still editable, so the
@@ -606,6 +688,32 @@ const pendingCount = computed(() => {
           <Alert v-if="approveError" variant="destructive" data-testid="approve-error">
             <AlertDescription>{{ approveError }}</AlertDescription>
           </Alert>
+
+          <!-- 10 §UC-GA-009's secondary action, offered ONLY on the Google 409 (a
+               taken username is a different problem and dropping the link would not
+               fix it). The server's sentence above is the explanation and it names no
+               friend; this is the remedy, and it is what keeps a collision from
+               dead-ending the approval.
+               ⚠ Its `:disabled` must stay IDENTICAL to the primary submit's below:
+               both controls POST the same form to the same endpoint, so a control
+               that is live while the username is empty hands the admin a 400 the
+               other button structurally prevents. -->
+          <div v-if="approveGoogleConflict" class="space-y-2" data-testid="approve-google-conflict">
+            <p class="text-xs text-muted-foreground">
+              Priateľa môžete vytvoriť aj bez tohto prepojenia — prihlasovacie meno
+              a dočasné heslo dostane rovnako. Google účet si môže prepojiť neskôr
+              vo svojom profile.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="approve-drop-google"
+              :disabled="approveSaving || !approveUsername.trim()"
+              @click="approveWithoutGoogle"
+            >
+              Vytvoriť bez Google prepojenia
+            </Button>
+          </div>
 
           <div class="space-y-2">
             <Label>Prihlasovacie meno *</Label>

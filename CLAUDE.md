@@ -219,7 +219,11 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 - AdminDashboard shows a clickable amber banner when pending invitations exist; fetches count via `api.getInvitations('pending')` on mount (non-blocking, swallows errors), navigates to `/admin/invitations` on click
 - Slovak pluralization inline: 1 → "čakajúca pozvánka", 2-4 → "čakajúce pozvánky", 5+ → "čakajúcich pozvánok"
 - ~~Invitation → new friend flow: "Vytvoriť" passes `create=1&name=&phone=&email=` query params to `/admin/friends`; AdminFriends `onMounted` prefills the modal~~ **SUPERSEDED (module 07, IA-T4/IA-T5, 2026-08-13).** "Vytvoriť" now opens an **approval dialog in place — no navigation**; the query params and the `onMounted` receiver are both DELETED. See `docs/specification/07-invitation-approval.md`.
-- ~~Modal field mapping in AdminFriends: friendName=Prihlasovacie meno (login)~~ **SUPERSEDED — and this bullet was the bug.** ⚠ `friendName` writes **`friends.name`, a DISPLAY label that never was a login**; the field is now labelled **`Meno *`** and `POST /api/friends` still sets no credentials. A friend gets a real login ONLY via `POST /api/invitations/:id/approve` (module 07) or the per-friend "Nastaviť username" / "Resetovať heslo" actions. The rest of the mapping still holds: friendDisplayName=Poznámka (internal admin note), friendPhone=Telefón, friendEmail=Email; the `invitations` table has name/phone/email/username (no user note field). ⚠ `grep -i prihlasovac frontend/src/views/AdminFriends.vue` must stay EMPTY (07 §UC-IA-007) — the one legitimate `Prihlásen*` string there is the `Prihlásenie` column header, which reports real credential state (`hasCredentials`) and makes no claim about the name field.
+- ~~Modal field mapping in AdminFriends: friendName=Prihlasovacie meno (login)~~ **SUPERSEDED — and this bullet was the bug.** ⚠ `friendName` writes **`friends.name`, a DISPLAY label that never was a login**; the field is now labelled **`Meno a priezvisko *`** (FC-T2, module 11 — was `Meno *` from IA-T5; `admin-friends-labels.spec.js`'s exact-label pins were retargeted with it, case (a)) and `POST /api/friends` still sets no credentials. A friend gets a real login ONLY via `POST /api/invitations/:id/approve` (module 07) or the per-friend "Nastaviť username" / "Resetovať heslo" actions. The rest of the mapping still holds: friendDisplayName=Poznámka (internal admin note), friendPhone=**Mobil** (FC-T2 relabel), friendEmail=Email; the `invitations` table has name/phone/email/username (no user note field). Module 11 (FC-T1/T2) added: server bounds 120/32/160/200 mirrored as `maxlength`, `Kontakt` (amber `Bez e-mailu`) + `Google` (`googleLinked`) columns, the truthful three-state `Prihlásenie` badge (`Neúplné` when password-no-username) + `dočasné heslo` marker, and save errors render in an in-dialog `modalError` Alert (the page Alert is hidden behind the radix overlay — do not "fix" it back). ⚠ **THE GUARD IS NOW TWO FILES:** `grep -i prihlasovac frontend/src/views/AdminFriends.vue frontend/src/views/FriendPortalSession.vue` must stay EMPTY (07 §UC-IA-007) — the one legitimate `Prihlásen*` string in the admin view is the `Prihlásenie` column header, which reports real credential state (`hasCredentials`) and makes no claim about the name field.
+
+⚠⚠ **WHY THE ONE-FILE FORM FAILED — FUP-T20, found by the product owner on staging.** The friend profile modal (`FriendPortalSession.vue`) carried the **identical** `Prihlasovacie meno *` label on the **identical** column: it binds `profileName` → writes `friends.name`, with its own help line one row below saying the opposite ("Toto meno vidí správca a kolegovia."). The real login is the read-only `Užívateľské meno` box above it. So a friend edited "their login name", their login did not change and their display name silently did — module 11 fixed exactly this in the admin view while the friend view shipped it to production, **because the guard named one file**. Any future guard stated as a grep must enumerate **every view that edits the column**, not the view where the bug was found. FUP-T20's fix: label **`Meno a priezvisko *`**, help text **"Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia."** (the PO mapping: `friends.name` is the **Packeta delivery name**, which is why it is required), the read-only **`Jedinečné ID` box REMOVED** (internal identifier, nothing to act on — the `friendUid` prop and `currentFriendUid` computed went with it; the uid still rides in `gorifi_friend_auth` and on the admin's ID column), and `username` stays **read-only** (PO decision — the admin renames, Google auth likely removes the need). Machine-checked by a rendered-copy sweep (text + `placeholder`/`title`/`aria-label`/`alt`, the `admin-friends-labels.spec.js` idiom) in `portal-profile-modal.spec.js`, which owns that modal. ⚠ The substring is **legitimate** in `AdminInvitations.vue` and `InviteRegister.vue`, where it labels a real `friends.username` field — the rule is "no view that edits `friends.name` may call it a login", not "the word is banned".
+
+⚠ **`friends.display_name` (the admin-only Poznámka) was being SENT to the friend's browser, and the fix is route-scoped on purpose (FUP-T20).** `GET /friends/:id/profile` does `SELECT *` and `sanitizeFriend` strips credentials only, so the note travelled to every friend portal; nothing rendered it, but it was one DevTools tab from visible. It is `delete`d **in that route**, never in `sanitizeFriend` — that function has **7 call sites, several admin**, and `AdminFriends.vue` reads `display_name` for its Poznámka column off exactly those, so a central strip would silence the leak and blank the admin's note. Rule: `sanitizeFriend` stays the one home for **credential** stripping (11 §UC-FC-005); **audience-scoped** fields belong to their route. Pinned by a raw-body `not.toMatch(/display_name/)` on the friend route **plus an admin counter-assertion** that `GET /api/friends` and `GET /api/friends/:id/detail` still carry the note value — a removal-only test passes while breaking the admin.
 
 ### Guest Shared Orders — schema + host share link (GSO-T2, 2026-08-04)
 - All three guest tables live in `schema.js` from GSO-T2 on: `guest_order_links` (one per host+cycle, `UNIQUE(host_friend_id, cycle_id)`), `guest_orders` (`link_id` carries host+cycle; `paid` = admin-only, `delivered` = host-only), `guest_order_items` (incl. `packed`). Later guest tasks must NOT add migrations for them.
@@ -324,11 +328,35 @@ Nginx Proxy Manager (SSL) → LXC Container (nginx) → PM2 apps
 
 ### Rate-limit buckets, and `backend/public` (follow-ups, 2026-08-04)
 
-**Rate-limit buckets — `middleware/rate-limit.js` exports FOUR, each a SEPARATE bucket. Do not collapse them.**
+### ⚠ `<script setup>` has NO module scope — a singleton declared there is per-instance (ML-T3, 2026-08-15)
+
+`<script setup>` compiles its **entire body** into the component's `setup()`, so a
+`const` at its top level is created **fresh for every component instance**. Only
+`import`s are hoisted out. A module-scope singleton in an SFC therefore needs a
+**plain `<script>` block alongside** `<script setup>` — that is the only way to get one.
+
+Found on `MagicLogin.vue`'s single-shot redemption guard: it lived in `<script setup>`,
+*looked* module-scope, and was per-mount — so an in-SPA Back to `/magic/:token` fired the
+POST again and **spent a single-use login credential twice**. Caught only by the guard's
+own e2e ("Expected: 1, Received: 2"); nothing else would have noticed, because the server
+correctly refuses the replay and the page shows the same neutral card either way.
+
+⚠ **It fails silently in exactly the cases that matter** — a guard, a cache, a
+"warn once" flag, an in-flight-request dedupe. Verify in the BUILT chunk if unsure: the
+declaration must sit at module top level, not inside `setup(…)`.
+
+**Rate-limit buckets — `middleware/rate-limit.js` exports FIVE, each a SEPARATE bucket. Do not collapse them.**
 - `authLimiter` (`RATE_LIMIT_AUTH_MAX`, 20) — admin login, friend auth.
 - `abuseLimiter` (`RATE_LIMIT_ABUSE_MAX`, 40) — invite-code lookup, onboarding submit.
 - `guestReadLimiter` (`RATE_LIMIT_GUEST_READ_MAX`, 300) — guest page loads.
 - `guestWriteLimiter` (`RATE_LIMIT_GUEST_WRITE_MAX`, 60) — guest submits, edits, invite requests.
+- `magicLinkLimiter` (`RATE_LIMIT_MAGIC_MAX`, 10) — `POST /api/magic-link/request` (ML-T2).
+
+⚠ The magic-link split has its own two reasons, neither shared by the others: an
+accepted request triggers an **outbound Mailgun send**, a cost profile no other
+bucket has; and on `authLimiter` the office-NAT coupling would let a recovery
+spammer behind the shared IP lock colleagues out of **password login** — at
+exactly the moment those colleagues need it — and vice versa.
 
 ⚠ The guest split exists because a guest link is shared privately **at office scale**, so a whole team usually arrives behind **one NAT'd IP**. While the guest routes sat on `abuseLimiter`, a busy order could exhaust the shared 40 and lock colleagues out of **registering** — and vice versa. Reads are generous because a page load is cheap and repeats (every colleague opening the link, every refresh); writes stay moderate and are additionally bounded by the T3 input caps. Pinned by `e2e/tests/rate-limit-isolation.spec.js`, which exhausts the guest **write** bucket and asserts guest reads, the invite-code lookup and registration all still reach their handlers. It self-skips unless started with a low `RATE_LIMIT_GUEST_WRITE_MAX` (the `rate-limit.spec.js` precedent), so a normal full-suite run reads **231 passed / 3 skipped**.
 
@@ -647,6 +675,136 @@ typeface.
   ETag/Last-Modified 304s rather than `/assets`' `expires 1y; immutable`. Deliberate — the
   filenames are **not** content-hashed, so `immutable` would pin a stale face forever if the
   subsets are ever refreshed from Google.
+
+### ⚠ Running playwright from the repo ROOT is a FALSE-GREEN vector (GA-T10, 2026-08-17)
+
+`npx playwright test` **must** be run from `/home/karolskolar/projects/gorifi/e2e`. From the
+repo root it resolves a **second** `@playwright/test`, dies with *"did not expect
+test.beforeAll() to be called here"*, and reports **`Error: No tests found`** — which a
+script checking only for `✘` lines reads as a clean run. A GA-T10 mutation probe
+"passed" that way and proved nothing; both affected runs had to be redone.
+
+⚠ The general form: **`No tests found` is not a pass.** Any wrapper that greps for
+failures must also assert a non-zero test count, or a wrong cwd, a bad `-g` filter and a
+typo'd path all look identical to success.
+
+### ⚠⚠ GA-T8 — `await` in a handler BREAKS the `instances: 1` atomicity assumption (2026-08-17)
+
+The standing concurrency note says non-transactional check-then-write is safe because
+`deploy/ecosystem.config.cjs` sets `instances: 1` **and the handlers are fully
+synchronous** (better-sqlite3). Module 10 is the first code to put an `await` — a network
+call to Google — **between a uniqueness check and its INSERT**, and that second clause is
+what the safety actually rested on. It no longer holds anywhere an `await` appears.
+
+`POST /api/invitations/register` is the first instance: request A carrying a Google token
+yields at `verifyGoogleIdToken`, request B passes the same phone dedupe during that
+window and inserts, and A's INSERT then hits `idx_invitations_phone_pending` and falls
+into the generic catch — **500 on a public endpoint whose contract is a 409.** No bad row
+is written (the index holds); the failure is the wrong status and a stack in the log.
+
+- **The fix is BOTH layers, and neither alone is enough.** Re-run the check immediately
+  before the INSERT inside the async branch (keeps the synchronous path untouched), **and**
+  translate `SQLITE_CONSTRAINT*` + the exact index message into the same 409 — the GSO-T10
+  pattern, which is also the layer that survives a future PM2 cluster.
+- ⚠ **Match on `code.startsWith('SQLITE_CONSTRAINT')` PLUS the exact message**, never a
+  bare `/UNIQUE/i` — a future index on the same table would otherwise start answering 409
+  for the wrong reason.
+- ⚠ **`node:sqlite` and `better-sqlite3` report DIFFERENT error codes for the same
+  violation** (`ERR_SQLITE_ERROR` vs `SQLITE_CONSTRAINT_UNIQUE`). The e2e helpers use
+  `node:sqlite`; the routes use better-sqlite3. **A probe written against the test driver
+  will "pass" while proving nothing about the route.** Verify a constraint-translation
+  guard against the driver the route actually loads.
+- ⚠ The window is **unreachable over HTTP in this suite** — only `TEST:` tokens verify and
+  they resolve in a microtask, which never yields to another request. So it is provable
+  only by a direct probe, and a green suite says nothing about it.
+- **Rule going forward:** any handler that gains an `await` must be re-read for
+  check-then-write pairs that were previously atomic by virtue of being synchronous.
+  GA-T4/T5/T7 added `await`s to handlers with no such pair; that was luck, not design.
+
+### ⚠ GA-T5 — shared-password mode is a credential-planting surface (2026-08-16)
+
+`PUT /api/friends/:id/google-link` carries a **modern-mode guard** (409
+`field:'auth_mode'`). It is not decoration and it is not symmetry with the login route —
+without it, **two requests using only the office-wide shared password plant an
+attacker-controlled Google credential on any friend's row**, reproduced live:
+
+```
+POST /api/friends/auth {password: <shared>, friendId: <victim>}  → 200, Bearer token
+PUT  /api/friends/<victim>/google-link {id_token: <attacker's>}  → 200, google_sub planted
+```
+
+The legacy dropdown login mints a per-friend session for **anybody** from the shared
+password alone (`friends.js:226`), so `requireFriendOwner` + a resolved-identity gate stop
+only the ONE-request (`X-Friends-Password`) form. The planted link is inert while legacy —
+then becomes a **permanent alternative credential the moment `auth_mode` flips to modern**,
+surviving the victim's own password change, which no other legacy primitive does. The
+migration window does not cover it, because the blast radius outlives the window (the
+UC-FC-009 reasoning at `friends.js:967-990`).
+
+- ⚠ **Any future route that writes a CREDENTIAL needs this guard**, not just an ownership
+  guard. Ownership is meaningless while a shared password can mint anyone's session.
+- ⚠ **Recorded residual:** the same two-request form still reaches **unlink** and
+  **prompt-dismiss** in legacy mode. Neither plants a credential (sever a login method,
+  silence a prompt — both recoverable, and in legacy nobody logs in via Google anyway), and
+  §UC-GA-004 mandates no mode guard on either. Revisit if either gains destructive weight.
+- ⚠ `requireFriendOwner` returns `{friendId: null}` for bare shared-password auth whenever
+  `auth_mode !== 'modern'` — **the spec's "guarded … with a RESOLVED friendId" describes a
+  guard that does not exist.** `friends.js:398/745/958`, `subscriptions.js:10,21` and
+  `transactions.js:55` share the hole; all read or write self-correcting data, which is why
+  only the contact half of `PATCH /:id/profile` was hardened before.
+- ⚠ **The app-level 409 pre-check is load-bearing independently of `instances: 1`:**
+  `schema.js:663-667` creates `idx_friends_google_sub` inside a **swallowing** try/catch, so
+  on any DB where creation ever failed the pre-check is the ONLY defence. The two layers are
+  HTTP-**indistinguishable** (deleting the pre-check leaves every HTTP test green — the
+  single-statement UPDATE rolls back atomically), so layer 2 is provable only by calling
+  `writeGoogleLink()` directly against a real migrated DB.
+- The 409 body is frozen at `{error, field}` and names **no** friend — id, name, uid, email
+  and sub are all asserted absent, or linking becomes a friend-table enumeration oracle.
+
+### ⚠ GA-T3 — the ONE sanctioned CSP exception, and the THIRD policy copy (2026-08-16)
+
+Google Identity Services needs four **scoped** path sources. They are added to
+`script-src` / `style-src` / `connect-src` and a **new** `frame-src`, per Google's current
+docs (`developers.google.com/identity/gsi/web/guides/get-google-api-clientid`, §CSP —
+the older `/guides/csp` URL is stale). **Nothing else is relaxed**: `font-src 'self' data:`
+and `img-src 'self' data:` are byte-identical to RD-DS-6. Fixing a CSP problem by
+loosening is still forbidden; this is the one exception and it stays minimal.
+
+- ⚠ **THE POLICY LIVES IN THREE FILES, NOT TWO.** `deploy/nginx-gorifi.conf` (3 lines),
+  `deploy/nginx-gorifi-staging.conf` (3), **and `docs/deploy/nginx-proxy-manager.md`**
+  (report-only). That third one is the dangerous one: NPM is a real hop in front of
+  **both** prod and staging, and the runbook's own Notes tell the operator to promote it
+  from `-Report-Only` to enforcing. Promoting the pre-GIS version would have killed
+  Google sign-in in production — the RD-DS-6 failure mode exactly, invisible to every
+  gate. All seven lines are now machine-checked: `self-hosted-fonts.spec.js` reads all
+  three files off disk and string-equals every line against `PROD_CSP`, so drift in
+  either direction reddens and names the file.
+- ⚠ **The residual is what an operator PASTED into NPM's web UI** — that lives in a
+  database on the proxy host, not the repo, and no suite can reach it. The manual check
+  is `docs/deploy/nginx-proxy-manager.md` §2b's `curl -sI … | grep -i content-security`.
+- ⚠ **`frame-src` is a NEW directive and it REPLACES the `default-src 'self'` fallback**,
+  so **same-origin iframes are now blocked too**. Free today (the app renders none — the
+  only `'iframe'` token in `frontend/src` is `NeoModal.vue`'s focus-trap selector), and
+  pinned by a test, so the day someone legitimately needs one they get a red test rather
+  than a blank frame. Add `'self'` to all three copies if that day comes.
+- **`frontend/src/lib/gis.js` is the ONE home for GIS script loading** — never
+  `index.html`, never guest routes. Idempotent, dedupes concurrent callers onto one
+  promise and one tag, **times out rather than hanging** (a blocked Google must degrade
+  to the password form), clears itself after failure so a retry works, and **resolves
+  `null` when `googleClientId` is null** so call sites need no separate guard. It does
+  NOT call `initialize()`. ⚠ Options apply only to the call that *starts* the load.
+- Route sweep: `accounts.google.com` allowed on `/` and `/invite/:code` **only**;
+  **`/g/:token` and `/magic/:token` stay at ZERO external requests**. Nothing imports the
+  loader yet and *that zero is asserted*, so GA-T4 turning it on is a loud, self-
+  describing failure rather than a silent drift.
+- ⚠ **Use `BASE_URL=http://localhost:3997`, never the IP.** `CORS_ORIGIN` allows
+  `localhost` but not `127.0.0.1`, and the built `index.html` loads its assets with
+  `crossorigin` — so the IP gives a **500 on the stylesheet** and `document.fonts.size
+  === 0`, which reads exactly like a font regression.
+- For a future hardening pass: Google wants `Referrer-Policy:
+  strict-origin-when-cross-origin` (both confs already send it), and if anyone ever adds
+  `Cross-Origin-Opener-Policy` it **must** be `same-origin-allow-popups` or the GIS popup
+  goes blank. None is sent today.
 
 ### `.cat-tabs` scroll affordance — `CatScrollArrow.vue` (2026-08-10)
 
@@ -981,11 +1139,29 @@ real regressions in code you just touched:
   is perfectly correct, and a manual check of the page looks like a broken route.
 - `guestReadLimiter` / `guestWriteLimiter` (300/60) — `guest-status.spec.js` alone
   runs enough guest writes that batching it with other guest files 429s ~15 tests.
+- ⚠⚠ **KILL THE SERVER BY THE PID THAT OWNS THE PORT, and assert the port is free before
+  restarting.** `pgrep -f node | head -1`-style killing takes a *stale* process while the
+  one holding `:3997` survives; the replacement then fails to bind **silently**, and the
+  suite goes on measuring **the code you just deleted**. This produced a false green
+  during FUP-T12 — the fix was in the tree and the failures were still real.
+  Use `kill $(ss -lptnH 'sport = :3997' | grep -oP 'pid=\K[0-9]+')`, then check
+  `ss -ltn | grep -c ':3997'` is `0`, then start. Same class as the "confirm the port is
+  free first" note above, but this is the failure it actually causes.
+- ⚠ **`bcrypt-nonstring-shape.spec.js` CANNOT pass on the default `RATE_LIMIT_AUTH_MAX=20`** —
+  it is the heaviest single consumer of `authLimiter` (~65 bucketed requests; each of
+  its 12 change-password tests adds a login to prove the password is untouched). For
+  this file the "raise all the buckets" recipe is a **hard requirement, not a
+  convenience**, and the failure looks like a broken auth fix rather than a budget.
+- `magicLinkLimiter` (10) — ⚠ **the newest, and the easiest to miss.**
+  `magic-link.spec.js`'s shared-server describe issues **20** requests to
+  `/api/magic-link/request`, and the limiter counts the 400s too, so from request
+  11 onward you get `429` and ~10 red tests that read exactly like a real
+  regression in the code you just touched.
 Every one of these passes when its file is run ALONE, which is the tell. Start the
 gate with `RATE_LIMIT_AUTH_MAX / RATE_LIMIT_ABUSE_MAX / RATE_LIMIT_GUEST_READ_MAX /
-RATE_LIMIT_GUEST_WRITE_MAX` raised — `rate-limit.spec.js` and
-`rate-limit-isolation.spec.js` then self-skip (they need LOW limits), which is
-exactly the documented "3 skipped".
+RATE_LIMIT_GUEST_WRITE_MAX / RATE_LIMIT_MAGIC_MAX` raised — `rate-limit.spec.js`,
+`rate-limit-isolation.spec.js` and `magic-link-rate-limit.spec.js` then self-skip
+(they need LOW limits), which is exactly the documented "4 skipped".
 ⚠ Also: pipe the run to a FILE, never `| tail -N`. A `tail -25` keeps the summary
 (which is honest about pass/fail) but discards every `✘` line above it, so a run
 with failures is indistinguishable from a clean one at a glance.

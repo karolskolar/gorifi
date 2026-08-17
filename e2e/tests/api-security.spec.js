@@ -32,6 +32,26 @@ const ADMIN_ENDPOINTS = [
   // are public), so its guard is per-route rather than on the mount. Anonymous must
   // never reach the handler.
   { method: 'post', path: '/api/invitations/1/approve', data: { username: 'evil.admin' } },
+  // 11 §UC-FC-006 / §UC-FC-008 item 2: the admin unlink of a friend's Google link.
+  // ⚠ `/api/friends` is a MIXED mount (friend auth, public login-list, admin), so the
+  // guard is per-route. Deliberately a DIFFERENT path from module 10's friend-owned
+  // `DELETE /api/friends/:id/google-link` — never multiplexed.
+  { method: 'delete', path: '/api/friends/1/google' },
+  // 10 §UC-GA-010 / §UC-GA-013 obligation 1: the admin Google ALLOWLIST — who may
+  // enter the admin portal with Google. All three are `requireAdmin`.
+  //
+  // ⚠ The two Google LOGIN endpoints (`POST /api/friends/auth/google`,
+  // `POST /api/admin/google-login`) are PUBLIC and must NEVER join this list — an
+  // anonymous caller has to reach them, and asserting 401 on them would pin the
+  // opposite of the contract. Their anonymous behaviour is pinned in
+  // `google-auth.spec.js` by MESSAGE, which is what distinguishes "the handler
+  // refused you" from "the guard did".
+  //
+  // ⚠ `/api/admin` is a MIXED mount (public `setup-status`, `login`, `verify`,
+  // `payment-settings`, `google-login`), so these guards are per-route.
+  { method: 'get', path: '/api/admin/google-allowlist' },
+  { method: 'post', path: '/api/admin/google-allowlist', data: { id_token: 'TEST:evil:evil@example.test' } },
+  { method: 'delete', path: '/api/admin/google-allowlist', data: { email: 'evil@example.test' } },
   { method: 'post', path: '/api/cycles', data: { name: 'evil' } },
 ]
 
@@ -82,17 +102,45 @@ const FRIEND_IDENTITY_ENDPOINTS = [
   { method: 'get', path: '/api/guest-links/cycle/1' },
   { method: 'post', path: '/api/guest-links/cycle/1' },
   { method: 'patch', path: '/api/guest-links/1' },
+  // 10 §UC-GA-004 (GA-T5) — friend-OWNED, so they belong here and NOT in
+  // `ADMIN_ENDPOINTS`. The admin unlink is a deliberately different path
+  // (`DELETE /api/friends/:id/google`, above) and the two are never multiplexed.
+  //
+  // ⚠ The two `google-link` routes pass only because the ownership guard runs BEFORE
+  // the Google config guard: with the order reversed, an unconfigured deployment would
+  // answer an anonymous caller 503 and this target-agnostic sweep would fail on it.
+  // (`google-prompt-dismissed` has no config guard at all by design — §UC-GA-004: it
+  // has no Google dependency — so the ordering argument does not apply to it.)
+  { method: 'put', path: '/api/friends/1/google-link' },
+  { method: 'delete', path: '/api/friends/1/google-link' },
+  { method: 'post', path: '/api/friends/1/google-prompt-dismissed' },
 ]
 
 test.describe('API security — friend-identity authorization', () => {
+  // ⚠ ONE admin login for the whole describe, deliberately. `POST /api/admin/login`
+  // sits on `authLimiter` (20/window by default) and so, since GA-T5, does
+  // `PUT /api/friends/:id/google-link` — a per-test login would spend two slots of that
+  // bucket per endpoint and, against a target on the DEFAULT limit, start answering
+  // **429 where this file asserts 401**. That failure reads exactly like an
+  // authorization regression, which is the worst way for a budget problem to surface.
+  let adminToken
+  test.beforeAll(async ({ playwright }, testInfo) => {
+    const ctx = await playwright.request.newContext({ baseURL: testInfo.project.use.baseURL })
+    try {
+      const login = await ctx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+      expect(login.status(), 'admin login for the friend-identity sweep').toBe(200)
+      adminToken = (await login.json()).token
+    } finally {
+      await ctx.dispose()
+    }
+  })
+
   for (const ep of FRIEND_IDENTITY_ENDPOINTS) {
     test(`${ep.method.toUpperCase()} ${ep.path} needs a friend session (401 anonymously and with an admin token)`, async ({ request }) => {
       const anon = await request[ep.method](ep.path)
       expect(anon.status(), `${ep.path} must not be reachable anonymously`).toBe(401)
 
-      const login = await request.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
-      const { token } = await login.json()
-      const asAdmin = await request[ep.method](ep.path, { headers: { 'X-Admin-Token': token } })
+      const asAdmin = await request[ep.method](ep.path, { headers: { 'X-Admin-Token': adminToken } })
       expect(asAdmin.status(), `${ep.path} is a friend surface, not an admin one`).toBe(401)
     })
   }

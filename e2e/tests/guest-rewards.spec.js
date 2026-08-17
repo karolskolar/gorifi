@@ -133,17 +133,24 @@ async function shareLink(host, cycleId) {
   return (await res.json()).link
 }
 
+// ⚠ Every guest name this spec submits is recorded here — see
+// `expectNoGuestAsMember` for why the assertions test membership of this set rather
+// than matching a name pattern.
+const guestNames = new Set()
+
 let guestSeq = 0
 async function submitGuest(linkToken, items) {
+  const guestName = `Kolega ${++guestSeq} ${uniq}`
   const res = await ctx.post(`/api/guest/${linkToken}/orders`, {
     data: {
-      guest_name: `Kolega ${++guestSeq} ${uniq}`,
+      guest_name: guestName,
       guest_phone: '0901 234 567',
       guest_email: 'kolega@example.com',
       items,
     },
   })
   expect(res.status(), 'guest submit').toBe(201)
+  guestNames.add(guestName)
   return res.json()
 }
 
@@ -212,12 +219,34 @@ function guestAcrossBuckets(report, cycleId) {
 }
 
 // No guest may ever surface as a member of a group — a guest is not a friend
-// (Decision 4). Every guest this spec submits is named `Kolega <n> <uniq>`.
+// (Decision 4).
+//
+// ⚠ The SWEEP stays global on purpose: every group × every `perCycle` column of a
+// 60-cycle report, because "a guest leaked into a member list" is exactly the kind of
+// bug that shows up in a bucket this test never built. What is scoped is the VALUE
+// being looked for. Matching `/^Kolega /` asked the whole report to contain no member
+// whose name starts with "Kolega " — a claim about rows this spec does not own, and
+// one nothing in the app enforces (a real friend may be called "Kolega Novák").
+//
+// ⚠ Why the set form still witnesses the invariant — and it is NOT "these are the only
+// guests in the window", which is false: `rewards.js` takes the newest 60 locked or
+// completed coffee cycles TABLE-WIDE, so the report also covers
+// `guest-aggregation.spec.js`'s cycleLockedA/cycleLockedB/cyclePrev and
+// guest-distribution's, all of which carry guests. The real argument is that "a guest
+// is credited as a friend" is SYSTEMIC — a property of how `buildGroupReport` fills
+// the member lists, not of one fixture — so this spec's own guests, whose cycles ARE
+// in the window, are enough to witness it. The honest cost: a leak confined to another
+// file's guests is not caught here.
+//
+// ⚠ Treat this as DOCUMENTATION OF INTENT rather than a pin. At every call site the
+// same bug is caught first by `expectMembers`' exact list equality, and no single-line
+// route mutation was found that reds this without reddening that. It is kept because
+// the Decision 4 rule it states is worth stating, not because it holds a line alone.
 function expectNoGuestAsMember(report) {
   for (const group of report.groups) {
     for (const pc of group.perCycle) {
-      expect(pc.orderedMembers.some((n) => /^Kolega /.test(n)), 'no guest in orderedMembers').toBe(false)
-      expect(pc.guestOnlyMembers.some((n) => /^Kolega /.test(n)), 'no guest in guestOnlyMembers').toBe(false)
+      expect(pc.orderedMembers.filter((n) => guestNames.has(n)), 'no guest in orderedMembers').toEqual([])
+      expect(pc.guestOnlyMembers.filter((n) => guestNames.has(n)), 'no guest in guestOnlyMembers').toEqual([])
     }
   }
 }

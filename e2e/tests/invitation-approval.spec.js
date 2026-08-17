@@ -1,19 +1,23 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { DatabaseSync } from 'node:sqlite'
-import { spawn } from 'node:child_process'
-import http from 'node:http'
-import net from 'node:net'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import {
   ADMIN_PASSWORD,
   TARGET_IS_LOCAL,
   NEEDS_LOCAL_TARGET,
   fixtureEmail,
-  setMailSafeTarget,
 } from '../fixtures.js'
+// The Mailgun stub harness lives in ONE shared module (extracted by EM-T2 per
+// 08 §UC-EM-005 item 1 — email-templates.spec.js and ML-T2 consume the same one).
+import {
+  CAN_SPAWN_BACKEND,
+  CAN_SPAWN_MAILER,
+  FAKE_MAILGUN_KEY,
+  STUB_MAILGUN_DOMAIN,
+  startMailgunStub,
+  withMailHarness as withStubbedMailgun,
+  multipartFields,
+  sendViaMailer,
+} from '../mailgun-harness.js'
 
 // IA-T3 / 07 §UC-IA-005 — `POST /api/invitations/:id/approve`, the API half.
 // (The dialog that drives it is IA-T4's; §UC-IA-008 item 5 splits this file that way.)
@@ -103,8 +107,8 @@ async function admin(path, opts = {}) {
 // `subscriptions` proves the `friend_subscriptions` non-write, and
 // `GET /api/friends/:id/detail` proves the `transactions` non-write. These direct
 // reads add only what no route exposes: that the stored hash is a bcrypt digest and
-// not the plaintext, that no `friend_sessions` row exists, and GLOBAL row counts
-// (which catch a row written with a NULL/foreign `friend_id`).
+// not the plaintext, that no `friend_sessions` row exists, and — via `newRowsFor`
+// below — that no row was written for a friend OTHER than the one the API can see.
 const DB_PATH = process.env.DB_PATH || ''
 
 function withDb(fn) {
@@ -122,8 +126,38 @@ function withDb(fn) {
   }
 }
 
-function countAll(table) {
-  return withDb((db) => Number(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n))
+// ⚠ FUP-T17 replaces the former `countAll(table)` global-count baselines. A count
+// delta over a WHOLE table straddling an HTTP round trip is a value claim over rows
+// this test does not own: any other spec file minting a session or posting a ledger
+// entry concurrently (`fullyParallel: false` serialises only WITHIN a file; different
+// files still interleave once `workers > 1`) reddens it while the approval endpoint
+// is blameless.
+//
+// The re-scoped form keeps everything the global count was actually buying:
+//  • `MAX(id)` watermark ⇒ only rows created AFTER the fixtures are considered, which
+//    is exactly what the old "baseline taken here, not at the top" comment wanted;
+//  • filtered to the friend ids THIS test owns (the new friend + the inviter), so a
+//    concurrent spec's rows are invisible while every row the approval could plausibly
+//    write is still caught — the approval holds no other friend identity.
+//
+// ⚠ Correction to the comment this replaces: a "row written with a NULL `friend_id`"
+// is NOT a real blind spot. Both `friend_sessions.friend_id` and
+// `transactions.friend_id` are declared `INTEGER NOT NULL` (schema.js), so SQLite
+// refuses such an insert outright. The blind spot the API genuinely cannot see is a
+// row credited to a DIFFERENT friend — here, the inviter — and that is what the id
+// filter below covers.
+function newRowsFor(table, watermark, friendIds) {
+  if (watermark === null) return null
+  const list = friendIds.map((n) => Number(n)).join(',')
+  return withDb((db) =>
+    db
+      .prepare(`SELECT id, friend_id FROM ${table} WHERE id > ? AND friend_id IN (${list})`)
+      .all(watermark)
+  )
+}
+
+function maxId(table) {
+  return withDb((db) => Number(db.prepare(`SELECT COALESCE(MAX(id), 0) AS n FROM ${table}`).get().n))
 }
 
 // ── Fixture builders ─────────────────────────────────────────────────────────
@@ -425,12 +459,12 @@ test.describe('Approval API — the three deliberate non-writes', () => {
     const inviter = await makeInviter('nonwrites')
     const invitation = await registerInvitation(inviter, { username: uniqueUsername('nowrite') })
 
-    // ⚠ The baselines are taken HERE, after the fixtures — not at the top of the
+    // ⚠ The watermarks are taken HERE, after the fixtures — not at the top of the
     // test. `makeInviter` logs a friend in, so it legitimately mints
-    // `friend_sessions` rows; a baseline captured before it would attribute the
+    // `friend_sessions` rows; a watermark captured before it would attribute the
     // fixture's own sessions to the approval and fail for the wrong reason.
-    const beforeTransactions = countAll('transactions')
-    const beforeSessions = countAll('friend_sessions')
+    const txWatermark = maxId('transactions')
+    const sessionWatermark = maxId('friend_sessions')
 
     const res = await approve(invitation.id, { note: 'nič navyše' })
     expect(res.status()).toBe(201)
@@ -453,15 +487,25 @@ test.describe('Approval API — the three deliberate non-writes', () => {
       Number(db.prepare('SELECT COUNT(*) AS n FROM friend_sessions WHERE friend_id = ?').get(body.friend.id).n)
     )
     if (sessionsForFriend !== null) expect(sessionsForFriend, 'no session minted by the approval').toBe(0)
-    if (beforeSessions !== null) expect(countAll('friend_sessions'), 'global friend_sessions unmoved').toBe(beforeSessions)
+    // FUP-T17: was a whole-table count delta. Now: no session row created since the
+    // watermark for EITHER friend this test owns — which additionally covers a session
+    // minted for the INVITER, something the per-friend check above cannot see.
+    const newSessions = newRowsFor('friend_sessions', sessionWatermark, [body.friend.id, inviter.id])
+    if (newSessions !== null) {
+      expect(newSessions, `no session row for the new friend or the inviter: ${JSON.stringify(newSessions)}`).toEqual([])
+    }
 
     // (3) NO transactions ROW — creation is not a financial event (GSO-T6). Checked
-    // per-friend through the API AND as a global count, which is the only way to see
-    // a row written with a NULL or foreign friend_id.
+    // per-friend through the API AND, via `newRowsFor`, for the INVITER — the one
+    // friend identity the approval can reach that no route surfaces from here.
     expect(await friendTransactions(body.friend.id), 'no ledger entry for a new friend').toEqual([])
     expect(friend.balance, 'balance starts at zero').toBe(0)
-    if (beforeTransactions !== null) {
-      expect(countAll('transactions'), 'no transactions row anywhere').toBe(beforeTransactions)
+    // FUP-T17: was a whole-table count delta. Now: no ledger row created since the
+    // watermark for either friend this test owns — the new friend (already covered
+    // through the API above) and the inviter (which no route surfaces from here).
+    const newTx = newRowsFor('transactions', txWatermark, [body.friend.id, inviter.id])
+    if (newTx !== null) {
+      expect(newTx, `no transactions row for the new friend or the inviter: ${JSON.stringify(newTx)}`).toEqual([])
     }
   })
 
@@ -745,184 +789,29 @@ test.describe('Approval API — the admin boundary', () => {
 // rule could only reach the stub.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const HERE = path.dirname(fileURLToPath(import.meta.url))
-const E2E_DIR = path.resolve(HERE, '..')
-const BACKEND_ENTRY = path.resolve(E2E_DIR, '../backend/src/index.js')
-const SEED_SCRIPT = path.resolve(E2E_DIR, 'seed.mjs')
-
-// The stub harness needs the backend SOURCE, so it self-skips when the suite is pointed
-// at a deployment (`BASE_URL=https://gorifi-dev.skolar.sk`) — the `DB_PATH` precedent.
-// The two non-harness tests below cover the same two outcomes through the ordinary
-// server, so the coverage is degraded, not lost.
-const CAN_SPAWN_BACKEND = fs.existsSync(BACKEND_ENTRY) && fs.existsSync(SEED_SCRIPT)
-
-// Obviously not a credential, and long enough that a substring search for it in a
-// response body or a log file is meaningful.
-const FAKE_MAILGUN_KEY = 'key-e2e-fake-0000000000000000000000000000'
-const STUB_MAILGUN_DOMAIN = 'mg.stub.invalid'
-
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const probe = net.createServer()
-    probe.once('error', reject)
-    probe.listen(0, '127.0.0.1', () => {
-      const { port } = probe.address()
-      probe.close(() => resolve(port))
-    })
-  })
-}
-
-// A stand-in for `https://api.eu.mailgun.net` that records what it was sent and replies
-// with whatever the test asks for.
-async function startMailgunStub() {
-  const requests = []
-  let reply = { status: 200, body: { id: '<stub.20260814@mg.stub.invalid>', message: 'Queued. Thank you.' } }
-
-  const server = http.createServer((req, res) => {
-    let raw = ''
-    // ⚠ setEncoding, not string concatenation of raw Buffers: the multipart body carries
-    // Slovak diacritics and a chunk boundary can fall inside a UTF-8 sequence.
-    req.setEncoding('utf8')
-    req.on('data', (chunk) => { raw += chunk })
-    req.on('end', () => {
-      requests.push({
-        method: req.method,
-        url: req.url,
-        authorization: req.headers.authorization || '',
-        contentType: req.headers['content-type'] || '',
-        body: raw,
-      })
-      res.writeHead(reply.status, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(reply.body))
-    })
-  })
-
-  const port = await freePort()
-  await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve))
-
-  return {
-    baseUrl: `http://127.0.0.1:${port}`,
-    requests,
-    setReply(next) { reply = next },
-    async stop() {
-      // undici keeps the connection alive, so close() alone would hang.
-      server.closeAllConnections?.()
-      await new Promise((resolve) => server.close(resolve))
-    },
-  }
-}
-
-// A second, throwaway backend process with its own DB and its own Mailgun env.
-async function startBackend(mailEnv) {
-  const port = await freePort()
-  const dbPath = path.join(os.tmpdir(), `gorifi-mailer-${Date.now()}-${Math.floor(Math.random() * 1e6)}.sqlite`)
-  const baseUrl = `http://127.0.0.1:${port}`
-
-  const child = spawn(process.execPath, [BACKEND_ENTRY], {
-    cwd: path.resolve(BACKEND_ENTRY, '../..'),
-    env: {
-      ...process.env,
-      DB_PATH: dbPath,
-      PORT: String(port),
-      CORS_ORIGIN: baseUrl,
-      PUBLIC_BASE_URL: baseUrl,
-      RATE_LIMIT_AUTH_MAX: '100000',
-      RATE_LIMIT_ABUSE_MAX: '100000',
-      RATE_LIMIT_GUEST_READ_MAX: '100000',
-      RATE_LIMIT_GUEST_WRITE_MAX: '100000',
-      // ⚠ Blanked FIRST, so an operator's real key in the ambient environment cannot be
-      // inherited by a harness server. Only `mailEnv` can turn sending on.
-      MAILGUN_API_KEY: '',
-      MAILGUN_DOMAIN: '',
-      MAILGUN_BASE_URL: '',
-      ...mailEnv,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-
-  const output = []
-  child.stdout.on('data', (c) => output.push(String(c)))
-  child.stderr.on('data', (c) => output.push(String(c)))
-
-  const deadline = Date.now() + 30_000
-  for (;;) {
-    if (child.exitCode !== null) throw new Error(`harness backend exited early (${child.exitCode}): ${output.join('')}`)
-    if (Date.now() > deadline) {
-      child.kill('SIGKILL')
-      throw new Error(`harness backend never became healthy: ${output.join('')}`)
-    }
-    try {
-      const health = await fetch(`${baseUrl}/api/health`)
-      if (health.ok) break
-    } catch { /* not listening yet */ }
-    await new Promise((r) => setTimeout(r, 150))
-  }
-
-  // The same seeding the local recipe does — it is what sets the admin password.
-  await new Promise((resolve) => {
-    const seed = spawn(process.execPath, [SEED_SCRIPT], {
-      cwd: E2E_DIR,
-      env: { ...process.env, BASE_URL: baseUrl },
-      stdio: 'ignore',
-    })
-    seed.on('exit', resolve)
-    seed.on('error', resolve)
-  })
-
-  return {
-    baseUrl,
-    logs: () => output.join(''),
-    async stop() {
-      if (child.exitCode === null) {
-        child.kill('SIGTERM')
-        await new Promise((resolve) => {
-          const timer = setTimeout(() => { child.kill('SIGKILL'); resolve() }, 5000)
-          child.on('exit', () => { clearTimeout(timer); resolve() })
-        })
-      }
-      for (const suffix of ['', '-wal', '-shm']) {
-        try { fs.unlinkSync(`${dbPath}${suffix}`) } catch { /* best effort */ }
-      }
-    },
-  }
-}
-
-// Run `fn` against a throwaway backend + stub Mailgun.
+// The harness itself (stub server, throwaway backend, ctx + admin login) lives in
+// `../mailgun-harness.js` — extracted by EM-T2, consumed unchanged here.
 //
-// ⚠ It SWAPS the module-level `ctx`/`adminToken` for the duration, so every fixture
-// builder above (which is the point — none of them are duplicated here) targets the
-// harness server instead. Safe because `playwright.config.js` sets `fullyParallel:
-// false`: one worker, one test at a time. Restored in `finally`, whatever happens.
+// ⚠ The shared harness hands back its own request context + admin token. This wrapper
+// SWAPS the module-level `ctx`/`adminToken` for the duration, so every fixture builder
+// above (which is the point — none of them are duplicated here) targets the harness
+// server instead. Safe because `playwright.config.js` sets `fullyParallel: false`: one
+// worker, one test at a time. Restored in `finally`, whatever happens. The swap is
+// deliberately NOT part of the shared module — it is this spec's module-level state,
+// and a consumer without such state (email-templates.spec.js) uses the handed-in
+// context directly.
 async function withMailHarness(mailEnv, fn) {
-  const stub = await startMailgunStub()
-  let backend
   const savedCtx = ctx
   const savedToken = adminToken
-  let savedMailSafe
-  let harnessCtx
   try {
-    // Inside a harness block the fixtures talk to a LOCAL throwaway backend whose
-    // `MAILGUN_BASE_URL` is a 127.0.0.1 stub, so an address in a fixture cannot reach
-    // Mailgun even when `BASE_URL` points at staging. Without this the transport tests
-    // would register recipient-less invitations off-local and assert nothing.
-    savedMailSafe = setMailSafeTarget(true)
-    // MAILGUN_BASE_URL always points at the stub — including in the "not configured"
-    // case, which is exactly how a stray send gets caught instead of leaving the host.
-    backend = await startBackend({ MAILGUN_BASE_URL: stub.baseUrl, ...mailEnv })
-    harnessCtx = await playwrightRequest.newContext({ baseURL: backend.baseUrl })
-    ctx = harnessCtx
-    const login = await ctx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
-    expect(login.status(), 'harness admin login (did seed.mjs run?)').toBe(200)
-    adminToken = (await login.json()).token
-
-    await fn({ stub, backend })
+    await withStubbedMailgun(mailEnv, async (harness) => {
+      ctx = harness.ctx
+      adminToken = harness.adminToken
+      await fn(harness)
+    })
   } finally {
     ctx = savedCtx
     adminToken = savedToken
-    if (savedMailSafe !== undefined) setMailSafeTarget(savedMailSafe)
-    await harnessCtx?.dispose()
-    await backend?.stop()
-    await stub.stop()
   }
 }
 
@@ -1189,6 +1078,421 @@ test.describe('Approval + Mailgun — the stubbed transport', () => {
         const bareBody = await bareRes.json()
         expect(bareBody.login_url).toBe('https://podpultovka.biz')
         expect(bareBody.credentials_message).toContain('Prihlás sa na https://podpultovka.biz -')
+      }
+    )
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EM-T1 / 08 §UC-EM-001 — `sendMail()` grows an optional `html` part, and EVERY send
+// (text-only included) carries the per-message tracking-disable flags.
+//
+// The mailer still has ZERO html callers (the template layer is EM-T2's), so the html
+// half cannot be exercised through any route — these tests drive `sendMail()` DIRECTLY:
+// a spawned Node child imports `backend/src/helpers/mailer.js` with the three MAILGUN_*
+// vars pointed at the same local stub the transport tests use. That is not a unit
+// runner sneaking in (01-architecture §Testing & gate): it is the same
+// stub-interception harness, minus the throwaway backend it does not need.
+//
+// What is pinned, and why:
+//   1. `html` present ⇒ ONE request whose multipart body carries BOTH a `text` and an
+//      `html` field. Mailgun assembles the MIME multipart/alternative itself — the
+//      mailer never builds MIME, so the FORM FIELDS are the whole contract.
+//   2. `o:tracking-clicks=no` + `o:tracking-opens=no` on EVERY send. Open-tracking
+//      injects a remote pixel (violating 08's no-remote-images rule) and
+//      click-tracking rewrites hrefs through the sending domain (violating the
+//      canonical-URL rule) — the per-message flags make the outcome deterministic
+//      regardless of the Mailgun account's domain-level settings.
+//   3. ⚠ `html` with an EMPTY/ABSENT `text` degrades to TEXT-ONLY and never throws.
+//      The plain-text part is the deliverability baseline; an html-only message is a
+//      programming error the mailer absorbs. EM-T2's render-inside-try/catch leans on
+//      exactly this contract.
+//   4. The sole current caller (the approve route) keeps its text part byte-identical
+//      and both flags on every send. (EM-T1 shipped it text-only; EM-T2 attached the
+//      branded html part — the one sanctioned assertion flip, marked inline below.)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// `multipartFields()` (the boundary/Content-Disposition parser) and `sendViaMailer()`
+// (the child-process direct drive of the mailer against the stub) are imported from
+// `../mailgun-harness.js` — EM-T1 placed them beside the harness so EM-T2's extraction
+// lifted them as one block.
+
+test.describe('EM-T1 / 08 §UC-EM-001 — sendMail() html part + tracking-disable flags', () => {
+  test('a send WITH html carries BOTH text and html fields, both tracking flags, and the result vocabulary is unchanged', async () => {
+    test.skip(!CAN_SPAWN_MAILER, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    const stub = await startMailgunStub()
+    try {
+      const payload = {
+        to: 'multipart@stub.invalid',
+        subject: 'Tvoj účet v Podpultovke je pripravený',
+        text: 'Prihlás sa — čšžľťďň v plain texte.',
+        html: '<p>Prihlás sa — <strong>čšžľťďň</strong> v html.</p>',
+      }
+      const result = await sendViaMailer(stub, payload)
+      // The result shape is the EXISTING vocabulary — the html part must not grow it.
+      expect(result).toEqual({ sent: true, to: payload.to })
+
+      expect(stub.requests, 'one request — multipart is ONE message, not two').toHaveLength(1)
+      const fields = multipartFields(stub.requests[0])
+      // ⚠ The text part is ALWAYS present and byte-exact — the deliverability baseline.
+      expect(fields.text, 'the text field, byte-exact incl. diacritics').toBe(payload.text)
+      expect(fields.html, 'the html field, byte-exact').toBe(payload.html)
+      expect(fields['o:tracking-clicks'], 'click-tracking disabled per message').toBe('no')
+      expect(fields['o:tracking-opens'], 'open-tracking disabled per message').toBe('no')
+      expect(fields.to).toBe(payload.to)
+      expect(fields.subject).toBe(payload.subject)
+    } finally {
+      await stub.stop()
+    }
+  })
+
+  test('a send WITHOUT html carries a text field and NO html field — and still both tracking flags', async () => {
+    test.skip(!CAN_SPAWN_MAILER, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    const stub = await startMailgunStub()
+    try {
+      const payload = {
+        to: 'textonly@stub.invalid',
+        subject: 'Len text',
+        text: 'Čisto textová správa.',
+      }
+      const result = await sendViaMailer(stub, payload)
+      expect(result).toEqual({ sent: true, to: payload.to })
+
+      expect(stub.requests).toHaveLength(1)
+      const fields = multipartFields(stub.requests[0])
+      expect(fields.text).toBe(payload.text)
+      // Existing text-only callers stay byte-unchanged: no html field at all, not an
+      // empty one.
+      expect('html' in fields, 'no html field on a text-only send').toBe(false)
+      // ⚠ The spec adds the flags to EVERY send, text-only included — open/click
+      // tracking is a property of the account unless disabled per message.
+      expect(fields['o:tracking-clicks']).toBe('no')
+      expect(fields['o:tracking-opens']).toBe('no')
+    } finally {
+      await stub.stop()
+    }
+  })
+
+  test('⚠ html with an EMPTY or ABSENT text degrades to TEXT-ONLY and never throws — the EM-T2 render contract', async () => {
+    test.skip(!CAN_SPAWN_MAILER, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    const stub = await startMailgunStub()
+    try {
+      // Empty-string text: the html field is DROPPED, the send still goes out (rule 3 —
+      // the caller is mid-approval and must not lose the mail over a template bug).
+      const emptyText = await sendViaMailer(stub, {
+        to: 'degrade1@stub.invalid',
+        subject: 'Degradácia',
+        text: '',
+        html: '<p>osirotené html</p>',
+      })
+      expect(emptyText).toEqual({ sent: true, to: 'degrade1@stub.invalid' })
+
+      // Absent text: same degrade, same non-throw.
+      const absentText = await sendViaMailer(stub, {
+        to: 'degrade2@stub.invalid',
+        subject: 'Degradácia',
+        html: '<p>osirotené html</p>',
+      })
+      expect(absentText).toEqual({ sent: true, to: 'degrade2@stub.invalid' })
+
+      expect(stub.requests).toHaveLength(2)
+      for (const call of stub.requests) {
+        const fields = multipartFields(call)
+        expect('html' in fields, 'an html-only message is never sent').toBe(false)
+        expect(fields.text, 'the text field stays first-class (empty, as today)').toBe('')
+        expect(fields['o:tracking-clicks']).toBe('no')
+        expect(fields['o:tracking-opens']).toBe('no')
+      }
+    } finally {
+      await stub.stop()
+    }
+  })
+
+  test('the approve route (the sole caller) sends MULTIPART since EM-T2 — text byte-identical, html attached, both flags', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    test.setTimeout(120_000)
+
+    await withMailHarness(
+      { MAILGUN_API_KEY: FAKE_MAILGUN_KEY, MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN },
+      async ({ stub }) => {
+        const inviter = await makeInviter('emflags')
+        const username = uniqueUsername('emflags')
+        const invitation = await registerInvitation(inviter, { username })
+
+        const res = await approve(invitation.id)
+        expect(res.status()).toBe(201)
+        const body = await res.json()
+        expect(body.email).toEqual({ sent: true, to: invitation.email })
+
+        expect(stub.requests).toHaveLength(1)
+        const fields = multipartFields(stub.requests[0])
+        // ⚠ Byte-identity, now as FIELD equality rather than a substring: the mailed
+        // text IS the returned credentials_message (the clipboard/mail contract).
+        expect(fields.text).toBe(body.credentials_message)
+        // ⚠ THE ONE SANCTIONED FLIP (this comment existed for exactly this): EM-T2
+        // wired `renderEmail()` into this caller, so the credentials mail is now
+        // multipart. The branded part's CONTENT is pinned by the EM-T2 describe below;
+        // here only its presence — this test's job stays "the text part and the flags
+        // are untouched".
+        expect('html' in fields, 'the credentials mail now carries the branded html part').toBe(true)
+        expect(fields['o:tracking-clicks'], 'flags ride the real caller\'s send too').toBe('no')
+        expect(fields['o:tracking-opens']).toBe('no')
+      }
+    )
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EM-T2 / 08 §UC-EM-003 + §UC-EM-005 items 2-3 — the credentials mail on the template
+// layer. The RENDERER's own contract (block vocabulary, escaping incl. attribute
+// positions, the throw cases) is pinned in `email-templates.spec.js` against the same
+// shared harness; this block pins what only the REAL caller can prove:
+//
+//   1. BYTE-IDENTITY END TO END: the stub-captured `text` field `===` the 201's
+//      `credentials_message` — the one assertion that pins the 07 §UC-IA-006/009
+//      clipboard/mail contract across the whole stack (renderer pass-through + route
+//      single-render). The html part is a THIRD presentation of the same variables,
+//      never part of the clipboard.
+//   2. ONE ORIGIN EVERYWHERE: the harness pins PUBLIC_BASE_URL to its own base URL, so
+//      the text part, the html button href and the 201's `login_url` must all carry it
+//      — and no OTHER http(s) host may appear anywhere in the html (the no-remote-
+//      assets pin, which also catches a future CDN link the way
+//      self-hosted-fonts.spec.js does for the browser).
+//   3. A HOSTILE APPLICANT NAME cannot inject markup into an e-mail sent from our
+//      DKIM-verified domain. (Today the name is not composed into the html at all —
+//      §UC-EM-003 rule 3 builds it from username/tempPassword/loginUrl only — so this
+//      is the guard that a future change adding it arrives escaped or not at all.)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test.describe('EM-T2 / 08 §UC-EM-003 — the credentials mail is branded multipart', () => {
+  test('⚠ byte-identical text, the same variables in the html, ONE origin in all three places, zero foreign hosts', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    test.setTimeout(120_000)
+
+    await withMailHarness(
+      { MAILGUN_API_KEY: FAKE_MAILGUN_KEY, MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN },
+      async ({ stub, backend }) => {
+        const inviter = await makeInviter('emhtml')
+        const username = uniqueUsername('emhtml')
+        const invitation = await registerInvitation(inviter, { username })
+
+        const res = await approve(invitation.id)
+        expect(res.status()).toBe(201)
+        const body = await res.json()
+        expect(body.email).toEqual({ sent: true, to: invitation.email })
+
+        expect(stub.requests, 'ONE request — multipart is one message, not two').toHaveLength(1)
+        const fields = multipartFields(stub.requests[0])
+
+        // ── §UC-EM-005 item 2: the clipboard/mail contract, end to end ──
+        expect(fields.text, 'the stub-captured text field IS the 201 credentials_message').toBe(body.credentials_message)
+
+        // ── the html part: shell + the same three variables ──
+        const html = fields.html
+        expect(html, 'the html field exists').toBeTruthy()
+        expect(html).toContain('<!DOCTYPE html>')
+        expect(html).toContain('<html lang="sk">')
+        expect(html, 'the wordmark with PULT in the accent').toMatch(/POD<span style="[^"]*#ff2d87[^"]*">PULT<\/span>OVKA/)
+        expect(html, 'the username, in the kv block').toContain(username)
+        expect(html, 'the temp password — product decision, bounded by must_change_password').toContain(body.tempPassword)
+        expect(html, "the kv labels are the signed sentence's own noun phrases").toContain('Užívateľské meno')
+        expect(html).toContain('Dočasné heslo')
+        expect(html, 'the opening fragment, verbatim').toContain('Ahoj, tvoj účet je pripravený.')
+        expect(html, 'the closing fragment, verbatim').toContain('Po prvom prihlásení si nastav vlastné heslo.')
+
+        // ── §UC-EM-005 item 3: one origin in the text, the href, and login_url ──
+        const origin = backend.baseUrl
+        expect(body.login_url, 'the harness PUBLIC_BASE_URL wins').toBe(origin)
+        expect(fields.text, 'the origin in the text part').toContain(origin)
+        expect(html, 'the origin as the button href — attribute position').toContain(`href="${origin}"`)
+
+        // …and NO other http(s) host anywhere in the html.
+        const foreign = (html.match(/https?:\/\/[^\s"'<>&]+/g) || []).filter((u) => !u.startsWith(origin))
+        expect(foreign, 'every http(s) URL in the html is the button URL').toEqual([])
+        expect(html.match(/https?:\/\//g)?.length, 'non-vacuity: the button URL really is in there').toBeGreaterThan(0)
+
+        // No remote-subresource carriers at all (§UC-EM-002's closed list).
+        for (const marker of ['<img', '<link', '<style', '@import', 'url(', 'src=']) {
+          expect(html, `no ${marker} in mail html`).not.toContain(marker)
+        }
+        expect(html.length, 'far under the ~102 KB Gmail clip').toBeLessThan(100_000)
+
+        // The credentials still work — the html changed presentation, not the account.
+        expect((await loginAs(username, body.tempPassword)).status()).toBe(200)
+      }
+    )
+  })
+
+  test('⚠ a hostile applicant name injects NOTHING into the html — mail from our domain stays markup-clean', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    test.setTimeout(120_000)
+
+    await withMailHarness(
+      { MAILGUN_API_KEY: FAKE_MAILGUN_KEY, MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN },
+      async ({ stub }) => {
+        const inviter = await makeInviter('emevil')
+        const username = uniqueUsername('emevil')
+        // Applicant-supplied, register-validated only for length — markup, an
+        // attribute-breaking quote and an entity all at once.
+        const hostileName = `Zlý <img src=x onerror=alert(1)> "&' ${uniq}`
+        const invitation = await registerInvitation(inviter, { username, name: hostileName })
+        expect(invitation.name, 'the hostile name really is stored').toBe(hostileName)
+
+        const res = await approve(invitation.id)
+        expect(res.status(), 'the approval itself is unaffected').toBe(201)
+        const body = await res.json()
+        expect(body.email).toEqual({ sent: true, to: invitation.email })
+
+        expect(stub.requests).toHaveLength(1)
+        const fields = multipartFields(stub.requests[0])
+        const html = fields.html
+        expect(html, 'the mail is still multipart').toBeTruthy()
+
+        // The security property: no RAW markup from the name, anywhere in the html.
+        expect(html, 'no raw <img — an injected tag would ride our DKIM-verified domain').not.toContain('<img')
+        expect(html, 'no raw <script either').not.toContain('<script')
+        expect(html, 'the name never appears unescaped').not.toContain(hostileName)
+        // §UC-EM-002's carrier list still holds with hostile input in play.
+        expect(html).not.toContain('src=')
+
+        // …and the text part is still exactly the signed sentence (the name is not in
+        // it either — composition, not filtering, is what keeps this clean).
+        expect(fields.text).toBe(body.credentials_message)
+        expect((await loginAs(username, body.tempPassword)).status()).toBe(200)
+      }
+    )
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EM-T3 / 08 §UC-EM-004 — the `PUBLIC_BASE_URL` deployment pin: MECHANISM + BOOT LINE.
+//
+// The literal production value (`https://podpultovka.biz` in `/var/www/gorifi/.env`,
+// and the SAME value in staging's — resolved 2026-08-15, one Mailgun sending domain)
+// CANNOT be e2e'd: it is an operator edit outside the rsync tree, verified per the
+// spec's manual procedure (grep on the server, the boot line in out.log, one real
+// received mail). What CAN be proven is the mechanism the pin rides on, as an A/B:
+//
+//   A. With `PUBLIC_BASE_URL` set, `login_url` in the approve 201 AND the URL inside
+//      BOTH stub-captured mail parts (text + html href) equal the configured value
+//      while the request carries a DIFFERENT allowlisted Origin — the pin IGNORES the
+//      request Origin. This is what stops an approval made from the legacy
+//      gorifi.skolar.sk tab putting that domain into a third party's mail.
+//   B. The same request with `PUBLIC_BASE_URL` unset resolves to that Origin — which
+//      is what makes A non-vacuous (the Origin WOULD have won; the pin is what beat
+//      it), and is the fallback chain the unset boot line claims.
+//
+// Each side also pins its BOOT LINE (`[mail] PUBLIC_BASE_URL=…` / `… unset — …`):
+// per §UC-EM-004 it is the only signal that `--env-file-if-exists` actually delivered
+// the pin — without it a fresh container silently regresses to Origin-derived URLs,
+// the exact failure mode that opened module 08.
+//
+// ⚠ Do NOT patch `resolveLoginUrl()` to serve these — resolved conflict: pin, don't
+// patch. The resolver's own chain (env → allowlisted Origin → brand default) is
+// pinned above in 'the login URL echoed into the e-mail must be an ALLOWLISTED
+// origin'; this block adds only what EM-T3 owns.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// One pinned value + one DIFFERENT allowlisted origin, shared by both halves of the
+// A/B so the only variable between them is whether PUBLIC_BASE_URL is set.
+const EM_T3_PIN = 'https://canonical-pin.test'
+const EM_T3_ORIGIN = 'https://other-allowed.test'
+
+test.describe('EM-T3 / 08 §UC-EM-004 — PUBLIC_BASE_URL pins the login URL and reports at boot', () => {
+  test('⚠ the pin beats a DIFFERENT allowlisted Origin in login_url and BOTH mail parts, and the boot line names it', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    test.setTimeout(120_000)
+
+    await withMailHarness(
+      {
+        MAILGUN_API_KEY: FAKE_MAILGUN_KEY,
+        MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN,
+        // The pin under test — deliberately NOT the harness default (its own base URL),
+        // so equality below cannot be satisfied by the fallback chain by accident.
+        PUBLIC_BASE_URL: EM_T3_PIN,
+        // The Origin the request will carry IS allowlisted — i.e. it would be honoured
+        // by resolveLoginUrl step 2 (test B proves that) — and still must not win here.
+        CORS_ORIGIN: EM_T3_ORIGIN,
+      },
+      async ({ stub, backend }) => {
+        // ── the boot line (§UC-EM-004): printed at import time, so it is already in
+        //    the captured output by the time the health check passed ──
+        expect(backend.logs(), 'the boot line reports the resolved pin')
+          .toContain(`[mail] PUBLIC_BASE_URL=${EM_T3_PIN}`)
+
+        const inviter = await makeInviter('empinbase')
+        const username = uniqueUsername('empinbase')
+        const invitation = await registerInvitation(inviter, { username })
+
+        // The approve request carries the OTHER allowlisted origin.
+        const res = await ctx.post(`/api/invitations/${invitation.id}/approve`, {
+          headers: { 'X-Admin-Token': adminToken, Origin: EM_T3_ORIGIN },
+        })
+        expect(res.status()).toBe(201)
+        const body = await res.json()
+        expect(body.email).toEqual({ sent: true, to: invitation.email })
+
+        // ── the 201: login_url is the pin, and the signed sentence carries it ──
+        expect(body.login_url, 'PUBLIC_BASE_URL wins over the request Origin').toBe(EM_T3_PIN)
+        expect(body.credentials_message).toBe(credentialsMessage(EM_T3_PIN, username, body.tempPassword))
+
+        // ── BOTH stub-captured mail parts carry the pin… ──
+        expect(stub.requests).toHaveLength(1)
+        const fields = multipartFields(stub.requests[0])
+        expect(fields.text, 'the text part is the pinned sentence, byte-identical').toBe(body.credentials_message)
+        expect(fields.text, 'the pin in the text part').toContain(EM_T3_PIN)
+        expect(fields.html, 'the pin as the html button href — attribute position').toContain(`href="${EM_T3_PIN}"`)
+
+        // ── …and the request Origin appears in NEITHER, nor does any other host in
+        //    the html (§UC-EM-005 item 3's no-foreign-hosts sweep, under the pin) ──
+        expect(fields.text, 'the Origin is nowhere in the text part').not.toContain(EM_T3_ORIGIN)
+        expect(fields.html, 'the Origin is nowhere in the html part').not.toContain(EM_T3_ORIGIN)
+        const foreign = (fields.html.match(/https?:\/\/[^\s"'<>&]+/g) || []).filter((u) => !u.startsWith(EM_T3_PIN))
+        expect(foreign, 'no http(s) host other than the pin anywhere in the html').toEqual([])
+        expect(fields.html, 'non-vacuity: the pinned URL really is in the html').toContain(EM_T3_PIN)
+
+        // The credentials still work — the pin changed a URL, not the account.
+        expect((await loginAs(username, body.tempPassword)).status()).toBe(200)
+      }
+    )
+  })
+
+  test('unset ⇒ the boot line says so, and the SAME request resolves to the Origin (the A/B that makes the pin non-vacuous)', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    test.setTimeout(120_000)
+
+    await withMailHarness(
+      {
+        MAILGUN_API_KEY: FAKE_MAILGUN_KEY,
+        MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN,
+        // Everything identical to the test above EXCEPT the pin is absent (the harness
+        // default is its own base URL, so it must be blanked explicitly).
+        PUBLIC_BASE_URL: '',
+        CORS_ORIGIN: EM_T3_ORIGIN,
+      },
+      async ({ stub, backend }) => {
+        // ── the unset boot line, verbatim per §UC-EM-004 ──
+        expect(backend.logs(), 'the boot line admits the pin is not in effect')
+          .toContain('[mail] PUBLIC_BASE_URL unset — login URLs fall back to request Origin / brand default')
+        expect(backend.logs(), 'and no line claims a pin').not.toContain('[mail] PUBLIC_BASE_URL=')
+
+        const inviter = await makeInviter('emnobase')
+        const username = uniqueUsername('emnobase')
+        const invitation = await registerInvitation(inviter, { username })
+
+        const res = await ctx.post(`/api/invitations/${invitation.id}/approve`, {
+          headers: { 'X-Admin-Token': adminToken, Origin: EM_T3_ORIGIN },
+        })
+        expect(res.status()).toBe(201)
+        const body = await res.json()
+
+        // The Origin WOULD have won — which is what the pin beat in the test above.
+        expect(body.login_url, 'unset ⇒ the allowlisted Origin resolves').toBe(EM_T3_ORIGIN)
+        expect(body.credentials_message).toBe(credentialsMessage(EM_T3_ORIGIN, username, body.tempPassword))
+        expect(stub.requests).toHaveLength(1)
+        const fields = multipartFields(stub.requests[0])
+        expect(fields.text, 'the Origin in the mailed text part').toContain(EM_T3_ORIGIN)
+        expect(fields.html, 'the Origin as the mailed html href').toContain(`href="${EM_T3_ORIGIN}"`)
       }
     )
   })

@@ -1,4 +1,5 @@
 import db from '../db/schema.js';
+import { bindValue } from './bind-value.js';
 
 // Stock-limit accounting (`products.stock_limit_g`), shared by every caller that
 // has to answer "how many grams of this product are already taken?".
@@ -71,7 +72,15 @@ export function gramsByProductFromItems(items) {
     const quantity = safeQuantity(item?.quantity);
     const perUnit = variantGrams(item?.variant);
     if (quantity <= 0 || perUnit <= 0) continue;
-    const productId = Number(item.product_id);
+    // ⚠ FUP-T15 — `Number(item.product_id)` is a `ToPrimitive` call, so an object
+    // with a NON-CALLABLE `toString` THROWS here ("Cannot convert object to
+    // primitive value") rather than yielding NaN. `{}` / `true` / an array are all
+    // safely NaN and skipped by the line below; only that one shape crashed, and
+    // it did so on the friend cart PUT — a 500 + full stack for a malformed body,
+    // reached whenever the same line also carried a valid variant and quantity.
+    // (`item?.` for the same reason as `quantity`/`variant` above: a `null`
+    // element must be skipped, not dereferenced.)
+    const productId = Number(bindValue(item?.product_id));
     if (!Number.isFinite(productId)) continue;
     const lineGrams = perUnit * quantity;
     if (!Number.isFinite(lineGrams)) continue;

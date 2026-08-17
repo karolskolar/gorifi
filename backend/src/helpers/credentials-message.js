@@ -38,6 +38,30 @@ function httpOrigin(value) {
   }
 }
 
+// ⚠ ONE LINE AT BOOT reporting how `PUBLIC_BASE_URL` resolved (08 §UC-EM-004) — the
+// `mailer.js` boot-line precedent: env plumbed through `--env-file-if-exists` has no
+// other signal, so without this a fresh container silently regresses to Origin-derived
+// login URLs and nothing surfaces until a recipient reports the wrong domain again —
+// the exact failure mode that opened module 08. Printed at import time so it lands in
+// `/var/log/gorifi/out.log` next to the mailer's own line. The value is public config
+// (the same URL every outbound mail prints); nothing sensitive is logged.
+//
+// Three cases, not two: a SET-BUT-INVALID value (e.g. `podpultovka.biz` without the
+// scheme) silently falls through to the Origin branch in `resolveLoginUrl()`, which is
+// precisely the regression the boot line exists to surface — reporting it as "set"
+// would claim a pin that is not in effect.
+{
+  const raw = String(process.env.PUBLIC_BASE_URL || '').trim();
+  const pinned = httpOrigin(raw);
+  if (pinned) {
+    console.log(`[mail] PUBLIC_BASE_URL=${pinned}`);
+  } else if (raw) {
+    console.log(`[mail] PUBLIC_BASE_URL invalid (${raw}) — not an http(s) URL; login URLs fall back to request Origin / brand default`);
+  } else {
+    console.log('[mail] PUBLIC_BASE_URL unset — login URLs fall back to request Origin / brand default');
+  }
+}
+
 // The login URL that goes into the message. The dialog used to build this from
 // `window.location.origin`; now that the server renders the sentence it has to derive
 // the same value:

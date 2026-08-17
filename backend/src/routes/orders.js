@@ -6,6 +6,7 @@ import { packOrder, unpackOrder, packingItemStats } from '../helpers/packing.js'
 import { gramsByProductFromItems, stockViolations } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup } from '../helpers/pricing.js';
 import { cycleSubOrdersByHost } from '../helpers/guest-orders.js';
+import { bindValue } from '../helpers/bind-value.js';
 
 const router = Router();
 
@@ -177,17 +178,43 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
     let total = 0;
 
     for (const item of orderItems) {
-      if (item.quantity <= 0) continue;
+      // ⚠ FUP-T15 — every one of the three client values on this line reached a
+      // bind unchecked, and the route creates the order row BEFORE it reads
+      // `items` (see the get-or-create above), so the resulting 500 left an empty
+      // `draft` order committed — a HALF-WRITE the admin then saw in the cycle's
+      // order list as a friend who "ordered nothing".
+      //
+      // `item?.` (not `item.`) because a literal `null` element was a TypeError on
+      // `.quantity` — same body, same route, same 500 + stack. `guest.js`'s
+      // `priceRequestedItems` already reads its items this way; the two disagreed.
+      //
+      // `variant` needs no guard: `basePriceForVariant` refuses anything that is
+      // not a known STRING (helpers/pricing.js), so the line is dropped before the
+      // insert — proven, not assumed, by the variant shapes in the shape matrix.
+      //
+      // ⚠ ORDER MATTERS: the sanitizing must come BEFORE the `<= 0` test, not
+      // after. `<=` on an object is a ToPrimitive call, and `{"quantity":{"toString":1}}`
+      // throws there ("Cannot convert object to primitive value") — the FUP-T12
+      // review's lesson, one line earlier than the bind everyone was looking at.
+      // (`{}` and `true` are merely NaN/1 in that comparison, so the shape matrix
+      // needs `{toString:1}` to see it at all.)
+      const quantity = bindValue(item?.quantity);
+      if (quantity === undefined) continue;
+      if (quantity <= 0) continue;
+
+      // Unbindable ⇒ `undefined` ⇒ binds as NULL ⇒ matches no product ⇒ the line is
+      // dropped, exactly as an unknown product id already was.
+      const productId = bindValue(item?.product_id);
 
       // Get product and base price
-      const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id);
+      const product = db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
       if (!product) continue;
 
       // An UNKNOWN variant is dropped, not silently priced at the 250g price:
       // that old fallback let a client buy real goods under a made-up variant
       // that helpers/stock.js scores at 0 g, walking straight past
       // products.stock_limit_g. ('unit' stays priceable — see helpers/pricing.js.)
-      const basePrice = basePriceForVariant(product, item.variant);
+      const basePrice = basePriceForVariant(product, item?.variant);
       if (!basePrice) continue;
 
       // Apply markup to get final price (round to 2 decimal places)
@@ -196,9 +223,9 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
       db.prepare(`
         INSERT INTO order_items (order_id, product_id, variant, quantity, price)
         VALUES (?, ?, ?, ?, ?)
-      `).run(order.id, item.product_id, item.variant, item.quantity, price);
+      `).run(order.id, productId, item.variant, quantity, price);
 
-      total += price * item.quantity;
+      total += price * quantity;
     }
 
     // Update order total
@@ -303,7 +330,10 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
     if (!cycle.parcel_enabled) {
       return res.status(400).json({ error: 'Doručenie Packetou nie je pre tento cyklus dostupné' });
     }
-    if (!packeta_address?.trim()) {
+    // ⚠ FUP-T12: the type guard is folded into the route's EXISTING required rule —
+    // same status, same message. `?.` only covers null/undefined, so a number or an
+    // object reached `.trim()` and threw a TypeError ⇒ 500 plus a stack in the log.
+    if (typeof packeta_address !== 'string' || !packeta_address.trim()) {
       return res.status(400).json({ error: 'Adresa výdajného miesta je povinná' });
     }
     // Submit with parcel delivery — clear pickup fields
@@ -315,8 +345,14 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
     `).run(cycle.parcel_fee || 0, packeta_address.trim(), order.id);
   } else {
     // Standard pickup — clear parcel fields
+    //
+    // ⚠ FUP-T15 — both fields below were bound unchecked (500 + ~1.1 KB of stack).
+    // The presence test stays on the RAW value so a present-but-unbindable id still
+    // enters the lookup and is refused with this route's own 400; mapping it to
+    // "absent" would submit the order with no pickup location and a 200.
+    const pickupLocationId = bindValue(pickup_location_id);
     if (pickup_location_id !== undefined && pickup_location_id !== null) {
-      const location = db.prepare('SELECT * FROM pickup_locations WHERE id = ? AND active = 1').get(pickup_location_id);
+      const location = db.prepare('SELECT * FROM pickup_locations WHERE id = ? AND active = 1').get(pickupLocationId);
       if (!location) {
         return res.status(400).json({ error: 'Vybrané miesto vyzdvihnutia neexistuje alebo nie je aktívne' });
       }
@@ -328,8 +364,13 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
         delivery_fee = 0, packeta_address = NULL
       WHERE id = ?
     `).run(
-      pickup_location_id || null,
-      pickup_location_id ? null : (pickup_location_note || null),
+      // `pickupLocationId` is already proved bindable by the gate above (an
+      // unbindable one returned 400). The NOTE has no rule of its own, so an
+      // unbindable one is treated as ABSENT — which on this UPDATE means the same
+      // NULL an absent note already writes, byte for byte. It is not "coercion on
+      // an update": this statement writes the column on every submit regardless.
+      pickupLocationId || null,
+      pickupLocationId ? null : (bindValue(pickup_location_note) || null),
       order.id
     );
   }

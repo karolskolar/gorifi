@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import multer from 'multer';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync } from 'fs';
@@ -31,6 +32,7 @@ import onboardingRouter from './routes/onboarding.js';
 import guestLinksRouter from './routes/guest-links.js';
 import guestOrdersRouter from './routes/guest-orders.js';
 import guestRouter from './routes/guest.js';
+import magicLinkRouter from './routes/magic-link.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -86,6 +88,10 @@ app.use('/api/guest-orders', guestOrdersRouter);
 // Public guest ordering — the URL token is the whole credential, so this mount
 // stays bare (no admin, no friend auth). Every route inside is abuse-rate-limited.
 app.use('/api/guest', guestRouter);
+// Magic-link recovery (09 §UC-ML-003). ⚠ BARE ON PURPOSE — this is the path for
+// someone who cannot log in, so it can carry neither admin nor friend auth. Its own
+// rate-limit bucket (`magicLinkLimiter`) is applied per route inside the router.
+app.use('/api/magic-link', magicLinkRouter);
 
 // Fully-admin routers: every route is privileged, so gate the whole mount.
 app.use('/api/bakery-products', requireAdmin, bakeryProductsRouter);
@@ -131,7 +137,92 @@ app.get(/^\/(?!api).*/, (req, res) => {
 });
 
 // Error handler
+//
+// ⚠ The 4-arg signature is what makes Express treat this as an ERROR handler —
+// `next` is unused on purpose, do not "clean it up".
+//
+// `express.json` is mounted above every router, so a body it refuses never reaches
+// a route: unparsable JSON, a scalar body (`null`, `"hi"` — its default `strict`
+// mode accepts only an object or an array), an oversized payload, an unsupported
+// charset. All of those are CLIENT mistakes, and this handler used to report them
+// as 500 on every JSON endpoint in the app (07 §Follow-ups item 1 / FUP-T3).
+//
+// Translation rule: PRESERVE a 4xx the error already carries, rather than forcing
+// every client error to 400. body-parser has already classified the failure and
+// picked the right status — 400 `entity.parse.failed`, 413 `entity.too.large`,
+// 415 `encoding.unsupported` / `charset.unsupported` — and 413/415 are strictly
+// more actionable for the caller than a blanket "bad request". Keying on the
+// status range rather than on a `type` allowlist is also the safer generalisation
+// here: `err.status` is only ever set by middleware that has decided the fault is
+// the caller's, and no route or helper in this codebase throws with a status (every
+// `throw` is a bare `Error`), so nothing that is genuinely a server fault can
+// reach the 4xx branch. Anything without a 4xx status keeps its 500 — including
+// the CORS rejection above, which rejects with a bare `Error`.
+const CLIENT_ERROR_MESSAGES = {
+  413: 'Poziadavka je prilis velka',
+  415: 'Nepodporovany format poziadavky',
+};
+
+// FUP-T6: multer's `MulterError` is a client-error source the rule above cannot see.
+//
+// ⚠ It was not the LAST one, and the rest is deliberately NOT solved in this file.
+// multer also raises PLAIN `Error`s for malformed or aborted multipart, which carry
+// no `code` either and so also took the 500 branch WITH a stack log. Those cannot be
+// classified here: a bare `Error` with no status is exactly what a genuine server
+// fault looks like at this point (the CORS rejection above is one), so the missing
+// information — WHICH middleware failed — only exists at the call site. FUP-T7 tags
+// them in `helpers/multipart.js`, the wrapper every `uploadSingle(...)` route goes
+// through, and they arrive here already carrying a 400. See that file for the rule.
+//
+// A `MulterError` carries `code` and `field` but NO `status`, so an upload past
+// the 5 MB cap in `routes/products.js` / `routes/bakery-products.js` fell through
+// to the 500 branch — a pure client mistake answered as a server fault, and (worse)
+// a remotely triggerable full stack in the log on every hit, which is exactly what
+// the 4xx branch below exists to avoid.
+//
+// The translation lives HERE rather than per-route on purpose: multer is per-route
+// middleware but its errors are delivered with `next(err)`, and neither upload router
+// installs an error handler of its own, so every one of the five `uploadSingle(...)`
+// routes across the two routers already arrives at this handler (verified live — the
+// pre-fix 500s were logged from this branch). One mapping therefore covers all of
+// them, and future upload routes inherit it; five per-route copies would drift, and
+// each would have to re-state the two decisions documented above.
+//
+// Giving the error a status here — rather than answering it separately — is what
+// makes it flow through the 4xx branch, so it inherits BOTH of those decisions for
+// free: no stack log, and `err.message` never echoed (multer's text is terse, but
+// `LIMIT_UNEXPECTED_FILE`'s quotes the client-supplied field name back at it).
+//
+// LIMIT_FILE_SIZE is the only "too large" code; every other code (LIMIT_UNEXPECTED_FILE,
+// LIMIT_FILE_COUNT, LIMIT_PART_COUNT, LIMIT_FIELD_KEY/VALUE/COUNT) describes a
+// malformed multipart request, which is a plain 400.
+const MULTER_STATUS_BY_CODE = { LIMIT_FILE_SIZE: 413 };
+
+function multerStatus(err) {
+  if (!(err instanceof multer.MulterError)) return null;
+  return MULTER_STATUS_BY_CODE[err.code] || 400;
+}
+
 app.use((err, req, res, next) => {
+  const carried = err && (err.status != null ? err.status : err.statusCode);
+  const status = Number(carried != null ? carried : multerStatus(err));
+  const isClientError = Number.isInteger(status) && status >= 400 && status < 500;
+
+  if (isClientError) {
+    // ⚠ Deliberately NOT `console.error(err.stack)`. This branch is reachable by
+    // any unauthenticated client with one malformed request, so a full stack per
+    // hit is a free remote log-flood on a box whose logs are not rotated per
+    // request volume. One compact line keeps what is actually diagnostic (which
+    // endpoint, which kind of bad body) at a bounded cost.
+    // `err.code` is the multer branch's diagnostic (LIMIT_FILE_SIZE, …) — a fixed
+    // enum from the library, never client text. `err.field` is client-supplied and
+    // deliberately not logged.
+    console.warn(`Chybna poziadavka: ${req.method} ${req.originalUrl} (${err.type || err.code || 'client-error'}, ${status})`);
+    // Never echo `err.message`: body-parser's text quotes the offending input and
+    // names a byte offset. Slovak and unaccented, matching the 500 below.
+    return res.status(status).json({ error: CLIENT_ERROR_MESSAGES[status] || 'Neplatna poziadavka' });
+  }
+
   console.error(err.stack);
   res.status(500).json({ error: 'Nieco sa pokazilo' });
 });

@@ -16,8 +16,12 @@
 // row added one to the wrong side.
 // =============================================================================
 
-import { ref, computed, onMounted, watchEffect } from 'vue'
+import { ref, computed, onMounted, watch, watchEffect, nextTick } from 'vue'
 import api, { clearFriendsPassword, getFriendsPassword, setFriendsAuthInfo, getFriendsAuthInfo, setFriendsToken, getFriendsToken } from '../api'
+// 10 §UC-GA-012 — the ONE home for GIS script loading. It resolves `null` when the
+// client id is falsy, so no call-site guard is needed for the unconfigured case; the
+// `v-if` on the markup is about not rendering an empty container, not about safety.
+import { loadGis } from '../lib/gis'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -47,7 +51,14 @@ const friends = ref([])
 // --- Login form -------------------------------------------------------------
 const selectedFriendId = ref('')
 const password = ref('')
-const rememberMe = ref(true)
+// ⚠ 09 §UC-ML-007 / resolved conflict #2 — DEFAULT OFF, and the default is the whole
+// point. "Zapamätať si ma na tomto zariadení" no longer means "persist to
+// localStorage" (that now happens either way, resolved conflict #1); it means "keep me
+// signed in for 60 days instead of 24 hours". The 2026-08-14 product decision names 60
+// days the OPT-IN, so a pre-checked box would hand every friend the longest session
+// the app can issue — including on a shared office machine — and make the decision a
+// dead letter. Sent to the server as `remember` by BOTH login paths below.
+const rememberMe = ref(false)
 const authError = ref('')
 const loginTab = ref('shared') // 'shared' | 'personal'
 const loginUsername = ref('')
@@ -61,6 +72,20 @@ const loginPassword = ref('')
 // (RD-FL-6). Same for the three credential fields above it.
 const showLoginPassword = ref(false)
 
+// --- Magic-link recovery (09 §UC-ML-006) -------------------------------------
+//
+// MODERN CARD ONLY. In legacy/transition the recovery UI does not exist at all
+// (confirmed decision) — see the `authMode === 'modern'` gate on the markup.
+//
+// Three states, one card: 'off' renders the login form, 'form' the one-field
+// request, 'sent' the neutral success sentence. No route change — §UC-ML-006 is
+// explicit that only the CARD'S CONTENT swaps, so `loginUsername`/`loginPassword`
+// stay in their refs and come back untouched via "Späť na prihlásenie".
+const recoveryView = ref('off') // 'off' | 'form' | 'sent'
+const recoveryIdentifier = ref('')
+const recoveryError = ref('')
+const recoverySending = ref(false)
+
 // --- Page state -------------------------------------------------------------
 const loading = ref(true)
 // ⚠ Initial-load failure only. Its sole writer is `loadInitialData`'s outer
@@ -70,6 +95,21 @@ const error = ref('')
 
 // Server auth mode — configuration, not session state.
 const authMode = ref('legacy') // 'legacy' | 'transition' | 'modern'
+
+// --- Google sign-in (10 §UC-GA-005) -----------------------------------------
+//
+// ⚠ SERVED config, not a build-time var (resolved decision #4): `deploy.sh` builds the
+// frontend locally, so a `VITE_*` value would live on the operator's machine and fork
+// the staging/prod artifacts. It arrives on the SAME public `GET /friends/auth-mode`
+// response `authMode` does — one request, two pieces of configuration — and `null`
+// means "this deployment has no Google", which is what hides every control.
+//
+// Configuration, not session state, exactly like `authMode` beside it.
+const googleClientId = ref(null)
+// The mount point GIS renders its own cross-origin iframe button into. Google's brand
+// guidelines forbid restyling that button, so this container stays a bare div — the
+// one accepted visual divergence from the Podpultovka language on this card.
+const googleButtonEl = ref(null)
 
 // ⚠ WHAT THE HANDSHAKE PRODUCED, handed to the session view once at mount:
 //   · `cycles`  — the payload of `GET /friends/cycles`, which is ALSO the
@@ -134,9 +174,15 @@ async function loadInitialData() {
     // failing friends-list call can never poison it back to the 'legacy'
     // default (that regression showed anonymous users an empty name dropdown).
     try {
-      authMode.value = (await api.getAuthMode()).authMode
+      const mode = await api.getAuthMode()
+      authMode.value = mode.authMode
+      // ⚠ `|| null`, not the raw value: 10 §UC-GA-002 pins `null` as the "feature is
+      // off" value, and a server predating this module answers with the key ABSENT.
+      // Normalising here means every consumer below tests one thing.
+      googleClientId.value = mode.googleClientId || null
     } catch {
-      // keep the 'legacy' default
+      // keep the 'legacy' default (and no Google — the safe direction: a failed
+      // config probe must never leave a Google control on screen with no id behind it)
     }
 
     // The name dropdown only exists in legacy/transition mode. Modern login
@@ -173,7 +219,24 @@ async function loadInitialData() {
             friendUid: parsed.friendUid
           })
           try {
-            await beginSession()
+            // ⚠ 09 §UC-ML-005 / resolved conflict #4 — the ONLY writer of this flag
+            // is `MagicLogin.vue`, which reaches the portal by a route change rather
+            // than through `authenticate*()`, so the stored payload is the only
+            // channel it has. It routes into 03 §UC-FL-012's EXISTING gate — no new
+            // gate code — exactly as a password login's `mustChangePassword` does.
+            // Absent on every payload written before ML-T3 ⇒ `false` ⇒ unchanged.
+            //
+            // ⚠ 09 §UC-ML-008 — the two provenance flags ride in on the SAME channel
+            // and for the same reason: `MagicLogin.vue` reaches the portal by a route
+            // change, so the stored payload is the only way a redemption can tell this
+            // component anything. They are read HERE (a restore) rather than in
+            // `authenticate*()` because a magic-link session can only ever arrive this
+            // way — every password path writes a payload without them.
+            await beginSession({
+              mustChangePassword: !!parsed.mustChangePassword,
+              viaMagicLink: !!parsed.viaMagicLink,
+              magicPromptDismissed: !!parsed.magicPromptDismissed,
+            })
             hydrateCurrentFriend(parsed.friendId)
             return
           } catch {
@@ -191,7 +254,20 @@ async function loadInitialData() {
         authState.value = 'login'
       }
     } else {
-      // Check for in-memory auth (when "remember me" was not checked)
+      // ⚠ 09 §UC-ML-007 (ML-T4) — this branch USED to be the restore half of the
+      // in-memory-only session an unticked "remember me" produced. That writer is
+      // gone: every login path (both branches of `authenticate*` below, MagicLogin,
+      // OnboardingPage) now writes `gorifi_friend_auth` unconditionally, so no
+      // SINGLE-TAB flow leaves an in-memory token with an empty localStorage.
+      // ⚠ Not unreachable in general: `switchUser()` is client-only (no server
+      // logout), so a SECOND tab logging out clears localStorage while this tab still
+      // holds `friendsToken` in api.js module scope — an in-SPA remount here then
+      // lands exactly on this branch. Harmless (the token is valid server-side either
+      // way, and logout never was global), but the branch is live. It is
+      // kept as a defensive reader ONLY — deliberately not deleted in this row, which
+      // is scoped to the write side and touches the six-leak session-boundary surface.
+      // If a future row removes it, `FriendOrder.vue`'s twin (its `getFriendsAuthInfo`
+      // fallback) goes with it, or the two disagree about what a session is.
       const memoryToken = getFriendsToken()
       const memoryPassword = getFriendsPassword()
       const memoryAuthInfo = getFriendsAuthInfo()
@@ -231,7 +307,52 @@ async function loadInitialData() {
  * `authState` flips only after it resolves, so the authenticated shell never
  * flashes on an expired token — the behaviour this file has always had.
  */
-async function beginSession({ mustChangePassword = false, currentPassword = '', needsCredentialSetup = false } = {}) {
+async function beginSession({
+  mustChangePassword = false,
+  currentPassword = '',
+  needsCredentialSetup = false,
+  // 09 §UC-ML-008: the provenance of THIS session and whether its prompt was already
+  // dismissed. Default false, so every non-magic entry point is unchanged.
+  viaMagicLink = false,
+  magicPromptDismissed = false,
+  // ⚠⚠ 10 §UC-GA-006 — NO DEFAULT VALUE, and that is the whole mechanism.
+  //
+  // The link prompt's trigger is the LITERAL `googleLinked === false &&
+  // googlePromptDismissed === false`, so "this handshake did not say" (`undefined`)
+  // has to be distinguishable from "this handshake said no". Only ONE caller passes
+  // BOTH — `authenticatePersonal()`, the non-Google modern login §UC-GA-006 names.
+  // Every other entry into a session leaves `googlePromptDismissed` absent on purpose:
+  //
+  //   · the two RESTORE paths — a restore is not a login (§UC-GA-006, verbatim);
+  //   · the shared-password branch of `authenticate()` — legacy/transition, and
+  //     `POST /friends/auth` publishes no Google state on that branch at all;
+  //   · a magic-link session, which arrives through the restore path because
+  //     `POST /magic-link/redeem` deliberately does not publish the two fields
+  //     (recorded at `magic-link.js:378`).
+  //
+  // ⚠ ONE EXCEPTION, added by GA-T7: `onGoogleCredential()` passes
+  // `googleLinked: true` — and ONLY that field. A Google login is definitionally
+  // linked (`friends.js:372` returns `googleLinked: true` at the top level), and
+  // §UC-GA-007's profile section needs to know it WITHOUT waiting on
+  // `hydrateCurrentFriend()`, which is fire-and-forget and documented as allowed to
+  // fail silently. Before this, a hydrate failure on that one login path offered the
+  // friend a GIS button to link the account they had just logged in WITH, hid the
+  // unlink for the rest of the session, and — since `hasCredentials` IS seeded
+  // immediately — showed a credential-less Google friend the "no password" warning,
+  // which is false for them: they can still log in with Google.
+  //
+  // ⚠ The prompt does NOT move, and this is the line the next reader will worry
+  // about: the trigger needs `googleLinked === false`, and `true !== false`, so
+  // §UC-GA-006's prompt stays shut on this path exactly as it did when the field was
+  // absent — belt and braces, since `googlePromptDismissed` is still `undefined` here
+  // and that term fails on its own too.
+  //
+  // ⚠ Writing `googleLinked = false` as a DEFAULT would make `undefined` unreachable
+  // and fire the prompt on every path above — including for a friend who IS already
+  // linked, stacked on ML-T6's magic prompt. Do not "tidy" these two into defaults.
+  googleLinked,
+  googlePromptDismissed,
+} = {}) {
   const cycles = await api.getFriendsCycles(selectedFriendId.value)
 
   // ⚠ Fetched HERE rather than on the child's mount, and the ordering is the
@@ -251,17 +372,57 @@ async function beginSession({ mustChangePassword = false, currentPassword = '', 
   // ⚠ Bumped HERE, one statement before the payload it keys. Every fresh
   // handshake re-creates the session view; see `sessionSeq`'s declaration.
   sessionSeq.value++
-  entry.value = { cycles, subscriptions, mustChangePassword, currentPassword, needsCredentialSetup }
+  entry.value = {
+    cycles, subscriptions, mustChangePassword, currentPassword, needsCredentialSetup,
+    viaMagicLink, magicPromptDismissed,
+    googleLinked, googlePromptDismissed,
+  }
   authState.value = 'authenticated'
+
+  // ⚠ 10 §UC-GA-006 — `google.accounts.id.initialize()` registers ONE GLOBAL callback,
+  // and the session view registers its OWN when the friend accepts the link prompt.
+  // Without this reset, `renderGoogleButton()` after a logout would skip `initialize`
+  // (the flag is still true) and Google's credential would be delivered to a callback
+  // belonging to an UNMOUNTED component — a login button that renders perfectly and
+  // silently does nothing. Re-registering is documented as harmless above; the one
+  // shipped assertion that counts initialize calls (the recovery round trip) never
+  // leaves the login card, so it is unaffected.
+  googleInitialised = false
+
   window.scrollTo(0, 0)
 }
 
 // Fill in the fields the login/restore payloads don't carry (packeta_address,
-// username, hasCredentials, display_name) from the owner-scoped profile
-// endpoint. Fire-and-forget: the portal works without it.
+// phone, email, username, hasCredentials) from the owner-scoped profile endpoint.
+// Fire-and-forget: the portal works without it, and no caller may block a login
+// on it.
+//
+// ⚠ FUP-T20: `display_name` is NO LONGER among them, and must never come back.
+// It is the admin-only Poznámka (11 §UC-FC-001), and `GET /friends/:id/profile`
+// now strips it — nothing on a friend surface may render or merge it.
+//
+// ⚠ Called from all FOUR entries into a session — both restore paths and, since
+// UC-FC-009, both fresh-login paths. `POST /friends/auth` (either mode) carries
+// no phone/email, so without the login-path calls the profile modal's Mobil and
+// Email render EMPTY for a whole freshly-logged-in session even when both are on
+// file — directly under the hint that says a missing e-mail costs the friend
+// their recovery link.
+//
+// ⚠ SESSION-BOUNDARY GUARD. Every call site is fire-and-forget, so a slow
+// response can land after a logout or after a DIFFERENT friend has logged in,
+// and the merge below would spread friend A's contact data onto friend B's
+// object — the six-leak class this file's `sessionSeq` exists for. `sessionSeq`
+// is bumped exactly once per handshake, one statement before `entry` (see its
+// declaration), so pinning it at call time — every call site is already past
+// `await beginSession()` — plus re-checking the id makes a late response a
+// no-op instead of a leak. Logout nulls `currentFriend`, which the id check
+// covers too.
 async function hydrateCurrentFriend(friendId) {
+  const seq = sessionSeq.value
   try {
     const full = await api.getFriendProfile(friendId)
+    if (seq !== sessionSeq.value) return
+    if (String(currentFriend.value?.id ?? '') !== String(friendId)) return
     currentFriend.value = { ...currentFriend.value, ...full }
   } catch {
     // non-fatal — keep the minimal object
@@ -279,7 +440,7 @@ async function authenticate(silent = false) {
 
   try {
     // Validate password with server
-    const result = await api.authenticateFriends(password.value, selectedFriendId.value)
+    const result = await api.authenticateFriends(password.value, selectedFriendId.value, rememberMe.value)
 
     // Token-only auth: never store or replay the plaintext password (SEC-A1)
     if (result.token) {
@@ -299,8 +460,17 @@ async function authenticate(silent = false) {
       friendUid: friendData.uid
     })
 
-    // Save to localStorage if remember me is checked (token + expiry only)
-    if (rememberMe.value && result.token) {
+    // ⚠ 09 §UC-ML-007 / resolved conflict #1 — written on EVERY successful login, NOT
+    // only when the box is ticked (01-architecture, verbatim: "the TTL, not the
+    // storage, is the mechanism"). The in-memory-only session an unticked box used to
+    // produce is retired: it did not survive a reload, so an unremembered friend was
+    // logged out by a refresh rather than by the 24 h horizon that is supposed to be
+    // the mechanism. What the checkbox moves now is `result.expiresAt` — 24 h or 60 d,
+    // decided server-side from the `remember` flag sent above — and the restore-time
+    // `expiresAt` check (03 §UC-FL-001) is what enforces it on this device.
+    // ⚠ The five keys below are the PINNED shape; three other e2e suites write this
+    // object directly. Do not reorder, rename or drop one.
+    if (result.token) {
       const storageData = {
         friendId: friendData.id,
         friendName: friendData.name,
@@ -320,6 +490,11 @@ async function authenticate(silent = false) {
       mustChangePassword: !!result.mustChangePassword,
       currentPassword: result.mustChangePassword ? password.value : '',
     })
+
+    // UC-FC-009: the auth payload carries no phone/email — hydrate them for THIS
+    // session. Fire-and-forget, exactly like the two restore call sites; a
+    // failure here must never turn a successful login into an error.
+    hydrateCurrentFriend(friendData.id)
   } catch (e) {
     if (!silent) {
       authError.value = e.message
@@ -344,7 +519,11 @@ async function authenticatePersonal() {
   loading.value = true
 
   try {
-    const result = await api.authenticateFriendsPersonal(loginUsername.value.toLowerCase(), loginPassword.value)
+    const result = await api.authenticateFriendsPersonal(
+      loginUsername.value.toLowerCase(),
+      loginPassword.value,
+      rememberMe.value
+    )
 
     // Set token for subsequent requests
     setFriendsToken(result.token)
@@ -360,25 +539,247 @@ async function authenticatePersonal() {
       friendUid: result.friend.uid
     })
 
-    if (rememberMe.value) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        friendId: result.friend.id,
-        friendName: result.friend.name,
-        friendUid: result.friend.uid,
-        token: result.token,
-        expiresAt: result.expiresAt
-      }))
-    }
+    // 09 §UC-ML-007 / resolved conflict #1 — same rule as the shared-password branch
+    // above: stored unconditionally, the pinned five keys, and the horizon in
+    // `result.expiresAt` is what the checkbox actually bought.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      friendId: result.friend.id,
+      friendName: result.friend.name,
+      friendUid: result.friend.uid,
+      token: result.token,
+      expiresAt: result.expiresAt
+    }))
 
     await beginSession({
       // Admin reset this friend's password → force them to set a new one now.
       mustChangePassword: !!result.mustChangePassword,
       currentPassword: result.mustChangePassword ? loginPassword.value : '',
+      // ⚠ 10 §UC-GA-006 — THE ONLY call site that forwards these, because this is the
+      // only "successful non-Google modern login" there is. Passed THROUGH, not
+      // normalised: `!!result.googleLinked` would turn a server that never sent the
+      // field (a pre-GA-T4 backend) into a definite `false` and open the prompt on it.
+      googleLinked: result.googleLinked,
+      googlePromptDismissed: result.googlePromptDismissed,
     })
+
+    // UC-FC-009: same as the shared-password path above — `/friends/auth`
+    // personal login returns no phone/email either.
+    hydrateCurrentFriend(result.friend.id)
   } catch (e) {
     authError.value = e.message
   } finally {
     loading.value = false
+  }
+}
+
+// --- Google sign-in (10 §UC-GA-005) -----------------------------------------
+
+// The button renders on the MODERN card only, and only when the deployment has a
+// client id (resolved decision #2 + §UC-GA-002). In legacy/transition mode and on an
+// unconfigured deployment the card must be byte-identical to what it was before this
+// row — which is what `v-if` on this one computed buys.
+//
+// `recoveryView === 'off'` is not a Google rule: the card has three contents
+// (09 §UC-ML-006) and only one of them is a login form. A GIS button under the
+// "we sent you a link" sentence would be offering a second way in to somebody who is
+// mid-way through a first.
+const showGoogleButton = computed(() =>
+  authState.value === 'login' &&
+  authMode.value === 'modern' &&
+  recoveryView.value === 'off' &&
+  !!googleClientId.value
+)
+
+// ⚠ Per-INSTANCE, and that is correct here — unlike the ML-T3 hazard, where a
+// `<script setup>` const only LOOKED module-scope and a single-shot guard silently ran
+// twice. `google.accounts.id.initialize()` registers ONE global callback; re-calling it
+// on a re-render would re-register the same handler, which is harmless but pointless.
+// The genuinely global part (one script tag, one in-flight promise) lives in
+// `lib/gis.js`, which is a real module.
+let googleInitialised = false
+
+async function renderGoogleButton() {
+  if (!showGoogleButton.value) return
+  let gis
+  try {
+    gis = await loadGis(googleClientId.value)
+  } catch {
+    // ⚠ SILENT, and deliberately. A blocked, offline or slow Google must DEGRADE to
+    // the password form, never hang the login screen and never shout at a friend who
+    // was about to type their password anyway. `loadGis` is timeout-bounded, so this
+    // branch is reached in bounded time; the container simply stays empty.
+    return
+  }
+  // `null` = no client id. Cannot happen behind `showGoogleButton`, but the loader
+  // documents it and a future caller of this function should not have to know.
+  if (!gis) return
+
+  // ⚠ RE-READ after the await: the friend may have opened the recovery form, or the
+  // token restore may have finished and swapped the whole card away, while the script
+  // was in flight. `googleButtonEl` is then null and `renderButton` would throw.
+  await nextTick()
+  const el = googleButtonEl.value
+  if (!el || !showGoogleButton.value) return
+
+  if (!googleInitialised) {
+    gis.initialize({ client_id: googleClientId.value, callback: onGoogleCredential })
+    googleInitialised = true
+  }
+  el.innerHTML = ''
+  gis.renderButton(el, {
+    theme: 'outline',
+    size: 'large',
+    text: 'signin_with',
+    shape: 'rectangular',
+    logo_alignment: 'center',
+    locale: 'sk',
+    // §UC-GA-005: full available width up to GIS's 400px cap. GIS also refuses widths
+    // under 200, so the floor is not cosmetic — at 320px the card's content box is
+    // narrower than that and an unclamped value would render nothing at all.
+    width: Math.max(200, Math.min(Math.round(el.clientWidth) || 320, 400)),
+  })
+}
+
+// `immediate` so a card that is already showing when this runs gets its button; the
+// watcher then covers every later transition (token restore failing into the login
+// card, the recovery form closing, the auth-mode probe landing late).
+watch(showGoogleButton, (show) => { if (show) renderGoogleButton() }, { immediate: true })
+
+/**
+ * The GIS credential callback. §UC-GA-005: success takes the EXACT post-login path of
+ * `authenticatePersonal()` — same token store, same localStorage payload, same
+ * handshake, same forced-change gate. Anything that diverges here diverges for one
+ * login method only, which is the kind of bug nobody finds.
+ */
+async function onGoogleCredential(response) {
+  const credential = response && response.credential
+  if (!credential) return
+
+  authError.value = ''
+  loading.value = true
+
+  try {
+    const result = await api.authenticateFriendsGoogle(credential, rememberMe.value)
+
+    setFriendsToken(result.token)
+
+    // ⚠ `result.hasCredentials`, not the password path's hardcoded `true`: a friend
+    // who signed up through Google may have no password at all.
+    currentFriend.value = { ...result.friend, hasCredentials: !!result.hasCredentials }
+    selectedFriendId.value = String(result.friend.id)
+
+    setFriendsAuthInfo({
+      friendId: result.friend.id,
+      friendName: result.friend.name,
+      friendUid: result.friend.uid
+    })
+
+    // The pinned five keys, identical to both password paths (09 §UC-ML-007).
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      friendId: result.friend.id,
+      friendName: result.friend.name,
+      friendUid: result.friend.uid,
+      token: result.token,
+      expiresAt: result.expiresAt
+    }))
+
+    await beginSession({
+      // Resolved decision #1 — the SAME forced gate, no new gate code.
+      mustChangePassword: !!result.mustChangePassword,
+      // ⚠ 10 §UC-GA-007 (GA-T7). A Google login IS linked — `friends.js:372` says so
+      // in this very response — and the profile section seeds from the handshake, so
+      // stating it here is what stops a fire-and-forget `hydrateCurrentFriend()`
+      // failure from offering to link the account the friend just logged in with.
+      // ⚠ `googlePromptDismissed` stays ABSENT: it is unknown on this path and
+      // §UC-GA-006's prompt must not trigger on it. `true !== false` already shuts
+      // the prompt; see `beginSession`'s enumeration for the full reasoning.
+      googleLinked: true,
+      // ⚠ NO `currentPassword`, and it must stay absent: a Google login never handled
+      // one. `submitForcedPasswordChange()` sends `entry?.currentPassword || ''` and
+      // the backend skips the current-password check while `must_change_password` is
+      // set, so the gate works on an empty string — exactly as it already does for a
+      // magic-link session (ML-T3).
+    })
+
+    hydrateCurrentFriend(result.friend.id)
+  } catch (e) {
+    // The server's own sentence, verbatim: the `not_linked` hint tells the friend
+    // what to do next ("log in with your password and link it in your profile"), and
+    // a generic replacement would throw that away. §UC-GA-005.
+    authError.value = e.message
+  } finally {
+    loading.value = false
+  }
+}
+
+// --- Magic-link recovery (09 §UC-ML-006) -------------------------------------
+
+function openRecovery() {
+  // A stale login error must not ride along into a different form; the recovery
+  // branch renders its own message in its own copy of the same banner slot.
+  authError.value = ''
+  recoveryError.value = ''
+  recoveryIdentifier.value = ''
+  recoveryView.value = 'form'
+}
+
+function closeRecovery() {
+  recoveryError.value = ''
+  recoveryView.value = 'off'
+}
+
+/** ⚠ THE SEQUENCE GUARD for the single-flight request below.
+ *
+ *  The hazard, reproduced: submit → click "Späť na prihlásenie" while the POST is
+ *  still in flight → the response settles and yanks the card back to the success
+ *  state, on top of a login form the friend is plausibly already typing into. The
+ *  refs survive; their keystrokes and their screen do not.
+ *
+ *  ⚠ A STATE PREDICATE, not the `let seq = ++loadSeq` counter `GuestShareDialog` /
+ *  `GuestSubOrders` / `loadGuestUnpaid` use — deliberately, and the difference is
+ *  not stylistic. A counter answers "is a NEWER REQUEST outstanding?", which is the
+ *  right question when one component is reused across several entities. Here there
+ *  is only ever one request in flight (`recoverySending` early-returns the second),
+ *  and the thing that invalidates the reply is not another request but THE USER
+ *  LEAVING — via `closeRecovery()` or `switchUser()`, neither of which mints a
+ *  request and so neither of which would bump a counter. A counter would therefore
+ *  have to be bumped by hand in both, i.e. two more lines someone can forget; this
+ *  predicate asks the question that actually matters ("am I still showing the form
+ *  this reply belongs to?") and covers both exits for free.
+ */
+function stillOnRecoveryForm() {
+  return recoveryView.value === 'form'
+}
+
+async function requestMagicLink() {
+  const identifier = recoveryIdentifier.value.trim()
+  if (!identifier || recoverySending.value) return
+
+  recoveryError.value = ''
+  recoverySending.value = true
+  try {
+    await api.requestMagicLink(identifier)
+    // ⚠ 09 §UC-ML-006 — THE ENUMERATION GUARANTEE HAS A CLIENT HALF.
+    //
+    // Every 200 lands here and nothing about the response is read. ML-T2 made the
+    // server's body byte-identical across match / no match / no e-mail / no
+    // password / inactive / ambiguous e-mail / cooldown / legacy mode / every
+    // mailer outcome — and that work is undone the moment this branch consults
+    // `result` for anything. There is deliberately no variable to branch on: the
+    // await's value is not even bound. A future edit that renders a second, "more
+    // helpful" sentence re-opens account enumeration on a public, unauthenticated
+    // screen. Pinned by the stubbed-200 test in `magic-link.spec.js`.
+    if (stillOnRecoveryForm()) recoveryView.value = 'sent'
+  } catch (e) {
+    // 400 (input shape) and 429 (magicLinkLimiter) only — every other outcome is
+    // a 200 above. The server's own Slovak message goes into the card's existing
+    // `.banner.danger.slim` slot (03 §UC-FL-002's error convention).
+    if (stillOnRecoveryForm()) recoveryError.value = e.message
+  } finally {
+    // ⚠ NOT guarded, deliberately: the in-flight flag belongs to the request, not
+    // to the screen. Left stuck at `true` after the user walked away, the submit
+    // button would come back permanently disabled on the next visit.
+    recoverySending.value = false
   }
 }
 
@@ -388,7 +789,21 @@ async function authenticatePersonal() {
 // outlive any one session; the child never touches either directly.
 // ---------------------------------------------------------------------------
 
-/** A fresh session token from a password change / credential setup. */
+/** A fresh session token from a password change / credential setup.
+ *
+ *  ⚠ ML-T3 LEFT THIS SEAM AND ML-T6 CLOSES IT (09 §UC-ML-008). Both re-mint sites —
+ *  `PUT /friends/:id/change-password` and `POST /friends/:id/setup-credentials` — write
+ *  `via` NULL on purpose (see the comments at `friends.js`), and that NULL is exactly
+ *  what retires the UC-ML-008 `currentPassword` waiver server-side. This function is
+ *  the ONE place the client learns a re-mint happened, so the two provenance flags are
+ *  dropped HERE and not only in the prompt's own logic. Without it the stored payload
+ *  would outlive the session property it describes: the banner would keep inviting the
+ *  friend to use a waiver that is gone, and the profile modal would keep HIDING a field
+ *  the server has started requiring again — a form that cannot succeed.
+ *
+ *  `magicPromptDismissed` goes with it: it is meaningless without `viaMagicLink`, and a
+ *  fresh redemption OVERWRITES the whole payload (`MagicLogin.vue`) rather than merging,
+ *  so leaving a stale `true` behind could only ever confuse a later reader. */
 function onToken({ token, expiresAt } = {}) {
   if (!token) return
   setFriendsToken(token)
@@ -398,7 +813,28 @@ function onToken({ token, expiresAt } = {}) {
     parsed.token = token
     if (expiresAt) parsed.expiresAt = expiresAt
     delete parsed.password // Remove old password
+    delete parsed.viaMagicLink      // 09 §UC-ML-008 — the re-mint retires the waiver.
+    delete parsed.magicPromptDismissed
     localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+  }
+}
+
+/** "Teraz nie" on the UC-ML-008 prompt: persist the dismissal so it survives a reload.
+ *
+ *  ⚠ The PARENT writes it, because the parent is the single owner of the credential
+ *  store (the same rule `onToken`/`onProfileSaved` follow) — the session view never
+ *  touches localStorage directly. A fresh redemption writes a fresh payload without
+ *  this key, which is what makes "a new link brings the prompt back" true by
+ *  construction rather than by a reset somebody has to remember. */
+function onMagicPromptDismissed() {
+  const stored = localStorage.getItem(STORAGE_KEY)
+  if (!stored) return
+  try {
+    const parsed = JSON.parse(stored)
+    parsed.magicPromptDismissed = true
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+  } catch {
+    // A corrupt payload is already handled by the restore path; nothing to do.
   }
 }
 
@@ -437,6 +873,23 @@ function onFriendMerged(fields) {
 /** UC-FL-012's gate is satisfied — drop the stashed plaintext password. */
 function onForcedComplete() {
   if (entry.value) entry.value = { ...entry.value, mustChangePassword: false, currentPassword: '' }
+
+  // ⚠ And clear the PERSISTED flag a magic-link redemption may have written
+  // (09 §UC-ML-005). Without this, `must_change_password` is 0 server-side but the
+  // stored payload still says 1, so every reload of this session would re-open a gate
+  // the friend has already satisfied — a nag with nothing behind it.
+  const stored = localStorage.getItem(STORAGE_KEY)
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored)
+      if (parsed.mustChangePassword) {
+        delete parsed.mustChangePassword
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+      }
+    } catch {
+      // A corrupt payload is already handled by the restore path; nothing to do.
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -484,6 +937,21 @@ function switchUser() {
   loginUsername.value = ''
   loginPassword.value = ''
   showLoginPassword.value = false
+  // ⚠ 09 §UC-ML-006 — kind 3 (THE LOGIN FORM). The recovery view is part of the
+  // login card, so nothing unmounts it either, and `recoveryIdentifier` holds a
+  // username or an e-mail the PREVIOUS person typed.
+  //
+  // ⚠ DO NOT DELETE THIS AS DEAD CODE. It looks redundant, and along the ordinary
+  // path it is: `openRecovery()` blanks the identifier on entry, and the only
+  // route from the recovery view to an authenticated session runs through
+  // `closeRecovery()`. What it actually guards is the RACE — an in-flight
+  // `requestMagicLink()` settling after a logout. `stillOnRecoveryForm()` reads
+  // `recoveryView`, so this reset is precisely what makes that reply a no-op;
+  // without it the settle would re-arm `'sent'` past the logout and put the
+  // previous person's flow back on screen. The two halves are one mechanism.
+  recoveryView.value = 'off'
+  recoveryIdentifier.value = ''
+  recoveryError.value = ''
   entry.value = null
   error.value = ''
   authState.value = 'login'
@@ -515,9 +983,12 @@ const currentFriendName = computed(() => currentFriend.value?.name || savedAuth.
 // wordmark with the name demoted to `.s`, so the appbar reads as the BRAND and no
 // user identifier is on screen. The wordmark is therefore constant across both auth
 // states and only `.s` varies — do not reintroduce a per-state `.t`.
-// The computed stays because `FriendPortalSession` still passes the uid down to the
-// profile/invite modal, which is where a friend is meant to read their own code.
-const currentFriendUid = computed(() => currentFriend.value?.uid || savedAuth.value?.friendUid || '')
+// ⚠ FUP-T20 removed the LAST on-screen consumer: the profile modal's read-only
+// `Jedinečné ID` box (an internal identifier a friend can neither read anything off
+// nor act on). So no friend-facing surface renders the uid any more, and the
+// computed plus the `:friend-uid` prop it fed are gone with the box. The uid itself
+// is untouched: it is still stored in `gorifi_friend_auth` (`friendUid`, pinned by
+// `modern-login.spec.js`) and still shown in the admin's own ID column.
 
 // Computed: friends to show in dropdown (exclude those with credentials in transition mode)
 const dropdownFriends = computed(() => {
@@ -638,6 +1109,13 @@ const dropdownFriends = computed(() => {
       </div>
 
       <div class="card flex flex-col gap-4 p-[18px] sm:p-6">
+        <!-- ==============================================================
+             09 §UC-ML-006 — the card has THREE contents, not one. Only the
+             card's inside swaps; the 480px column, the headline and the
+             dashed footnote below are untouched, and there is no route
+             change. `v-if`/`v-else-if`/`v-else` over `recoveryView`.
+             ============================================================== -->
+        <template v-if="recoveryView === 'off'">
         <!-- The prototype has no login-error state; `.banner danger slim`
              follows 02 §UC-DS-013's semantic grammar and keeps the card compact. -->
         <div v-if="authError" class="banner danger slim">
@@ -725,6 +1203,37 @@ const dropdownFriends = computed(() => {
           <span @click="rememberMe = !rememberMe">Zapamätať si ma na tomto zariadení</span>
         </label>
 
+        <!-- ⚠⚠ 09 §UC-ML-006 — THE LAYOUT SEAM FOR MODULE 10 (GA-T4). ⚠⚠
+             This affordance is the LAST MEMBER OF THE PASSWORD FIELD GROUP:
+             username → password → remember-me → "Zabudli ste heslo?" →
+             "Prihlásiť sa". It belongs to password login and to nothing else,
+             which is why it sits INSIDE the group rather than at the bottom of
+             the card. GA-T4 adds a Google button to this same card; its "alebo"
+             divider and button therefore go BELOW the submit button — AFTER this
+             whole group — so the two never contest one slot. Do not move this
+             span down to make room; move the Google block further down instead.
+
+             Bare `<span>` + the house zero-pixel ARIA layer (role/tabindex/
+             Enter/Space), exactly like the eye toggle above: a `<button>` inside
+             this card could act as a submit control, and a pointer-only span
+             would be an accessibility regression (RD-FO-1).
+
+             ⚠ `line-height:normal`: PLAIN TEXT with no theme class, so A10's
+             class list cannot reach it and preflight's `html{line-height:1.5}`
+             applies. This is the fifth site in RD-FL-8b's count (the third on
+             this screen, after the dashed footnote and the remember-me label);
+             every unclassed string this row adds — here, both "Späť na
+             prihlásenie" spans and the success sentence — carries it. -->
+        <span
+          data-testid="forgot-password"
+          role="button"
+          tabindex="0"
+          style="align-self:flex-start;font-size:13.5px;line-height:normal;color:var(--ink-dim);text-decoration:underline;cursor:pointer"
+          @click="openRecovery()"
+          @keydown.enter.prevent="openRecovery()"
+          @keydown.space.prevent="openRecovery()"
+        >Zabudli ste heslo?</span>
+
         <button
           class="btn accent block"
           :disabled="loading || !loginUsername || !loginPassword"
@@ -732,6 +1241,134 @@ const dropdownFriends = computed(() => {
         >
           {{ loading ? 'Overujem...' : 'Prihlásiť sa' }}
         </button>
+
+        <!-- ==============================================================
+             10 §UC-GA-005 — Google sign-in.
+
+             ⚠ BELOW the whole password group, per the ML-T5 seam comment
+             above: username → password → remember-me → "Zabudli ste heslo?"
+             → "Prihlásiť sa" belong to password login, and this block is an
+             ALTERNATIVE to all of it. This row adds only these two elements;
+             nothing above was moved, restyled or reordered.
+
+             ⚠ `v-if` on the whole block: in legacy/transition mode and on a
+             deployment with no `GOOGLE_CLIENT_ID` the card must be
+             byte-identical to what it was before this row (§UC-GA-005), and
+             NO REQUEST TO accounts.google.com OCCURS — `showGoogleButton` is
+             false, so `renderGoogleButton()` never runs and `loadGis()` is
+             never called.
+
+             ⚠ That is the whole claim, and it is deliberately not a claim
+             about the bundle. `lib/gis.js` is a STATIC top-level import
+             (`:24`), so it ships and is evaluated with this chunk on every
+             visit to `/`, in every auth mode — `self-hosted-fonts.spec.js`
+             asserts exactly that (`hits.length > 0`, plus the containment
+             rule that keeps it out of the entry chunk and out of every guest
+             chunk). Importing the loader costs nothing; CALLING it is what
+             contacts Google, and that is what this gate withholds.
+
+             The divider is composed from the theme's own `.divider` rule
+             (there is no text-in-a-rule variant) rather than added to
+             `friends-theme.css` — the CatScrollArrow precedent: that file is
+             a byte-for-byte canon port with a numbered adaptation list this
+             belongs to none of.
+
+             ⚠ `line-height:normal` on "alebo": plain text with no theme
+             class, so A10's selector list cannot reach it and preflight's
+             `html{line-height:1.5}` applies (RD-FL-8b).
+             ============================================================== -->
+        <template v-if="showGoogleButton">
+          <div
+            data-testid="google-divider"
+            style="display:flex;align-items:center;gap:12px"
+          >
+            <hr class="divider" style="flex:1" />
+            <span style="font-size:13px;line-height:normal;color:var(--ink-dim)">alebo</span>
+            <hr class="divider" style="flex:1" />
+          </div>
+
+          <!-- ⚠ A BARE MOUNT POINT — no `.btn`, no theme class, no width
+               override. GIS renders its own cross-origin iframe here and
+               Google's brand guidelines forbid restyling it; the container is
+               centred so the capped 400px button does not sit off-axis in a
+               wider card. -->
+          <div
+            ref="googleButtonEl"
+            data-testid="google-signin"
+            style="display:flex;justify-content:center;min-height:44px"
+          ></div>
+        </template>
+        </template>
+
+        <!-- ── The request form (09 §UC-ML-006) ───────────────────────────
+             ONE field, because the friend may not remember which of the two
+             they registered with; the server tries both. -->
+        <template v-else-if="recoveryView === 'form'">
+        <div data-testid="recovery-form" class="flex flex-col gap-4">
+          <div v-if="recoveryError" class="banner danger slim">
+            <span class="dot"></span>
+            <div>{{ recoveryError }}</div>
+          </div>
+
+          <div>
+            <label class="field-lbl" for="pp-recovery-identifier">Užívateľské meno alebo e-mail</label>
+            <!-- ⚠ `.inp` is MANDATORY (A12): it is the only selector the
+                 `@media (pointer: coarse)` block raises to 16px, and a field
+                 under 16px re-scales the whole app on iOS for the rest of the
+                 session. No placeholder (the 2026-08-10 decision). -->
+            <input
+              id="pp-recovery-identifier"
+              v-model="recoveryIdentifier"
+              data-testid="recovery-identifier"
+              class="inp"
+              type="text"
+              maxlength="160"
+              autocapitalize="none"
+              autocorrect="off"
+              autocomplete="username"
+              @keydown.enter.prevent="requestMagicLink()"
+            />
+          </div>
+
+          <button
+            class="btn accent block"
+            :disabled="recoverySending || !recoveryIdentifier.trim()"
+            @click="requestMagicLink()"
+          >
+            Poslať odkaz na prihlásenie
+          </button>
+
+          <span
+            role="button"
+            tabindex="0"
+            style="align-self:center;font-size:13.5px;line-height:normal;color:var(--ink-dim);text-decoration:underline;cursor:pointer"
+            @click="closeRecovery()"
+            @keydown.enter.prevent="closeRecovery()"
+            @keydown.space.prevent="closeRecovery()"
+          >Späť na prihlásenie</span>
+        </div>
+        </template>
+
+        <!-- ── The neutral success state (09 §UC-ML-006) ──────────────────
+             ⚠ ONE SENTENCE FOR EVERY 200. See `requestMagicLink()` — nothing
+             from the response reaches this branch, by construction. -->
+        <template v-else>
+        <div class="flex flex-col gap-4">
+          <div
+            data-testid="recovery-sent"
+            style="font-size:14px;line-height:normal;color:var(--ink)"
+          >Ak máme k vášmu účtu e-mail, poslali sme naň odkaz na prihlásenie. Skontrolujte si schránku.</div>
+
+          <span
+            role="button"
+            tabindex="0"
+            style="align-self:center;font-size:13.5px;line-height:normal;color:var(--ink-dim);text-decoration:underline;cursor:pointer"
+            @click="closeRecovery()"
+            @keydown.enter.prevent="closeRecovery()"
+            @keydown.space.prevent="closeRecovery()"
+          >Späť na prihlásenie</span>
+        </div>
+        </template>
       </div>
 
       <!-- ⚠ `line-height:normal` is NOT in the prototype and is not decoration:
@@ -943,12 +1580,14 @@ const dropdownFriends = computed(() => {
       :friend-id="selectedFriendId"
       :friend="currentFriend"
       :friend-name="currentFriendName"
-      :friend-uid="currentFriendUid"
       :entry="entry"
+      :auth-mode="authMode"
+      :google-client-id="googleClientId"
       @profile-saved="onProfileSaved"
       @friend-merged="onFriendMerged"
       @token="onToken"
       @forced-complete="onForcedComplete"
+      @magic-prompt-dismissed="onMagicPromptDismissed"
     />
   </div>
 </template>

@@ -48,9 +48,11 @@
 // `switchUser()`.
 // =============================================================================
 
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api, { getFriendsAuthInfo } from '../api'
+// 10 §UC-GA-012 — the ONE home for the GIS script. Never a second injector.
+import { loadGis } from '../lib/gis'
 // ⚠ No `@/components/ui/*` import remains in this file. The credential-setup
 // dialog was the last radix consumer on the authenticated friend surface; it now
 // composes on `NeoModal`, so `Input`/`Label`/`Button`/`Alert`/`Dialog*` are gone.
@@ -80,7 +82,9 @@ const props = defineProps({
   // (`currentFriend?.name || savedAuth?.friendName`), so this file never has to
   // know that a restored session may carry only the stored name.
   friendName: { type: String, default: '' },
-  friendUid: { type: String, default: '' },
+  // ⚠ FUP-T20: there is no `friendUid` prop any more. Its only consumer was the
+  // profile modal's read-only `Jedinečné ID` box, which that row removed; the uid
+  // still lives in the stored session and on the admin's own surfaces.
   // ⚠ What the AUTH HANDSHAKE produced, handed over once at mount:
   //   · `cycles`  — the payload of the probe request the parent already made to
   //     validate the token (`GET /friends/cycles`). Seeding from it is what
@@ -90,7 +94,15 @@ const props = defineProps({
   //     parent already holds it in `password`/`loginPassword`); this component
   //     reads it at submit time and never copies it into a ref of its own.
   //   · `needsCredentialSetup` — transition mode, `hasCredentials === false`.
+  //   · `googleLinked` + `googlePromptDismissed` — 10 §UC-GA-006. ⚠ These may be
+  //     ABSENT, and absence is meaningful: see `googlePromptEligible` below.
   entry: { type: Object, default: () => ({}) },
+  // ⚠ CONFIGURATION, not handshake state — the parent's two `GET /friends/auth-mode`
+  // values, passed down rather than re-fetched. They are props (not `entry` keys)
+  // because they belong to the DEPLOYMENT, not to this login: `entry` dies with the
+  // session by design, and these two are identical for every friend on the device.
+  authMode: { type: String, default: 'legacy' },
+  googleClientId: { type: String, default: null },
 })
 
 const emit = defineEmits([
@@ -104,6 +116,10 @@ const emit = defineEmits([
   'token',
   // UC-FL-012's gate is satisfied; the parent may drop the stashed plaintext.
   'forced-complete',
+  // 09 §UC-ML-008 "Teraz nie": persist `magicPromptDismissed` into the stored payload.
+  // ⚠ An emit rather than a write, for the same reason `token` is one — the parent is
+  // the single owner of localStorage, and this component must never touch it.
+  'magic-prompt-dismissed',
 ])
 
 // ---------------------------------------------------------------------------
@@ -170,6 +186,22 @@ const error = ref('')
 const showProfileModal = ref(false)
 const profileName = ref('')
 const profilePacketaAddress = ref('')
+// UC-FC-009: the friend's own contact data. Seeded on modal OPEN from the
+// hydrated profile (the session-boundary rule — never module-level defaults),
+// with the open-time originals kept so `saveProfile` only sends a field the
+// friend actually CHANGED (PATCH semantics; an untouched field is left to
+// whatever the server already holds). FUP-T5 put `packeta_address` on the same
+// rule, so `name` is now the only key always present.
+const profilePhone = ref('')
+const profileEmail = ref('')
+const profilePhoneOriginal = ref('')
+const profileEmailOriginal = ref('')
+// FUP-T5: `packeta_address` joins the same delta. `hydrateCurrentFriend` is
+// fire-and-forget, so this modal is openable BEFORE the profile GET lands — the
+// field then renders empty and an unconditional send WIPED a stored address.
+// Seeded per OPEN like every other original, so it carries no state across
+// friends (the session-boundary rule).
+const profilePacketaOriginal = ref('')
 const profileSaving = ref(false)
 const profileError = ref('')
 
@@ -233,6 +265,417 @@ const forcedNewPassword = ref('')
 const forcedNewPasswordConfirm = ref('')
 const forcedError = ref('')
 const forcedSaving = ref(false)
+
+// ---------------------------------------------------------------------------
+// Magic-link session provenance (09 §UC-ML-008)
+// ---------------------------------------------------------------------------
+
+// "This session was born of a magic link AND still carries the server's
+// `currentPassword` waiver." Seeded ONCE from the handshake, like every other piece of
+// session state in this file, so it dies with the instance — the six-leak rule.
+//
+// ⚠ The `!mustChangePassword` term is the resolved-conflict-#4 suppression, and it
+// belongs in the SEED rather than in a computed over `props.entry`. In the forced flow
+// the friend never reaches the profile modal's password fold (the gate is
+// focus-trapped and non-dismissable), and satisfying that gate re-mints with NULL
+// `via` — so from the very first paint to the last, a forced session genuinely has no
+// waiver to offer. Reading the prop reactively instead would flip this to `true` the
+// moment `onForcedComplete` clears it upstream, i.e. it would show the prompt exactly
+// once the waiver was gone: the one state it must never appear in.
+//
+// It is cleared by the two writers that consume the waiver — `changePassword()` and
+// `submitForcedPasswordChange()` — because both re-mint, and the parent's `onToken`
+// drops the same flag from the stored payload in the same tick. Keeping the two in
+// step is what stops the modal hiding a field the server has started requiring again.
+const magicLinkSession = ref(!!props.entry?.viaMagicLink && !props.entry?.mustChangePassword)
+
+// Dismissal is a SIBLING of the provenance, never a replacement for it: "Teraz nie"
+// silences the invitation, it does not retire the waiver, so the hidden
+// current-password field must survive a dismissal. Seeded from the stored payload so a
+// dismissal made before a reload is still in force after it.
+const magicPromptDismissed = ref(!!props.entry?.magicPromptDismissed)
+
+// §UC-ML-008's visibility rule, verbatim: `viaMagicLink && !magicPromptDismissed`.
+const showMagicPrompt = computed(() => magicLinkSession.value && !magicPromptDismissed.value)
+
+function dismissMagicPrompt() {
+  magicPromptDismissed.value = true
+  // The ref alone would die with the reload, which is the exact case a dismissal is
+  // for; the parent persists it into `gorifi_friend_auth`.
+  emit('magic-prompt-dismissed')
+}
+
+/** The prompt's call to action: the EXISTING change-password UI, already unfolded. */
+function openMagicPasswordChange() {
+  openProfileModal()
+  showPasswordChange.value = true
+}
+
+// ---------------------------------------------------------------------------
+// Google link prompt (10 §UC-GA-006)
+// ---------------------------------------------------------------------------
+
+// ⚠⚠ THE TRIGGER, and every term in it is load-bearing.
+//
+// STRICT `=== false`, never `!props.entry?.googleLinked`. The two fields are ABSENT on
+// every handshake that is not a fresh non-Google modern login (see `beginSession`'s
+// note in `FriendPortal.vue`), and `!undefined` is `true` — a truthiness test would
+// open this modal for a friend who is ALREADY LINKED, on top of ML-T6's magic prompt,
+// which is precisely the "one modal per login, maximum" §UC-GA-006 forbids. The
+// omission upstream IS the enforcement mechanism.
+//
+// ⚠ `authMode === 'modern'` is NOT in §UC-GA-006's literal condition and is required
+// anyway: GA-T5 put a modern-only guard on `PUT /:id/google-link` (409
+// `field:'auth_mode'`), so on a legacy/transition deployment the spec's own condition
+// would offer a link whose every attempt 409s. The spec predates that guard.
+//
+// ⚠ The blocking gates are the "one modal per login" rule: when either fired, the
+// prompt SKIPS this login entirely rather than queueing behind it. Reading them from
+// the SEED (not reactively) is what makes that true — `forcedPasswordChange` clears
+// itself when the friend satisfies the gate, and a reactive read would pop this modal
+// open at that exact moment.
+//
+// ⚠ SESSION BOUNDARY (§UC-GA-006, restated as a requirement after this file's six
+// leaks): everything below is `ref`s seeded ONCE at setup from the handshake. NO
+// module-level state, NO localStorage, NO state keyed on the friend id — the component
+// is keyed on the auth handshake (`:key="sessionSeq"`), so a "Teraz nie" dies with the
+// session and the next friend on this device gets their own decision. `<script setup>`
+// compiles into `setup()`, so these consts are genuinely per-instance (the ML-T3
+// hazard, working FOR us here) — do not "fix" them into a plain `<script>` block.
+// ⚠ ACCEPTED RESIDUAL — the voucher overlay, and why it is NOT fixed here. GA-T7 will
+// face the same temptation, so the reasoning lives with the seed rather than in a
+// commit message.
+//
+// `onMounted` awaits `checkPendingVouchers()`, which raises `showVoucherModal` with NO
+// user action. That overlay is a hand-rolled `fixed inset-0 z-50` teleport while
+// `NeoModal`'s `.modal-layer` is `z-index: 200`, so a friend who is unlinked,
+// un-dismissed AND has a pending voucher gets this prompt painted OVER the voucher
+// modal, whose buttons stay unreachable behind our scrim until the prompt is closed.
+// Recoverable (close the prompt and the voucher is there), and it needs both
+// conditions to coincide.
+//
+// The obvious fix — a `!hasPendingVoucher` term — is the one thing that must not be
+// done: the voucher check is ASYNC, so the term could only be evaluated after it
+// resolves, which turns this seed into a `watch`. SEEDED-ONCE-AT-SETUP is precisely
+// what makes the session boundary safe here (the six leaks in this file were all state
+// that outlived or re-evaluated across a handshake), and a `watch` reintroduces the
+// async-flush hazard for a z-order overlap. Wrong trade; leave it.
+const googlePromptEligible = ref(
+  !!props.googleClientId &&
+  props.authMode === 'modern' &&
+  props.entry?.googleLinked === false &&
+  props.entry?.googlePromptDismissed === false &&
+  !props.entry?.mustChangePassword &&
+  !props.entry?.needsCredentialSetup
+)
+
+// "Teraz nie" (and the ×, and a completed link) live here — CLIENT-SIDE ONLY, no
+// server write, so the prompt may return at the next login (§UC-GA-006).
+const googlePromptClosed = ref(false)
+
+const showGooglePrompt = computed(() => googlePromptEligible.value && !googlePromptClosed.value)
+
+// 'ask' → the three options · 'link' → the GIS button · 'done' → the linked address.
+const googlePromptStage = ref('ask')
+const googlePromptButtonEl = ref(null)
+const googlePromptBusy = ref(false)
+// ONE error surface for this action (the RD-FL-8a rule): the 409 renders HERE,
+// verbatim from the server, and never in the page banner behind the scrim.
+const googleLinkError = ref('')
+const googleLinkedEmail = ref('')
+
+function closeGooglePrompt() {
+  googlePromptClosed.value = true
+}
+
+/** "Áno, teraz" — swap the body to Google's own button (§UC-GA-006). */
+async function startGoogleLink() {
+  googleLinkError.value = ''
+  googlePromptStage.value = 'link'
+  await nextTick()
+
+  let gis
+  try {
+    gis = await loadGis(props.googleClientId)
+  } catch {
+    // ⚠ NOT silent, unlike the login card's loader. There the friend still has the
+    // password form in front of them; here they asked for exactly one thing and an
+    // empty box would be the whole answer. `loadGis` is timeout-bounded, so this
+    // branch is reached in bounded time.
+    googleLinkError.value = 'Google sa nepodarilo načítať. Skúste to prosím neskôr.'
+    googlePromptStage.value = 'ask'
+    return
+  }
+  if (!gis) return
+
+  // ⚠ RE-READ after the await: the friend may have closed the modal while the script
+  // was in flight, in which case `googlePromptButtonEl` is null and `renderButton`
+  // would throw.
+  await nextTick()
+  const el = googlePromptButtonEl.value
+  if (!el || googlePromptStage.value !== 'link') return
+
+  // ⚠ Unconditional, and it takes over GIS's ONE global callback. That is why
+  // `beginSession()` resets the parent's `googleInitialised` — otherwise the login
+  // card after a logout would render a button wired to this unmounted component.
+  gis.initialize({ client_id: props.googleClientId, callback: onGoogleLinkCredential })
+  el.innerHTML = ''
+  gis.renderButton(el, {
+    theme: 'outline',
+    size: 'large',
+    text: 'continue_with',
+    shape: 'rectangular',
+    logo_alignment: 'center',
+    locale: 'sk',
+    // Same clamp as the login card: GIS caps at 400 and refuses anything under 200.
+    width: Math.max(200, Math.min(Math.round(el.clientWidth) || 320, 400)),
+  })
+}
+
+/**
+ * The GIS credential, handed to the friend-owned link route (§UC-GA-004).
+ *
+ * ⚠ NO RETRY LOOP (§UC-GA-006). A 409 means the account belongs to someone else —
+ * re-firing the same credential can only produce the same answer, so the message is
+ * rendered inline and the modal stays open for the friend to decide.
+ */
+async function onGoogleLinkCredential(response) {
+  const credential = response && response.credential
+  if (!credential) return
+
+  googleLinkError.value = ''
+  googlePromptBusy.value = true
+  try {
+    const result = await api.linkFriendGoogle(props.friendId, credential)
+    googleLinkedEmail.value = result.googleEmail || ''
+    // ⚠ DELIBERATE DEVIATION from §UC-GA-006, which says success "shows the linked
+    // `google_email` + closes". It shows it and waits for an explicit `Zavrieť`: an
+    // auto-close flashes the one confirmation the friend ever gets for this action,
+    // and it would race any assertion that the address was displayed at all. The
+    // clause's intent — the prompt does not linger as an offer once it has been
+    // taken — is met by the three options being REMOVED in this stage.
+    googlePromptStage.value = 'done'
+    // ⚠ GA-T7 DISCHARGES THIS SEAM'S FIRST OBLIGATION, right here: the profile
+    // section reads the SAME session-scoped state, so a link taken from the prompt
+    // must show up there without a reload (§UC-GA-007's "stays consistent within the
+    // session"). The second obligation — the unconditional `initialize()` — is
+    // discharged in `mountGoogleProfileButton()` below.
+    googleLinkedInSession.value = true
+    googleEmailInSession.value = result.googleEmail || ''
+    // ⚠ Seam for GA-T7 (§UC-GA-007), TWO obligations:
+    //   1. The profile modal's Google section links and unlinks the SAME friend within
+    //      this session, and §UC-GA-007 requires the two to agree. When it lands, the
+    //      handshake-scoped "is this friend linked" state it introduces must be
+    //      written here too.
+    //   2. ⚠ That section must call `gis.initialize()` UNCONDITIONALLY before its
+    //      `renderButton`, exactly as `startGoogleLink()` does — never behind a
+    //      "already initialised" flag. GIS keeps ONE global callback, and the profile
+    //      modal and this prompt can both exist within a single session, so whichever
+    //      rendered last owns it. That is the same hazard `beginSession()`'s
+    //      `googleInitialised = false` reset covers for the login card.
+  } catch (e) {
+    // The server's own sentence, verbatim — §UC-GA-004's 409 says nothing about WHICH
+    // friend holds the account, and a rewrite here could only make that worse.
+    googleLinkError.value = e.message
+  } finally {
+    googlePromptBusy.value = false
+  }
+}
+
+/** "Už sa nepýtať" — the one option that writes (§UC-GA-004, one-way by design). */
+async function dismissGooglePromptForever() {
+  googleLinkError.value = ''
+  googlePromptBusy.value = true
+  try {
+    await api.dismissGooglePrompt(props.friendId)
+    closeGooglePrompt()
+  } catch (e) {
+    // Keep the modal open on failure: closing it would claim a persistence that did
+    // not happen, and the prompt would then be back at the next login with no
+    // explanation.
+    googleLinkError.value = e.message
+  } finally {
+    googlePromptBusy.value = false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Google section in the profile modal (10 §UC-GA-007)
+// ---------------------------------------------------------------------------
+//
+// The always-available MANUAL trigger, as opposed to the once-per-login prompt above.
+// It shares that prompt's state and its hazards; what is new here is the unlink.
+//
+// ⚠ SESSION BOUNDARY (§UC-GA-006, which §UC-GA-007 says applies identically). This is
+// the ONE piece of "is this friend linked" state in this component, seeded ONCE at
+// setup from the handshake and written by BOTH surfaces (the prompt and this section),
+// which is what keeps them consistent within a session. Per-instance `ref`s in a
+// `<script setup>` that is keyed on the handshake — NO module scope, NO localStorage,
+// NO map keyed on the friend id. A link made by friend A must not make friend B look
+// linked on this same page, and A's unlink must not un-link B.
+//
+// `null` = "this session has not decided", which is the honest state on a session
+// RESTORE and a magic-link login — neither publishes the two Google fields (the strict
+// `=== false` note above says why the omission is deliberate). The display then follows
+// the owner-scoped profile fetch (`props.friend`, hydrated by the parent under its own
+// sessionSeq guard), exactly as `hasCredentials`/`username` already do in this modal.
+const googleLinkedInSession = ref(
+  typeof props.entry?.googleLinked === 'boolean' ? props.entry.googleLinked : null
+)
+const googleEmailInSession = ref('')
+
+const googleSectionLinked = computed(() => (
+  googleLinkedInSession.value === null
+    ? !!props.friend?.googleLinked
+    : googleLinkedInSession.value
+))
+// Only meaningful while linked. The handshake carries no address (§UC-GA-003 publishes
+// `googleLinked` alone), so a seeded-true session falls through to the profile fetch
+// until an action in this session produces one.
+const googleSectionEmail = computed(() => (
+  googleSectionLinked.value
+    ? (googleEmailInSession.value || props.friend?.google_email || '')
+    : ''
+))
+
+// ⚠⚠ THE MODE GATE IS ON THE *LINK* HALF ONLY, and the asymmetry is the whole point.
+//
+// GA-T5's `field:'auth_mode'` 409 guards `PUT /:id/google-link` — and nothing else.
+// `DELETE /:id/google-link` (`friends.js:1295`) carries NO mode guard and works on
+// every deployment. So gating the whole section on modern mode (as this row first
+// shipped) would take a linked friend's self-service UNLINK away on a legacy or
+// transition deployment — a capability §UC-GA-007 grants and the server still honours
+// — for a reason that applies only to the other half. That state is reachable: a
+// deployment can roll modern back to transition after friends have already linked.
+//
+// Hence: OFFERING a link needs modern mode, because otherwise every attempt 409s;
+// SEVERING one needs only a client id, because the endpoint accepts it.
+const googleCanLink = computed(
+  () => !!props.googleClientId && props.authMode === 'modern'
+)
+
+// The section renders when it has something to say: an existing link to show and
+// sever, or (in modern mode) an offer to make. An unlinked friend outside modern mode
+// gets no trace — a bare "Google" heading over nothing is worse than absence, and
+// §UC-GA-007's "unconfigured deployments show no trace" spirit covers it.
+const googleSectionVisible = computed(
+  () => !!props.googleClientId && (googleSectionLinked.value || googleCanLink.value)
+)
+
+// ⚠ The no-password warning, driven by EITHER of §UC-GA-007's two sources. STRICT
+// `=== false` on the client half: `hasCredentials` is absent until the profile fetch
+// lands, and `!undefined` would cry wolf at a friend who has a perfectly good password
+// (the same trap `googlePromptEligible` documents). The server half is the backstop —
+// GA-T5 answers `warning: 'no_password'` on the unlink itself, which covers the case
+// where this client never learned the friend's credential state at all.
+const googleUnlinkWarned = ref(false)
+const googleNoPassword = computed(
+  () => googleUnlinkWarned.value || props.friend?.hasCredentials === false
+)
+
+// The confirm §UC-GA-007 requires, inline in the section rather than a second modal —
+// the `GuestShareDialog` regenerate precedent. A NeoModal on top of a NeoModal would
+// stack two `.modal-layer`s, and the profile modal is closable, so the friend could
+// dismiss the one UNDERNEATH the confirm.
+const googleConfirmUnlink = ref(false)
+const googleSectionBusy = ref(false)
+const googleProfileButtonEl = ref(null)
+
+/**
+ * Render Google's own button into the section.
+ *
+ * ⚠⚠ `gis.initialize()` IS CALLED UNCONDITIONALLY, never behind an "already
+ * initialised" flag — the second obligation of GA-T6's seam, and the one live bug this
+ * whole area has already produced. GIS registers ONE GLOBAL callback and the LAST
+ * `initialize()` owns it; the login card, the post-login prompt and this section can
+ * all run within a single session. A guard flag here would leave the callback with
+ * whichever surface registered first, so this button would render perfectly and do
+ * nothing — the exact failure GA-T6 found on the login card after a logout. The login
+ * card takes it back through `beginSession()`'s `googleInitialised = false` reset.
+ */
+async function mountGoogleProfileButton() {
+  // `googleCanLink`, not `googleSectionVisible`: the section is also visible to a
+  // LINKED friend outside modern mode, and there is no button to render for them.
+  if (!googleCanLink.value || googleSectionLinked.value) return
+  await nextTick()
+
+  let gis
+  try {
+    gis = await loadGis(props.googleClientId)
+  } catch {
+    // ⚠ SILENT, unlike the prompt's loud failure — and the difference is deliberate.
+    // The prompt is a modal the friend opened to do exactly one thing; this is a
+    // section of a form they opened to edit their name, so an empty box beside four
+    // working fields is a degradation, not a dead end. `loadGis` is timeout-bounded.
+    return
+  }
+  if (!gis) return
+
+  // ⚠ RE-READ after the await: the friend may have closed the modal, or linked from
+  // somewhere else, while the script was in flight — `renderButton` would then throw
+  // on a null element.
+  await nextTick()
+  const el = googleProfileButtonEl.value
+  if (!el || !showProfileModal.value || !googleCanLink.value || googleSectionLinked.value) return
+
+  gis.initialize({ client_id: props.googleClientId, callback: onGoogleProfileCredential })
+  el.innerHTML = ''
+  gis.renderButton(el, {
+    theme: 'outline',
+    size: 'large',
+    text: 'continue_with',
+    shape: 'rectangular',
+    logo_alignment: 'center',
+    locale: 'sk',
+    // Same clamp as the login card and the prompt: GIS caps at 400 and refuses
+    // anything under 200.
+    width: Math.max(200, Math.min(Math.round(el.clientWidth) || 320, 400)),
+  })
+}
+
+/** The GIS credential, handed to the friend-owned link route (§UC-GA-004). */
+async function onGoogleProfileCredential(response) {
+  const credential = response && response.credential
+  if (!credential) return
+
+  profileError.value = ''
+  googleSectionBusy.value = true
+  try {
+    const result = await api.linkFriendGoogle(props.friendId, credential)
+    // In place, no reload, and the prompt's view of this session moves with it.
+    googleLinkedInSession.value = true
+    googleEmailInSession.value = result.googleEmail || ''
+    googleConfirmUnlink.value = false
+    // ⚠ NOT `google_prompt_dismissed` — §UC-GA-007 says this section touches that flag
+    // in NEITHER direction, and there is no call to `api.dismissGooglePrompt` here.
+  } catch (e) {
+    // §UC-GA-007: "A 409 renders in the modal's existing error slot." The server's own
+    // sentence, verbatim — it names no friend and a rewrite could only make that worse.
+    profileError.value = e.message
+  } finally {
+    googleSectionBusy.value = false
+  }
+}
+
+async function confirmGoogleUnlink() {
+  profileError.value = ''
+  googleSectionBusy.value = true
+  try {
+    const result = await api.unlinkFriendGoogle(props.friendId)
+    if (result && result.warning === 'no_password') googleUnlinkWarned.value = true
+    googleLinkedInSession.value = false
+    googleEmailInSession.value = ''
+    googleConfirmUnlink.value = false
+    // The section is usable again immediately: a fresh button, freshly initialised.
+    mountGoogleProfileButton()
+  } catch (e) {
+    // Keep the confirm open on failure — closing it would claim a severance that did
+    // not happen, and the section would still be showing the link it failed to remove.
+    profileError.value = e.message
+  } finally {
+    googleSectionBusy.value = false
+  }
+}
 
 // Invite modal
 const showInviteModal = ref(false)
@@ -497,7 +940,21 @@ function openProfileModal() {
   profileError.value = ''
   profileName.value = props.friendName || ''
   profilePacketaAddress.value = props.friend?.packeta_address || ''
+  // UC-FC-009: seeded per OPEN, from THIS session's hydrated friend — the
+  // session-boundary rule (nothing may survive from a previous friend's edit).
+  profilePhone.value = props.friend?.phone || ''
+  profileEmail.value = props.friend?.email || ''
+  profilePhoneOriginal.value = profilePhone.value
+  profileEmailOriginal.value = profileEmail.value
+  profilePacketaOriginal.value = profilePacketaAddress.value
+  // §UC-GA-007: the CONFIRM is per-open UI state — an unlink the friend backed out of
+  // (or closed the modal on) must not be half-armed when they come back. The link
+  // state itself is NOT reset here: it belongs to the session, not to the modal.
+  googleConfirmUnlink.value = false
   showProfileModal.value = true
+  // Fire-and-forget: the GIS script load must not delay the modal, and its own failure
+  // path is silent by design.
+  mountGoogleProfileButton()
 }
 
 async function saveProfile() {
@@ -507,10 +964,29 @@ async function saveProfile() {
   // A retry must not leave the previous attempt's banner standing (RD-FL-3).
   profileError.value = ''
   try {
-    const updated = await api.updateFriendProfile(props.friendId, {
-      name: profileName.value.trim(),
-      packeta_address: profilePacketaAddress.value.trim() || null
-    })
+    const payload = {
+      name: profileName.value.trim()
+    }
+    // FUP-T5: `packeta_address` rides along on the SAME rule as the contact
+    // fields below — only when the friend actually changed it. Sending it
+    // unconditionally meant a save from an UNHYDRATED modal (the field renders
+    // empty until `hydrateCurrentFriend` lands) wrote `null` over a stored
+    // address. An intentional clear is still a change, so it still travels as
+    // `null` — never as `''`.
+    if (profilePacketaAddress.value.trim() !== profilePacketaOriginal.value.trim()) {
+      payload.packeta_address = profilePacketaAddress.value.trim() || null
+    }
+    // UC-FC-009: contact fields ride along ONLY when changed (trim() || null —
+    // clearing is allowed, no confirm; the admin's "Bez e-mailu" badge is the
+    // operational signal). Untouched fields stay absent, so an admin's
+    // concurrent edit of them is not clobbered.
+    if (profilePhone.value.trim() !== profilePhoneOriginal.value.trim()) {
+      payload.phone = profilePhone.value.trim() || null
+    }
+    if (profileEmail.value.trim() !== profileEmailOriginal.value.trim()) {
+      payload.email = profileEmail.value.trim() || null
+    }
+    const updated = await api.updateFriendProfile(props.friendId, payload)
     // The parent owns `currentFriend`, the login-list row and the stored display
     // name — all three outlive this component.
     emit('profile-saved', updated)
@@ -526,7 +1002,13 @@ async function changePassword() {
   changePasswordError.value = ''
   changePasswordSuccess.value = ''
 
-  if (!changeCurrentPassword.value) {
+  // ⚠ 09 §UC-ML-008 — CONDITIONAL, because the field it guards is conditionally
+  // hidden. On a magic-link session the friend by definition does not know the current
+  // password, so demanding it client-side would make the waiver unreachable from the
+  // one UI it exists for. The SERVER is authoritative regardless: it reads
+  // `friend_sessions.via` itself, so a client that skipped this check without the
+  // waiver still gets a 401 it renders in the banner below.
+  if (!magicLinkSession.value && !changeCurrentPassword.value) {
     changePasswordError.value = 'Zadajte aktuálne heslo'
     return
   }
@@ -548,6 +1030,12 @@ async function changePassword() {
     if (result.token) {
       emit('token', { token: result.token, expiresAt: result.expiresAt })
     }
+
+    // ⚠ 09 §UC-ML-008 — the change re-minted with NULL `via`, so the waiver is gone
+    // server-side. Clearing it here in the same tick brings the "Aktuálne heslo" field
+    // back and retires the prompt for good; the parent's `onToken` (already emitted
+    // above) drops the matching flags from the stored payload, so a reload agrees.
+    magicLinkSession.value = false
 
     changePasswordSuccess.value = 'Heslo bolo úspešne zmenené'
     changeCurrentPassword.value = ''
@@ -643,6 +1131,15 @@ async function saveCredentials() {
   try {
     const result = await api.setupCredentials(props.friendId, username, setupPassword.value)
 
+    // ⚠ This is the THIRD `onToken` emitter and — unlike `changePassword()` and
+    // `submitForcedPasswordChange()` — it deliberately does NOT clear
+    // `magicLinkSession` (09 §UC-ML-008). It cannot need to: §UC-ML-003 eligibility
+    // requires a `password_hash`, so a magic-link session implies credentials already
+    // exist, and `POST /friends/:id/setup-credentials` answers 409 in that case and
+    // emits no token at all. Even if it were somehow reached, the parent's `onToken`
+    // drops the stored flags anyway, so the two halves stay consistent — the local ref
+    // would merely lag until the next load. Recorded rather than "fixed" so a future
+    // reader does not mistake the asymmetry for an oversight. (ML-T6 review.)
     if (result.token) {
       emit('token', { token: result.token, expiresAt: result.expiresAt })
     }
@@ -694,6 +1191,10 @@ async function submitForcedPasswordChange() {
     forcedNewPassword.value = ''
     forcedNewPasswordConfirm.value = ''
     forcedPasswordChange.value = false
+    // 09 §UC-ML-008: this change re-minted with NULL `via` too. `magicLinkSession` is
+    // already false in the forced flow (see its seed), so this is belt-and-braces
+    // against a future edit that loosens the seed — not a live state change.
+    magicLinkSession.value = false
     // The parent drops the stashed plaintext password with this.
     emit('forced-complete')
   } catch (e) {
@@ -807,6 +1308,43 @@ defineExpose({ openProfileModal, openInviteModal })
       >
         <NeoIcon name="close" />
       </button>
+    </div>
+
+    <!-- The magic-link prompt (09 §UC-ML-008).
+
+         ⚠ PLAIN `.banner` — INFORMATIONAL, per 02 §UC-DS-013's semantic grammar.
+         Not `danger`, not `warn`: the friend just logged in successfully and nothing
+         is wrong. It is an invitation, and it is non-blocking by product decision
+         (resolved conflict #4: a magic link is a LOGIN, not a reset — the old password
+         keeps working until they change it).
+
+         ⚠ Suppressed ENTIRELY in the forced flow — see `magicLinkSession`'s seed. That
+         is not merely tidiness: 03 §UC-FL-012's gate is focus-trapped, so a banner
+         behind it would be an unreachable control offering a choice the friend does
+         not have. -->
+    <div v-if="showMagicPrompt" class="banner mb-5" data-testid="magic-prompt">
+      <span class="dot"></span>
+      <div style="min-width:0;display:flex;flex-direction:column;gap:10px">
+        <div>Prihlásenie cez e-mailový odkaz prebehlo úspešne. Chcete si nastaviť nové heslo?</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button
+            type="button"
+            class="btn sm dark"
+            data-testid="magic-prompt-set"
+            @click="openMagicPasswordChange"
+          >
+            Nastaviť nové heslo
+          </button>
+          <button
+            type="button"
+            class="btn ghost sm"
+            data-testid="magic-prompt-dismiss"
+            @click="dismissMagicPrompt"
+          >
+            Teraz nie
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- Balance Card -->
@@ -1175,10 +1713,19 @@ defineExpose({ openProfileModal, openInviteModal })
 
     <!-- Read-only identity row. `div.copyrow > div.val` is the prototype's
          READ-ONLY box style — deliberately WITHOUT NeoCopyRow's button
-         (UC-DS-011 is the copy control; this is just its box). The two
-         boxes are content-sized, exactly as `portal.jsx` renders them: no
-         `flex:1`, so each is as wide as its own label/value and the pair
-         shrinks (`.val` carries `min-width:0`) rather than overflowing.
+         (UC-DS-011 is the copy control; this is just its box). The box is
+         content-sized, exactly as `portal.jsx` renders it: no `flex:1`, so it
+         is as wide as its own label/value and shrinks (`.val` carries
+         `min-width:0`) rather than overflowing.
+
+         ⚠ FUP-T20 — the `Jedinečné ID` box that used to sit to the left of the
+         username is REMOVED (product decision): `friends.uid` is an internal
+         identifier with nothing a friend can read off it or act on. The `uid`
+         itself is untouched everywhere else — it still rides in the stored
+         session (`friendUid`) and the admin still shows it in its own ID column
+         — so this is a presentation removal, not a data change. The flex row is
+         KEPT as the row it always was; it now holds one box, and keeping it is
+         what preserves the content-sized rendering the `.copyrow` box relies on.
 
          ⚠ `<label for=…>` only associates with LABELABLE elements, and a
          `div` is not one, so the association runs the other way here:
@@ -1186,15 +1733,11 @@ defineExpose({ openProfileModal, openInviteModal })
          `aria-labelledby`. That is what keeps `getByLabel` resolving on a
          non-input — plain `for` would silently associate with nothing. -->
     <div style="display:flex;gap:10px">
-      <div>
-        <label id="pp-profile-uid-lbl" class="field-lbl">Jedinečné ID</label>
-        <div class="copyrow">
-          <div class="val" aria-labelledby="pp-profile-uid-lbl" data-testid="profile-uid">{{ friendUid }}</div>
-        </div>
-      </div>
       <!-- Username renders only when there IS one: legacy friends have no
            credentials at all (repo behavior beats the prototype's demo
-           friend, who always does). -->
+           friend, who always does). It is READ-ONLY by design (UC-FL-009, and
+           re-confirmed by FUP-T20's product decision: the admin renames, and
+           module 10's Google login likely removes the need entirely). -->
       <div v-if="friend?.username">
         <label id="pp-profile-username-lbl" class="field-lbl">Užívateľské meno</label>
         <div class="copyrow">
@@ -1203,15 +1746,28 @@ defineExpose({ openProfileModal, openInviteModal })
       </div>
     </div>
 
+    <!-- ⚠ FUP-T20 — THE BUG THIS ROW EXISTS FOR. This field binds `profileName`
+         and writes `friends.name`, a DISPLAY label that never was a login, yet its
+         label claimed to be the LOGIN NAME while its own help line one row below
+         said the opposite. A friend editing "their login name" changed nothing
+         about how they log in and silently renamed themselves. It is the same
+         mislabel module 11 fixed in `AdminFriends.vue` (11 §UC-FC-001/003); it
+         survived here because §UC-FC-002's grep guard named that ONE file.
+         ⚠ THE GUARD NOW COVERS THIS FILE TOO — see CLAUDE.md / 07 §UC-IA-007: it
+         must return nothing for `AdminFriends.vue` AND `FriendPortalSession.vue`,
+         which is why no string here (copy or comment) spells out the forbidden
+         adjective. The login is the read-only `Užívateľské meno` box above (and it
+         stays read-only by product decision); `friends.name` is the PACKETA
+         DELIVERY name, which is why it is required and why the help text says so. -->
     <div>
-      <label class="field-lbl" for="pp-profile-name">Prihlasovacie meno *</label>
+      <label class="field-lbl" for="pp-profile-name">Meno a priezvisko *</label>
       <input
         id="pp-profile-name"
         v-model="profileName"
         class="inp"
         :disabled="profileSaving"
       />
-      <div class="field-help">Toto meno vidí správca a kolegovia.</div>
+      <div class="field-help">Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia.</div>
     </div>
 
     <div>
@@ -1224,6 +1780,37 @@ defineExpose({ openProfileModal, openInviteModal })
         :disabled="profileSaving"
       />
       <div class="field-help">Predvolená adresa pre doručenie Packetou (voliteľné).</div>
+    </div>
+
+    <!-- UC-FC-009: the friend's own contact data. Mobil keeps its format-example
+         placeholder (a format example, not a label substitute — the admin modal
+         does the same); Email has NO placeholder (the 2026-08-10 no-placeholder
+         login decision) and carries the vy-form recovery hint verbatim.
+         `maxlength` mirrors the server bounds (MAX_PHONE_LENGTH 32 /
+         MAX_EMAIL_LENGTH 160 — the GSO-T3 mirror convention). -->
+    <div>
+      <label class="field-lbl" for="pp-profile-phone">Mobil</label>
+      <input
+        id="pp-profile-phone"
+        v-model="profilePhone"
+        class="inp"
+        maxlength="32"
+        placeholder="+421 900 000 000"
+        :disabled="profileSaving"
+      />
+    </div>
+
+    <div>
+      <label class="field-lbl" for="pp-profile-email">Email</label>
+      <input
+        id="pp-profile-email"
+        v-model="profileEmail"
+        class="inp"
+        type="email"
+        maxlength="160"
+        :disabled="profileSaving"
+      />
+      <div class="field-help">Bez e-mailu vám nevieme poslať odkaz na obnovenie prístupu.</div>
     </div>
 
     <!-- Password-change fold — only for friends who HAVE a password (repo
@@ -1257,7 +1844,13 @@ defineExpose({ openProfileModal, openInviteModal })
           <div style="min-width:0">{{ changePasswordSuccess }}</div>
         </div>
 
-        <div>
+        <!-- ⚠ 09 §UC-ML-008 — CONDITIONALLY HIDDEN, never removed. A friend who came
+             in on a magic link does not know this password; that is why they used the
+             link. `portal-profile-modal.spec.js` pins this modal heavily and passes
+             UNCHANGED precisely because `magicLinkSession` is false on every
+             password-login session, so that spec renders the byte-identical markup it
+             always did. Only a redeemed session sees the difference. -->
+        <div v-if="!magicLinkSession">
           <label class="field-lbl" for="pp-profile-current-password">Aktuálne heslo</label>
           <input
             id="pp-profile-current-password"
@@ -1288,15 +1881,129 @@ defineExpose({ openProfileModal, openInviteModal })
             @keyup.enter="changePassword()"
           />
         </div>
+        <!-- ⚠ The `!changeCurrentPassword` term drops WITH the field (§UC-ML-008).
+             Leaving it in would leave the submit permanently disabled on exactly the
+             sessions the waiver exists for — the form would render and never submit. -->
         <button
           type="button"
           class="btn sm dark"
-          :disabled="changePasswordSaving || !changeCurrentPassword || !changeNewPassword || !changeNewPasswordConfirm"
+          :disabled="changePasswordSaving || (!magicLinkSession && !changeCurrentPassword) || !changeNewPassword || !changeNewPasswordConfirm"
           @click="changePassword()"
         >
           {{ changePasswordSaving ? 'Mením heslo...' : 'Zmeniť heslo' }}
         </button>
       </div>
+    </div>
+
+    <!-- Google section (10 §UC-GA-007) — PURELY ADDITIVE, and that is a requirement,
+         not a nicety: `portal-profile-modal.spec.js` pins this modal's labels ~10×
+         and must pass unmodified. It sits UNDER the existing fields, adds no
+         `.copyrow` (that count is asserted), reuses the fold's own separator style,
+         and its cancel is "Nechať prepojené" rather than a second "Zrušiť" — the
+         shipped spec resolves `dialog.getByRole('button', { name: 'Zrušiť' })`
+         unscoped, and a second match would break it in strict mode.
+
+         ⚠ The mode gate sits on the LINK branch only (`googleCanLink`), never on the
+         section: unlink has no server-side mode guard, so a linked friend keeps it on
+         every deployment. See `googleCanLink`'s declaration. -->
+    <div
+      v-if="googleSectionVisible"
+      data-testid="profile-google"
+      style="border-top:2px solid rgba(10,10,10,0.12);padding-top:12px"
+    >
+      <label class="field-lbl">Google</label>
+
+      <!-- LINKED: the address (or "Prepojené" when the token carried none) + the
+           unlink, behind a confirm. -->
+      <template v-if="googleSectionLinked">
+        <!-- The address and the unlink share ONE row (product decision, 2026-08-17:
+             the stacked form spent a whole line on a short address). `flex-wrap` is
+             the safety net, not the intent — at 320px the pair still fits, and if a
+             very long address ever pushes past it the button drops below instead of
+             overflowing the modal. ⚠ The address needs BOTH `min-width:0` (so the
+             flex item may shrink) and `overflow-wrap:anywhere` (so an unbreakable
+             address paints inside that box rather than through it — the RD-FO-2
+             lesson: `min-width:0` alone does not break a long token). -->
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;justify-content:space-between">
+          <div
+            class="sub"
+            data-testid="profile-google-email"
+            style="flex:1 1 auto;min-width:0;overflow-wrap:anywhere"
+          >
+            {{ googleSectionEmail || 'Prepojené' }}
+          </div>
+          <button
+            v-if="!googleConfirmUnlink"
+            type="button"
+            class="btn sm"
+            style="flex:0 0 auto"
+            :disabled="googleSectionBusy"
+            @click="googleConfirmUnlink = true"
+          >
+            Odpojiť Google účet
+          </button>
+        </div>
+        <!-- ⚠ `.confirmbox` + `.confirmbox .row` are the THEME's own inline-confirm
+             classes (friends-theme.css:285-286), used by `GuestShareDialog.vue` — the
+             precedent this confirm is modelled on. 02 §UC-DS-004 rule 1 puts a theme
+             class ahead of hand-rolled utilities, and it matters here beyond fidelity:
+             the destructive question was a `.field-help` (13px `--ink-dim`), i.e. it
+             read as dimmed helper text rather than a decision. `.confirmbox` also
+             carries A10's `line-height:normal`, so no call-site override is needed. -->
+        <!-- ⚠ `v-if`, not `v-else`: the button this used to alternate with now lives
+             INSIDE the address row above, so there is no adjacent `v-if` sibling to
+             pair with. The two states stay mutually exclusive on the same ref. -->
+        <div v-if="googleConfirmUnlink" class="confirmbox" style="margin-top:10px">
+          <!-- ⚠ §UC-GA-007: when the friend has no password, the confirm must say so
+               BEFORE they act. §UC-GA-004 names the recovery path — the admin reset —
+               and this sentence states it rather than implying the account is lost. -->
+          <div v-if="googleNoPassword" class="banner warn slim" data-testid="profile-google-warning">
+            <span class="dot"></span>
+            <div style="min-width:0">
+              Bez hesla sa nebudete môcť prihlásiť, kým vám správca nenastaví nové heslo.
+            </div>
+          </div>
+          <span><b>Naozaj chcete odpojiť Google účet?</b></span>
+          <div class="row">
+            <button
+              type="button"
+              class="btn sm dark"
+              :disabled="googleSectionBusy"
+              @click="confirmGoogleUnlink"
+            >
+              {{ googleSectionBusy ? 'Odpájam...' : 'Áno, odpojiť' }}
+            </button>
+            <button
+              type="button"
+              class="btn sm ghost"
+              :disabled="googleSectionBusy"
+              @click="googleConfirmUnlink = false"
+            >
+              Nechať prepojené
+            </button>
+          </div>
+        </div>
+      </template>
+
+      <!-- UNLINKED: the helper line + Google's own cross-origin iframe button. Brand
+           guidelines forbid restyling it, so the container carries the layout only.
+           ⚠ `v-else-if`, not `v-else`: outside modern mode there is no link to offer
+           and this branch must render NOTHING (the section itself is then absent too,
+           but a defensive `v-else` here could resurrect an empty box). -->
+      <template v-else-if="googleCanLink">
+        <div v-if="googleNoPassword" class="banner warn slim" data-testid="profile-google-warning">
+          <span class="dot"></span>
+          <div style="min-width:0">
+            Bez hesla sa nebudete môcť prihlásiť, kým vám správca nenastaví nové heslo.
+          </div>
+        </div>
+        <div class="field-help">Prepojte si Google účet a prihlasujte sa jedným klikom.</div>
+        <div
+          ref="googleProfileButtonEl"
+          data-testid="google-profile-signin"
+          style="margin-top:10px;display:flex;justify-content:center;min-height:44px"
+        ></div>
+      </template>
     </div>
 
     <template #footer>
@@ -1487,6 +2194,102 @@ defineExpose({ openProfileModal, openInviteModal })
     </template>
   </NeoModal>
 
+  <!-- Google link prompt (10 §UC-GA-006). Shown at most ONCE per login, and only for
+       a successful non-Google modern login of an unlinked, un-silenced friend — the
+       whole trigger lives in `googlePromptEligible`, seeded once at setup.
+
+       ⚠ `title-heading`: the spec's acceptance criteria are written against the
+       title, and `NeoModal`'s `.m-title` is a `<div>` by default.
+
+       ⚠ THE FOOTER IS A COLUMN, and that is not a style preference. `.m-foot` is
+       `display:flex` and `.m-foot .btn` is `flex:1` with `white-space:nowrap` and no
+       `min-width` — a three-option row has NO degradation signal (CLAUDE.md): it
+       neither shrinks nor wraps nor ellipsises, it paints outside the modal border
+       and hands the scrim a horizontal scrollbar. Measured min-content for these
+       three labels is ~340px against the ~224px a 320px viewport leaves inside the
+       footer. The wrapper is deliberately NOT a `.btn`, so the theme's `flex:1` does
+       not reach it and no specificity race is created. -->
+  <NeoModal
+    v-if="showGooglePrompt"
+    data-testid="google-link-prompt"
+    title="Prepojiť Google účet?"
+    title-heading
+    @close="closeGooglePrompt"
+  >
+    <div class="sub">Nabudúce sa prihlásite jedným klikom, bez hesla.</div>
+
+    <div v-if="googleLinkError" class="banner danger slim">
+      <span class="dot"></span>
+      <div style="min-width:0">{{ googleLinkError }}</div>
+    </div>
+
+    <!-- Google's own cross-origin iframe button. Brand guidelines forbid restyling
+         it, so this stays a bare mount point with no theme class (§UC-GA-005's rule,
+         which applies wherever the button is rendered). -->
+    <div
+      v-if="googlePromptStage === 'link'"
+      ref="googlePromptButtonEl"
+      data-testid="google-prompt-signin"
+    ></div>
+
+    <div
+      v-else-if="googlePromptStage === 'done'"
+      class="banner ok slim"
+      data-testid="google-prompt-linked"
+    >
+      <span class="dot"></span>
+      <div style="min-width:0">
+        Účet je prepojený<template v-if="googleLinkedEmail"> s {{ googleLinkedEmail }}</template>.
+      </div>
+    </div>
+
+    <div class="field-help">Prepojenie nájdete kedykoľvek v profile.</div>
+
+    <template #footer>
+      <div class="gp-actions">
+        <!-- ⚠ After a successful link the three options are GONE, not merely
+             disabled: re-firing the same credential can only repeat the same answer,
+             and "Už sa nepýtať" on a linked account would silence a prompt that
+             already has nothing left to offer. -->
+        <button
+          v-if="googlePromptStage === 'done'"
+          type="button"
+          class="btn accent"
+          @click="closeGooglePrompt"
+        >
+          Zavrieť
+        </button>
+        <template v-else>
+          <button
+            v-if="googlePromptStage === 'ask'"
+            type="button"
+            class="btn accent"
+            :disabled="googlePromptBusy"
+            @click="startGoogleLink"
+          >
+            Áno, teraz
+          </button>
+          <button
+            type="button"
+            class="btn"
+            :disabled="googlePromptBusy"
+            @click="closeGooglePrompt"
+          >
+            Teraz nie
+          </button>
+          <button
+            type="button"
+            class="btn"
+            :disabled="googlePromptBusy"
+            @click="dismissGooglePromptForever"
+          >
+            Už sa nepýtať
+          </button>
+        </template>
+      </div>
+    </template>
+  </NeoModal>
+
   <!-- Invite modal (UC-FL-011) — `portal.jsx:162-167`. The title keeps its
        familiar "Pozvi priateľa" (resolved conflict #5); the body copy is
        vy-form.
@@ -1574,3 +2377,21 @@ defineExpose({ openProfileModal, openInviteModal })
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+/* 10 §UC-GA-006 — the three-option footer, stacked.
+ *
+ * ⚠ Scoped to this view rather than added to `friends-theme.css`: that file is a
+ * byte-for-byte port of the design canon with a numbered adaptation list (A1..A12)
+ * this belongs to none of (the `CatScrollArrow.vue` / cart-line precedent).
+ *
+ * ⚠ Nothing here re-declares a property the theme sets on `.m-foot .btn` — the
+ * wrapper is not a `.btn`, so the theme's `flex:1` (0,3,0) is never in contention and
+ * this needs no specificity bet. */
+.gp-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+</style>

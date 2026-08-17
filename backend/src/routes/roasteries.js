@@ -13,7 +13,10 @@ router.get('/', (req, res) => {
 router.post('/', (req, res) => {
   const { name } = req.body;
 
-  if (!name || !name.trim()) {
+  // ⚠ FUP-T12: folded into the existing required rule — same status, same message.
+  // `!name` only caught falsy values; a number or an object reached `.trim()` and
+  // threw a TypeError ⇒ 500 plus a stack in the log.
+  if (typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'Názov pražiarne je povinný' });
   }
 
@@ -41,7 +44,8 @@ router.patch('/:id', (req, res) => {
     return res.status(404).json({ error: 'Pražiareň nebola nájdená' });
   }
 
-  if (!name || !name.trim()) {
+  // ⚠ FUP-T12: folded into the existing required rule — same status, same message.
+  if (typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'Názov pražiarne je povinný' });
   }
 

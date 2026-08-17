@@ -48,9 +48,32 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 // is what makes the current cycle (and the `previous` one) deterministic instead of
 // arbitrary among same-second ties. Each live-cycle test still builds its OWN cycle
 // through `freshLiveCycle()` and every read asserts it got that cycle before
-// asserting anything else. Same for `cyclePrev`, which must be the most recent
-// COMPLETED coffee cycle for the `previous` block. Both hold on a fresh local DB and
-// against a long-lived environment, because these cycles are created now.
+// asserting anything else. That holds on a fresh local DB and against a long-lived
+// environment, because the cycle is created immediately before the read.
+//
+// ⚠ `previous` — "the most recent COMPLETED coffee cycle", the route's second
+// whole-table singleton — is built INSIDE its own test for the same reason, NOT by
+// the beforeAll fixture. The reasoning is at that test; the short version is that a
+// fixture completed once at setup is outranked by every coffee cycle anything else
+// completes afterwards, and two shipped spec files do exactly that. `cyclePrev` in
+// beforeAll survives only for the coffee-analytics block, which looks its row up BY
+// ID and so does not care what the singleton pick resolves to.
+//
+// ⚠ NEITHER singleton can be re-scoped away: `GET /api/analytics/live-cycle` takes no
+// cycle parameter, so "the route picked my cycle" is a PRECONDITION of every value
+// below it, not a value claim that could be narrowed to test-owned rows. (A delta form
+// — "whatever cycle it picked, its totals moved by N" — is no escape either: on a
+// stolen pick it passes VACUOUSLY at 0-vs-0.) What makes it safe is
+// create-then-immediately-read at ONE worker.
+//
+// ⚠ And one worker is a DEFAULT, not a guarantee: nothing pins it. There is no
+// `workers` key in `e2e/playwright.config.js`, no CI config, and `e2e/package.json`'s
+// script is a bare `playwright test` — so Playwright's "50% of cores" default gives 1
+// here and 2 on a 4-core box. What is true is narrower: at >1 worker these
+// admin-API specs fail outright on the shared `settings.admin_token` (`admin.js` does
+// `INSERT OR REPLACE … 'admin_token'`, so whichever file logs in second clobbers the
+// other's token), which means the cycle-pick race is never the failure you would
+// actually observe. Do not upgrade that into "the race cannot happen".
 //
 // ⚠ Each cycle gets its OWN host, so the per-friend analytics table can be asserted
 // exactly (a shared host would sum kilos across cycles). That is 4 friend logins —
@@ -125,18 +148,49 @@ async function shareLink(host, cycleId) {
   return (await res.json()).link
 }
 
+// ⚠ EVERY guest name this spec submits is recorded here, and the "no guest in a
+// friend-shaped list" assertions below test membership of THIS SET rather than
+// matching a `/^Kolega /` name pattern across the whole friends table. Nothing
+// forbids a real friend from being called "Kolega …", so the pattern form was a
+// value claim over rows this spec does not own: it would have gone red on somebody
+// else's fixture while the endpoint was behaving perfectly.
+//
+// ⚠ Why the set form still witnesses the bug — and it is NOT "these are the only
+// guests in the window", which is false. `analytics.friends` is not cycle-scoped at
+// all (`analytics.js` takes every active friend plus every friend with an order), and
+// even the nudge list sits on a route whose completed-cycle lookback is table-wide.
+// The real argument is that "a guest is counted as a friend" is SYSTEMIC — it is a
+// property of how the route builds friend rows, not of one fixture — so this spec's
+// own guests are enough to witness it. The honest cost: a leak confined to ANOTHER
+// file's guests is not caught here.
+//
+// ⚠ And these two lines are DOCUMENTATION OF INTENT, not a pin. In both call sites the
+// same bug is caught first by a stronger neighbour (the byte-identical `not_ordered`
+// snapshot; the exact per-friend row assertions), and no single-line route mutation
+// was found that reds these without reddening those. They are kept because the
+// Decision 4 rule they state is worth stating, not because they hold a line alone.
+const guestNames = new Set()
+
 let guestSeq = 0
 async function submitGuest(linkToken, items, identity) {
+  const guestName = identity?.guest_name || `Kolega ${++guestSeq} ${uniq}`
   const res = await ctx.post(`/api/guest/${linkToken}/orders`, {
     data: {
-      guest_name: identity?.guest_name || `Kolega ${++guestSeq} ${uniq}`,
+      guest_name: guestName,
       guest_phone: identity?.guest_phone || '0901 234 567',
       guest_email: identity?.guest_email || 'kolega@example.com',
       items,
     },
   })
   expect(res.status(), 'guest submit').toBe(201)
+  guestNames.add(guestName)
   return res.json()
+}
+
+// The names of this spec's own guests found in a friend-shaped list. Returns the
+// offending names (not a boolean) so a failure says WHICH guest leaked.
+function guestsAmong(rows) {
+  return rows.map((r) => r.name).filter((n) => guestNames.has(n))
 }
 
 async function submitOwnOrder(host, cycleId, items) {
@@ -185,7 +239,10 @@ function friendRow(analytics, friendId) {
 // beforeAll builds the cycles that are DONE (nothing below mutates them):
 //
 //   cycleOther   open      — the cross-cycle leak probe (receives a guest order)
-//   cyclePrev    completed — 2 kg friend + 1 kg guest → live-cycle `previous`
+//   cyclePrev    completed — 2 kg friend + 1 kg guest → the coffee-analytics row for
+//                            a COMPLETED cycle, looked up BY ID. It is deliberately
+//                            NOT the source of live-cycle's `previous` any more; that
+//                            test completes its own cycle inline (see there).
 //   cycleLockedA locked    — 25 kg friend + 1 kg guest → the tier tip in analytics
 //   cycleLockedB locked    — 2 kg friend + 1 kg CANCELLED guest
 //
@@ -321,9 +378,10 @@ test.describe('live-cycle dashboard — cycle totals include guest kilos (UC-GSO
     expect(JSON.stringify(after.not_ordered), 'the nudge list is untouched').toBe(friendFacts.not_ordered)
     expect(after.potential_kg).toBe(friendFacts.potential_kg)
 
-    // And the guest appears nowhere in the friend-shaped output (every guest this
-    // spec submits is named `Kolega <n> <uniq>`).
-    expect(after.not_ordered.some((f) => /^Kolega /.test(f.name)), 'no guest in the nudge list').toBe(false)
+    // And the guest appears nowhere in the friend-shaped output. Scoped to the guests
+    // this spec submitted (see `guestNames`) — the nudge list is every eligible friend
+    // who has not ordered, i.e. an unbounded set of rows this test does not own.
+    expect(guestsAmong(after.not_ordered), 'no guest in the nudge list').toEqual([])
   })
 
   test('a cancelled sub-order contributes nothing', async () => {
@@ -385,16 +443,64 @@ test.describe('live-cycle dashboard — cycle totals include guest kilos (UC-GSO
   })
 
   test('the previous-cycle comparison counts guest kilos, but not guests as friends', async () => {
+    // ⚠ THIS TEST BUILDS ITS OWN `previous` CYCLE, seconds before reading it, for the
+    // same reason `freshLiveCycle()` exists one helper up. `live-cycle`'s `previous`
+    // is "the most recent COMPLETED coffee cycle" over the WHOLE table — the route
+    // takes no cycle parameter, so the only way to assert values for a nominated
+    // cycle is to be the one that owns the pick at read time.
+    //
+    // The beforeAll fixture could not give that. It completes `cyclePrev` once, up to
+    // four tests earlier, and every completed coffee cycle created anywhere after that
+    // moment outranks it on `created_at DESC, id DESC`. Two shipped spec files do
+    // exactly that today — `guest-rewards.spec.js` completes its `t4y` cycle and
+    // `guest-status.spec.js` completes (then re-opens) one — and neither is guarded.
+    //
+    // ⚠ Be precise about WHY that was not already red, because the reason is fragile
+    // rather than sound: at one worker whole FILES run in sequence and `beforeAll`
+    // re-runs per file, so `cyclePrev` was always the newest completed cycle in the
+    // instant it mattered. Nothing states that as a rule. Add ONE test above this one
+    // that completes a coffee cycle — the same single call those two files make — and
+    // the old form went red on `previous.id` with a pair of unrelated cycle ids
+    // (verified by injecting exactly that test). This form passes it unchanged.
+    //
+    // Making the fixture "unambiguously newest" is not available: `created_at` is a
+    // `DATETIME DEFAULT CURRENT_TIMESTAMP` with no API to set it, and beforeAll runs
+    // before those files do. Asserting whatever `previous` happened to resolve to is
+    // not available either — the exact kilos ARE the coverage. Nor is it covered
+    // elsewhere: the coffee-analytics block below asserts `cyclePrev`, the beforeAll
+    // fixture, by id; the `prev` cycle built here is asserted nowhere else.
+    //
+    // ⚠ ORDER MATTERS, and it is chosen to make the window ~ZERO. The live cycle is
+    // built FIRST and `prev` is completed LAST, so `setStatus(prev, 'completed')` is
+    // the last write before the read. Completing a cycle also removes it from the
+    // CURRENT-cycle pick (that query is `status IN ('open','locked')`), so `prev` being
+    // momentarily the newest open cycle costs nothing and the ordering is free.
+    // Building `prev` first instead would leave a whole `freshLiveCycle()` call — ~8
+    // requests — sitting between the completion and the read. Down from "one beforeAll
+    // plus four tests", and this row exists precisely because that DISTANCE was the
+    // real defect.
+    //
+    // `hostMain` is reused deliberately: nothing asserts hostMain's row in the
+    // per-friend analytics table (only hosts a/b/prev are), so this costs no extra
+    // friend login and cannot perturb the exact per-friend figures below.
     const { cycle } = await freshLiveCycle('prevcmp', 4)
+
+    const prev = await makeCycle('prevcmp-prev')
+    const productPrev = await addProduct(prev.id, { name: `E2E T8 prevcmp ${uniq}`, price_1kg: 20 })
+    const linkPrev = await shareLink(hostMain, prev.id)
+    await submitOwnOrder(hostMain, prev.id, [{ product_id: productPrev.id, variant: '1kg', quantity: 2 }])
+    await submitGuest(linkPrev.token, [{ product_id: productPrev.id, variant: '1kg', quantity: 1 }])
+    await setStatus(prev.id, 'completed')
+
     const body = await live(cycle)
-    expect(body.previous, 'cyclePrev is the most recent completed coffee cycle').toBeTruthy()
-    expect(body.previous.id).toBe(cyclePrev.id)
+    expect(body.previous, 'the cycle this test just completed is the most recent completed coffee cycle').toBeTruthy()
+    expect(body.previous.id).toBe(prev.id)
     expect(body.previous.total_kg, '2 kg friend + 1 kg guest').toBe(3)
     expect(body.previous.total_value, '40 + 20 EUR').toBe(60)
     expect(body.previous.num_friends, 'one friend ordered — the guest is not one').toBe(1)
     expect(body.previous.avg_kg_per_person, 'per-FRIEND average stays on friend kilos').toBe(2)
     expect(body.previous.avg_value_per_person).toBe(40)
-    expect(body.previous.friend_ids, 'only the host').toEqual([hostIds.prev])
+    expect(body.previous.friend_ids, 'only the host').toEqual([hostMain.id])
   })
 })
 
@@ -433,8 +539,10 @@ test.describe('coffee analytics — cycle totals include guest kilos (UC-GSO-013
     expect(host.cycles_participated).toBe(1)
     expect(host.avg_kg_per_cycle).toBe(25)
 
-    // No guest is ever a row in the friend table.
-    expect(analytics.friends.some((f) => /^Kolega /.test(f.name)), 'no guest in the friend table').toBe(false)
+    // No guest is ever a row in the friend table. Same scoping as the nudge list
+    // above: `analytics.friends` is every active friend plus every friend with an
+    // order — the whole friends table, in practice.
+    expect(guestsAmong(analytics.friends), 'no guest in the friend table').toEqual([])
   })
 
   test('a cancelled sub-order contributes nothing to a cycle total', async () => {

@@ -4,6 +4,7 @@ import { guestReadLimiter, guestWriteLimiter } from '../middleware/rate-limit.js
 import { gramsByProductFromItems, stockViolations, cycleAvailability } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup, VARIANT_PRICE_COLUMNS } from '../helpers/pricing.js';
 import { guestOrderStatus, guestPaymentReference } from '../helpers/guest-orders.js';
+import { bindValue } from '../helpers/bind-value.js';
 
 const router = Router();
 
@@ -270,9 +271,18 @@ function priceRequestedItems(body, cycle, markupRatio) {
     const quantity = asQuantity(item?.quantity);
     if (quantity <= 0) continue;
     // Scoped to this cycle: a token for cycle A can never order a product from B.
+    //
+    // ⚠ FUP-T15 — THE APP'S ONLY UNAUTHENTICATED WRITE, and `product_id` was the
+    // one field on it that reached a bind unchecked (name/phone/e-mail go through
+    // asString(), the quantity through asQuantity(), the variant through
+    // basePriceForVariant()'s `typeof === 'string'` gate, and the price comes from
+    // the DB). `{"product_id":{}}` was a 500 plus ~870 bytes of stack per request
+    // from anyone holding an office-wide share link — the FUP-T3/T7 log-flood rule.
+    // `bindValue` yields `undefined`, which binds as NULL, matches no product and
+    // therefore DROPS the line, exactly as an unknown product id already did.
     const product = db.prepare(
       'SELECT * FROM products WHERE id = ? AND cycle_id = ? AND active = 1'
-    ).get(item?.product_id, cycle.id);
+    ).get(bindValue(item?.product_id), cycle.id);
     if (!product) continue;
     const basePrice = basePriceForVariant(product, item?.variant);
     if (!basePrice) continue;
