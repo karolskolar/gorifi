@@ -2282,6 +2282,30 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       // Flipped IN PLACE: same modal, same document.
       await expect(section.getByTestId('profile-google-email')).toHaveText('profile@example.test')
       await expect(section.getByRole('button', { name: GOOGLE_UNLINK, exact: true })).toBeVisible()
+
+      // ⚠ The address and the unlink share ONE row (product decision, 2026-08-17 — the
+      // stacked form spent a whole line on a short address). Asserted as GEOMETRY, not
+      // as markup: the flex row is `flex-wrap`, so a restack is a legal CSS outcome that
+      // no structural assertion would notice. Tops within 12px = same line. Also pinned:
+      // the button stays inside the section's right edge, i.e. the row did not overflow
+      // to buy that line back.
+      {
+        const box = await section.getByTestId('profile-google-email').boundingBox()
+        const btn = await section.getByRole('button', { name: GOOGLE_UNLINK, exact: true }).boundingBox()
+        const sec = await section.boundingBox()
+        // ⚠ Asserted as VERTICAL OVERLAP, not as a pixel threshold on the tops. The
+        // first version used `< 12px` and the stacked mutation measured 15 — three
+        // pixels of margin, i.e. a change to the address line's `line-height` could
+        // have flipped it either way. Overlap is binary: on one row the two boxes
+        // necessarily share vertical space, stacked they necessarily do not.
+        const overlap = Math.min(box.y + box.height, btn.y + btn.height) - Math.max(box.y, btn.y)
+        expect(overlap, 'address and unlink share one row (boxes overlap vertically)').toBeGreaterThan(0)
+        expect(btn.x + btn.width, 'unlink stays inside the section').toBeLessThanOrEqual(sec.x + sec.width + 1)
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth),
+          'the one-row layout did not push the document sideways'
+        ).toBe(0)
+      }
       await expect(section.getByTestId('google-profile-signin'), 'the offer is gone once taken')
         .toHaveCount(0)
       await expect(section).not.toContainText(GOOGLE_SECTION_HELPER)

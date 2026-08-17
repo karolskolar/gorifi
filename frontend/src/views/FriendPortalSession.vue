@@ -1916,13 +1916,27 @@ defineExpose({ openProfileModal, openInviteModal })
       <!-- LINKED: the address (or "Prepojené" when the token carried none) + the
            unlink, behind a confirm. -->
       <template v-if="googleSectionLinked">
-        <div class="sub" data-testid="profile-google-email" style="overflow-wrap:anywhere">
-          {{ googleSectionEmail || 'Prepojené' }}
-        </div>
-        <div v-if="!googleConfirmUnlink" style="margin-top:10px">
+        <!-- The address and the unlink share ONE row (product decision, 2026-08-17:
+             the stacked form spent a whole line on a short address). `flex-wrap` is
+             the safety net, not the intent — at 320px the pair still fits, and if a
+             very long address ever pushes past it the button drops below instead of
+             overflowing the modal. ⚠ The address needs BOTH `min-width:0` (so the
+             flex item may shrink) and `overflow-wrap:anywhere` (so an unbreakable
+             address paints inside that box rather than through it — the RD-FO-2
+             lesson: `min-width:0` alone does not break a long token). -->
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;justify-content:space-between">
+          <div
+            class="sub"
+            data-testid="profile-google-email"
+            style="flex:1 1 auto;min-width:0;overflow-wrap:anywhere"
+          >
+            {{ googleSectionEmail || 'Prepojené' }}
+          </div>
           <button
+            v-if="!googleConfirmUnlink"
             type="button"
             class="btn sm"
+            style="flex:0 0 auto"
             :disabled="googleSectionBusy"
             @click="googleConfirmUnlink = true"
           >
@@ -1936,7 +1950,10 @@ defineExpose({ openProfileModal, openInviteModal })
              the destructive question was a `.field-help` (13px `--ink-dim`), i.e. it
              read as dimmed helper text rather than a decision. `.confirmbox` also
              carries A10's `line-height:normal`, so no call-site override is needed. -->
-        <div v-else class="confirmbox" style="margin-top:10px">
+        <!-- ⚠ `v-if`, not `v-else`: the button this used to alternate with now lives
+             INSIDE the address row above, so there is no adjacent `v-if` sibling to
+             pair with. The two states stay mutually exclusive on the same ref. -->
+        <div v-if="googleConfirmUnlink" class="confirmbox" style="margin-top:10px">
           <!-- ⚠ §UC-GA-007: when the friend has no password, the confirm must say so
                BEFORE they act. §UC-GA-004 names the recovery path — the admin reset —
                and this sentence states it rather than implying the account is lost. -->
