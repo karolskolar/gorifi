@@ -92,6 +92,38 @@ function isPendingPhoneConflict(e) {
     && /UNIQUE constraint failed: invitations\.phone/.test(String(e?.message || ''));
 }
 
+// ── 10 §UC-GA-009 — the approval's Google conflict, ONE frozen body ───────────
+//
+// ⚠ DELIBERATELY A DIFFERENT SENTENCE from §UC-GA-004's `GOOGLE_LINK_CONFLICT`
+// ('Tento Google účet je už prepojený s iným účtom', friends.js). That one answers a
+// FRIEND who just tried to link their own account; this one answers an ADMIN whose
+// applicant attached a Google account at registration that somebody else has claimed
+// in the meantime. Two readers, two facts — do not merge them.
+//
+// ⚠ NAMES NO FRIEND, by construction: there is no slot in this object for an id or a
+// name. §UC-GA-004's rule ("a form must not become a 'whose Google account is this?'
+// directory") applies on the admin surface too — the remedy is the same either way,
+// and it is the dialog's `drop_google_link` secondary action, not a lookup.
+export const GOOGLE_APPROVE_CONFLICT = Object.freeze({
+  error: 'Google účet z tejto registrácie je medzičasom prepojený s iným účtom',
+  field: 'google',
+});
+
+// Does this error come from `idx_friends_google_sub` (10 §UC-GA-001)? The
+// `friends.js` predicate of the same name, duplicated rather than imported: that one
+// is module-private to the link route and its own regression net pins it there.
+//
+// ⚠ BOTH halves are required, and the message half must stay COLUMN-SPECIFIC.
+// `friends.username` and `friends.uid` have unique indexes of their own; a username
+// collision is module 07's own 409 (a different sentence, on a different field) and a
+// uid collision is a genuine 500 — the retry loop above just failed. Reporting either
+// as "your Google account is taken" would be a lie the admin cannot act on.
+export function isGoogleSubConflict(e) {
+  return typeof e?.code === 'string'
+    && e.code.startsWith('SQLITE_CONSTRAINT')
+    && /UNIQUE constraint failed: friends\.google_sub/.test(String(e?.message || ''));
+}
+
 // GET /code/:code — Validate invite code (public, rate-limited against enumeration)
 router.get('/code/:code', abuseLimiter, (req, res) => {
   try {
@@ -455,6 +487,9 @@ router.get('/', requireAdmin, (req, res) => {
 //   400 — `username`/`note` present but not a string; no username resolvable; the
 //         username fails the format rule. All with a `field` marker.
 //   409 — the username is taken (`field: 'username'`)
+//   409 — the invitation's `google_sub` is already on a friend row (`field: 'google'`,
+//         10 §UC-GA-009). Re-submitting with `drop_google_link: true` approves via
+//         the unchanged path with no Google columns, so approval is never dead-ended.
 //   201 — `{ friend: { id, name, uid, username }, username, tempPassword,
 //           login_url, credentials_message, email }` — the last three added by
 //         07 §UC-IA-009 (Mailgun delivery); see the send block at the bottom.
@@ -516,6 +551,38 @@ router.post('/:id/approve', requireAdmin, async (req, res) => {
       return res.status(409).json({ error: USERNAME_TAKEN_MESSAGE, field: 'username' });
     }
 
+    // ── 10 §UC-GA-009: the invitation's Google identity, copied forward ───────
+    //
+    // ⚠ THIS IS TWO COLUMNS ON AN EXISTING INSERT — not a third write, not a network
+    // call. **No verification happens here**: the token was verified at registration
+    // (§UC-GA-008) and `invitations.google_sub` is a frozen historical record, i.e.
+    // DATA, not a credential to re-check. Adding an `await` on this path would put
+    // the check-then-write window the register handler already had to close into the
+    // credential-minting path as well.
+    //
+    // ⚠ `=== true`, never a truthiness test (the GSO-T4 rule: a destructive action
+    // requires explicit intent). `drop_google_link` silently discards an identity the
+    // applicant deliberately attached, so a stray `'false'` / `1` / `'yes'` from any
+    // client must not be read as consent. Failing CLOSED costs the admin one
+    // retryable 409; failing open costs the applicant their link with no signal.
+    const dropGoogleLink = body.drop_google_link === true;
+    // The e-mail is keyed on the SUB, never carried alone: `google_email` is display
+    // only (§UC-GA-002) and is NULL whenever Google reported the address unverified,
+    // so a row with an address but no sub is not a link and must not look like one.
+    const googleSub = dropGoogleLink ? null : (invitation.google_sub || null);
+    const googleEmail = googleSub ? (invitation.google_email || null) : null;
+
+    // Pre-check, OUTSIDE the transaction — the UC-IA-005 username pattern, and placed
+    // before bcrypt so a conflict costs no hashing. Under `instances: 1` plus
+    // synchronous better-sqlite3 this is the load-bearing layer (nothing between here
+    // and the INSERT yields); the `idx_friends_google_sub` translation in the catch
+    // below is the second, for the PM2-cluster scenario.
+    if (googleSub && db.get('SELECT id FROM friends WHERE google_sub = ?', [googleSub])) {
+      // ⚠ NOT scoped to `active` — the index is not either, so a check that ignored
+      // deactivated holders would 201 and then hit the constraint anyway.
+      return res.status(409).json({ ...GOOGLE_APPROVE_CONFLICT });
+    }
+
     // ⚠ ORDERING RULE (UC-IA-005): bcrypt and the two collision-retry loops run
     // BEFORE the transaction. `hashPassword` is bcrypt cost 10 — ~62 ms of blocking
     // CPU — and better-sqlite3 transactions are synchronous, so hashing inside one
@@ -573,14 +640,22 @@ router.post('/:id/approve', requireAdmin, async (req, res) => {
     //     adding it would put a third write inside a transaction the IA-T3 invariant
     //     pins at EXACTLY TWO.
     const approveInvitation = db.transaction(() => {
+      // ⚠ 10 §UC-GA-009 widens this statement by exactly TWO COLUMNS
+      // (`google_sub`, `google_email`) and adds NOTHING else — still ONE insert, so
+      // the transaction still holds exactly the two writes the invariant names.
+      // ⚠ `google_prompt_dismissed` is deliberately absent in either direction: the
+      // applicant never dismissed anything, and its DEFAULT 0 is what keeps the
+      // §UC-GA-006 prompt available to a friend created without a link.
       const result = db.prepare(`
         INSERT INTO friends
           (cycle_id, name, display_name, uid, access_token, invite_code, active,
-           phone, email, username, password_hash, must_change_password, onboarding_source)
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1, ?)
+           phone, email, username, password_hash, must_change_password, onboarding_source,
+           google_sub, google_email)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1, ?, ?, ?)
       `).run(
         cycleId, invitation.name, displayName, uid, accessToken, inviteCode,
-        invitation.phone, invitation.email || null, username, passwordHash, onboardingSource
+        invitation.phone, invitation.email || null, username, passwordHash, onboardingSource,
+        googleSub, googleEmail
       );
       const newFriendId = result.lastInsertRowid;
 
@@ -608,6 +683,13 @@ router.post('/:id/approve', requireAdmin, async (req, res) => {
       const message = e?.message || '';
       if (/UNIQUE/i.test(message) && /username/i.test(message)) {
         return res.status(409).json({ error: USERNAME_TAKEN_MESSAGE, field: 'username' });
+      }
+      // 10 §UC-GA-009's second layer, the same dual-layer shape one branch up:
+      // `idx_friends_google_sub` translates to the SAME 409 the pre-check answers
+      // with — one frozen constant, so the two cannot drift. Nothing is written on
+      // this path; the transaction is the mechanism.
+      if (isGoogleSubConflict(e)) {
+        return res.status(409).json({ ...GOOGLE_APPROVE_CONFLICT });
       }
       throw e;
     }

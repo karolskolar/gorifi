@@ -268,6 +268,42 @@ function makeApi(ctx, adminToken, dbPath) {
     setInvitationStatus(id, status) {
       withDb((db) => db.prepare('UPDATE invitations SET status = ? WHERE id = ?').run(status, Number(id)))
     },
+
+    // ── GA-T9 (§UC-GA-009) ───────────────────────────────────────────────────
+    /** `POST /api/invitations/:id/approve` — module 07's endpoint, which §UC-GA-009
+     *  widens rather than replaces. */
+    approve(id, data) {
+      return ctx.post(`/api/invitations/${id}/approve`, {
+        headers: admin(),
+        ...(data === undefined ? {} : { data }),
+      })
+    },
+    /**
+     * The created friend's WHOLE row.
+     *
+     * ⚠ `SELECT *` on purpose, unlike `row()` above: the "a non-Google invitation
+     * approves BYTE-IDENTICALLY to today" claim is a claim about EVERY column, so a
+     * fixed column list would let a future write to some field nobody listed pass.
+     */
+    friendRowById(id) {
+      return withDb((db) => db.prepare('SELECT * FROM friends WHERE id = ?').get(Number(id)))
+    },
+    friendBySub(sub) {
+      return withDb((db) => db.prepare(
+        'SELECT id, name, username, google_sub, google_email FROM friends WHERE google_sub = ?'
+      ).get(sub))
+    },
+    friendByUsername(username) {
+      return withDb((db) => db.prepare('SELECT id FROM friends WHERE username = ?').get(username))
+    },
+    friendCount() {
+      return withDb((db) => db.prepare('SELECT COUNT(*) AS n FROM friends').get().n)
+    },
+    /** The invitation as the row really is, by id — `invitationRow` is keyed on phone
+     *  and omits `created_friend_id`, which the approval back-link needs. */
+    invitationById(id) {
+      return withDb((db) => db.prepare('SELECT * FROM invitations WHERE id = ?').get(Number(id)))
+    },
   }
   return { api }
 }
@@ -3308,5 +3344,650 @@ test.describe('§UC-GA-008 — the invite-registration Google block', () => {
     await expect(page.getByLabel('Meno a priezvisko')).toHaveValue('Email UI')
     await expect(page.getByLabel('Telefón')).toHaveValue(phone)
     expect(await pendingByPhone(phone), 'nothing was written').toBeNull()
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GA-T9 — §UC-GA-009: approval of a Google-attached invitation
+//
+// The whole row is TWO EXTRA COLUMNS on an INSERT that module 07 owns
+// (`POST /api/invitations/:id/approve`, 07 §UC-IA-005). So the coverage below is
+// shaped by what could go wrong around that, not by "a friend appeared":
+//
+//   1. THE LINK REALLY CARRIES. Not "the column is set" but "the account works":
+//      every happy path ends in a `TEST:` GOOGLE LOGIN with the invitation's sub,
+//      which is the acceptance criterion this row exists for, and which also proves
+//      resolved decision #1 (`mustChangePassword: true` survives a Google login).
+//   2. A COLLISION WRITES NOTHING. `friends.friendCount()` is taken across the
+//      request, so "no friend row exists" is a claim about the whole table, not
+//      about a row we thought to look up — the transaction is the mechanism and a
+//      partially-applied approval is exactly what it must make impossible.
+//   3. APPROVAL IS NEVER DEAD-ENDED. `drop_google_link: true` gets the applicant an
+//      account anyway (product owner, 2026-08-15), and the sub stays with whoever
+//      legitimately holds it.
+//   4. `drop_google_link` IS A NO-OP ON A LINK-LESS INVITATION. Asserted as a
+//      WHOLE-ROW comparison between two friends approved by the SAME code, differing
+//      only in that request field, so "no-op" is not limited to the columns this file
+//      happens to name. ⚠ It is NOT the before/after baseline for "a non-Google
+//      invitation approves byte-identically to today" — both rows here are written by
+//      the new code. That baseline is `invitation-approval.spec.js` passing
+//      UNMODIFIED (§UC-GA-013 obligation 4); this test is the complement that covers
+//      the one request shape module 07 never sends.
+//
+// ⚠ WHAT NO TEST HERE CAN HOLD (§UC-GA-013 obligation 6, restated because this row
+// is where "add Google to approve" would be misread as licence): bcrypt and the
+// collision-retry loops still run OUTSIDE the transaction, and the transaction still
+// holds EXACTLY TWO WRITES. Both are undetectable from here — a `hashPassword` moved
+// inside the `db.transaction` callback passes every assertion in this file. They live
+// as code comments at the site and in CLAUDE.md.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// The exact bytes §UC-GA-009 mandates. ⚠ DELIBERATELY DIFFERENT from §UC-GA-004's
+// `LINK_CONFLICT` (asserted below): the friend-facing link 409 says "your account",
+// this one says "the account on this registration was linked elsewhere in the interim"
+// — two different facts, to two different readers.
+const APPROVE_GOOGLE_CONFLICT =
+  'Google účet z tejto registrácie je medzičasom prepojený s iným účtom'
+
+let ga9Seq = 0
+const ga9Username = (label) => `ga9${label}${uniq}${++ga9Seq}`.toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 30)
+
+test.describe('§UC-GA-009 — approving a Google-attached invitation', () => {
+  /** Register a pending invitation, optionally carrying a Google identity. */
+  async function pendingInvitation(api, { sub = null, email = 'attached@example.test', name = 'Ján Kováč' } = {}) {
+    const { code } = await api.inviteCode(tag('ga9inv'))
+    const phone = uniquePhone()
+    const res = await api.register({
+      invite_code: code, name, phone,
+      ...(sub ? { google_id_token: `TEST:${sub}:${email}` } : {}),
+    })
+    expect(res.status(), 'invitation register').toBe(201)
+    const row = api.invitationRow(phone)
+    expect(row, 'the invitation was stored').toBeTruthy()
+    return { ...row, phone }
+  }
+
+  test('the friend INSERT carries both Google columns, and the 201 body gains NOTHING', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const sub = tag('ga9-carry')
+      const invitation = await pendingInvitation(api, { sub, email: 'carry@example.test' })
+      expect(invitation.google_sub, 'GA-T8 really attached it').toBe(sub)
+
+      const username = ga9Username('carry')
+      const res = await api.approve(invitation.id, { username, note: 'Pozval/a: Niekto' })
+      expect(res.status(), 'approve').toBe(201)
+
+      // ⚠ THE STRIP PIN, on raw bytes (§UC-GA-013). `google_sub` stays out of the
+      // response: the dialog learns the link state from the invitation row it already
+      // has. A future `SELECT *` here fails loudly.
+      const raw = await res.text()
+      expect(raw.match(STRIP_RE) || [], 'google_sub must appear zero times').toEqual([])
+      const body = JSON.parse(raw)
+      // The 07 §UC-IA-005 / §UC-IA-009 key set, UNCHANGED — exact, not `toHaveProperty`.
+      expect(Object.keys(body).sort(), 'top-level keys are module 07\'s, unmoved').toEqual(
+        ['credentials_message', 'email', 'friend', 'login_url', 'tempPassword', 'username']
+      )
+      expect(Object.keys(body.friend).sort()).toEqual(['id', 'name', 'uid', 'username'])
+
+      // …and the row really did get the link, copied from the invitation.
+      const row = api.friendRowById(body.friend.id)
+      expect(row.google_sub, 'the invitation\'s sub landed on the friend').toBe(sub)
+      expect(row.google_email).toBe('carry@example.test')
+      // ⚠ NOT touched by approval — §UC-GA-001 owns it and the applicant never
+      // dismissed anything. A default of 1 here would silence the §UC-GA-006 prompt
+      // for every invited friend.
+      expect(row.google_prompt_dismissed).toBe(0)
+
+      // Every UC-IA-005 column is still exactly what module 07 puts there.
+      expect(row.name).toBe(invitation.name)
+      expect(row.display_name).toBe('Pozval/a: Niekto')
+      expect(row.username).toBe(username)
+      expect(row.phone).toBe(invitation.phone)
+      expect(row.active).toBe(1)
+      expect(row.must_change_password, 'resolved decision #5: the temp-password flow is unchanged').toBe(1)
+      expect(row.onboarding_source).toBe('invitation')
+      expect(typeof row.password_hash).toBe('string')
+      expect(row.password_hash.startsWith('$2'), 'a bcrypt digest, never the plaintext').toBe(true)
+
+      // The invitation is closed out and back-linked, and its OWN google columns are
+      // untouched (07 resolved conflict #4: approval never rewrites the frozen record).
+      const after = api.invitationById(invitation.id)
+      expect(after.status).toBe('processed')
+      expect(Number(after.created_friend_id)).toBe(Number(body.friend.id))
+      expect(after.google_sub).toBe(sub)
+      expect(after.google_email).toBe('carry@example.test')
+
+      // The temp password is real — the backup credential decision #1 depends on it.
+      const pw = await api.passwordLogin(username, body.tempPassword)
+      expect(pw.status(), 'the returned credentials really work').toBe(200)
+      expect((await pw.json()).mustChangePassword).toBe(true)
+    })
+  })
+
+  test('THE ACCEPTANCE CRITERION: the approved friend\'s Google login works immediately, with mustChangePassword true', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      await api.setModernMode()
+      const sub = tag('ga9-login')
+      const invitation = await pendingInvitation(api, { sub, email: 'login@example.test' })
+      const username = ga9Username('login')
+      const approved = await api.approve(invitation.id, { username })
+      expect(approved.status()).toBe(201)
+      const friendId = (await approved.json()).friend.id
+
+      // ⚠ THE POINT OF THE WHOLE ROW: no link step, no first password login, no admin
+      // action in between. The identity attached at registration is a working login
+      // the moment the account exists.
+      const res = await api.googleLogin({ id_token: `TEST:${sub}:login@example.test` })
+      expect(res.status(), 'Google login straight after approval').toBe(200)
+      const raw = await res.text()
+      expect(raw.match(STRIP_RE) || []).toEqual([])
+      const body = JSON.parse(raw)
+      expect(body.friend.id).toBe(friendId)
+      expect(body.friend.username).toBe(username)
+      expect(body.googleLinked).toBe(true)
+      // Resolved decision #1 — the forced-change gate is honoured on this path too, so
+      // the temp password cannot stay valid forever behind a Google login.
+      expect(body.mustChangePassword, 'resolved decision #1').toBe(true)
+      expect(body.hasCredentials, 'the temp password is the backup credential').toBe(true)
+    })
+  })
+
+  test('a NULL google_email with a SET google_sub still carries, and still logs in', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      await api.setModernMode()
+      // ⚠ `TEST:<sub>:` with an EMPTY address half is the seam's stand-in for the
+      // real state §UC-GA-002 produces: Google reported `email_verified: false`, so
+      // the address is NOT stored while the `sub` is. This is the state the approval
+      // dialog's fallback copy exists for — and the reason `GET /api/invitations`
+      // keeps the raw sub (GA-T8's recorded decision).
+      const sub = tag('ga9-noemail')
+      const invitation = await pendingInvitation(api, { sub, email: '' })
+      expect(invitation.google_sub).toBe(sub)
+      expect(invitation.google_email, 'unverified ⇒ no address stored').toBeNull()
+
+      const username = ga9Username('noemail')
+      const res = await api.approve(invitation.id, { username })
+      expect(res.status()).toBe(201)
+      const row = api.friendRowById((await res.json()).friend.id)
+      expect(row.google_sub, 'the sub is the identity; the e-mail is decoration').toBe(sub)
+      expect(row.google_email).toBeNull()
+
+      expect((await api.googleLogin({ id_token: `TEST:${sub}:` })).status(),
+        'an e-mail-less link is a working login').toBe(200)
+    })
+  })
+
+  test('an interim collision is a 409 that NAMES NO FRIEND — and writes nothing at all', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const sub = tag('ga9-clash')
+      const invitation = await pendingInvitation(api, { sub, email: 'clash@example.test' })
+
+      // "Medzičasom": between the registration and the approval, the same Google
+      // account got linked to an existing friend (§UC-GA-004's own flow).
+      const holder = await api.friendWithLogin(tag('ga9holder'))
+      api.linkGoogle(holder.id, { sub, email: 'holder@example.test' })
+
+      const username = ga9Username('clash')
+      const friendsBefore = api.friendCount()
+      const res = await api.approve(invitation.id, { username, note: 'Pozval/a: Niekto' })
+      expect(res.status(), 'the sub is taken ⇒ 409').toBe(409)
+
+      const body = await res.json()
+      expect(body.error).toBe(APPROVE_GOOGLE_CONFLICT)
+      expect(body.field).toBe('google')
+      // ⚠ §UC-GA-004's rule extended to the admin surface: the 409 must not become a
+      // "whose Google account is this?" lookup. An exact key set is the strongest form
+      // — no id, no name, no `created_friend_id` can be added without failing here.
+      expect(Object.keys(body).sort(), 'the body names no friend').toEqual(['error', 'field'])
+      expect(body.error).not.toBe(LINK_CONFLICT)
+
+      // ⚠ NOTHING WAS WRITTEN — a whole-table count across the request, not a lookup
+      // of the row we expected. The transaction is the mechanism.
+      expect(api.friendCount(), 'NO friend row exists').toBe(friendsBefore)
+      expect(api.friendByUsername(username), 'and the username is still free').toBeFalsy()
+      expect(api.invitationById(invitation.id).status, 'the invitation is still approvable').toBe('pending')
+      expect(api.invitationById(invitation.id).created_friend_id).toBeFalsy()
+      // The legitimate holder is untouched.
+      expect(api.friendBySub(sub).id).toBe(holder.id)
+    })
+  })
+
+  test('`drop_google_link: true` approves via the unchanged 07 path — approval is never dead-ended', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      await api.setModernMode()
+      const sub = tag('ga9-drop')
+      const invitation = await pendingInvitation(api, { sub, email: 'drop@example.test' })
+      const holder = await api.friendWithLogin(tag('ga9dropholder'))
+      api.linkGoogle(holder.id, { sub, email: 'holder@example.test' })
+
+      const username = ga9Username('drop')
+      // The collision the admin just saw…
+      expect((await api.approve(invitation.id, { username })).status()).toBe(409)
+      // …and the secondary action the dialog offers.
+      const res = await api.approve(invitation.id, { username, note: 'Bez Googlu', drop_google_link: true })
+      expect(res.status(), 'the applicant gets an account anyway').toBe(201)
+      const body = await res.json()
+
+      const row = api.friendRowById(body.friend.id)
+      expect(row.google_sub, 'the friend row carries NO google_sub').toBeNull()
+      expect(row.google_email).toBeNull()
+      // …and everything module 07 does is still done.
+      expect(row.username).toBe(username)
+      expect(row.display_name).toBe('Bez Googlu')
+      expect(row.must_change_password).toBe(1)
+      const pw = await api.passwordLogin(username, body.tempPassword)
+      expect(pw.status(), 'the temp-password path is exactly 07\'s').toBe(200)
+
+      // The sub stayed where it legitimately was, and still logs THAT friend in.
+      expect(api.friendBySub(sub).id).toBe(holder.id)
+      const gl = await api.googleLogin({ id_token: `TEST:${sub}:holder@example.test` })
+      expect(gl.status()).toBe(200)
+      expect((await gl.json()).friend.id, 'the holder, not the new friend').toBe(holder.id)
+
+      // The invitation's own record still says what the applicant did (frozen).
+      expect(api.invitationById(invitation.id).google_sub).toBe(sub)
+      expect(api.invitationById(invitation.id).status).toBe('processed')
+    })
+  })
+
+  test('⚠ only a LITERAL `true` drops the link — a truthy string does not', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const sub = tag('ga9-intent')
+      const invitation = await pendingInvitation(api, { sub, email: 'intent@example.test' })
+      const holder = await api.friendWithLogin(tag('ga9intentholder'))
+      api.linkGoogle(holder.id, { sub, email: 'holder@example.test' })
+      const username = ga9Username('intent')
+
+      // The GSO-T4 rule ("a destructive action requires explicit intent") applied to a
+      // flag that silently discards an identity the applicant deliberately attached.
+      // A stray `'false'`, `'0'` or `1` from a client must not be read as consent —
+      // and failing CLOSED here is a retryable 409, not a lost link.
+      for (const value of ['true', 'yes', 1, {}, [], 'false']) {
+        const res = await api.approve(invitation.id, { username, drop_google_link: value })
+        expect(res.status(), `drop_google_link: ${JSON.stringify(value)} must NOT drop the link`).toBe(409)
+        expect((await res.json()).field).toBe('google')
+      }
+      // Non-vacuity: the same call with a real boolean goes through.
+      const ok = await api.approve(invitation.id, { username, drop_google_link: true })
+      expect(ok.status()).toBe(201)
+      expect(api.friendRowById((await ok.json()).friend.id).google_sub).toBeNull()
+    })
+  })
+
+  test('a link-less invitation approves with NULL Google columns, and `drop_google_link` changes not one column of it', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      // Two invitations that differ in NOTHING but the request body of the approval.
+      const plain = await pendingInvitation(api, { name: 'Bez Googlu' })
+      const alsoPlain = await pendingInvitation(api, { name: 'Bez Googlu' })
+      expect(plain.google_sub, 'no attach').toBeNull()
+
+      const usernameA = ga9Username('plaina')
+      const a = await api.approve(plain.id, { username: usernameA, note: 'Rovnaká poznámka' })
+      expect(a.status()).toBe(201)
+      const bodyA = await a.json()
+      expect(Object.keys(bodyA).sort()).toEqual(
+        ['credentials_message', 'email', 'friend', 'login_url', 'tempPassword', 'username']
+      )
+      const rowA = api.friendRowById(bodyA.friend.id)
+      expect(rowA.google_sub, 'no invitation link ⇒ no friend link').toBeNull()
+      expect(rowA.google_email).toBeNull()
+
+      // ⚠ `drop_google_link` on an invitation that has no link is a NO-OP, not an
+      // error: the dialog may resend it, and refusing would dead-end an approval for
+      // the one state where there is nothing to dead-end on.
+      const usernameB = ga9Username('plainb')
+      const b = await api.approve(alsoPlain.id, { username: usernameB, note: 'Rovnaká poznámka', drop_google_link: true })
+      expect(b.status()).toBe(201)
+      const rowB = api.friendRowById((await b.json()).friend.id)
+
+      // ⚠ THE WHOLE-ROW CLAIM, and what it is and is not. BOTH rows are written by
+      // the code under test, so this is not a before/after baseline — that is
+      // `invitation-approval.spec.js` passing unmodified. What it pins is that the
+      // one request field module 07 never sends changes NOTHING when there is no link
+      // to drop. Everything that is not identity (id, uid, tokens, timestamps, the
+      // invite code, the bcrypt salt) is excluded by name; every other column —
+      // including ones this file never mentions — must match.
+      const volatile = new Set([
+        'id', 'uid', 'access_token', 'invite_code', 'password_hash', 'created_at', 'updated_at',
+        'name', 'phone', 'email', 'username',
+      ])
+      const shape = (row) => Object.fromEntries(Object.entries(row).filter(([k]) => !volatile.has(k)))
+      expect(shape(rowB), 'the flag changed nothing on a link-less invitation').toEqual(shape(rowA))
+    })
+  })
+
+  test('§UC-GA-009 pre-check ordering: a taken USERNAME still wins, and neither 409 writes', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      // Both conflicts at once. The username 409 keeps its own sentence and field —
+      // §UC-GA-009 adds a check, it does not relabel module 07's.
+      const sub = tag('ga9-both')
+      const invitation = await pendingInvitation(api, { sub, email: 'both@example.test' })
+      const holder = await api.friendWithLogin(tag('ga9bothholder'))
+      api.linkGoogle(holder.id, { sub, email: 'holder@example.test' })
+
+      const before = api.friendCount()
+      const res = await api.approve(invitation.id, { username: holder.username })
+      expect(res.status()).toBe(409)
+      const body = await res.json()
+      expect(body.field, 'the username check runs first — it is module 07\'s').toBe('username')
+      expect(body.error).toBe('Toto prihlasovacie meno je už obsadené')
+      expect(api.friendCount()).toBe(before)
+    })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §UC-GA-009 — the SECOND layer: the SQLITE_CONSTRAINT translation
+//
+// The app pre-check is the load-bearing one under `instances: 1` (its SELECT and the
+// INSERT are separated by nothing that yields), so the constraint layer exists for the
+// PM2-cluster scenario the standing concurrency caveat warns about — and is therefore
+// unreachable over HTTP. What CAN rot, and is pinned here, is the PREDICATE: it
+// matches on `code` + the exact SQLite message, either of which a driver upgrade could
+// move, silently turning a clean 409 into a 500. The GA-T5 / GA-T8 probe precedent.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test.describe('§UC-GA-009 — the constraint layer, without the app pre-check', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+  const SCHEMA_URL = 'file://' + join(REPO_ROOT, 'backend', 'src', 'db', 'schema.js')
+  const INVITATIONS_URL = 'file://' + join(REPO_ROOT, 'backend', 'src', 'routes', 'invitations.js')
+  const HAS_SOURCE = existsSync(join(REPO_ROOT, 'backend', 'src', 'routes', 'invitations.js'))
+
+  test('what sqlite throws on idx_friends_google_sub is what the approval\'s guard matches', () => {
+    test.skip(!CAN_SPAWN_BACKEND || !HAS_SOURCE, NEEDS_SOURCE)
+    const dir = mkdtempSync(join(tmpdir(), 'ga-t9-probe-'))
+    const script = join(dir, 'probe.mjs')
+    try {
+      writeFileSync(script, `import db from '${SCHEMA_URL}';
+import { isGoogleSubConflict, GOOGLE_APPROVE_CONFLICT } from '${INVITATIONS_URL}';
+const out = {};
+out.indexSql = (db.get("SELECT sql FROM sqlite_master WHERE type='index' AND name = 'idx_friends_google_sub'") || {}).sql || null;
+out.conflictBody = GOOGLE_APPROVE_CONFLICT;
+db.run("INSERT INTO order_cycles (name) VALUES ('GA-T9 probe cycle')");
+const cyc = db.get('SELECT id FROM order_cycles ORDER BY id DESC LIMIT 1').id;
+db.run("INSERT INTO friends (name, cycle_id, access_token, google_sub) VALUES ('Holder', ?, 'ga9-holder', 'ga9-probe-sub')", [cyc]);
+try {
+  // The approval's own INSERT shape, second time round — the state a cluster peer
+  // could create between this process's pre-check and its transaction.
+  db.run("INSERT INTO friends (name, cycle_id, access_token, google_sub) VALUES ('New', ?, 'ga9-new', 'ga9-probe-sub')", [cyc]);
+  out.threw = false;
+} catch (e) {
+  out.threw = true;
+  out.code = e.code;
+  out.message = e.message;
+  out.guardMatches = isGoogleSubConflict(e);
+}
+out.friends = db.all("SELECT name FROM friends WHERE google_sub = 'ga9-probe-sub'").map(r => r.name);
+// The guard must be NARROW: a username collision is module 07's 409, and a uid
+// collision is a genuine 500 — neither may be reported as a Google conflict.
+try {
+  db.run("INSERT INTO friends (name, cycle_id, access_token, username) VALUES ('U1', ?, 'ga9-u1', 'ga9probeuser')", [cyc]);
+  db.run("INSERT INTO friends (name, cycle_id, access_token, username) VALUES ('U2', ?, 'ga9-u2', 'ga9probeuser')", [cyc]);
+} catch (e) { out.usernameMatches = isGoogleSubConflict(e); out.usernameMessage = e.message; }
+console.log('@@PROBE@@' + JSON.stringify(out));
+`)
+      const stdout = execFileSync(process.execPath, [script], {
+        env: { ...process.env, DB_PATH: join(dir, 'probe.sqlite'), GOOGLE_CLIENT_ID: '', GOOGLE_AUTH_TEST_MODE: '' },
+        encoding: 'utf8',
+        cwd: REPO_ROOT,
+      })
+      const m = stdout.match(/@@PROBE@@(.*)/)
+      expect(m, `probe produced no marker. stdout:\n${stdout}`).toBeTruthy()
+      const out = JSON.parse(m[1])
+
+      expect(out.indexSql, 'idx_friends_google_sub is the mechanism — without it everything below is vacuous')
+        .toMatch(/UNIQUE INDEX/i)
+      expect(out.threw, 'a second friend on one sub must be refused by the DB').toBe(true)
+      expect(out.guardMatches,
+        `the approval's isGoogleSubConflict no longer matches what sqlite throws — the second layer is dead code and a lost race is a 500.\ncode=${out.code}\nmessage=${out.message}`)
+        .toBe(true)
+      expect(out.friends, 'nothing was written on the refused INSERT').toEqual(['Holder'])
+      // One constant, two layers — the pre-check and the catch cannot drift apart.
+      expect(out.conflictBody).toEqual({ error: APPROVE_GOOGLE_CONFLICT, field: 'google' })
+      expect(out.usernameMatches,
+        `a USERNAME collision must not be reported as a Google conflict (${out.usernameMessage})`).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// §UC-GA-009 — the approval dialog + the list badge (GA-T9, UI half)
+//
+// ON THE GATE, and admin-only. ⚠ Every invitation registered here is deliberately
+// WITHOUT an e-mail address, so an approval can never reach a transport (the
+// `invitation-approval.spec.js` mail guard, in its simplest form).
+// ⚠ ONE ADMIN TOKEN APP-WIDE: `loginAsAdminUI` below adopts the browser's token, or
+// every API call after the first UI login 401s for a reason unrelated to the test.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ⚠ `Prepojené`, NOT `InviteRegister.vue`'s 'Google účet je pripojený'. The two admin
+// screens are aligned with each other (`AdminFriends.vue:422/576` renders this exact
+// word for this exact state); the public invite form keeps its full sentence because
+// its reader is an applicant, not an admin. Divergence by AUDIENCE, not by screen.
+const APPROVE_GOOGLE_FALLBACK = 'Google: Prepojené'
+const APPROVE_DROP_GOOGLE = 'Vytvoriť bez Google prepojenia'
+
+test.describe('§UC-GA-009 — the approval dialog\'s Google line', () => {
+  let uiCtx = null
+  let uiAdminToken = ''
+  let uiInviteCode = ''
+
+  async function uiAdmin(path, opts = {}) {
+    return uiCtx[opts.method || 'get'](path, {
+      headers: { 'X-Admin-Token': uiAdminToken },
+      ...(opts.data ? { data: opts.data } : {}),
+    })
+  }
+
+  test.beforeAll(async ({ baseURL }) => {
+    uiCtx = await playwrightRequest.newContext({ baseURL })
+    const login = await uiCtx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+    expect(login.status(), 'admin login').toBe(200)
+    uiAdminToken = (await login.json()).token
+
+    const headers = { 'X-Admin-Token': uiAdminToken }
+    const name = `GA9 Inviter ${uniq}`
+    const username = `ga9i${uniq}`.replace(/[^a-z0-9_]/g, '').slice(0, 30)
+    const created = await uiCtx.post('/api/friends', { headers, data: { name } })
+    expect(created.status(), 'friend create').toBe(201)
+    const friend = await created.json()
+    expect((await uiCtx.put(`/api/friends/${friend.id}/admin-username`, { headers, data: { username } })).status()).toBe(200)
+    expect((await uiCtx.put(`/api/friends/${friend.id}/reset-password`, { headers, data: { password: 'initPass1' } })).status()).toBe(200)
+    const auth = await uiCtx.post('/api/friends/auth', { data: { username, password: 'initPass1' } })
+    expect(auth.status()).toBe(200)
+    const first = (await auth.json()).token
+    const chg = await uiCtx.put(`/api/friends/${friend.id}/change-password`, {
+      headers: { Authorization: `Bearer ${first}` },
+      data: { currentPassword: 'initPass1', newPassword: 'ownPass1' },
+    })
+    expect(chg.status()).toBe(200)
+    const token = (await chg.json()).token || first
+    const code = await uiCtx.get('/api/invitations/my-code', { headers: { Authorization: `Bearer ${token}` } })
+    expect(code.status()).toBe(200)
+    uiInviteCode = (await code.json()).inviteCode
+    expect(uiInviteCode).toBeTruthy()
+  })
+
+  test.afterAll(async () => { await uiCtx?.dispose() })
+
+  /** A pending invitation, NEVER with an e-mail (see the mail note above). */
+  async function register({ sub = null, email = 'dialog@example.test', name = 'Ján Kováč' } = {}) {
+    const phone = uniquePhone()
+    const res = await uiCtx.post('/api/invitations/register', {
+      data: {
+        invite_code: uiInviteCode, name, phone,
+        ...(sub ? { google_id_token: `TEST:${sub}:${email}` } : {}),
+      },
+    })
+    expect(res.status(), 'register').toBe(201)
+    const list = await uiAdmin('/api/invitations?status=pending')
+    expect(list.status()).toBe(200)
+    const row = (await list.json()).find((r) => r.phone === phone)
+    expect(row, 'the pending row is visible to the admin').toBeTruthy()
+    return row
+  }
+
+  /**
+   * ⚠ CALL THIS FIRST IN EVERY TEST HERE, BEFORE ANY `uiAdmin()` / `register()`.
+   *
+   * There is exactly ONE admin token app-wide (`admin.js` does `INSERT OR REPLACE`
+   * on a single settings row), so ANY admin login anywhere invalidates ours — and
+   * §UC-GA-011 adds a SECOND way to mint one (`POST /api/admin/google-login`), which
+   * GA-T10's describe will exercise in this same file. A test that did its API setup
+   * on a token adopted by the PREVIOUS test would then 401 on its first call for a
+   * reason that has nothing to do with what it asserts, and read as a GA-T9
+   * regression. Logging in first makes each test's token its own.
+   */
+  async function loginAsAdminUI(page) {
+    await page.goto('/admin')
+    await page.locator('#password').fill(ADMIN_PASSWORD)
+    await page.getByRole('button', { name: /Prihlásiť sa/ }).click()
+    await expect(page).toHaveURL(/\/admin\/dashboard/)
+    uiAdminToken = await page.evaluate(() => localStorage.getItem('adminToken'))
+    expect(uiAdminToken, 'the UI login stored an admin token').toBeTruthy()
+  }
+
+  function rowFor(page, phone) {
+    return page.locator('tr', { hasText: phone })
+  }
+
+  async function openDialog(page, phone) {
+    const row = rowFor(page, phone)
+    await expect(row).toBeVisible()
+    await row.getByRole('button', { name: 'Vytvoriť' }).click()
+    const dialog = page.getByTestId('approve-dialog')
+    await expect(dialog).toBeVisible()
+    return dialog
+  }
+
+  test('a Google-attached invitation gets a list BADGE and a summary line naming the e-mail; a plain one gets neither', async ({ page }) => {
+    await loginAsAdminUI(page)
+    const attached = await register({ sub: tag('ga9-ui-mail'), email: 'kolega@example.test' })
+    const plain = await register({ name: 'Bez Googlu' })
+
+    await page.goto('/admin/invitations')
+
+    // ⚠ The badge and its absence are asserted in ONE test against ONE list, so a
+    // badge rendered unconditionally cannot pass.
+    await expect(rowFor(page, attached.phone).getByTestId('invitation-google')).toBeVisible()
+    await expect(rowFor(page, plain.phone).getByTestId('invitation-google')).toHaveCount(0)
+
+    const dialog = await openDialog(page, attached.phone)
+    const line = dialog.getByTestId('approve-google')
+    await expect(line).toBeVisible()
+    await expect(line, 'the admin sees WHICH account they are approving')
+      .toHaveText('Google: kolega@example.test')
+    await page.keyboard.press('Escape')
+    await expect(page.getByTestId('approve-dialog')).toHaveCount(0)
+
+    const plainDialog = await openDialog(page, plain.phone)
+    await expect(plainDialog.getByTestId('approve-google'), 'no link, no line').toHaveCount(0)
+    // Non-vacuity: the summary itself really rendered.
+    await expect(plainDialog.getByTestId('approve-summary')).toContainText(plain.phone)
+  })
+
+  test('⚠ google_email NULL with google_sub SET still renders the line — the fallback wording', async ({ page }) => {
+    // The §UC-GA-002 unverified-address state. The whole reason `GET /api/invitations`
+    // keeps the raw sub: an e-mail-only signal would render NOTHING here.
+    await loginAsAdminUI(page)
+    const invitation = await register({ sub: tag('ga9-ui-noemail'), email: '' })
+    expect(invitation.google_email, 'the fixture really is the NULL-e-mail state').toBeFalsy()
+    expect(invitation.google_sub, 'while the sub IS set').toBeTruthy()
+
+    await page.goto('/admin/invitations')
+    await expect(rowFor(page, invitation.phone).getByTestId('invitation-google')).toBeVisible()
+
+    const dialog = await openDialog(page, invitation.phone)
+    await expect(dialog.getByTestId('approve-google')).toHaveText(APPROVE_GOOGLE_FALLBACK)
+  })
+
+  test('the collision 409 explains itself, names no friend, and the secondary action creates the account anyway', async ({ page }) => {
+    // Manufacture the interim collision through the app only (no DB write, so this
+    // cannot self-skip): register A with the sub, park it, register B with the same
+    // sub, put A back in the queue, approve A — now a real friend holds it.
+    await loginAsAdminUI(page)
+    const sub = tag('ga9-ui-clash')
+    const a = await register({ sub, email: 'holder@example.test', name: 'Prvý GA9' })
+    expect((await uiAdmin(`/api/invitations/${a.id}`, { method: 'patch', data: { status: 'rejected' } })).status()).toBe(200)
+    const b = await register({ sub, email: 'holder@example.test', name: 'Druhý GA9' })
+    expect((await uiAdmin(`/api/invitations/${a.id}`, { method: 'patch', data: { status: 'pending' } })).status()).toBe(200)
+
+    const holderUsername = ga9Username('uiholder')
+    const approvedA = await uiAdmin(`/api/invitations/${a.id}/approve`, { method: 'post', data: { username: holderUsername } })
+    expect(approvedA.status(), 'the holder now owns the sub').toBe(201)
+    const holderId = (await approvedA.json()).friend.id
+
+    await page.goto('/admin/invitations')
+    const dialog = await openDialog(page, b.phone)
+
+    const username = ga9Username('uidrop')
+    await dialog.getByTestId('approve-username').fill(username)
+    await dialog.getByTestId('approve-submit').click()
+
+    // The server's own sentence, verbatim, in the dialog's existing inline error slot.
+    await expect(dialog.getByTestId('approve-error')).toHaveText(APPROVE_GOOGLE_CONFLICT)
+    // ⚠ AND IT NAMES NOBODY. The other friend's name and username must not reach this
+    // screen — a support dialog must not become an identity lookup.
+    await expect(dialog).not.toContainText('Prvý GA9')
+    await expect(dialog).not.toContainText(holderUsername)
+    // The username the admin typed survives — same rule as every other inline 409.
+    await expect(dialog.getByTestId('approve-username')).toHaveValue(username)
+
+    // ⚠ BOTH controls POST the same form, so they must share one gate: an empty
+    // username disables the secondary action exactly as it disables the primary,
+    // instead of sending a request the primary button structurally prevents.
+    await dialog.getByTestId('approve-username').fill('')
+    await expect(dialog.getByTestId('approve-drop-google')).toBeDisabled()
+    await expect(dialog.getByTestId('approve-submit')).toBeDisabled()
+    await dialog.getByTestId('approve-username').fill(username)
+    await expect(dialog.getByTestId('approve-drop-google')).toBeEnabled()
+
+    // The secondary action §UC-GA-009 resolves to (product owner, 2026-08-15).
+    await dialog.getByTestId('approve-drop-google').click()
+    await expect(dialog.getByTestId('approve-credentials'), 'the applicant got an account').toBeVisible()
+    await expect(dialog.getByTestId('approve-cred-username')).toHaveText(username)
+
+    const friends = await (await uiAdmin('/api/friends')).json()
+    const created = friends.find((f) => f.username === username)
+    expect(created, 'the friend really exists').toBeTruthy()
+    expect(created.googleLinked, 'created WITHOUT the Google link').toBe(false)
+    expect(friends.find((f) => f.id === holderId).googleLinked, 'and the holder kept theirs').toBe(true)
+  })
+
+  test('the secondary action is offered ONLY on the Google 409 — a username 409 does not get it', async ({ page }) => {
+    await loginAsAdminUI(page)
+    const taken = ga9Username('uitaken')
+    const first = await register({ name: 'Obsadené A' })
+    expect((await uiAdmin(`/api/invitations/${first.id}/approve`, { method: 'post', data: { username: taken } })).status()).toBe(201)
+    const second = await register({ sub: tag('ga9-ui-only'), email: 'only@example.test', name: 'Obsadené B' })
+
+    await page.goto('/admin/invitations')
+    const dialog = await openDialog(page, second.phone)
+
+    // A Google-ATTACHED invitation with a taken username: the drop control must not
+    // appear, because dropping the link would not fix the actual problem.
+    await dialog.getByTestId('approve-username').fill(taken)
+    await dialog.getByTestId('approve-submit').click()
+    await expect(dialog.getByTestId('approve-error')).toHaveText('Toto prihlasovacie meno je už obsadené')
+    await expect(dialog.getByTestId('approve-drop-google'), 'wrong remedy ⇒ not offered').toHaveCount(0)
+    await expect(dialog.getByRole('button', { name: APPROVE_DROP_GOOGLE })).toHaveCount(0)
+
+    // …and fixing the real problem still works, WITH the link intact.
+    const good = ga9Username('uifixed')
+    await dialog.getByTestId('approve-username').fill(good)
+    await dialog.getByTestId('approve-submit').click()
+    await expect(dialog.getByTestId('approve-credentials')).toBeVisible()
+    const friends = await (await uiAdmin('/api/friends')).json()
+    expect(friends.find((f) => f.username === good).googleLinked, 'the link was kept').toBe(true)
   })
 })
