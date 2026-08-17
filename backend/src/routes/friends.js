@@ -406,7 +406,22 @@ router.get('/:id/profile', (req, res) => {
     return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
   }
   friend.hasCredentials = !!friend.password_hash;
-  res.json(sanitizeFriend(friend));
+  const payload = sanitizeFriend(friend);
+  // ⚠ FUP-T20 — `friends.display_name` is the ADMIN-ONLY note (11 §UC-FC-001:
+  // "Poznámka … never shown to the friend"; the column name is a historical
+  // misnomer). This route does `SELECT *`, so the note was travelling to the
+  // friend's browser; nothing rendered it, but it was one DevTools tab from
+  // visible.
+  //
+  // ⚠ STRIPPED HERE, NOT IN `sanitizeFriend` — and that is the whole point of
+  // this line. `sanitizeFriend` has SEVEN call sites, several of them admin
+  // routes (`GET /`, `GET /:id/detail`, `POST /`, `PATCH /:id`, …), and
+  // `AdminFriends.vue` reads `display_name` for its Poznámka column off exactly
+  // those. Stripping it centrally would silence the leak and silently blank the
+  // admin's note everywhere. `sanitizeFriend` stays the one home for CREDENTIAL
+  // stripping (11 §UC-FC-005); audience-scoped fields belong to their route.
+  delete payload.display_name;
+  res.json(payload);
 });
 
 // POST /friends/:id/setup-credentials - Set username + password for first time

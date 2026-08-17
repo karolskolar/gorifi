@@ -393,9 +393,13 @@ async function beginSession({
 }
 
 // Fill in the fields the login/restore payloads don't carry (packeta_address,
-// phone, email, username, hasCredentials, display_name) from the owner-scoped
-// profile endpoint. Fire-and-forget: the portal works without it, and no caller
-// may block a login on it.
+// phone, email, username, hasCredentials) from the owner-scoped profile endpoint.
+// Fire-and-forget: the portal works without it, and no caller may block a login
+// on it.
+//
+// ⚠ FUP-T20: `display_name` is NO LONGER among them, and must never come back.
+// It is the admin-only Poznámka (11 §UC-FC-001), and `GET /friends/:id/profile`
+// now strips it — nothing on a friend surface may render or merge it.
 //
 // ⚠ Called from all FOUR entries into a session — both restore paths and, since
 // UC-FC-009, both fresh-login paths. `POST /friends/auth` (either mode) carries
@@ -979,9 +983,12 @@ const currentFriendName = computed(() => currentFriend.value?.name || savedAuth.
 // wordmark with the name demoted to `.s`, so the appbar reads as the BRAND and no
 // user identifier is on screen. The wordmark is therefore constant across both auth
 // states and only `.s` varies — do not reintroduce a per-state `.t`.
-// The computed stays because `FriendPortalSession` still passes the uid down to the
-// profile/invite modal, which is where a friend is meant to read their own code.
-const currentFriendUid = computed(() => currentFriend.value?.uid || savedAuth.value?.friendUid || '')
+// ⚠ FUP-T20 removed the LAST on-screen consumer: the profile modal's read-only
+// `Jedinečné ID` box (an internal identifier a friend can neither read anything off
+// nor act on). So no friend-facing surface renders the uid any more, and the
+// computed plus the `:friend-uid` prop it fed are gone with the box. The uid itself
+// is untouched: it is still stored in `gorifi_friend_auth` (`friendUid`, pinned by
+// `modern-login.spec.js`) and still shown in the admin's own ID column.
 
 // Computed: friends to show in dropdown (exclude those with credentials in transition mode)
 const dropdownFriends = computed(() => {
@@ -1573,7 +1580,6 @@ const dropdownFriends = computed(() => {
       :friend-id="selectedFriendId"
       :friend="currentFriend"
       :friend-name="currentFriendName"
-      :friend-uid="currentFriendUid"
       :entry="entry"
       :auth-mode="authMode"
       :google-client-id="googleClientId"

@@ -1,5 +1,11 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+import { readFileSync, existsSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
+
+// FUP-T20's source-grep guard needs the checkout's own path (see that test).
+const HERE = dirname(fileURLToPath(import.meta.url))
 
 // RD-FL-6 — the profile modal on `NeoModal` (03 §UC-FL-009), and the scrim-drag
 // amendment to 02 §UC-DS-010 that this row was the trigger for.
@@ -179,29 +185,41 @@ test.describe('Profile modal — structure on NeoModal (UC-FL-009)', () => {
     await expect(dialog.locator('.m-x')).toHaveCount(1) // closable ⇒ × present
     await expect(page.locator('.modal-layer')).toHaveCount(1)
 
-    // ⚠ Two read-only value boxes in the prototype's `.copyrow > .val` STYLE
-    // and explicitly WITHOUT a copy button — this is not NeoCopyRow.
+    // ⚠ RETARGETED (e2e-immutability case (a)) — FUP-T20 removes the
+    // `Jedinečné ID` box: an internal identifier with nothing a friend can act
+    // on. ONE read-only value box survives (the username), still in the
+    // prototype's `.copyrow > .val` STYLE and still explicitly WITHOUT a copy
+    // button — this is not NeoCopyRow. The count went 2 → 1 rather than being
+    // dropped, because the "no copy button" and "it is a `.val` box" halves are
+    // the properties this assertion exists for.
     const boxes = dialog.locator('.copyrow')
-    await expect(boxes).toHaveCount(2)
+    await expect(boxes).toHaveCount(1)
     await expect(boxes.locator('button')).toHaveCount(0)
-    await expect(dialog.getByTestId('profile-uid')).toHaveText(friend.uid)
     await expect(dialog.getByTestId('profile-username')).toHaveText(friend.username)
-    await expect(dialog.getByTestId('profile-uid')).toHaveClass(/\bval\b/)
+    await expect(dialog.getByTestId('profile-username')).toHaveClass(/\bval\b/)
+    // FUP-T20: the uid box is gone, on a hydrated modal too.
+    await expect(dialog.getByTestId('profile-uid')).toHaveCount(0)
+    await expect(dialog).not.toContainText('Jedinečné ID')
 
     // The old helper texts under the read-only row are DROPPED (UC-FL-009).
     await expect(dialog).not.toContainText('Toto ID sa nedá zmeniť')
 
-    // The pair sits in one `display:flex; gap:10px` row (portal.jsx:178).
-    const row = await dialog.getByTestId('profile-uid').evaluate((el) => {
+    // The read-only row is still the `display:flex; gap:10px` row (portal.jsx:178)
+    // — kept as the row it always was, now holding one box. RETARGETED off
+    // `profile-uid` (FUP-T20); the nesting it walks is identical.
+    const row = await dialog.getByTestId('profile-username').evaluate((el) => {
       const s = getComputedStyle(el.parentElement.parentElement.parentElement)
       return { display: s.display, gap: s.columnGap }
     })
     expect(row, JSON.stringify(row)).toEqual({ display: 'flex', gap: '10px' })
 
     // Two editable fields with their verbatim help texts.
+    // ⚠ RETARGETED (case (a)) — FUP-T20: the name field's help text no longer
+    // says "Toto meno vidí správca a kolegovia." alone; it names the reason the
+    // field is REQUIRED, which is Packeta delivery.
     await expect(dialog.locator('#pp-profile-name')).toHaveClass(/\binp\b/)
     await expect(dialog.locator('#pp-profile-packeta')).toHaveAttribute('placeholder', 'napr. Z-BOX Hlavná 15, Bratislava')
-    await expect(dialog.locator('.field-help').nth(0)).toHaveText('Toto meno vidí správca a kolegovia.')
+    await expect(dialog.locator('.field-help').nth(0)).toHaveText('Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia.')
     await expect(dialog.locator('.field-help').nth(1)).toHaveText('Predvolená adresa pre doručenie Packetou (voliteľné).')
 
     // The fold's separator: 2px ink-at-12% rule with 12px of air under it.
@@ -228,13 +246,19 @@ test.describe('Profile modal — structure on NeoModal (UC-FL-009)', () => {
     await openPortal(page)
     const dialog = await openProfile(page)
 
-    // The read-only boxes are `div`s, which `<label for>` cannot address at
-    // all — they carry `aria-labelledby` instead, and getByLabel must still
-    // resolve them.
-    await expect(dialog.getByLabel('Jedinečné ID')).toHaveText(friend.uid)
+    // The read-only box is a `div`, which `<label for>` cannot address at
+    // all — it carries `aria-labelledby` instead, and getByLabel must still
+    // resolve it.
+    // ⚠ RETARGETED (case (a), FUP-T20): `Jedinečné ID` is removed, so its
+    // getByLabel pin becomes the absence assertion. The property this test
+    // exists for — programmatic label association on a non-input — is still
+    // asserted, on the box that survives.
+    await expect(dialog.getByLabel('Jedinečné ID')).toHaveCount(0)
     await expect(dialog.getByLabel('Užívateľské meno')).toHaveText(friend.username)
 
-    await expect(dialog.getByLabel('Prihlasovacie meno *')).toHaveValue(friend.name)
+    // ⚠ RETARGETED (case (a), FUP-T20): the label was `Prihlasovacie meno *`
+    // while the field writes `friends.name`. Same field, truthful label.
+    await expect(dialog.getByLabel('Meno a priezvisko *')).toHaveValue(friend.name)
     await expect(dialog.getByLabel('Adresa Packeta výdajného miesta')).toHaveValue('')
 
     await dialog.getByRole('button', { name: 'Zmeniť heslo' }).click()
@@ -251,9 +275,15 @@ test.describe('Profile modal — structure on NeoModal (UC-FL-009)', () => {
     await openPortal(page)
     const dialog = await openProfile(page, { hydrated: false })
 
-    await expect(dialog.getByTestId('profile-uid')).toHaveText(friend.uid)
+    // ⚠ RETARGETED (case (a), FUP-T20): with the uid box removed, a legacy
+    // friend has NO read-only box at all — which is the honest end state of
+    // "renders ONLY when the friend has one". The editable fields below are
+    // asserted still present by the next test, so this is not a blank modal.
+    await expect(dialog.getByTestId('profile-uid')).toHaveCount(0)
     await expect(dialog.getByTestId('profile-username')).toHaveCount(0)
-    await expect(dialog.locator('.copyrow')).toHaveCount(1)
+    await expect(dialog.locator('.copyrow')).toHaveCount(0)
+    // Non-vacuity: the modal really did render (it is just the row that is empty).
+    await expect(dialog.locator('#pp-profile-name')).toBeVisible()
   })
 
   test('the password fold renders ONLY for credentialed friends', async ({ page }) => {
@@ -264,7 +294,7 @@ test.describe('Profile modal — structure on NeoModal (UC-FL-009)', () => {
 
     await expect(dialog.getByRole('button', { name: 'Zmeniť heslo' })).toHaveCount(0)
     // …while the editable fields are all still there.
-    await expect(dialog.getByLabel('Prihlasovacie meno *')).toBeVisible()
+    await expect(dialog.getByLabel('Meno a priezvisko *')).toBeVisible()
   })
 
   test('the fold toggles, and its label flips', async ({ page }) => {
@@ -310,6 +340,197 @@ test.describe('Profile modal — structure on NeoModal (UC-FL-009)', () => {
     expect(m.modalLeft, JSON.stringify(m)).toBeGreaterThanOrEqual(0)
     expect(m.modalRight, JSON.stringify(m)).toBeLessThanOrEqual(m.clientWidth)
   })
+
+  // FUP-T20 item 5. The row asks for the measurement to be taken rather than
+  // assumed after a field left the modal, and for the STRICTER form of the
+  // assertion (`scrollWidth - clientWidth === 0`, not `<=`) at BOTH widths, with
+  // the fold closed and open. The `<=` test above stays as shipped.
+  for (const width of [320, 390]) {
+    test(`⚠ zero horizontal overflow at ${width}px, fold closed AND open`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 720 })
+      await signIn(page)
+      await openPortal(page)
+      const dialog = await openProfile(page)
+
+      const measure = () =>
+        page.evaluate(() => {
+          const d = document.documentElement
+          const r = document.querySelector('.modal').getBoundingClientRect()
+          return {
+            overflow: d.scrollWidth - d.clientWidth,
+            clientWidth: d.clientWidth,
+            modalLeft: Math.round(r.left),
+            modalRight: Math.round(r.right),
+            modalWidth: Math.round(r.width),
+          }
+        })
+
+      const closed = await measure()
+      expect(closed.overflow, `fold closed: ${JSON.stringify(closed)}`).toBe(0)
+      expect(closed.modalLeft, JSON.stringify(closed)).toBeGreaterThanOrEqual(0)
+      expect(closed.modalRight, JSON.stringify(closed)).toBeLessThanOrEqual(closed.clientWidth)
+
+      await dialog.getByRole('button', { name: 'Zmeniť heslo' }).click()
+      await expect(dialog.getByLabel('Aktuálne heslo')).toBeVisible()
+      const open = await measure()
+      expect(open.overflow, `fold open: ${JSON.stringify(open)}`).toBe(0)
+      expect(open.modalRight, JSON.stringify(open)).toBeLessThanOrEqual(open.clientWidth)
+    })
+  }
+})
+
+// ---------------------------------------------------------------------------
+
+/**
+ * FUP-T20 — the guard that let this bug survive, now MACHINE-CHECKED on the
+ * friend surface too.
+ *
+ * 07 §UC-IA-007 / 11 §UC-FC-002 state the rule as `grep -i prihlasovac
+ * frontend/src/views/AdminFriends.vue` returning nothing. That grep named ONE
+ * file, and the identical label lived in `FriendPortalSession.vue` on a field
+ * that writes the same `friends.name` column — so the admin half was fixed by
+ * module 11 while the friend half shipped the same lie to staging.
+ *
+ * The sweep is the `admin-friends-labels.spec.js` idiom (text AND the attributes
+ * that render as copy), pointed at the friend portal with the profile modal open.
+ * The property is an ABSENCE, because new copy alone would let a revert pass:
+ * "Meno a priezvisko *" can be added while "Prihlasovacie meno" stays one row up.
+ */
+function collectCopy() {
+  return async () => {
+    const out = [document.body.innerText]
+    for (const el of document.querySelectorAll('*')) {
+      for (const attr of ['placeholder', 'title', 'aria-label', 'alt']) {
+        const v = el.getAttribute(attr)
+        if (v) out.push(v)
+      }
+    }
+    return out.join('\n')
+  }
+}
+
+test.describe('⚠ FUP-T20 — no copy on the friend surface claims the name is a login', () => {
+  /**
+   * The guard AS IT IS WRITTEN, executed. §UC-FC-002 / 07 §UC-IA-007 state it as a
+   * grep over source, and CLAUDE.md now names BOTH views — so this test runs that
+   * grep instead of trusting someone to. It is the half the DOM sweep below cannot
+   * cover: a string in a dialog state no test happens to open is invisible to the
+   * browser and plainly visible here.
+   *
+   * ⚠ Reads repo source, the `self-hosted-fonts.spec.js` precedent. It self-skips
+   * when the checkout is not next to the suite (a BASE_URL run against staging from
+   * elsewhere), so the file stays target-agnostic.
+   */
+  test('the grep guard itself: both views that edit `friends.name` are clean', () => {
+    const views = [
+      resolve(HERE, '../../frontend/src/views/AdminFriends.vue'),
+      resolve(HERE, '../../frontend/src/views/FriendPortalSession.vue'),
+    ]
+    if (!views.every((p) => existsSync(p))) {
+      test.skip(true, 'frontend source not available next to the suite')
+      return
+    }
+    for (const path of views) {
+      const hits = readFileSync(path, 'utf8')
+        .split('\n')
+        .map((line, i) => [i + 1, line])
+        .filter(([, line]) => /prihlasovac/i.test(line))
+      expect(hits, `${path} claims the name field is a login: ${JSON.stringify(hits)}`).toEqual([])
+    }
+    // Non-vacuity: the reader really works and the pattern really matches — the
+    // same substring IS legitimately present where it labels `friends.username`.
+    const invitations = resolve(HERE, '../../frontend/src/views/AdminInvitations.vue')
+    if (existsSync(invitations)) {
+      expect(readFileSync(invitations, 'utf8')).toMatch(/prihlasovac/i)
+    }
+  })
+
+  test('the portal and the profile modal are free of /prihlasovac/i', async ({ page }) => {
+    await signIn(page)
+    await openPortal(page)
+
+    const portalCopy = await page.evaluate(collectCopy())
+    expect(portalCopy, 'the portal claims a login somewhere').not.toMatch(/prihlasovac/i)
+
+    const dialog = await openProfile(page)
+    const modalCopy = await page.evaluate(collectCopy())
+    expect(modalCopy, 'the profile modal claims the name is a login').not.toMatch(/prihlasovac/i)
+
+    // Non-vacuity: the sweep really does read this modal's copy.
+    // ⚠ Case-INSENSITIVE: `.field-lbl` is `text-transform: uppercase` and
+    // `innerText` applies text-transform, so these arrive as "MENO A PRIEZVISKO *"
+    // (the standing CLAUDE.md trap). The absence assertions above are already
+    // case-insensitive regexes, so they are unaffected.
+    expect(modalCopy).toMatch(/meno a priezvisko \*/i)
+    expect(modalCopy).toMatch(/užívateľské meno/i)
+    // …and the modal is the one that used to carry the claim, on the field that
+    // writes `friends.name`.
+    await expect(dialog.getByLabel('Meno a priezvisko *')).toHaveValue(friend.name)
+
+    // The password fold is copy too, and it is the one place a login-ish string
+    // would be legitimate — it must still avoid the guarded substring.
+    await dialog.getByRole('button', { name: 'Zmeniť heslo' }).click()
+    await expect(dialog.getByLabel('Aktuálne heslo')).toBeVisible()
+    const foldCopy = await page.evaluate(collectCopy())
+    expect(foldCopy, 'the password fold claims a login').not.toMatch(/prihlasovac/i)
+    expect(foldCopy).toMatch(/aktuálne heslo/i)
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+/**
+ * FUP-T20 item 3 — `friends.display_name` is the ADMIN-ONLY note ("recommended
+ * by X"). `GET /friends/:id/profile` did `SELECT *` and `sanitizeFriend` strips
+ * only credential material, so the note was already in the friend's browser —
+ * nothing rendered it, but it was one DevTools tab from visible.
+ *
+ * ⚠ Both halves matter. Stripping it in `sanitizeFriend` (7 call sites, several
+ * admin) would pass the removal assertion while breaking the admin Poznámka
+ * column, which reads `display_name` off the admin list. So the admin
+ * counter-assertion is not decoration: it is what makes the fix a route-scoped
+ * one rather than a central one.
+ */
+test.describe('⚠ FUP-T20 — the admin note never reaches the friend', () => {
+  test('the friend profile omits display_name; the admin list still carries it', async () => {
+    const who = await makeFriend('note')
+    const note = `FUP-T20 odporucil kolega ${uniq()}`
+
+    expect((await admin(`/api/friends/${who.id}`, { method: 'patch', data: { name: who.name, display_name: note } })).status(),
+      'seed the admin note').toBe(200)
+
+    // 1. The friend's own payload — asserted on the RAW BODY, not on parsed
+    //    keys: a nested/renamed copy of the note is just as much a leak.
+    const mine = await ctx.get(`/api/friends/${who.id}/profile`, {
+      headers: { Authorization: `Bearer ${who.token}` },
+      timeout: TIMEOUT,
+    })
+    expect(mine.status()).toBe(200)
+    const raw = await mine.text()
+    expect(raw, 'the friend payload names the admin-only column').not.toMatch(/display_name/)
+    expect(raw, 'the friend payload carries the admin note VALUE').not.toContain(note)
+    // Non-vacuity: this really is the profile payload and it is still useful.
+    const parsed = JSON.parse(raw)
+    expect(parsed.id).toBe(who.id)
+    expect(parsed.name).toBe(who.name)
+    expect(parsed.uid).toBeTruthy()
+    expect(parsed.hasCredentials).toBe(true)
+    // The credential strip is unchanged (the fix must not have moved it).
+    expect(raw).not.toMatch(/password_hash|access_token|invite_code|google_sub/)
+
+    // 2. THE COUNTER-ASSERTION. The admin Poznámka column reads `display_name`
+    //    off `GET /api/friends` — the fix must not have touched it.
+    const list = await admin('/api/friends')
+    expect(list.status()).toBe(200)
+    const row = (await list.json()).find((f) => f.id === who.id)
+    expect(row, 'the friend is in the admin list').toBeTruthy()
+    expect(row.display_name, 'the admin lost the Poznámka value').toBe(note)
+
+    // …and the admin detail endpoint too (the friend edit modal's source).
+    const detail = await admin(`/api/friends/${who.id}/detail`)
+    expect(detail.status()).toBe(200)
+    expect((await detail.json()).friend.display_name).toBe(note)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -325,7 +546,7 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
 
     const dialog = await openProfile(page)
     const renamed = `${who.name} R`
-    await dialog.getByLabel('Prihlasovacie meno *').fill(renamed)
+    await dialog.getByLabel('Meno a priezvisko *').fill(renamed)
     await dialog.getByRole('button', { name: 'Uložiť' }).click()
 
     // No reload anywhere: the appbar name is RD-FL-3's `getCurrentFriendName()`
@@ -340,7 +561,7 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
 
     // …and it really persisted: reopening prefills from the server value.
     const again = await openProfile(page)
-    await expect(again.getByLabel('Prihlasovacie meno *')).toHaveValue(renamed)
+    await expect(again.getByLabel('Meno a priezvisko *')).toHaveValue(renamed)
   })
 
   test('⚠ a blank Packeta address is sent as null, not ""', async ({ page }) => {
@@ -415,7 +636,7 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
     // Precondition of the bug: the field is empty because nothing hydrated it.
     await expect(dialog.getByLabel('Adresa Packeta výdajného miesta')).toHaveValue('')
     // The name still prefills — it comes from the stored session, not the GET.
-    await expect(dialog.getByLabel('Prihlasovacie meno *')).toHaveValue(who.name)
+    await expect(dialog.getByLabel('Meno a priezvisko *')).toHaveValue(who.name)
 
     await dialog.getByRole('button', { name: 'Uložiť' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
@@ -438,9 +659,9 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
     await openPortal(page)
     const dialog = await openProfile(page)
 
-    await dialog.getByLabel('Prihlasovacie meno *').fill('   ')
+    await dialog.getByLabel('Meno a priezvisko *').fill('   ')
     await expect(dialog.getByRole('button', { name: 'Uložiť' })).toBeDisabled()
-    await dialog.getByLabel('Prihlasovacie meno *').fill(friend.name)
+    await dialog.getByLabel('Meno a priezvisko *').fill(friend.name)
     await expect(dialog.getByRole('button', { name: 'Uložiť' })).toBeEnabled()
   })
 
@@ -652,7 +873,7 @@ test.describe('⚠ NeoModal scrim-drag — the UC-DS-010 amendment (RD-DS-4 → 
 
     // Something worth losing.
     const sentinel = 'Half-typed value'
-    await dialog.getByLabel('Prihlasovacie meno *').fill(sentinel)
+    await dialog.getByLabel('Meno a priezvisko *').fill(sentinel)
 
     // Press on TEXT inside the body (the help line under the name field),
     // drag out over the scrim, release. The `click` that follows is delivered
@@ -666,7 +887,7 @@ test.describe('⚠ NeoModal scrim-drag — the UC-DS-010 amendment (RD-DS-4 → 
     await page.mouse.up()
 
     await expect(dialog).toBeVisible()
-    await expect(dialog.getByLabel('Prihlasovacie meno *')).toHaveValue(sentinel)
+    await expect(dialog.getByLabel('Meno a priezvisko *')).toHaveValue(sentinel)
   })
 
   test('a genuine scrim click still closes it', async ({ page }) => {
@@ -721,7 +942,7 @@ test.describe('⚠ NeoModal scrim-drag — the UC-DS-010 amendment (RD-DS-4 → 
     await openPortal(page)
     const dialog = await openProfile(page)
     const sentinel = 'Half-typed value'
-    await dialog.getByLabel('Prihlasovacie meno *').fill(sentinel)
+    await dialog.getByLabel('Meno a priezvisko *').fill(sentinel)
 
     await page.evaluate(() => {
       // A descendant that swallows `mousedown`. Nothing in `frontend/src` does
@@ -746,7 +967,7 @@ test.describe('⚠ NeoModal scrim-drag — the UC-DS-010 amendment (RD-DS-4 → 
     await page.mouse.up()
 
     await expect(dialog).toBeVisible()
-    await expect(dialog.getByLabel('Prihlasovacie meno *')).toHaveValue(sentinel)
+    await expect(dialog.getByLabel('Meno a priezvisko *')).toHaveValue(sentinel)
   })
 
   test('a drag that starts on the scrim and ends inside the card does not need to be special-cased', async ({ page }) => {

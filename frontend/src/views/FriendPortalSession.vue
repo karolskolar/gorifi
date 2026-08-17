@@ -82,7 +82,9 @@ const props = defineProps({
   // (`currentFriend?.name || savedAuth?.friendName`), so this file never has to
   // know that a restored session may carry only the stored name.
   friendName: { type: String, default: '' },
-  friendUid: { type: String, default: '' },
+  // ⚠ FUP-T20: there is no `friendUid` prop any more. Its only consumer was the
+  // profile modal's read-only `Jedinečné ID` box, which that row removed; the uid
+  // still lives in the stored session and on the admin's own surfaces.
   // ⚠ What the AUTH HANDSHAKE produced, handed over once at mount:
   //   · `cycles`  — the payload of the probe request the parent already made to
   //     validate the token (`GET /friends/cycles`). Seeding from it is what
@@ -1711,10 +1713,19 @@ defineExpose({ openProfileModal, openInviteModal })
 
     <!-- Read-only identity row. `div.copyrow > div.val` is the prototype's
          READ-ONLY box style — deliberately WITHOUT NeoCopyRow's button
-         (UC-DS-011 is the copy control; this is just its box). The two
-         boxes are content-sized, exactly as `portal.jsx` renders them: no
-         `flex:1`, so each is as wide as its own label/value and the pair
-         shrinks (`.val` carries `min-width:0`) rather than overflowing.
+         (UC-DS-011 is the copy control; this is just its box). The box is
+         content-sized, exactly as `portal.jsx` renders it: no `flex:1`, so it
+         is as wide as its own label/value and shrinks (`.val` carries
+         `min-width:0`) rather than overflowing.
+
+         ⚠ FUP-T20 — the `Jedinečné ID` box that used to sit to the left of the
+         username is REMOVED (product decision): `friends.uid` is an internal
+         identifier with nothing a friend can read off it or act on. The `uid`
+         itself is untouched everywhere else — it still rides in the stored
+         session (`friendUid`) and the admin still shows it in its own ID column
+         — so this is a presentation removal, not a data change. The flex row is
+         KEPT as the row it always was; it now holds one box, and keeping it is
+         what preserves the content-sized rendering the `.copyrow` box relies on.
 
          ⚠ `<label for=…>` only associates with LABELABLE elements, and a
          `div` is not one, so the association runs the other way here:
@@ -1722,15 +1733,11 @@ defineExpose({ openProfileModal, openInviteModal })
          `aria-labelledby`. That is what keeps `getByLabel` resolving on a
          non-input — plain `for` would silently associate with nothing. -->
     <div style="display:flex;gap:10px">
-      <div>
-        <label id="pp-profile-uid-lbl" class="field-lbl">Jedinečné ID</label>
-        <div class="copyrow">
-          <div class="val" aria-labelledby="pp-profile-uid-lbl" data-testid="profile-uid">{{ friendUid }}</div>
-        </div>
-      </div>
       <!-- Username renders only when there IS one: legacy friends have no
            credentials at all (repo behavior beats the prototype's demo
-           friend, who always does). -->
+           friend, who always does). It is READ-ONLY by design (UC-FL-009, and
+           re-confirmed by FUP-T20's product decision: the admin renames, and
+           module 10's Google login likely removes the need entirely). -->
       <div v-if="friend?.username">
         <label id="pp-profile-username-lbl" class="field-lbl">Užívateľské meno</label>
         <div class="copyrow">
@@ -1739,15 +1746,28 @@ defineExpose({ openProfileModal, openInviteModal })
       </div>
     </div>
 
+    <!-- ⚠ FUP-T20 — THE BUG THIS ROW EXISTS FOR. This field binds `profileName`
+         and writes `friends.name`, a DISPLAY label that never was a login, yet its
+         label claimed to be the LOGIN NAME while its own help line one row below
+         said the opposite. A friend editing "their login name" changed nothing
+         about how they log in and silently renamed themselves. It is the same
+         mislabel module 11 fixed in `AdminFriends.vue` (11 §UC-FC-001/003); it
+         survived here because §UC-FC-002's grep guard named that ONE file.
+         ⚠ THE GUARD NOW COVERS THIS FILE TOO — see CLAUDE.md / 07 §UC-IA-007: it
+         must return nothing for `AdminFriends.vue` AND `FriendPortalSession.vue`,
+         which is why no string here (copy or comment) spells out the forbidden
+         adjective. The login is the read-only `Užívateľské meno` box above (and it
+         stays read-only by product decision); `friends.name` is the PACKETA
+         DELIVERY name, which is why it is required and why the help text says so. -->
     <div>
-      <label class="field-lbl" for="pp-profile-name">Prihlasovacie meno *</label>
+      <label class="field-lbl" for="pp-profile-name">Meno a priezvisko *</label>
       <input
         id="pp-profile-name"
         v-model="profileName"
         class="inp"
         :disabled="profileSaving"
       />
-      <div class="field-help">Toto meno vidí správca a kolegovia.</div>
+      <div class="field-help">Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia.</div>
     </div>
 
     <div>
