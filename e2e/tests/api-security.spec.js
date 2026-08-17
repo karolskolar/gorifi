@@ -37,6 +37,21 @@ const ADMIN_ENDPOINTS = [
   // guard is per-route. Deliberately a DIFFERENT path from module 10's friend-owned
   // `DELETE /api/friends/:id/google-link` — never multiplexed.
   { method: 'delete', path: '/api/friends/1/google' },
+  // 10 §UC-GA-010 / §UC-GA-013 obligation 1: the admin Google ALLOWLIST — who may
+  // enter the admin portal with Google. All three are `requireAdmin`.
+  //
+  // ⚠ The two Google LOGIN endpoints (`POST /api/friends/auth/google`,
+  // `POST /api/admin/google-login`) are PUBLIC and must NEVER join this list — an
+  // anonymous caller has to reach them, and asserting 401 on them would pin the
+  // opposite of the contract. Their anonymous behaviour is pinned in
+  // `google-auth.spec.js` by MESSAGE, which is what distinguishes "the handler
+  // refused you" from "the guard did".
+  //
+  // ⚠ `/api/admin` is a MIXED mount (public `setup-status`, `login`, `verify`,
+  // `payment-settings`, `google-login`), so these guards are per-route.
+  { method: 'get', path: '/api/admin/google-allowlist' },
+  { method: 'post', path: '/api/admin/google-allowlist', data: { id_token: 'TEST:evil:evil@example.test' } },
+  { method: 'delete', path: '/api/admin/google-allowlist', data: { email: 'evil@example.test' } },
   { method: 'post', path: '/api/cycles', data: { name: 'evil' } },
 ]
 

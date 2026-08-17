@@ -1,7 +1,8 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watchEffect } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
+import { loadGis } from '../lib/gis'
 
 const baseUrl = computed(() => window.location.origin)
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
@@ -31,6 +32,17 @@ const editingLocationId = ref(null)
 const editingLocationName = ref('')
 const editingLocationAddress = ref('')
 const openMenuId = ref(null)
+
+// 10 §UC-GA-010 — the admin Google allowlist. `googleClientId` null (an unconfigured
+// deployment, or a failed probe) hides the whole section and makes `loadGis()`
+// unreachable, so nothing is requested from Google.
+const googleClientId = ref(null)
+const googleEntries = ref([])
+const googleBusy = ref(false)
+const googleAddButtonEl = ref(null)
+// ⚠ "the list failed to load" is a THIRD state, not a flavour of empty. See
+// `loadGoogleSection()` — on an access-audit screen those two must never be confused.
+const googleLoadFailed = ref(false)
 
 // Roasteries
 const roasteries = ref([])
@@ -79,6 +91,138 @@ async function loadSettings() {
   } finally {
     loading.value = false
   }
+
+  // ⚠ AFTER the main load and OUTSIDE its try, so a Google problem can never take the
+  // settings page down — this page is the operator's route back to a working state.
+  await loadGoogleSection()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 10 §UC-GA-010 — "Prihlásenie cez Google"
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function loadGoogleSection() {
+  try {
+    const mode = await api.getAuthMode()
+    googleClientId.value = mode.googleClientId || null
+  } catch {
+    googleClientId.value = null
+  }
+  // ⚠ The ALLOWLIST fetch is gated on the client id purely to avoid a pointless
+  // request on an unconfigured deployment. The ROUTE itself has no such gate — an
+  // operator who unsets the env must still be able to see and revoke what is there —
+  // so if this section is ever shown unconditionally, nothing server-side changes.
+  if (!googleClientId.value) return
+  // ⚠⚠ A FAILED LOAD IS ITS OWN STATE, AND THIS IS AN ACCESS-AUDIT SCREEN.
+  // Before this flag existed, a rotated token or a network blip left `googleEntries`
+  // at `[]` and the section rendered "Zatiaľ žiadny Google účet. Do administrácie sa
+  // dá prihlásiť len heslom." — a POSITIVE FACTUAL CLAIM about who can reach the
+  // admin portal, which may be false, on the one screen whose job is answering
+  // exactly that question. An admin reading it would conclude Google access is off
+  // while an account still holds it. "I could not load the list" is the only honest
+  // thing to say, and it is also the only one that tells them to retry.
+  googleLoadFailed.value = false
+  try {
+    googleEntries.value = (await api.getAdminGoogleAllowlist()).entries || []
+  } catch (e) {
+    googleLoadFailed.value = true
+    googleEntries.value = []
+    error.value = e.message
+    // ⚠ `mountGoogleAddButton()` is deliberately NOT reached: without it the mount
+    // point stays unrendered rather than sitting there as an empty box promising an
+    // add control that never appears (the template hides the whole add block in this
+    // state for the same reason).
+    return
+  }
+  await mountGoogleAddButton()
+}
+
+/**
+ * Google's own button — the ONLY way an account enters the allowlist.
+ *
+ * ⚠ There is deliberately NO text field here. §UC-GA-010: the admin proves possession
+ * of the account being added, so the identity comes out of a verified ID token and
+ * never out of a form. No hand-typed identities, no e-mail-based matching, ever.
+ *
+ * ⚠ `gis.initialize()` UNCONDITIONALLY (the GA-T6/GA-T7 rule — GIS keeps ONE global
+ * callback and the LAST `initialize()` owns it). `AdminLogin.vue` is a different view
+ * and the two cannot be mounted together, so no collision is reachable today; the rule
+ * is followed anyway because a guard flag is exactly what produced the friend-side bug
+ * where a button rendered perfectly and did nothing.
+ */
+async function mountGoogleAddButton() {
+  await nextTick()
+  let gis
+  try {
+    gis = await loadGis(googleClientId.value)
+  } catch {
+    // Silent: the rest of the settings page works, and the entry list — including the
+    // remove buttons — is still fully usable. Revocation must never depend on Google.
+    return
+  }
+  if (!gis) return
+
+  await nextTick()
+  const el = googleAddButtonEl.value
+  if (!el || !googleClientId.value) return
+
+  gis.initialize({ client_id: googleClientId.value, callback: onGoogleAllowlistCredential })
+  el.innerHTML = ''
+  gis.renderButton(el, {
+    theme: 'outline',
+    size: 'large',
+    text: 'continue_with',
+    shape: 'rectangular',
+    logo_alignment: 'center',
+    locale: 'sk',
+    width: Math.max(200, Math.min(Math.round(el.clientWidth) || 320, 400)),
+  })
+}
+
+async function onGoogleAllowlistCredential(response) {
+  const credential = response && response.credential
+  if (!credential) return
+
+  error.value = ''
+  successMessage.value = ''
+  googleBusy.value = true
+  try {
+    // The server answers with the whole (stripped) list, so no second request.
+    const result = await api.addAdminGoogleAccount(credential)
+    googleEntries.value = result.entries || []
+    // ⚠ "aktualizovaný", not "pridaný": a re-add of an account already on the list is
+    // an idempotent 200 that only refreshes its e-mail (§UC-GA-010), and telling the
+    // admin it was "added" would describe a second entry that does not exist.
+    successMessage.value = 'Zoznam Google účtov bol aktualizovaný'
+    setTimeout(() => { successMessage.value = '' }, 3000)
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    googleBusy.value = false
+  }
+}
+
+async function removeGoogleAccount(email) {
+  // ⚠ NO "you are removing the last one" guard, by design (§UC-GA-010): password auth
+  // is the PERMANENT backup, so Google lockout is recoverable and the empty state is
+  // legitimate — it simply means nobody logs into admin with Google.
+  if (!confirm(`Naozaj odobrať ${email} zo zoznamu?`)) return
+  error.value = ''
+  googleBusy.value = true
+  try {
+    const result = await api.removeAdminGoogleAccount(email)
+    googleEntries.value = result.entries || []
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    googleBusy.value = false
+  }
+}
+
+function formatGoogleDate(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('sk-SK')
 }
 
 // Roastery functions
@@ -360,6 +504,84 @@ async function savePaymentSettings() {
             <Button @click="saveAuthMode" :disabled="savingAuthMode">
               {{ savingAuthMode ? 'Ukladám...' : 'Uložiť režim' }}
             </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- ═══════════════════════════════════════════════════════════════════
+           10 §UC-GA-010 — Prihlásenie cez Google
+
+           ⚠ HIDDEN ENTIRELY when `googleClientId` is null (the mailer no-op
+           precedent): an unconfigured deployment renders no Google control and
+           makes no request to accounts.google.com.
+
+           ⚠ There is NO input field, and that is the design: an account joins the
+           allowlist only by signing in through Google's own button, which proves
+           possession. A typed address would be an identity nobody confirmed.
+           ═══════════════════════════════════════════════════════════════════ -->
+      <Card v-if="!loading && googleClientId" class="mt-6" data-testid="admin-google-section">
+        <CardHeader>
+          <CardTitle>Prihlásenie cez Google</CardTitle>
+          <CardDescription>
+            Google účty, ktoré majú prístup do administrácie. Prihlásenie heslom zostáva
+            vždy funkčné ako záložná možnosť.
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-4">
+          <!-- ⚠ The failure state comes FIRST: it must win over both the list and the
+               empty state, because "I could not load this" is not "this is empty". -->
+          <div
+            v-if="googleLoadFailed"
+            data-testid="admin-google-error"
+            class="text-sm rounded-lg border border-destructive/50 text-destructive px-3 py-2"
+          >
+            Zoznam Google účtov sa nepodarilo načítať. Skúste stránku obnoviť — kým sa
+            nenačíta, tu nie je vidieť, kto má prístup.
+          </div>
+
+          <div v-else-if="googleEntries.length > 0" class="space-y-2">
+            <div
+              v-for="entry in googleEntries"
+              :key="`${entry.email}|${entry.added_at}`"
+              data-testid="admin-google-entry"
+              class="flex items-center gap-3 px-3 py-2 rounded-lg border"
+            >
+              <div class="flex-1 min-w-0">
+                <div class="font-medium truncate">{{ entry.email }}</div>
+                <div v-if="entry.added_at" class="text-xs text-muted-foreground">
+                  Pridaný {{ formatGoogleDate(entry.added_at) }}
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                class="text-destructive flex-shrink-0"
+                :disabled="googleBusy"
+                @click="removeGoogleAccount(entry.email)"
+              >
+                Odobrať
+              </Button>
+            </div>
+          </div>
+          <div v-else data-testid="admin-google-empty" class="text-sm text-muted-foreground py-2">
+            Zatiaľ žiadny Google účet. Do administrácie sa dá prihlásiť len heslom.
+          </div>
+
+          <!-- ⚠ Hidden while the list failed to load: `mountGoogleAddButton()` was
+               never reached on that path, so rendering the mount would leave an empty
+               box promising a control that never appears. -->
+          <div v-if="!googleLoadFailed" class="pt-4 border-t space-y-2">
+            <Label>Pridať Google účet, ktorým sa chcete prihlasovať</Label>
+            <!-- A bare mount point: Google's brand guidelines forbid restyling the
+                 GIS button, so it carries no Button class. -->
+            <div
+              ref="googleAddButtonEl"
+              data-testid="admin-google-add"
+              class="flex justify-start min-h-[44px]"
+            ></div>
+            <p class="text-xs text-muted-foreground">
+              Prihláste sa účtom, ktorý chcete pridať — potvrdíte tým, že vám patrí.
+            </p>
           </div>
         </CardContent>
       </Card>

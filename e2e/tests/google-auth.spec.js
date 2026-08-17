@@ -101,7 +101,15 @@ async function withGoogleBackend(extraEnv, fn) {
 }
 
 function makeApi(ctx, adminToken, dbPath) {
-  const admin = () => ({ 'X-Admin-Token': adminToken })
+  // ⚠ MUTABLE, and GA-T10 is why. There is exactly ONE admin token app-wide
+  // (`admin.js` does `INSERT OR REPLACE` on a single settings row), and §UC-GA-011
+  // adds a SECOND way to mint one. The moment a test in this file logs in through
+  // `POST /api/admin/google-login`, the password token this harness captured at
+  // startup is dead — so every later `admin()` header would 401 for a reason that has
+  // nothing to do with what the test asserts. `adoptAdminToken` / `reloginAdmin`
+  // below keep the harness pointed at whichever token is currently live.
+  let currentAdminToken = adminToken
+  const admin = () => ({ 'X-Admin-Token': currentAdminToken })
 
   function withDb(fn) {
     const db = new DatabaseSync(dbPath)
@@ -303,6 +311,44 @@ function makeApi(ctx, adminToken, dbPath) {
      *  and omits `created_friend_id`, which the approval back-link needs. */
     invitationById(id) {
       return withDb((db) => db.prepare('SELECT * FROM invitations WHERE id = ?').get(Number(id)))
+    },
+
+    // ── GA-T10 (§UC-GA-010 / §UC-GA-011) ─────────────────────────────────────
+    /** Re-mint the harness's admin token with the PASSWORD login and adopt it. */
+    async reloginAdmin() {
+      const r = await ctx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+      expect(r.status(), 'harness admin re-login').toBe(200)
+      currentAdminToken = (await r.json()).token
+      return currentAdminToken
+    },
+    adoptAdminToken(token) { currentAdminToken = token },
+    adminToken: () => currentAdminToken,
+
+    allowlistGet(headers = admin()) {
+      return ctx.get('/api/admin/google-allowlist', { headers })
+    },
+    allowlistAdd(body, headers = admin()) {
+      return ctx.post('/api/admin/google-allowlist', { headers, ...(body === undefined ? {} : { data: body }) })
+    },
+    allowlistRemove(body, headers = admin()) {
+      return ctx.delete('/api/admin/google-allowlist', { headers, ...(body === undefined ? {} : { data: body }) })
+    },
+    /** ⚠ PUBLIC — no admin header, ever (§UC-GA-013 obligation 1). */
+    adminGoogleLogin(body) {
+      return ctx.post('/api/admin/google-login', body === undefined ? {} : { data: body })
+    },
+    adminVerify(token) {
+      return ctx.post('/api/admin/verify', { data: { token } })
+    },
+    /** Any admin route, with an explicitly chosen token — the interchangeability tests. */
+    adminProbe(token) {
+      return ctx.get('/api/friends', { headers: { 'X-Admin-Token': token } })
+    },
+    setting(key) {
+      return withDb((db) => db.prepare('SELECT value FROM settings WHERE key = ?').get(key))
+    },
+    writeSetting(key, value) {
+      withDb((db) => db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value))
     },
   }
   return { api }
@@ -3989,5 +4035,698 @@ test.describe('§UC-GA-009 — the approval dialog\'s Google line', () => {
     await expect(dialog.getByTestId('approve-credentials')).toBeVisible()
     const friends = await (await uiAdmin('/api/friends')).json()
     expect(friends.find((f) => f.username === good).googleLinked, 'the link was kept').toBe(true)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GA-T10 — §UC-GA-010 (the admin Google allowlist) + §UC-GA-011 (admin Google
+// login). API half, on THROWAWAY BACKENDS.
+//
+// ⚠⚠ WHY THE API HALF IS NOT ON THE GATE, and it is not a preference. §UC-GA-011
+// adds a SECOND path that mints THE ONE APP-WIDE ADMIN TOKEN (`admin.js` does
+// `INSERT OR REPLACE` on a single settings row). Every one of these tests logs in
+// with Google at least once, so on the shared gate each of them would silently
+// invalidate the token any other spec file — GA-T9's UI describe below most of all —
+// had already captured, and those files would fail on their FIRST admin call for a
+// reason that has nothing to do with them. On a throwaway backend the rotation is
+// contained to a process that dies with the test.
+//
+// ⚠ These routes have NO auth-mode dependency (§UC-GA-011, and the constraint the
+// backlog row states twice): `auth_mode` governs the FRIEND surface only. The
+// throwaway backend is seeded LEGACY, which is therefore the honest place to prove
+// it — resolved decision #2 does not reach here.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** §UC-GA-011's 401, verbatim: the whole body, naming nothing else. */
+const ADMIN_GOOGLE_401 = 'Tento Google účet nemá prístup do administrácie'
+/** `requireAdmin`'s own 401 — the discriminator that proves WHICH guard answered. */
+const ADMIN_GUARD_401 = 'Neautorizovaný prístup'
+/** §UC-GA-010's acceptance criterion, as a raw-text regex over the FULL body. */
+const SUB_KEY_RE = /"sub"/
+
+test.describe('§UC-GA-010 — the admin Google allowlist', () => {
+  test('empty ⇒ {entries: []}; adding proves possession and the entry is {email, added_at} — the sub is stored but NEVER published', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const empty = await api.allowlistGet()
+      expect(empty.status()).toBe(200)
+      expect(await empty.json()).toEqual({ entries: [] })
+
+      const sub = tag('ga10-add')
+      const added = await api.allowlistAdd({ id_token: `TEST:${sub}:sef@example.test` })
+      expect(added.status(), 'the admin proves possession of the account being added').toBe(200)
+      expect(await added.text(), 'the POST body must not name a sub either').not.toMatch(SUB_KEY_RE)
+
+      const res = await api.allowlistGet()
+      expect(res.status()).toBe(200)
+      const body = await res.json()
+      expect(body.entries).toHaveLength(1)
+      expect(body.entries[0].email).toBe('sef@example.test')
+      expect(Number.isNaN(Date.parse(body.entries[0].added_at)), 'added_at is a real timestamp').toBe(false)
+      // ⚠ EXACT KEYS. `sub` is an identity key and nothing client-side needs it; the
+      // e-mail is the display AND the deletion handle (§UC-GA-010).
+      expect(Object.keys(body.entries[0]).sort()).toEqual(['added_at', 'email'])
+
+      // ⚠ THE ACCEPTANCE CRITERION, as raw text rather than a key check: a future
+      // `res.json({ entries })` that forgot to map would pass a key assertion written
+      // against the fields we happen to know about.
+      expect(await res.text()).not.toMatch(SUB_KEY_RE)
+
+      // ⚠ NON-VACUITY. The strip has to be a STRIP, not an absence of data: the sub
+      // really is stored, which is the only thing the login can key on.
+      const stored = JSON.parse(api.setting('admin_google_subs').value)
+      expect(stored).toHaveLength(1)
+      expect(stored[0].sub, 'the settings row keeps the identity key').toBe(sub)
+    })
+  })
+
+  test('a duplicate sub is 200 IDEMPOTENT — one entry, the e-mail refreshed, added_at preserved', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const sub = tag('ga10-dup')
+      expect((await api.allowlistAdd({ id_token: `TEST:${sub}:prve@example.test` })).status()).toBe(200)
+      const first = (await (await api.allowlistGet()).json()).entries[0]
+
+      const again = await api.allowlistAdd({ id_token: `TEST:${sub}:druhe@example.test` })
+      expect(again.status(), 'a re-add is not an error — the same person, a newer e-mail').toBe(200)
+
+      const entries = (await (await api.allowlistGet()).json()).entries
+      expect(entries, 'still ONE entry — the sub is the key').toHaveLength(1)
+      expect(entries[0].email, 'the e-mail is refreshed').toBe('druhe@example.test')
+      expect(entries[0].added_at, 'but it is the same entry, so added_at does not move').toBe(first.added_at)
+      expect(JSON.parse(api.setting('admin_google_subs').value)).toHaveLength(1)
+    })
+  })
+
+  test('DELETE removes by e-mail, is idempotent when absent, and removing the LAST entry is ALLOWED', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const keep = tag('ga10-keep')
+      const drop = tag('ga10-drop')
+      expect((await api.allowlistAdd({ id_token: `TEST:${keep}:ostava@example.test` })).status()).toBe(200)
+      expect((await api.allowlistAdd({ id_token: `TEST:${drop}:odchadza@example.test` })).status()).toBe(200)
+
+      const removed = await api.allowlistRemove({ email: 'odchadza@example.test' })
+      expect(removed.status()).toBe(200)
+      expect(await removed.text(), 'the DELETE body is stripped too').not.toMatch(SUB_KEY_RE)
+      expect((await (await api.allowlistGet()).json()).entries.map((e) => e.email)).toEqual(['ostava@example.test'])
+
+      const twice = await api.allowlistRemove({ email: 'odchadza@example.test' })
+      expect(twice.status(), 'idempotent when absent').toBe(200)
+      expect((await (await api.allowlistGet()).json()).entries).toHaveLength(1)
+
+      // ⚠ THE LAST ONE GOES TOO. Password auth is the PERMANENT backup (brief item 3),
+      // so Google lockout is recoverable by design — a "cannot remove the last one"
+      // guard would be protecting against a state the design deliberately permits.
+      expect((await api.allowlistRemove({ email: 'ostava@example.test' })).status()).toBe(200)
+      expect((await (await api.allowlistGet()).json()).entries).toEqual([])
+
+      // …and with the list empty, Google admin login always 401s (the acceptance
+      // criterion), which is the whole reason emptying it is safe.
+      const login = await api.adminGoogleLogin({ id_token: `TEST:${keep}:ostava@example.test` })
+      expect(login.status()).toBe(401)
+      expect((await login.json()).error).toBe(ADMIN_GOOGLE_401)
+    })
+  })
+
+  test('malformed input never 500s: a non-string token ⇒ 400, garbage ⇒ 401, a non-string e-mail ⇒ 400', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const numeric = await api.allowlistAdd({ id_token: 123 })
+      expect(numeric.status()).toBe(400)
+      expect((await numeric.json()).field).toBe('id_token')
+
+      const junk = await api.allowlistAdd({ id_token: 'not-a-token' })
+      expect(junk.status(), 'the verifier refuses it — 401, not a 500').toBe(401)
+
+      const noBody = await api.allowlistAdd({})
+      expect(noBody.status()).toBe(400)
+
+      const badEmail = await api.allowlistRemove({ email: 123 })
+      expect(badEmail.status(), 'the deletion handle is a string or it is a 400').toBe(400)
+      expect((await badEmail.json()).field).toBe('email')
+
+      expect((await (await api.allowlistGet()).json()).entries, 'nothing was written').toEqual([])
+    })
+  })
+
+  test('an identity with NO verified e-mail is refused — the e-mail IS the deletion handle', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      // §UC-GA-002: `email` survives verification ONLY when `email_verified` is true,
+      // otherwise it is NULL. §UC-GA-010 makes the e-mail the display AND the deletion
+      // handle — so an entry without one would be permanently unrevokable through the
+      // API and invisible in the list. Refusing the ADD is what keeps every entry
+      // removable; the alternative is an admin ACL with no way out.
+      const res = await api.allowlistAdd({ id_token: `TEST:${tag('ga10-noemail')}:` })
+      expect(res.status()).toBe(400)
+      expect((await res.json()).field).toBe('email')
+      expect((await (await api.allowlistGet()).json()).entries).toEqual([])
+    })
+  })
+
+  test('⚠ an e-mail already held by a DIFFERENT sub is refused — the deletion handle must stay unambiguous', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      // The real-world shape: a Workspace address is freed when an account is deleted
+      // and later reassigned, so the SAME e-mail arrives under a NEW `sub`. `sub` is
+      // the identity key, so both entries are legitimately distinct — but the e-mail
+      // is the DELETION HANDLE (§UC-GA-010), and two entries sharing one handle means
+      // `DELETE { email }` removes BOTH with no way to remove one, while the list
+      // shows two rows an admin cannot tell apart.
+      const first = tag('ga10-mail-a')
+      const second = tag('ga10-mail-b')
+      expect((await api.allowlistAdd({ id_token: `TEST:${first}:zdielany@example.test` })).status()).toBe(200)
+
+      const clash = await api.allowlistAdd({ id_token: `TEST:${second}:zdielany@example.test` })
+      expect(clash.status(), 'refused, not silently duplicated').toBe(409)
+      const body = await clash.json()
+      expect(body.field).toBe('email')
+      // ⚠ It names the address the admin just used (which they already know) and
+      // NOTHING about the other identity — no sub reaches this body either.
+      expect(await clash.text()).not.toMatch(SUB_KEY_RE)
+
+      // ⚠ AND NOTHING WAS WRITTEN. The failure direction is the point: refusing costs
+      // one 409 with an obvious remedy (remove the stale row first), while accepting
+      // would make the second entry unremovable-in-isolation forever.
+      const entries = (await (await api.allowlistGet()).json()).entries
+      expect(entries).toHaveLength(1)
+      expect(JSON.parse(api.setting('admin_google_subs').value)[0].sub, 'the ORIGINAL holder kept the address').toBe(first)
+
+      // Non-vacuity: the SAME sub re-adding the SAME address is still the idempotent
+      // 200, so this guard cannot have been implemented as "no repeat e-mails".
+      expect((await api.allowlistAdd({ id_token: `TEST:${first}:zdielany@example.test` })).status()).toBe(200)
+      // …and once the original is revoked, the new account goes in cleanly.
+      expect((await api.allowlistRemove({ email: 'zdielany@example.test' })).status()).toBe(200)
+      expect((await api.allowlistAdd({ id_token: `TEST:${second}:zdielany@example.test` })).status()).toBe(200)
+      expect(JSON.parse(api.setting('admin_google_subs').value)[0].sub).toBe(second)
+    })
+  })
+
+  test('a corrupt admin_google_subs setting reads as EMPTY, never as a 500', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      api.writeSetting('admin_google_subs', 'not json at all')
+      const res = await api.allowlistGet()
+      expect(res.status(), 'an unparseable ACL must not take the settings page down').toBe(200)
+      expect(await res.json()).toEqual({ entries: [] })
+
+      // ⚠ AND IT FAILS CLOSED: an ACL that cannot be read grants nobody.
+      const login = await api.adminGoogleLogin({ id_token: `TEST:${tag('ga10-corrupt')}:x@example.test` })
+      expect(login.status()).toBe(401)
+
+      // A well-formed add heals it rather than compounding it.
+      expect((await api.allowlistAdd({ id_token: `TEST:${tag('ga10-heal')}:heal@example.test` })).status()).toBe(200)
+      expect((await (await api.allowlistGet()).json()).entries).toHaveLength(1)
+    })
+  })
+
+  test('⚠ §UC-GA-013 obligation 1 — the three allowlist routes are admin-only while BOTH Google LOGIN routes are public', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      for (const [label, res] of [
+        ['GET', await api.allowlistGet({})],
+        ['POST', await api.allowlistAdd({ id_token: `TEST:${tag('ga10-anon')}:x@example.test` }, {})],
+        ['DELETE', await api.allowlistRemove({ email: 'x@example.test' }, {})],
+      ]) {
+        expect(res.status(), `${label} /api/admin/google-allowlist must not be reachable anonymously`).toBe(401)
+        expect((await res.json()).error, `${label} is refused by requireAdmin, not by Google`).toBe(ADMIN_GUARD_401)
+      }
+
+      // ⚠ THE OTHER HALF, and getting it backwards is the failure the backlog row
+      // warns about: an anonymous caller must REACH the login handler. The
+      // discriminator is the MESSAGE — both answers are 401.
+      const anon = await api.adminGoogleLogin({ id_token: `TEST:${tag('ga10-pub')}:x@example.test` })
+      expect(anon.status()).toBe(401)
+      expect((await anon.json()).error, 'this 401 came from the allowlist check, not from requireAdmin').toBe(ADMIN_GOOGLE_401)
+
+      // (The friend-side public login is GA-T4's; asserted here only as the pair.)
+      const friendSide = await api.googleLogin({ id_token: `TEST:${tag('ga10-fr')}:x@example.test` })
+      expect(friendSide.status(), 'legacy mode, so 409 — but it REACHED the handler').toBe(409)
+    })
+  })
+
+  test('GET and DELETE work with Google UNCONFIGURED — revocation must never depend on Google; POST and login do not', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({ GOOGLE_CLIENT_ID: '', GOOGLE_AUTH_TEST_MODE: '' }, async ({ api }) => {
+      // Seeded straight into settings, because ADDING is exactly what is unavailable
+      // here — which is the point: an operator who unsets the env must still be able
+      // to SEE and REVOKE what is already there.
+      api.writeSetting('admin_google_subs', JSON.stringify([
+        { sub: 'orphan-sub', email: 'zostal@example.test', added_at: '2026-08-17T10:00:00.000Z' },
+      ]))
+
+      const res = await api.allowlistGet()
+      expect(res.status(), 'reading the ACL has no Google dependency').toBe(200)
+      expect((await res.json()).entries).toEqual([{ email: 'zostal@example.test', added_at: '2026-08-17T10:00:00.000Z' }])
+
+      for (const [label, r] of [
+        ['add', await api.allowlistAdd({ id_token: 'TEST:whoever:x@example.test' })],
+        ['login', await api.adminGoogleLogin({ id_token: 'TEST:orphan-sub:zostal@example.test' })],
+      ]) {
+        expect(r.status(), `${label} needs a verifier, so 503`).toBe(503)
+        expect((await r.json()).error, label).toBe(NOT_CONFIGURED)
+      }
+
+      const removed = await api.allowlistRemove({ email: 'zostal@example.test' })
+      expect(removed.status(), 'REVOCATION MUST ALWAYS WORK').toBe(200)
+      expect((await (await api.allowlistGet()).json()).entries).toEqual([])
+    })
+  })
+})
+
+test.describe('§UC-GA-011 — POST /api/admin/google-login', () => {
+  test('an allowlisted sub mints a token that is byte-identical to the password login\'s, and it reaches an admin route', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const sub = tag('ga11-ok')
+      expect((await api.allowlistAdd({ id_token: `TEST:${sub}:sef@example.test` })).status()).toBe(200)
+
+      const before = Date.now()
+      const res = await api.adminGoogleLogin({ id_token: `TEST:${sub}:sef@example.test` })
+      expect(res.status()).toBe(200)
+      const body = await res.json()
+
+      // ⚠ THE MINT IS BYTE-IDENTICAL TO `admin.js:80-89`: exactly `{ token }`, 32
+      // random bytes as hex, a 7-day expiry, one settings row. Anything additive here
+      // would be a second admin session shape.
+      expect(Object.keys(body)).toEqual(['token'])
+      expect(body.token).toMatch(/^[0-9a-f]{64}$/)
+      expect(await res.text(), 'and it never names a sub').not.toMatch(SUB_KEY_RE)
+
+      const stored = JSON.parse(api.setting('admin_token').value)
+      expect(stored.token).toBe(body.token)
+      const sevenDays = 7 * 24 * 60 * 60 * 1000
+      expect(stored.expiry).toBeGreaterThanOrEqual(before + sevenDays - 5000)
+      expect(stored.expiry).toBeLessThanOrEqual(Date.now() + sevenDays + 5000)
+
+      const verify = await api.adminVerify(body.token)
+      expect(verify.status()).toBe(200)
+      expect(await verify.json()).toEqual({ valid: true })
+      expect((await api.adminProbe(body.token)).status(), 'it really unlocks admin routes').toBe(200)
+
+      // ⚠ Adopt it, or every later `admin()` in this test 401s (the ONE-token trap).
+      api.adoptAdminToken(body.token)
+      expect((await api.allowlistGet()).status()).toBe(200)
+    })
+  })
+
+  test('⚠ ONE ADMIN TOKEN APP-WIDE — a Google login invalidates the password token AND a password login invalidates the Google one', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const sub = tag('ga11-rot')
+      expect((await api.allowlistAdd({ id_token: `TEST:${sub}:rot@example.test` })).status()).toBe(200)
+
+      const passwordToken = api.adminToken()
+      expect((await api.adminProbe(passwordToken)).status()).toBe(200)
+
+      const googleToken = (await (await api.adminGoogleLogin({ id_token: `TEST:${sub}:rot@example.test` })).json()).token
+      expect((await api.adminProbe(passwordToken)).status(), 'the Google login rotated it').toBe(401)
+      expect((await api.adminProbe(googleToken)).status()).toBe(200)
+
+      // …and the other direction, which is the pre-existing behaviour a second
+      // password login already had. Known behaviour, not a bug — asserted rather than
+      // worked around, because every e2e in this file depends on knowing it.
+      api.adoptAdminToken(googleToken)
+      const secondPassword = await api.reloginAdmin()
+      expect((await api.adminProbe(googleToken)).status(), 'the password login rotated it back').toBe(401)
+      expect((await api.adminProbe(secondPassword)).status()).toBe(200)
+    })
+  })
+
+  test('a sub that is not on the allowlist is 401 with the allowlist message and mints NOTHING', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      expect((await api.allowlistAdd({ id_token: `TEST:${tag('ga11-in')}:in@example.test` })).status()).toBe(200)
+      const tokenBefore = api.setting('admin_token').value
+
+      const res = await api.adminGoogleLogin({ id_token: `TEST:${tag('ga11-out')}:out@example.test` })
+      expect(res.status()).toBe(401)
+      const body = await res.json()
+      expect(body.error).toBe(ADMIN_GOOGLE_401)
+      expect(body.token, 'no token on a refusal').toBeUndefined()
+      // ⚠ The refusal names no allowlisted address — the 401 must not be a directory.
+      expect(await res.text()).not.toContain('in@example.test')
+      expect(api.setting('admin_token').value, 'and the live session is untouched').toBe(tokenBefore)
+    })
+  })
+
+  test('⚠ NO auth-mode dependency: it works in LEGACY and in MODERN — auth_mode governs the FRIEND surface only', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const sub = tag('ga11-mode')
+      expect((await api.allowlistAdd({ id_token: `TEST:${sub}:mode@example.test` })).status()).toBe(200)
+
+      // The backend is seeded LEGACY. Non-vacuity: the FRIEND endpoint refuses right
+      // now, in this very state, which is what makes "no mode gate here" a real claim
+      // rather than an untested one.
+      expect((await api.googleLogin({ id_token: `TEST:${sub}:mode@example.test` })).status()).toBe(409)
+
+      const legacyLogin = await api.adminGoogleLogin({ id_token: `TEST:${sub}:mode@example.test` })
+      expect(legacyLogin.status(), 'resolved decision #2 does NOT reach the admin portal').toBe(200)
+      api.adoptAdminToken((await legacyLogin.json()).token)
+
+      await api.setModernMode()
+      const modernLogin = await api.adminGoogleLogin({ id_token: `TEST:${sub}:mode@example.test` })
+      expect(modernLogin.status(), 'and it is unaffected by the flip in the other direction').toBe(200)
+      api.adoptAdminToken((await modernLogin.json()).token)
+    })
+  })
+
+  test('unconfigured ⇒ 503 ahead of any complaint about the token', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({ GOOGLE_CLIENT_ID: '', GOOGLE_AUTH_TEST_MODE: '' }, async ({ api }) => {
+      for (const [label, body] of [
+        ['a valid-shaped seam token', { id_token: 'TEST:whoever:x@example.test' }],
+        ['a number', { id_token: 123 }],
+        ['no token at all', {}],
+      ]) {
+        const res = await api.adminGoogleLogin(body)
+        expect(res.status(), `${label} ⇒ 503, the feature is simply off`).toBe(503)
+        expect((await res.json()).error, label).toBe(NOT_CONFIGURED)
+      }
+    })
+  })
+
+  test('a non-string token is 400 and garbage is 401 — the verifier\'s own contract, never a 500', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const numeric = await api.adminGoogleLogin({ id_token: 123 })
+      expect(numeric.status()).toBe(400)
+      expect((await numeric.json()).field).toBe('id_token')
+      expect((await numeric.json()).error).toBe(BAD_TOKEN)
+
+      const junk = await api.adminGoogleLogin({ id_token: 'garbage' })
+      expect(junk.status()).toBe(401)
+      // ⚠ AND IT IS THE VERIFIER'S 401, NOT THE ALLOWLIST'S. Answering the allowlist
+      // message here would tell an attacker their forged token verified.
+      expect((await junk.json()).error).toBe('Prihlásenie cez Google zlyhalo')
+
+      expect((await api.adminGoogleLogin(undefined)).status(), 'no body at all ⇒ 400, not a 500').toBe(400)
+    })
+  })
+
+  test('§UC-GA-013 rate-limit rule — the admin Google login and the allowlist POST both sit on authLimiter', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({ RATE_LIMIT_AUTH_MAX: '12' }, async ({ api }) => {
+      const sub = tag('ga11-limit')
+      expect((await api.allowlistAdd({ id_token: `TEST:${sub}:limit@example.test` })).status()).toBe(200)
+
+      let limited = false
+      for (let i = 0; i < 30 && !limited; i++) {
+        const res = await api.adminGoogleLogin({ id_token: `TEST:nobody-${i}:x@example.test` })
+        if (res.status() === 429) limited = true
+      }
+      expect(limited, 'the admin Google login must be rate limited at all').toBe(true)
+
+      // ⚠ THE SAME bucket, not a new one (no fifth bucket — §UC-GA-013).
+      expect((await api.allowlistAdd({ id_token: `TEST:${sub}:limit@example.test` })).status(),
+        'the allowlist POST accepts an ID token, so it shares the bucket').toBe(429)
+      expect((await api.adminGoogleLogin({ id_token: `TEST:${sub}:limit@example.test` })).status()).toBe(429)
+
+      // Reads and revocation are NOT on it — an exhausted bucket must not lock an
+      // admin out of seeing or removing an entry.
+      expect((await api.allowlistGet()).status(), 'GET carries no credential to check').toBe(200)
+      expect((await api.allowlistRemove({ email: 'limit@example.test' })).status()).toBe(200)
+    })
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GA-T10 — §UC-GA-010 / §UC-GA-011, the UI half. ON THE GATE.
+//
+// ⚠⚠ THE ONE-ADMIN-TOKEN HAZARD IS AT ITS WORST IN THIS DESCRIBE, because it holds
+// BOTH minting paths: a UI password login AND a UI Google login, each of which
+// `INSERT OR REPLACE`s the single `admin_token` settings row. The discipline, applied
+// without exception below:
+//
+//   1. Every test that needs API setup mints its OWN token first (`adminLoginApi()`
+//      or `loginAsAdminUI()`), never inheriting one from a previous test.
+//   2. Every mint that happens IN THE BROWSER is immediately ADOPTED
+//      (`adoptBrowserToken`), so the API context and the page agree afterwards.
+//   3. Nothing here is shared through `beforeAll` except the request context itself.
+//
+// Without (1) these tests would fail on their first API call and read as a GA-T9
+// regression; without (2) the cleanup at the end of a Google-login test would 401.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const ADMIN_GOOGLE_TITLE = 'Prihlásenie cez Google'
+const ADMIN_GOOGLE_HELPER = 'Pridať Google účet, ktorým sa chcete prihlasovať'
+
+test.describe('§UC-GA-010/011 — the admin login screen and the settings section', () => {
+  let uiCtx = null
+  let uiToken = ''
+
+  test.beforeAll(async ({ baseURL }) => {
+    uiCtx = await playwrightRequest.newContext({ baseURL })
+  })
+  test.afterAll(async () => { await uiCtx?.dispose() })
+
+  /** Mint a FRESH admin token over the API. See discipline (1) above. */
+  async function adminLoginApi() {
+    const login = await uiCtx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+    expect(login.status(), 'admin login (did seed.mjs run?)').toBe(200)
+    uiToken = (await login.json()).token
+    return uiToken
+  }
+
+  function adminReq(path, opts = {}) {
+    return uiCtx[opts.method || 'get'](path, {
+      headers: { 'X-Admin-Token': uiToken },
+      ...(opts.data === undefined ? {} : { data: opts.data }),
+    })
+  }
+
+  /** Discipline (2): whatever the browser just minted becomes ours. */
+  async function adoptBrowserToken(page) {
+    uiToken = await page.evaluate(() => localStorage.getItem('adminToken'))
+    expect(uiToken, 'the browser stored an admin token').toBeTruthy()
+    return uiToken
+  }
+
+  async function loginAsAdminUI(page) {
+    await page.goto('/admin')
+    await page.locator('#password').fill(ADMIN_PASSWORD)
+    await page.getByRole('button', { name: 'Prihlásiť sa', exact: true }).click()
+    await expect(page).toHaveURL(/\/admin\/dashboard/)
+    await adoptBrowserToken(page)
+  }
+
+  /** Leave the shared gate as we found it — an allowlisted sub is a live credential. */
+  async function clearAllowlist() {
+    const res = await adminReq('/api/admin/google-allowlist')
+    if (res.status() !== 200) return
+    for (const entry of (await res.json()).entries) {
+      await adminReq('/api/admin/google-allowlist', { method: 'delete', data: { email: entry.email } })
+    }
+  }
+
+  test('the password form stays PRIMARY: the GIS button is an addition below an "alebo" divider, and it renders in LEGACY mode too', async ({ page }) => {
+    const hits = await trackGoogle(page, { fulfilWith: GIS_STUB })
+    // ⚠ `legacy` DELIBERATELY. `auth_mode` governs the FRIEND surface only
+    // (§UC-GA-011), so the admin screen must offer Google in every mode — resolved
+    // decision #2 is not copied here. A stub carrying `modern` would hide that.
+    await stubAuthMode(page, { authMode: 'legacy', googleClientId: 'gate-client-id' })
+    await page.goto('/admin')
+
+    // The backup guarantee (brief item 3): the password form is never removed or
+    // hidden, and it is FIRST.
+    await expect(page.locator('#password')).toBeVisible()
+    const submit = page.getByRole('button', { name: 'Prihlásiť sa', exact: true })
+    await expect(submit).toBeVisible()
+
+    const divider = page.getByTestId('admin-google-divider')
+    await expect(divider).toBeVisible()
+    await expect(divider).toHaveText('alebo')
+    await expect(page.getByTestId('admin-google-signin')).toBeVisible()
+    await expect(page.getByTestId('gis-stub-button')).toBeVisible()
+
+    // ⚠ The RD-DS-6 lesson: assert the REQUEST, not just the DOM.
+    expect(hits.filter((u) => u.includes('/gsi/client')).length, 'the loader must really fetch GIS').toBeGreaterThan(0)
+
+    const calls = await page.evaluate(() => window.__gisCalls)
+    expect(calls.initialize.length).toBe(1)
+    expect(calls.initialize[0].client_id, 'the SERVED client id, not a build-time constant').toBe('gate-client-id')
+    expect(calls.initialize[0].hasCallback).toBe(true)
+    expect(calls.renderButton[0].testid).toBe('admin-google-signin')
+
+    const submitBox = await submit.boundingBox()
+    const dividerBox = await divider.boundingBox()
+    expect(dividerBox.y, 'Google goes BELOW the whole password form').toBeGreaterThan(submitBox.y)
+  })
+
+  test('googleClientId EXPLICITLY null ⇒ the login screen is byte-identical to today: no divider, no button, zero requests to Google', async ({ page }) => {
+    // ⚠ NON-VACUOUS BY CONSTRUCTION: the stub CARRIES the key with a `null` value, so
+    // a screen that ignored the flag entirely could not pass this.
+    const hits = await trackGoogle(page)
+    await stubAuthMode(page, { authMode: 'legacy', googleClientId: null })
+    await page.goto('/admin')
+
+    await expect(page.locator('#password')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Prihlásiť sa', exact: true })).toBeVisible()
+    await expect(page.getByTestId('admin-google-divider')).toHaveCount(0)
+    await expect(page.getByTestId('admin-google-signin')).toHaveCount(0)
+    await page.waitForLoadState('networkidle')
+    expect(hits, 'an unconfigured deployment must be Google-free').toEqual([])
+  })
+
+  test('an allowlisted Google account logs the admin in and lands on the dashboard, exactly as the password path does', async ({ page }) => {
+    await adminLoginApi()
+    await clearAllowlist()
+    const sub = tag('ga10-ui-login')
+    expect((await adminReq('/api/admin/google-allowlist', {
+      method: 'post', data: { id_token: `TEST:${sub}:uilogin@example.test` },
+    })).status(), 'seed the allowlist').toBe(200)
+
+    await trackGoogle(page, { fulfilWith: GIS_STUB })
+    await stubAuthMode(page, { authMode: 'legacy', googleClientId: 'gate-client-id' })
+    await page.goto('/admin')
+    await expect(page.getByTestId('gis-stub-button')).toBeVisible()
+
+    // The E2E BOUNDARY IS THE ID TOKEN (§UC-GA-013): hand the view's own registered
+    // callback a credential, exactly as the real GIS iframe would.
+    await page.evaluate((token) => window.__gisCallback({ credential: token }), `TEST:${sub}:uilogin@example.test`)
+
+    await expect(page, 'same destination as the password login').toHaveURL(/\/admin\/dashboard/)
+    // ⚠ Discipline (2). This mint rotated the ONE app-wide token; the cleanup below
+    // would 401 without adopting it.
+    await adoptBrowserToken(page)
+    await clearAllowlist()
+    expect((await (await adminReq('/api/admin/google-allowlist')).json()).entries).toEqual([])
+  })
+
+  test('a non-allowlisted Google account renders the server\'s own sentence in the existing error slot and stays on the login screen', async ({ page }) => {
+    await adminLoginApi()
+    await clearAllowlist()
+
+    await trackGoogle(page, { fulfilWith: GIS_STUB })
+    await stubAuthMode(page, { authMode: 'legacy', googleClientId: 'gate-client-id' })
+    await page.goto('/admin')
+    await expect(page.getByTestId('gis-stub-button')).toBeVisible()
+
+    await page.evaluate((token) => window.__gisCallback({ credential: token }), `TEST:${tag('ga10-ui-deny')}:deny@example.test`)
+
+    await expect(page.getByText(ADMIN_GOOGLE_401)).toBeVisible()
+    await expect(page, 'a refusal must not navigate').toHaveURL(/\/admin$/)
+    // …and the backup is still right there.
+    await expect(page.locator('#password')).toBeVisible()
+  })
+
+  test('AdminSettings: the section lists the allowlisted account, offers the GIS add button, and removes an entry behind a confirm', async ({ page }) => {
+    await trackGoogle(page, { fulfilWith: GIS_STUB })
+    await stubAuthMode(page, { authMode: 'legacy', googleClientId: 'gate-client-id' })
+    // ⚠ Discipline (1): the UI login FIRST, then the API setup on its token.
+    await loginAsAdminUI(page)
+    await clearAllowlist()
+    expect((await adminReq('/api/admin/google-allowlist', {
+      method: 'post', data: { id_token: `TEST:${tag('ga10-ui-sec')}:nastavenia@example.test` },
+    })).status()).toBe(200)
+
+    await page.goto('/admin/settings')
+    const section = page.getByTestId('admin-google-section')
+    await expect(section).toBeVisible()
+    await expect(section).toContainText(ADMIN_GOOGLE_TITLE)
+    await expect(section).toContainText(ADMIN_GOOGLE_HELPER)
+
+    const entry = section.getByTestId('admin-google-entry')
+    await expect(entry).toHaveCount(1)
+    await expect(entry).toContainText('nastavenia@example.test')
+    // The GIS button is the ONLY way in — no hand-typed identities (§UC-GA-010).
+    await expect(section.getByTestId('gis-stub-button')).toBeVisible()
+    await expect(section.locator('input[type="email"], input[type="text"]'),
+      'an admin must never be able to TYPE an identity into the allowlist').toHaveCount(0)
+
+    page.once('dialog', (d) => d.accept())
+    await entry.getByRole('button', { name: 'Odobrať' }).click()
+
+    await expect(section.getByTestId('admin-google-entry')).toHaveCount(0)
+    expect((await (await adminReq('/api/admin/google-allowlist')).json()).entries,
+      'and it really left the server, not just the screen').toEqual([])
+  })
+
+  test('⚠ AdminSettings: a FAILED allowlist load must not render "nobody has access" — it renders an error', async ({ page }) => {
+    await trackGoogle(page, { fulfilWith: GIS_STUB })
+    await stubAuthMode(page, { authMode: 'legacy', googleClientId: 'gate-client-id' })
+    await loginAsAdminUI(page)
+    await clearAllowlist()
+    // A real entry EXISTS on the server — so the empty state would be a lie about
+    // this instance, not merely about an unknown one.
+    expect((await adminReq('/api/admin/google-allowlist', {
+      method: 'post', data: { id_token: `TEST:${tag('ga10-ui-fail')}:nevidno@example.test` },
+    })).status()).toBe(200)
+
+    await page.route('**/api/admin/google-allowlist', (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Chyba servera' }) }))
+
+    await page.goto('/admin/settings')
+    const section = page.getByTestId('admin-google-section')
+    await expect(section).toBeVisible()
+
+    // ⚠ THE WHOLE POINT. On an ACCESS-AUDIT screen, "nobody has Google access" is the
+    // single worst thing to show wrongly: an admin reading it would conclude the
+    // allowlist is empty and that Google login is off, when an account still holds it.
+    await expect(section.getByTestId('admin-google-empty'),
+      'a load failure is NOT an empty allowlist').toHaveCount(0)
+    await expect(section).not.toContainText('Zatiaľ žiadny Google účet')
+    await expect(section.getByTestId('admin-google-error')).toBeVisible()
+
+    // …and the add control is gone too rather than sitting there as an empty box: the
+    // GIS mount is never reached on this path, so advertising it would be a second lie.
+    await expect(section.getByTestId('admin-google-add')).toHaveCount(0)
+
+    // Cleanup needs the real route back.
+    await page.unroute('**/api/admin/google-allowlist')
+    await clearAllowlist()
+  })
+
+  test('⚠ AdminSettings: two subs sharing one e-mail still render as TWO rows (the v-for key is not the e-mail)', async ({ page }) => {
+    const dbPath = process.env.DB_PATH || ''
+    test.skip(!dbPath, 'requires DB_PATH to hand-write the settings row the API now refuses')
+
+    await trackGoogle(page, { fulfilWith: GIS_STUB })
+    await stubAuthMode(page, { authMode: 'legacy', googleClientId: 'gate-client-id' })
+    await loginAsAdminUI(page)
+    await clearAllowlist()
+
+    // ⚠ WRITTEN DIRECTLY, because the POST now refuses this state (see the §UC-GA-010
+    // 409 above). The row can still exist on a deployment that ran an earlier build or
+    // was hand-edited, and a `:key="entry.email"` would then collapse the two into one
+    // rendering slot — a list that misrepresents who has admin access.
+    const db = new DatabaseSync(dbPath)
+    try {
+      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(
+        'admin_google_subs',
+        JSON.stringify([
+          { sub: 'legacy-sub-1', email: 'dvojica@example.test', added_at: '2026-01-01T00:00:00.000Z' },
+          { sub: 'legacy-sub-2', email: 'dvojica@example.test', added_at: '2026-02-02T00:00:00.000Z' },
+        ]),
+      )
+    } finally { db.close() }
+
+    await page.goto('/admin/settings')
+    const section = page.getByTestId('admin-google-section')
+    await expect(section).toBeVisible()
+    await expect(section.getByTestId('admin-google-entry'),
+      'both entries must be visible — an admin cannot revoke access they cannot see').toHaveCount(2)
+    // ⚠ And they are DISTINGUISHABLE: `added_at` is the only thing that differs, so
+    // both dates must render. It is also the second half of the `v-for` key, which is
+    // what makes the two rows separate identities to Vue's patcher.
+    await expect(section).toContainText('1. 1. 2026')
+    await expect(section).toContainText('2. 2. 2026')
+
+    await clearAllowlist()
+  })
+
+  test('AdminSettings: googleClientId null ⇒ the whole section is absent and nothing is requested from Google', async ({ page }) => {
+    const hits = await trackGoogle(page)
+    await stubAuthMode(page, { authMode: 'legacy', googleClientId: null })
+    await loginAsAdminUI(page)
+
+    await page.goto('/admin/settings')
+    // Non-vacuity: the page really rendered.
+    await expect(page.getByText('Režim autentifikácie')).toBeVisible()
+    await expect(page.getByTestId('admin-google-section')).toHaveCount(0)
+    await page.waitForLoadState('networkidle')
+    expect(hits, 'an unconfigured deployment must be Google-free here too').toEqual([])
   })
 })

@@ -186,7 +186,23 @@ test.describe('FUP-T11 — POST /api/admin/login', () => {
     // everything" would have satisfied the whole block.
     const res = await adminLogin(ADMIN_PASSWORD)
     expect(res.status(), 'the real admin password still works').toBe(200)
-    expect((await res.json()).token, 'and still mints a token').toBeTruthy()
+    const { token } = await res.json()
+    expect(token, 'and still mints a token').toBeTruthy()
+
+    // ⚠ ADOPT IT — the same rule `expectAdminPasswordUntouched()` above is written
+    // for, and this was the one login in the file that did not follow it. There is
+    // exactly ONE admin token app-wide, so this success invalidates the one
+    // `beforeAll` minted, and §4 (`PUT /:id/reset-password`, `requireAdmin`) then
+    // answers 401 where it asserts 400 — a failure that reads exactly like the fix
+    // under test having broken authorization.
+    //
+    // ⚠ IT ONLY SURVIVED BECAUSE §1b BELOW HAPPENED TO RE-ADOPT — and §1b is
+    // `test.skip`ped without `DB_PATH`, so the file passed only when the runner
+    // exported it and went red, in an unrelated describe, when it did not. Found on a
+    // GA-T10 full-suite run started without `DB_PATH`; fixed HERE so the coupling
+    // between an optional env var and an unrelated describe's authz is gone rather
+    // than merely satisfied.
+    adminToken = token
   })
 })
 

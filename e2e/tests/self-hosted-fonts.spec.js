@@ -455,8 +455,17 @@ test.describe('Brand fonts are self-hosted (BASE_URL target)', () => {
 // so it was broken twice over.) Every public, unauthenticated route that renders
 // its own chrome is swept here, so the claim is true rather than merely softened.
 //
-// Not swept, deliberately: authenticated routes (`/cycle/:id`, `/admin/*`) need
-// a session and are covered for chrome by their own specs. `revolut.me` links in
+// Not swept, deliberately: authenticated routes (`/cycle/:id`, `/admin/dashboard`
+// and every other `/admin/*` screen) need a session and are covered for chrome by
+// their own specs. ⚠ GA-T10 CORRECTION: `/admin` ITSELF is NOT one of them — it is
+// the admin LOGIN card, reachable with no session at all, and since GA-T10 it renders
+// a GIS button. It was previously lumped in with `/admin/*` and therefore excluded on
+// a premise that was false for it, which left the one public-URL screen this file
+// does not cover — the exclusion was recorded as coverage that does not exist
+// (`admin-auth.spec.js` asserts redirect/login/logout behaviour and makes no
+// subresource, external-host or CSP assertion whatsoever). It is swept below now, in
+// both sweeps, so this file's generalizing claim is true again rather than locally
+// false. `revolut.me` links in
 // `FriendOrder.vue` / `PaymentModal.vue` are `<a href>` NAVIGATIONS, not
 // subresource fetches — CSP's `form-action`/`navigate-to` do not apply to plain
 // link targets and nothing is fetched until the user clicks, so they are out of
@@ -575,11 +584,19 @@ test.describe('No public route fetches a third-party subresource', () => {
     // only a VALID code reaches — so the route is swept in BOTH states, and only
     // the valid one may contact anybody.
     '/invite/:code (valid)': [GIS_HOST, GIS_IFRAME_HOST],
+    // ⚠ GA-T10: the ADMIN LOGIN CARD. Public URL, no session, and since §UC-GA-011 it
+    // renders the same GIS button below the password form — so it fetches the same
+    // five URLs on the same two hosts. It belongs here for the reason every other row
+    // does: this sweep is the ONLY thing that catches an un-allowlisted external
+    // subresource on a route anyone can open (the gate sends no security headers, the
+    // RD-DS-6 lesson), and leaving the app's one remaining public screen out of it
+    // made the file's own generalizing claim untrue.
+    '/admin': [GIS_HOST, GIS_IFRAME_HOST],
     '/g/:token': [],
     '/magic/:token': [],
   }
 
-  test('/ , /invite/:code, /g/:token and /magic/:token each fetch only same-origin subresources', async ({ page, baseURL }) => {
+  test('every public route fetches only same-origin subresources (plus the sanctioned GIS hosts)', async ({ page, baseURL }) => {
     const origin = new URL(baseURL).origin
     const offenders = {}
 
@@ -596,6 +613,10 @@ test.describe('No public route fetches a third-party subresource', () => {
       { label: '/', url: '/' },
       { label: '/invite/:code', url: `/invite/RDDS6-${uniq}` },
       { label: '/invite/:code (valid)', url: `/invite/${inviteCode}` },
+      // `/admin` (GA-T10, §UC-GA-011): visited ANONYMOUSLY, which is the state that
+      // matters — the login card renders its own chrome and, on a configured target,
+      // its own GIS button. A stored token would redirect to the dashboard instead.
+      { label: '/admin', url: '/admin' },
       { label: '/g/:token', url: `/g/${guestToken}` },
       { label: '/magic/:token', url: `/magic/${'f'.repeat(64)}` },
     ]
@@ -701,10 +722,20 @@ test.describe('No public route fetches a third-party subresource', () => {
     //     That asymmetry is the decision, observed on a real target.
     const googleOnInviteForm = mode.googleClientId !== null
 
+    // ⚠ GA-T10 UPDATE (§UC-GA-011), a case (a) edit for the same reason GA-T8 made
+    // one: a new sanctioned surface must state its expectation here, not leave it
+    // inferred. The ADMIN LOGIN CARD has the invite form's shape, not the friend login
+    // card's — NO `authMode` term, because `auth_mode` governs the FRIEND surface only
+    // and resolved decision #2 does not reach the admin portal. So on this legacy gate
+    // `/` is zero while `/admin` is not, exactly as `/invite/<valid>` is not, and that
+    // asymmetry is the decision observed on a real target rather than a stub.
+    const googleOnAdminLogin = mode.googleClientId !== null
+
     const routes = [
       ['/', '/', googleOnLoginCard],
       ['/invite/:code', `/invite/RDDS6-${uniq}`, false],
       ['/invite/:code (valid)', `/invite/${inviteCode}`, googleOnInviteForm],
+      ['/admin', '/admin', googleOnAdminLogin],
       // ⚠ UNCONDITIONAL, on every target and in every auth mode.
       ['/g/:token', `/g/${guestToken}`, false],
       ['/magic/:token', `/magic/${'f'.repeat(64)}`, false],
@@ -783,11 +814,34 @@ test.describe('No public route fetches a third-party subresource', () => {
     //     control inside this SAME file, so the list below is unchanged — the
     //     "third importer" this note used to anticipate never materialised as a new
     //     row, and no assertion here moves.
-    // Still to come, each on its own row when it lands: AdminLogin (§UC-GA-011),
-    // InviteRegister (§UC-GA-008), AdminSettings (§UC-GA-010). ⚠ A guest
-    // view (`GuestOrder`, `GuestOrderStatus`, `GuestProductGrid`) or `MagicLogin`
-    // appearing here is a BUG, not an update — those routes are pinned at zero
-    // external requests by the sweep above.
+    // ⚠ A guest view (`GuestOrder`, `GuestOrderStatus`, `GuestProductGrid`) or
+    // `MagicLogin` appearing here is a BUG, not an update — those routes are pinned
+    // at zero external requests by the sweep above.
+    //     ⚠ GA-T10 UPDATE (§UC-GA-010/011): `views/AdminLogin.vue` (the login card's
+    //     GIS button, below the password form that stays as the permanent backup) and
+    //     `views/AdminSettings.vue` (the allowlist's "add an account" button) are the
+    //     FOURTH and FIFTH importers, and the list is now COMPLETE — every surface
+    //     §UC-GA-012 names has landed, so anything appearing here from now on is a new
+    //     decision, not a pending row.
+    //     ⚠ ONE of them adds a row to BOTH sweeps above, the other adds none, and the
+    //     split is the whole point of pairing this list with the sweep:
+    //       · `AdminLogin.vue` serves `/admin`, which is a PUBLIC URL — no session, the
+    //         login card renders its own chrome. It is now swept in both sweeps, with
+    //         `[GIS_HOST, GIS_IFRAME_HOST]` allowed and a config-driven expectation of
+    //         `googleClientId !== null` (no `authMode` term). An earlier draft of this
+    //         note excluded it as "authenticated, covered by `admin-auth.spec.js`" —
+    //         BOTH halves were false, and the exclusion was recorded as coverage that
+    //         does not exist. Corrected here and at the top of this section.
+    //       · `AdminSettings.vue` serves `/admin/settings`, which genuinely IS
+    //         authenticated — an anonymous visit redirects to the login card and never
+    //         mounts the view, so there is nothing for a public-route sweep to observe.
+    //         Its Google control is pinned in `google-auth.spec.js` instead, which can
+    //         log in. That is the honest reason, and it is not the reason `/admin` was
+    //         wrongly given.
+    //     ⚠ Like `InviteRegister.vue`, NEITHER carries an `authMode === 'modern'` term
+    //     — `auth_mode` governs the FRIEND surface only (§UC-GA-011), so resolved
+    //     decision #2 does not reach the admin portal. A mode term appearing on either
+    //     of these two would be the bug.
     //     ⚠ GA-T8 UPDATE (§UC-GA-008): `views/InviteRegister.vue` is the THIRD
     //     importer and the first on a route other than `/`. Its Google block is
     //     inside the `form` state only, so `/invite/:code` contacts Google when the
@@ -798,6 +852,8 @@ test.describe('No public route fetches a third-party subresource', () => {
     //     `PUT /:id/google-link` 409s in legacy, and `POST /invitations/register`
     //     does not refuse in any mode.
     const SANCTIONED_GIS_IMPORTERS = [
+      'views/AdminLogin.vue',
+      'views/AdminSettings.vue',
       'views/FriendPortal.vue',
       'views/FriendPortalSession.vue',
       'views/InviteRegister.vue',

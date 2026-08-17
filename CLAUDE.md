@@ -672,6 +672,18 @@ typeface.
   filenames are **not** content-hashed, so `immutable` would pin a stale face forever if the
   subsets are ever refreshed from Google.
 
+### ⚠ Running playwright from the repo ROOT is a FALSE-GREEN vector (GA-T10, 2026-08-17)
+
+`npx playwright test` **must** be run from `/home/karolskolar/projects/gorifi/e2e`. From the
+repo root it resolves a **second** `@playwright/test`, dies with *"did not expect
+test.beforeAll() to be called here"*, and reports **`Error: No tests found`** — which a
+script checking only for `✘` lines reads as a clean run. A GA-T10 mutation probe
+"passed" that way and proved nothing; both affected runs had to be redone.
+
+⚠ The general form: **`No tests found` is not a pass.** Any wrapper that greps for
+failures must also assert a non-zero test count, or a wrong cwd, a bad `-g` filter and a
+typo'd path all look identical to success.
+
 ### ⚠⚠ GA-T8 — `await` in a handler BREAKS the `instances: 1` atomicity assumption (2026-08-17)
 
 The standing concurrency note says non-transactional check-then-write is safe because

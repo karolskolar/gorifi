@@ -145,6 +145,32 @@ export const api = {
   verify: (token) => request('/admin/verify', { method: 'POST', body: { token } }),
   logout: () => request('/admin/logout', { method: 'POST' }),
 
+  // 10 §UC-GA-011 — the admin logs in with Google. ⚠ PUBLIC, exactly like
+  // `login()` above: the endpoint carries no admin guard (an anonymous caller has to
+  // reach it or nobody could ever log in with it), and its response is the SAME
+  // `{ token }` the password login returns, stored in the same `localStorage.adminToken`.
+  // ⚠ There is exactly ONE admin token app-wide, so this REPLACES any token a password
+  // login minted earlier — known behaviour (§UC-GA-011), not a bug.
+  adminGoogleLogin: (idToken) => request('/admin/google-login', {
+    method: 'POST',
+    body: { id_token: idToken }
+  }),
+
+  // 10 §UC-GA-010 — the admin Google allowlist. All three are `requireAdmin`.
+  // ⚠ The GET never carries a `sub`; the e-mail is both the display value and the
+  // deletion handle, which is why `removeAdminGoogleAccount` takes one.
+  // ⚠ Adding requires an ID TOKEN, never a typed address: the admin proves possession
+  // of the account being added (01's "e-mails confirmed at link time").
+  getAdminGoogleAllowlist: () => adminRequest('/admin/google-allowlist'),
+  addAdminGoogleAccount: (idToken) => adminRequest('/admin/google-allowlist', {
+    method: 'POST',
+    body: { id_token: idToken }
+  }),
+  removeAdminGoogleAccount: (email) => adminRequest('/admin/google-allowlist', {
+    method: 'DELETE',
+    body: { email }
+  }),
+
   // Cycles
   getCycles: () => request('/cycles'),
   getCycle: (id) => request(`/cycles/${id}`),
