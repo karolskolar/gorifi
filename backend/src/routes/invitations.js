@@ -18,6 +18,7 @@ import {
   credentialsMessage,
   resolveLoginUrl,
 } from '../helpers/credentials-message.js';
+import { verifyGoogleIdToken } from '../helpers/google-auth.js';
 
 const router = Router();
 
@@ -79,6 +80,18 @@ const USERNAME_REQUIRED_MESSAGE = 'Prihlasovacie meno je povinné.';
 // Shared by the register 409 and the approval 409 — one field, one sentence.
 const USERNAME_TAKEN_MESSAGE = 'Toto prihlasovacie meno je už obsadené';
 
+// The second layer of `POST /register`'s pending-phone dedupe (10 §UC-GA-008 made
+// that handler `async`, so its check and its write are no longer indivisible — see
+// the block comment at the attach). `idx_invitations_phone_pending` is the ONLY
+// unique index on `invitations`, so a message match alone would already be
+// unambiguous; the `code` half follows `friends.js`'s `isGoogleSubConflict` so a
+// future index on this table cannot silently start answering 409.
+function isPendingPhoneConflict(e) {
+  return typeof e?.code === 'string'
+    && e.code.startsWith('SQLITE_CONSTRAINT')
+    && /UNIQUE constraint failed: invitations\.phone/.test(String(e?.message || ''));
+}
+
 // GET /code/:code — Validate invite code (public, rate-limited against enumeration)
 router.get('/code/:code', abuseLimiter, (req, res) => {
   try {
@@ -105,7 +118,17 @@ router.get('/code/:code', abuseLimiter, (req, res) => {
 // field is type-guarded before it is touched, bounded after trim, and the 400s
 // carry a `field` marker so the form can point at the offending input (the
 // guest.js contract). 07 §UC-IA-003.
-router.post('/register', abuseLimiter, (req, res) => {
+//
+// ⚠⚠ THIS HANDLER IS `async` (10 §UC-GA-008's optional Google attach), AND THE
+// TRY/CATCH AROUND ITS WHOLE BODY IS THEREFORE LOAD-BEARING — the module-10 pattern,
+// inherited verbatim from `friends.js`'s `POST /auth/google`. **Express 4 does not
+// forward a rejected handler promise to the error middleware**, and the process runs
+// under Node 20's default `--unhandled-rejections=throw`. So a throw ANYWHERE AFTER
+// THE `await` — the two dedupe SELECTs, the INSERT under `SQLITE_BUSY` — would leave
+// the client with NO RESPONSE AT ALL **and kill the process**, on a PUBLIC
+// unauthenticated endpoint. The catch below already wrapped everything; what changed
+// is that it now also has to.
+router.post('/register', abuseLimiter, async (req, res) => {
   try {
     const body = req.body || {};
 
@@ -189,14 +212,145 @@ router.post('/register', abuseLimiter, (req, res) => {
       return res.status(409).json({ error: 'Registrácia s týmto číslom už existuje' });
     }
 
+    // ── The optional Google attach (10 §UC-GA-008) ──────────────────────────
+    //
+    // ⚠ NO NEW ENDPOINT AND NO NEW BUCKET (§UC-GA-013): the credential rides THIS
+    // public route, on the `abuseLimiter` it already sat on. One endpoint, one
+    // bucket — moving it to `authLimiter` would let a registration spammer behind
+    // the office NAT lock colleagues out of password login.
+    //
+    // ⚠ IT SITS HERE, LAST, ON PURPOSE. Every check above is module 07's and runs
+    // in module 07's order, so an absent/empty token leaves this handler's whole
+    // decision sequence — and its 201 body — byte-identical to what it shipped.
+    // It is also the only step that costs a network round trip, so nothing pays
+    // for it until everything cheap has passed.
+    //
+    // ⚠⚠ BUT THE RESPONSE AND THE ROW ARE NOT THE ONLY THINGS THAT COULD MOVE, AND
+    // ONE THING DID: **ATOMICITY**. The phone dedupe at the top of this block and the
+    // INSERT at the bottom used to be separated by nothing — this whole handler was
+    // synchronous, so under `instances: 1` no request could interleave between them.
+    // The `await` below is **the first place in this repo where the standing
+    // "handlers are fully synchronous" assumption stops holding**: request A carrying
+    // a token yields at the verifier for the duration of a JWKS round trip, and
+    // request B for the SAME phone can arrive, pass the dedupe and insert inside that
+    // window. A's INSERT then hits `idx_invitations_phone_pending` and — before the
+    // two guards below — fell into the generic catch as a **500 on a public endpoint
+    // whose contract for that state is a 409**. No bad data was ever written (the
+    // partial unique index is what holds), which is why this is narrow, not severe.
+    //
+    // Closed at BOTH layers, the GSO-T10 / friends.js pattern:
+    //   1. the phone SELECT is re-run inside the token branch, immediately before the
+    //      INSERT — so the window shrinks to nothing on a single process, and the
+    //      no-token path (which never yields) keeps exactly one check, as before;
+    //   2. `isPendingPhoneConflict()` in the catch translates the constraint to the
+    //      SAME 409, which is the layer that survives the PM2-cluster scenario the
+    //      standing concurrency caveat warns about — there, layer 1 can still lose.
+    //
+    // ⚠ NO AUTH-MODE GATE, deliberately (see §UC-GA-005/007): the surfaces that
+    // require modern mode do so because `PUT /:id/google-link` answers 409 in
+    // legacy. This path has no such refusal — it writes only a NEW invitation row,
+    // approval mints a username + temp password regardless of mode, and the
+    // attached identity is a frozen record for §UC-GA-009 to copy. GA-T5's legacy
+    // hazard (planting an alternative credential on an EXISTING friend row, which
+    // the shared office password makes reachable for anyone) has no analogue here.
+    let googleSub = null;
+    let googleEmail = null;
+    const googleToken = body.google_id_token;
+    // Absent / null / '' ⇒ today's flow, untouched. Anything else — including a
+    // non-string — goes to the helper, which owns the type and length guard.
+    if (googleToken !== undefined && googleToken !== null && googleToken !== '') {
+      // ⚠ NETWORK I/O — MUST stay outside any db.transaction (helpers/google-auth.js,
+      // the IA-T3 structural rule). There is no transaction on this path, so the
+      // rule is restated rather than enforced by anything: keep it that way, and if
+      // this handler ever grows one, verify FIRST and open it with `sub` in hand.
+      // ⚠ The result is ALWAYS TRUTHY — branch on `.error`, never on falsiness.
+      const v = await verifyGoogleIdToken(googleToken, { field: 'google_id_token' });
+      if (v.error) {
+        // ⚠ 400, NOT 401, for a token that did not verify. Registration is not a
+        // login: a bad token is a bad FIELD, so the form keeps everything the
+        // applicant typed and points at the one control that failed. The other
+        // reasons keep the helper's own status (400 bad_request with the
+        // `google_id_token` marker, 503 unavailable, 503 not_configured).
+        if (v.reason === 'invalid') {
+          return res.status(400).json({ error: 'Overenie Google účtu zlyhalo, skúste to znova', field: 'google' });
+        }
+        return res.status(v.status).json({ error: v.error, ...(v.field && { field: v.field }) });
+      }
+
+      googleSub = v.identity.sub;
+      googleEmail = v.identity.email;
+
+      // Courtesy dedupe (the UC-IA-003 convention). The AUTHORITATIVE check is the
+      // `idx_friends_google_sub` UNIQUE index at approval (§UC-GA-009); these two
+      // exist so the applicant learns now rather than after an admin's approval
+      // fails. ⚠ NOT scoped to `active` — that index is not either, so a courtesy
+      // check that ignored deactivated holders would wave through a registration
+      // that can never be approved.
+      const linkedFriend = db.get('SELECT id FROM friends WHERE google_sub = ?', [googleSub]);
+      if (linkedFriend) {
+        // ⚠ Names no friend (the §UC-GA-004 rule): a public form must not become a
+        // "whose Google account is this?" directory.
+        //
+        // ⚠ ACCEPTED RISK, recorded (it is copy, not logic — the sentence is
+        // product-owner-signed in §UC-GA-008 and must not be reworded here): on a
+        // CONFIGURED but LEGACY deployment "Prihláste sa cez Google" is advice the
+        // friend cannot take yet, because `POST /friends/auth/google` answers the
+        // resolved-decision-#2 409 until the mode flips. Same class as the block's
+        // "Po schválení sa budete môcť prihlásiť svojím Google účtom". Neither is a
+        // dead end — module 07's approval always mints a username + temp password,
+        // and the attach activates at the flip — but the honest operator note is:
+        // ⚠ SET `GOOGLE_CLIENT_ID` AT OR AFTER THE MODERN FLIP, not before.
+        return res.status(409).json({
+          error: 'Tento Google účet je už prepojený s existujúcim účtom. Prihláste sa cez Google.',
+          field: 'google'
+        });
+      }
+      // ⚠ PENDING only — the phone-dedupe precedent, and an app check only (there
+      // is no partial index on `invitations`, by design: the row is a frozen
+      // historical record, so a processed or rejected registration must not block
+      // the same person from registering again).
+      const pendingWithSub = db.get(
+        "SELECT id FROM invitations WHERE google_sub = ? AND status = 'pending'",
+        [googleSub]
+      );
+      if (pendingWithSub) {
+        // A DIFFERENT sentence from the one above: "you already have an account"
+        // and "your registration is already queued" are different facts.
+        return res.status(409).json({ error: 'Registrácia s týmto Google účtom už existuje', field: 'google' });
+      }
+
+      // ⚠ LAYER 1 OF THE RACE FIX (see the block comment above). Re-read the phone
+      // dedupe now that the `await` has resolved: on a single process nothing can
+      // interleave between here and the INSERT, so this closes the window the
+      // verifier opened. Byte-identical 409 to the one at the top — same status,
+      // same sentence, no `field` — because it is the same fact, just observed
+      // later. The no-token path never reaches this line and still runs exactly
+      // one phone check.
+      const raced = db.get(
+        "SELECT id FROM invitations WHERE phone = ? AND status = 'pending'",
+        [phone]
+      );
+      if (raced) {
+        return res.status(409).json({ error: 'Registrácia s týmto číslom už existuje' });
+      }
+    }
+
     db.run(
-      `INSERT INTO invitations (invite_code, invited_by_friend_id, name, phone, email, username)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [inviteCode.toUpperCase(), friend.id, name, phone, email || null, username || null]
+      `INSERT INTO invitations (invite_code, invited_by_friend_id, name, phone, email, username, google_sub, google_email)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [inviteCode.toUpperCase(), friend.id, name, phone, email || null, username || null, googleSub, googleEmail]
     );
 
     res.status(201).json({ success: true });
   } catch (e) {
+    // ⚠ LAYER 2 OF THE RACE FIX. `idx_invitations_phone_pending` is the only unique
+    // index on this table, and it states exactly the rule the two SELECTs above
+    // check — so a constraint failure here is a lost race, not a server fault, and
+    // the caller's state really is "already registered". A 500 would both be wrong
+    // and leak a SQLite message into a public 500 log line on every retry.
+    if (isPendingPhoneConflict(e)) {
+      return res.status(409).json({ error: 'Registrácia s týmto číslom už existuje' });
+    }
     console.error('Error registering invitation:', e.message);
     res.status(500).json({ error: 'Chyba pri registrácii' });
   }
@@ -234,6 +388,27 @@ router.get('/my-code', (req, res) => {
 });
 
 // GET / — List invitations (admin)
+//
+// ⚠ `SELECT i.*` NOW SHIPS `invitations.google_sub` TO THE ADMIN CLIENT, AND THAT IS
+// A DELIBERATE DECISION, NOT AN INHERITANCE (10 §UC-GA-008; GA-T1's review carried
+// this forward for GA-T8 to settle). It is KEPT, on three grounds:
+//   1. This route is `requireAdmin`. §UC-GA-013's strip rule — and 11 §UC-FC-005's,
+//      which it inherits — names the FRIEND login response, the link/unlink
+//      responses, the approve 201 and the allowlist GET. Every one of those is
+//      reachable by the identity the key belongs to or by the public; this one is
+//      not, and `GET /api/invitations` already returns the applicant's phone and
+//      e-mail, which are more sensitive than an opaque Google subject id.
+//   2. A `sub` is an OPAQUE PAIRWISE IDENTIFIER, not a credential: possessing it
+//      authenticates nobody (only a signed token from Google does), and it is
+//      per-OAuth-client, so it is not even a cross-site handle.
+//   3. GA-T9 needs to know a link EXISTS in order to render the approval dialog's
+//      Google line and to offer `drop_google_link` on a collision — and it must be
+//      able to tell "linked" from "not linked" when `google_email` IS NULL, which
+//      happens whenever Google reported the address unverified (§UC-GA-002).
+// ⚠ The rejected alternative, recorded so a later row need not re-derive it:
+// stripping the sub and publishing `google_email` alone would break case 3 exactly
+// in the NULL-e-mail case. If it is ever stripped, replace it with a DERIVED
+// `googleLinked` boolean (the §UC-GA-003 pattern) — never with the e-mail alone.
 router.get('/', requireAdmin, (req, res) => {
   try {
     // ⚠ FUP-T15 — a query-string filter is client-shaped (`?status[a]=1` is an

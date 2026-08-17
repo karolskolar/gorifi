@@ -87,6 +87,46 @@ test.beforeAll(async ({ baseURL }) => {
 
 test.afterAll(async () => { await ctx?.dispose() })
 
+// ⚠ GA-T8 — THIS FILE MUST STAY HERMETIC, and after 10 §UC-GA-008 it stops being so
+// on its own. The invite form now renders a GIS button whenever the target serves a
+// `googleClientId`, so every `goto('/invite/<valid>')` below would issue REAL,
+// uncontrolled requests to `accounts.google.com` where it previously issued none —
+// making a shell spec depend on network egress and on Google's uptime. Every other
+// GIS-rendering UI test in the repo stubs the host (`google-auth.spec.js`); this
+// `beforeEach` does the same, for every test in the file at once.
+//
+// It fulfils rather than aborts on purpose: an aborted script puts the view in its
+// LOADER-FAILURE path (the block renders, the mount stays empty), which is an error
+// state, not the state a shell spec should be measuring. The stub defines the
+// namespace the loader waits for and renders a marker, so the page is in its normal
+// shape.
+//
+// ⚠ RESIDUAL, stated because the 320px test below silently depends on it: the stub
+// renders a plain `<div>`, NOT the real cross-origin iframe. So no test in this repo
+// covers the REAL GIS button's geometry at 320px — with no egress the mount would
+// simply stay empty and the overflow assertion would pass vacuously. That
+// measurement belongs to the manual staging walkthrough (§UC-GA-013), together with
+// the CSP one.
+const GIS_STUB_SRC = `
+  window.google = { accounts: { id: {
+    initialize: () => {},
+    renderButton: (el) => {
+      const marker = document.createElement('div')
+      marker.setAttribute('data-testid', 'gis-stub-button')
+      marker.textContent = 'Prihlásiť sa cez Google'
+      el.appendChild(marker)
+    },
+  } } };
+`
+
+test.beforeEach(async ({ page }) => {
+  await page.route('https://accounts.google.com/**', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/javascript',
+    body: GIS_STUB_SRC,
+  }))
+})
+
 test.describe('Invite registration — the restyled shell', () => {
   test('the chrome is the Podpultovka wordmark, in EVERY state, and no Goriffee mark', async ({ page }) => {
     // Invalid code first: the chrome must render OUTSIDE the state branch, so
@@ -160,7 +200,15 @@ test.describe('Invite registration — the restyled shell', () => {
     }
     await expect(phone).toHaveAttribute('type', 'tel')
     await expect(email).toHaveAttribute('type', 'email')
-    await expect(page.locator('.field-lbl')).toHaveCount(4)
+    // ⚠ GA-T8 UPDATE (10 §UC-GA-008), an e2e-immutability case (a) edit. The
+    // optional Google block adds a FIFTH `.field-lbl`, so a bare count of 4 became
+    // false — and bumping it to 5 would have made this assertion depend on whether
+    // the target has `GOOGLE_CLIENT_ID` set, i.e. it would flip between two correct
+    // deployments. Re-pointed at `label.field-lbl` instead: the four FIELDS each
+    // have a real `<label for>` (which is what "label-associated, no `ui/`
+    // components" means here), while the Google block's is a `<div>` heading over a
+    // GIS iframe that owns no input. Strictly more precise, and config-independent.
+    await expect(page.locator('label.field-lbl')).toHaveCount(4)
 
     // The username field's own constraints (§UC-IA-004's markup table).
     await expect(username).toHaveAttribute('type', 'text')
@@ -179,7 +227,12 @@ test.describe('Invite registration — the restyled shell', () => {
     // field's own help (via its testid) rather than weakened to `.first()` — the
     // point of the assertion is that the EMAIL hint still says "Nepovinné".
     await expect(page.getByTestId('invite-email-help')).toHaveText(/Nepovinné/)
-    await expect(page.locator('.field-help')).toHaveCount(2)
+    // ⚠ GA-T8 UPDATE (10 §UC-GA-008), the same case (a) edit and the same reason:
+    // the Google block carries a THIRD `.field-help`. Scoped to the FIELD rows —
+    // the card's direct children other than the Google block — so the assertion
+    // still says "each of the two optional fields explains itself, and nothing
+    // else does", on a configured target and an unconfigured one alike.
+    await expect(page.locator('.card > div:not([data-testid="invite-google"]) .field-help')).toHaveCount(2)
     // The username hint is pinned VERBATIM from §UC-IA-004's markup table — it is
     // the only statement of the charset the applicant ever sees, and the en dash
     // in "3–30" is part of it.

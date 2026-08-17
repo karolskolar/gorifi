@@ -237,9 +237,46 @@ function makeApi(ctx, adminToken, dbPath) {
     },
     /** Identity-less shared-password auth — the requireHost precedent's reject case. */
     sharedPasswordHeaders: () => ({ 'X-Friends-Password': FRIENDS_PASSWORD }),
+
+    // ── GA-T8 (§UC-GA-008) ───────────────────────────────────────────────────
+    /**
+     * A REAL invite code. `friends.js` strips `invite_code` from every friend
+     * response, so `GET /invitations/my-code` on the friend's own Bearer session is
+     * the only route to one (the `invite-register-shell.spec.js` idiom).
+     */
+    async inviteCode(label) {
+      const friend = await api.friendWithLogin(label)
+      const token = await api.loginToken(friend)
+      const r = await ctx.get('/api/invitations/my-code', { headers: api.bearer(token) })
+      expect(r.status(), 'my-code').toBe(200)
+      const code = (await r.json()).inviteCode
+      expect(code, 'the inviter must really have a code').toBeTruthy()
+      return { friend, code }
+    },
+    register(data) {
+      return ctx.post('/api/invitations/register', { data })
+    },
+    /** The stored row, read straight from sqlite — the response says only `success`. */
+    invitationRow(phone) {
+      return withDb((db) => db.prepare(
+        'SELECT id, invite_code, invited_by_friend_id, name, phone, email, username, status, source, google_sub, google_email FROM invitations WHERE phone = ?'
+      ).get(phone))
+    },
+    invitationCount() {
+      return withDb((db) => db.prepare('SELECT COUNT(*) AS n FROM invitations').get().n)
+    },
+    setInvitationStatus(id, status) {
+      withDb((db) => db.prepare('UPDATE invitations SET status = ? WHERE id = ?').run(status, Number(id)))
+    },
   }
   return { api }
 }
+
+// Every successful registration must carry a distinct phone: the shipped pending
+// dedupe (`idx_invitations_phone_pending`) 409s a repeat, so a shared number would
+// make a later test fail for a reason that is not under test.
+let phoneSeq = 0
+const uniquePhone = () => `+4219${String(Date.now() % 1e5).padStart(5, '0')}${String(++phoneSeq).padStart(3, '0')}`
 
 // ═════════════════════════════════════════════════════════════════════════════
 // §UC-GA-003 — the endpoint, on a modern throwaway backend
@@ -2615,5 +2652,661 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await page.waitForLoadState('networkidle')
       expect(hits, 'an unconfigured deployment must be Google-free').toEqual([])
     })
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// §UC-GA-008 — the invite-registration Google attach (GA-T8)
+//
+// ⚠ NO NEW ENDPOINT. The credential rides the EXISTING public
+// `POST /api/invitations/register` (07 §UC-IA-003) as an optional
+// `google_id_token`, on that endpoint's own `abuseLimiter` bucket. So the first
+// obligation of this section is a NEGATIVE one: the no-token path must be
+// byte-identical to what module 07 shipped — asserted here on the RAW response
+// text and on the STORED ROW, because "the existing invite specs still pass" is
+// necessary and nowhere near sufficient (they never look at the two new columns).
+//
+// ⚠ NO AUTH-MODE GATE, and that is a decision, not an omission. §UC-GA-005's button
+// and §UC-GA-006's prompt additionally require modern mode because the endpoint they
+// post to (§UC-GA-004's `PUT /:id/google-link`) answers 409 in legacy — the reason
+// §UC-GA-007 states verbatim. `POST /invitations/register` has no such guard and must
+// not grow one: it writes only a NEW `invitations` row, approval (module 07) mints a
+// username + temp password regardless of auth mode, and the attach is a frozen record
+// for §UC-GA-009 to consume. GA-T5's legacy hazard — planting an alternative
+// credential on an EXISTING friend row, reachable because the shared office password
+// hands anyone a session for anyone — has no analogue here. These tests therefore run
+// on the harness's DEFAULT (legacy) backend on purpose, and one of them flips the same
+// backend to modern to show the answer does not move.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const ATTACH_INVALID = 'Overenie Google účtu zlyhalo, skúste to znova'
+const ATTACH_ON_FRIEND = 'Tento Google účet je už prepojený s existujúcim účtom. Prihláste sa cez Google.'
+const ATTACH_ON_INVITATION = 'Registrácia s týmto Google účtom už existuje'
+
+test.describe('§UC-GA-008 — POST /api/invitations/register, the optional google_id_token', () => {
+  test('NO token ⇒ byte-identical to module 07: the same 201 body, the same row, both Google columns NULL', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const { friend, code } = await api.inviteCode(tag('plain'))
+      const phone = uniquePhone()
+
+      const res = await api.register({
+        invite_code: code, name: 'Bez Googlu', phone, email: 'plain@example.test', username: `plainu${phoneSeq}`,
+      })
+      expect(res.status()).toBe(201)
+      // ⚠ RAW TEXT, not a key check: the endpoint's whole reply is this literal, and
+      // a body that grew a field would still satisfy `{ success: true }`.
+      expect(await res.text(), 'the 201 body must not move at all').toBe('{"success":true}')
+
+      const row = api.invitationRow(phone)
+      expect(row.name).toBe('Bez Googlu')
+      expect(row.email).toBe('plain@example.test')
+      expect(row.username).toBe(`plainu${phoneSeq}`)
+      expect(row.status).toBe('pending')
+      expect(row.invited_by_friend_id).toBe(friend.id)
+      expect(row.source, 'the GSO-T10 column is untouched by this row').toBeNull()
+      expect(row.google_sub, 'no token ⇒ nothing attached').toBeNull()
+      expect(row.google_email).toBeNull()
+
+      // And an explicitly EMPTY token is the same "absent" (§UC-GA-008: absent/empty).
+      const phone2 = uniquePhone()
+      const empty = await api.register({ invite_code: code, name: 'Prázdny', phone: phone2, google_id_token: '' })
+      expect(empty.status()).toBe(201)
+      expect(await empty.text()).toBe('{"success":true}')
+      expect(api.invitationRow(phone2).google_sub).toBeNull()
+    })
+  })
+
+  test('a valid TEST token attaches: the row carries google_sub + google_email, the RESPONSE names neither', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const { code } = await api.inviteCode(tag('attach'))
+      const phone = uniquePhone()
+      const sub = `ga8-attach-${uniq}`
+
+      const res = await api.register({
+        invite_code: code, name: 'S Googlom', phone, email: 'form@example.test',
+        google_id_token: `TEST:${sub}:google@example.test`,
+      })
+      expect(res.status()).toBe(201)
+      // The strip rule (§UC-GA-013): the identity key is never published, on any
+      // surface, and the reply of a PUBLIC endpoint least of all.
+      const text = await res.text()
+      expect(text).toBe('{"success":true}')
+      expect(text).not.toMatch(STRIP_RE)
+      expect(text).not.toContain(sub)
+
+      const row = api.invitationRow(phone)
+      expect(row.google_sub).toBe(sub)
+      // ⚠ THE TOKEN'S address, not the form's — they differ here on purpose.
+      expect(row.google_email).toBe('google@example.test')
+      expect(row.email, 'the form e-mail is a separate field and is untouched').toBe('form@example.test')
+    })
+  })
+
+  test('the type/length guard answers 400 with field:google_id_token — never a 500, and nothing is written', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const { code } = await api.inviteCode(tag('guard'))
+      const before = api.invitationCount()
+
+      for (const [label, value] of [
+        ['a number', 123],
+        ['an object', {}],
+        ['an array', ['TEST:a:b@c.d']],
+        ['a boolean', true],
+        ['4097 chars', 'a'.repeat(4097)],
+      ]) {
+        const res = await api.register({
+          invite_code: code, name: `Guard ${label}`, phone: uniquePhone(), google_id_token: value,
+        })
+        expect(res.status(), `${label} ⇒ 400`).toBe(400)
+        const body = await res.json()
+        expect(body.error, label).toBe(BAD_TOKEN)
+        expect(body.field, 'the field marker is overridden for this endpoint').toBe('google_id_token')
+      }
+
+      // The BOUNDARY: 4096 chars passes the length guard and is then simply an
+      // unverifiable token — a different answer, which is what proves the 4097 above
+      // was the LENGTH guard and not a generic rejection.
+      const atLimit = await api.register({
+        invite_code: code, name: 'Guard limit', phone: uniquePhone(), google_id_token: 'a'.repeat(4096),
+      })
+      expect(atLimit.status()).toBe(400)
+      expect((await atLimit.json()).field).toBe('google')
+
+      expect(api.invitationCount(), 'a rejected attach writes no invitation at all').toBe(before)
+    })
+  })
+
+  test('an unverifiable token is a 400 field:google — registration is not a login, so never a 401', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const { code } = await api.inviteCode(tag('bad'))
+      const before = api.invitationCount()
+
+      for (const bad of ['garbage', 'TEST:', 'TEST::x@y.z', 'aaa.bbb.ccc']) {
+        const res = await api.register({
+          invite_code: code, name: 'Zlý token', phone: uniquePhone(), google_id_token: bad,
+        })
+        expect(res.status(), `${bad} ⇒ 400, NOT 401`).toBe(400)
+        const body = await res.json()
+        expect(body.error).toBe(ATTACH_INVALID)
+        expect(body.field, 'a bad token here is a bad FIELD — the form stays filled').toBe('google')
+      }
+      expect(api.invitationCount()).toBe(before)
+    })
+  })
+
+  test('a sub already on a FRIEND row ⇒ 409 whose body names no friend, and no invitation is written', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const { code } = await api.inviteCode(tag('dupf'))
+      const holder = await api.plainFriend(tag('holder'))
+      const sub = `ga8-onfriend-${uniq}`
+      api.linkGoogle(holder.id, { sub, email: 'holder@example.test' })
+      const before = api.invitationCount()
+
+      const res = await api.register({
+        invite_code: code, name: 'Duplicitný', phone: uniquePhone(),
+        google_id_token: `TEST:${sub}:holder@example.test`,
+      })
+      expect(res.status()).toBe(409)
+      const text = await res.text()
+      expect(JSON.parse(text).error).toBe(ATTACH_ON_FRIEND)
+      expect(JSON.parse(text).field).toBe('google')
+      // ⚠ The §UC-GA-004 rule, inherited: a courtesy 409 must not turn a public form
+      // into an "is this Google account one of yours?" directory.
+      expect(text, 'the 409 must not name the friend').not.toContain(holder.name)
+      expect(text).not.toContain(`"${holder.id}"`)
+      expect(text).not.toMatch(STRIP_RE)
+      expect(api.invitationCount()).toBe(before)
+    })
+  })
+
+  test('the friend-side collision is NOT scoped to active friends', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const { code } = await api.inviteCode(tag('dupinact'))
+      const holder = await api.plainFriend(tag('inactive'))
+      const sub = `ga8-inactive-${uniq}`
+      api.linkGoogle(holder.id, { sub })
+      await api.deactivate(holder.id)
+
+      const res = await api.register({
+        invite_code: code, name: 'Neaktívny držiteľ', phone: uniquePhone(),
+        google_id_token: `TEST:${sub}:x@example.test`,
+      })
+      // The authoritative backstop is `idx_friends_google_sub`, which does not care
+      // about `active` — a courtesy check that did would send the applicant into an
+      // approval that cannot succeed.
+      expect(res.status()).toBe(409)
+      expect((await res.json()).error).toBe(ATTACH_ON_FRIEND)
+    })
+  })
+
+  test('a sub already on another PENDING invitation ⇒ its own, DIFFERENT 409 — and a closed one does not block', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const { code } = await api.inviteCode(tag('dupinv'))
+      const sub = `ga8-oninv-${uniq}`
+      const firstPhone = uniquePhone()
+
+      expect((await api.register({
+        invite_code: code, name: 'Prvý', phone: firstPhone, google_id_token: `TEST:${sub}:a@example.test`,
+      })).status()).toBe(201)
+
+      const dup = await api.register({
+        invite_code: code, name: 'Druhý', phone: uniquePhone(), google_id_token: `TEST:${sub}:a@example.test`,
+      })
+      expect(dup.status()).toBe(409)
+      const body = await dup.json()
+      // ⚠ The two 409s are DIFFERENT sentences — "you already have an account" and
+      // "your registration is already queued" are different facts about the applicant.
+      expect(body.error).toBe(ATTACH_ON_INVITATION)
+      expect(body.error).not.toBe(ATTACH_ON_FRIEND)
+      expect(body.field).toBe('google')
+
+      // ⚠ PENDING-only (the phone-dedupe precedent): once the first registration is
+      // closed out, the same Google account may register again. There is no partial
+      // index on `invitations` by design, so this is an app check and it must be
+      // exactly this narrow.
+      api.setInvitationStatus(api.invitationRow(firstPhone).id, 'rejected')
+      const again = await api.register({
+        invite_code: code, name: 'Znova', phone: uniquePhone(), google_id_token: `TEST:${sub}:a@example.test`,
+      })
+      expect(again.status(), 'a rejected/processed invitation must not block forever').toBe(201)
+    })
+  })
+
+  test('a token attaches in LEGACY mode exactly as in modern — no auth-mode gate on this path', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api, ctx }) => {
+      const { code } = await api.inviteCode(tag('mode'))
+      expect((await (await ctx.get('/api/friends/auth-mode')).json()).authMode,
+        'the harness backend is seeded legacy — that is the point of this test').toBe('legacy')
+
+      const legacyPhone = uniquePhone()
+      expect((await api.register({
+        invite_code: code, name: 'Legacy', phone: legacyPhone, google_id_token: `TEST:ga8-legacy-${uniq}:l@example.test`,
+      })).status(), 'legacy must NOT refuse the attach').toBe(201)
+      expect(api.invitationRow(legacyPhone).google_sub).toBe(`ga8-legacy-${uniq}`)
+
+      // The same body on the SAME backend once flipped: the answer does not move.
+      await api.setModernMode()
+      const modernPhone = uniquePhone()
+      expect((await api.register({
+        invite_code: code, name: 'Modern', phone: modernPhone, google_id_token: `TEST:ga8-modern-${uniq}:m@example.test`,
+      })).status()).toBe(201)
+      expect(api.invitationRow(modernPhone).google_sub).toBe(`ga8-modern-${uniq}`)
+    })
+  })
+
+  test('an UNCONFIGURED deployment: the plain registration is untouched, a token gets the 503', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({ GOOGLE_CLIENT_ID: '', GOOGLE_AUTH_TEST_MODE: '' }, async ({ api, ctx }) => {
+      expect((await (await ctx.get('/api/friends/auth-mode')).json()).googleClientId).toBeNull()
+      const { code } = await api.inviteCode(tag('noconf'))
+
+      // ⚠ THE HALF THAT MATTERS MOST: with Google off, the public registration form
+      // this endpoint has always served must be completely unaffected.
+      const phone = uniquePhone()
+      const plain = await api.register({ invite_code: code, name: 'Bez Googlu', phone })
+      expect(plain.status()).toBe(201)
+      expect(await plain.text()).toBe('{"success":true}')
+
+      // A token arriving anyway (the block does not render, so this is anomalous) is
+      // REFUSED, not silently dropped — an invitation the applicant believes carries
+      // their Google account but does not is worse than an error.
+      const withToken = await api.register({
+        invite_code: code, name: 'S Googlom', phone: uniquePhone(),
+        google_id_token: `TEST:ga8-noconf-${uniq}:x@example.test`,
+      })
+      expect(withToken.status()).toBe(503)
+      expect((await withToken.json()).error).toBe(NOT_CONFIGURED)
+    })
+  })
+
+  test('a duplicate PENDING phone still answers module 07\'s 409, byte-identical, with a token attached', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      const { code } = await api.inviteCode(tag('phone'))
+      const phone = uniquePhone()
+      expect((await api.register({ invite_code: code, name: 'Prvý', phone })).status()).toBe(201)
+
+      // ⚠ The phone rule OUTRANKS the Google attach and keeps its exact shape: the
+      // same sentence, and NO `field` (module 07 never set one). The attach must not
+      // relabel somebody else's 409, and a valid token must not buy a second row.
+      const dup = await api.register({
+        invite_code: code, name: 'Druhý', phone,
+        google_id_token: `TEST:ga8-phone-${uniq}:p@example.test`,
+      })
+      expect(dup.status()).toBe(409)
+      const body = await dup.json()
+      expect(body.error).toBe('Registrácia s týmto číslom už existuje')
+      expect(body.field, 'module 07 set no field marker on this one').toBeUndefined()
+      expect(api.invitationRow(phone).google_sub, 'and nothing was attached to the FIRST row').toBeNull()
+    })
+  })
+
+  test('⚠ the race the `await` opened: a lost phone race is a 409 at the CONSTRAINT too, never a 500', () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+
+    // ⚠ WHY THIS IS A PROBE AND NOT AN HTTP TEST, stated because the gap is the
+    // whole point. Making this handler `async` is the first place in the repo where
+    // the standing `instances: 1` "handlers are fully synchronous" assumption stops
+    // holding: request A can now yield inside `verifyGoogleIdToken` and request B can
+    // insert the same pending phone in that window. But the window is UNREACHABLE
+    // from this suite — the only tokens that verify are the `TEST:` seam's, which
+    // resolve in a microtask, and a microtask yield returns to the same task before
+    // any other HTTP callback runs. A token that costs a real macrotask (a JWKS
+    // fetch) never verifies, so it never reaches the INSERT. Layer 1 (the re-read
+    // before the INSERT) therefore cannot be observed over HTTP either.
+    //
+    // What CAN be pinned, and what actually rots, is the ERROR SHAPE layer 2's guard
+    // reads: `isPendingPhoneConflict` matches on `code` + the exact SQLite message,
+    // and a future index on this table (or a driver upgrade) could change either and
+    // turn the guard into silent dead code — restoring the 500 it exists to prevent.
+    // The friends.js `isGoogleSubConflict` precedent, minus the route export.
+    const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+    const SCHEMA_URL = 'file://' + join(REPO_ROOT, 'backend', 'src', 'db', 'schema.js')
+    test.skip(!existsSync(join(REPO_ROOT, 'backend', 'src', 'db', 'schema.js')), NEEDS_SOURCE)
+
+    const dir = mkdtempSync(join(tmpdir(), 'ga-t8-probe-'))
+    const script = join(dir, 'probe.mjs')
+    try {
+      writeFileSync(script, `import db from '${SCHEMA_URL}';
+const out = {};
+// Non-vacuity: the partial unique index must really exist, or everything below is
+// asserting the behaviour of a table with no constraint on it.
+out.indexSql = (db.get("SELECT sql FROM sqlite_master WHERE type='index' AND name = 'idx_invitations_phone_pending'") || {}).sql || null;
+// \`invited_by_friend_id\` is NOT NULL with an FK, so the inviter is real — the
+// GA-T5 probe's shape (a cycle, then a friend on it).
+db.run("INSERT INTO order_cycles (name) VALUES ('GA-T8 probe cycle')");
+const cyc = db.get('SELECT id FROM order_cycles ORDER BY id DESC LIMIT 1').id;
+db.run("INSERT INTO friends (name, cycle_id, access_token) VALUES ('Inviter', ?, 'ga8-probe')", [cyc]);
+const inviter = db.get("SELECT id FROM friends WHERE access_token = 'ga8-probe'").id;
+db.run("INSERT INTO invitations (invite_code, invited_by_friend_id, name, phone, status) VALUES ('X', ?, 'A', '+421999000111', 'pending')", [inviter]);
+try {
+  db.run("INSERT INTO invitations (invite_code, invited_by_friend_id, name, phone, status) VALUES ('X', ?, 'B', '+421999000111', 'pending')", [inviter]);
+  out.threw = false;
+} catch (e) {
+  out.threw = true;
+  out.code = e.code;
+  out.message = e.message;
+  // The route's guard, character for character (invitations.js isPendingPhoneConflict).
+  out.guardMatches = typeof e?.code === 'string'
+    && e.code.startsWith('SQLITE_CONSTRAINT')
+    && /UNIQUE constraint failed: invitations\\.phone/.test(String(e?.message || ''));
+}
+// A CLOSED registration on the same number must still be insertable — the index is
+// partial, and layer 2 must not start answering 409 for a state that is legal.
+try {
+  db.run("INSERT INTO invitations (invite_code, invited_by_friend_id, name, phone, status) VALUES ('X', ?, 'C', '+421999000111', 'rejected')", [inviter]);
+  out.closedInsertOk = true;
+} catch { out.closedInsertOk = false; }
+console.log('@@PROBE@@' + JSON.stringify(out));
+`)
+      const stdout = execFileSync(process.execPath, [script], {
+        env: { ...process.env, DB_PATH: join(dir, 'probe.sqlite'), GOOGLE_CLIENT_ID: '', GOOGLE_AUTH_TEST_MODE: '' },
+        encoding: 'utf8',
+        cwd: REPO_ROOT,
+      })
+      const m = stdout.match(/@@PROBE@@(.*)/)
+      expect(m, `probe produced no marker. stdout:\n${stdout}`).toBeTruthy()
+      const out = JSON.parse(m[1])
+
+      expect(out.indexSql, 'idx_invitations_phone_pending must exist').toContain("status = 'pending'")
+      expect(out.threw, 'a second PENDING row on one phone must be refused by the DB').toBe(true)
+      expect(out.guardMatches,
+        `the route's isPendingPhoneConflict no longer matches what sqlite throws — layer 2 is dead code and a lost race is a 500 again.\ncode=${out.code}\nmessage=${out.message}`)
+        .toBe(true)
+      expect(out.closedInsertOk, 'the index is PARTIAL — a rejected/processed row must not collide').toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('§UC-GA-013 — the attach rides the endpoint\'s EXISTING abuseLimiter, not authLimiter', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({ RATE_LIMIT_ABUSE_MAX: '12' }, async ({ api, ctx }) => {
+      const { code } = await api.inviteCode(tag('bucket'))
+
+      let limited = false
+      for (let i = 0; i < 30 && !limited; i++) {
+        const res = await api.register({
+          invite_code: code, name: 'Bucket', phone: uniquePhone(),
+          google_id_token: `TEST:ga8-bucket-${uniq}-${i}:b@example.test`,
+        })
+        if (res.status() === 429) limited = true
+      }
+      expect(limited, 'the register attach must be rate limited at all').toBe(true)
+
+      // ⚠ THE CLAIM: the SAME bucket the endpoint already sat in. The invite-code
+      // lookup is the other abuseLimiter route, so it must be exhausted too…
+      expect((await ctx.get(`/api/invitations/code/${code}`)).status(),
+        'one endpoint, one bucket — no new limiter for the attach').toBe(429)
+      // …and the STRICT credential bucket must be untouched: moving this endpoint to
+      // authLimiter would let a registration spammer lock the office out of login.
+      expect((await ctx.post('/api/friends/auth', { data: { username: 'nobody', password: 'nope' } })).status(),
+        'authLimiter must be a separate bucket still').not.toBe(429)
+    })
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// §UC-GA-008 — the GIS block on `/invite/:code` (GA-T8, UI half)
+//
+// It lives in THIS file, not in `invite-register-shell.spec.js`, because every
+// mechanism it needs is already here and must stay in one home: `GIS_STUB`,
+// `trackGoogle` (the RD-DS-6 rule — assert the REQUEST, not just the DOM) and
+// `stubAuthMode`. §UC-GA-013's obligation-5 UI bullet names "invite register" in
+// this file's list. `invite-register-shell.spec.js` keeps the SHELL (chrome,
+// composition, 320px, the four fields) and passes unchanged.
+//
+// ⚠ ON THE GATE, WHICH IS LEGACY MODE — deliberately. That is the strongest form
+// of the no-mode-gate decision above: the block has to render on a real target
+// that is not modern, with no stub at all.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const INVITE_GOOGLE_LABEL = 'Prihlásenie cez Google'
+const INVITE_GOOGLE_HELP = 'Nepovinné. Po schválení sa budete môcť prihlásiť svojím Google účtom.'
+const INVITE_GOOGLE_DETACH = 'Zrušiť'
+
+test.describe('§UC-GA-008 — the invite-registration Google block', () => {
+  let inviteCtx = null
+  let inviteCode = ''
+  let inviteAdminToken = ''
+
+  test.beforeAll(async ({ baseURL }) => {
+    inviteCtx = await playwrightRequest.newContext({ baseURL })
+    const login = await inviteCtx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+    expect(login.status(), 'admin login').toBe(200)
+    inviteAdminToken = (await login.json()).token
+    const adminHeaders = { 'X-Admin-Token': inviteAdminToken }
+
+    const name = `GA8 Inviter ${uniq}`
+    const username = `ga8i${uniq}`.replace(/[^a-z0-9_]/g, '').slice(0, 30)
+    const created = await inviteCtx.post('/api/friends', { headers: adminHeaders, data: { name } })
+    expect(created.status(), 'friend create').toBe(201)
+    const friend = await created.json()
+    expect((await inviteCtx.put(`/api/friends/${friend.id}/admin-username`, {
+      headers: adminHeaders, data: { username },
+    })).status()).toBe(200)
+    expect((await inviteCtx.put(`/api/friends/${friend.id}/reset-password`, {
+      headers: adminHeaders, data: { password: 'initPass1' },
+    })).status()).toBe(200)
+    const auth = await inviteCtx.post('/api/friends/auth', { data: { username, password: 'initPass1' } })
+    expect(auth.status(), 'friend login').toBe(200)
+    const first = (await auth.json()).token
+    const chg = await inviteCtx.put(`/api/friends/${friend.id}/change-password`, {
+      headers: { Authorization: `Bearer ${first}` },
+      data: { currentPassword: 'initPass1', newPassword: 'ownPass1' },
+    })
+    expect(chg.status(), 'forced change').toBe(200)
+    const token = (await chg.json()).token || first
+
+    const code = await inviteCtx.get('/api/invitations/my-code', { headers: { Authorization: `Bearer ${token}` } })
+    expect(code.status(), 'my-code').toBe(200)
+    inviteCode = (await code.json()).inviteCode
+    expect(inviteCode).toBeTruthy()
+  })
+
+  test.afterAll(async () => { await inviteCtx?.dispose() })
+
+  /** The pending invitation as the ADMIN sees it — `GET /api/invitations` is `SELECT i.*`. */
+  async function pendingByPhone(phone) {
+    const list = await inviteCtx.get('/api/invitations?status=pending', {
+      headers: { 'X-Admin-Token': inviteAdminToken },
+    })
+    expect(list.status()).toBe(200)
+    return (await list.json()).find((r) => r.phone === phone) || null
+  }
+
+  async function fillForm(page, { name, phone, email }) {
+    await page.getByLabel('Meno a priezvisko').fill(name)
+    await page.getByLabel('Telefón').fill(phone)
+    await page.getByLabel('Email').fill(email)
+  }
+
+  test('configured ⇒ the block renders with its exact copy and really loads GIS — on a LEGACY target', async ({ page }) => {
+    const hits = await trackGoogle(page, { fulfilWith: GIS_STUB })
+    await page.goto(`/invite/${inviteCode}`)
+    await expect(page.getByTestId('invite-form')).toBeVisible()
+
+    const mode = await (await page.request.get('/api/friends/auth-mode')).json()
+    test.skip(mode.googleClientId === null, 'this target has no GOOGLE_CLIENT_ID')
+
+    const block = page.getByTestId('invite-google')
+    await expect(block).toBeVisible()
+    await expect(block.locator('.field-lbl')).toHaveText(INVITE_GOOGLE_LABEL)
+    await expect(block.locator('.field-help')).toHaveText(INVITE_GOOGLE_HELP)
+
+    // ⚠ The RD-DS-6 lesson: assert the REQUEST, not just the DOM.
+    expect(hits.filter((u) => u.includes('/gsi/client')).length,
+      'the loader must actually fetch the GIS client').toBeGreaterThan(0)
+    await expect(page.getByTestId('gis-stub-button')).toBeVisible()
+
+    const calls = await page.evaluate(() => window.__gisCalls)
+    expect(calls.initialize.length, 'one global callback, registered once').toBe(1)
+    expect(calls.initialize[0].client_id, 'the SERVED client id, not a build-time constant').toBe(mode.googleClientId)
+    expect(calls.initialize[0].hasCallback).toBe(true)
+    expect(calls.renderButton.length).toBe(1)
+    expect(calls.renderButton[0].testid, 'rendered into our own container').toBe('invite-google-signin')
+    expect(calls.renderButton[0].opts.locale).toBe('sk')
+
+    // The block sits BELOW the four existing fields and ABOVE the submit.
+    const emailBox = await page.getByLabel('Email').boundingBox()
+    const blockBox = await block.boundingBox()
+    const submitBox = await page.getByRole('button', { name: 'Odoslať registráciu' }).boundingBox()
+    expect(blockBox.y).toBeGreaterThan(emailBox.y)
+    expect(submitBox.y).toBeGreaterThan(blockBox.y)
+  })
+
+  test('googleClientId EXPLICITLY null ⇒ no block at all, and zero requests to Google', async ({ page }) => {
+    // ⚠ NON-VACUOUS BY CONSTRUCTION: the stub CARRIES the key with a `null` value,
+    // so this asserts the flag is the gate (the GA-T4 note on this file's stubs).
+    const hits = await trackGoogle(page)
+    await stubAuthMode(page, { authMode: 'legacy', googleClientId: null })
+    await page.goto(`/invite/${inviteCode}`)
+    await expect(page.getByTestId('invite-form')).toBeVisible()
+
+    await expect(page.getByTestId('invite-google')).toHaveCount(0)
+    await expect(page.getByTestId('invite-google-signin')).toHaveCount(0)
+    // Non-vacuity: the form itself really did render.
+    await expect(page.getByLabel('Meno a priezvisko')).toBeVisible()
+    await page.waitForLoadState('networkidle')
+    expect(hits, 'an unconfigured deployment must be Google-free').toEqual([])
+  })
+
+  test('an INVALID code renders the dead card and contacts Google zero times', async ({ page }) => {
+    // The control lives inside the FORM state. A loader fired on mount would make
+    // `/invite/:code` contact Google for anyone who mistypes a link.
+    const hits = await trackGoogle(page)
+    await page.goto(`/invite/NOPE-GA8-${uniq}`)
+    await expect(page.getByTestId('invite-invalid')).toBeVisible()
+    await page.waitForLoadState('networkidle')
+    expect(hits, 'no form, no Google').toEqual([])
+  })
+
+  test('the credential is captured, shown as an e-mail with a "Zrušiť" control, and rides the submit', async ({ page }) => {
+    await trackGoogle(page, { fulfilWith: GIS_STUB })
+    await page.goto(`/invite/${inviteCode}`)
+    await expect(page.getByTestId('gis-stub-button')).toBeVisible()
+
+    const phone = uniquePhone()
+    await fillForm(page, { name: 'Attach UI', phone, email: 'form-ui@example.test' })
+
+    const sub = `ga8-ui-${uniq}`
+    // The E2E BOUNDARY (§UC-GA-013): Google's iframe cannot run here, so the
+    // credential is delivered exactly as GIS would — through the callback the view
+    // registered, which the stub captured.
+    await page.evaluate((s) => window.__gisCallback({ credential: `TEST:${s}:picked@example.test` }), sub)
+
+    const block = page.getByTestId('invite-google')
+    // ⚠ The `TEST:` seam token is NOT a JWS, so the view — which decodes the label
+    // out of the token's own payload and has no business knowing about the seam —
+    // legitimately falls back to the neutral wording. The e-mail half is pinned by
+    // its own test below, with a JWS-shaped token.
+    await expect(block.getByTestId('invite-google-account')).toHaveText('Google účet je pripojený')
+    await expect(block.getByTestId('invite-google-signin'), 'the button gives way to the captured state').toHaveCount(0)
+
+    const [req] = await Promise.all([
+      page.waitForRequest((r) => r.url().includes('/api/invitations/register') && r.method() === 'POST'),
+      page.getByRole('button', { name: 'Odoslať registráciu' }).click(),
+    ])
+    // ⚠ The token is held in MEMORY and sent ONLY with the submit.
+    expect(JSON.parse(req.postData()).google_id_token).toBe(`TEST:${sub}:picked@example.test`)
+
+    await expect(page.getByTestId('invite-success')).toBeVisible()
+    const row = await pendingByPhone(phone)
+    expect(row, 'the invitation was created').toBeTruthy()
+    expect(row.google_sub).toBe(sub)
+    expect(row.google_email).toBe('picked@example.test')
+  })
+
+  test('"Zrušiť" detaches before the submit: the button comes back and the body carries NO token', async ({ page }) => {
+    await trackGoogle(page, { fulfilWith: GIS_STUB })
+    await page.goto(`/invite/${inviteCode}`)
+    await expect(page.getByTestId('gis-stub-button')).toBeVisible()
+
+    const phone = uniquePhone()
+    await fillForm(page, { name: 'Detach UI', phone, email: 'detach@example.test' })
+    await page.evaluate((s) => window.__gisCallback({ credential: `TEST:${s}:drop@example.test` }), `ga8-detach-${uniq}`)
+    await expect(page.getByTestId('invite-google-attached')).toBeVisible()
+
+    await page.getByTestId('invite-google').getByRole('button', { name: INVITE_GOOGLE_DETACH, exact: true }).click()
+    await expect(page.getByTestId('invite-google-attached')).toHaveCount(0)
+    // ⚠ AND THE BUTTON COMES BACK, RENDERED — a detach that left an empty mount
+    // point would be a dead end with no way to attach again.
+    await expect(page.getByTestId('gis-stub-button')).toBeVisible()
+
+    const [req] = await Promise.all([
+      page.waitForRequest((r) => r.url().includes('/api/invitations/register') && r.method() === 'POST'),
+      page.getByRole('button', { name: 'Odoslať registráciu' }).click(),
+    ])
+    expect(Object.keys(JSON.parse(req.postData())), 'a detached form sends no google_id_token')
+      .not.toContain('google_id_token')
+
+    await expect(page.getByTestId('invite-success')).toBeVisible()
+    expect((await pendingByPhone(phone)).google_sub).toBeNull()
+  })
+
+  test('a field:google 409 keeps the FORM FILLED — the whole reason it is a field error', async ({ page }) => {
+    await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+    // The collision is manufactured through the app itself: one pending invitation
+    // already holding this sub. No DB write, so this cannot self-skip.
+    const sub = `ga8-taken-${uniq}`
+    const firstPhone = uniquePhone()
+    expect((await inviteCtx.post('/api/invitations/register', {
+      data: { invite_code: inviteCode, name: 'Prvý GA8', phone: firstPhone, google_id_token: `TEST:${sub}:taken@example.test` },
+    })).status()).toBe(201)
+
+    await page.goto(`/invite/${inviteCode}`)
+    await expect(page.getByTestId('gis-stub-button')).toBeVisible()
+    const phone = uniquePhone()
+    await fillForm(page, { name: 'Konflikt UI', phone, email: 'conflict@example.test' })
+    await page.evaluate((s) => window.__gisCallback({ credential: `TEST:${s}:taken@example.test` }), sub)
+    await expect(page.getByTestId('invite-google-attached')).toBeVisible()
+
+    await page.getByRole('button', { name: 'Odoslať registráciu' }).click()
+
+    // The view's EXISTING error display, with the server's sentence verbatim.
+    await expect(page.locator('.banner.danger')).toHaveText(ATTACH_ON_INVITATION)
+    // ⚠ THE POINT: the applicant does not retype anything.
+    await expect(page.getByTestId('invite-form'), 'still on the form, not the success state').toBeVisible()
+    await expect(page.getByLabel('Meno a priezvisko')).toHaveValue('Konflikt UI')
+    await expect(page.getByLabel('Telefón')).toHaveValue(phone)
+    await expect(page.getByLabel('Email')).toHaveValue('conflict@example.test')
+    await expect(page.getByTestId('invite-google-attached'), 'and the attachment survives too').toBeVisible()
+    expect(await pendingByPhone(phone), 'nothing was written').toBeNull()
+  })
+
+  test('the captured account is shown as its E-MAIL, and an unverifiable token 400s with the form intact', async ({ page }) => {
+    await trackGoogle(page, { fulfilWith: GIS_STUB })
+    await page.goto(`/invite/${inviteCode}`)
+    await expect(page.getByTestId('gis-stub-button')).toBeVisible()
+
+    const phone = uniquePhone()
+    await fillForm(page, { name: 'Email UI', phone, email: 'form@example.test' })
+
+    // ⚠ A JWS-SHAPED token whose payload really carries an `email` claim — which is
+    // what a real GIS credential is. The view decodes it FOR DISPLAY ONLY; the
+    // server re-verifies the whole thing, and this one cannot verify, which is
+    // exactly what the second half of this test is about.
+    const claims = Buffer.from(JSON.stringify({ email: 'picked@example.test', sub: 'x' })).toString('base64url')
+    const jws = `eyJhbGciOiJSUzI1NiJ9.${claims}.c2ln`
+    await page.evaluate((t) => window.__gisCallback({ credential: t }), jws)
+    await expect(page.getByTestId('invite-google-account')).toHaveText('picked@example.test')
+
+    await page.getByRole('button', { name: 'Odoslať registráciu' }).click()
+
+    // 400, not 401 — the server's own sentence, in the view's existing error display.
+    await expect(page.locator('.banner.danger')).toHaveText(ATTACH_INVALID)
+    await expect(page.getByTestId('invite-form')).toBeVisible()
+    await expect(page.getByLabel('Meno a priezvisko')).toHaveValue('Email UI')
+    await expect(page.getByLabel('Telefón')).toHaveValue(phone)
+    expect(await pendingByPhone(phone), 'nothing was written').toBeNull()
   })
 })

@@ -672,6 +672,39 @@ typeface.
   filenames are **not** content-hashed, so `immutable` would pin a stale face forever if the
   subsets are ever refreshed from Google.
 
+### ⚠⚠ GA-T8 — `await` in a handler BREAKS the `instances: 1` atomicity assumption (2026-08-17)
+
+The standing concurrency note says non-transactional check-then-write is safe because
+`deploy/ecosystem.config.cjs` sets `instances: 1` **and the handlers are fully
+synchronous** (better-sqlite3). Module 10 is the first code to put an `await` — a network
+call to Google — **between a uniqueness check and its INSERT**, and that second clause is
+what the safety actually rested on. It no longer holds anywhere an `await` appears.
+
+`POST /api/invitations/register` is the first instance: request A carrying a Google token
+yields at `verifyGoogleIdToken`, request B passes the same phone dedupe during that
+window and inserts, and A's INSERT then hits `idx_invitations_phone_pending` and falls
+into the generic catch — **500 on a public endpoint whose contract is a 409.** No bad row
+is written (the index holds); the failure is the wrong status and a stack in the log.
+
+- **The fix is BOTH layers, and neither alone is enough.** Re-run the check immediately
+  before the INSERT inside the async branch (keeps the synchronous path untouched), **and**
+  translate `SQLITE_CONSTRAINT*` + the exact index message into the same 409 — the GSO-T10
+  pattern, which is also the layer that survives a future PM2 cluster.
+- ⚠ **Match on `code.startsWith('SQLITE_CONSTRAINT')` PLUS the exact message**, never a
+  bare `/UNIQUE/i` — a future index on the same table would otherwise start answering 409
+  for the wrong reason.
+- ⚠ **`node:sqlite` and `better-sqlite3` report DIFFERENT error codes for the same
+  violation** (`ERR_SQLITE_ERROR` vs `SQLITE_CONSTRAINT_UNIQUE`). The e2e helpers use
+  `node:sqlite`; the routes use better-sqlite3. **A probe written against the test driver
+  will "pass" while proving nothing about the route.** Verify a constraint-translation
+  guard against the driver the route actually loads.
+- ⚠ The window is **unreachable over HTTP in this suite** — only `TEST:` tokens verify and
+  they resolve in a microtask, which never yields to another request. So it is provable
+  only by a direct probe, and a green suite says nothing about it.
+- **Rule going forward:** any handler that gains an `await` must be re-read for
+  check-then-write pairs that were previously atomic by virtue of being synchronous.
+  GA-T4/T5/T7 added `await`s to handlers with no such pair; that was luck, not design.
+
 ### ⚠ GA-T5 — shared-password mode is a credential-planting surface (2026-08-16)
 
 `PUT /api/friends/:id/google-link` carries a **modern-mode guard** (409

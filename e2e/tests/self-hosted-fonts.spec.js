@@ -476,6 +476,7 @@ function watchExternal(page, origin) {
 test.describe('No public route fetches a third-party subresource', () => {
   let ctx = null
   let guestToken = ''
+  let inviteCode = ''
   const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
   test.beforeAll(async ({ baseURL }) => {
@@ -518,6 +519,16 @@ test.describe('No public route fetches a third-party subresource', () => {
     expect(link.status(), 'guest link create').toBe(201)
     guestToken = (await link.json()).link.token
     expect(guestToken, 'guest token').toBeTruthy()
+
+    // ⚠ GA-T8: a VALID invite code, so the sweeps below can visit the route in the
+    // state where its Google block actually renders (`form`). `friends.js` strips
+    // `invite_code` from every friend response, so this is the only route to one.
+    const myCode = await ctx.get('/api/invitations/my-code', {
+      headers: { Authorization: `Bearer ${hostToken}` },
+    })
+    expect(myCode.status(), 'my-code').toBe(200)
+    inviteCode = (await myCode.json()).inviteCode
+    expect(inviteCode, 'invite code').toBeTruthy()
   })
 
   test.afterAll(async () => { await ctx?.dispose() })
@@ -528,9 +539,42 @@ test.describe('No public route fetches a third-party subresource', () => {
   // loader (`frontend/src/lib/gis.js`) is what keeps that true — it is imported only
   // by button surfaces, never by `index.html` and never by a guest route. THIS map is
   // the assertion that stops a future row quietly loading GIS on the guest surface.
+  // ⚠ GA-T8 — WHAT A REAL GIS BUTTON ACTUALLY FETCHES, measured, because until this
+  // row nothing in the suite had ever let the REAL library run: `google-auth.spec.js`
+  // stubs it, and the gate is legacy so `/` never loaded it. Rendering the button on
+  // the invite form issues FIVE requests, on TWO hosts:
+  //     accounts.google.com/gsi/client            (the library, our page)
+  //     accounts.google.com/gsi/style             (its stylesheet, our page)
+  //     accounts.google.com/gsi/button?…          (the button IFRAME, our page)
+  //     ssl.gstatic.com/_/gsi/_/js/…credential_button_library     ┐ inside that
+  //     ssl.gstatic.com/_/gsi/_/ss/…credential_button_library     ┘ iframe
+  //
+  // ⚠ THE GSTATIC PAIR IS NOT A CSP GAP, and that was worth proving rather than
+  // assuming — it looks exactly like the RD-DS-6 bug (a host the production policy
+  // does not name). It is not: those two requests are issued INSIDE the
+  // cross-origin `accounts.google.com/gsi/button` iframe, which is its own browsing
+  // context governed by GOOGLE's policy, not ours. Verified directly — the real
+  // library rendering a real button under this file's `PROD_CSP`, served by a
+  // throwaway static server: `securitypolicyviolation` count **0**, button HTML
+  // 1819 bytes. `frame-src https://accounts.google.com/gsi/` is what admits the
+  // iframe, and that is the whole of our obligation. So UC-GA-012's four directives
+  // are correct as they stand — do NOT "fix" the nginx confs by adding gstatic.
+  //
+  // They appear here only because Playwright's `page.on('request')` reports SUBFRAME
+  // requests too, which is why the list below is per-host and not per-directive.
+  const GIS_IFRAME_HOST = 'ssl.gstatic.com'
   const EXTERNAL_ALLOWLIST = {
-    '/': [GIS_HOST],
+    // ⚠ `/` gets the iframe host as well, and that is a LATENT fix, not a new
+    // allowance: this gate is legacy so the login card never renders the button,
+    // but on a modern + configured target (staging, once GA-T4 is walked through)
+    // `/` fetches exactly the same five URLs and this row would have gone red for a
+    // perfectly correct page.
+    '/': [GIS_HOST, GIS_IFRAME_HOST],
     '/invite/:code': [GIS_HOST],
+    // ⚠ GA-T8: the invite screen's Google block lives in the `form` state, which
+    // only a VALID code reaches — so the route is swept in BOTH states, and only
+    // the valid one may contact anybody.
+    '/invite/:code (valid)': [GIS_HOST, GIS_IFRAME_HOST],
     '/g/:token': [],
     '/magic/:token': [],
   }
@@ -551,6 +595,7 @@ test.describe('No public route fetches a third-party subresource', () => {
     const routes = [
       { label: '/', url: '/' },
       { label: '/invite/:code', url: `/invite/RDDS6-${uniq}` },
+      { label: '/invite/:code (valid)', url: `/invite/${inviteCode}` },
       { label: '/g/:token', url: `/g/${guestToken}` },
       { label: '/magic/:token', url: `/magic/${'f'.repeat(64)}` },
     ]
@@ -641,10 +686,25 @@ test.describe('No public route fetches a third-party subresource', () => {
     const mode = await (await request.get('/api/friends/auth-mode')).json()
     const googleOnLoginCard = mode.authMode === 'modern' && mode.googleClientId !== null
 
+    // ⚠ GA-T8 UPDATE (§UC-GA-008), an e2e-immutability case (a) edit. This row used
+    // to read "GA-T8 owns the invite screen's Google control; until it lands, zero"
+    // — that row has landed, so the expectation is stated rather than left stale.
+    //
+    // ⚠ AND IT IS TWO ROWS, NOT ONE, because the two states of this route have
+    // OPPOSITE expectations and only the pair is honest:
+    //   · an INVALID code renders the dead card and must stay at zero — the block is
+    //     inside the `form` state, so anyone who mistypes a link contacts nobody.
+    //   · a VALID code on a configured deployment MUST contact Google. Note the
+    //     absent `authMode` term: unlike the login card, this control has no
+    //     modern-mode condition (§UC-GA-008 — `POST /invitations/register` refuses in
+    //     no mode), so on this legacy gate `/` is zero and `/invite/<valid>` is not.
+    //     That asymmetry is the decision, observed on a real target.
+    const googleOnInviteForm = mode.googleClientId !== null
+
     const routes = [
       ['/', '/', googleOnLoginCard],
-      // GA-T8 owns the invite screen's Google control; until it lands, zero.
       ['/invite/:code', `/invite/RDDS6-${uniq}`, false],
+      ['/invite/:code (valid)', `/invite/${inviteCode}`, googleOnInviteForm],
       // ⚠ UNCONDITIONAL, on every target and in every auth mode.
       ['/g/:token', `/g/${guestToken}`, false],
       ['/magic/:token', `/magic/${'f'.repeat(64)}`, false],
@@ -671,9 +731,10 @@ test.describe('No public route fetches a third-party subresource', () => {
 
     expect(
       missing,
-      `This target is modern + configured, so ${JSON.stringify(mode)} says the login card\n` +
-      'should render the GIS button — but nothing was requested from Google. Either the\n' +
-      'button regressed or the loader stopped being reached.',
+      `${JSON.stringify(mode)} says these routes should render a GIS button — the login\n` +
+      'card when modern + configured, the invite FORM whenever configured — but nothing\n' +
+      'was requested from Google. Either a button regressed or the loader stopped being\n' +
+      `reached: ${JSON.stringify(missing)}`,
     ).toEqual([])
   })
 
@@ -727,9 +788,19 @@ test.describe('No public route fetches a third-party subresource', () => {
     // view (`GuestOrder`, `GuestOrderStatus`, `GuestProductGrid`) or `MagicLogin`
     // appearing here is a BUG, not an update — those routes are pinned at zero
     // external requests by the sweep above.
+    //     ⚠ GA-T8 UPDATE (§UC-GA-008): `views/InviteRegister.vue` is the THIRD
+    //     importer and the first on a route other than `/`. Its Google block is
+    //     inside the `form` state only, so `/invite/:code` contacts Google when the
+    //     code is VALID and the deployment is configured — and never on the
+    //     loading/invalid/success screens. The sweep above states both halves.
+    //     ⚠ It is the first sanctioned importer with NO `authMode === 'modern'`
+    //     term, deliberately: the two rows above need one because
+    //     `PUT /:id/google-link` 409s in legacy, and `POST /invitations/register`
+    //     does not refuse in any mode.
     const SANCTIONED_GIS_IMPORTERS = [
       'views/FriendPortal.vue',
       'views/FriendPortalSession.vue',
+      'views/InviteRegister.vue',
     ]
     const importers = walkFiles(FRONTEND_SRC)
       .filter((f) => /\.(js|ts|vue)$/.test(f) && f !== GIS_LIB)

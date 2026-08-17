@@ -28,9 +28,10 @@
 // party, not for the reader) would have permitted "Pozval vás", but a noun phrase
 // needs no gender at all.
 
-import { ref, onMounted } from 'vue'
+import { computed, nextTick, ref, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api'
+import { loadGis } from '../lib/gis'
 import BrandChrome from '@/components/neo/BrandChrome.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 
@@ -50,6 +51,15 @@ const email = ref('')
 const username = ref('')
 
 onMounted(async () => {
+  // ⚠ NOT awaited before the code check and deliberately non-blocking: the
+  // registration form is the point of this screen, and a slow or failing
+  // `auth-mode` must never delay or break it. `googleClientId` simply stays null,
+  // which is the same state an unconfigured deployment is in — no Google control,
+  // no request to Google. (The AdminDashboard pending-invitations banner precedent.)
+  api.getAuthMode()
+    .then((mode) => { googleClientId.value = mode?.googleClientId || null })
+    .catch(() => {})
+
   try {
     const data = await api.validateInviteCode(route.params.code)
     inviterName.value = data.inviterName
@@ -58,6 +68,145 @@ onMounted(async () => {
     state.value = 'invalid'
   }
 })
+
+// --- Google attach (10 §UC-GA-008) -------------------------------------------
+//
+// ⚠ NO AUTH-MODE TERM, and that is a decision. §UC-GA-005's login button and
+// §UC-GA-006's prompt additionally require `authMode === 'modern'` because the
+// endpoint they call (`PUT /:id/google-link`) answers 409 in legacy. This block
+// posts to `POST /invitations/register`, which has no such refusal in any mode —
+// §UC-GA-008's own condition is "rendered only when `googleClientId` is non-null",
+// full stop. An identity attached on a legacy deployment is a frozen record that
+// §UC-GA-009's approval copies onto the friend row; it starts working the moment
+// the deployment flips, and until then the friend logs in with the username and
+// password module 07's approval mints regardless of mode.
+//
+// ⚠ ACCEPTED RISK OF THAT DECISION, recorded rather than designed around. On a
+// CONFIGURED but LEGACY deployment this block's help text promises "Po schválení sa
+// budete môcť prihlásiť svojím Google účtom", and the server's collision 409 says
+// "Prihláste sa cez Google" — both are true only AFTER the flip to modern, because
+// `POST /friends/auth/google` answers the resolved-decision-#2 409 until then. Both
+// strings are product-owner-signed in §UC-GA-008 and the render condition is
+// spec-mandated, so neither is softened here. The operator note that actually
+// removes the gap: ⚠ SET `GOOGLE_CLIENT_ID` AT OR AFTER THE MODERN FLIP, not before
+// — an unset client id is exactly the "feature off" state this block already
+// handles, so the promise is simply never made early.
+const googleClientId = ref(null)
+// Held in MEMORY only and sent ONLY with the submit (§UC-GA-008). Never stored,
+// never put in localStorage — it is a one-shot credential.
+const googleIdToken = ref('')
+const googleEmail = ref('')
+
+// The block belongs to the FORM state: on the loading/invalid/success screens
+// there is nothing to attach an identity to, and rendering it there would make
+// `/invite/:code` contact Google for anyone who mistyped a link.
+const showGoogleBlock = computed(() => state.value === 'form' && !!googleClientId.value)
+// The GIS mount exists only while nothing is attached — the captured state
+// replaces it, so there is exactly one control at a time.
+const showGoogleButton = computed(() => showGoogleBlock.value && !googleIdToken.value)
+
+const googleButtonEl = ref(null)
+
+// ⚠ Per-INSTANCE, and correct here (the FriendPortal.vue note): `initialize()`
+// registers ONE global callback, so re-calling it on a re-render is pointless
+// rather than harmful. The genuinely global part — one script tag, one in-flight
+// promise — lives in `lib/gis.js`, which is a real module (the ML-T3 rule:
+// `<script setup>` has no module scope).
+//
+// ⚠ The GA-T6/T7 global-callback hazard does not apply: nothing else on this route
+// renders a Google control (`/invite/:code` mounts this view alone), so the last
+// `initialize()` is always this block's, and an unconditional call would be
+// correct too. Stated rather than assumed.
+let googleInitialised = false
+
+async function renderGoogleButton() {
+  if (!showGoogleButton.value) return
+  let gis
+  try {
+    gis = await loadGis(googleClientId.value)
+  } catch {
+    // ⚠ SILENT, deliberately (the login card's rule). A blocked, offline or slow
+    // Google must DEGRADE — the four fields below are the whole registration and
+    // Google is explicitly optional here, so the container simply stays empty.
+    // `loadGis` is timeout-bounded, so this branch is reached in bounded time.
+    return
+  }
+  if (!gis) return
+
+  // ⚠ RE-READ after the await: the applicant may have submitted (success state) or
+  // the code check may have failed while the script was in flight, in which case
+  // the container is gone and `renderButton` would throw.
+  await nextTick()
+  const el = googleButtonEl.value
+  if (!el || !showGoogleButton.value) return
+
+  if (!googleInitialised) {
+    gis.initialize({ client_id: googleClientId.value, callback: onGoogleCredential })
+    googleInitialised = true
+  }
+  el.innerHTML = ''
+  gis.renderButton(el, {
+    theme: 'outline',
+    size: 'large',
+    text: 'signin_with',
+    shape: 'rectangular',
+    logo_alignment: 'center',
+    locale: 'sk',
+    // ⚠ Both bounds are GIS's OWN behaviour, not the spec's. §UC-GA-005 says only
+    // "full available width up to GIS's 400px cap"; the 200px FLOOR is undocumented
+    // there and was measured in GA-T4 — below it the library renders nothing at all,
+    // which at 320px is what an unclamped `clientWidth` would produce. Attributed to
+    // the measurement rather than to a spec line that does not say it.
+    width: Math.max(200, Math.min(Math.round(el.clientWidth) || 320, 400)),
+  })
+}
+
+// `immediate` so a block that is already showing gets its button; the watcher then
+// covers every later transition (the auth-mode probe landing late, the code check
+// resolving, a detach putting the mount point back).
+watch(showGoogleButton, (show) => { if (show) renderGoogleButton() }, { immediate: true })
+
+/**
+ * The GIS credential callback.
+ *
+ * ⚠ The e-mail read here is DISPLAY ONLY and is decoded, never verified — the
+ * server re-verifies the whole token with `google-auth-library` and stores the
+ * address from ITS payload (§UC-GA-002: `email` only when `email_verified`). This
+ * side must never be treated as a fact about the account; it exists so the
+ * applicant can see WHICH account they just picked before submitting.
+ */
+function onGoogleCredential(response) {
+  const credential = response && response.credential
+  if (!credential) return
+  googleIdToken.value = credential
+  googleEmail.value = decodeGoogleEmail(credential)
+  // A field-level failure from a previous submit is stale once the identity moves.
+  if (error.value) error.value = ''
+}
+
+function decodeGoogleEmail(credential) {
+  try {
+    const payload = String(credential).split('.')[1]
+    if (!payload) return ''
+    const json = decodeURIComponent(
+      atob(payload.replace(/-/g, '+').replace(/_/g, '/'))
+        .split('')
+        .map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`)
+        .join('')
+    )
+    const claims = JSON.parse(json)
+    return typeof claims.email === 'string' ? claims.email : ''
+  } catch {
+    // A token we cannot read is still a token the SERVER may accept — the decode
+    // is for the label, not for the flow. Fall back to the neutral wording below.
+    return ''
+  }
+}
+
+function detachGoogle() {
+  googleIdToken.value = ''
+  googleEmail.value = ''
+}
 
 async function submit() {
   error.value = ''
@@ -80,7 +229,11 @@ async function submit() {
       name: name.value.trim(),
       phone: phone.value.trim(),
       email: email.value.trim() || null,
-      ...(wanted ? { username: wanted } : {})
+      ...(wanted ? { username: wanted } : {}),
+      // ⚠ OMITTED when nothing is attached, exactly like `username` above: an
+      // absent/empty `google_id_token` is what keeps the server on module 07's
+      // byte-identical path (§UC-GA-008).
+      ...(googleIdToken.value ? { google_id_token: googleIdToken.value } : {})
     })
     state.value = 'success'
   } catch (e) {
@@ -276,6 +429,32 @@ async function submit() {
           <div class="field-help" data-testid="invite-email-help">Nepovinné. Potrebujeme ho len pre doručenie zásielkovňou.</div>
         </div>
 
+        <!-- ================= Optional Google attach (10 §UC-GA-008) =================
+             A BORDERED block below the four fields, so it reads as an addition to
+             the form rather than a fifth field. It renders only when the deployment
+             serves a `googleClientId` — and only in the `form` state, which is what
+             keeps the loading/invalid/success screens (and anyone who mistyped a
+             code) from contacting Google at all.
+             ⚠ The GIS iframe cannot wear this skin (Google's brand guidelines, the
+             accepted risk in §Design reference), so the mount point below carries no
+             theme class — do not "tidy" a `.btn` onto it. -->
+        <div v-if="showGoogleBlock" class="ir-google" data-testid="invite-google">
+          <div class="field-lbl">Prihlásenie cez Google</div>
+          <div class="field-help">Nepovinné. Po schválení sa budete môcť prihlásiť svojím Google účtom.</div>
+
+          <!-- Captured state: WHICH account, plus the way back out. The token is in
+               memory only and travels with the submit. -->
+          <div v-if="googleIdToken" class="ir-google-row" data-testid="invite-google-attached">
+            <span class="sub ir-google-acct" data-testid="invite-google-account">{{ googleEmail || 'Google účet je pripojený' }}</span>
+            <button type="button" class="btn sm" @click="detachGoogle">Zrušiť</button>
+          </div>
+          <!-- ⚠ `v-else`, not `v-show`: GIS renders an iframe into this node, so the
+               mount point is recreated on detach and `renderGoogleButton()` runs
+               again (the watcher). An emptied-but-kept container would leave the
+               applicant with no way to attach a second time. -->
+          <div v-else ref="googleButtonEl" class="ir-google-mount" data-testid="invite-google-signin"></div>
+        </div>
+
         <button
           class="btn accent block"
           :disabled="submitting || !name.trim() || !phone.trim()"
@@ -326,3 +505,39 @@ async function submit() {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* ⚠ A SCOPED BLOCK, not an addition to `friends-theme.css` (the CatScrollArrow.vue
+   and cart-line precedents): the theme is a byte-for-byte design-canon port with a
+   numbered adaptation list, and a one-screen optional block belongs to none of it.
+   Nothing here re-declares a property a theme rule sets on these elements. */
+.ir-google {
+  border: 2px dashed var(--nb-ink);
+  border-radius: 10px;
+  padding: 14px;
+}
+.ir-google-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+}
+/* ⚠ `min-width:0` + clipping, not `overflow-wrap`: an e-mail address is one
+   unbreakable token, and at 320px an un-clipped one paints outside the card (the
+   RD-FO-2 hazard). The full address stays in the DOM. */
+.ir-google-acct {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: normal;
+}
+.ir-google-mount {
+  margin-top: 10px;
+  /* GIS refuses widths under 200px, so the mount must never be squeezed below it. */
+  min-height: 44px;
+}
+</style>
