@@ -1,40 +1,46 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
-// The product-description face — Noto Sans Condensed (design brief, 2026-08-13).
+// The product-description face — Figtree, the body face (product decision,
+// 2026-08-18). This REPLACED the 2026-08-13 Noto Sans Condensed brief: the owner
+// asked for the typeface of the order screen's status banner ("Objednávky sú
+// uzamknuté…" — Figtree, bold lead-in + regular body) on these two lines.
 //
-// Two lines under the badges in a COFFEE product card change typeface:
-//   `description1` (the spec line)     → `.pspec`  Bold 700, 14.5px, lh 1.25, --ink
-//   `description2` (the tasting notes) → `.pnotes` Medium 500, 14px, lh 1.3, --ink-dim
+// Two lines under the badges in a COFFEE product card:
+//   `description1` (the spec line)     → `.pspec`  Figtree 700, 14.5px, lh 1.25, --ink
+//   `description2` (the tasting notes) → `.pnotes` Figtree 400, 14px, lh 1.3, --ink-dim
 //
-// Why it needs a spec of its own: every value lives in `friends-theme.css` as a
-// CANON SYNC (the design project's theme.css carries `--font-cond`, `.pspec` and
-// `.pnotes` verbatim), so a later "tidy-up" that re-adds an inline `font-size` at the
-// call site, or drops the class for `.sub`, would be invisible — the text still
-// renders, just in the wrong face at the wrong weight.
+// Why it needs a spec of its own: every value lives in `friends-theme.css`, so a
+// later "tidy-up" that re-adds an inline `font-size` at the call site, or drops the
+// class for `.sub`, would be invisible — the text still renders, just in the wrong
+// face at the wrong weight.
 //
-// ⚠ The three things only a measurement catches, and the reason each is here:
-//   1. the condensed face actually LOADED — a missing woff2 leaves the text in
-//      'Noto Sans'/sans-serif at the same size and colour, which no text assertion
+// ⚠ The things only a measurement catches, and the reason each is here:
+//   1. the face actually LOADED — a missing woff2 leaves the text in the fallback
+//      ('Inter'/sans-serif) at the same size and colour, which no text assertion
 //      and no screenshot diff at this scale would flag;
 //   2. Slovak diacritics come from the SAME face — they live in latin-ext
 //      (U+0100-017F), a separate file, so a dropped subset breaks "mliečna
 //      čokoláda" mid-word while "karamel" stays perfect;
-//   3. the brief's acceptance strings fit in ≤ 2 lines at 390px — the entire point
-//      of a condensed face is that a long varietal name stops wrapping.
+//   3. Noto Sans Condensed is really GONE — its preloads left index.html with the
+//      face (a preload with no consumer logs "preloaded but not used" on every
+//      route), and nothing may quietly reintroduce a font preload.
 
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
-// The brief's own acceptance strings (§Akceptačné kritériá), verbatim.
+// The 2026-08-13 brief's acceptance strings, kept as the wrap fixtures: the long
+// varietal is the worst real-world case and must still fit ≤ 2 lines at 390px in
+// the wider (non-condensed) face.
 const SPEC_SHORT = '100% bourbon arabica'
 const SPEC_LONG = 'Honey Co-Fermented Pink Bourbon · SCA 86'
 const NOTES_DIACRITICS = 'karamel, mliečna čokoláda, orechy'
 
-// Every value the brief specifies, as the browser computes it. Kept as one table so
-// a drift shows up as a single readable diff.
+// Every value the decision specifies, as the browser computes it. Kept as one table
+// so a drift shows up as a single readable diff. `ls: 'normal'` is load-bearing —
+// the condensed tracking (.005em) left with the condensed face.
 const EXPECTED = {
-  pspec: { family: '"Noto Sans Cond"', weight: '700', size: '14.5px', lh: '18.125px', ls: '0.0725px', color: 'rgb(10, 10, 10)' },
-  pnotes: { family: '"Noto Sans Cond"', weight: '500', size: '14px', lh: '18.2px', ls: '0.07px', color: 'rgba(10, 10, 10, 0.66)' },
+  pspec: { family: 'Figtree', weight: '700', size: '14.5px', lh: '18.125px', ls: 'normal', color: 'rgb(10, 10, 10)' },
+  pnotes: { family: 'Figtree', weight: '400', size: '14px', lh: '18.2px', ls: 'normal', color: 'rgba(10, 10, 10, 0.66)' },
 }
 
 let ctx = null
@@ -123,8 +129,8 @@ async function gotoFriendCard(page) {
  *  assertion that would have named the broken subset. */
 async function fontsReady(page) {
   await page.evaluate(async () => {
-    await Promise.all([500, 700].map((w) =>
-      document.fonts.load(`${w} 16px "Noto Sans Cond"`, 'Ažč').catch(() => {})))
+    await Promise.all([400, 700].map((w) =>
+      document.fonts.load(`${w} 16px "Figtree"`, 'Ažč').catch(() => {})))
     await document.fonts.ready
   })
 }
@@ -136,7 +142,7 @@ async function describedLines(page) {
       return {
         cls,
         text: el.textContent.trim(),
-        family: cs.fontFamily.split(',')[0].trim(),
+        family: cs.fontFamily.split(',')[0].trim().replace(/^"|"$/g, ''),
         weight: cs.fontWeight,
         size: cs.fontSize,
         lh: cs.lineHeight,
@@ -149,8 +155,8 @@ async function describedLines(page) {
   })
 }
 
-test.describe('Product description — Noto Sans Condensed', () => {
-  test('the friend card: every briefed value, computed', async ({ page }) => {
+test.describe('Product description — Figtree (the banner face)', () => {
+  test('the friend card: every decided value, computed', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 900 })
     await gotoFriendCard(page)
 
@@ -180,8 +186,9 @@ test.describe('Product description — Noto Sans Condensed', () => {
     }
   })
 
-  // §Akceptačné kritériá: both strings on at most two lines at 390px, not clipped.
-  test('the brief\'s acceptance strings fit in ≤ 2 lines at 390px', async ({ page }) => {
+  // The 2026-08-13 acceptance strings still hold in the wider face: both on at most
+  // two lines at 390px, not clipped.
+  test('the acceptance strings fit in ≤ 2 lines at 390px', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 900 })
     await gotoFriendCard(page)
 
@@ -209,7 +216,7 @@ test.describe('Product description — Noto Sans Condensed', () => {
   // ⚠ The assertion the whole self-hosting exercise exists for. A width comparison,
   // not `document.fonts.check()` — RD-DS-6 recorded that check() answered `true` on
   // staging while ZERO faces had loaded.
-  test('Slovak diacritics render in the condensed face, not a fallback', async ({ page }) => {
+  test('Slovak diacritics render in Figtree, not a fallback', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 900 })
     await gotoFriendCard(page)
 
@@ -228,7 +235,7 @@ test.describe('Product description — Noto Sans Condensed', () => {
         el.remove()
         return w
       }
-      for (const weight of [500, 700]) {
+      for (const weight of [400, 700]) {
         for (const [label, text] of Object.entries(texts)) {
           // ⚠ Swallow a rejected load rather than letting it throw. A missing or
           // CSP-blocked woff2 rejects here, and an unhandled rejection surfaces as
@@ -236,10 +243,10 @@ test.describe('Product description — Noto Sans Condensed', () => {
           // died. Measured anyway, the width comparison below names it exactly.
           // (Same reasoning as self-hosted-fonts.spec.js's REJECTED marker.)
           try {
-            await document.fonts.load(`${weight} 96px "Noto Sans Cond"`, text)
+            await document.fonts.load(`${weight} 96px "Figtree"`, text)
           } catch { /* reported by the width assertion, not here */ }
           out[`${weight}|${label}`] = {
-            brand: measure(text, '"Noto Sans Cond", monospace', weight),
+            brand: measure(text, '"Figtree", monospace', weight),
             // A family that cannot exist, so this resolves to the SAME fallback.
             // Equal widths ⇒ the brand face contributed nothing to this string.
             fallback: measure(text, '"NoSuchFace-PDESC", monospace', weight),
@@ -271,35 +278,32 @@ test.describe('Product description — Noto Sans Condensed', () => {
     // Scope guard: the BAKERY card's description lines are a different mapping
     // (`description2` is a subtitle beside the name) and keep `.sub`. If a future
     // edit points `.pspec`/`.pnotes` at them, this is what says so.
-    const bakeryHasCond = await page.evaluate(() => {
+    const specInCard = await page.evaluate(() => {
       const spec = document.querySelector('.pspec')
       return spec ? spec.closest('[data-testid="product-card"]') !== null : false
     })
-    expect(bakeryHasCond, 'the condensed classes must sit inside a product card').toBe(true)
+    expect(specInCard, 'the description classes must sit inside a product card').toBe(true)
   })
 
-  // The brief asks for `font-display:swap` + a preload of the Bold cut, so the spec
-  // line does not visibly reflow. A preload pointing at a path that 404s is silent
-  // in the DOM, so the files are fetched here.
-  test('the Bold cut is preloaded and both of its subsets resolve', async ({ page, request }) => {
+  // Noto Sans Condensed is retired: its preloads must be gone (a preload with no
+  // consumer logs "preloaded but not used" on every route and re-fetches ~50 KB),
+  // and no stylesheet may still ask for the face. The body face needs no preload —
+  // Figtree is fetched by first paint on every route anyway.
+  test('no font preloads remain, and Noto Sans Condensed is gone', async ({ page }) => {
     await page.goto('/')
-    const preloads = page.locator('link[rel="preload"][as="font"]')
-    await expect(preloads).toHaveCount(2)
+    await expect(page.locator('link[rel="preload"][as="font"]')).toHaveCount(0)
 
-    const hrefs = await preloads.evaluateAll((els) => els.map((el) => ({
-      href: el.getAttribute('href'), crossorigin: el.hasAttribute('crossorigin'), type: el.getAttribute('type'),
-    })))
-    for (const p of hrefs) {
-      expect(p.href, 'only the 700 cut is preloaded').toMatch(/noto-sans-condensed-700-(latin|latin-ext)\.woff2$/)
-      // ⚠ Without `crossorigin` the browser fetches the font a SECOND time: fonts
-      // are always requested in CORS mode, so a non-CORS preload cannot be reused.
-      expect(p.crossorigin, `${p.href} needs crossorigin or the preload is wasted`).toBe(true)
-      expect(p.type).toBe('font/woff2')
-
-      const res = await request.get(p.href)
-      expect(res.status(), `${p.href} must be served`).toBe(200)
-      expect(res.headers()['content-type']).toContain('font/woff2')
-    }
-    expect(new Set(hrefs.map((p) => p.href)).size, 'both subsets, not the same file twice').toBe(2)
+    const stillAsked = await page.evaluate(async () => {
+      const hits = []
+      for (const sheet of document.styleSheets) {
+        let rules
+        try { rules = sheet.cssRules } catch { continue }
+        for (const r of rules) {
+          if (r.cssText && /Noto Sans Cond/i.test(r.cssText)) hits.push(r.cssText.slice(0, 120))
+        }
+      }
+      return hits
+    })
+    expect(stillAsked, 'a stylesheet still references Noto Sans Cond').toEqual([])
   })
 })

@@ -378,34 +378,37 @@ test.describe('Cycle card — structure and pins (UC-FL-006)', () => {
     const nameFont = await name.evaluate((el) => getComputedStyle(el).fontFamily)
     expect(nameFont, 'the cycle name uses the display family').toMatch(/Darker Grotesque/i)
 
-    // ⚠ `.mono` left this row on 2026-08-13 (it is Noto Sans Condensed Bold now),
-    // so the locator is the testid the view gained for exactly this reason.
+    // ⚠ `.mono` left this row on 2026-08-13, so the locator is the testid the view
+    // gained for exactly this reason. The face is Figtree BOLD since 2026-08-18
+    // (the body face, matching the order screen's status banner — this replaced
+    // the Noto Sans Condensed pass).
     const date = card.getByTestId('cycle-date')
     await expect(date).toContainText('29. august 2026')
     await expect(date.locator('svg'), 'the calendar glyph').toHaveCount(1)
     // The face itself, or this change is only a locator rename. Bold on the date,
-    // Medium on the plan — the same 700/500 pair the product card uses.
+    // Regular on the plan — the same 700/400 pair the product card uses.
     await expect(date).toHaveCSS('font-weight', '700')
-    // ⚠ 14px, bumped from 12px on 2026-08-13 (product decision: both rows were too
-    // small in the condensed face). Pinned because the size is the whole ask.
+    // ⚠ 14px since 2026-08-13 (bumped from 12px), kept through the 2026-08-18
+    // face change. Pinned because the size was its own product decision.
     await expect(date).toHaveCSS('font-size', '14px')
-    expect(await date.evaluate((el) => getComputedStyle(el).fontFamily), 'condensed face on the date')
-      .toContain('Noto Sans Cond')
+    expect(await date.evaluate((el) => getComputedStyle(el).fontFamily), 'the body face on the date')
+      .toContain('Figtree')
     // …and it is NOT the mono face any more.
     expect(await date.evaluate((el) => getComputedStyle(el).fontFamily)).not.toContain('Courier')
 
     // Plan block: faint, and `white-space: pre-line` so the admin's multiline note
-    // keeps one line per row. ⚠ Was `.mono` nth(1) — the face is Noto Sans Condensed
-    // Medium since 2026-08-13, and an nth() over a class this row no longer carries
-    // would silently have pointed at the archive rows' money column.
+    // keeps one line per row. ⚠ Was `.mono` nth(1) — the row lost that class on
+    // 2026-08-13, and an nth() over a class this row no longer carries would
+    // silently have pointed at the archive rows' money column.
     const plan = card.getByTestId('cycle-plan')
     await expect(plan).toHaveCSS('white-space', 'pre-line')
-    // ⚠ 13.5px, bumped from 12px the same day — kept below the date's 14px so the
-    // weight AND size hierarchy both still say "date first, plan second".
+    // ⚠ 13.5px, kept below the date's 14px so the weight AND size hierarchy both
+    // still say "date first, plan second". Weight 400 = the inherited body default
+    // (the view declares no font-family and no font-weight on this row).
     await expect(plan).toHaveCSS('font-size', '13.5px')
-    await expect(plan).toHaveCSS('font-weight', '500')
-    expect(await plan.evaluate((el) => getComputedStyle(el).fontFamily), 'condensed face on the plan')
-      .toContain('Noto Sans Cond')
+    await expect(plan).toHaveCSS('font-weight', '400')
+    expect(await plan.evaluate((el) => getComputedStyle(el).fontFamily), 'the body face on the plan')
+      .toContain('Figtree')
     expect((await plan.textContent()).split('\n').map((s) => s.trim())).toEqual([
       '22. – 28. august — Objednávanie',
       '1. – 3. september — Delivery',

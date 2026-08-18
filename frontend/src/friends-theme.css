@@ -15,7 +15,7 @@
   --warn:#8a5a00;--warn-soft:#fff1cf;
   --nav-bg:#0a0a0a;--nav-ink:#ffffff;--nav-ink-dim:rgba(255,255,255,0.72);--nav-ink-soft:rgba(255,255,255,0.45);
   --radius:10px;
-  --font-body:'Figtree','Inter',sans-serif;--font-display:'Darker Grotesque',sans-serif;--font-mono:'Courier Prime',monospace;--font-cond:'Noto Sans Cond','Noto Sans',sans-serif;
+  --font-body:'Figtree','Inter',sans-serif;--font-display:'Darker Grotesque',sans-serif;--font-mono:'Courier Prime',monospace;
   color:var(--ink);font-family:var(--font-body);
 }
 .app{min-height:100vh;background:var(--bg);font-size:16px;position:relative}
@@ -23,18 +23,23 @@
 .app>*{position:relative;z-index:1}
 :where(.app, .modal-layer) .mono{font-family:var(--font-mono);letter-spacing:0.01em}
 :where(.app, .modal-layer) .display{font-family:var(--font-display);text-transform:uppercase;font-weight:800}
-/* product description (Noto Sans Condensed) — CANON SYNC, not an adaptation:
-   `--font-cond`, `.pspec` and `.pnotes` are in the design canon's own theme.css
-   (verified against the "Podpultovka - Reviewed" project, 2026-08-13), so they are
-   ported here verbatim like every other rule in this file. Both declare their own
-   `line-height`, so neither needs the A9/A10 preflight counter.
+/* product description — Figtree, the body face (product decision 2026-08-18):
+   match the status banner's typeface ("Objednávky sú uzamknuté…") — bold for
+   description1 (.pspec), regular for description2 (.pnotes). This RETIRES the
+   2026-08-13 Noto Sans Condensed canon sync: these two rules plus the portal
+   cycle card's date/plan rows were its only consumers, so `--font-cond`, the
+   fonts.css @font-face blocks, the 700-cut preloads in index.html and all four
+   noto-sans-condensed woff2 files are gone with it (a preload with no consumer
+   logs "preloaded but not used" on every route). Sizes, colours and
+   line-heights keep the 2026-08-13 values — both still declare their own
+   `line-height`, so neither needs the A9/A10 preflight counter. The condensed
+   tracking (.005em) went with the face.
 
-   ⚠ The canon ALSO moved `--font-mono` to `'Space Mono','Courier Prime',monospace`.
-   That is NOT ported: Space Mono is not self-hosted here, so the stack would fall
-   through to Courier Prime and render identically while implying a face we do not
-   ship. The brief scopes this change to two lines and says mono stays as it is. */
-:where(.app, .modal-layer) .pspec{font-family:var(--font-cond);font-weight:700;font-size:14.5px;line-height:1.25;letter-spacing:.005em;color:var(--ink)}
-:where(.app, .modal-layer) .pnotes{font-family:var(--font-cond);font-weight:500;font-size:14px;line-height:1.3;letter-spacing:.005em;color:var(--ink-dim)}
+   ⚠ The canon's `--font-mono` move to 'Space Mono' is still NOT ported: Space
+   Mono is not self-hosted here, so the stack would fall through to Courier
+   Prime and render identically while implying a face we do not ship. */
+:where(.app, .modal-layer) .pspec{font-family:var(--font-body);font-weight:700;font-size:14.5px;line-height:1.25;color:var(--ink)}
+:where(.app, .modal-layer) .pnotes{font-family:var(--font-body);font-weight:400;font-size:14px;line-height:1.3;color:var(--ink-dim)}
 
 /* ---------- brand chrome: appbar + hazard tape + ticker ---------- */
 :where(.app, .modal-layer) .appbar{background:var(--nav-bg);color:var(--nav-ink);display:flex;align-items:center;gap:14px;padding:14px 18px;position:relative;border-bottom:4px solid var(--accent)}

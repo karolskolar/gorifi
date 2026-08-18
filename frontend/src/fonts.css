@@ -202,90 +202,13 @@
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
-/* ============================================================
-   Noto Sans Condensed — the product-description face (2026-08-13)
-   ============================================================
-   Added for the two text lines under the badges in a COFFEE product card:
-   `.pspec` (Bold 700, the spec line) and `.pnotes` (Medium 500, the tasting
-   notes). Both classes live in friends-theme.css, which the design canon
-   (friends/theme.css in the "Podpultovka - Reviewed" project) now carries — so
-   this is a canon sync, not a local invention.
-
-   Licence: SIL OFL 1.1, so self-hosting is permitted and required here — the
-   production CSP is `font-src 'self' data:`, which blocks any CDN outright
-   (RD-DS-6, and the whole reason this file exists).
-
-   Only TWO cuts ship: 500 and 700. No italic, no variable font — the design
-   brief asks for exactly this pair, and every extra weight is bytes nobody
-   renders.
-
-   ⚠ THE latin-ext RANGE HERE IS NARROWER THAN GOOGLE'S, AND IS DECLARED EXACTLY
-   AS SHIPPED. Every other face in this file preserves Google's own range
-   verbatim, because its file IS Google's subset. These four files are subset
-   from the handoff TTFs instead, and Noto's Latin coverage is enormous: built
-   against Google's literal latin-ext range each weight came to 62.6 KB, of which
-   the excess is IPA Extensions (U+1D00-1DBF), Latin Extended Additional
-   (U+1E00-1E9F, i.e. Vietnamese) and Latin Extended-D (U+A720-A7FF) — none of
-   which a Slovak coffee-order app renders in a product spec. Restricting to
-   U+0100-024F (Latin Extended-A + B, which is every Central/Eastern European
-   Latin language, Baltic and Turkish) plus the punctuation and currency bits
-   gives 28.1/28.7 KB. Measured, both weights, woff2:
-
-     range                 500        700
-     Google latin-ext    61.1 KB    62.6 KB
-     shipped (this)      28.1 KB    28.7 KB
-
-   Declaring the narrower range rather than Google's is the load-bearing half: a
-   codepoint outside it now falls straight through to the next family in
-   `--font-cond` ('Noto Sans' → sans-serif) instead of fetching a file that has
-   no glyph for it. Total added: 99,192 B across four files.
-
-   ⚠ Slovak lives in latin-ext, not latin: c/s/z/l/t/d/n-caron are U+0100-017F.
-   Shipping only `latin` would break "mliečna čokoláda" mid-word — the exact
-   failure RD-DS-6 documents. `noto-sans-condensed.spec.js` measures both subsets
-   in the rendered face, so a future re-subset cannot silently drop one.
-
-   To regenerate: subset the OFL TTFs to the two ranges below with any
-   harfbuzz-based subsetter, targeting woff2, and keep the ranges and filenames
-   in step with the four `@font-face` blocks here.
-   ============================================================ */
-
-/* Noto Sans Condensed 500 — latin */
-@font-face {
-  font-family: 'Noto Sans Cond';
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url('/fonts/noto-sans-condensed-500-latin.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-
-/* Noto Sans Condensed 500 — latin-ext (narrowed; see the note above) */
-@font-face {
-  font-family: 'Noto Sans Cond';
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url('/fonts/noto-sans-condensed-500-latin-ext.woff2') format('woff2');
-  unicode-range: U+0100-024F, U+0259, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113;
-}
-
-/* Noto Sans Condensed 700 — latin */
-@font-face {
-  font-family: 'Noto Sans Cond';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('/fonts/noto-sans-condensed-700-latin.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-
-/* Noto Sans Condensed 700 — latin-ext (narrowed; see the note above) */
-@font-face {
-  font-family: 'Noto Sans Cond';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('/fonts/noto-sans-condensed-700-latin-ext.woff2') format('woff2');
-  unicode-range: U+0100-024F, U+0259, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113;
-}
+/* Noto Sans Condensed (the 2026-08-13 product-description face) was REMOVED on
+   2026-08-18: the product decision moved `.pspec`/`.pnotes` and the portal cycle
+   card's date/plan rows onto Figtree (the body face, matching the status
+   banner), which left the face with zero consumers. All four
+   noto-sans-condensed-*.woff2 files and the index.html preloads of the 700 cut
+   went with it — a preload with no consumer logs "preloaded but not used" on
+   every route. If it ever comes back, re-subset from the OFL TTFs (harfbuzz)
+   and remember: Slovak carons are latin-ext (U+0100-017F), both subsets must
+   ship per weight, and `self-hosted-fonts.spec.js`'s exact-set FAMILIES ledger
+   must gain the face again. */

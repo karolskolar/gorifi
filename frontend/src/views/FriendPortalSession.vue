@@ -1431,20 +1431,21 @@ defineExpose({ openProfileModal, openInviteModal })
                    `.display` uppercases via CSS only, so `textContent` and the
                    accessible name are untouched. -->
               <h3 class="display" style="font-size:22px;line-height:1;overflow-wrap:anywhere">{{ cycle.name }}</h3>
-              <!-- ⚠ Noto Sans Condensed BOLD, not `.mono` (product decision
-                   2026-08-13, extending the product-card brief to this screen).
-                   `.mono` is REMOVED rather than overridden: leaving it on an
-                   element rendered in a condensed sans would be a lie, and other
-                   specs read `.mono` as "this is the mono face". `.sub` stays —
-                   it carries the colour, and it is what keeps A10's
-                   `line-height:normal` reaching this row now that `.mono` is gone.
-                   `data-testid` exists because the shipped locators were
-                   `.mono.sub` / `.mono` nth(1), which this change retires. -->
+              <!-- ⚠ Figtree BOLD (the body face — product decision 2026-08-18,
+                   matching the order screen's status banner; this replaced the
+                   2026-08-13 Noto Sans Condensed pass), not `.mono`. `.mono` is
+                   REMOVED rather than overridden: other specs read `.mono` as
+                   "this is the mono face". `.sub` stays — it carries the colour,
+                   and it is what keeps A10's `line-height:normal` reaching this
+                   row now that `.mono` is gone. `data-testid` exists because the
+                   shipped locators were `.mono.sub` / `.mono` nth(1), which the
+                   2026-08-13 change retired. No font-family here: the body face
+                   is inherited. -->
               <div
                 v-if="cycle.expected_date"
                 class="sub"
                 data-testid="cycle-date"
-                style="font-family:var(--font-cond);font-weight:700;font-size:14px;margin-top:7px;display:flex;align-items:center;gap:6px"
+                style="font-weight:700;font-size:14px;margin-top:7px;display:flex;align-items:center;gap:6px"
               >
                 <NeoIcon name="cal" /> {{ cycle.expected_date }}
               </div>
@@ -1470,14 +1471,15 @@ defineExpose({ openProfileModal, openInviteModal })
                a phone (531px against a 320px viewport). Neither `.card` nor the
                page column clips, so the wrap has to happen here. UC-DS-005:
                minimum supported width 320px with zero horizontal overflow. -->
-          <!-- ⚠ Noto Sans Condensed MEDIUM, not `.mono` — same decision as the date
-               row above. The inline `line-height:1.7` is unchanged and still the only
-               thing declaring it, so the A9/A10 invariant `portal-fidelity.spec.js`
-               pins (12px × 1.7 = 20.4px) survives the class going away. -->
+          <!-- ⚠ Figtree REGULAR (inherited body face, weight 400 by default —
+               product decision 2026-08-18, same as the date row above), not
+               `.mono`. The inline `line-height:1.7` is unchanged and still the
+               only thing declaring it, so the A9/A10 invariant
+               `portal-fidelity.spec.js` pins (13.5px × 1.7 = 22.95px) survives. -->
           <div
             v-if="cycle.plan_note"
             data-testid="cycle-plan"
-            style="font-family:var(--font-cond);font-weight:500;font-size:13.5px;color:var(--ink-faint);margin-top:10px;line-height:1.7;white-space:pre-line;overflow-wrap:anywhere"
+            style="font-size:13.5px;color:var(--ink-faint);margin-top:10px;line-height:1.7;white-space:pre-line;overflow-wrap:anywhere"
           >{{ cycle.plan_note }}</div>
 
           <!-- Badge row: type × status × order.

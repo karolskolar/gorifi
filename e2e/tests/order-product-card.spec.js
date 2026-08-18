@@ -260,10 +260,10 @@ test.describe('UC-FO-005 — coffee product card', () => {
     expect((await badges.nth(1).getAttribute('class')).split(/\s+/)).toContain('acc-o')
     expect(await badges.nth(0).evaluate((el) => getComputedStyle(el).fontSize)).toBe('11px')
 
-    // ⚠ RETARGETED 2026-08-13 (design brief — the product-description face). These
-    // two lines were `.sub` 13px --ink-dim and `.mono` 12.5px --ink-faint; they are
-    // now Noto Sans Condensed `.pspec` 700 / `.pnotes` 500, and the notes line has
-    // LOST `.mono` deliberately (it was the least readable text on the card). The
+    // ⚠ RETARGETED 2026-08-13 (Noto Sans Condensed) and again 2026-08-18: the
+    // product decision moved both lines onto Figtree, the body face — matching the
+    // status banner — as `.pspec` 700 / `.pnotes` 400. The notes line keeps its
+    // deliberate loss of `.mono` (it was the least readable text on the card). The
     // full computed table, both weights, both subsets and the ≤2-line acceptance
     // criteria live in `product-desc-font.spec.js`; what this test keeps is the
     // card-composition claim — the two lines exist, in the right order, with the
@@ -279,12 +279,12 @@ test.describe('UC-FO-005 — coffee product card', () => {
       }
       return { spec: read('.pspec'), notes: read('.pnotes') }
     })
-    expect(lineStyles.spec.ff, 'condensed face on the spec line').toContain('Noto Sans Cond')
-    expect(lineStyles.spec.fw, 'the spec line is the Bold cut').toBe('700')
+    expect(lineStyles.spec.ff, 'the body face on the spec line').toContain('Figtree')
+    expect(lineStyles.spec.fw, 'the spec line is Bold').toBe('700')
     expect(lineStyles.spec.fs).toBe('14.5px')
     expect(lineStyles.spec.color, 'ink — the spec line is the heavier of the two').toBe('rgb(10, 10, 10)')
-    expect(lineStyles.notes.ff, 'condensed face on the notes line').toContain('Noto Sans Cond')
-    expect(lineStyles.notes.fw, 'the notes line is the Medium cut').toBe('500')
+    expect(lineStyles.notes.ff, 'the body face on the notes line').toContain('Figtree')
+    expect(lineStyles.notes.fw, 'the notes line is Regular').toBe('400')
     expect(lineStyles.notes.fs).toBe('14px')
     expect(lineStyles.notes.color, 'ink-dim — dimmer than the spec line').toBe('rgba(10, 10, 10, 0.66)')
     // The hierarchy the brief asks for, as a relation rather than two constants:
@@ -433,8 +433,8 @@ test.describe('UC-FO-005 — coffee product card', () => {
     const card = cardFor(page, unbreakable.name)
     const metrics = await card.locator('h3.display').evaluate((el) => {
       const col = el.parentElement
-      // ⚠ `.pnotes`, not `.mono`: the notes line moved to Noto Sans Condensed on
-      // 2026-08-13 and no longer carries `.mono`. The claim under test is unchanged
+      // ⚠ `.pnotes`, not `.mono`: the notes line lost `.mono` on 2026-08-13 (and
+      // has been Figtree since 2026-08-18). The claim under test is unchanged
       // — free admin text must wrap inside its own column — and the notes line is
       // still the right probe for it, being the longest free-text line on the card.
       const notes = col.querySelector('.pnotes')
