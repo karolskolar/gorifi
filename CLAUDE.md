@@ -1220,7 +1220,29 @@ their 30s timeout under memory pressure. A **different set** of tests fails on e
 run — that non-determinism is the tell. Confirm any suspicious failure by running its
 file ALONE, two or three times, before believing it.
 
-### Noto Sans Condensed on the product description (design brief, 2026-08-13)
+### ~~Noto Sans Condensed on the product description~~ — SUPERSEDED (2026-08-18): the face is Figtree now
+
+**Product decision 2026-08-18 (owner, from prod screenshots): `.pspec`/`.pnotes` and
+the portal cycle card's date/plan rows use the STATUS BANNER's typeface — Figtree,
+the body face — bold (`description1` / date) and regular 400 (`description2` /
+plan).** That left Noto Sans Condensed with **zero consumers**, so the whole face
+was removed: `--font-cond`, the four `@font-face` blocks in `fonts.css`, the two
+700-cut preloads in `index.html` (a preload with no consumer logs "preloaded but
+not used" on every route) and all four `noto-sans-condensed-*.woff2` files. The
+condensed tracking (`.005em`) went with it; **sizes, colours and line-heights kept
+the 2026-08-13 values** (card 14.5/14px, portal 14/13.5px — so `portal-fidelity`'s
+22.95px leading pin is unmoved). The portal rows now declare NO font-family at all
+(inherited body face); the plan row also lost its `font-weight` (400 is the
+default). Specs retargeted with it: `product-desc-font.spec.js` (rewritten —
+Figtree 700/400 computed table, `ls: 'normal'`, plus a "no font preloads remain +
+no stylesheet asks for Noto" test), `order-product-card.spec.js`,
+`portal-cycles.spec.js` (weight 500→400), and `self-hosted-fonts.spec.js`'s
+exact-set `FAMILIES` ledger — which is what forces this edit in either direction —
+back to the three families, with a Figtree 700 probe replacing the two Noto ones.
+Most of the section below is HISTORY now; still true and load-bearing: the
+subsetting/latin-ext lessons (if any face is ever added again), the
+`document.fonts.load` catch-wrapping, the `gotoFriendCard` portal-entry rule, and
+the `.mono`-left-the-card pins.
 
 Two lines under the badges in a **coffee** product card change typeface — a
 frontend-only, typography-only change (`git diff -- backend/` is empty):

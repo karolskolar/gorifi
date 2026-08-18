@@ -124,9 +124,13 @@ function walkFiles(dir, out = []) {
 }
 
 // ⚠ 'Noto Sans Cond' joined this list on 2026-08-13 (the product-description face,
-// `.pspec`/`.pnotes`). The exact-set assertion below is what forced this edit, which
-// is exactly its purpose — a face may not arrive without a ledger note.
-const FAMILIES = ['Darker Grotesque', 'Figtree', 'Courier Prime', 'Noto Sans Cond']
+// `.pspec`/`.pnotes`) and LEFT it on 2026-08-18: the product decision moved those
+// lines (and the portal cycle card's date/plan rows) onto Figtree, the body face,
+// which left the condensed face with zero consumers — so its @font-face blocks,
+// woff2 files and preloads were all removed. The exact-set assertion below is what
+// forced BOTH edits, which is exactly its purpose — a face may not arrive or leave
+// without a ledger note.
+const FAMILIES = ['Darker Grotesque', 'Figtree', 'Courier Prime']
 
 // Every shipped weight, and the fallback each is measured against. The fallback
 // must be metrically FAR from the brand face, or a "did it render?" width diff is
@@ -146,11 +150,9 @@ const PROBES = [
   { family: 'Figtree', weight: 400, fallback: 'monospace' },
   { family: 'Courier Prime', weight: 400, fallback: 'sans-serif' },
   { family: 'Courier Prime', weight: 700, fallback: 'sans-serif' },
-  // Both shipped cuts of the product-description face. `monospace` is the far
-  // fallback for the same reason the other sans faces use it — and a CONDENSED face
-  // against a monospace one is the widest metric gap in this table.
-  { family: 'Noto Sans Cond', weight: 500, fallback: 'monospace' },
-  { family: 'Noto Sans Cond', weight: 700, fallback: 'monospace' },
+  // Figtree 700 carries `.pspec` and the portal cycle-date row since 2026-08-18
+  // (the Noto Sans Cond 500/700 probes that stood here left with the face).
+  { family: 'Figtree', weight: 700, fallback: 'monospace' },
 ]
 
 const LATIN = 'AHOJ KOLEGOVIA'

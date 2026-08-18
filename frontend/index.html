@@ -13,18 +13,12 @@
          coffee-cup.png STAYS in public/ — FriendPortal.vue renders it as an image. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- Preload the BOLD product-spec cut, both subsets (the design brief's
-         acceptance criterion: `font-display:swap` + preload, so the spec line does
-         not visibly reflow when the condensed face swaps in). Both subsets, because
-         a Slovak card needs latin AND latin-ext — the caron letters are U+0100-017F.
-
-         ⚠ Deliberately ONLY the 700 cut, and deliberately not the 500: this is 50 KB
-         fetched on every route, including the portal and login where no product card
-         exists, and preloading all four files would double that for a face used on
-         one screen. `crossorigin` is required even same-origin — fonts are fetched
-         in CORS mode, and without it the browser downloads the file twice. -->
-    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/noto-sans-condensed-700-latin.woff2" />
-    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/noto-sans-condensed-700-latin-ext.woff2" />
+    <!-- The Noto Sans Condensed 700 preloads that stood here were removed on
+         2026-08-18 with the face itself (product descriptions moved to Figtree,
+         the body face) — a preload with no consumer logs "preloaded but not
+         used" on every route. If a font preload ever returns, remember
+         `crossorigin` is required even same-origin: fonts are fetched in CORS
+         mode, and without it the browser downloads the file twice. -->
     <title>Podpultovka</title>
     <!-- Brand webfonts are SELF-HOSTED in src/fonts.css (imported by main.js).
          Do NOT reintroduce a Google Fonts <link> here: the production CSP is

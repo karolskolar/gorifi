@@ -1423,12 +1423,12 @@ function applyMarkup(price) {
                        `line-clamp-2` on the notes is dropped — the prototype does
                        not truncate them.
 
-                       ⚠ `.pspec` / `.pnotes` (Noto Sans Condensed 700 / 500) carry
-                       EVERY text property for these two lines — family, size,
-                       line-height, letter-spacing and colour — so no inline
-                       `font-size` may come back here. The condensed face is what
-                       lets a long Slovak varietal fit one line, and the 700/500 pair
-                       is the hierarchy (what it is → how it tastes). The notes line
+                       ⚠ `.pspec` / `.pnotes` (Figtree 700 / 400 since 2026-08-18 —
+                       the body face, matching the status banner; previously Noto
+                       Sans Condensed) carry EVERY text property for these two
+                       lines — family, size, line-height and colour — so no inline
+                       `font-size` may come back here. The 700/400 pair is the
+                       hierarchy (what it is → how it tastes). The notes line
                        deliberately LOSES `.mono`: it was the least readable text on
                        the card. Mono stays on dates, prices, IBANs and references.
                        Only the two `margin-top`s remain inline, as spacing. -->
