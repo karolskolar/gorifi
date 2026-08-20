@@ -334,13 +334,17 @@ router.post('/auth/google', authLimiter, async (req, res) => {
       db.prepare('UPDATE friends SET google_email = ? WHERE id = ?').run(v.identity.email, friend.id);
     }
 
-    // Same remember-me contract as both password branches above (module 09
-    // §UC-ML-002): `=== true`, never a truthy check — the string "false" must not buy 60
-    // days. (`?.` where the password branches use a bare `req.body`: unreachable with an
-    // absent body, since `verifyGoogleIdToken(undefined)` 400s above, but this is a
-    // PUBLIC unauthenticated route and the FUP-T13/T15 family is exactly about the
-    // dereference nobody thought was reachable.)
-    const session = createFriendSession(friend.id, { remember: req.body?.remember === true });
+    // ⚠ ALWAYS the 60-day horizon — product decision 2026-08-20, superseding the
+    // shared remember-me contract this branch used to copy from the password
+    // branches (module 09 §UC-ML-002). The owner's report: on a phone, a
+    // Google-linked friend had to sign in again every day, because the
+    // "Zapamätať si ma" checkbox lives inside the PASSWORD field group
+    // (§UC-GA-005 seam) and nobody tapping the Google button below the divider
+    // ever ticks it — so Google logins always got the 24 h default. A Google
+    // sign-in is inherently "my own device", so it opts in by construction.
+    // The client no longer sends `remember` on this route; a stale client that
+    // still does is ignored either way. Password branches are UNCHANGED.
+    const session = createFriendSession(friend.id, { remember: true });
 
     // ⚠ HAND-PICKED, NEVER A `SELECT *` SPREAD. `friend` above is a full row and holds
     // `password_hash`, `access_token`, `invite_code` and `google_sub`; every one of them

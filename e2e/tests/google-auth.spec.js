@@ -487,7 +487,16 @@ test.describe('§UC-GA-003 — POST /api/friends/auth/google', () => {
     })
   })
 
-  test('remember forwards to the mint: opt-in buys the long horizon, omission does not', async () => {
+  // ⚠ REVERSED 2026-08-20 (product decision): a Google login is ALWAYS remembered.
+  // This test used to pin the opposite — `remember` forwarding to the mint — and
+  // that contract is exactly what put Google-linked friends on the 24 h default
+  // forever: the checkbox lives inside the password field group (§UC-GA-005 seam),
+  // so nobody tapping the Google button below the divider ever ticked it. Now the
+  // horizon is 60 days regardless of the flag, including an explicit
+  // `remember: false` (the flag is simply not read on this route). The password
+  // branches keep the opt-in — asserted here as the counter, so "always long"
+  // cannot be satisfied by the opt-in leaking into every mint.
+  test('a Google login always mints the 60-day horizon; password login keeps the opt-in', async () => {
     test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
     await withGoogleBackend({}, async ({ api }) => {
       await api.setModernMode()
@@ -495,11 +504,21 @@ test.describe('§UC-GA-003 — POST /api/friends/auth/google', () => {
       const sub = tag('sub-remember')
       api.linkGoogle(friend.id, { sub })
 
-      const short = await (await api.googleLogin({ id_token: `TEST:${sub}:x@example.test` })).json()
-      const long = await (await api.googleLogin({ id_token: `TEST:${sub}:x@example.test`, remember: true })).json()
       const day = 24 * 60 * 60 * 1000
-      expect(long.expiresAt - short.expiresAt, 'remember:true must buy strictly more').toBeGreaterThan(20 * day)
-      expect(short.expiresAt - Date.now(), 'the default horizon stays short').toBeLessThan(2 * day)
+      for (const [label, body] of [
+        ['flag absent', { id_token: `TEST:${sub}:x@example.test` }],
+        ['remember: false', { id_token: `TEST:${sub}:x@example.test`, remember: false }],
+        ['remember: true (stale client)', { id_token: `TEST:${sub}:x@example.test`, remember: true }],
+      ]) {
+        const session = await (await api.googleLogin(body)).json()
+        expect(session.expiresAt - Date.now(), `${label} ⇒ the long horizon`).toBeGreaterThan(50 * day)
+        expect(session.expiresAt - Date.now(), `${label} ⇒ but never more than 60 days`).toBeLessThanOrEqual(61 * day)
+      }
+
+      // Counter: the personal-password branch still defaults SHORT, so the change
+      // is scoped to the Google route rather than a global remember:true.
+      const pw = await (await api.passwordLogin(friend.username, friend.password)).json()
+      expect(pw.expiresAt - Date.now(), 'password login without the checkbox stays 24 h').toBeLessThan(2 * day)
     })
   })
 
