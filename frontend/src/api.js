@@ -219,12 +219,14 @@ export const api = {
   // `FriendPortal.vue` identical for all three — the error message a failed Google
   // login shows is the server's own sentence, including the `not_linked` hint.
   //
-  // `remember` rides along exactly as it does on password login (module 09
-  // §UC-ML-007): the same checkbox, on the same card, must buy the same horizon
-  // whichever credential the friend used.
-  authenticateFriendsGoogle: (idToken, remember) => request('/friends/auth/google', {
+  // ⚠ NO `remember` flag — product decision 2026-08-20: a Google login is always
+  // remembered (the server mints the 60-day horizon unconditionally on this
+  // route). The checkbox on the login card belongs to the PASSWORD group only;
+  // it used to ride along here too, but nobody tapping the Google button below
+  // the "alebo" divider ever ticked it, so Google logins always got 24 h.
+  authenticateFriendsGoogle: (idToken) => request('/friends/auth/google', {
     method: 'POST',
-    body: { id_token: idToken, remember: remember === true }
+    body: { id_token: idToken }
   }),
   setupCredentials: (friendId, username, password) => request(`/friends/${friendId}/setup-credentials`, {
     method: 'POST',

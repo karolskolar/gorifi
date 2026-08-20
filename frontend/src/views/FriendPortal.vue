@@ -57,7 +57,9 @@ const password = ref('')
 // signed in for 60 days instead of 24 hours". The 2026-08-14 product decision names 60
 // days the OPT-IN, so a pre-checked box would hand every friend the longest session
 // the app can issue — including on a shared office machine — and make the decision a
-// dead letter. Sent to the server as `remember` by BOTH login paths below.
+// dead letter. Sent to the server as `remember` by both PASSWORD paths below.
+// ⚠ NOT by the Google path any more (product decision 2026-08-20): a Google login is
+// always remembered — the server mints 60 days unconditionally on /auth/google.
 const rememberMe = ref(false)
 const authError = ref('')
 const loginTab = ref('shared') // 'shared' | 'personal'
@@ -659,7 +661,10 @@ async function onGoogleCredential(response) {
   loading.value = true
 
   try {
-    const result = await api.authenticateFriendsGoogle(credential, rememberMe.value)
+    // No rememberMe here — a Google login is ALWAYS remembered (60 days),
+    // decided server-side (product decision 2026-08-20). The checkbox above
+    // belongs to the password group and keeps governing password logins only.
+    const result = await api.authenticateFriendsGoogle(credential)
 
     setFriendsToken(result.token)
 

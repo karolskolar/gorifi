@@ -7,6 +7,10 @@ import db from '../db/schema.js';
 // tomto zariadení" opt-in. 60 days rather than 30 because cycles run ~monthly,
 // so a remembered session has to span two of them (product decision
 // 2026-08-14) — otherwise a friend who orders every cycle still re-logs-in.
+// ⚠ Google logins opt in BY CONSTRUCTION (product decision 2026-08-20):
+// POST /friends/auth/google always mints the 60-day horizon — the checkbox
+// belongs to the password group and Google users never saw it. Password and
+// shared-password logins keep the explicit opt-in.
 const SESSION_DURATION_MS = 24 * 60 * 60 * 1000;          // 24 hours — the default
 const SESSION_REMEMBER_MS = 60 * 24 * 60 * 60 * 1000;     // 60 days — the opt-in
 
