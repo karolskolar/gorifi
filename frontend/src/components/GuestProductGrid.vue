@@ -344,19 +344,20 @@ function onQty(productId, variant, next) {
           <!-- ==================== coffee (04 §UC-FO-005) ==================== -->
           <template v-else>
             <div class="flex gap-[13px] items-stretch">
-              <!-- A product with no uploaded photo renders the BARE `.pimg` frame
-                   — its built-in dark gradient and nothing else (02 §UC-DS-013's
-                   disposition, closed by RD-FO-2). `min-height` = width,
-                   `height:auto`, `align-self:stretch` is what makes the frame
-                   track the text block's height. -->
-              <div class="pimg w-[58px] sm:w-[70px] min-h-[58px] sm:min-h-[70px] h-auto self-stretch">
-                <img
-                  v-if="product.image"
-                  :src="product.image"
-                  alt=""
-                  style="display:block;width:100%;height:100%;object-fit:cover"
-                />
-              </div>
+              <!-- ⚠ The `.pimg` frame is RETIRED (product decision 2026-08-20,
+                   mirroring FriendOrder.vue — 06 §UC-GX-002 keeps the two cards
+                   pixel-identical): the photo renders as imported — no frame, no
+                   border, no dark gradient; transparent stays transparent;
+                   `height:auto` = never cropped; `self-start` = top-aligned with
+                   the name, only as tall as the image itself. No photo ⇒ nothing
+                   renders. -->
+              <img
+                v-if="product.image"
+                :src="product.image"
+                alt=""
+                class="w-[58px] sm:w-[70px] shrink-0 self-start"
+                style="display:block;height:auto"
+              />
               <!-- ⚠ `overflow-wrap:anywhere` is REQUIRED, not cosmetic, and
                    `min-w-0` alone does not do it: `min-w-0` lets the flex item
                    SHRINK, but an unbreakable token still paints outside it.

@@ -1383,24 +1383,28 @@ function applyMarkup(price) {
             <!-- ==================== coffee (04 §UC-FO-005) ==================== -->
             <template v-else>
               <div class="flex gap-[13px] items-stretch">
-                <!-- ⚠ CLOSES 02 §UC-DS-013's `.pimg` OPEN. A product with no
-                     uploaded photo renders the BARE frame — its built-in dark
-                     gradient and nothing else. No `.band`/`.cap`/`.lbl` bag
-                     internals (they encode a per-bag demo colour and `.lbl` wants
-                     Anton, which 02 §UC-DS-003 deliberately does not load), and no
-                     placeholder icon: the grey photo glyph belonged to the shadcn
-                     skin. Recorded in 02 §UC-DS-013's disposition table.
-
-                     `min-height` = width, `height:auto`, `align-self:stretch` is
-                     what makes the frame track the text block's height. -->
-                <div class="pimg w-[58px] sm:w-[70px] min-h-[58px] sm:min-h-[70px] h-auto self-stretch">
-                  <img
-                    v-if="product.image"
-                    :src="product.image"
-                    alt=""
-                    style="display:block;width:100%;height:100%;object-fit:cover"
-                  />
-                </div>
+                <!-- ⚠ The `.pimg` frame is RETIRED here (product decision
+                     2026-08-20, superseding 02 §UC-DS-013's bare-frame
+                     disposition): the photo renders exactly as imported — no
+                     frame, no border, no dark gradient behind it, so a
+                     transparent background stays transparent. `height:auto`
+                     with a fixed width means the image is NEVER cropped (the
+                     old `object-fit:cover` was) — a non-matching ratio shrinks
+                     instead. `self-start` top-aligns it with the product name,
+                     and it is only as tall as the image itself, not stretched
+                     to the description block. A product with NO photo renders
+                     nothing at all — no empty box. `shrink-0` keeps the fixed
+                     column width the text column's `min-w-0` would otherwise
+                     eat. The theme's `.pimg` rules still exist, now unused
+                     (like `.pimg .lbl` before) — the theme file is a canon
+                     port and is deliberately not edited for this. -->
+                <img
+                  v-if="product.image"
+                  :src="product.image"
+                  alt=""
+                  class="w-[58px] sm:w-[70px] shrink-0 self-start"
+                  style="display:block;height:auto"
+                />
                 <!-- ⚠ `overflow-wrap:anywhere` is REQUIRED, not cosmetic, and
                      `min-w-0` alone does not do it: `min-w-0` lets the flex item
                      SHRINK, but an unbreakable token still paints outside it.

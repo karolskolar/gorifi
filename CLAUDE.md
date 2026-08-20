@@ -558,9 +558,17 @@ Full suite after this work: **367 passed / 3 skipped** (+14, zero pre-existing s
 - Text metrics: every text-bearing element in both cards carries an A10-covered class
   (`.display`, `.badge`, `.sub`, `.mono`, `.vbox .vsize`, `.vbox .vprice`, `.stepper .val`), so no
   call-site `line-height:normal` was needed and **A10's selector list did not grow**.
-- ⚠ **`.pimg` no-photo = the BARE FRAME** — built-in dark gradient, zero children, no `.band`/`.cap`/
-  `.lbl`, no placeholder icon. This closes 02 §UC-DS-013's OPEN and is recorded there; RD-GX-1
-  inherits it for `GuestProductGrid.vue`.
+- ~~⚠ `.pimg` no-photo = the BARE FRAME~~ **SUPERSEDED (product decision 2026-08-20): `.pimg` is
+  RETIRED at both call sites** (`FriendOrder.vue`, `GuestProductGrid.vue`). The photo is now a bare
+  `<img>` rendered as imported — no frame, no border, no dark gradient (transparent backgrounds stay
+  transparent), `height:auto` so it is NEVER cropped (the old `object-fit:cover` was), `self-start`
+  so it top-aligns with the product name, and only as tall as the image itself; a product with no
+  photo renders **nothing at all**. The theme's `.pimg` rules stay in `friends-theme.css` unused
+  (canon port — same treatment as the dead `.pimg .lbl`). Pinned in `order-product-card.spec.js`
+  with a 40×30 transparent fixture PNG whose 4:3 ratio (58px column ⇒ 43.5px) is the numeric proof
+  of "not cropped". ⚠ The whole image story is interim: the planned DB consolidation makes products
+  global (one image per product, not per cycle snapshot), and the 13 MB-JSON payload finding from
+  2026-08-20 rides on that too.
 - Product name is `<h3 class="display">` on **both** card types (04 §UC-FO-015 pins
   `getByRole('heading')` for `guest-host-view.spec.js`); on the bakery card it is additionally
   `inline` so the subtitle sits on its baseline.
