@@ -1,6 +1,12 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
+// 40×30 RGBA PNG, left half opaque magenta, right half fully transparent — the
+// product-photo fixture for the frameless image rules (product decision
+// 2026-08-20). Non-square ON PURPOSE: `height:auto` at a 58px column must
+// compute 43.5px, which no cropped/covered rendering can produce.
+const FIXTURE_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACgAAAAeCAYAAABe3VzdAAAAM0lEQVR4nO3OMQ0AAAgEMQyhE9mPAjbGXnJ7Kz35vL4DBAQEBAQEBAQEBAQEBAQEBAS8WsmPUYvRfZB+AAAAAElFTkSuQmCC'
+
 // RD-FO-2 — the friend order screen's PRODUCT CARDS (04 §UC-FO-005..007), and the
 // deferred `NeoStepper` obligation (02 §UC-DS-014 item 6, restated by
 // 04 §UC-FO-015 item 4).
@@ -40,8 +46,10 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 //     no-emit-at-`min` rule (a no-op tap must not dirty the cart, or auto-save and
 //     the leave guard fire on nothing).
 //
-// (E) THE PHOTO FALLBACK CLOSES 02 §UC-DS-013's `.pimg` OPEN — bare frame, no bag
-//     internals, no placeholder icon. It is a decision, so it is pinned as one.
+// (E) THE FRAMELESS PHOTO (product decision 2026-08-20, superseding 02
+//     §UC-DS-013's bare-frame disposition): the photo renders as imported — no
+//     `.pimg` frame, no border, no dark gradient, never cropped, top-aligned
+//     with the name, only as tall as itself; no photo ⇒ nothing renders.
 //
 // (F) TWO NARROW-WIDTH HOLES THAT ARE INVISIBLE TO A BUILD AND TO A SCREENSHOT.
 //     The variant grid's `grid-cols-2` has a track minimum of ZERO, so a
@@ -178,6 +186,7 @@ test.describe('UC-FO-005 — coffee product card', () => {
   let cycle = null
   let full = null
   let unbreakable = null
+  let bare = null
 
   test.beforeAll(async () => {
     // markup 1.25 on purpose: every price on screen must be the MARKED-UP one, and
@@ -194,6 +203,11 @@ test.describe('UC-FO-005 — coffee product card', () => {
       description2: 'cokolada · lieskovy orech · karamel',
       // ALL SIX price fields — (A) above.
       price_150g: 4, price_200g: 5.2, price_250g: 8, price_500g: 15.6, price_1kg: 28, price_20pc5g: 6.4,
+      // A 40×30 RGBA PNG (right half fully TRANSPARENT) for the frameless-photo
+      // assertions: the 4:3 ratio is what proves `height:auto` (58px wide ⇒
+      // 43.5px tall — a cropped `object-fit:cover` square would read 58), and
+      // the transparency is the "transparent stays transparent" claim's fixture.
+      image: FIXTURE_PNG,
     })
     await addProduct(cycle.id, {
       name: `Kapsule Only ${uniq}`,
@@ -212,14 +226,15 @@ test.describe('UC-FO-005 — coffee product card', () => {
       description2: 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz',
       price_250g: 8, price_1kg: 28,
     })
-    await addProduct(cycle.id, {
+    // NO image on purpose — the "no photo ⇒ nothing renders" fixture.
+    bare = await addProduct(cycle.id, {
       name: `Holy Bare ${uniq}`,
       purpose: 'Espresso',
       price_250g: 8,
     })
   })
 
-  test('the card: heading, two badges, spec line, mono notes, and a bare `.pimg` frame that tracks the text block', async ({ page }) => {
+  test('the card: heading, two badges, spec line, mono notes, and a frameless top-aligned photo (none when no photo)', async ({ page }) => {
     await page.setViewportSize({ width: 378, height: 900 })
     await signIn(page)
     await gotoCycle(page, cycle)
@@ -291,31 +306,51 @@ test.describe('UC-FO-005 — coffee product card', () => {
     // spec is heavier AND darker than notes.
     expect(Number(lineStyles.spec.fw)).toBeGreaterThan(Number(lineStyles.notes.fw))
 
-    // ⚠ (E) — closes 02 §UC-DS-013's `.pimg` OPEN. No photo ⇒ the BARE frame:
-    // its own dark gradient, zero children — no `.band`/`.cap`/`.lbl`, no icon.
-    const frame = card.locator('.pimg')
-    const img = await frame.evaluate((el) => ({
-      kids: el.children.length,
-      svgs: el.querySelectorAll('svg').length,
-      bg: getComputedStyle(el).backgroundImage,
-      border: getComputedStyle(el).borderTopWidth,
-      borderColor: getComputedStyle(el).borderTopColor,
-      radius: getComputedStyle(el).borderTopLeftRadius,
-      w: Math.round(el.getBoundingClientRect().width),
-      h: Math.round(el.getBoundingClientRect().height),
-      textH: Math.round(el.nextElementSibling.getBoundingClientRect().height),
-    }))
-    expect(img.kids, 'bare frame — no bag internals, no placeholder').toBe(0)
-    expect(img.svgs, 'and no placeholder icon').toBe(0)
-    expect(img.bg, 'the frame keeps its built-in dark gradient').toContain('linear-gradient')
-    expect(img.border, '2px ink border').toBe('2px')
-    expect(img.borderColor).toBe('rgb(10, 10, 10)')
-    expect(img.radius, 'radius 8').toBe('8px')
-    expect(img.w, 'phone width 58').toBe(58)
-    // items-stretch: the frame's height TRACKS the description block, it is not a
-    // square. Both halves matter — equal height, and taller than its own width.
-    expect(img.h, 'the frame stretches to the text block').toBe(img.textH)
-    expect(img.h).toBeGreaterThan(img.w)
+    // ⚠ (E) — the FRAMELESS photo (product decision 2026-08-20, superseding 02
+    // §UC-DS-013's bare-frame disposition and RD-FO-2's `.pimg` port). The photo
+    // renders exactly as imported: no `.pimg` wrapper, no border, no background
+    // behind it (transparent stays transparent), NEVER cropped (`height:auto` —
+    // the 40×30 fixture at a 58px column must compute 43.5px; the old
+    // `object-fit:cover` read the text-block height instead), top-aligned with
+    // the product name, and only as tall as the image itself.
+    await expect(card.locator('.pimg'), 'the .pimg frame is retired').toHaveCount(0)
+    const photo = card.locator('img')
+    await expect(photo).toHaveCount(1)
+    const img = await photo.evaluate((el) => {
+      const cs = getComputedStyle(el)
+      const h3 = el.parentElement.querySelector('h3')
+      return {
+        loaded: el.complete && el.naturalWidth > 0,
+        border: cs.borderTopWidth,
+        bg: cs.backgroundColor,
+        bgImage: cs.backgroundImage,
+        fit: cs.objectFit,
+        w: el.getBoundingClientRect().width,
+        h: el.getBoundingClientRect().height,
+        topDelta: Math.abs(el.getBoundingClientRect().top - h3.closest('div').getBoundingClientRect().top),
+        textH: el.nextElementSibling.getBoundingClientRect().height,
+      }
+    })
+    expect(img.loaded, 'the photo actually decoded').toBe(true)
+    expect(img.border, 'no border').toBe('0px')
+    expect(img.bg, 'no background of our own — transparency stays transparent').toBe('rgba(0, 0, 0, 0)')
+    expect(img.bgImage, 'no dark gradient behind the photo').toBe('none')
+    expect(img.w, 'phone column width 58').toBe(58)
+    // height:auto ⇒ the intrinsic 4:3 ratio survives — 58 × 30/40 = 43.5. This is
+    // the not-cropped claim as a number: cover/fill at the old frame geometry
+    // cannot produce it.
+    expect(img.h, 'natural ratio — never cropped').toBeCloseTo(43.5, 0)
+    expect(img.h, 'only as tall as the image itself, not the description block')
+      .toBeLessThan(img.textH)
+    // self-start in an items-stretch row: the image's top edge sits at the row's
+    // top, i.e. level with the product name.
+    expect(img.topDelta, 'top-aligned with the name').toBeLessThanOrEqual(1)
+
+    // …and a product with NO photo renders NOTHING — no empty frame, no box.
+    const bareCard = cardFor(page, bare.name)
+    await expect(bareCard).toBeVisible()
+    await expect(bareCard.locator('img'), 'no photo ⇒ no element at all').toHaveCount(0)
+    await expect(bareCard.locator('.pimg')).toHaveCount(0)
   })
 
   test('the variant matrix: one `.vbox` per priced field in the fixed order, marked-up prices, `1fr 1fr` vs `1fr`', async ({ page }) => {
@@ -738,8 +773,9 @@ test.describe('UC-FO-007 — bakery card', () => {
     await expect(body).toBeVisible()
 
     // No image column and no stock bar on a bakery card (conflicts #8 / no
-    // availability rows).
-    await expect(card.locator('.pimg')).toHaveCount(0)
+    // availability rows). `.pimg` is retired app-wide (2026-08-20), so the live
+    // half of this pin is the `img` count.
+    await expect(card.locator('.pimg, img')).toHaveCount(0)
     await expect(card.getByTestId('stock-bar')).toHaveCount(0)
 
     // The legacy product: a NULL `variant_label` renders the "1 ks" fallback, and
