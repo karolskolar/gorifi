@@ -1,6 +1,7 @@
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import NeoStepper from '@/components/neo/NeoStepper.vue'
+import ProductImageModal from '@/components/ProductImageModal.vue'
 import { snapTab } from '@/lib/snap-tab'
 import CatScrollArrow from '@/components/CatScrollArrow.vue'
 import { fmtEur } from '@/lib/money'
@@ -77,6 +78,13 @@ const cart = defineModel({ type: Object, required: true })
 // checkout round-trip. (The per-purpose page tint it also used to drive is gone —
 // §UC-GX-001: the prototype background is uniform `--bg`.)
 const activeTab = defineModel('activeTab', { type: String, default: '' })
+
+// The product-photo lightbox (product decision 2026-08-20) — the PRODUCT, not a
+// boolean, so "which photo" and "is it open" cannot disagree. Deliberately local
+// state and NOT a model: both guest screens want the same behaviour and neither
+// needs to know a photo is open. The lightbox itself is shared with
+// `views/FriendOrder.vue` via `components/ProductImageModal.vue`.
+const photoProduct = ref(null)
 
 function coffeeVariantsFor(product) {
   return COFFEE_VARIANTS.filter((v) => product[v.priceKey])
@@ -350,13 +358,25 @@ function onQty(productId, variant, next) {
                    border, no dark gradient; transparent stays transparent;
                    `height:auto` = never cropped; `self-start` = top-aligned with
                    the name, only as tall as the image itself. No photo ⇒ nothing
-                   renders. -->
+                   renders.
+
+                   ⚠ Tapping it opens the shared lightbox (product decision
+                   2026-08-20) — 58px cannot show the text printed on a bag. The
+                   photo stops being decorative, hence the real accessible name
+                   and the house zero-pixel ARIA layer; mirrors FriendOrder.vue,
+                   where the same block carries the full rationale. -->
               <img
                 v-if="product.image"
                 :src="product.image"
-                alt=""
+                :alt="product.name"
+                :aria-label="`Zobraziť fotku: ${product.name}`"
+                role="button"
+                tabindex="0"
                 class="w-[58px] sm:w-[70px] shrink-0 self-start"
-                style="display:block;height:auto"
+                style="display:block;height:auto;cursor:pointer"
+                @click="photoProduct = product"
+                @keydown.enter.prevent="photoProduct = product"
+                @keydown.space.prevent="photoProduct = product"
               />
               <!-- ⚠ `overflow-wrap:anywhere` is REQUIRED, not cosmetic, and
                    `min-w-0` alone does not do it: `min-w-0` lets the flex item
@@ -473,5 +493,14 @@ function onQty(productId, variant, next) {
         </div>
       </div>
     </template>
+
+    <!-- The shared product-photo lightbox. `v-if` on the mount, per the standing
+         rule for every modal on this shell. -->
+    <ProductImageModal
+      v-if="photoProduct"
+      :image="photoProduct.image"
+      :name="photoProduct.name"
+      @close="photoProduct = null"
+    />
   </div>
 </template>
