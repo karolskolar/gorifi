@@ -16,6 +16,7 @@ import BrandChrome from '@/components/neo/BrandChrome.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoStepper from '@/components/neo/NeoStepper.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
+import ProductImageModal from '@/components/ProductImageModal.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { snapTab } from '@/lib/snap-tab'
 import { itemsLabel } from '@/lib/plural'
@@ -142,6 +143,14 @@ const paymentReference = computed(() => {
 // Guest share link — all state/logic lives in GuestShareDialog, shared with
 // FriendPortal's cycle list so both entry points behave identically.
 const showShareModal = ref(false)
+
+// The product-photo lightbox (product decision 2026-08-20). Holds the PRODUCT,
+// not a boolean: the modal needs both the image and the name, and one ref keeps
+// "which photo" and "is it open" from ever disagreeing. Cleared on close.
+// ⚠ `GuestProductGrid.vue` carries the same three lines — the LIGHTBOX itself is
+// shared (`components/ProductImageModal.vue`); this is only the open/close state,
+// which each screen owns because each owns its own product list.
+const photoProduct = ref(null)
 
 // ---- top-level view switch: own order vs colleagues ---------------------------
 //
@@ -1397,13 +1406,30 @@ function applyMarkup(price) {
                      column width the text column's `min-w-0` would otherwise
                      eat. The theme's `.pimg` rules still exist, now unused
                      (like `.pimg .lbl` before) — the theme file is a canon
-                     port and is deliberately not edited for this. -->
+                     port and is deliberately not edited for this.
+
+                     ⚠ TAPPING IT OPENS THE LIGHTBOX (product decision
+                     2026-08-20): at 58px the text printed on a coffee bag is
+                     unreadable. The photo therefore stops being decorative, so
+                     `alt=""` gives way to a real accessible name plus the house
+                     zero-pixel ARIA layer (role + tabindex + Enter/Space, the
+                     RD-FO-1 pattern) — a pointer-only handler would leave the
+                     only route to the full photo unreachable by keyboard. The
+                     label carries the PRODUCT NAME because a list renders many
+                     of these and "Zobraziť fotku" alone would announce them all
+                     identically. -->
                 <img
                   v-if="product.image"
                   :src="product.image"
-                  alt=""
+                  :alt="product.name"
+                  :aria-label="`Zobraziť fotku: ${product.name}`"
+                  role="button"
+                  tabindex="0"
                   class="w-[58px] sm:w-[70px] shrink-0 self-start"
-                  style="display:block;height:auto"
+                  style="display:block;height:auto;cursor:pointer"
+                  @click="photoProduct = product"
+                  @keydown.enter.prevent="photoProduct = product"
+                  @keydown.space.prevent="photoProduct = product"
                 />
                 <!-- ⚠ `overflow-wrap:anywhere` is REQUIRED, not cosmetic, and
                      `min-w-0` alone does not do it: `min-w-0` lets the flex item
@@ -2126,6 +2152,17 @@ function applyMarkup(price) {
         >Potvrdiť a odoslať</button>
       </template>
     </NeoModal>
+
+    <!-- The product-photo lightbox. `v-if` on the mount is load-bearing (the
+         standing rule for every modal on this shell): shipped specs locate
+         "Zavrieť" unscoped, so an always-mounted dialog would match them and its
+         scrim would swallow clicks. -->
+    <ProductImageModal
+      v-if="photoProduct"
+      :image="photoProduct.image"
+      :name="photoProduct.name"
+      @close="photoProduct = null"
+    />
   </div>
 </template>
 

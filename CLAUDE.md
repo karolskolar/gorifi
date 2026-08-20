@@ -569,6 +569,25 @@ Full suite after this work: **367 passed / 3 skipped** (+14, zero pre-existing s
   of "not cropped". ⚠ The whole image story is interim: the planned DB consolidation makes products
   global (one image per product, not per cycle snapshot), and the 13 MB-JSON payload finding from
   2026-08-20 rides on that too.
+- ⚠ **Tapping the photo opens a LIGHTBOX** (same day, follow-up decision — 58px cannot show the text
+  printed on a coffee bag). `components/ProductImageModal.vue` is the **one home**, with two call
+  sites (`FriendOrder.vue`, `GuestProductGrid.vue` — which itself serves `/g/:token` *and* the
+  status/edit screen); each call site owns only its `photoProduct` ref. Built on **`NeoModal`, never
+  a hand-rolled overlay**: the order screen is an `.app` scope, so a hand-rolled `position:fixed`
+  overlay would silently compute `relative` (the `.app > *` rule) — pinned by asserting the dialog is
+  teleported OUT of `.app`, that `.modal-layer` really computes `fixed`, and that the body scroll
+  lock is taken *and released*.
+  ⚠ **The image is `width:100%` + `height:auto` with DELIBERATELY NO `max-height`.** A `70vh` cap was
+  written first and removed after measuring: with `width:100%` the box becomes 100% × 70vh, so a
+  **portrait** photo (what a coffee bag usually is) gets letterboxed with dead bands either side and
+  renders *smaller* than the dialog allows — the exact complaint the row answers. Without the cap a
+  tall photo just makes the dialog tall and `.modal-scrim` (already `overflow-y:auto`) scrolls it.
+  Mutation-verified: re-adding `max-height:70vh;object-fit:contain` reddens exactly two tests in
+  `product-photo-lightbox.spec.js`. Measured at 390px: **310 × 465** against 58px on the card.
+  The photo stops being decorative, so `alt=""` became a real name plus the house zero-pixel ARIA
+  layer (role/tabindex/Enter/Space) — it is the ONLY route to the full image, so pointer-only would
+  be a keyboard regression. Its accessible name is `Zobraziť fotku: <product>`; no shipped spec has a
+  role-based button lookup that can now collide (checked).
 - Product name is `<h3 class="display">` on **both** card types (04 §UC-FO-015 pins
   `getByRole('heading')` for `guest-host-view.spec.js`); on the bakery card it is additionally
   `inline` so the subtitle sits on its baseline.
