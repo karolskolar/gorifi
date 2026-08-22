@@ -227,8 +227,14 @@ importer (UC-PC-003), manual POST (UC-PC-005), migration (UC-PC-006), merge tool
   use the resolved name (resolved decision 3).
 - **`nameSimilarity(a, b)`** — in-repo, **no fuzzy-string dependency**
   (01-architecture): plain Levenshtein over the two normalized names,
-  `similarity = 1 − distance / max(len_a, len_b)`. The candidate set is ~tens of
-  rows, so O(n·m) per pair is free.
+  `similarity = 1 − distance / (len_a + len_b)`. ⚠ CORRECTED during PC-T1: the
+  original text said `… / max(len_a, len_b)`, which contradicts this UC's own
+  acceptance example — it yields 0.667 for `('pink bourbon','pink bourbon honey')`,
+  below the 0.75 band the example requires. The sum-denominator form gives 0.80 /
+  0.52 for the two pinned pairs; exact = 1. If the threshold is ever retuned
+  (UC-PC-008), tune against THIS formula. The candidate set is ~tens of
+  rows, so O(n·m) per pair is free. Either normalized name being `''` ⇒ similarity
+  0 ("no identity, never match" — also avoids 0/0).
 - **`FUZZY_THRESHOLD = 0.75`** — a named exported constant: a pair is a fuzzy
   near-miss when `FUZZY_THRESHOLD ≤ similarity < 1`. Shipped as a sensible default,
   tunable from data (the brief's Decision-5 posture). Exact (`similarity = 1`, i.e.

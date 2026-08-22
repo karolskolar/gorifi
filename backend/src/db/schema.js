@@ -958,6 +958,70 @@ function initDb() {
     )
   `);
 
+  // ===================================================================
+  // Coffee product catalog (module 12, PC-T1 — 12 §UC-PC-001). One row per
+  // real-world Goriffee coffee; cycle `products` rows are snapshots that link
+  // back via products.source_coffee_product_id. Identity is
+  // (normalized_name, roastery) — normalized by helpers/catalog.js
+  // normalizeProductName, THE one home for that pipeline.
+  //
+  // ⚠ The UNIQUE(normalized_name, roastery) lives INSIDE the CREATE TABLE,
+  // deliberately NOT as a separately-created UNIQUE index wrapped in a
+  // swallowing try/catch — the GA-T5 lesson: an index whose creation can be
+  // silently skipped leaves the app's dedupe check as the only defence.
+  //
+  // `region`/`altitude`/`farm`/`variety`/`processing` are informational
+  // attributes: admin-entered once, display-only (module 13's detail modal),
+  // NEVER written by the importer or the migration (brief Decision 9).
+  // `is_new`/`curator_pick_note` are columns only — the feature is module 14.
+  // No flavor_chips column exists (resolved decision 10).
+  // ===================================================================
+  db.run(`
+    CREATE TABLE IF NOT EXISTS coffee_products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      normalized_name TEXT NOT NULL,
+      roastery TEXT NOT NULL DEFAULT 'Goriffee',
+      country TEXT,
+      region TEXT,
+      altitude TEXT,
+      farm TEXT,
+      variety TEXT,
+      processing TEXT,
+      description1 TEXT,
+      description2 TEXT,
+      roast_type TEXT,
+      purpose TEXT,
+      is_new INTEGER DEFAULT 0,
+      curator_pick_note TEXT,
+      image TEXT,
+      status TEXT NOT NULL DEFAULT 'available'
+        CHECK (status IN ('available','retired')),
+      price_150g REAL, price_200g REAL, price_250g REAL,
+      price_500g REAL, price_1kg REAL, price_20pc5g REAL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(normalized_name, roastery)
+    )
+  `);
+
+  // Migration (PC-T1): link a cycle snapshot to its catalog row. The ONLY
+  // change to an existing table for module 12. Bare ALTER, no FK — the house
+  // precedent (07 §UC-IA-001); safe because the merge tool (UC-PC-007) is the
+  // only deleter of catalog rows and it repoints links first. Every consumer
+  // must tolerate NULL (unmigrated / pre-feature rows).
+  try {
+    db.run('ALTER TABLE products ADD COLUMN source_coffee_product_id INTEGER');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Stats-join index. IF NOT EXISTS and deliberately OUTSIDE any try/catch:
+  // if this ever fails it must fail LOUDLY, not be swallowed (the GA-T5
+  // lesson). The UNIQUE(normalized_name, roastery) above doubles as the
+  // catalog lookup index.
+  db.run('CREATE INDEX IF NOT EXISTS idx_products_source_coffee ON products(source_coffee_product_id)');
+
 }
 
 // Retained as a no-op for backward compatibility. better-sqlite3 persists every
