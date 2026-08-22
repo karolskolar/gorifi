@@ -67,13 +67,15 @@ changes; the "no backend change" rule scopes 02–06 only. Canonical source:
 `docs/requirements/2026-08-18-catalog-profiles-recommendations-brief.md` (v5) — its
 §6 Decisions log wins over earlier body text on any conflict. Key confirmed decisions:
 
-- **Importer stays byte-identical.** The admin keeps pasting the adapted Google Sheet
-  into the existing import endpoints; consolidation happens AFTER parsing. Goriffee-only
-  matching; exact normalized-name matches auto-link, fuzzy matches ask for confirmation;
-  price changes auto-apply to the new cycle + catalog and are reported. **Cycles are
-  frozen absolutely: re-import into the same cycle is refused (2026-08-22) — imports
-  target fresh cycles only, and never mutate any existing cycle's products.** The
-  import returns a machine-readable JSON report
+- **Bakery-pattern import (pivot 2026-08-22, decision #15).** The import tool lives in
+  the ADMIN MAIN MENU and targets the CATALOG — cycle-independent, like the bakery
+  products page; the sheet PARSING/column mapping stays byte-identical, only the target
+  moved. Coffee cycle creation ticks products from the catalog (default: all available)
+  and snapshots them with frozen prices; the per-cycle import endpoints + CycleDetail
+  import UI retire. Goriffee-only matching; exact normalized-name matches auto-link,
+  fuzzy matches ask for confirmation; price changes update catalog current prices and
+  are reported. **Cycles are frozen by construction — no import path can touch any
+  cycle.** The import returns a machine-readable JSON report
   (automation-readiness: a future scheduled job drives the same HTTP API; the DB stays
   SQLite — no external database).
 - **Catalog + snapshot links** (the bakery pattern): `coffee_products` holds each real
@@ -104,7 +106,7 @@ changes; the "no backend change" rule scopes 02–06 only. Canonical source:
 | `09-magic-link-recovery.md` | "Zabudli ste heslo?" → single-use, short-lived, hashed magic-link login e-mail (requires `friends.email`); passwords preserved; logging in via link prompts (does not force) a new password; "Zapamätať si ma na tomto zariadení" = 60-day session opt-in (default 24 h). Backend + schema changes | UC-ML |
 | `10-google-auth.md` | Sign in with Google on the friend AND admin portals: choose-Google at invite registration, link-to-existing prompt after friend login (áno / teraz nie / už sa nepýtať) + manual link/unlink in the profile, explicit-link-only matching (no silent e-mail matching), admin keeps password auth as backup. Backend + schema changes | UC-GA |
 | `11-friends-consolidation.md` | `friends` table + AdminFriends consolidation to the canonical field set: Meno a priezvisko (`name`), username, password state, Google auth on/off, mobil (`phone`), e-mail, admin note (`display_name`). Relabel/reconcile, no destructive migration | UC-FC |
-| `12-product-catalog.md` | Consolidated `coffee_products` catalog + snapshot links; duplicate-aware idempotent import layer on the unchanged importers (Goriffee-only; exact auto-link / fuzzy confirm; price auto-apply + report); one-time historical migration + admin merge tool; cross-cycle statistics; catalog admin view. Backend + schema changes | UC-PC |
+| `12-product-catalog.md` | Consolidated `coffee_products` catalog + snapshot links; CATALOG-targeted import from the admin main menu (bakery-pattern pivot 2026-08-22; parsing byte-identical, Goriffee-only, exact auto-link / fuzzy confirm, price auto-apply + report, naturally idempotent); cycle creation ticks catalog products (picker + snapshot); per-cycle importers retired; one-time historical migration + admin merge tool; cross-cycle statistics; AdminCatalog view. Backend + schema changes | UC-PC |
 | `13-coffee-passport.md` | **DEFERRED wholesale (PM 2026-08-22)** — drafted, not planned/built. Friend-facing catalog layer: multi-select brew methods (`friend_brew_methods`), passport "Moje kávy" (stats header, history, Objednať znova), 👍/😐/👎 micro-reviews, product detail modal (Región/Nadmorská výška/Farma/Odroda/Spracovanie — display only). Backend + schema changes | UC-CP |
 
 ## Glossary

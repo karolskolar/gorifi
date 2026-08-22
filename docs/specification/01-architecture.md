@@ -77,15 +77,16 @@ spec, so this documents the **existing** system, not a greenfield design.
   existing table. `order_items`, frozen snapshot prices, and every guarded seam
   (`helpers/stock.js`, `helpers/pricing.js`, guest aggregation JS-merge, packing gates)
   are untouched — module specs must not propose changes there.
-- **Import layer (module 12):** the existing CSV/gsheet endpoints keep their parsing and
-  column mapping byte-identical; consolidation runs AFTER parsing, per row: exact
-  normalized match → auto-link (reuse catalog image/metadata, update catalog current
-  price, snapshot gets the sheet price); fuzzy near-miss → pending confirmation in the
-  report, NEVER auto-merged; no match → new catalog row. **Same-cycle re-import is
-  REFUSED (2026-08-22): an import into a cycle that already has coffee products 4xxs
-  and writes nothing — imports target fresh cycles only, existing cycles are frozen
-  absolutely. The refusal is the idempotency property (a double-fired import writes
-  nothing twice).** Response is a
+- **Import layer (module 12 — bakery-pattern pivot, 2026-08-22):** imports are
+  admin-main-menu, CATALOG-targeted (`/api/coffee-products/import*`), cycle-independent.
+  Sheet parsing/column mapping is reused byte-identical from the legacy importers;
+  consolidation per parsed row: exact normalized match → update catalog current prices
+  (+report old→new); fuzzy near-miss → create-as-new-but-flagged, NEVER auto-merged;
+  no match → new catalog row ("needs image"). Naturally idempotent (re-import = 0
+  changes). **No import path touches any cycle — cycles are frozen by construction.**
+  Coffee cycle creation ticks catalog products (bakery flow, cycles.js snapshot
+  precedent) with prices frozen at snapshot time; the per-cycle import endpoints and
+  CycleDetail import UI are RETIRED with the pivot. Response is a
   machine-readable JSON report (new / matched / price changes old→new / pending fuzzy /
   unparsed rows) — the future autonomous-import routine consumes exactly this API, so the
   report shape is a contract. Matching scope is Goriffee-only by construction.

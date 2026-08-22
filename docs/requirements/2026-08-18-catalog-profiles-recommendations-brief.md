@@ -1,6 +1,6 @@
 # Requirements Brief: Product Catalog Consolidation, Friend Coffee Profiles & Recommendations
 
-**Date:** 2026-08-18 (v7, updated 2026-08-22 — Module 2 deferred wholesale; same-cycle re-import forbidden)  · **Author:** Karol (PM) + Claude (research/synthesis)
+**Date:** 2026-08-18 (v8, updated 2026-08-22 — PIVOT: bakery pattern — imports target the catalog; cycles pick from it)  · **Author:** Karol (PM) + Claude (research/synthesis)
 **Status:** FINAL raw requirements material — input for `/draft-spec`.
 
 > **v2 rescope:** The import pipeline stays AS IS (admin pastes an adapted Google Sheet;
@@ -33,7 +33,18 @@
 - Friends need no consolidation (stable `friends.id` already); their cross-cycle stats join through the same link.
 - Bakery catalog stays separate ✅ — bakery will most likely be REMOVED from the app; no convergence work, ever. Do not generalize the coffee catalog for bakery's sake.
 
-### 2.2 Import flow (existing importer + consolidation layer) ✅
+### 2.2 Import flow — ⚠ SUPERSEDED 2026-08-22 by the bakery-pattern pivot (decision #15)
+
+> The premise "importer stays per-cycle as-is" is retired. **Imports now target the
+> CATALOG from a main-menu tool (like the bakery products page); coffee cycle creation
+> ticks products from the catalog and snapshots them; the per-cycle sheet import is
+> REMOVED.** The sheet PARSING/column mapping stays byte-identical — only the target
+> moves. Everything below about matching (exact auto-link / fuzzy confirm), price
+> auto-apply + report, idempotency and the JSON report contract carries over to the
+> catalog-targeted import. Frozen cycles are now enforced by construction (imports
+> cannot touch a cycle at all). Canonical text: 12-product-catalog.md.
+
+### 2.2-old Import flow (existing importer + consolidation layer) — superseded, kept for provenance
 
 - **Input unchanged:** admin pastes the adapted Google Sheet (or CSV) exactly as today; the existing endpoints and column mapping stay byte-identical. The adapted sheet carries final sell prices, as today.
 - **Goriffee-only scope ✅:** the importer works exclusively with the Goriffee roastery sheet. Duplicate matching runs ONLY against Goriffee catalog products; products of other roasteries are never candidates and never checked. Identity key = **normalized name within Goriffee** (trim, case-fold, collapse whitespace, fold punctuation).
@@ -146,6 +157,7 @@ No points/loyalty program (tier discount is the collective reward). No star rati
 12. ✅ **Same-cycle re-import is not possible** — imports only into fresh cycles; existing cycles frozen absolutely (no in-place snapshot updates of any kind). Historical field merging happens only in the migration/merge tool.
 13. ✅ **Module 2 (passport/brew methods/reviews/detail modal) DEFERRED WHOLESALE** — spec drafted and kept, nothing built. Module 12 ships alone.
 14. ✅ Catalog-image display derivation accepted: editing a catalog product's image changes how past cycles display it (data untouched).
+15. ✅ **PIVOT (2026-08-22): "unified import tool in the main menu like in the bakery."** Imports target the catalog (cycle-independent, main-menu page); coffee cycle creation gains a tick-list picker over `status='available'` catalog products (bakery flow); the per-cycle import endpoints + CycleDetail import UI are retired. Supersedes the v2 "keep importer per-cycle as-is" premise; sheet parsing itself is still unchanged. Decided after PC-T1 shipped, before PC-T2 started.
 
 ## 7. Data-model sketch (directional)
 
