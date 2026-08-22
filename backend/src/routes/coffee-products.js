@@ -3,6 +3,7 @@ import { uploadSingle } from '../helpers/multipart.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { parseCsvProducts, parseGsheetCsvProducts, parseMultiRowProducts, fetchGsheetCsv } from '../helpers/import-parsing.js';
 import { importRowsIntoCatalog } from '../helpers/catalog-import.js';
+import { migrateHistoricalSnapshots } from '../helpers/catalog-migrate.js';
 
 // Coffee-product catalog routes — module 12 (PC-T2 opened this file with the
 // three UC-PC-003 import endpoints; PC-T4/T5/T6/T7 add migrate/merge/
@@ -155,6 +156,21 @@ router.post('/import-gsheet-multirow', async (req, res) => {
   } catch (error) {
     console.error('Catalog multirow import error:', error.message);
     return res.status(500).json({ error: 'Nepodarilo sa importovat produkty' });
+  }
+});
+
+// One-time historical migration (admin) — 12 §UC-PC-006 (PC-T4). Idempotent
+// and deliberately re-runnable (after merges it links the still-unlinked
+// fuzzy tail). Fully synchronous — no await anywhere (GA-T8); the helper runs
+// everything inside ONE db.transaction. The admin trigger + report rendering
+// land in PC-T7; until then this is API-only.
+router.post('/migrate', (req, res) => {
+  try {
+    const report = migrateHistoricalSnapshots();
+    return res.json(report);
+  } catch (error) {
+    console.error('Catalog migration error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa migrovat historicke produkty' });
   }
 });
 

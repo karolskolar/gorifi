@@ -60,6 +60,8 @@ const ADMIN_ENDPOINTS = [
   { method: 'post', path: '/api/coffee-products/import' },
   { method: 'post', path: '/api/coffee-products/import-gsheet', data: { url: 'https://docs.google.com/spreadsheets/d/x/edit' } },
   { method: 'post', path: '/api/coffee-products/import-gsheet-multirow', data: { url: 'https://docs.google.com/spreadsheets/d/x/edit' } },
+  // 12 §UC-PC-006 (PC-T4): the historical migration.
+  { method: 'post', path: '/api/coffee-products/migrate' },
 ]
 
 const PUBLIC_ENDPOINTS = [
