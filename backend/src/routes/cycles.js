@@ -211,7 +211,7 @@ router.post('/', requireAdmin, (req, res) => {
   const expected_date = bindValue(req.body.expected_date);
   const type = bindValue(req.body.type);
   const plan_note = bindValue(req.body.plan_note);
-  const { bakery_product_ids, status } = req.body;
+  const { bakery_product_ids, coffee_product_ids, status } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Nazov je povinny' });
   }
@@ -262,6 +262,48 @@ router.post('/', requireAdmin, (req, res) => {
           [cycleId, bp.name, bp.description || null, bp.subtitle || null, categoryLabel, bp.price, bp.weight_grams || null, bp.composition || null, bp.image || null, bp.id]
         );
       }
+    }
+  }
+
+  // PC-T8 (12 §UC-PC-012): for COFFEE cycles, snapshot selected CATALOG products
+  // — the sibling of the bakery branch above, never a rewrite of it. Honoured
+  // only when the cycle's type resolves to 'coffee'; `coffee_product_ids` is
+  // OPTIONAL on purpose (an id-less coffee POST keeps today's empty-cycle
+  // behavior, so existing fixtures and scripted creation stay valid).
+  //
+  // NO junction table (resolved decision): a coffee catalog product snapshots to
+  // exactly ONE row per cycle (variants are price columns), so
+  // `source_coffee_product_id` IS the selection record — bakery needs
+  // `cycle_bakery_products` only because its variant explosion breaks the 1:1.
+  //
+  // Per id: only `status = 'available'` rows snapshot — a missing or RETIRED
+  // row is skipped exactly as the bakery loop's `if (!bp) continue`, so retired
+  // products can never enter a new cycle even by hand-crafted request. All six
+  // prices are COPIED from the catalog's current prices — THIS is the freeze
+  // moment (later catalog edits never touch existing snapshots). `image` stays
+  // NULL (resolved decision 5: the read-path COALESCE serves the catalog image)
+  // and `stock_limit_g` stays NULL (per-cycle, set later via the snapshot PATCH).
+  if (cycleType === 'coffee' && Array.isArray(coffee_product_ids) && coffee_product_ids.length > 0) {
+    for (const rawId of coffee_product_ids) {
+      // The ARRAY was checked, its ELEMENTS never were (the FUP-T13 lesson on
+      // the bakery loop) — `[{}]` / `[true]` must skip, never 500.
+      const cpId = bindValue(rawId);
+      const cp = cpId === undefined || cpId === null
+        ? null
+        : db.get("SELECT * FROM coffee_products WHERE id = ? AND status = 'available'", [cpId]);
+      if (!cp) continue;
+
+      db.run(
+        `INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, roastery,
+           price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g,
+           image, stock_limit_g, source_coffee_product_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+        [
+          cycleId, cp.name, cp.description1, cp.description2, cp.roast_type, cp.purpose, cp.roastery,
+          cp.price_150g, cp.price_200g, cp.price_250g, cp.price_500g, cp.price_1kg, cp.price_20pc5g,
+          cp.id,
+        ]
+      );
     }
   }
 

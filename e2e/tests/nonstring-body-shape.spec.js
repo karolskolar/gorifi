@@ -124,7 +124,6 @@ let parcelFriendId
 let pickupId
 let roasteryId
 let transactionId
-let importCycleId
 
 const admin = () => ({ 'X-Admin-Token': adminToken })
 const shared = () => ({ 'X-Friends-Password': FRIENDS_PASSWORD })
@@ -221,12 +220,8 @@ test.beforeAll(async () => {
   expect(tx.status(), 'transaction fixture').toBe(201)
   transactionId = (await tx.json()).transaction.id
 
-  const importCycle = await ctx.post('/api/cycles', {
-    headers: admin(),
-    data: { name: `FUP12 import ${uniq}`, cycle_type: 'coffee' },
-  })
-  expect(importCycle.status(), 'import cycle fixture').toBe(201)
-  importCycleId = (await importCycle.json()).id
+  // (The per-cycle import fixture cycle is gone with the routes — UC-PC-013:
+  // the retargeted import pins hit the cycle-less catalog routes.)
 })
 
 test.afterAll(async () => { await ctx?.dispose() })
@@ -858,11 +853,15 @@ test.describe('FUP-T12 — transactions with a non-string note', () => {
 // The route's own try/catch turned `url.match is not a function` into a 400 — but it
 // ECHOED THAT SENTENCE TO THE CLIENT and still wrote ~1.2 KB of stack to the log per
 // request. A status assertion alone would have called this site clean.
+// ⚠ UC-PC-013 retarget: the per-cycle gsheet importers RETIRED (module 12, PC-T8);
+// the FUP-T12 guard is MANDATORY on the replacement catalog routes
+// (POST /api/coffee-products/import-gsheet[-multirow]) — same property, same
+// messages, no cycle in the path. The pins move with the guard.
 test.describe('FUP-T12 — Google Sheets import with a non-string url', () => {
   for (const path of ['import-gsheet', 'import-gsheet-multirow']) {
-    test(`POST /api/products/${path}/:cycleId refuses without echoing internals`, async () => {
+    test(`POST /api/coffee-products/${path} refuses without echoing internals`, async () => {
       for (const url of MALFORMED) {
-        const res = await ctx.post(`/api/products/${path}/${importCycleId}`, {
+        const res = await ctx.post(`/api/coffee-products/${path}`, {
           headers: admin(),
           data: { url },
         })
@@ -876,14 +875,14 @@ test.describe('FUP-T12 — Google Sheets import with a non-string url', () => {
 
   test('NOTHING LOOSENED: an absent url still 400s and a string url still reaches the parser', async () => {
     for (const path of ['import-gsheet', 'import-gsheet-multirow']) {
-      const absent = await ctx.post(`/api/products/${path}/${importCycleId}`, { headers: admin(), data: {} })
+      const absent = await ctx.post(`/api/coffee-products/${path}`, { headers: admin(), data: {} })
       expect(absent.status()).toBe(400)
       expect((await absent.json()).error).toBe(IMPORT_URL_REQUIRED)
 
       // A STRING that is not a Sheets URL must still get past the guard and be
       // rejected by the URL parser — the different message proves the guard did not
       // swallow well-formed input. (No network is reached: the regex fails first.)
-      const notASheet = await ctx.post(`/api/products/${path}/${importCycleId}`, {
+      const notASheet = await ctx.post(`/api/coffee-products/${path}`, {
         headers: admin(),
         data: { url: 'https://example.test/not-a-sheet' },
       })
@@ -2801,7 +2800,7 @@ test.describe('FUP-T15 — friend groups with a non-string field', () => {
   })
 })
 
-// ── T15.14 POST /api/products/import/:cycleId — ⚠ the FALSE "multipart" blocker ─
+// ── T15.14 POST /api/coffee-products/import — ⚠ the FALSE "multipart" blocker ──
 //
 // The recorded blocker was "the route requires `req.file`, so the body is multipart
 // and every field is a string". multer parses fields through `append-field`, which
@@ -2809,18 +2808,41 @@ test.describe('FUP-T15 — friend groups with a non-string field', () => {
 // as an object, was bound into the per-row INSERT, and the route's own try/catch
 // answered 400 with the BINDER'S SENTENCE echoed to the client, after logging a
 // full stack.
-test.describe('FUP-T15 — the CSV import with a non-string multipart roastery', () => {
+//
+// ⚠ UC-PC-013 retarget: the per-cycle CSV import RETIRED (module 12, PC-T8); the
+// FUP-T15 `bindValue(req.body.roastery)` guard is MANDATORY on the catalog import.
+// The catalog is roastery-keyed: an unbindable roastery must resolve exactly as an
+// ABSENT one does (the default roastery), never crash and never echo the binder —
+// so each probe is compared against a control import that sends NO roastery field.
+test.describe('FUP-T15 — the catalog CSV import with a non-string multipart roastery', () => {
   const BOUNDARY = '----fup15boundary'
-  const CSV = 'Name,Price250g\nFUP15 CSV Produkt,9.90\n'
-  const multipart = (fieldParts) =>
+  const csvBody = (productName) => `Name,Price250g\n${productName},9.90\n`
+  const multipart = (fieldParts, productName) =>
     fieldParts +
     `--${BOUNDARY}\r\nContent-Disposition: form-data; name="file"; filename="p.csv"\r\n` +
-    `Content-Type: text/csv\r\n\r\n${CSV}\r\n--${BOUNDARY}--\r\n`
-  const post = (cycleId, body) =>
-    ctx.post(`/api/products/import/${cycleId}`, {
+    `Content-Type: text/csv\r\n\r\n${csvBody(productName)}\r\n--${BOUNDARY}--\r\n`
+  const post = (body) =>
+    ctx.post('/api/coffee-products/import', {
       headers: { ...admin(), 'Content-Type': `multipart/form-data; boundary=${BOUNDARY}` },
       data: Buffer.from(body, 'utf8'),
     })
+  const catalogRow = async (id) =>
+    (await ctx.get(`/api/coffee-products/${id}`, { headers: admin() })).json()
+
+  // The control: an import with the roastery field ABSENT — whatever roastery
+  // that resolves to (the roasteries table's default) is what an unbindable
+  // field must also resolve to.
+  let defaultRoastery
+  test.beforeAll(async () => {
+    const name = `FUP15 control ${uniq} ${nextSeq()}`
+    const res = await post(multipart('', name))
+    expect(res.status(), 'control import (no roastery field)').toBe(201)
+    const { report } = await res.json()
+    const entry = report.new.find((e) => e.name === name)
+    expect(entry, 'the control row imported as new').toBeTruthy()
+    defaultRoastery = (await catalogRow(entry.catalog_id)).roastery
+    expect(typeof defaultRoastery).toBe('string')
+  })
 
   for (const [name, part] of [
     ['roastery[a]=1 ⇒ {a:"1"}', `--${BOUNDARY}\r\nContent-Disposition: form-data; name="roastery[a]"\r\n\r\n1\r\n`],
@@ -2831,10 +2853,9 @@ test.describe('FUP-T15 — the CSV import with a non-string multipart roastery',
     ],
     ["roastery[]=a ⇒ ['a']", `--${BOUNDARY}\r\nContent-Disposition: form-data; name="roastery[]"\r\n\r\na\r\n`],
   ]) {
-    test(`${name} imports with NO roastery and leaks nothing`, async () => {
-      const cycle = await ctx.post('/api/cycles', { headers: admin(), data: { name: `FUP15 csv ${uniq} ${nextSeq()}` } })
-      const cycleId = (await cycle.json()).id
-      const res = await post(cycleId, multipart(part))
+    test(`${name} imports under the DEFAULT roastery and leaks nothing`, async () => {
+      const productName = `FUP15 csv ${uniq} ${nextSeq()}`
+      const res = await post(multipart(part, productName))
       expect(res.status(), `${name} still imports`).toBe(201)
       const body = await res.json()
       // ⚠ The old 400 said "Chyba pri parsovani CSV: Too few parameter values were
@@ -2842,18 +2863,22 @@ test.describe('FUP-T15 — the CSV import with a non-string multipart roastery',
       expect(JSON.stringify(body), 'no binder text reaches the client').not.toMatch(
         /parameter values|can only bind|convert object to primitive/i,
       )
-      expect(body.products.length, 'the row really imported').toBe(1)
-      expect(body.products[0].roastery, 'unbindable ⇒ absent ⇒ NULL').toBeNull()
+      const entry = body.report.new.find((e) => e.name === productName)
+      expect(entry, 'the row really imported').toBeTruthy()
+      const row = await catalogRow(entry.catalog_id)
+      expect(row.roastery, 'unbindable ⇒ absent ⇒ the default roastery').toBe(defaultRoastery)
     })
   }
 
-  test('NOTHING LOOSENED: a real roastery string still lands on every imported row', async () => {
-    const cycle = await ctx.post('/api/cycles', { headers: admin(), data: { name: `FUP15 csv ok ${uniq}` } })
-    const cycleId = (await cycle.json()).id
+  test('NOTHING LOOSENED: a real roastery string still lands on the catalog row', async () => {
+    const productName = `FUP15 csv ok ${uniq} ${nextSeq()}`
     const part = `--${BOUNDARY}\r\nContent-Disposition: form-data; name="roastery"\r\n\r\nFUP15 Pražiareň\r\n`
-    const res = await post(cycleId, multipart(part))
+    const res = await post(multipart(part, productName))
     expect(res.status()).toBe(201)
-    expect((await res.json()).products[0].roastery).toBe('FUP15 Pražiareň')
+    const { report } = await res.json()
+    const entry = report.new.find((e) => e.name === productName)
+    expect(entry, 'the row imported as new').toBeTruthy()
+    expect((await catalogRow(entry.catalog_id)).roastery).toBe('FUP15 Pražiareň')
   })
 })
 

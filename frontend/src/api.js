@@ -266,9 +266,8 @@ export const api = {
   createProduct: (data) => request('/products', { method: 'POST', body: data }),
   updateProduct: (id, data) => request(`/products/${id}`, { method: 'PATCH', body: data }),
   deleteProduct: (id) => request(`/products/${id}`, { method: 'DELETE' }),
-  importProducts: (cycleId, formData) => request(`/products/import/${cycleId}`, { method: 'POST', body: formData }),
-  importFromGoogleSheets: (cycleId, url, roastery) => request(`/products/import-gsheet/${cycleId}`, { method: 'POST', body: { url, roastery: roastery || null } }),
-  importFromGoogleSheetsMultirow: (cycleId, url, roastery) => request(`/products/import-gsheet-multirow/${cycleId}`, { method: 'POST', body: { url, roastery: roastery || null } }),
+  // (The three per-cycle importers retired in PC-T8 — 12 §UC-PC-013. Imports
+  // target the catalog: importCatalogCSV / importCatalogGsheet* below.)
   uploadProductImage: (id, formData) => request(`/products/${id}/image`, { method: 'POST', body: formData }),
   uploadProductImageFromUrl: (id, imageUrl) => request(`/products/${id}/image-from-url`, { method: 'POST', body: { url: imageUrl } }),
 

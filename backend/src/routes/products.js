@@ -4,9 +4,11 @@ import { requireAdmin } from '../middleware/admin-auth.js';
 import { safeFetch } from '../helpers/safe-fetch.js';
 // PC-T2 (12 §UC-PC-003 parsing seam): the importers' parsing/column mapping was
 // extracted VERBATIM into helpers/import-parsing.js — the catalog import
-// (routes/coffee-products.js) shares it. The three per-cycle import routes
-// below are otherwise UNTOUCHED and retire wholesale in PC-T8 (UC-PC-013).
-import { parseCsvProducts, parseGsheetCsvProducts, parseMultiRowProducts, fetchGsheetCsv, parsePrice } from '../helpers/import-parsing.js';
+// (routes/coffee-products.js) owns the import surface now. The three per-cycle
+// import routes RETIRED wholesale in PC-T8 (12 §UC-PC-013): a hit on them falls
+// through to Express's default 404, no tombstone handler. Only parsePrice is
+// still consumed here (the PC-T3 manual-POST consolidation path).
+import { parsePrice } from '../helpers/import-parsing.js';
 // PC-T3 (12 §UC-PC-005): the manual per-cycle POST is the ONE sanctioned
 // add-to-an-existing-cycle path and funnels its catalog half through the SAME
 // consolidation layer as the importers. helpers/catalog.js stays the one
@@ -21,16 +23,32 @@ import { bindValue } from '../helpers/bind-value.js';
 const router = Router();
 
 // Get all products for a cycle
+//
+// PC-T8 (12 §UC-PC-012 image fallback): a snapshot with no image of its own
+// serves its catalog product's image — COALESCE(p.image, cp.image). A non-NULL
+// snapshot image (manual upload, bakery, history) still wins; the response
+// shape is unchanged (still one `image` field). The aliased column is listed
+// AFTER p.*, and better-sqlite3 resolves a duplicate result name to the LAST
+// column — pinned by the "snapshot's own image wins" e2e in catalog-admin.
 router.get('/cycle/:cycleId', (req, res) => {
   const products = db.prepare(`
-    SELECT * FROM products WHERE cycle_id = ? AND active = 1 ORDER BY purpose, name
+    SELECT p.*, COALESCE(p.image, cp.image) AS image
+    FROM products p
+    LEFT JOIN coffee_products cp ON cp.id = p.source_coffee_product_id
+    WHERE p.cycle_id = ? AND p.active = 1
+    ORDER BY p.purpose, p.name
   `).all(req.params.cycleId);
   res.json(products);
 });
 
-// Get single product
+// Get single product — same UC-PC-012 image fallback as the list read above.
 router.get('/:id', (req, res) => {
-  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  const product = db.prepare(`
+    SELECT p.*, COALESCE(p.image, cp.image) AS image
+    FROM products p
+    LEFT JOIN coffee_products cp ON cp.id = p.source_coffee_product_id
+    WHERE p.id = ?
+  `).get(req.params.id);
   if (!product) {
     return res.status(404).json({ error: 'Produkt nebol najdeny' });
   }
@@ -187,69 +205,6 @@ router.post('/', requireAdmin, uploadSingle('image'), (req, res) => {
   res.status(201).json({ ...product, report: created.report });
 });
 
-// Import products from CSV (admin)
-router.post('/import/:cycleId', requireAdmin, uploadSingle('file'), (req, res) => {
-  const cycleId = req.params.cycleId;
-  // ⚠ FUP-T15 — THE RECORDED "LATENT" BLOCKER ON THIS ROUTE WAS FALSE. It read
-  // "the route requires `req.file`, so the body is multipart and every field is a
-  // string". multer parses fields with the `append-field` package, which honours
-  // bracket notation and repeated keys — so `roastery[a]=1` really did arrive as an
-  // OBJECT, was bound into the per-row INSERT below, and this route's own try/catch
-  // answered 400 with the BINDER'S OWN SENTENCE echoed to the client ("Chyba pri
-  // parsovani CSV: Too few parameter values were provided") after `console.error`
-  // wrote ~1.1 KB of stack. Unbindable ⇒ `undefined` ⇒ `|| null` ⇒ exactly what an
-  // absent `roastery` field already stores.
-  const roastery = bindValue(req.body.roastery) || null;
-
-  // Check cycle exists
-  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
-  if (!cycle) {
-    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
-  }
-
-  if (!req.file) {
-    return res.status(400).json({ error: 'Ziaden subor nebol nahrany' });
-  }
-
-  try {
-    const csvContent = req.file.buffer.toString('utf-8');
-    // Column mapping + price parsing moved verbatim to helpers/import-parsing.js
-    // (PC-T2); the helper returns every record mapped, and the `if (p.name)`
-    // skip below is the route's original behavior, unchanged.
-    const records = parseCsvProducts(csvContent);
-
-    const insertStmt = db.prepare(`
-      INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, roastery)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const insertMany = db.transaction((products) => {
-      const results = [];
-      for (const p of products) {
-        if (p.name) {
-          const result = insertStmt.run(cycleId, p.name, p.description1, p.description2, p.roast_type, p.purpose, p.price_250g, p.price_1kg, roastery);
-          results.push(result.lastInsertRowid);
-        }
-      }
-      return results;
-    });
-
-    const insertedIds = insertMany(records);
-
-    const products = db.prepare(`
-      SELECT * FROM products WHERE id IN (${insertedIds.map(() => '?').join(',')})
-    `).all(...insertedIds);
-
-    res.status(201).json({
-      message: `${products.length} produktov bolo importovanych`,
-      products
-    });
-  } catch (error) {
-    console.error('CSV parse error:', error);
-    res.status(400).json({ error: 'Chyba pri parsovani CSV: ' + error.message });
-  }
-});
-
 // Upload image for existing product (admin)
 router.post('/:id/image', requireAdmin, uploadSingle('image'), (req, res) => {
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
@@ -383,171 +338,6 @@ router.delete('/:id', requireAdmin, (req, res) => {
     return res.status(404).json({ error: 'Produkt nebol najdeny' });
   }
   res.status(204).send();
-});
-
-// Import products from Google Sheets URL (admin)
-router.post('/import-gsheet/:cycleId', requireAdmin, async (req, res) => {
-  const cycleId = req.params.cycleId;
-  // ⚠ FUP-T15 — same class and same file as the CSV import above: `roastery` is bound
-  // into every inserted row. Reaching it needs a live public sheet, so it is not
-  // exercisable from the e2e suite — but the shape is identical and so is the cost
-  // (this route's catch logs the whole Error, i.e. a full stack, and echoes
-  // `error.message` to the client). Unbindable ⇒ absent, exactly as `|| null` already
-  // treats an empty field.
-  const { url } = req.body;
-  const roastery = bindValue(req.body.roastery);
-
-  // Check cycle exists
-  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
-  if (!cycle) {
-    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
-  }
-
-  // ⚠ FUP-T12: a non-string reached `url.match(...)` below and threw a TypeError. The
-  // route's own try/catch already turned that into a 400, so the STATUS looked fine —
-  // but it ECHOED `url.match is not a function` to the client and still wrote ~1.2 KB
-  // of stack to the log per request. Folded into the existing presence rule: same
-  // status, same message, and a string url still reaches the parser unchanged.
-  if (typeof url !== 'string' || !url) {
-    return res.status(400).json({ error: 'URL je povinne' });
-  }
-
-  try {
-    // Sheet-id/gid extraction + safeFetch moved verbatim to
-    // helpers/import-parsing.js (PC-T2). Error mapping stays here so the
-    // messages are byte-identical; a safeFetch throw still lands in this
-    // route's own catch, exactly as before.
-    const fetched = await fetchGsheetCsv(url);
-    if (fetched.error === 'invalid_url') {
-      return res.status(400).json({ error: 'Neplatna Google Sheets URL' });
-    }
-    if (fetched.error) {
-      return res.status(400).json({ error: 'Nepodarilo sa nacitat Google Sheet. Skontrolujte ci je sheet verejny.' });
-    }
-
-    // Column mapping + price parsing moved verbatim to the same helper
-    // (⚠ the gsheet mapper keeps its extra 'Chutovy profil' alias).
-    const records = parseGsheetCsvProducts(fetched.csvContent);
-
-    const insertStmt = db.prepare(`
-      INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, roastery)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const insertMany = db.transaction((products) => {
-      const results = [];
-      for (const p of products) {
-        if (p.name) {
-          const result = insertStmt.run(cycleId, p.name, p.description1, p.description2, p.roast_type, p.purpose, p.price_250g, p.price_1kg, roastery || null);
-          results.push(result.lastInsertRowid);
-        }
-      }
-      return results;
-    });
-
-    const insertedIds = insertMany(records);
-
-    if (insertedIds.length === 0) {
-      return res.status(400).json({ error: 'Ziadne produkty neboli najdene. Skontrolujte nazvy stlpcov.' });
-    }
-
-    const products = db.prepare(`
-      SELECT * FROM products WHERE id IN (${insertedIds.map(() => '?').join(',')})
-    `).all(...insertedIds);
-
-    res.status(201).json({
-      message: `${products.length} produktov bolo importovanych z Google Sheets`,
-      products
-    });
-  } catch (error) {
-    console.error('Google Sheets import error:', error);
-    res.status(400).json({ error: 'Chyba pri importe: ' + error.message });
-  }
-});
-
-// Import products from Google Sheets with multi-row format (3 rows per product) (admin)
-router.post('/import-gsheet-multirow/:cycleId', requireAdmin, async (req, res) => {
-  const cycleId = req.params.cycleId;
-  // ⚠ FUP-T15 — same class and same file as the CSV import above: `roastery` is bound
-  // into every inserted row. Reaching it needs a live public sheet, so it is not
-  // exercisable from the e2e suite — but the shape is identical and so is the cost
-  // (this route's catch logs the whole Error, i.e. a full stack, and echoes
-  // `error.message` to the client). Unbindable ⇒ absent, exactly as `|| null` already
-  // treats an empty field.
-  const { url } = req.body;
-  const roastery = bindValue(req.body.roastery);
-
-  // Check cycle exists
-  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
-  if (!cycle) {
-    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
-  }
-
-  // ⚠ FUP-T12: a non-string reached `url.match(...)` below and threw a TypeError. The
-  // route's own try/catch already turned that into a 400, so the STATUS looked fine —
-  // but it ECHOED `url.match is not a function` to the client and still wrote ~1.2 KB
-  // of stack to the log per request. Folded into the existing presence rule: same
-  // status, same message, and a string url still reaches the parser unchanged.
-  if (typeof url !== 'string' || !url) {
-    return res.status(400).json({ error: 'URL je povinne' });
-  }
-
-  try {
-    // Sheet-id/gid extraction + safeFetch moved verbatim to
-    // helpers/import-parsing.js (PC-T2); error mapping stays here so the
-    // messages are byte-identical, and a safeFetch throw still lands in this
-    // route's own catch, exactly as before.
-    const fetched = await fetchGsheetCsv(url);
-    if (fetched.error === 'invalid_url') {
-      return res.status(400).json({ error: 'Neplatna Google Sheets URL' });
-    }
-    if (fetched.error) {
-      return res.status(400).json({
-        error: 'Nepodarilo sa nacitat Google Sheet. Skontrolujte ci je sheet verejny.'
-      });
-    }
-
-    // Parse with multi-row logic (moved verbatim to the same helper)
-    const { products, warnings } = parseMultiRowProducts(fetched.csvContent);
-
-    if (products.length === 0) {
-      return res.status(400).json({
-        error: 'Ziadne produkty neboli najdene. Skontrolujte format sheetu (3 riadky na produkt, oddelene prazdnym riadkom).'
-      });
-    }
-
-    // Insert products into database (without transaction wrapper to avoid sql.js issues)
-    const insertedIds = [];
-    for (const p of products) {
-      if (p.name) {
-        const result = db.prepare(`
-          INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_1kg, roastery)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(cycleId, p.name, p.description1, p.description2, p.roast_type, p.purpose, p.price_150g, p.price_200g, p.price_250g, p.price_1kg, roastery || null);
-        insertedIds.push(result.lastInsertRowid);
-      }
-    }
-
-    if (insertedIds.length === 0) {
-      return res.status(400).json({
-        error: 'Ziadne produkty neboli importovane. Skontrolujte format sheetu.'
-      });
-    }
-
-    const insertedProducts = db.prepare(`
-      SELECT * FROM products WHERE id IN (${insertedIds.map(() => '?').join(',')})
-    `).all(...insertedIds);
-
-    res.status(201).json({
-      message: `${insertedProducts.length} produktov bolo importovanych z Google Sheets`,
-      products: insertedProducts,
-      warnings: warnings
-    });
-
-  } catch (error) {
-    console.error('Google Sheets multi-row import error:', error);
-    res.status(400).json({ error: 'Chyba pri importe: ' + error.message });
-  }
 });
 
 export default router;

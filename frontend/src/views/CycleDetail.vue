@@ -44,14 +44,9 @@ const roasteries = ref([])
 const dragOverProductId = ref(null)
 const droppingProductId = ref(null)
 
-// CSV import
-const csvFile = ref(null)
-
-// Google Sheets import
-const gsheetUrl = ref('')
-const gsheetLoading = ref(false)
-const gsheetFormat = ref('multirow')  // 'simple' or 'multirow'
-const importRoastery = ref('')  // roastery to assign to imported products
+// (The per-cycle import UI retired in PC-T8 — 12 §UC-PC-013. Products enter a
+// cycle via the catalog picker at cycle creation or the manual "+ Pridať
+// produkt" dialog below; sheet imports live in /admin/catalog.)
 
 // Summary roastery filter
 const summaryRoasteryFilter = ref('')  // '' = all, '_default' = no roastery, or roastery name
@@ -514,54 +509,6 @@ async function deleteProduct(id) {
   await loadAll()
 }
 
-async function importCSV() {
-  if (!csvFile.value) return
-
-  const formData = new FormData()
-  formData.append('file', csvFile.value)
-  if (importRoastery.value) {
-    formData.append('roastery', importRoastery.value)
-  }
-
-  try {
-    await api.importProducts(cycleId.value, formData)
-    csvFile.value = null
-    await loadAll()
-  } catch (e) {
-    error.value = e.message
-  }
-}
-
-function onFileChange(event) {
-  csvFile.value = event.target.files[0]
-}
-
-async function importGoogleSheets() {
-  if (!gsheetUrl.value.trim()) return
-
-  gsheetLoading.value = true
-  error.value = ''
-
-  try {
-    const result = gsheetFormat.value === 'multirow'
-      ? await api.importFromGoogleSheetsMultirow(cycleId.value, gsheetUrl.value, importRoastery.value)
-      : await api.importFromGoogleSheets(cycleId.value, gsheetUrl.value, importRoastery.value)
-
-    gsheetUrl.value = ''
-    await loadAll()
-
-    let message = `${result.products.length} produktov bolo importovaných z Google Sheets`
-    if (result.warnings && result.warnings.length > 0) {
-      message += `\n\nUpozornenia:\n${result.warnings.join('\n')}`
-    }
-    alert(message)
-  } catch (e) {
-    error.value = e.message
-  } finally {
-    gsheetLoading.value = false
-  }
-}
-
 // Image handling
 function handleImageSelect(event) {
   const file = event.target.files[0]
@@ -944,67 +891,9 @@ function getStatusVariant(status) {
             </CardContent>
           </Card>
 
-          <!-- Import section (coffee only) -->
-          <Card v-if="!isBakery" class="mb-4">
-            <CardContent class="p-4">
-              <h3 class="text-sm font-medium text-foreground mb-3">Import produktov</h3>
-              <!-- Roastery selector for import -->
-              <div v-if="roasteries.length > 0" class="mb-3">
-                <Label class="text-xs text-muted-foreground mb-1">Pražiareň pre importované produkty</Label>
-                <select v-model="importRoastery" class="flex h-9 w-full max-w-xs rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
-                  <option value="">— Žiadna —</option>
-                  <option v-for="r in roasteries" :key="r.id" :value="r.name">{{ r.name }}</option>
-                </select>
-              </div>
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <!-- Google Sheets import -->
-                <div>
-                  <Label class="text-xs text-muted-foreground mb-1">Z Google Sheets (verejný sheet)</Label>
-                  <!-- Format selector -->
-                  <div class="flex gap-4 mb-2">
-                    <label class="flex items-center text-sm cursor-pointer">
-                      <input type="radio" v-model="gsheetFormat" value="multirow" class="mr-1.5" />
-                      Viacriadkový (3 riadky = 1 produkt)
-                    </label>
-                    <label class="flex items-center text-sm cursor-pointer">
-                      <input type="radio" v-model="gsheetFormat" value="simple" class="mr-1.5" />
-                      Jednoduchý (1 riadok = 1 produkt)
-                    </label>
-                  </div>
-                  <div class="flex gap-2">
-                    <Input
-                      v-model="gsheetUrl"
-                      placeholder="https://docs.google.com/spreadsheets/d/..."
-                      :disabled="gsheetLoading"
-                      class="text-sm"
-                    />
-                    <Button
-                      @click="importGoogleSheets"
-                      :disabled="!gsheetUrl.trim() || gsheetLoading"
-                      class="whitespace-nowrap"
-                    >
-                      {{ gsheetLoading ? 'Importujem...' : 'Importovať' }}
-                    </Button>
-                  </div>
-                </div>
-                <!-- CSV import -->
-                <div>
-                  <Label class="text-xs text-muted-foreground mb-1">Z CSV súboru</Label>
-                  <div class="flex gap-2">
-                    <input type="file" accept=".csv" @change="onFileChange" class="flex-1 text-sm" />
-                    <Button
-                      v-if="csvFile"
-                      @click="importCSV"
-                      class="whitespace-nowrap"
-                    >
-                      Importovať
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
+          <!-- (Import section retired in PC-T8 — 12 §UC-PC-013: products enter a
+               cycle via the catalog picker at creation; sheet imports live in
+               /admin/catalog.) -->
           <Card>
             <Table>
               <TableHeader>

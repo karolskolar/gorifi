@@ -1533,3 +1533,473 @@ test.describe('UC-PC-005 follow-up — CycleDetail saveProduct surfaces the dupl
     await expect(dialog, 'the dialog stays open on a failed save').toBeVisible()
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PC-T8 — 12 §UC-PC-012 (cycle creation from the catalog picker) +
+//         12 §UC-PC-013 (the per-cycle importers are RETIRED).
+//
+// ⚠ These describes run AFTER the PC-T7 UI describes, whose loginAsAdminUI
+// calls INVALIDATE the file-level adminToken (one admin token app-wide) — so
+// every API-only describe below re-mints `adminToken` in its own beforeAll,
+// and every UI test adopts the browser's token, exactly as PC-T7's do.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// A second valid 1×1 PNG (different pixel ⇒ different base64), so "the
+// snapshot's own image wins the COALESCE" can be asserted as an inequality.
+const PNG_1PX_BLUE = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNgYPj/HwADAgH/p8FQrgAAAABJRU5ErkJggg==',
+  'base64'
+)
+
+async function refreshAdminToken() {
+  const login = await ctx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+  expect(login.status(), 'admin re-login (the UI describes above invalidated the token)').toBe(200)
+  adminToken = (await login.json()).token
+}
+
+function createCycle(data) {
+  return ctx.post('/api/cycles', { headers: admin(), data })
+}
+
+async function cycleProducts(cycleId) {
+  const res = await ctx.get(`/api/products/cycle/${cycleId}`)
+  expect(res.status()).toBe(200)
+  return res.json()
+}
+
+// A friend with real credentials + a Bearer session (the guest-link.spec.js
+// makeHost pattern) — for the guest-listing COALESCE and the walkthrough.
+let pct8Seq = 0
+async function makeFriendSession(label) {
+  const runId = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
+  const suffix = `_${runId}${++pct8Seq}`
+  const username = `pct8_${label}`.slice(0, 30 - suffix.length) + suffix
+  const created = await ctx.post('/api/friends', { headers: admin(), data: { name: `PCT8 ${label} ${runId}` } })
+  expect(created.status(), 'friend create').toBe(201)
+  const friend = await created.json()
+  expect((await ctx.put(`/api/friends/${friend.id}/admin-username`, { headers: admin(), data: { username } })).status()).toBe(200)
+  expect((await ctx.put(`/api/friends/${friend.id}/reset-password`, { headers: admin(), data: { password: 'initPass1' } })).status()).toBe(200)
+  const login = await ctx.post('/api/friends/auth', { data: { username, password: 'initPass1' } })
+  expect(login.status(), 'friend login').toBe(200)
+  const body = await login.json()
+  const chg = await ctx.put(`/api/friends/${friend.id}/change-password`, {
+    headers: { Authorization: `Bearer ${body.token}` },
+    data: { currentPassword: 'initPass1', newPassword: 'ownPass12' },
+  })
+  expect(chg.status(), 'forced change cleared').toBe(200)
+  const token = (await chg.json()).token || body.token
+  return { id: friend.id, name: `PCT8 ${label} ${runId}`, token, auth: { Authorization: `Bearer ${token}` } }
+}
+
+test.describe('UC-PC-012 — the catalog picker on POST /api/cycles (API)', () => {
+  test.beforeAll(refreshAdminToken)
+
+  test('two ticked products snapshot into the cycle: linked, all six prices FROZEN from the catalog, stock_limit_g NULL', async () => {
+    const stem = uniq()
+    const idA = await importOne(`${stem} Vyber A`, { purpose: 'Filter', desc1: 'Washed profil' })
+    const idB = await importOne(`${stem} Vyber B`, { purpose: 'Espresso' })
+    // Give A the full price vocabulary so the freeze covers every column.
+    const patched = await patchCatalog(idA, {
+      price_150g: 5.5, price_200g: 6.5, price_250g: 8.8, price_500g: 15, price_1kg: 27.5, price_20pc5g: 7.4,
+    })
+    expect(patched.status()).toBe(200)
+    const catalogA = await (await getCatalogRow(idA)).json()
+    const catalogB = await (await getCatalogRow(idB)).json()
+
+    const res = await createCycle({ name: `${stem} cyklus`, type: 'coffee', coffee_product_ids: [idA, idB] })
+    expect(res.status()).toBe(201)
+    const cycleId = (await res.json()).id
+
+    const products = await cycleProducts(cycleId)
+    expect(products.length, 'exactly the two ticked products snapshot').toBe(2)
+    const snapA = products.find((p) => p.source_coffee_product_id === idA)
+    const snapB = products.find((p) => p.source_coffee_product_id === idB)
+    expect(snapA, 'A is linked via source_coffee_product_id').toBeTruthy()
+    expect(snapB, 'B is linked via source_coffee_product_id').toBeTruthy()
+
+    // Snapshot fields copied from the catalog — the freeze moment.
+    expect(snapA.name).toBe(catalogA.name)
+    expect(snapA.description1).toBe(catalogA.description1)
+    expect(snapA.purpose).toBe('Filter')
+    expect(snapA.roastery).toBe(catalogA.roastery)
+    for (const f of ['price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g']) {
+      expect(snapA[f], `${f} copied from the catalog's current price`).toBe(catalogA[f])
+    }
+    expect(snapB.price_250g).toBe(catalogB.price_250g)
+    // Per-cycle admin concern, set later via the snapshot PATCH — never copied.
+    expect(snapA.stock_limit_g).toBeNull()
+    expect(snapB.stock_limit_g).toBeNull()
+  })
+
+  test('the freeze is one-way: a later catalog edit leaves the served snapshot byte-identical', async () => {
+    const stem = uniq()
+    const id = await importOne(`${stem} Zmrazena`, { purpose: 'Filter', p250: '9,0' })
+    const res = await createCycle({ name: `${stem} freeze cyklus`, type: 'coffee', coffee_product_ids: [id] })
+    expect(res.status()).toBe(201)
+    const cycleId = (await res.json()).id
+    const [snap] = await cycleProducts(cycleId)
+    expect(snap.source_coffee_product_id).toBe(id)
+
+    const before = JSON.stringify(await (await ctx.get(`/api/products/${snap.id}`)).json())
+
+    // Move the catalog: price AND sheet-sourced metadata. (⚠ deliberately NOT
+    // the catalog image — the UC-PC-012 COALESCE makes a catalog image visible
+    // on the snapshot BY DESIGN; that is pinned separately below.)
+    const edit = await patchCatalog(id, { price_250g: 99.99, description1: 'uplne novy profil' })
+    expect(edit.status()).toBe(200)
+
+    const after = JSON.stringify(await (await ctx.get(`/api/products/${snap.id}`)).json())
+    expect(after, 'the snapshot is byte-identical after the catalog edit').toBe(before)
+  })
+
+  test('the freeze pin on the RAW row (DB): image and stock_limit_g stored NULL, no column moves on a catalog edit', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const stem = uniq()
+    const id = await importOne(`${stem} Surova`, { p250: '8,5' })
+    // Catalog image BEFORE the picker runs — the raw snapshot must still store NULL
+    // (resolved decision 5: the read-path COALESCE carries the image, never a copy).
+    const up = await ctx.post(`/api/coffee-products/${id}/image`, {
+      headers: admin(),
+      multipart: { image: { name: 'p.png', mimeType: 'image/png', buffer: PNG_1PX } },
+    })
+    expect(up.status()).toBe(200)
+
+    const res = await createCycle({ name: `${stem} raw cyklus`, type: 'coffee', coffee_product_ids: [id] })
+    expect(res.status()).toBe(201)
+    const cycleId = (await res.json()).id
+    const [snap] = await cycleProducts(cycleId)
+
+    const db = openDb()
+    try {
+      const rawBefore = db.prepare('SELECT * FROM products WHERE id = ?').get(snap.id)
+      expect(rawBefore.image, 'the raw snapshot stores image = NULL (decision 5)').toBeNull()
+      expect(rawBefore.stock_limit_g).toBeNull()
+
+      const edit = await patchCatalog(id, { price_250g: 42.42, price_1kg: 111 })
+      expect(edit.status()).toBe(200)
+
+      const rawAfter = db.prepare('SELECT * FROM products WHERE id = ?').get(snap.id)
+      expect(JSON.stringify(rawAfter), 'the raw products row is byte-identical').toBe(JSON.stringify(rawBefore))
+    } finally {
+      db.close()
+    }
+  })
+
+  test('a retired catalog product never enters a new cycle, even by hand-crafted request; unknown ids are skipped', async () => {
+    const stem = uniq()
+    const retiredId = await importOne(`${stem} Vyradena`)
+    const okId = await importOne(`${stem} Dostupna`)
+    expect((await patchCatalog(retiredId, { status: 'retired' })).status()).toBe(200)
+
+    const res = await createCycle({
+      name: `${stem} retired cyklus`, type: 'coffee',
+      coffee_product_ids: [retiredId, okId, 99999999],
+    })
+    expect(res.status(), 'skipped exactly as the bakery loop skips inactive products — never a refusal that loses the rest').toBe(201)
+    const products = await cycleProducts((await res.json()).id)
+    expect(products.length).toBe(1)
+    expect(products[0].source_coffee_product_id).toBe(okId)
+  })
+
+  test('coffee_product_ids is OPTIONAL: an id-less coffee POST still creates the (empty) cycle', async () => {
+    const stem = uniq()
+    const res = await createCycle({ name: `${stem} prazdny cyklus`, type: 'coffee' })
+    expect(res.status()).toBe(201)
+    expect(await cycleProducts((await res.json()).id)).toEqual([])
+  })
+
+  test('element hygiene (FUP-T13): unbindable elements are skipped, never a 500; a non-array is ignored', async () => {
+    const stem = uniq()
+    const okId = await importOne(`${stem} Hygiena`)
+    const res = await createCycle({
+      name: `${stem} hygiena cyklus`, type: 'coffee',
+      coffee_product_ids: [{}, true, ['1'], null, { toString: 1 }, okId],
+    })
+    expect(res.status(), 'the ARRAY was checked, its ELEMENTS are too').toBe(201)
+    const products = await cycleProducts((await res.json()).id)
+    expect(products.length, 'only the bindable, available id snapshots').toBe(1)
+    expect(products[0].source_coffee_product_id).toBe(okId)
+
+    const nonArray = await createCycle({ name: `${stem} nonarray cyklus`, type: 'coffee', coffee_product_ids: 'abc' })
+    expect(nonArray.status(), 'a non-array is ignored (Array.isArray gate)').toBe(201)
+    expect(await cycleProducts((await nonArray.json()).id)).toEqual([])
+  })
+
+  test('a BAKERY cycle ignores coffee_product_ids — the bakery branch is untouched', async () => {
+    const stem = uniq()
+    const coffeeId = await importOne(`${stem} Kava Do Pekarne`)
+    const bp = await ctx.post('/api/bakery-products', {
+      headers: admin(),
+      data: { name: `${stem} Makovnik`, price: 5, category: 'sladké' },
+    })
+    expect(bp.status()).toBe(201)
+    const bpId = (await bp.json()).id
+
+    const res = await createCycle({
+      name: `${stem} bakery cyklus`, type: 'bakery',
+      bakery_product_ids: [bpId], coffee_product_ids: [coffeeId],
+    })
+    expect(res.status()).toBe(201)
+    const products = await cycleProducts((await res.json()).id)
+    expect(products.length, 'the bakery snapshot flow ran exactly as before').toBe(1)
+    expect(products[0].source_bakery_product_id).toBe(bpId)
+    expect(products[0].source_coffee_product_id, 'coffee ids are honoured only on a coffee cycle').toBeNull()
+  })
+})
+
+test.describe('UC-PC-012 — the image COALESCE on the snapshot read paths (API)', () => {
+  test.beforeAll(refreshAdminToken)
+
+  test('a catalog image uploaded ONCE appears on the picker-created snapshot (list + detail); the snapshot\'s own image still wins', async () => {
+    const stem = uniq()
+    const id = await importOne(`${stem} Fotogenicka`)
+    const up = await ctx.post(`/api/coffee-products/${id}/image`, {
+      headers: admin(),
+      multipart: { image: { name: 'kava.png', mimeType: 'image/png', buffer: PNG_1PX } },
+    })
+    expect(up.status()).toBe(200)
+    const catalogImage = (await up.json()).image
+    expect(catalogImage).toMatch(/^data:image\/png;base64,/)
+
+    const res = await createCycle({ name: `${stem} foto cyklus`, type: 'coffee', coffee_product_ids: [id] })
+    expect(res.status()).toBe(201)
+    const cycleId = (await res.json()).id
+
+    // The list read the friend order page consumes.
+    const [listed] = await cycleProducts(cycleId)
+    expect(listed.image, 'GET /products/cycle/:id serves COALESCE(p.image, cp.image)').toBe(catalogImage)
+
+    // The detail read.
+    const detail = await (await ctx.get(`/api/products/${listed.id}`)).json()
+    expect(detail.image, 'GET /products/:id serves the same fallback').toBe(catalogImage)
+
+    // A non-NULL snapshot image (manual upload) wins the COALESCE.
+    const own = await ctx.post(`/api/products/${listed.id}/image`, {
+      headers: admin(),
+      multipart: { image: { name: 'own.png', mimeType: 'image/png', buffer: PNG_1PX_BLUE } },
+    })
+    expect(own.status()).toBe(200)
+    const ownImage = (await own.json()).image
+    expect(ownImage, 'the fixture really differs from the catalog image').not.toBe(catalogImage)
+    const rereadList = await cycleProducts(cycleId)
+    expect(rereadList[0].image, 'the snapshot\'s own image wins').toBe(ownImage)
+    const rereadDetail = await (await ctx.get(`/api/products/${listed.id}`)).json()
+    expect(rereadDetail.image).toBe(ownImage)
+  })
+
+  test('the GUEST product listing serves the COALESCEd image (read-only column change on the hostile route)', async () => {
+    const stem = uniq()
+    const id = await importOne(`${stem} Hostovska`)
+    const up = await ctx.post(`/api/coffee-products/${id}/image`, {
+      headers: admin(),
+      multipart: { image: { name: 'g.png', mimeType: 'image/png', buffer: PNG_1PX } },
+    })
+    expect(up.status()).toBe(200)
+    const catalogImage = (await up.json()).image
+
+    const res = await createCycle({ name: `${stem} guest cyklus`, type: 'coffee', coffee_product_ids: [id] })
+    expect(res.status()).toBe(201)
+    const cycleId = (await res.json()).id
+    const [snap] = await cycleProducts(cycleId)
+
+    const host = await makeFriendSession('guestimg')
+    const link = await ctx.post(`/api/guest-links/cycle/${cycleId}`, { headers: host.auth })
+    expect(link.status(), 'host share link created').toBe(201)
+    const token = (await link.json()).link.token
+    expect(token, 'the link payload carries the share token').toBeTruthy()
+
+    const pub = await ctx.get(`/api/guest/${token}`)
+    expect(pub.status()).toBe(200)
+    const body = await pub.json()
+    // ⚠ Matched by SNAPSHOT id: the guest column set deliberately does not
+    // publish source_coffee_product_id (its display set is fixed; the image is
+    // the only column that changed).
+    const product = body.products.find((p) => p.id === snap.id)
+    expect(product, 'the picked product is on the guest listing').toBeTruthy()
+    expect(product.image, 'the guest listing serves the catalog fallback too').toBe(catalogImage)
+  })
+})
+
+test.describe('UC-PC-013 — the per-cycle importers are retired (API)', () => {
+  test.beforeAll(refreshAdminToken)
+
+  test('the three retired routes answer 404 to an authenticated admin', async () => {
+    const stem = uniq()
+    const cycle = await createCycle({ name: `${stem} 404 cyklus`, type: 'coffee' })
+    expect(cycle.status()).toBe(201)
+    const cycleId = (await cycle.json()).id
+
+    const csv = await ctx.post(`/api/products/import/${cycleId}`, {
+      headers: admin(),
+      multipart: { file: { name: 'p.csv', mimeType: 'text/csv', buffer: Buffer.from('Name,Price250g\nX,9\n', 'utf8') } },
+    })
+    expect(csv.status(), 'POST /api/products/import/:cycleId is GONE (no tombstone handler)').toBe(404)
+
+    for (const path of ['import-gsheet', 'import-gsheet-multirow']) {
+      const res = await ctx.post(`/api/products/${path}/${cycleId}`, {
+        headers: admin(),
+        data: { url: 'https://docs.google.com/spreadsheets/d/x/edit' },
+      })
+      expect(res.status(), `POST /api/products/${path}/:cycleId is GONE`).toBe(404)
+    }
+  })
+
+  test('acceptance walkthrough: import sheet into catalog → create cycle by ticking → friend orders from the snapshot → old endpoint 404', async () => {
+    const stem = uniq()
+    // 1. Import "the sheet" into the CATALOG (CSV is the e2e vehicle).
+    const imp = await importCsv(csvFor([
+      { name: `${stem} Chodba A`, purpose: 'Filter', p250: '9,5' },
+      { name: `${stem} Chodba B`, purpose: 'Espresso', p250: '8,0', p1kg: '26,0' },
+    ]))
+    expect(imp.status()).toBe(201)
+    const { report } = await imp.json()
+    const ids = report.new.filter((e) => e.name.startsWith(stem)).map((e) => e.catalog_id)
+    expect(ids.length).toBe(2)
+
+    // 2. Create the cycle by ticking both.
+    const cycle = await createCycle({ name: `${stem} walkthrough cyklus`, type: 'coffee', coffee_product_ids: ids })
+    expect(cycle.status()).toBe(201)
+    const cycleId = (await cycle.json()).id
+    const products = await cycleProducts(cycleId)
+    expect(products.length).toBe(2)
+
+    // 3. A friend orders FROM THE SNAPSHOT.
+    const friend = await makeFriendSession('walk')
+    const snap = products.find((p) => p.price_250g !== null)
+    const put = await ctx.put(`/api/orders/cycle/${cycleId}/friend/${friend.id}`, {
+      headers: friend.auth,
+      data: { items: [{ product_id: snap.id, variant: '250g', quantity: 2 }] },
+    })
+    expect(put.status(), 'the friend cart saves against the picker-created snapshot').toBe(200)
+    const sub = await ctx.post(`/api/orders/cycle/${cycleId}/friend/${friend.id}/submit`, {
+      headers: friend.auth, data: {},
+    })
+    expect(sub.status(), 'the order submits').toBe(200)
+    const order = await (await ctx.get(`/api/orders/cycle/${cycleId}/friend/${friend.id}`, { headers: friend.auth })).json()
+    expect(order.order, 'the order exists').toBeTruthy()
+    expect(order.order.total).toBeGreaterThan(0)
+
+    // 4. The retired endpoint answers 404 for this very cycle.
+    const old = await ctx.post(`/api/products/import/${cycleId}`, {
+      headers: admin(),
+      multipart: { file: { name: 'p.csv', mimeType: 'text/csv', buffer: Buffer.from('Name,Price250g\nX,9\n', 'utf8') } },
+    })
+    expect(old.status()).toBe(404)
+  })
+})
+
+// ── PC-T8 UI half — the picker in the new-cycle dialog; no import section ──────
+
+test.describe('UC-PC-012/013 — admin UI (picker + retired import section)', () => {
+  test('the new-cycle dialog pre-ticks ALL available catalog products, never lists a retired one, and unticking keeps a product out', async ({ page }) => {
+    const token = await loginAsAdminUI(page)
+    const stem = uniq()
+    const nameA = `${stem} Tick A`
+    const nameB = `${stem} Tick B`
+    const nameR = `${stem} Tick Vyradena`
+    const idA = await uiImportOne(token, nameA)
+    const idB = await uiImportOne(token, nameB)
+    const idR = await uiImportOne(token, nameR)
+    const retire = await ctx.patch(`/api/coffee-products/${idR}`, { headers: uiHeaders(token), data: { status: 'retired' } })
+    expect(retire.status()).toBe(200)
+
+    await page.goto('/admin/dashboard')
+    await page.getByRole('button', { name: '+ Nový cyklus' }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    const cycleName = `${stem} UI cyklus`
+    await dialog.locator('#cycleName').fill(cycleName)
+
+    // Coffee is the default type; the picker renders over the catalog.
+    const picker = dialog.getByTestId('coffee-picker')
+    await expect(picker).toBeVisible()
+    await picker.getByTestId('coffee-picker-search').fill(stem)
+    const rows = picker.getByTestId('coffee-picker-row')
+    await expect(rows, 'retired products are not listed at all').toHaveCount(2)
+    await expect(rows.filter({ hasText: nameR })).toHaveCount(0)
+    // Default: all available products PRE-TICKED (tick-and-go).
+    await expect(rows.filter({ hasText: nameA }).locator('input[type="checkbox"]')).toBeChecked()
+    await expect(rows.filter({ hasText: nameB }).locator('input[type="checkbox"]')).toBeChecked()
+
+    // Untick B and create.
+    await rows.filter({ hasText: nameB }).locator('input[type="checkbox"]').uncheck()
+    await dialog.getByRole('button', { name: 'Vytvoriť' }).click()
+    await expect(dialog).not.toBeVisible()
+
+    const cycles = await (await ctx.get('/api/cycles', { headers: uiHeaders(token) })).json()
+    const created = cycles.find((c) => c.name === cycleName)
+    expect(created, 'the cycle was created').toBeTruthy()
+    const products = await cycleProducts(created.id)
+    const sources = products.map((p) => p.source_coffee_product_id)
+    expect(sources).toContain(idA)
+    expect(sources, 'the unticked product stays out').not.toContain(idB)
+    expect(sources).not.toContain(idR)
+  })
+
+  test('CycleDetail renders its products tab with NO import section (UC-PC-013)', async ({ page }) => {
+    const token = await loginAsAdminUI(page)
+    const stem = uniq()
+    const cycle = await ctx.post('/api/cycles', {
+      headers: uiHeaders(token),
+      data: { name: `${stem} detail cyklus`, type: 'coffee' },
+    })
+    expect(cycle.status()).toBe(201)
+    const cycleId = (await cycle.json()).id
+
+    await page.goto(`/admin/cycle/${cycleId}`)
+    // The products tab still works (its other functions stay)…
+    await expect(page.getByRole('button', { name: '+ Pridať produkt' })).toBeVisible()
+    // …but the whole import section is GONE.
+    await expect(page.getByText('Import produktov')).toHaveCount(0)
+    await expect(page.getByText('Z Google Sheets')).toHaveCount(0)
+    await expect(page.getByText('Z CSV súboru')).toHaveCount(0)
+  })
+
+  test('the friend order page lists the picked product WITH the catalog image (the acceptance\'s friend half, in the UI)', async ({ page }) => {
+    const token = await loginAsAdminUI(page)
+    const stem = uniq()
+    const name = `${stem} Vitrina`
+    const id = await uiImportOne(token, name)
+    const up = await ctx.post(`/api/coffee-products/${id}/image`, {
+      headers: uiHeaders(token),
+      multipart: { image: { name: 'v.png', mimeType: 'image/png', buffer: PNG_1PX } },
+    })
+    expect(up.status()).toBe(200)
+    const catalogImage = (await up.json()).image
+
+    const cycleName = `${stem} vitrina cyklus`
+    const cycle = await ctx.post('/api/cycles', {
+      headers: uiHeaders(token),
+      data: { name: cycleName, type: 'coffee', coffee_product_ids: [id] },
+    })
+    expect(cycle.status()).toBe(201)
+    const cycleId = (await cycle.json()).id
+
+    // Friend session via localStorage (the order-product-card.spec.js pattern —
+    // a cold deep-link to /cycle/:id bounces, so enter via the portal card).
+    // ⚠ makeFriendSession uses the ADMIN token — re-mint it under the UI login.
+    adminToken = token
+    const friend = await makeFriendSession('vitrina')
+    const stored = JSON.stringify({
+      friendId: friend.id,
+      friendName: friend.name,
+      token: friend.token,
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+    })
+    await page.addInitScript((value) => {
+      localStorage.clear()
+      localStorage.setItem('gorifi_friend_auth', value)
+    }, stored)
+
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await page.getByRole('heading', { name: cycleName, exact: true }).click()
+    await expect(page).toHaveURL(new RegExp(`/cycle/${cycleId}$`))
+
+    const card = page.getByTestId('product-card').filter({ has: page.getByRole('heading', { name, exact: true }) })
+    await expect(card).toHaveCount(1)
+    const img = card.locator('img')
+    await expect(img).toBeVisible()
+    await expect(img, 'the friend order page serves the catalog image via the COALESCE').toHaveAttribute('src', catalogImage)
+  })
+})

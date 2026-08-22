@@ -123,7 +123,9 @@ test.describe('Upload size limit (FUP-T6)', () => {
   })
 
   test('an oversized CSV import is 413, not 500', async () => {
-    const res = await ctx.post(`/api/products/import/${cycleId}`, {
+    // UC-PC-013: the per-cycle CSV import retired; the multipart vehicle is the
+    // catalog import (same uploadSingle helper, same 5 MB cap).
+    const res = await ctx.post('/api/coffee-products/import', {
       headers: { 'X-Admin-Token': adminToken },
       multipart: { file: { name: 'huge.csv', mimeType: 'text/csv', buffer: Buffer.alloc(6 * 1024 * 1024, 'a') } },
     })
@@ -188,7 +190,9 @@ test.describe('Upload size limit (FUP-T6)', () => {
   for (const [label, path, field] of [
     ['products :id/image', () => `/api/products/${productId}/image`, 'image'],
     ['products create', () => '/api/products', 'image'],
-    ['products CSV import', () => `/api/products/import/${cycleId}`, 'file'],
+    // UC-PC-013 retarget: the per-cycle CSV import retired; the catalog import
+    // is the same class — no inline requireAdmin, guarded only by its MOUNT.
+    ['coffee-products CSV import', () => '/api/coffee-products/import', 'file'],
     ['bakery create', () => '/api/bakery-products', 'image'],
     ['bakery :id/image', () => `/api/bakery-products/${bakeryProductId}/image`, 'image'],
   ]) {
@@ -345,7 +349,8 @@ test.describe('Malformed or aborted multipart (FUP-T7)', () => {
   for (const [label, path] of [
     ['products :id/image', () => `/api/products/${productId}/image`],
     ['products create', () => '/api/products'],
-    ['products CSV import', () => `/api/products/import/${cycleId}`],
+    // UC-PC-013 retarget: same property, on the surviving catalog import.
+    ['coffee-products CSV import', () => '/api/coffee-products/import'],
     ['bakery create', () => '/api/bakery-products'],
     ['bakery :id/image', () => `/api/bakery-products/${bakeryProductId}/image`],
   ]) {

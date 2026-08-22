@@ -22,6 +22,12 @@ const newCycleType = ref('coffee')
 const bakeryProducts = ref([])
 const selectedBakeryProductIds = ref([])
 const bakeryProductSearch = ref('')
+// PC-T8 (12 §UC-PC-012): coffee cycles pick their products from the catalog.
+// Default: ALL available products pre-ticked (tick-and-go); retired products
+// are never offered (the list is loaded with status='available').
+const coffeeProducts = ref([])
+const selectedCoffeeProductIds = ref([])
+const coffeeProductSearch = ref('')
 const newCycleStatus = ref('open')
 const newCyclePlanNote = ref('')
 
@@ -70,11 +76,21 @@ async function openNewCycleModal() {
   newCycleType.value = 'coffee'
   selectedBakeryProductIds.value = []
   bakeryProductSearch.value = ''
+  coffeeProducts.value = []
+  selectedCoffeeProductIds.value = []
+  coffeeProductSearch.value = ''
   newCycleStatus.value = 'open'
   newCyclePlanNote.value = ''
   // Load bakery products for picker
   try {
     bakeryProducts.value = await api.getBakeryProducts()
+  } catch (e) {
+    // Non-critical
+  }
+  // Load the coffee catalog for the picker — available only, all pre-ticked.
+  try {
+    coffeeProducts.value = await api.getCatalogProducts({ status: 'available' })
+    selectedCoffeeProductIds.value = coffeeProducts.value.map(p => p.id)
   } catch (e) {
     // Non-critical
   }
@@ -95,6 +111,21 @@ const filteredBakeryProducts = computed(() => {
   return bakeryProducts.value.filter(p => p.name.toLowerCase().includes(q))
 })
 
+function toggleCoffeeProduct(id) {
+  const idx = selectedCoffeeProductIds.value.indexOf(id)
+  if (idx >= 0) {
+    selectedCoffeeProductIds.value.splice(idx, 1)
+  } else {
+    selectedCoffeeProductIds.value.push(id)
+  }
+}
+
+const filteredCoffeeProducts = computed(() => {
+  if (!coffeeProductSearch.value.trim()) return coffeeProducts.value
+  const q = coffeeProductSearch.value.toLowerCase()
+  return coffeeProducts.value.filter(p => p.name.toLowerCase().includes(q))
+})
+
 async function createCycle() {
   if (!newCycleName.value.trim()) return
 
@@ -107,6 +138,9 @@ async function createCycle() {
     }
     if (newCycleType.value === 'bakery') {
       data.bakery_product_ids = selectedBakeryProductIds.value
+    }
+    if (newCycleType.value === 'coffee') {
+      data.coffee_product_ids = selectedCoffeeProductIds.value
     }
     await api.createCycle(data)
     newCycleName.value = ''
@@ -446,6 +480,40 @@ function getStatusText(status) {
               rows="4"
               class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             ></textarea>
+          </div>
+          <!-- Coffee catalog picker (PC-T8 — 12 §UC-PC-012): available products
+               only, all pre-ticked; the admin unticks. -->
+          <div v-if="newCycleType === 'coffee'" class="space-y-2" data-testid="coffee-picker">
+            <Label>Produkty z katalógu ({{ selectedCoffeeProductIds.length }} vybraných)</Label>
+            <Input
+              v-model="coffeeProductSearch"
+              placeholder="Hľadať produkt..."
+              class="mb-2"
+              data-testid="coffee-picker-search"
+            />
+            <div class="max-h-48 overflow-y-auto border rounded-md p-2 space-y-1">
+              <label
+                v-for="cp in filteredCoffeeProducts"
+                :key="cp.id"
+                class="flex items-center gap-2 p-1.5 rounded hover:bg-muted cursor-pointer"
+                data-testid="coffee-picker-row"
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectedCoffeeProductIds.includes(cp.id)"
+                  @change="toggleCoffeeProduct(cp.id)"
+                  class="rounded"
+                />
+                <span class="text-sm flex-1">{{ cp.name }}</span>
+                <Badge v-if="cp.purpose" variant="outline" class="text-xs">
+                  {{ cp.purpose }}
+                </Badge>
+                <span class="text-xs text-muted-foreground">{{ cp.roastery }}</span>
+              </label>
+              <div v-if="filteredCoffeeProducts.length === 0" class="text-sm text-muted-foreground text-center py-2">
+                Žiadne produkty v katalógu
+              </div>
+            </div>
           </div>
           <!-- Bakery product picker -->
           <div v-if="newCycleType === 'bakery'" class="space-y-2">
