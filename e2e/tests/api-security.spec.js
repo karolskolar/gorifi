@@ -65,6 +65,9 @@ const ADMIN_ENDPOINTS = [
   // 12 §UC-PC-007/008 (PC-T5): merge tool + stateless duplicates review.
   { method: 'post', path: '/api/coffee-products/1/merge', data: { source_id: 2 } },
   { method: 'get', path: '/api/coffee-products/duplicates' },
+  // 12 §UC-PC-010 (PC-T6): cross-cycle statistics.
+  { method: 'get', path: '/api/coffee-products/stats' },
+  { method: 'get', path: '/api/coffee-products/1/stats' },
 ]
 
 const PUBLIC_ENDPOINTS = [

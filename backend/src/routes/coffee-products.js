@@ -5,6 +5,7 @@ import { parseCsvProducts, parseGsheetCsvProducts, parseMultiRowProducts, fetchG
 import { importRowsIntoCatalog } from '../helpers/catalog-import.js';
 import { migrateHistoricalSnapshots } from '../helpers/catalog-migrate.js';
 import { mergeCatalogRows, findDuplicatePairs } from '../helpers/catalog-merge.js';
+import { coffeeCycleWindow, catalogRanking, catalogProductStats } from '../helpers/catalog-stats.js';
 
 // Coffee-product catalog routes — module 12 (PC-T2 opened this file with the
 // three UC-PC-003 import endpoints; PC-T4/T5/T6/T7 add migrate/merge/
@@ -186,6 +187,68 @@ router.get('/duplicates', (req, res) => {
   } catch (error) {
     console.error('Catalog duplicates error:', error.message);
     return res.status(500).json({ error: 'Nepodarilo sa nacitat duplicity' });
+  }
+});
+
+// Cross-cycle statistics ranking (admin) — 12 §UC-PC-010 (PC-T6). Pure
+// computation lives in helpers/catalog-stats.js (module 13 imports those
+// FUNCTIONS server-side — never this endpoint). Fully synchronous — no await
+// (GA-T8). Registered ABOVE the parametric routes, like /duplicates, so a
+// future GET /:id can never shadow it.
+router.get('/stats', (req, res) => {
+  // Window: last N coffee cycles, ordered created_at DESC, id DESC (the
+  // GSO-T8 same-second tiebreak — mandatory). Omitted = all time.
+  let lastN = null;
+  // ⚠ Deliberate asymmetry: `?purpose=` (empty) means "no filter", but `?last_n_cycles=`
+  // (empty) 400s — a window must be a positive integer or absent. PC-T7's UI must OMIT
+  // the param for "all time", never send it empty. Do not "fix" either side to match the other.
+  if (req.query.last_n_cycles !== undefined) {
+    lastN = Number(req.query.last_n_cycles);
+    if (!Number.isInteger(lastN) || lastN < 1) {
+      return res.status(400).json({ error: 'last_n_cycles musi byt kladne cele cislo', field: 'last_n_cycles' });
+    }
+  }
+
+  // Purpose filter partitions by the CATALOG row's purpose. A repeated or
+  // bracketed query param arrives as an array — refuse, never coerce
+  // (the FUP-T13 discipline applied to query strings).
+  let purpose = null;
+  if (req.query.purpose !== undefined) {
+    if (typeof req.query.purpose !== 'string') {
+      return res.status(400).json({ error: 'purpose musi byt retazec', field: 'purpose' });
+    }
+    purpose = req.query.purpose || null; // empty string = no filter
+  }
+
+  try {
+    const cycleIds = coffeeCycleWindow(lastN);
+    const products = catalogRanking({ purpose, cycleIds });
+    // `window` names the cycles the numbers were computed over — auditable.
+    return res.json({ products, window: { cycle_ids: cycleIds } });
+  } catch (error) {
+    console.error('Catalog stats error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa nacitat statistiky' });
+  }
+});
+
+// Per-product statistics (admin) — availability history + order trend (one
+// per-cycle series: every offering cycle with the friend/guest kg split) and
+// the per friend × product table (friends ONLY — Decision 4). All-time.
+router.get('/:id/stats', (req, res) => {
+  const id = Number(req.params.id);
+  // A non-integer id can match no row — 404 without binding a NaN/float.
+  if (!Number.isInteger(id)) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+  try {
+    const result = catalogProductStats(id);
+    if (!result) {
+      return res.status(404).json({ error: 'Produkt neexistuje' });
+    }
+    return res.json(result);
+  } catch (error) {
+    console.error('Catalog product stats error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa nacitat statistiky' });
   }
 });
 
