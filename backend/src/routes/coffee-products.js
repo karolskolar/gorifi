@@ -4,6 +4,7 @@ import { bindValue } from '../helpers/bind-value.js';
 import { parseCsvProducts, parseGsheetCsvProducts, parseMultiRowProducts, fetchGsheetCsv } from '../helpers/import-parsing.js';
 import { importRowsIntoCatalog } from '../helpers/catalog-import.js';
 import { migrateHistoricalSnapshots } from '../helpers/catalog-migrate.js';
+import { mergeCatalogRows, findDuplicatePairs } from '../helpers/catalog-merge.js';
 
 // Coffee-product catalog routes — module 12 (PC-T2 opened this file with the
 // three UC-PC-003 import endpoints; PC-T4/T5/T6/T7 add migrate/merge/
@@ -171,6 +172,67 @@ router.post('/migrate', (req, res) => {
   } catch (error) {
     console.error('Catalog migration error:', error.message);
     return res.status(500).json({ error: 'Nepodarilo sa migrovat historicke produkty' });
+  }
+});
+
+// Stateless fuzzy-duplicate review (admin) — 12 §UC-PC-008 (PC-T5). Recomputed
+// on demand from the catalog; no pending-state table, no dismiss state. The
+// admin resolves a pair with the merge below (it disappears from the next
+// recompute) or leaves it (two genuinely different coffees). Registered ABOVE
+// the /:id routes so PC-T7's future GET /:id can never shadow it.
+router.get('/duplicates', (req, res) => {
+  try {
+    return res.json(findDuplicatePairs());
+  } catch (error) {
+    console.error('Catalog duplicates error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa nacitat duplicity' });
+  }
+});
+
+// Merge catalog row B (body.source_id) INTO A (:id) — 12 §UC-PC-007 (PC-T5).
+// The permanent safety valve for the migration's fuzzy tail, import
+// near-misses, and any future duplicate — and the module's ONLY catalog-row
+// deleter (decision 9). Fully synchronous — no await (GA-T8); the helper runs
+// the two writes inside ONE db.transaction. UI (duplicates section, per-pair
+// merge buttons) lands in PC-T7 — API-only here.
+router.post('/:id/merge', (req, res) => {
+  // 400 — source_id missing/unbindable (the FUP-T13 bindValue discipline: an
+  // object/array/bool body value must refuse cleanly, never reach a binder).
+  const sourceRaw = bindValue(req.body?.source_id);
+  if (sourceRaw === undefined || sourceRaw === null || sourceRaw === '') {
+    return res.status(400).json({ error: 'source_id je povinne', field: 'source_id' });
+  }
+
+  const targetId = Number(req.params.id);
+  const sourceId = Number(sourceRaw);
+
+  // 400 — self-merge (request shape, like missing source_id — checked before
+  // any lookup; a nonexistent id can otherwise only 404 below).
+  if (Number.isFinite(targetId) && targetId === sourceId) {
+    return res.status(400).json({ error: 'Produkt nie je mozne zlucit sam so sebou', field: 'source_id' });
+  }
+
+  // A non-integer id can match no row — refuse as unknown without ever binding
+  // a NaN/float into the statement.
+  if (!Number.isInteger(targetId) || !Number.isInteger(sourceId)) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+
+  try {
+    const result = mergeCatalogRows(targetId, sourceId);
+    if (result.outcome === 'not_found') {
+      // Either id unknown — 404 BEFORE any 4xx about state (§UC-PC-007). This
+      // is also what a repeated merge of the now-deleted source returns.
+      return res.status(404).json({ error: 'Produkt neexistuje' });
+    }
+    if (result.outcome === 'roastery_mismatch') {
+      // Cross-roastery merges are refused unconditionally, nothing written.
+      return res.status(409).json({ error: 'Produkty patria roznym praziarniam', field: 'roastery' });
+    }
+    return res.json({ target: result.target, repointed_snapshots: result.repointed_snapshots });
+  } catch (error) {
+    console.error('Catalog merge error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa zlucit produkty' });
   }
 });
 

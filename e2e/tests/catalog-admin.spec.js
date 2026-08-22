@@ -6,9 +6,10 @@
 // `products.source_coffee_product_id`, and returns the report incl.
 // `fuzzy_review`.
 //
-// ⚠ This file is the module's ADMIN-surface spec: PC-T5 (merge/duplicates) and
-// PC-T7 (catalog CRUD + AdminCatalog.vue) extend it later. This task owns only
-// the migration half.
+// ⚠ This file is the module's ADMIN-surface spec. PC-T4 owns the migration
+// half (§§1–5); PC-T5 added the merge tool + stateless duplicates review
+// (§§6–10, 12 §UC-PC-007/008); PC-T7 (catalog CRUD + AdminCatalog.vue)
+// extends it later.
 //
 // ⚠ Unlinked historical snapshots CANNOT be manufactured over HTTP any more —
 // PC-T3 made the manual POST born-linked and imports never create snapshots —
@@ -64,14 +65,16 @@ function seedCycle(db, name, type = 'coffee') {
 }
 
 // Insert an UNLINKED historical snapshot directly (the pre-module-12 shape:
-// source_coffee_product_id NULL).
+// source_coffee_product_id NULL) — PC-T5's merge fixtures pass
+// f.source_coffee_product_id to seed born-linked snapshots.
 function seedSnapshot(db, cycleId, f) {
   const r = db
     .prepare(
       `INSERT INTO products
          (cycle_id, name, description1, description2, roast_type, purpose,
-          price_250g, price_1kg, image, roastery, source_bakery_product_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          price_250g, price_1kg, image, roastery, source_bakery_product_id,
+          source_coffee_product_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       cycleId,
@@ -84,9 +87,40 @@ function seedSnapshot(db, cycleId, f) {
       f.price_1kg ?? null,
       f.image ?? null,
       f.roastery ?? null,
-      f.source_bakery_product_id ?? null
+      f.source_bakery_product_id ?? null,
+      f.source_coffee_product_id ?? null
     )
   return Number(r.lastInsertRowid)
+}
+
+// Insert a catalog row directly (PC-T5 merge fixtures need full control over
+// every column, incl. status/image, before PATCH exists in PC-T7).
+function seedCatalog(db, f) {
+  const r = db
+    .prepare(
+      `INSERT INTO coffee_products
+         (name, normalized_name, roastery, description1, description2, roast_type,
+          purpose, price_250g, price_1kg, image, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      f.name,
+      f.name.toLowerCase(),
+      f.roastery ?? 'Goriffee',
+      f.description1 ?? null,
+      f.description2 ?? null,
+      f.roast_type ?? null,
+      f.purpose ?? null,
+      f.price_250g ?? null,
+      f.price_1kg ?? null,
+      f.image ?? null,
+      f.status ?? 'available'
+    )
+  return Number(r.lastInsertRowid)
+}
+
+function catalogRowById(db, id) {
+  return db.prepare('SELECT * FROM coffee_products WHERE id = ?').get(id) ?? null
 }
 
 function productRow(db, id) {
@@ -110,6 +144,50 @@ function tableSnapshot(db, table, excludeCols = []) {
 
 function migrate() {
   return ctx.post('/api/coffee-products/migrate', { headers: admin() })
+}
+
+// ── PC-T5 fixture helpers (merge + duplicates) ────────────────────────────────
+
+function merge(targetId, sourceId) {
+  return ctx.post(`/api/coffee-products/${targetId}/merge`, {
+    headers: admin(),
+    data: { source_id: sourceId },
+  })
+}
+
+function duplicates() {
+  return ctx.get('/api/coffee-products/duplicates', { headers: admin() })
+}
+
+// The catalog CSV import (the PC-T2 vehicle) — PC-T5 uses it to create catalog
+// rows over HTTP where no DB shape is asserted, so those tests run without
+// DB_PATH. Same column vocabulary as catalog-import.spec.js.
+function csvFor(rows) {
+  const header = 'Name,Description1,Popis2,Roast,Purpose,Price250g,Price1kg'
+  const lines = rows.map((r) =>
+    [r.name ?? '', r.desc1 ?? '', r.desc2 ?? '', r.roast ?? '', r.purpose ?? '', r.p250 ?? '', r.p1kg ?? '']
+      .map((c) => `"${String(c).replace(/"/g, '""')}"`)
+      .join(',')
+  )
+  return [header, ...lines].join('\n') + '\n'
+}
+
+function importCsv(csv, roastery) {
+  const multipart = {
+    file: { name: 'catalog.csv', mimeType: 'text/csv', buffer: Buffer.from(csv, 'utf8') },
+  }
+  if (roastery !== undefined) multipart.roastery = roastery
+  return ctx.post('/api/coffee-products/import', { headers: admin(), multipart })
+}
+
+// Import exactly one NEW row over HTTP and return its catalog_id.
+async function importOne(name, extra = {}, roastery) {
+  const res = await importCsv(csvFor([{ name, p250: '8,0', ...extra }]), roastery)
+  expect(res.status(), `import of ${name} must succeed`).toBe(201)
+  const { report } = await res.json()
+  const entry = report.new.find((e) => e.name === name)
+  expect(entry, `import must report ${name} as new`).toBeTruthy()
+  return entry.catalog_id
 }
 
 // ── 1. auth ───────────────────────────────────────────────────────────────────
@@ -469,5 +547,391 @@ test.describe('UC-PC-006 — fuzzy_review', () => {
     } finally {
       db2.close()
     }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PC-T5 — 12 §UC-PC-007 (merge tool) + §UC-PC-008 (stateless duplicates review)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── 6. route guards + decision 9 (no DELETE route ever) ──────────────────────
+
+test.describe('UC-PC-007/008 — route guards', () => {
+  test('anonymous POST /:id/merge and GET /duplicates are 401', async () => {
+    const anon = await playwrightRequest.newContext({ baseURL: BASE_URL })
+    try {
+      const m = await anon.post('/api/coffee-products/1/merge', { data: { source_id: 2 } })
+      expect(m.status(), 'merge must not be reachable anonymously').toBe(401)
+      const d = await anon.get('/api/coffee-products/duplicates')
+      expect(d.status(), 'duplicates review must not be reachable anonymously').toBe(401)
+    } finally {
+      await anon.dispose()
+    }
+  })
+
+  test('no standalone catalog DELETE route exists (decision 9 — the merge is the ONLY deleter)', async () => {
+    // A REAL catalog row, so a hypothetical DELETE route would have a target.
+    const id = await importOne(`${uniq()} Nezmazatelny`)
+    const res = await ctx.delete(`/api/coffee-products/${id}`, { headers: admin() })
+    expect(res.status(), 'DELETE /api/coffee-products/:id must not exist').toBe(404)
+  })
+})
+
+// ── 7. merge happy path: repoint + delete, target-wins-entirely ──────────────
+
+test.describe('UC-PC-007 — merge B into A', () => {
+  test('repoints B’s snapshots to A, deletes B, leaves A byte-identical — exactly two writes, no transactions row', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const nameA = `${uniq()} Cierny Kremen`
+    const nameB = `${nameA} Honey`
+    const db = openDb()
+    let A, B, snapA, snapB1, snapB2, before
+    try {
+      // A carries deliberately DIFFERENT metadata than B — target-wins-entirely
+      // means none of B's fields (image included) survive anywhere.
+      A = seedCatalog(db, {
+        name: nameA, description1: 'profil A', roast_type: 'Light roast',
+        purpose: 'Filter', price_250g: 9.5, price_1kg: 36, image: 'data:image/png;base64,PCT5A',
+      })
+      B = seedCatalog(db, {
+        name: nameB, description1: 'profil B', roast_type: 'Dark roast',
+        purpose: 'Espresso', price_250g: 7.5, image: 'data:image/png;base64,PCT5B',
+      })
+      const c1 = seedCycle(db, `${nameA} c1`, 'coffee')
+      const c2 = seedCycle(db, `${nameA} c2`, 'coffee')
+      snapA = seedSnapshot(db, c1, { name: nameA, price_250g: 9.5, source_coffee_product_id: A })
+      snapB1 = seedSnapshot(db, c1, { name: nameB, price_250g: 7.5, source_coffee_product_id: B })
+      snapB2 = seedSnapshot(db, c2, { name: nameB, price_250g: 7.5, source_coffee_product_id: B })
+
+      // Non-vacuity: a submitted order against one of B's snapshots, so the
+      // no-financial-event pins are proven against data that exists.
+      const friend = db.prepare('SELECT id FROM friends ORDER BY id LIMIT 1').get()
+      expect(friend, 'seeded target must carry at least one friend (run e2e/seed.mjs)').toBeTruthy()
+      const ord = db
+        .prepare("INSERT INTO orders (friend_id, cycle_id, status, total) VALUES (?, ?, 'submitted', 15)")
+        .run(friend.id, c1)
+      db.prepare(
+        "INSERT INTO order_items (order_id, product_id, variant, quantity, price) VALUES (?, ?, '250g', 2, 7.5)"
+      ).run(Number(ord.lastInsertRowid), snapB1)
+
+      before = {
+        targetRow: JSON.stringify(catalogRowById(db, A)),
+        // The merge's ONLY products write is the link column of B's snapshots.
+        productsMinusLink: tableSnapshot(db, 'products', ['source_coffee_product_id']),
+        orderItems: tableSnapshot(db, 'order_items'),
+        orders: tableSnapshot(db, 'orders'),
+        transactionsCount: db.prepare('SELECT COUNT(*) AS n FROM transactions').get().n,
+      }
+    } finally {
+      db.close()
+    }
+
+    const res = await merge(A, B)
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+
+    // Response contract: 200 { target: <catalog row A>, repointed_snapshots: n }.
+    expect(Object.keys(body).sort()).toEqual(['repointed_snapshots', 'target'])
+    expect(body.repointed_snapshots).toBe(2)
+    expect(body.target).toEqual(JSON.parse(before.targetRow))
+
+    const db2 = openDb()
+    try {
+      // Target wins entirely — A's row is byte-identical (updated_at included).
+      expect(JSON.stringify(catalogRowById(db2, A)), 'A must be byte-identical after the merge').toBe(before.targetRow)
+      // B is gone — the merge is the module's only catalog-row deleter.
+      expect(catalogRowById(db2, B), 'B must be deleted').toBeNull()
+      // Both of B's snapshots now link to A; A's own snapshot is untouched.
+      expect(productRow(db2, snapB1).source_coffee_product_id).toBe(A)
+      expect(productRow(db2, snapB2).source_coffee_product_id).toBe(A)
+      expect(productRow(db2, snapA).source_coffee_product_id).toBe(A)
+      // No snapshot mutation beyond the link column, no order/financial event
+      // (the GSO-T6 lesson: a merge is a metadata repointing).
+      expect(tableSnapshot(db2, 'products', ['source_coffee_product_id']),
+        'the merge writes EXACTLY source_coffee_product_id on products').toBe(before.productsMinusLink)
+      expect(tableSnapshot(db2, 'order_items'), 'order_items must not move').toBe(before.orderItems)
+      expect(tableSnapshot(db2, 'orders'), 'orders must not move').toBe(before.orders)
+      expect(db2.prepare('SELECT COUNT(*) AS n FROM transactions').get().n,
+        'a merge must never write a transactions row').toBe(before.transactionsCount)
+    } finally {
+      db2.close()
+    }
+
+    // Convergence per §UC-PC-007: a repeated merge of the now-deleted source is
+    // a plain 404 ("either id unknown") — not an idempotent 200.
+    const again = await merge(A, B)
+    expect(again.status(), 'repeat merge of a deleted source is 404').toBe(404)
+    const db3 = openDb()
+    try {
+      expect(JSON.stringify(catalogRowById(db3, A)), 'the repeat attempt writes nothing').toBe(before.targetRow)
+    } finally {
+      db3.close()
+    }
+  })
+})
+
+// ── 8. merge refusals: 409 cross-roastery, 400 self/shape, 404 ordering ──────
+
+test.describe('UC-PC-007 — refusals', () => {
+  test('cross-roastery merge is 409 field:roastery with NOTHING written (byte-compare)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const nameA = `${uniq()} Modra Hora`
+    const nameB = `${nameA} Honey`
+    const otherRoastery = `Praziaren ${uniq()}`
+    const db = openDb()
+    let A, B, before
+    try {
+      A = seedCatalog(db, { name: nameA, price_250g: 9 })
+      B = seedCatalog(db, { name: nameB, price_250g: 8, roastery: otherRoastery })
+      const c = seedCycle(db, `${nameA} c`, 'coffee')
+      seedSnapshot(db, c, { name: nameB, price_250g: 8, roastery: otherRoastery, source_coffee_product_id: B })
+      before = {
+        catalog: tableSnapshot(db, 'coffee_products'),
+        products: tableSnapshot(db, 'products'),
+      }
+    } finally {
+      db.close()
+    }
+
+    const res = await merge(A, B)
+    expect(res.status()).toBe(409)
+    const body = await res.json()
+    expect(body.field).toBe('roastery')
+
+    const db2 = openDb()
+    try {
+      expect(tableSnapshot(db2, 'coffee_products'), 'a refused merge writes nothing to the catalog').toBe(before.catalog)
+      expect(tableSnapshot(db2, 'products'), 'a refused merge repoints nothing').toBe(before.products)
+    } finally {
+      db2.close()
+    }
+  })
+
+  test('self-merge is 400', async () => {
+    const id = await importOne(`${uniq()} Sam So Sebou`)
+    const res = await merge(id, id)
+    expect(res.status()).toBe(400)
+  })
+
+  test('unknown ids are 404 — either side, before any state 4xx', async () => {
+    const id = await importOne(`${uniq()} Osamely`)
+    // Unknown target, real source: 404 (and the source must survive).
+    expect((await merge(999999999, id)).status()).toBe(404)
+    // Real target, unknown source: 404.
+    expect((await merge(id, 999999999)).status()).toBe(404)
+    // Both unknown: still 404, never a 409 about state that cannot be known.
+    expect((await merge(999999998, 999999999)).status()).toBe(404)
+  })
+
+  test('missing or unbindable source_id is 400', async () => {
+    const id = await importOne(`${uniq()} Bez Zdroja`)
+    expect((await ctx.post(`/api/coffee-products/${id}/merge`, { headers: admin(), data: {} })).status(),
+      'missing source_id').toBe(400)
+    expect((await ctx.post(`/api/coffee-products/${id}/merge`, {
+      headers: admin(), data: { source_id: { a: 1 } },
+    })).status(), 'object source_id (bindValue)').toBe(400)
+    expect((await ctx.post(`/api/coffee-products/${id}/merge`, {
+      headers: admin(), data: { source_id: [1, 2] },
+    })).status(), 'array source_id (bindValue)').toBe(400)
+  })
+})
+
+// ── 9. the acceptance pin: a later import never resurrects B blindly ─────────
+
+test.describe('UC-PC-007 — post-merge imports meet the survivor', () => {
+  test('importing B’s name after the merge fuzzy-flags against A; importing A’s name exact-matches A', async () => {
+    const nameA = `${uniq()} Ruzovy Bourbon`
+    const nameB = `${nameA} Honey`
+    // One sheet, two rows: B lands as new + pending_fuzzy against A.
+    const first = await importCsv(csvFor([
+      { name: nameA, p250: '9,0' },
+      { name: nameB, p250: '8,0' },
+    ]))
+    expect(first.status()).toBe(201)
+    const r1 = (await first.json()).report
+    const A = r1.new.find((e) => e.name === nameA).catalog_id
+    const B = r1.new.find((e) => e.name === nameB).catalog_id
+
+    expect((await merge(A, B)).status()).toBe(200)
+
+    // B's sheet name in a LATER fresh import: a new row is created (the names
+    // genuinely differ) but it is FLAGGED against the survivor A — never a
+    // blind resurrection of B, and never a candidate pointing at the dead B.
+    const second = await importCsv(csvFor([{ name: nameB, p250: '8,5' }]))
+    expect(second.status()).toBe(201)
+    const r2 = (await second.json()).report
+    const reborn = r2.new.find((e) => e.name === nameB)
+    expect(reborn, 'B’s name imports as new (its identity no longer exists)').toBeTruthy()
+    expect(reborn.catalog_id, 'a fresh row, never B’s id back from the dead').not.toBe(B)
+    const flag = r2.pending_fuzzy.find((e) => e.catalog_id === reborn.catalog_id)
+    expect(flag, 'the re-import must be fuzzy-flagged').toBeTruthy()
+    expect(flag.candidate_catalog_id, 'the candidate is the SURVIVOR A').toBe(A)
+
+    // A's own name exact-matches the survivor — nothing new is created.
+    const third = await importCsv(csvFor([{ name: nameA, p250: '9,0' }]))
+    expect(third.status()).toBe(201)
+    const r3 = (await third.json()).report
+    expect(r3.matched.some((e) => e.catalog_id === A), 'A’s name exact-matches the survivor').toBe(true)
+    expect(r3.new.some((e) => e.name === nameA)).toBe(false)
+  })
+
+  test('after a merge, a /migrate re-run links a still-unlinked snapshot to the SURVIVOR (the re-runnability seam)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const stem = `${uniq()} Zeleny Vrch`
+    const variant = `${stem} Honey`
+    const db = openDb()
+    try {
+      const c1 = seedCycle(db, `${stem} c1`, 'coffee')
+      const c2 = seedCycle(db, `${stem} c2`, 'coffee')
+      seedSnapshot(db, c1, { name: stem, price_250g: 8 })
+      seedSnapshot(db, c2, { name: variant, price_250g: 9 })
+    } finally {
+      db.close()
+    }
+
+    // First migration: two rows + a fuzzy_review pair (the PC-T4 behavior).
+    expect((await migrate()).status()).toBe(200)
+    const db2 = openDb()
+    let A, B, c3
+    try {
+      A = catalogByNormalized(db2, stem.toLowerCase())[0].id
+      B = catalogByNormalized(db2, variant.toLowerCase())[0].id
+      c3 = seedCycle(db2, `${stem} c3`, 'coffee')
+    } finally {
+      db2.close()
+    }
+
+    // The admin resolves the fuzzy pair with the merge…
+    expect((await merge(A, B)).status()).toBe(200)
+
+    // …and a LATER unlinked snapshot bearing the survivor's identity is picked
+    // up by the re-run and linked to A — B is never recreated.
+    const db3 = openDb()
+    let lateSnap
+    try {
+      lateSnap = seedSnapshot(db3, c3, { name: stem.toUpperCase(), price_250g: 8.5 })
+    } finally {
+      db3.close()
+    }
+    const rerun = await migrate()
+    expect(rerun.status()).toBe(200)
+    expect((await rerun.json()).unlinked_remaining).toBe(0)
+
+    const db4 = openDb()
+    try {
+      expect(productRow(db4, lateSnap).source_coffee_product_id, 'the late snapshot links to the survivor').toBe(A)
+      expect(catalogByNormalized(db4, stem.toLowerCase())).toHaveLength(1)
+      expect(catalogByNormalized(db4, variant.toLowerCase()), 'B’s identity is not resurrected by the re-run').toHaveLength(0)
+    } finally {
+      db4.close()
+    }
+  })
+})
+
+// ── 10. UC-PC-008 — the stateless duplicates review ───────────────────────────
+
+test.describe('UC-PC-008 — GET /duplicates', () => {
+  test('a fuzzy pair is listed with the exact shape, in-band similarity, and the list is similarity-DESC', async () => {
+    const nameA = `${uniq()} Zlaty Klas`
+    const nameB = `${nameA} Honey`
+    const A = await importOne(nameA)
+    const B = await importOne(nameB)
+
+    const res = await duplicates()
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(Object.keys(body)).toEqual(['pairs'])
+
+    const pair = body.pairs.find(
+      (p) => (p.a.id === A && p.b.id === B) || (p.a.id === B && p.b.id === A)
+    )
+    expect(pair, 'the near-miss pair must be listed').toBeTruthy()
+    expect(Object.keys(pair).sort()).toEqual(['a', 'b', 'similarity'])
+    expect(Object.keys(pair.a).sort()).toEqual(['cycles_count', 'id', 'name'])
+    expect(Object.keys(pair.b).sort()).toEqual(['cycles_count', 'id', 'name'])
+    expect(pair.similarity).toBeGreaterThanOrEqual(0.75)
+    expect(pair.similarity).toBeLessThan(1)
+    // Import-created rows have no snapshots — zero cycles each.
+    expect(pair.a.cycles_count).toBe(0)
+    expect(pair.b.cycles_count).toBe(0)
+
+    // Ordered by similarity DESC across the whole (shared-DB) list.
+    for (let i = 1; i < body.pairs.length; i++) {
+      expect(body.pairs[i - 1].similarity).toBeGreaterThanOrEqual(body.pairs[i].similarity)
+    }
+  })
+
+  test('after the merge the pair disappears from the recompute (stateless resolution)', async () => {
+    const nameA = `${uniq()} Biela Skala`
+    const nameB = `${nameA} Honey`
+    const A = await importOne(nameA)
+    const B = await importOne(nameB)
+
+    const beforeRes = await duplicates()
+    const beforePairs = (await beforeRes.json()).pairs
+    expect(beforePairs.some((p) => (p.a.id === A && p.b.id === B) || (p.a.id === B && p.b.id === A)),
+      'non-vacuity: the pair exists before the merge').toBe(true)
+
+    expect((await merge(A, B)).status()).toBe(200)
+
+    const afterRes = await duplicates()
+    const afterPairs = (await afterRes.json()).pairs
+    expect(afterPairs.some((p) => p.a.id === B || p.b.id === B), 'the deleted row appears in no pair').toBe(false)
+    expect(afterPairs.some((p) => (p.a.id === A && p.b.id === B) || (p.a.id === B && p.b.id === A))).toBe(false)
+  })
+
+  test('dissimilar names never pair; a same-name pair across DIFFERENT roasteries never pairs', async () => {
+    const rnd = () => Math.random().toString(36).slice(2, 14)
+    // Deliberately NO shared uniq() stem — a long common prefix would put two
+    // "different" fixtures inside the fuzzy band by construction.
+    const alfa = await importOne(`Alfa ${rnd()}`)
+    const omega = await importOne(`Omega ${rnd()}`)
+    // Near-miss names, but in two different roasteries: matching is
+    // within-roastery only (resolved decision 3).
+    const stem = `${uniq()} Hraniciar`
+    const gor = await importOne(stem)
+    const other = await importOne(`${stem} Honey`, {}, `Praziaren ${rnd()}`)
+
+    const res = await duplicates()
+    expect(res.status()).toBe(200)
+    const { pairs } = await res.json()
+    const joins = (x, y) => pairs.some((p) => (p.a.id === x && p.b.id === y) || (p.a.id === y && p.b.id === x))
+    expect(joins(alfa, omega), 'dissimilar names must not pair').toBe(false)
+    expect(joins(gor, other), 'cross-roastery near-misses must not pair').toBe(false)
+  })
+
+  test('cycles_count counts DISTINCT cycles of linked snapshots, and a retired duplicate is still listed', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const nameA = `${uniq()} Sedy Kamen`
+    const nameB = `${nameA} Honey`
+    const db = openDb()
+    let A, B
+    try {
+      A = seedCatalog(db, { name: nameA, price_250g: 9 })
+      // Status ANY: a retired duplicate still pollutes history until merged.
+      B = seedCatalog(db, { name: nameB, price_250g: 8, status: 'retired' })
+      const c1 = seedCycle(db, `${nameA} c1`, 'coffee')
+      const c2 = seedCycle(db, `${nameA} c2`, 'coffee')
+      // A: three snapshots across TWO distinct cycles (DISTINCT is the pin);
+      // B: one snapshot in one cycle.
+      seedSnapshot(db, c1, { name: nameA, price_250g: 9, source_coffee_product_id: A })
+      seedSnapshot(db, c1, { name: nameA, price_250g: 9, source_coffee_product_id: A })
+      seedSnapshot(db, c2, { name: nameA, price_250g: 9, source_coffee_product_id: A })
+      seedSnapshot(db, c2, { name: nameB, price_250g: 8, source_coffee_product_id: B })
+    } finally {
+      db.close()
+    }
+
+    const res = await duplicates()
+    expect(res.status()).toBe(200)
+    const { pairs } = await res.json()
+    const pair = pairs.find(
+      (p) => (p.a.id === A && p.b.id === B) || (p.a.id === B && p.b.id === A)
+    )
+    expect(pair, 'a retired duplicate must still be listed (status ANY)').toBeTruthy()
+    const entryA = pair.a.id === A ? pair.a : pair.b
+    const entryB = pair.a.id === B ? pair.a : pair.b
+    expect(entryA.cycles_count, 'A: 3 snapshots but 2 DISTINCT cycles').toBe(2)
+    expect(entryB.cycles_count).toBe(1)
   })
 })

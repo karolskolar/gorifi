@@ -62,6 +62,9 @@ const ADMIN_ENDPOINTS = [
   { method: 'post', path: '/api/coffee-products/import-gsheet-multirow', data: { url: 'https://docs.google.com/spreadsheets/d/x/edit' } },
   // 12 §UC-PC-006 (PC-T4): the historical migration.
   { method: 'post', path: '/api/coffee-products/migrate' },
+  // 12 §UC-PC-007/008 (PC-T5): merge tool + stateless duplicates review.
+  { method: 'post', path: '/api/coffee-products/1/merge', data: { source_id: 2 } },
+  { method: 'get', path: '/api/coffee-products/duplicates' },
 ]
 
 const PUBLIC_ENDPOINTS = [
