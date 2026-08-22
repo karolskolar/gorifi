@@ -6,7 +6,13 @@ import { safeFetch } from '../helpers/safe-fetch.js';
 // extracted VERBATIM into helpers/import-parsing.js — the catalog import
 // (routes/coffee-products.js) shares it. The three per-cycle import routes
 // below are otherwise UNTOUCHED and retire wholesale in PC-T8 (UC-PC-013).
-import { parseCsvProducts, parseGsheetCsvProducts, parseMultiRowProducts, fetchGsheetCsv } from '../helpers/import-parsing.js';
+import { parseCsvProducts, parseGsheetCsvProducts, parseMultiRowProducts, fetchGsheetCsv, parsePrice } from '../helpers/import-parsing.js';
+// PC-T3 (12 §UC-PC-005): the manual per-cycle POST is the ONE sanctioned
+// add-to-an-existing-cycle path and funnels its catalog half through the SAME
+// consolidation layer as the importers. helpers/catalog.js stays the one
+// normalizer (imported via catalog-import.js — never re-inlined here).
+import { consolidateCatalogRow, exactCatalogMatch, singleRowReport } from '../helpers/catalog-import.js';
+import { normalizeProductName, normalizeRoastery } from '../helpers/catalog.js';
 import { cycleAvailability } from '../helpers/stock.js';
 import { imageFromUpload, imageFromBody, detectImageMime } from '../helpers/image-upload.js';
 import { uploadSingle } from '../helpers/multipart.js';
@@ -89,13 +95,96 @@ router.post('/', requireAdmin, uploadSingle('image'), (req, res) => {
     image = built.image;
   }
 
-  const result = db.prepare(`
-    INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, image, roastery, stock_limit_g)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g || null, price_1kg, price_20pc5g, image, roastery || null, stock_limit_g ? parseInt(stock_limit_g) : null);
+  // The snapshot INSERT, byte-for-byte the pre-PC-T3 statement plus the
+  // source_coffee_product_id link (12 §UC-PC-005: "INSERTs the snapshot as
+  // today PLUS source_coffee_product_id").
+  const insertSnapshot = (sourceCoffeeProductId) => db.prepare(`
+    INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, image, roastery, stock_limit_g, source_coffee_product_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g || null, price_1kg, price_20pc5g, image, roastery || null, stock_limit_g ? parseInt(stock_limit_g) : null, sourceCoffeeProductId);
 
-  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(result.lastInsertRowid);
-  res.status(201).json(product);
+  // PC-T3 (12 §UC-PC-005): consolidation runs ONLY when the target cycle is a
+  // coffee cycle — bakery-cycle rows are never consolidated and never touch
+  // coffee_products (brief Decision 6). A nonexistent cycle_id has no type, so
+  // it takes the plain path and fails on the products FK exactly as before
+  // (500 — pinned by image-upload.spec.js's FK-fault probe; crucially it must
+  // not leave an orphan catalog row behind).
+  const cycle = db.prepare('SELECT type FROM order_cycles WHERE id = ?').get(cycle_id);
+  const isCoffeeCycle = !!cycle && (cycle.type || 'coffee') === 'coffee';
+
+  if (!isCoffeeCycle) {
+    const result = insertSnapshot(null);
+    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(result.lastInsertRowid);
+    return res.status(201).json(product);
+  }
+
+  // The catalog half sees the body the way the importers see a sheet row: the
+  // admin form posts prices as strings, so they go through the SAME parsePrice
+  // an imported price gets (a non-price stays off the row — consolidation
+  // treats only numbers as "supplied").
+  const parsedRow = {
+    name,
+    description1,
+    description2,
+    roast_type,
+    purpose,
+    price_150g: parsePrice(price_150g),
+    price_200g: parsePrice(price_200g),
+    price_250g: parsePrice(price_250g),
+    price_500g: parsePrice(price_500g),
+    price_1kg: parsePrice(price_1kg),
+    price_20pc5g: parsePrice(price_20pc5g),
+  };
+
+  // ONE synchronous transaction for the whole coffee path (the handler has no
+  // await anywhere — the GA-T8 discipline): the duplicate check, the catalog
+  // write and the snapshot INSERT commit or roll back together, so a refused
+  // POST writes nothing and an FK failure cannot strand a catalog row.
+  const createConsolidated = db.transaction(() => {
+    // Duplicate guard (12 §UC-PC-005): a POST whose exact match already has a
+    // snapshot in the TARGET cycle is refused BEFORE consolidateCatalogRow runs
+    // — a 409 must not even apply the decision-13 price refresh. "Has a
+    // snapshot" is checked by link AND by normalized identity: snapshots made
+    // before PC-T3 (or before the PC-T4 migration runs) carry no
+    // source_coffee_product_id, and re-adding one of those is the same admin
+    // mistake the module exists to catch. Active rows only — a soft-deleted
+    // product must stay re-addable.
+    const match = exactCatalogMatch(name, roastery);
+    if (match) {
+      const inCycle = db.prepare(
+        'SELECT name, roastery, source_coffee_product_id FROM products WHERE cycle_id = ? AND active = 1'
+      ).all(cycle_id);
+      const dup = inCycle.some((p) =>
+        p.source_coffee_product_id === match.id ||
+        (normalizeProductName(p.name) === match.normalized_name && normalizeRoastery(p.roastery) === match.roastery)
+      );
+      if (dup) return { duplicate: true };
+    }
+
+    // opts.image — the UC-PC-005 dual store: the image lands on the SNAPSHOT
+    // via insertSnapshot (existing behavior, wins the UC-PC-012 COALESCE) and,
+    // when the row CREATES a catalog entry, additionally on the new catalog row
+    // (the friction win — the next cycle reuses it). A MATCH never writes the
+    // catalog image: image is admin-only there (resolved decision 13).
+    const rowResult = consolidateCatalogRow(parsedRow, roastery, { image });
+    const report = singleRowReport(rowResult);
+    // 'skipped' (a name that normalizes to '') keeps today's snapshot-only
+    // behavior: no catalog row exists to link.
+    const sourceId = rowResult.outcome === 'skipped' ? null : rowResult.catalog_id;
+    const result = insertSnapshot(sourceId);
+    return { productId: result.lastInsertRowid, report };
+  });
+
+  const created = createConsolidated();
+  if (created.duplicate) {
+    return res.status(409).json({ error: 'Produkt už v tomto cykle existuje.', reason: 'duplicate_in_cycle' });
+  }
+
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(created.productId);
+  // Byte-compatible 201: the snapshot row at the top level (this endpoint's
+  // consumers read fields straight off the body) plus the UC-PC-004 report
+  // with exactly one row accounted for.
+  res.status(201).json({ ...product, report: created.report });
 });
 
 // Import products from CSV (admin)

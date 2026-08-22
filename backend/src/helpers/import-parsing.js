@@ -19,7 +19,10 @@ import { safeFetch } from './safe-fetch.js';
 // Parse prices - handle various formats.
 // (Verbatim from products.js — it was defined inline, identically, in both the
 // CSV and the gsheet column-mapping loops.)
-function parsePrice(val) {
+// Exported for PC-T3 (12 §UC-PC-005): the manual POST's body prices arrive as
+// admin-form strings and must become numbers for the catalog half — parsed by
+// the SAME rules an imported price gets, never by a second parser.
+export function parsePrice(val) {
   if (!val) return null;
   const cleaned = String(val).replace(/[^\d.,]/g, '').replace(',', '.');
   const num = parseFloat(cleaned);

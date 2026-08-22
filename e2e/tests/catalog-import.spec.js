@@ -527,3 +527,257 @@ test.describe('UC-PC-003 — parsing extracted, consolidation shared (structural
     expect(plain[0].description2, 'the plain CSV mapper deliberately keeps its narrower alias set').toBe('')
   })
 })
+
+// ── 9. UC-PC-005 — the manual per-cycle POST joins the consolidation (PC-T3) ──
+//
+// `POST /api/products` is the ONE sanctioned add-to-an-existing-cycle path
+// (resolved decision 11: it ADDS a snapshot to an open cycle, never mutates an
+// existing one). For a coffee cycle it funnels through the SAME
+// consolidateCatalogRow as the importers — exact match ⇒ link + decision-13
+// refresh, no match ⇒ create, fuzzy near-miss ⇒ create-as-new-but-flagged —
+// and the 201 keeps returning the snapshot row (byte-compatible) plus the
+// UC-PC-004 `report` with exactly one row accounted for. Bakery cycles never
+// touch coffee_products (brief Decision 6).
+
+// Route message, verbatim from the spec (12 §UC-PC-005) and the handler.
+const DUP_IN_CYCLE = 'Produkt už v tomto cykle existuje.'
+
+// A real PNG's magic bytes as a data: URI — the body-image path (imageFromBody).
+const PNG_DATA_URI = 'data:image/png;base64,' +
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]).toString('base64')
+
+async function createCycle(type) {
+  const res = await ctx.post('/api/cycles', {
+    headers: admin(),
+    data: { name: `PCT3 cyklus ${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, ...(type ? { type } : {}) },
+  })
+  expect(res.status(), 'cycle fixture must be creatable').toBe(201)
+  return (await res.json()).id
+}
+
+function postProduct(cycleId, fields) {
+  return ctx.post('/api/products', { headers: admin(), data: { cycle_id: cycleId, ...fields } })
+}
+
+function catalogCountByName(name) {
+  const db = openDb()
+  try {
+    return db.prepare('SELECT COUNT(*) AS n FROM coffee_products WHERE name = ?').get(name).n
+  } finally {
+    db.close()
+  }
+}
+
+test.describe('UC-PC-005 — manual POST of a NEW name', () => {
+  test('creates a catalog row, links the snapshot, and the 201 stays the snapshot row plus a one-row report', async () => {
+    const cycleId = await createCycle()
+    const name = `${uniq()} Manual Cerro`
+    const res = await postProduct(cycleId, {
+      name, description1: 'Washed', description2: 'kvety',
+      roast_type: 'Light roast', purpose: 'Filter', price_250g: '8.9', price_1kg: 35.3,
+    })
+    expect(res.status()).toBe(201)
+    const body = await res.json()
+
+    // Byte-compatible snapshot row at the top level — this endpoint survives,
+    // so its consumers matter (they read fields straight off the body).
+    expect(typeof body.id).toBe('number')
+    expect(body.cycle_id).toBe(cycleId)
+    expect(body.name).toBe(name)
+    expect(body.description1).toBe('Washed')
+
+    // …plus the SAME report shape the importers return (UC-PC-004).
+    expect(Object.keys(body.report).sort()).toEqual(
+      ['matched', 'new', 'pending_fuzzy', 'price_changes', 'summary', 'unparsed'])
+    expect(Object.keys(body.report.summary).sort()).toEqual(
+      ['matched', 'new', 'pending_fuzzy', 'price_changes', 'unparsed'])
+    expect(body.report.summary.new).toBe(1)
+    expect(body.report.summary.matched).toBe(0)
+    expect(body.report.summary.price_changes).toBe(0)
+    expect(body.report.summary.unparsed).toBe(0)
+    expect(body.report.new).toHaveLength(1)
+    expect(Object.keys(body.report.new[0]).sort()).toEqual(['catalog_id', 'name', 'needs_image'])
+    expect(body.report.new[0].name).toBe(name)
+    expect(body.report.new[0].needs_image, 'no image posted ⇒ the catalog row needs one').toBe(true)
+
+    // The snapshot is born linked to the created catalog row.
+    expect(body.source_coffee_product_id).toBe(body.report.new[0].catalog_id)
+  })
+
+  test('the created catalog row carries the manual fields, with string prices parsed as numbers (DB readback)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const cycleId = await createCycle()
+    const name = `${uniq()} Manual Huila`
+    const res = await postProduct(cycleId, {
+      name, description2: 'jahoda', roast_type: 'Medium roast', purpose: 'Espresso',
+      price_250g: '9,4 EUR', price_1kg: '39',
+    })
+    expect(res.status()).toBe(201)
+    const row = catalogRowByName(name)
+    expect(row).not.toBeNull()
+    expect(row.price_250g, 'a string price is a number on the catalog row').toBe(9.4)
+    expect(row.price_1kg).toBe(39)
+    expect(row.description2).toBe('jahoda')
+    expect(row.roast_type).toBe('Medium roast')
+    expect(row.purpose).toBe('Espresso')
+    expect(row.status).toBe('available')
+    expect(row.image).toBeNull()
+  })
+})
+
+test.describe('UC-PC-005 — manual POST of a KNOWN name', () => {
+  test('links to the EXISTING catalog row — no new catalog row — and the manual price refreshes the catalog like an imported one', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const name = `${uniq()} Manual Geisha`
+    // The catalog knows the product from an import…
+    const imported = await importCsv(csvFor([{ name, purpose: 'Filter', p250: '8,9', p1kg: '35' }]))
+    const catalogId = (await imported.json()).report.new[0].catalog_id
+
+    // …and the manual POST (a mid-cycle addition) exact-matches it.
+    const cycleId = await createCycle()
+    const res = await postProduct(cycleId, { name, purpose: 'Filter', price_250g: '9.4', price_1kg: '35' })
+    expect(res.status()).toBe(201)
+    const body = await res.json()
+    expect(body.report.summary).toEqual({ new: 0, matched: 1, price_changes: 1, pending_fuzzy: 0, unparsed: 0 })
+    expect(body.report.matched).toEqual([{ catalog_id: catalogId, name }])
+    expect(body.report.price_changes).toEqual([
+      { catalog_id: catalogId, name, field: 'price_250g', old: 8.9, new: 9.4 },
+    ])
+    expect(body.source_coffee_product_id).toBe(catalogId)
+
+    expect(catalogCountByName(name), 'exactly one catalog row — matched, never duplicated').toBe(1)
+    expect(catalogRowByName(name).price_250g, 'the manual price IS the current sell price').toBe(9.4)
+  })
+})
+
+test.describe('UC-PC-005 — duplicate_in_cycle', () => {
+  test('a repeated exact-name POST into the SAME cycle is refused with 409 and the pinned body', async () => {
+    const cycleId = await createCycle()
+    const name = `${uniq()} Manual Dulce`
+    expect((await postProduct(cycleId, { name, price_250g: '8' })).status()).toBe(201)
+
+    const res = await postProduct(cycleId, { name, price_250g: '99' })
+    expect(res.status()).toBe(409)
+    const body = await res.json()
+    expect(body).toEqual({ error: DUP_IN_CYCLE, reason: 'duplicate_in_cycle' })
+
+    // The one-normalizer rule: a case/punctuation variant of the same identity
+    // is the same duplicate.
+    const variant = await postProduct(cycleId, { name: name.toUpperCase() + '!', price_250g: '99' })
+    expect(variant.status()).toBe(409)
+    expect((await variant.json()).reason).toBe('duplicate_in_cycle')
+
+    // The same name into a DIFFERENT cycle is the legitimate mid-cycle path.
+    const otherCycle = await createCycle()
+    expect((await postProduct(otherCycle, { name, price_250g: '8' })).status()).toBe(201)
+  })
+
+  test('the 409 writes NOTHING — catalog and products byte-identical, no decision-13 refresh (byte-compare)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const cycleId = await createCycle()
+    const name = `${uniq()} Manual Frozen`
+    await postProduct(cycleId, { name, description2: 'stary profil', price_250g: '8' })
+
+    const catalogBefore = tableSnapshot('coffee_products')
+    const productsBefore = tableSnapshot('products')
+    // A different price + description: a leak through the refresh path would
+    // move the catalog row even though the POST was refused.
+    const res = await postProduct(cycleId, { name, description2: 'novy profil', price_250g: '99' })
+    expect(res.status()).toBe(409)
+    expect(tableSnapshot('coffee_products'), 'the refused POST may not write a single catalog byte').toBe(catalogBefore)
+    expect(tableSnapshot('products'), 'the refused POST may not write a single products byte').toBe(productsBefore)
+  })
+})
+
+test.describe('UC-PC-005 — bakery-cycle exemption (brief Decision 6)', () => {
+  test('a bakery-cycle POST returns the plain snapshot row: no report, no link, and no 409 on repeat', async () => {
+    const cycleId = await createCycle('bakery')
+    const name = `${uniq()} Makovnik`
+    const res = await postProduct(cycleId, { name, price_250g: '4' })
+    expect(res.status()).toBe(201)
+    const body = await res.json()
+    expect(body.report, 'bakery rows are never consolidated — no report').toBeUndefined()
+    expect(body.source_coffee_product_id).toBeNull()
+
+    // The duplicate guard is catalog-borne, so it must not leak into bakery:
+    // a repeated POST keeps today's behavior (a second row).
+    const again = await postProduct(cycleId, { name, price_250g: '4' })
+    expect(again.status(), 'bakery cycles keep the pre-PC-T3 duplicate behavior').toBe(201)
+  })
+
+  test('a bakery-cycle POST leaves coffee_products byte-identical (byte-compare)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const cycleId = await createCycle('bakery')
+    const before = tableSnapshot('coffee_products')
+    const res = await postProduct(cycleId, { name: `${uniq()} Orechovnik`, price_250g: '4' })
+    expect(res.status()).toBe(201)
+    expect(tableSnapshot('coffee_products'), 'a bakery POST may not touch the coffee catalog').toBe(before)
+  })
+})
+
+test.describe('UC-PC-005 — fuzzy near-miss via manual POST', () => {
+  test('a near-miss name is created AND flagged, exactly like an imported one', async () => {
+    const stem = `${uniq()} Manual Pink Bourbon`
+    const first = await importCsv(csvFor([{ name: stem, purpose: 'Filter', p250: '9' }]))
+    const candidateId = (await first.json()).report.new[0].catalog_id
+
+    const cycleId = await createCycle()
+    const res = await postProduct(cycleId, { name: `${stem} Honey`, purpose: 'Filter', price_250g: '10' })
+    expect(res.status()).toBe(201)
+    const body = await res.json()
+    expect(body.report.summary.new, 'never auto-merged — the row is created').toBe(1)
+    expect(body.report.summary.pending_fuzzy).toBe(1)
+    const fuzzy = body.report.pending_fuzzy[0]
+    expect(Object.keys(fuzzy).sort()).toEqual(
+      ['candidate_catalog_id', 'candidate_name', 'catalog_id', 'name', 'similarity'])
+    expect(fuzzy.catalog_id).toBe(body.report.new[0].catalog_id)
+    expect(fuzzy.candidate_catalog_id).toBe(candidateId)
+    expect(body.source_coffee_product_id, 'the snapshot links to the NEW row, not the candidate').toBe(body.report.new[0].catalog_id)
+  })
+})
+
+test.describe('UC-PC-005 — image dual-store', () => {
+  test('an image on a CREATING POST lands on the snapshot AND the new catalog row; needs_image is false', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const cycleId = await createCycle()
+    const name = `${uniq()} Manual Foto`
+    const res = await postProduct(cycleId, { name, price_250g: '8', image: PNG_DATA_URI })
+    expect(res.status()).toBe(201)
+    const body = await res.json()
+    expect(body.image, 'existing behavior: the snapshot keeps its own image').toBe(PNG_DATA_URI)
+    expect(body.report.new[0].needs_image).toBe(false)
+    expect(catalogRowByName(name).image, 'the friction win: the next cycle reuses this image').toBe(PNG_DATA_URI)
+  })
+
+  test('an image on a MATCHING POST stays on the snapshot only — image is admin-only on the catalog (decision 13)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const name = `${uniq()} Manual Bez Fotky`
+    await importCsv(csvFor([{ name, p250: '8' }])) // catalog row, image NULL
+    const cycleId = await createCycle()
+    const res = await postProduct(cycleId, { name, price_250g: '8', image: PNG_DATA_URI })
+    expect(res.status()).toBe(201)
+    const body = await res.json()
+    expect(body.report.summary.matched).toBe(1)
+    expect(body.image).toBe(PNG_DATA_URI)
+    expect(catalogRowByName(name).image, 'a match never writes the catalog image').toBeNull()
+  })
+})
+
+test.describe('UC-PC-005 — guards and structure', () => {
+  test('the existing cycle_id/name 400 still fires first', async () => {
+    const res = await ctx.post('/api/products', { headers: admin(), data: { name: 'no cycle' } })
+    expect(res.status()).toBe(400)
+    expect((await res.json()).error).toBe('cycle_id a nazov su povinne')
+  })
+
+  test('the manual POST funnels through the ONE consolidation layer (structural)', () => {
+    const src = readFileSync(join(REPO_ROOT, 'backend', 'src', 'routes', 'products.js'), 'utf8')
+    expect(src).toContain("from '../helpers/catalog-import.js'")
+    // Exactly one consolidation call site — the manual POST; the legacy
+    // per-cycle importers stay catalog-blind until they retire (PC-T8).
+    expect((src.match(/consolidateCatalogRow\(/g) || []).length).toBe(1)
+    // No inline catalog SQL: the helper stays the only coffee_products writer.
+    expect(src).not.toMatch(/INSERT INTO coffee_products/)
+    expect(src).not.toMatch(/UPDATE coffee_products/)
+  })
+})

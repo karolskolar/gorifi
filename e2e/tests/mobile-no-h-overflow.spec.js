@@ -35,12 +35,19 @@ test.describe('Mobile layout — no horizontal document overflow', () => {
 
     // Enough purposes that the tab strip cannot fit a phone viewport, plus the long
     // name + nowrap badges that squeezed the title column in the original report.
+    //
+    // Retargeted under 12 §UC-PC-005 (PC-T3), case (a) of the e2e-immutability
+    // rule: the manual POST now refuses a repeated exact name in one cycle with
+    // 409 `duplicate_in_cycle`, so five same-name rows are impossible by design.
+    // A per-purpose suffix keeps the SAME property under test (five purpose tabs,
+    // a long product name) — the literal names also keep re-runs against a
+    // long-lived DB convergent (later runs 409 silently onto the existing rows).
     for (const [i, purpose] of PURPOSES.entries()) {
       await request.post('/api/products', {
         headers: admin,
         data: {
           cycle_id: cycleId,
-          name: 'Brazil Morada da Prata Natural',
+          name: `Brazil Morada da Prata Natural ${i + 1}`,
           purpose,
           roast_type: i === 0 ? 'Medium roast' : 'Medium & Full city roast',
           roastery: 'Goriffee',

@@ -188,6 +188,62 @@ export function consolidateCatalogRow(parsedRow, roastery, opts = {}) {
   };
 }
 
+// exactCatalogMatch(name, roastery) — PC-T3 (12 §UC-PC-005): the manual POST's
+// `duplicate_in_cycle` pre-check needs the WOULD-BE exact match BEFORE any
+// write happens (a refused POST must not even run the decision-13 price
+// refresh). Read-only; returns the catalog row or null. Kept here so the
+// normalization pair (normalizeProductName + normalizeRoastery) is applied by
+// the one consolidation home, never re-inlined in a route.
+export function exactCatalogMatch(name, roastery) {
+  const key = normalizeProductName(name);
+  if (key === '') return null;
+  return exactMatch(key, normalizeRoastery(roastery)) ?? null;
+}
+
+// singleRowReport(result) — PC-T3 (12 §UC-PC-005): the manual POST's 201 gains
+// the SAME UC-PC-004 report shape with exactly one row accounted for. The
+// bucket vocabulary is the contract importRowsIntoCatalog pins below; the
+// 'duplicate' outcome cannot occur here (no seenCatalogIds on a one-row call).
+// `unparsed.row` is null — there is no sheet row to point at (the warnings
+// precedent).
+export function singleRowReport(result) {
+  const report = {
+    summary: { new: 0, matched: 0, price_changes: 0, pending_fuzzy: 0, unparsed: 0 },
+    new: [],
+    matched: [],
+    price_changes: [],
+    pending_fuzzy: [],
+    unparsed: [],
+  };
+
+  if (result.outcome === 'skipped') {
+    report.unparsed.push({ row: null, reason: result.reason });
+  } else if (result.outcome === 'matched') {
+    report.matched.push({ catalog_id: result.catalog_id, name: result.name });
+    report.price_changes.push(...result.price_changes);
+  } else {
+    report.new.push({ catalog_id: result.catalog_id, name: result.name, needs_image: result.needs_image });
+    if (result.fuzzy) {
+      report.pending_fuzzy.push({
+        catalog_id: result.catalog_id,
+        name: result.name,
+        candidate_catalog_id: result.fuzzy.candidate_catalog_id,
+        candidate_name: result.fuzzy.candidate_name,
+        similarity: result.fuzzy.similarity,
+      });
+    }
+  }
+
+  report.summary = {
+    new: report.new.length,
+    matched: report.matched.length,
+    price_changes: report.price_changes.length,
+    pending_fuzzy: report.pending_fuzzy.length,
+    unparsed: report.unparsed.length,
+  };
+  return report;
+}
+
 // importRowsIntoCatalog(parsedRows, roastery, { warnings }) — the whole-import
 // orchestrator the three routes call. Runs EVERYTHING (lookups + writes) inside
 // ONE db.transaction and assembles the UC-PC-004 report:
