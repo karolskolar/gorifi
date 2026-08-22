@@ -33,6 +33,7 @@ import guestLinksRouter from './routes/guest-links.js';
 import guestOrdersRouter from './routes/guest-orders.js';
 import guestRouter from './routes/guest.js';
 import magicLinkRouter from './routes/magic-link.js';
+import coffeeProductsRouter from './routes/coffee-products.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -105,6 +106,13 @@ app.use('/api/order-items', requireAdmin, orderItemsRouter);
 // the MIXED-auth /api/guest-orders router next door — nothing a host or a guest
 // does touches this flag.
 app.use('/api/guest-order-items', requireAdmin, guestOrderItemsRouter);
+
+// Module 12 (PC-T2): the coffee-product catalog — WHOLE-MOUNT admin, like
+// bakery-products. No public/friend route may ever live on this router
+// (12 §UC-PC-009); module 13's friend-facing catalog reads are separate
+// Bearer-guarded routes. Every route on it also joins ADMIN_ENDPOINTS in
+// e2e/tests/api-security.spec.js.
+app.use('/api/coffee-products', requireAdmin, coffeeProductsRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {

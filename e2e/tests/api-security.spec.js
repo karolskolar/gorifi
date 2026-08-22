@@ -53,6 +53,13 @@ const ADMIN_ENDPOINTS = [
   { method: 'post', path: '/api/admin/google-allowlist', data: { id_token: 'TEST:evil:evil@example.test' } },
   { method: 'delete', path: '/api/admin/google-allowlist', data: { email: 'evil@example.test' } },
   { method: 'post', path: '/api/cycles', data: { name: 'evil' } },
+  // 12 §UC-PC-011 item 1 (PC-T2): the catalog import trio. The mount is
+  // whole-mount `requireAdmin` (`app.use('/api/coffee-products', requireAdmin,
+  // …)`), but the sweep still pins each route individually — a later
+  // restructure that un-wraps the mount must redden here.
+  { method: 'post', path: '/api/coffee-products/import' },
+  { method: 'post', path: '/api/coffee-products/import-gsheet', data: { url: 'https://docs.google.com/spreadsheets/d/x/edit' } },
+  { method: 'post', path: '/api/coffee-products/import-gsheet-multirow', data: { url: 'https://docs.google.com/spreadsheets/d/x/edit' } },
 ]
 
 const PUBLIC_ENDPOINTS = [
