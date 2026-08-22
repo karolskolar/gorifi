@@ -68,6 +68,11 @@ const ADMIN_ENDPOINTS = [
   // 12 §UC-PC-010 (PC-T6): cross-cycle statistics.
   { method: 'get', path: '/api/coffee-products/stats' },
   { method: 'get', path: '/api/coffee-products/1/stats' },
+  // 12 §UC-PC-009 (PC-T7): catalog CRUD — completes the module's 12 admin routes.
+  { method: 'get', path: '/api/coffee-products' },
+  { method: 'get', path: '/api/coffee-products/1' },
+  { method: 'patch', path: '/api/coffee-products/1', data: { country: 'evil' } },
+  { method: 'post', path: '/api/coffee-products/1/image' },
 ]
 
 const PUBLIC_ENDPOINTS = [

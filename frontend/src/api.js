@@ -493,6 +493,36 @@ export const api = {
   // — plus the refund queue (paid but cancelled).
   getGuestUnpaid: (cycleId) => adminRequest(`/guest-orders/cycle/${cycleId}/unpaid`),
 
+  // Coffee product catalog (admin) — module 12. The whole /coffee-products
+  // mount is requireAdmin server-side; all calls ride X-Admin-Token.
+  getCatalogProducts: (params = {}) => {
+    const query = new URLSearchParams()
+    for (const key of ['status', 'purpose', 'roastery', 'q']) {
+      if (params[key]) query.set(key, params[key])
+    }
+    const qs = query.toString()
+    return adminRequest(`/coffee-products${qs ? `?${qs}` : ''}`)
+  },
+  getCatalogProduct: (id) => adminRequest(`/coffee-products/${id}`),
+  updateCatalogProduct: (id, data) => adminRequest(`/coffee-products/${id}`, { method: 'PATCH', body: data }),
+  uploadCatalogProductImage: (id, formData) => adminRequest(`/coffee-products/${id}/image`, { method: 'POST', body: formData }),
+  importCatalogCSV: (formData) => adminRequest('/coffee-products/import', { method: 'POST', body: formData }),
+  importCatalogGsheet: (url, roastery) => adminRequest('/coffee-products/import-gsheet', { method: 'POST', body: { url, roastery: roastery || null } }),
+  importCatalogGsheetMultirow: (url, roastery) => adminRequest('/coffee-products/import-gsheet-multirow', { method: 'POST', body: { url, roastery: roastery || null } }),
+  migrateCatalog: () => adminRequest('/coffee-products/migrate', { method: 'POST' }),
+  getCatalogDuplicates: () => adminRequest('/coffee-products/duplicates'),
+  mergeCatalogProduct: (targetId, sourceId) => adminRequest(`/coffee-products/${targetId}/merge`, { method: 'POST', body: { source_id: sourceId } }),
+  // ⚠ `last_n_cycles` is OMITTED for all time, never sent empty — the route
+  // 400s on an empty value by design (see the comment at the route).
+  getCatalogStats: ({ purpose, lastNCycles } = {}) => {
+    const query = new URLSearchParams()
+    if (purpose) query.set('purpose', purpose)
+    if (Number.isInteger(lastNCycles) && lastNCycles > 0) query.set('last_n_cycles', String(lastNCycles))
+    const qs = query.toString()
+    return adminRequest(`/coffee-products/stats${qs ? `?${qs}` : ''}`)
+  },
+  getCatalogProductStats: (id) => adminRequest(`/coffee-products/${id}/stats`),
+
   // Roasteries
   getRoasteries: () => request('/roasteries'),
   createRoastery: (data) => request('/roasteries', { method: 'POST', body: data }),

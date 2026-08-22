@@ -464,9 +464,21 @@ test.describe('UC-PC-003 — parsing extracted, consolidation shared (structural
     expect(src).toContain("from '../helpers/catalog-import.js'")
     // Exactly three call sites — one per endpoint, nothing bespoke.
     expect((src.match(/importRowsIntoCatalog\(/g) || []).length).toBe(3)
-    // No inline catalog SQL in the routes: the helper is the only writer.
+    // No inline catalog SQL in the IMPORT half: the helper is the only
+    // import-path writer. ⚠ Re-pointed for PC-T7 (e2e-immutability case (a),
+    // 12 §UC-PC-009): the router now also carries the admin CRUD routes, whose
+    // PATCH/image handlers legitimately UPDATE coffee_products — so the blanket
+    // whole-file UPDATE ban became structurally unsatisfiable. The pinned
+    // property is unchanged: everything ABOVE the PC-T7 CRUD section (all three
+    // import endpoints) funnels through importRowsIntoCatalog with zero bespoke
+    // catalog SQL, and catalog-row CREATION still has exactly one home (no
+    // INSERT anywhere in the routes file — CRUD edits rows, never creates them).
+    const crudStart = src.indexOf('Catalog CRUD (PC-T7')
+    expect(crudStart, 'the PC-T7 CRUD section marker exists').toBeGreaterThan(-1)
+    const importHalf = src.slice(0, crudStart)
+    expect(importHalf).not.toMatch(/INSERT INTO coffee_products/)
+    expect(importHalf).not.toMatch(/UPDATE coffee_products/)
     expect(src).not.toMatch(/INSERT INTO coffee_products/)
-    expect(src).not.toMatch(/UPDATE coffee_products/)
   })
 
   test('the parser has ONE home and products.js re-imports it (pure relocation)', () => {

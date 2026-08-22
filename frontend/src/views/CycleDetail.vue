@@ -27,6 +27,9 @@ const error = ref('')
 
 // Product modal
 const showProductModal = ref(false)
+// Save errors render inside the product dialog (the module-11 modalError
+// lesson — the page Alert is hidden behind the radix overlay).
+const productModalError = ref('')
 const editingProduct = ref(null)
 const productForm = ref({
   name: '', description1: '', description2: '', roast_type: '', purpose: '', price_150g: '', price_200g: '', price_250g: '', price_500g: '', price_1kg: '', price_20pc5g: '', image: '', roastery: '', stock_limit_g: ''
@@ -448,6 +451,7 @@ function openProductModal(product = null) {
     productForm.value = { name: '', description1: '', description2: '', roast_type: '', purpose: '', price_150g: '', price_200g: '', price_250g: '', price_500g: '', price_1kg: '', price_20pc5g: '', image: '', roastery: '', stock_limit_g: '' }
     imagePreview.value = null
   }
+  productModalError.value = ''
   showProductModal.value = true
 }
 
@@ -466,14 +470,22 @@ async function saveProduct() {
     stock_limit_g: productForm.value.stock_limit_g ? parseInt(productForm.value.stock_limit_g) : null
   }
 
-  if (editingProduct.value) {
-    await api.updateProduct(editingProduct.value.id, data)
-  } else {
-    await api.createProduct(data)
+  productModalError.value = ''
+  try {
+    if (editingProduct.value) {
+      await api.updateProduct(editingProduct.value.id, data)
+    } else {
+      await api.createProduct(data)
+    }
+    showProductModal.value = false
+    await loadAll()
+  } catch (e) {
+    // PC-T7 (review-assigned): surface save errors IN-DIALOG — notably PC-T3's
+    // deliberate `duplicate_in_cycle` 409, which this function used to swallow.
+    // The page-level Alert sits behind the radix overlay (the module-11
+    // modalError lesson), so it must render inside the dialog.
+    productModalError.value = e.message
   }
-
-  showProductModal.value = false
-  await loadAll()
 }
 
 function duplicateProduct(product) {
@@ -492,6 +504,7 @@ function duplicateProduct(product) {
     stock_limit_g: product.stock_limit_g || ''
   }
   imagePreview.value = product.image || null
+  productModalError.value = ''
   showProductModal.value = true
 }
 
@@ -1684,6 +1697,10 @@ function getStatusVariant(status) {
         <DialogHeader>
           <DialogTitle>{{ editingProduct ? 'Upraviť produkt' : 'Nový produkt' }}</DialogTitle>
         </DialogHeader>
+
+        <Alert v-if="productModalError" variant="destructive" data-testid="product-modal-error">
+          <AlertDescription>{{ productModalError }}</AlertDescription>
+        </Alert>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 py-4">
           <!-- Left column - Image -->

@@ -1,11 +1,14 @@
 import { Router } from 'express';
+import db from '../db/schema.js';
 import { uploadSingle } from '../helpers/multipart.js';
 import { bindValue } from '../helpers/bind-value.js';
+import { imageFromUpload, imageFromBody } from '../helpers/image-upload.js';
+import { normalizeProductName } from '../helpers/catalog.js';
 import { parseCsvProducts, parseGsheetCsvProducts, parseMultiRowProducts, fetchGsheetCsv } from '../helpers/import-parsing.js';
 import { importRowsIntoCatalog } from '../helpers/catalog-import.js';
 import { migrateHistoricalSnapshots } from '../helpers/catalog-migrate.js';
 import { mergeCatalogRows, findDuplicatePairs } from '../helpers/catalog-merge.js';
-import { coffeeCycleWindow, catalogRanking, catalogProductStats } from '../helpers/catalog-stats.js';
+import { coffeeCycleWindow, catalogRanking, catalogProductStats, allTimeKgByCatalogId } from '../helpers/catalog-stats.js';
 
 // Coffee-product catalog routes — module 12 (PC-T2 opened this file with the
 // three UC-PC-003 import endpoints; PC-T4/T5/T6/T7 add migrate/merge/
@@ -297,6 +300,205 @@ router.post('/:id/merge', (req, res) => {
     console.error('Catalog merge error:', error.message);
     return res.status(500).json({ error: 'Nepodarilo sa zlucit produkty' });
   }
+});
+
+// ── Catalog CRUD (PC-T7, 12 §UC-PC-009) ────────────────────────────────────
+//
+// ⚠ ROUTE ORDERING: the parametric GET /:id, PATCH /:id and POST /:id/image
+// below are registered AFTER every literal path (/duplicates, /stats, /import*,
+// /migrate) and after GET /:id/stats — express matches in registration order,
+// so keeping them at the END of this file is what stops /:id from shadowing
+// /duplicates or /stats. Never move them up.
+//
+// ⚠ NO DELETE ROUTE EVER (resolved decision 9): the merge tool above is the
+// module's only catalog-row deleter. Retirement is PATCH { status: 'retired' }
+// and has zero effect on snapshots, orders or stats.
+
+// List the catalog (admin) — every catalog column plus computed `cycles_count`
+// and `all_time_kg` (the PC-T6 seam: allTimeKgByCatalogId is the ONE home for
+// that number — never re-derive it here). Filters: status, purpose, roastery,
+// q (substring over normalized_name via the ONE normalization helper).
+router.get('/', (req, res) => {
+  // Query params must be strings — a repeated/bracketed param arrives as an
+  // array/object; refuse, never coerce (the FUP-T13 discipline, as /stats).
+  const filters = {};
+  for (const key of ['status', 'purpose', 'roastery', 'q']) {
+    if (req.query[key] !== undefined) {
+      if (typeof req.query[key] !== 'string') {
+        return res.status(400).json({ error: `${key} musi byt retazec`, field: key });
+      }
+      filters[key] = req.query[key];
+    }
+  }
+
+  const where = [];
+  const params = [];
+  if (filters.status) { where.push('cp.status = ?'); params.push(filters.status); }
+  if (filters.purpose) { where.push('cp.purpose = ?'); params.push(filters.purpose); }
+  if (filters.roastery) { where.push('cp.roastery = ?'); params.push(filters.roastery); }
+  if (filters.q) {
+    const nq = normalizeProductName(filters.q);
+    // A q that normalizes to '' matches nothing meaningful — treat as no filter
+    // (an all-punctuation search must not return an empty list by accident).
+    if (nq) { where.push('cp.normalized_name LIKE ?'); params.push(`%${nq}%`); }
+  }
+
+  try {
+    // cycles_count via a CORRELATED SUBQUERY, never a LEFT JOIN — a join here
+    // would multiply catalog rows per linked snapshot (the GSO-T6 trap).
+    const rows = db.prepare(`
+      SELECT cp.*,
+        (SELECT COUNT(DISTINCT p.cycle_id) FROM products p
+          WHERE p.source_coffee_product_id = cp.id) AS cycles_count
+      FROM coffee_products cp
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY cp.name COLLATE NOCASE ASC, cp.id ASC
+    `).all(...params);
+    const kg = allTimeKgByCatalogId();
+    return res.json(rows.map((r) => ({ ...r, all_time_kg: kg.get(r.id) || 0 })));
+  } catch (error) {
+    console.error('Catalog list error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa nacitat katalog' });
+  }
+});
+
+// The rename-collision detector shared by both PATCH layers. The app-level
+// check answers the common case; the constraint translation is the layer that
+// survives a future PM2 cluster (the GA-T8/GSO-T10 dual-layer pattern). Match
+// on the code PLUS the exact index message — a future UNIQUE on this table
+// must not start answering 409 for the wrong reason.
+const isNormalizedNameCollision = (e) =>
+  e && typeof e.code === 'string' && e.code.startsWith('SQLITE_CONSTRAINT') &&
+  String(e.message || '').includes('UNIQUE constraint failed: coffee_products.normalized_name, coffee_products.roastery');
+
+// Catalog detail (admin) — the row + availability history (which cycles
+// offered it, per-cycle kg). The history comes from catalogProductStats (the
+// one home for per-product kg math) — never a second weight query here.
+router.get('/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+  try {
+    const row = db.prepare('SELECT * FROM coffee_products WHERE id = ?').get(id);
+    if (!row) {
+      return res.status(404).json({ error: 'Produkt neexistuje' });
+    }
+    const stats = catalogProductStats(id);
+    return res.json({ ...row, history: stats ? stats.history : [] });
+  } catch (error) {
+    console.error('Catalog detail error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa nacitat produkt' });
+  }
+});
+
+// Admin edit (12 §UC-PC-009) — field-by-field `!== undefined` + bindValue, the
+// products.js PATCH pattern. `name` recomputes `normalized_name` via the ONE
+// helper in the same statement flow; a rename colliding with an existing
+// (normalized_name, roastery) answers 409 field:'name'. `roastery` is
+// deliberately NOT editable here — it is half of the identity key.
+router.patch('/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+  const product = db.prepare('SELECT * FROM coffee_products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+
+  const updates = [];
+  const values = [];
+
+  // name — recompute normalized_name; '' after normalization = no identity,
+  // which the catalog can never store (the importers' `if (name)` rule).
+  const name = bindValue(req.body.name);
+  if (name !== undefined) {
+    const normalized = normalizeProductName(name);
+    if (!normalized) {
+      return res.status(400).json({ error: 'Nazov je povinny', field: 'name' });
+    }
+    // App-level collision check (layer 1), excluding the row itself.
+    const clash = db.prepare(
+      'SELECT id FROM coffee_products WHERE normalized_name = ? AND roastery = ? AND id != ?'
+    ).get(normalized, product.roastery, id);
+    if (clash) {
+      return res.status(409).json({ error: 'Produkt s tymto nazvom uz v katalogu existuje', field: 'name' });
+    }
+    updates.push('name = ?'); values.push(name);
+    updates.push('normalized_name = ?'); values.push(normalized);
+  }
+
+  // Plain text/price columns — unbindable values SKIP their write (the stored
+  // column survives); an explicit null still clears.
+  const PLAIN_FIELDS = [
+    'country', 'region', 'altitude', 'farm', 'variety', 'processing',
+    'description1', 'description2', 'roast_type', 'purpose', 'curator_pick_note',
+    'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g',
+  ];
+  for (const field of PLAIN_FIELDS) {
+    const value = bindValue(req.body[field]);
+    if (value !== undefined) { updates.push(`${field} = ?`); values.push(value); }
+  }
+
+  // status — 'available'/'retired' only, else 400 (12 §UC-PC-009).
+  if (req.body.status !== undefined) {
+    const status = bindValue(req.body.status);
+    if (status !== 'available' && status !== 'retired') {
+      return res.status(400).json({ error: 'Neplatny stav produktu', field: 'status' });
+    }
+    updates.push('status = ?'); values.push(status);
+  }
+
+  // is_new — `? 1 : 0`, never bound raw (the products.js `active` rule).
+  if (req.body.is_new !== undefined) {
+    updates.push('is_new = ?'); values.push(req.body.is_new ? 1 : 0);
+  }
+
+  if (updates.length > 0) {
+    updates.push('updated_at = CURRENT_TIMESTAMP');
+    try {
+      db.prepare(`UPDATE coffee_products SET ${updates.join(', ')} WHERE id = ?`).run(...values, id);
+    } catch (error) {
+      // Layer 2 — the UNIQUE index catches what the app-level check raced past.
+      if (isNormalizedNameCollision(error)) {
+        return res.status(409).json({ error: 'Produkt s tymto nazvom uz v katalogu existuje', field: 'name' });
+      }
+      console.error('Catalog PATCH error:', error.message);
+      return res.status(500).json({ error: 'Nepodarilo sa ulozit produkt' });
+    }
+  }
+
+  return res.json(db.prepare('SELECT * FROM coffee_products WHERE id = ?').get(id));
+});
+
+// Upload the catalog image (admin) — THE image home from now on (12
+// §UC-PC-009): uploaded once here, served to every future snapshot via the
+// UC-PC-012 COALESCE. Reuses the image helpers exactly as products.js
+// POST /:id/image does — same storage, same validation.
+router.post('/:id/image', uploadSingle('image'), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    return res.status(404).json({ error: 'Produkt nebol najdeny' });
+  }
+  const product = db.prepare('SELECT id FROM coffee_products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ error: 'Produkt nebol najdeny' });
+  }
+
+  let image = null;
+  if (req.file) {
+    const built = imageFromUpload(req.file);
+    if (built.error) return res.status(400).json({ error: built.error });
+    image = built.image;
+  } else if (req.body.image) {
+    const built = imageFromBody(req.body.image);
+    if (built.error) return res.status(400).json({ error: built.error });
+    image = built.image;
+  }
+
+  db.prepare('UPDATE coffee_products SET image = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(image, id);
+  return res.json(db.prepare('SELECT * FROM coffee_products WHERE id = ?').get(id));
 });
 
 export default router;

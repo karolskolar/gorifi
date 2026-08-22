@@ -935,3 +935,601 @@ test.describe('UC-PC-008 — GET /duplicates', () => {
     expect(entryB.cycles_count).toBe(1)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PC-T7 — 12 §UC-PC-009: catalog CRUD routes + AdminCatalog.vue.
+//
+// API half first, UI half last — ⚠ ORDER IS LOAD-BEARING: there is exactly ONE
+// admin token app-wide, so the first `loginAsAdminUI` below INVALIDATES the
+// file-level `adminToken` minted in beforeAll. Every API-only test must be
+// declared ABOVE the UI describes; every UI test adopts the browser's token
+// for its own API fixture calls (the documented harness trap).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// 1×1 red PNG — passes detectImageMime's magic-byte sniff.
+const PNG_1PX = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64'
+)
+
+function getCatalog(query = '') {
+  return ctx.get(`/api/coffee-products${query}`, { headers: admin() })
+}
+
+function getCatalogRow(id) {
+  return ctx.get(`/api/coffee-products/${id}`, { headers: admin() })
+}
+
+function patchCatalog(id, data) {
+  return ctx.patch(`/api/coffee-products/${id}`, { headers: admin(), data })
+}
+
+function uploadImage(id, buffer = PNG_1PX) {
+  return ctx.post(`/api/coffee-products/${id}/image`, {
+    headers: admin(),
+    multipart: { image: { name: 'photo.png', mimeType: 'image/png', buffer } },
+  })
+}
+
+test.describe('UC-PC-009 — catalog CRUD (API)', () => {
+  test('GET / lists an imported row with every catalog column plus cycles_count and all_time_kg', async () => {
+    const name = `${uniq()} Zlaty Vrch`
+    const id = await importOne(name, { purpose: 'Filter', desc1: 'Washed' })
+
+    const res = await getCatalog()
+    expect(res.status()).toBe(200)
+    const rows = await res.json()
+    const row = rows.find((r) => r.id === id)
+    expect(row, 'the imported row appears in the list').toBeTruthy()
+    expect(row.name).toBe(name)
+    expect(row.normalized_name).toBe(name.toLowerCase())
+    expect(row.status).toBe('available')
+    expect(row.purpose).toBe('Filter')
+    // The two computed columns — an import-created row has no snapshots.
+    expect(row.cycles_count).toBe(0)
+    expect(row.all_time_kg).toBe(0)
+    // Informational-attribute columns ride along (NULL until the admin edits).
+    for (const col of ['country', 'region', 'altitude', 'farm', 'variety', 'processing', 'is_new', 'curator_pick_note', 'image']) {
+      expect(Object.keys(row)).toContain(col)
+    }
+  })
+
+  test('GET / filters: status, purpose, q (normalized substring), roastery — and array params refuse with 400', async () => {
+    const stem = uniq()
+    const nameA = `${stem} Ranna Hmla`
+    const nameB = `${stem} Vecerny Mrak`
+    const idA = await importOne(nameA, { purpose: 'Filter' })
+    const idB = await importOne(nameB, { purpose: 'Espresso' })
+    await patchCatalog(idB, { status: 'retired' })
+
+    // q — substring over normalized_name via the ONE normalizer: search with
+    // diacritics/case the stored name does not carry.
+    const qRes = await getCatalog(`?q=${encodeURIComponent('RANNÁ HMLA')}`)
+    const qRows = await qRes.json()
+    expect(qRows.some((r) => r.id === idA)).toBe(true)
+    expect(qRows.some((r) => r.id === idB)).toBe(false)
+
+    const statusRes = await getCatalog(`?status=retired&q=${encodeURIComponent(stem)}`)
+    const statusRows = await statusRes.json()
+    expect(statusRows.map((r) => r.id)).toEqual([idB])
+
+    const purposeRes = await getCatalog(`?purpose=Filter&q=${encodeURIComponent(stem)}`)
+    expect((await purposeRes.json()).map((r) => r.id)).toEqual([idA])
+
+    const roasteryRes = await getCatalog(`?roastery=Goriffee&q=${encodeURIComponent(stem)}`)
+    const roasteryIds = (await roasteryRes.json()).map((r) => r.id)
+    expect(roasteryIds).toContain(idA)
+    expect(roasteryIds).toContain(idB)
+
+    // A repeated param arrives as an array — refuse, never coerce (FUP-T13).
+    const arrayRes = await getCatalog('?status=a&status=b')
+    expect(arrayRes.status()).toBe(400)
+    expect((await arrayRes.json()).field).toBe('status')
+  })
+
+  test('GET /:id returns the row + availability history; unknown and non-integer ids 404', async () => {
+    const name = `${uniq()} Tichy Potok`
+    const id = await importOne(name)
+
+    const res = await getCatalogRow(id)
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.name).toBe(name)
+    expect(Array.isArray(body.history), 'detail carries the availability history').toBe(true)
+    expect(body.history).toEqual([])
+
+    expect((await getCatalogRow(99999999)).status()).toBe(404)
+    expect((await ctx.get('/api/coffee-products/abc', { headers: admin() })).status()).toBe(404)
+  })
+
+  test('GET /:id history lists offering cycles with per-cycle kg; GET / computes cycles_count and all_time_kg', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const name = `${uniq()} Modra Lagoda`
+    const id = await importOne(name)
+
+    const db = openDb()
+    let c1, c2
+    try {
+      c1 = seedCycle(db, `${name} c1`, 'coffee')
+      c2 = seedCycle(db, `${name} c2`, 'coffee')
+      const s1 = seedSnapshot(db, c1, { name, price_250g: 9, source_coffee_product_id: id })
+      seedSnapshot(db, c2, { name, price_250g: 9, source_coffee_product_id: id })
+      // One submitted 1kg order in c1 → all_time_kg 1, history c1 friend_kg 1.
+      const friendId = Number(db
+        .prepare('INSERT INTO friends (cycle_id, name, access_token, active) VALUES (?, ?, ?, 1)')
+        .run(c1, `${name} F`, `${uniq()}tok${Math.random().toString(36).slice(2)}`).lastInsertRowid)
+      const orderId = Number(db
+        .prepare("INSERT INTO orders (friend_id, cycle_id, status, total) VALUES (?, ?, 'submitted', 0)")
+        .run(friendId, c1).lastInsertRowid)
+      db.prepare('INSERT INTO order_items (order_id, product_id, variant, quantity, price) VALUES (?, ?, ?, 1, 10)')
+        .run(orderId, s1, '1kg')
+    } finally {
+      db.close()
+    }
+
+    const listRes = await getCatalog(`?q=${encodeURIComponent(name)}`)
+    const row = (await listRes.json()).find((r) => r.id === id)
+    expect(row.cycles_count, 'two distinct offering cycles').toBe(2)
+    expect(row.all_time_kg, 'the PC-T6 seam: allTimeKgByCatalogId feeds the column').toBe(1)
+
+    const detail = await (await getCatalogRow(id)).json()
+    expect(detail.history.length).toBe(2)
+    const h1 = detail.history.find((h) => h.cycle_id === c1)
+    const h2 = detail.history.find((h) => h.cycle_id === c2)
+    expect(h1.total_kg).toBe(1)
+    expect(h1.friend_kg).toBe(1)
+    expect(h2.total_kg).toBe(0)
+  })
+
+  test('PATCH edits metadata + informational attributes + is_new/curator note + prices; unknown id 404', async () => {
+    const name = `${uniq()} Kamenny Dvor`
+    const id = await importOne(name)
+
+    const res = await patchCatalog(id, {
+      country: 'Kolumbia',
+      region: 'Huila',
+      altitude: '1900 m',
+      farm: 'El Paraiso',
+      variety: 'Pink Bourbon',
+      processing: 'Honey',
+      description1: 'novy popis',
+      roast_type: 'Light roast',
+      purpose: 'Espresso',
+      is_new: true,
+      curator_pick_note: 'obľúbená káva',
+      price_250g: 11.5,
+      price_1kg: 39,
+    })
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.country).toBe('Kolumbia')
+    expect(body.processing).toBe('Honey')
+    expect(body.is_new).toBe(1)
+    expect(body.curator_pick_note).toBe('obľúbená káva')
+    expect(body.price_250g).toBe(11.5)
+
+    // Persisted, not just echoed.
+    const detail = await (await getCatalogRow(id)).json()
+    expect(detail.region).toBe('Huila')
+    expect(detail.altitude).toBe('1900 m')
+    expect(detail.farm).toBe('El Paraiso')
+    expect(detail.variety).toBe('Pink Bourbon')
+    expect(detail.description1).toBe('novy popis')
+    expect(detail.purpose).toBe('Espresso')
+    expect(detail.price_1kg).toBe(39)
+
+    expect((await patchCatalog(99999999, { country: 'X' })).status()).toBe(404)
+  })
+
+  test('PATCH rename recomputes normalized_name via the ONE helper; collision answers 409 field:name and writes nothing', async () => {
+    const stem = uniq()
+    const idA = await importOne(`${stem} Cierny Les`)
+    const idB = await importOne(`${stem} Sivy Kamen`)
+
+    // Rename B with diacritics/punctuation — normalized key must follow.
+    const renamed = `${stem} Nová – Káva!`
+    const ok = await patchCatalog(idB, { name: renamed })
+    expect(ok.status()).toBe(200)
+    expect((await ok.json()).normalized_name).toBe(`${stem.toLowerCase()} nova kava`)
+    // Findable under the new normalized identity.
+    const found = await (await getCatalog(`?q=${encodeURIComponent('nová káva')}`)).json()
+    expect(found.some((r) => r.id === idB)).toBe(true)
+
+    // Collision: rename B to A's name (same default roastery) → 409.
+    const clash = await patchCatalog(idB, { name: `${stem} Cierny Les` })
+    expect(clash.status()).toBe(409)
+    const clashBody = await clash.json()
+    expect(clashBody.field).toBe('name')
+    // Nothing written — B keeps its renamed identity.
+    const after = await (await getCatalogRow(idB)).json()
+    expect(after.name).toBe(renamed)
+    expect(after.id).not.toBe(idA)
+
+    // A name that normalizes to '' has no identity — 400, never stored.
+    const empty = await patchCatalog(idB, { name: '–––' })
+    expect(empty.status()).toBe(400)
+    expect((await empty.json()).field).toBe('name')
+  })
+
+  test('PATCH status: available/retired only, anything else 400; retirement touches no snapshot', async () => {
+    const name = `${uniq()} Zeleny Haj`
+    const id = await importOne(name)
+
+    const bad = await patchCatalog(id, { status: 'deleted' })
+    expect(bad.status()).toBe(400)
+    expect((await bad.json()).field).toBe('status')
+
+    const retired = await patchCatalog(id, { status: 'retired' })
+    expect(retired.status()).toBe(200)
+    expect((await retired.json()).status).toBe('retired')
+
+    // And back — retirement is a status, not a tombstone.
+    expect((await patchCatalog(id, { status: 'available' })).status()).toBe(200)
+  })
+
+  test('roastery is NOT PATCH-editable (half of the identity key), and there is NO DELETE route (decision 9)', async () => {
+    const name = `${uniq()} Stara Hora`
+    const id = await importOne(name)
+
+    const res = await patchCatalog(id, { roastery: 'Ina Praziaren' })
+    expect(res.status()).toBe(200)
+    expect((await res.json()).roastery, 'roastery must survive a PATCH attempt').toBe('Goriffee')
+
+    // Decision 9: no DELETE route exists on the catalog — express falls through.
+    const del = await ctx.delete(`/api/coffee-products/${id}`, { headers: admin() })
+    expect(del.status(), 'DELETE /api/coffee-products/:id must not exist').toBe(404)
+    // The row survives the attempt.
+    expect((await getCatalogRow(id)).status()).toBe(200)
+  })
+
+  test('POST /:id/image stores the sniffed data: URI; the list serves it; unknown id 404; junk bytes 400', async () => {
+    const name = `${uniq()} Fotogenicka`
+    const id = await importOne(name)
+
+    const res = await uploadImage(id)
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.image, 'magic-byte sniffed mime, not the client label').toMatch(/^data:image\/png;base64,/)
+
+    const listRow = (await (await getCatalog(`?q=${encodeURIComponent(name)}`)).json()).find((r) => r.id === id)
+    expect(listRow.image).toMatch(/^data:image\/png;base64,/)
+
+    expect((await uploadImage(99999999)).status()).toBe(404)
+
+    const junk = await ctx.post(`/api/coffee-products/${id}/image`, {
+      headers: admin(),
+      multipart: { image: { name: 'x.png', mimeType: 'image/png', buffer: Buffer.from('not an image at all') } },
+    })
+    expect(junk.status(), 'the same magic-byte validation as products.js').toBe(400)
+  })
+
+  test('route ordering: the parametric GET /:id shadows neither /duplicates nor /stats', async () => {
+    const dupRes = await duplicates()
+    expect(dupRes.status()).toBe(200)
+    expect(Array.isArray((await dupRes.json()).pairs)).toBe(true)
+
+    const statsRes = await ctx.get('/api/coffee-products/stats', { headers: admin() })
+    expect(statsRes.status()).toBe(200)
+    const statsBody = await statsRes.json()
+    expect(Array.isArray(statsBody.products)).toBe(true)
+    expect(statsBody.window).toBeTruthy()
+  })
+})
+
+// ── UI half — AdminCatalog.vue + the CycleDetail modalError obligation ─────────
+//
+// ⚠ Every test here logs in through the UI FIRST and adopts the browser's token
+// for its API fixture calls (ONE admin token app-wide — the documented trap).
+
+async function loginAsAdminUI(page) {
+  await page.goto('/admin')
+  await page.locator('#password').fill(ADMIN_PASSWORD)
+  await page.getByRole('button', { name: /Prihlásiť sa/ }).click()
+  await expect(page).toHaveURL(/\/admin\/dashboard/)
+  const token = await page.evaluate(() => localStorage.getItem('adminToken'))
+  expect(token, 'the UI login stored an admin token').toBeTruthy()
+  return token
+}
+
+const uiHeaders = (token) => ({ 'X-Admin-Token': token })
+
+async function uiImportOne(token, name, extra = {}) {
+  const res = await ctx.post('/api/coffee-products/import', {
+    headers: uiHeaders(token),
+    multipart: {
+      file: { name: 'catalog.csv', mimeType: 'text/csv', buffer: Buffer.from(csvFor([{ name, p250: '8,0', ...extra }]), 'utf8') },
+    },
+  })
+  expect(res.status()).toBe(201)
+  const { report } = await res.json()
+  return report.new.find((e) => e.name === name).catalog_id
+}
+
+test.describe('UC-PC-009 — AdminCatalog view (UI)', () => {
+  test('the admin MAIN MENU carries "Katalóg" and it lands on the catalog list', async ({ page }) => {
+    const token = await loginAsAdminUI(page)
+    const name = `${uniq()} Navigacna`
+    await uiImportOne(token, name)
+
+    await page.getByRole('button', { name: 'Katalóg', exact: true }).click()
+    await expect(page).toHaveURL(/\/admin\/catalog/)
+
+    await page.getByTestId('catalog-search').fill(name)
+    const row = page.getByTestId('catalog-row').filter({ hasText: name })
+    await expect(row).toHaveCount(1)
+    await expect(row.getByText('Dostupná')).toBeVisible()
+  })
+
+  test('needs-image affordance: amber "Chýba fotka" badge + the chýba-fotka filter', async ({ page }) => {
+    const token = await loginAsAdminUI(page)
+    const stem = uniq()
+    const bare = `${stem} Bez Fotky`
+    const shot = `${stem} S Fotkou`
+    const bareId = await uiImportOne(token, bare)
+    const shotId = await uiImportOne(token, shot)
+    const up = await ctx.post(`/api/coffee-products/${shotId}/image`, {
+      headers: uiHeaders(token),
+      multipart: { image: { name: 'p.png', mimeType: 'image/png', buffer: PNG_1PX } },
+    })
+    expect(up.status()).toBe(200)
+
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-search').fill(stem)
+    await expect(page.getByTestId('catalog-row')).toHaveCount(2)
+
+    const bareRow = page.getByTestId('catalog-row').filter({ hasText: bare })
+    await expect(bareRow.getByText('Chýba fotka')).toBeVisible()
+    const shotRow = page.getByTestId('catalog-row').filter({ hasText: shot })
+    await expect(shotRow.getByText('Chýba fotka')).toHaveCount(0)
+
+    // The filter — the report's needs_image flag made durable.
+    await page.getByTestId('needs-image-filter').check()
+    await expect(page.getByTestId('catalog-row')).toHaveCount(1)
+    await expect(page.getByTestId('catalog-row').first()).toContainText(bare)
+    void bareId
+  })
+
+  test('edit dialog: informational attributes persist; a rename collision renders the 409 IN-DIALOG', async ({ page }) => {
+    const token = await loginAsAdminUI(page)
+    const stem = uniq()
+    const nameA = `${stem} Prva Kava`
+    const nameB = `${stem} Druha Kava`
+    await uiImportOne(token, nameA)
+    await uiImportOne(token, nameB)
+
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-search').fill(stem)
+    await expect(page.getByTestId('catalog-row')).toHaveCount(2)
+
+    // Edit B: set an informational attribute and save.
+    await page.getByTestId('catalog-row').filter({ hasText: nameB }).getByRole('button', { name: 'Upraviť' }).click()
+    const dialog = page.getByTestId('catalog-edit-dialog')
+    await expect(dialog).toBeVisible()
+    await dialog.getByTestId('catalog-edit-country').fill('Etiópia')
+    await dialog.getByRole('button', { name: 'Uložiť' }).click()
+    await expect(dialog).not.toBeVisible()
+
+    // Persisted — reopen shows the value.
+    await page.getByTestId('catalog-row').filter({ hasText: nameB }).getByRole('button', { name: 'Upraviť' }).click()
+    await expect(dialog.getByTestId('catalog-edit-country')).toHaveValue('Etiópia')
+
+    // The collision: rename B to A's name. The 409 renders INSIDE the dialog
+    // (module-11 modalError — the page Alert hides behind the radix overlay),
+    // and the dialog stays open.
+    await dialog.getByTestId('catalog-edit-name').fill(nameA)
+    await dialog.getByRole('button', { name: 'Uložiť' }).click()
+    await expect(dialog.getByTestId('catalog-modal-error')).toBeVisible()
+    await expect(dialog.getByTestId('catalog-modal-error')).toContainText('existuje')
+    await expect(dialog).toBeVisible()
+  })
+
+  test('image uploaded once via the edit dialog lands on the CATALOG row (THE image home)', async ({ page }) => {
+    // ⚠ Headline-acceptance note: the friend-order-page half ("appears on a NEW
+    // cycle's picker-created snapshot via the COALESCE") belongs to PC-T8 —
+    // neither the picker nor the snapshot-read COALESCE exists yet (12
+    // §UC-PC-012). This pins the half PC-T7 owns: one upload, stored on the
+    // catalog row every future snapshot will COALESCE to.
+    const token = await loginAsAdminUI(page)
+    const name = `${uniq()} Portretna`
+    const id = await uiImportOne(token, name)
+
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-search').fill(name)
+    await page.getByTestId('catalog-row').filter({ hasText: name }).getByRole('button', { name: 'Upraviť' }).click()
+    const dialog = page.getByTestId('catalog-edit-dialog')
+    await dialog.getByTestId('catalog-image-input').setInputFiles({
+      name: 'kava.png', mimeType: 'image/png', buffer: PNG_1PX,
+    })
+    await expect(dialog.getByTestId('catalog-image-preview')).toBeVisible()
+
+    const detail = await (await ctx.get(`/api/coffee-products/${id}`, { headers: uiHeaders(token) })).json()
+    expect(detail.image).toMatch(/^data:image\/png;base64,/)
+  })
+
+  test('import section drives a real CSV import and renders the UC-PC-004 report buckets incl. pending_fuzzy → merge flow', async ({ page }) => {
+    const token = await loginAsAdminUI(page)
+    const stem = uniq()
+    const base = `${stem} Ruzovy Kvet`
+    // Pre-existing near-name so the UI import fuzzy-flags against it.
+    await uiImportOne(token, base)
+
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-tab-import').click()
+
+    // CSV with one clean new row, one fuzzy near-miss and one nameless row —
+    // all three buckets render from ONE 201 (a 201 is NOT "everything
+    // imported": the nameless row lands in unparsed). ⚠ The clean row must NOT
+    // share the uniq() stem with the fuzzy fixture — a long common prefix puts
+    // two "different" names inside the fuzzy band by construction (the same
+    // note as the PC-T5 dissimilar-names test).
+    // Two long random tokens, no fixed word: repeated runs of THIS test leave
+    // prior clean rows in the shared DB, and a fixed prefix would push two of
+    // them into the fuzzy band (fixed 15 shared chars vs ~8 random = sim ≥ .75).
+    const cleanName = `${Math.random().toString(36).slice(2, 14)} ${Math.random().toString(36).slice(2, 14)}`
+    const csv = csvFor([
+      { name: cleanName, purpose: 'Filter', p250: '9,0' },
+      { name: `${base} Honey`, purpose: 'Filter', p250: '10,0' },
+      { name: '', desc1: 'bez mena', p250: '5,0' },
+    ])
+    await page.getByTestId('import-csv-input').setInputFiles({
+      name: 'import.csv', mimeType: 'text/csv', buffer: Buffer.from(csv, 'utf8'),
+    })
+    await page.getByTestId('import-csv-button').click()
+
+    const report = page.getByTestId('import-report')
+    await expect(report).toBeVisible()
+    await expect(report).toContainText('2 nových')
+    await expect(report).toContainText('1 na kontrolu')
+    await expect(report).toContainText('1 nespracovaných')
+    await expect(report).toContainText(cleanName)
+
+    // The fuzzy entry: "Je to premenovaný X?" naming the CANDIDATE (the
+    // pre-existing row), with a link into the merge flow.
+    const fuzzy = report.getByTestId('fuzzy-entry')
+    await expect(fuzzy).toHaveCount(1)
+    await expect(fuzzy).toContainText(`Je to premenovaný ${base}?`)
+
+    // The unparsed entry renders its reason string prominently (row numbers
+    // count parsed records, and the UI says so).
+    await expect(report.getByTestId('unparsed-entry')).toHaveCount(1)
+
+    // The merge-flow link lands on the duplicates tab with the pair recomputed.
+    // ⚠ Identified by BOTH member buttons, not by hasText: the shared DB
+    // accumulates same-prefix fixtures from other tests that also clear the
+    // fuzzy band, so a substring match can hit several cards.
+    await fuzzy.getByTestId('fuzzy-merge-link').click()
+    const pair = page.getByTestId('dup-pair')
+      .filter({ has: page.getByRole('button', { name: `Ponechať „${base}“`, exact: true }) })
+      .filter({ has: page.getByRole('button', { name: `Ponechať „${base} Honey“`, exact: true }) })
+    await expect(pair).toHaveCount(1)
+  })
+
+  test('duplicates section merges a pair behind an INLINE confirm; the pair disappears', async ({ page }) => {
+    const token = await loginAsAdminUI(page)
+    const stem = uniq()
+    const keeper = `${stem} Povodna Kava`
+    const dupe = `${keeper} Honey`
+    await uiImportOne(token, keeper)
+    await uiImportOne(token, dupe)
+
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-tab-duplicates').click()
+    // Identified by BOTH member buttons (see the import test's note — hasText
+    // alone can match other same-prefix fixtures in the shared DB).
+    const pair = page.getByTestId('dup-pair')
+      .filter({ has: page.getByRole('button', { name: `Ponechať „${keeper}“`, exact: true }) })
+      .filter({ has: page.getByRole('button', { name: `Ponechať „${dupe}“`, exact: true }) })
+    await expect(pair).toHaveCount(1)
+
+    // ⚠ Once "Ponechať" is clicked the card swaps its buttons for the confirm
+    // row, so the has-button `pair` locator momentarily matches nothing — the
+    // confirm is addressed globally (only one pendingMerge exists at a time).
+    // Inline confirm — the merge must NOT fire on the first click.
+    await pair.getByRole('button', { name: `Ponechať „${keeper}“`, exact: true }).click()
+    const confirm = page.getByTestId('merge-confirm')
+    await expect(confirm).toBeVisible()
+    await expect(confirm).toContainText(dupe)
+    // Cancel really cancels — the buttons come back, nothing merged.
+    await confirm.getByRole('button', { name: 'Zrušiť' }).click()
+    await expect(page.getByTestId('merge-confirm')).toHaveCount(0)
+    await expect(pair).toHaveCount(1)
+
+    // Now for real.
+    await pair.getByRole('button', { name: `Ponechať „${keeper}“`, exact: true }).click()
+    await page.getByTestId('merge-confirm').getByRole('button', { name: 'Potvrdiť' }).click()
+    // The merged row is deleted, so its name can appear in NO pair.
+    await expect(page.getByTestId('dup-pair').filter({ hasText: dupe })).toHaveCount(0)
+
+    // The survivor still lists; the merged row is gone from the catalog.
+    await page.getByTestId('catalog-tab-products').click()
+    await page.getByTestId('catalog-search').fill(stem)
+    await expect(page.getByTestId('catalog-row')).toHaveCount(1)
+    await expect(page.getByTestId('catalog-row').first()).toContainText(keeper)
+  })
+
+  test('migration trigger renders the UC-PC-006 report (idempotent — safe to fire from the UI at any time)', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-tab-migrate').click()
+    await page.getByTestId('migrate-button').click()
+    const report = page.getByTestId('migrate-report')
+    await expect(report).toBeVisible()
+    await expect(report).toContainText('Výsledok migrácie')
+    await expect(report).toContainText('vytvorených')
+    await expect(report).toContainText('prepojených')
+  })
+
+  test('stats tab renders the ranking with the imported product (window OMITTED for all time)', async ({ page }) => {
+    const token = await loginAsAdminUI(page)
+    const name = `${uniq()} Statisticka`
+    await uiImportOne(token, name, { purpose: 'Filter' })
+
+    await page.goto('/admin/catalog')
+
+    // ⚠ The all-time load must OMIT last_n_cycles, never send it empty (the
+    // route 400s on an empty value by design).
+    const statsRequests = []
+    page.on('request', (req) => {
+      if (req.url().includes('/api/coffee-products/stats')) statsRequests.push(req.url())
+    })
+
+    await page.getByTestId('catalog-tab-stats').click()
+    const table = page.getByTestId('stats-table')
+    await expect(table).toBeVisible()
+    const row = page.getByTestId('stats-row').filter({ hasText: name })
+    await expect(row).toHaveCount(1)
+
+    expect(statsRequests.length).toBeGreaterThan(0)
+    for (const url of statsRequests) {
+      expect(url, 'all-time = the param is absent, not empty').not.toContain('last_n_cycles')
+    }
+  })
+
+  test('admin-skin invariance: AdminCatalog renders ZERO Podpultovka theme classes', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await page.goto('/admin/catalog')
+    await expect(page.getByTestId('catalog-table').or(page.getByText('Žiadne produkty v katalógu')).first()).toBeVisible()
+
+    // The UC-PC-011 admin-skin assertion: none of the friends-theme scopes or
+    // neo primitives may appear on an admin view (01-architecture scope rule).
+    const themed = page.locator('.app, .appbar, .cartbar, .cat-tabs, .modal-layer, .tabgroup, .vbox, .stepper, .m-foot, .inp, .h-screen.hl, .catarrow')
+    await expect(themed).toHaveCount(0)
+  })
+})
+
+test.describe('UC-PC-005 follow-up — CycleDetail saveProduct surfaces the duplicate_in_cycle 409 in-dialog', () => {
+  test('adding an exact-name duplicate into one cycle shows the 409 inside the product dialog', async ({ page }) => {
+    // Review-assigned obligation (PROGRESS PC-T7 row): saveProduct used to
+    // swallow ALL errors — PC-T3's deliberate 409 closed the dialog's own
+    // await chain silently and the admin never learned the product was not
+    // created.
+    const token = await loginAsAdminUI(page)
+    const stem = uniq()
+    const cycleRes = await ctx.post('/api/cycles', {
+      headers: uiHeaders(token),
+      data: { name: `${stem} cyklus`, type: 'coffee' },
+    })
+    expect(cycleRes.status()).toBe(201)
+    const cycleId = (await cycleRes.json()).id
+    const productName = `${stem} Duplikat`
+    const createRes = await ctx.post('/api/products', {
+      headers: uiHeaders(token),
+      data: { cycle_id: cycleId, name: productName, price_250g: 9 },
+    })
+    expect(createRes.status()).toBe(201)
+
+    await page.goto(`/admin/cycle/${cycleId}`)
+    await page.getByRole('button', { name: '+ Pridať produkt' }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    // The name field is the first visible text input in the dialog (the file
+    // input above it is hidden).
+    await dialog.locator('input:visible').first().fill(productName)
+    await dialog.getByRole('button', { name: 'Uložiť' }).click()
+
+    const error = dialog.getByTestId('product-modal-error')
+    await expect(error, 'the 409 renders IN-DIALOG (module-11 modalError)').toBeVisible()
+    await expect(error).toContainText('existuje')
+    await expect(dialog, 'the dialog stays open on a failed save').toBeVisible()
+  })
+})
