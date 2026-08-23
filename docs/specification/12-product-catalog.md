@@ -191,6 +191,20 @@
     `FUZZY_THRESHOLD = 0.75` too loose in practice on real data (recorded follow-up
     in §Accepted risks, not tuned here). This supersedes the auto-migration parts of
     decision 2 and the `fuzzy_review` surface everywhere it appeared.
+15. **Product images move from inline base64 to FILES + URL strings (PM-approved
+    2026-08-23, task PC-T10 — the recorded "13 MB JSON payload" follow-up).**
+    Measured state: 20 catalog images ≈ 10.3 MB of base64 inline in
+    `coffee_products.image`, plus historical `products.image` base64 — every
+    listing response ships the full weight and nothing is browser-cacheable. The
+    compatibility rationale that makes this cheap: **every frontend consumer is
+    `<img :src>`** (verified — FriendOrder, CycleDetail, AdminCatalog,
+    GuestProductGrid, ProductImageModal; PaymentModal's QR data-URI is unrelated),
+    and `<img>` renders a URL path exactly like a data URI, so converted rows need
+    ZERO frontend rendering changes; `imageFromBody` already passes plain URL/path
+    strings through by design, and the `COALESCE(p.image, cp.image)` read paths are
+    value-agnostic. Admin upload flows keep SENDING what they send today — the
+    SERVER converts to file + URL on write. Bakery (`bakery_products`) is
+    explicitly OUT (slated for removal). Details: UC-PC-014.
 
 ---
 
@@ -750,7 +764,9 @@ reads are separate Bearer-guarded routes and must NOT be added under this mount)
 - `POST /:id/image` — reuse the `imageFromUpload`/`imageFromBody` +
   `uploadSingle('image')` helpers verbatim (the `products.js POST /:id/image`
   pattern). This is THE image home from now on; per-cycle attaching remains possible
-  on snapshots but is no longer needed.
+  on snapshots but is no longer needed. **From PC-T10 the stored VALUE is a file
+  URL, not base64** — UC-PC-014 owns the storage mechanics; this route's request
+  contract is unchanged.
 - `POST /import`, `POST /import-gsheet`, `POST /import-gsheet-multirow`
   (UC-PC-003 — the catalog import), `POST /:id/merge` (UC-PC-007),
   `GET /migration/pending` + `POST /migration/assign` + `POST /migration/create`
@@ -896,7 +912,11 @@ backend files).
    `POST /api/coffee-products/import-gsheet-multirow` (UC-PC-003), **plus the
    workbench routes (PC-T9)** `GET /api/coffee-products/migration/pending`,
    `POST /api/coffee-products/migration/assign`,
-   `POST /api/coffee-products/migration/create` (UC-PC-006). ⚠ PC-T9 also
+   `POST /api/coffee-products/migration/create` (UC-PC-006), **plus PC-T10's
+   conversion route** `POST /api/coffee-products/convert-images` (UC-PC-014).
+   ⚠ `GET /api/images/:filename` is **deliberately NOT added** — it is a public
+   read (friend and guest pages render it; exposure equivalent to the already-
+   public products listing, UC-PC-014) — do not "fix" it into the sweep. PC-T9 also
    **REMOVES** the shipped `POST /api/coffee-products/migrate` row from
    `ADMIN_ENDPOINTS` — the route retires (resolved decision 14), so its
    anonymous-401 pin retires with it, in the same change. The RETIRED
@@ -964,14 +984,28 @@ backend files).
    and the **guest absent from every per-friend figure** (the Decision-4 pins), plus
    the JS-merge non-multiplication pin (1 friend kg + 2 × 1 guest kg = 3.0, friend
    count still per the friend half — the GSO-T8 idiom).
-6. **Fixtures per test, not a shared `beforeAll`** (Playwright re-runs `beforeAll`
+6. **New `e2e/tests/catalog-images.spec.js` (PC-T10, UC-PC-014):** the
+   upload→file→URL→served roundtrip incl. the immutable cache header and
+   content-type; same-bytes dedupe + different-bytes new-URL (cache busting);
+   filename-regex 404s (traversal-shaped names included); conversion idempotency
+   (`converted = 0` on the second run) + `bytes_freed`; the payload pin — after
+   conversion neither `GET /api/products/cycle/:id` nor the guest listing body
+   contains `data:image`, and both still render via the COALESCE with URL values;
+   bakery base64 untouched; anonymous `GET /api/images/…` 200 vs anonymous
+   `POST /convert-images` 401. Uploads land next to the test `DB_PATH`, so no
+   fixture cleanup problem arises.
+7. **Fixtures per test, not a shared `beforeAll`** (Playwright re-runs `beforeAll`
    after a worker failure — the GSO-T8 lesson); DB-shape tests that write rows
    directly need `DB_PATH` and self-skip without it (house convention).
-7. Existing suites (beyond item 4's enumerated retargets) must pass **unchanged** —
+8. Existing suites (beyond item 4's enumerated retargets) must pass **unchanged** —
    this module changes no friend/guest behavior except serving a catalog image where
    the snapshot has none (an additive COALESCE;
    `order-product-card.spec.js`'s fixture products carry snapshot images or
-   none at all, so its assertions are unaffected — verify, don't assume). ⚠ Seeded
+   none at all, so its assertions are unaffected — verify, don't assume) and, from
+   PC-T10, `image` values being URL paths instead of data URIs — rendering-
+   equivalent for `<img :src>` (decision 15), but any spec that asserts a `data:`
+   prefix on a COFFEE image must be checked (the product-photo specs use fixture
+   uploads, which now come back as URLs — verify, don't assume). ⚠ Seeded
    admin flows that create coffee cycles (`e2e/seed.mjs`, cycle-creating helpers in
    existing specs) must be checked against UC-PC-012: `coffee_product_ids` is
    OPTIONAL on cycle creation precisely so an id-less `POST /api/cycles` keeps
@@ -1095,6 +1129,131 @@ the retired-route specs re-pointed, none deleted.
 
 ---
 
+## UC-PC-014 Product images as files + URLs (Admin / System — PC-T10)
+
+**Goal (resolved decision 15):** image BYTES leave the database and the JSON
+payloads. Uploads become files in a persistent directory served by a public,
+long-cached route; `image` columns hold a URL path string; existing base64 is
+converted once by an admin-triggered endpoint.
+
+**Storage — `backend/src/helpers/image-store.js` (the ONE home for writing image
+files):**
+
+- **Directory:** default `join(dirname(<DB file>), 'uploads')` — i.e. a SIBLING of
+  the SQLite file (`backend/src/db/uploads/` in prod/staging, and automatically
+  next to the throwaway `DB_PATH` in e2e runs, which isolates test uploads per
+  run); `UPLOADS_DIR` env overrides. Created on boot (`mkdir recursive`).
+- ⚠ **`deploy/deploy.sh` MUST gain `--exclude 'src/db/uploads'`** on the backend
+  rsync (same block as the DB exclude): the deploy rsyncs `backend/` with
+  `--delete`, and the existing `src/db/database.sqlite*` glob does NOT cover a
+  directory — without the new exclude the FIRST deploy after PC-T10 deletes every
+  uploaded image. This is the load-bearing line of the whole task; it lands in the
+  same change as the code.
+- **Filename = content hash:** `sha256(bytes)` hex, first 32 chars, plus the
+  canonical extension for the SNIFFED type (`detectImageMime` stays the one magic-
+  bytes authority — SEC-H2): `<hash32>.png|jpg|gif|webp`. Consequences, all
+  deliberate: identical bytes dedupe to one file; a REPLACED photo gets a NEW
+  filename ⇒ a new URL ⇒ **cache busting by construction** (an admin image swap
+  can never serve stale, because the old URL is simply no longer referenced);
+  conversion and re-uploads are idempotent (file exists ⇒ skip the write).
+- `storeImage(buffer)` → `{ url: '/api/images/<hash32>.<ext>' }` or
+  `{ error }` (non-raster refused — the existing SEC-H2 message). Write order:
+  file fully written first, column updated second — a crash between the two leaves
+  a valid state (old value still in the column, an orphan file on disk that a
+  re-run reuses by hash).
+- **Orphan files are accepted:** replacing a photo does not delete the old file
+  (dedupe means two rows may share one file; reference counting is not worth it at
+  ~tens of images). Recorded in §Accepted risks.
+
+**Serving — `GET /api/images/:filename` (PUBLIC, mounted BARE — deliberately NOT
+`requireAdmin` and NOT in `ADMIN_ENDPOINTS`):**
+
+- Why public is correct: friend AND guest pages render these images, and the
+  exposure is EQUIVALENT to today — `GET /api/products/cycle/:id` is already a
+  public route shipping the same bytes inline. Recorded so the ADMIN_ENDPOINTS
+  sweep's reviewer doesn't "fix" it.
+- A validated ROUTE, not an `express.static` mount (house hostile-boundary style):
+  `:filename` must match `^[a-f0-9]{32}\.(png|jpg|gif|webp)$` — anything else 404s,
+  which forecloses path traversal by construction (no separator can appear).
+  Content-Type from the extension (trusted: the extension was derived from sniffed
+  magic bytes at write time, never from client input). Missing file ⇒ 404.
+- **Cache headers that actually cache:** `Cache-Control: public,
+  max-age=31536000, immutable` — safe ONLY because the filename is a content hash
+  (the busting scheme above). Express sends these itself; nginx's `location /api`
+  adds no header of its own, so nothing overrides them.
+- **URL placement under `/api` is deliberate:** both nginx confs proxy ONLY `/api`
+  to the backend, so no nginx change and no CSP change is needed — `img-src 'self'`
+  covers same-origin (`data:` stays in the policy for bakery + QR codes). The Vite
+  dev proxy already forwards `/api` → :3000 and `API_BASE` defaults to `/api`, so
+  the stored RELATIVE path renders in dev, e2e and prod alike. ⚠ Constraint,
+  recorded: a deployment that set `VITE_API_URL` to a cross-origin API would break
+  relative image paths — no current deployment does; revisit only if that ever
+  changes.
+
+**Column semantics + write paths converted (coffee only):**
+
+- `coffee_products.image` and `products.image` (coffee rows) hold either a URL path
+  string (`/api/images/…`) or legacy base64 pending conversion; NULL = no image.
+  **Base64 never enters these columns again** on the converted paths:
+  - catalog `POST /api/coffee-products/:id/image` (multipart AND body-base64 forms
+    — the server stores a file and writes the URL; a body value that is already a
+    plain URL/path passes through as `imageFromBody` always did);
+  - the manual product POST's dual-store (UC-PC-005 — snapshot and, when created,
+    catalog row both receive the URL);
+  - the snapshot-level `products.js POST /:id/image` and `POST /:id/image-from-url`
+    (both still-reachable admin routes; they convert regardless of cycle type —
+    same column, same consumers — while the `bakery_products` table and its routes
+    stay untouched, bakery being out of scope).
+- Frontend: ZERO rendering changes (decision 15's `<img :src>` rationale). Admin
+  upload UIs keep sending multipart/base64 exactly as today.
+
+**One-time conversion — `POST /api/coffee-products/convert-images`
+(`requireAdmin`, whole-mount; the migration-endpoint precedent, resolved
+decision 2's surviving half):**
+
+- Converts every `image LIKE 'data:%'` value in `coffee_products` AND in `products`
+  rows of coffee cycles (`COALESCE(order_cycles.type,'coffee')='coffee'`,
+  `source_bakery_product_id IS NULL`) — old cycles' friend pages get the payload
+  win too. Per row: sniff + store file (reusing `storeImage`; an unparseable/
+  non-raster legacy value is SKIPPED and reported, never dropped), then UPDATE the
+  column to the URL. **Per-row commit order file-then-column** (crash safety as
+  above); rows already holding URL values or NULL are skipped — that is the
+  idempotency (second run converts 0).
+- **Report:** `{ converted_catalog: n, converted_snapshots: n, skipped:
+  [{table, id, reason}], bytes_freed: n, second_run_hint }` — `bytes_freed` is the
+  summed base64 string length removed from columns (the PM-visible payoff number).
+- Synchronous handler, no `await` (file writes via `fs.writeFileSync` — consistent
+  with the `instances: 1` + synchronous-handler concurrency model; ~10 MB of
+  writes is a one-time admin action, not a hot path).
+- UI: a small action in AdminCatalog near the workbench ("Konvertovať obrázky na
+  súbory"), rendering the report counts; admin skin.
+
+**Backup implication (SEC-D2) — explicit addition, PM-visible:** `backup-db.sh`
+snapshots ONLY the SQLite file (`sqlite3 .backup` → age-encrypt → rclone). Once
+images are files they LEAVE that backup. **The same change extends `backup-db.sh`
+to tar the uploads dir and ship it alongside the DB snapshot, encrypted with the
+same age key** (`gorifi-uploads-<TS>-<label>.tar.age`); until that script lands on
+the server, image loss on disk failure is an accepted risk — recorded in
+§Accepted risks so the PM sees it either way. The uploads tar can skip unchanged
+re-uploads only if someone later adds state; shipping the whole ~10 MB each run is
+fine at this size.
+
+**Acceptance criteria:** uploading a PNG to a catalog product stores a file under
+the uploads dir, writes `/api/images/<hash32>.png` into the column, and `GET` on
+that URL serves the exact bytes with `Cache-Control: public, max-age=31536000,
+immutable` and `Content-Type: image/png`; re-uploading the same bytes reuses the
+same URL; uploading different bytes yields a DIFFERENT URL (the cache-busting
+pin); `GET /api/images/x%2F..%2Fdb.sqlite`-style and any non-matching filename
+404; the conversion endpoint converts a seeded base64 catalog row AND a historical
+coffee snapshot, reports `bytes_freed > 0`, and a second run reports 0 converted;
+after conversion, `GET /api/products/cycle/:id` and the guest listing contain **no
+`data:image` substring** (the payload-size pin) and both still render the image
+via the COALESCE; a bakery product's base64 is untouched; anonymous
+`POST /convert-images` 401s via the sweep while anonymous `GET /api/images/…`
+succeeds (the deliberate-public pin).
+
+---
+
 ## Seams
 
 > ⛔ **Module 13 was DEFERRED WHOLESALE on 2026-08-22** (see its file's status banner).
@@ -1189,6 +1348,17 @@ cycle-level aggregate split (Decision 4), importer parsing + column mapping,
 - **No auto-retire policy** — `status` is purely admin-curated; products absent from
   recent cycles stay `available` until the admin says otherwise. Revisit if the list
   gets noisy.
+- **PC-T10 (UC-PC-014): image files are NOT in the DB backup until the
+  `backup-db.sh` uploads-tar addition lands ON THE SERVER** (the script snapshots
+  only the SQLite file). The addition is specified as part of the same change and
+  is PM-visible; the residual window — the deploy that ships PC-T10 up to the next
+  backup-script rollout — is an accepted risk. Losing the disk in that window
+  loses the image FILES while the DB keeps their URLs (broken `<img>`s, re-upload
+  recovers).
+- **PC-T10: orphan image files are accepted** — replacing a photo does not delete
+  the old file (content-hash dedupe means two rows may share one file; refcounting
+  is not worth it at ~tens of images, ~10 MB total). Disk cost is bounded and
+  visible with `du`.
 
 ---
 

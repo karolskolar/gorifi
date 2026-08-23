@@ -1,6 +1,6 @@
 # Requirements Brief: Product Catalog Consolidation, Friend Coffee Profiles & Recommendations
 
-**Date:** 2026-08-18 (v9, updated 2026-08-23 — migration becomes a manual assignment workbench)  · **Author:** Karol (PM) + Claude (research/synthesis)
+**Date:** 2026-08-18 (v10, updated 2026-08-23 — product images move to files + URLs)  · **Author:** Karol (PM) + Claude (research/synthesis)
 **Status:** FINAL raw requirements material — input for `/draft-spec`.
 
 > **v2 rescope:** The import pipeline stays AS IS (admin pastes an adapted Google Sheet;
@@ -175,3 +175,10 @@ Guarded seams that must NOT change behavior: stock counting (`helpers/stock.js`)
     resolved rows disappear, created products appear. No similarity suggestions anywhere in
     migration. The 0.75 fuzzy threshold (still used by import flagging + duplicates tab) is
     recorded as too loose on real data — tuning is a follow-up.
+17. ✅ **Product images become FILES served by URL (2026-08-23, PC-T10).** Inline base64 storage
+    put ~10 MB of image text into every product listing response with zero browser caching (the
+    recorded "13 MB JSON payload" issue). Approved: uploads become server-side files behind a
+    public cacheable GET; `image` columns hold URL paths; a one-time admin-triggered conversion
+    migrates existing base64 (catalog AND historical coffee snapshots). Frontend rendering is
+    unchanged (`<img src>` takes a URL like a data URI).
+
