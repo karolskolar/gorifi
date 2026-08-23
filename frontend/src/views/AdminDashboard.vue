@@ -432,7 +432,11 @@ function getStatusText(status) {
 
     <!-- New Cycle Modal -->
     <Dialog :open="showNewCycleModal" @update:open="showNewCycleModal = $event">
-      <DialogContent>
+      <!-- Desktop sizing (PM 2026-08-23): the default max-w-lg + max-h-48 picker
+           showed 5 of 40 catalog products. Widened progressively (2xl on small
+           laptops, 4xl from lg up — 4K and the MBP 14" both land there) and the
+           whole dialog is viewport-capped so it can never exceed the window. -->
+      <DialogContent class="max-w-lg sm:max-w-2xl lg:max-w-4xl xl:max-w-5xl 2xl:max-w-6xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Nový objednávkový cyklus</DialogTitle>
         </DialogHeader>
@@ -491,7 +495,7 @@ function getStatusText(status) {
               class="mb-2"
               data-testid="coffee-picker-search"
             />
-            <div class="max-h-48 overflow-y-auto border rounded-md p-2 space-y-1">
+            <div class="max-h-[38vh] lg:max-h-[50vh] overflow-y-auto border rounded-md p-2 grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-x-6 gap-y-0.5">
               <label
                 v-for="cp in filteredCoffeeProducts"
                 :key="cp.id"
@@ -510,7 +514,7 @@ function getStatusText(status) {
                 </Badge>
                 <span class="text-xs text-muted-foreground">{{ cp.roastery }}</span>
               </label>
-              <div v-if="filteredCoffeeProducts.length === 0" class="text-sm text-muted-foreground text-center py-2">
+              <div v-if="filteredCoffeeProducts.length === 0" class="text-sm text-muted-foreground text-center py-2 lg:col-span-2 2xl:col-span-3">
                 Žiadne produkty v katalógu
               </div>
             </div>
@@ -523,7 +527,7 @@ function getStatusText(status) {
               placeholder="Hľadať produkt..."
               class="mb-2"
             />
-            <div class="max-h-48 overflow-y-auto border rounded-md p-2 space-y-1">
+            <div class="max-h-[38vh] lg:max-h-[50vh] overflow-y-auto border rounded-md p-2 grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-x-6 gap-y-0.5">
               <label
                 v-for="bp in filteredBakeryProducts"
                 :key="bp.id"
@@ -541,7 +545,7 @@ function getStatusText(status) {
                 </Badge>
                 <span class="text-xs text-muted-foreground">{{ bp.price.toFixed(2) }} EUR</span>
               </label>
-              <div v-if="filteredBakeryProducts.length === 0" class="text-sm text-muted-foreground text-center py-2">
+              <div v-if="filteredBakeryProducts.length === 0" class="text-sm text-muted-foreground text-center py-2 lg:col-span-2 2xl:col-span-3">
                 Žiadne produkty v katalógu
               </div>
             </div>
