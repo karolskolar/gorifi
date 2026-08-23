@@ -99,6 +99,7 @@ router.post('/', requireAdmin, uploadSingle('image'), (req, res) => {
   const price_500g = bindValue(req.body.price_500g);
   const price_1kg = bindValue(req.body.price_1kg);
   const price_20pc5g = bindValue(req.body.price_20pc5g);
+  const price_8pc12g = bindValue(req.body.price_8pc12g);
   const roastery = bindValue(req.body.roastery);
   const stock_limit_g = bindValue(req.body.stock_limit_g);
 
@@ -123,9 +124,9 @@ router.post('/', requireAdmin, uploadSingle('image'), (req, res) => {
   // source_coffee_product_id link (12 §UC-PC-005: "INSERTs the snapshot as
   // today PLUS source_coffee_product_id").
   const insertSnapshot = (sourceCoffeeProductId) => db.prepare(`
-    INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, image, roastery, stock_limit_g, source_coffee_product_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g || null, price_1kg, price_20pc5g, image, roastery || null, stock_limit_g ? parseInt(stock_limit_g) : null, sourceCoffeeProductId);
+    INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, price_8pc12g, image, roastery, stock_limit_g, source_coffee_product_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g || null, price_1kg, price_20pc5g, price_8pc12g, image, roastery || null, stock_limit_g ? parseInt(stock_limit_g) : null, sourceCoffeeProductId);
 
   // PC-T3 (12 §UC-PC-005): consolidation runs ONLY when the target cycle is a
   // coffee cycle — bakery-cycle rows are never consolidated and never touch
@@ -144,21 +145,28 @@ router.post('/', requireAdmin, uploadSingle('image'), (req, res) => {
 
   // The catalog half sees the body the way the importers see a sheet row: the
   // admin form posts prices as strings, so they go through the SAME parsePrice
-  // an imported price gets (a non-price stays off the row — consolidation
-  // treats only numbers as "supplied").
+  // an imported price gets.
+  //
+  // ⚠ PC-T12 review fix: only fields actually PRESENT in the body are DECLARED
+  // on the parsed row. The decision-13 amendment's vector-write is scoped to
+  // the SHEET refresh — on this manual path a blank/absent form field means
+  // "unspecified", never "clear it", or a partially filled manual add of a
+  // KNOWN name would wipe the catalog's other price columns.
   const parsedRow = {
     name,
     description1,
     description2,
     roast_type,
     purpose,
-    price_150g: parsePrice(price_150g),
-    price_200g: parsePrice(price_200g),
-    price_250g: parsePrice(price_250g),
-    price_500g: parsePrice(price_500g),
-    price_1kg: parsePrice(price_1kg),
-    price_20pc5g: parsePrice(price_20pc5g),
   };
+  const manualPrices = {
+    price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, price_8pc12g,
+  };
+  for (const [field, raw] of Object.entries(manualPrices)) {
+    if (req.body[field] === undefined) continue; // absent = undeclared
+    if (raw === undefined) continue; // unbindable = treated as absent (FUP-T13)
+    parsedRow[field] = parsePrice(raw);
+  }
 
   // ONE synchronous transaction for the whole coffee path (the handler has no
   // await anywhere — the GA-T8 discipline): the duplicate check, the catalog
@@ -301,6 +309,7 @@ router.patch('/:id', requireAdmin, (req, res) => {
   const price_500g = bindValue(req.body.price_500g);
   const price_1kg = bindValue(req.body.price_1kg);
   const price_20pc5g = bindValue(req.body.price_20pc5g);
+  const price_8pc12g = bindValue(req.body.price_8pc12g);
   const image = bindValue(req.body.image);
   const roastery = bindValue(req.body.roastery);
   const stock_limit_g = bindValue(req.body.stock_limit_g);
@@ -325,6 +334,7 @@ router.patch('/:id', requireAdmin, (req, res) => {
   if (price_500g !== undefined) { updates.push('price_500g = ?'); values.push(price_500g); }
   if (price_1kg !== undefined) { updates.push('price_1kg = ?'); values.push(price_1kg); }
   if (price_20pc5g !== undefined) { updates.push('price_20pc5g = ?'); values.push(price_20pc5g); }
+  if (price_8pc12g !== undefined) { updates.push('price_8pc12g = ?'); values.push(price_8pc12g); }
   if (image !== undefined) { updates.push('image = ?'); values.push(image); }
   if (active !== undefined) { updates.push('active = ?'); values.push(active ? 1 : 0); }
   if (roastery !== undefined) { updates.push('roastery = ?'); values.push(roastery || null); }

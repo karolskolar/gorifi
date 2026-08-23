@@ -295,12 +295,12 @@ router.post('/', requireAdmin, (req, res) => {
 
       db.run(
         `INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, roastery,
-           price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g,
+           price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, price_8pc12g,
            image, stock_limit_g, source_coffee_product_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
         [
           cycleId, cp.name, cp.description1, cp.description2, cp.roast_type, cp.purpose, cp.roastery,
-          cp.price_150g, cp.price_200g, cp.price_250g, cp.price_500g, cp.price_1kg, cp.price_20pc5g,
+          cp.price_150g, cp.price_200g, cp.price_250g, cp.price_500g, cp.price_1kg, cp.price_20pc5g, cp.price_8pc12g,
           cp.id,
         ]
       );
@@ -686,12 +686,12 @@ router.put('/:id/catalog-products', requireAdmin, (req, res) => {
       const ins = db.prepare(`
         INSERT INTO products
           (cycle_id, name, description1, description2, roast_type, purpose,
-           price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g,
+           price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, price_8pc12g,
            image, roastery, source_coffee_product_id, active)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
       `).run(
         cycleId, cp.name, cp.description1, cp.description2, cp.roast_type, cp.purpose,
-        cp.price_150g, cp.price_200g, cp.price_250g, cp.price_500g, cp.price_1kg, cp.price_20pc5g,
+        cp.price_150g, cp.price_200g, cp.price_250g, cp.price_500g, cp.price_1kg, cp.price_20pc5g, cp.price_8pc12g,
         cp.roastery, cp.id
       );
       added.push({ product_id: Number(ins.lastInsertRowid), name: cp.name });

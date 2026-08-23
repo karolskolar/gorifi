@@ -159,8 +159,10 @@ router.post('/import-gsheet-multirow', async (req, res) => {
   }
 
   try {
-    // Multirow parser warnings fold into the report's `unparsed` (UC-PC-004) —
-    // nothing is silently guessed or dropped.
+    // Multirow parser warnings fold into the report's `warnings` bucket —
+    // "imported, but check this" — kept separate from `unparsed`, which is
+    // strictly the skipped rows (PC-T12's honest split of UC-PC-004). Nothing
+    // is silently guessed or dropped.
     const report = importRowsIntoCatalog(parsed.products, roastery, { warnings: parsed.warnings });
     return res.status(201).json({ report });
   } catch (error) {
@@ -602,16 +604,50 @@ router.patch('/:id', (req, res) => {
     updates.push('normalized_name = ?'); values.push(normalized);
   }
 
-  // Plain text/price columns — unbindable values SKIP their write (the stored
+  // Plain text columns — unbindable values SKIP their write (the stored
   // column survives); an explicit null still clears.
   const PLAIN_FIELDS = [
     'country', 'region', 'altitude', 'farm', 'variety', 'processing',
     'description1', 'description2', 'roast_type', 'purpose', 'curator_pick_note',
-    'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g',
   ];
   for (const field of PLAIN_FIELDS) {
     const value = bindValue(req.body[field]);
     if (value !== undefined) { updates.push(`${field} = ?`); values.push(value); }
+  }
+
+  // Prices — PC-T12 (the PM's manual repair path): numbers only, 400 on junk.
+  // Before this, bindValue passed any string through and `price_250g: 'abc'`
+  // stored the literal TEXT into a REAL column, which then read as an
+  // unpriceable variant on every order surface. `null`/'' clears; a numeric
+  // string is parsed like an imported price (decimal comma included). Note
+  // decision 13's posture (stated in the edit dialog too): a manual price edit
+  // lives only until the next import, which owns the whole price vector.
+  const PRICE_FIELDS = [
+    'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g', 'price_8pc12g',
+  ];
+  for (const field of PRICE_FIELDS) {
+    if (req.body[field] === undefined) continue;
+    const raw = req.body[field];
+    let value;
+    if (raw === null) {
+      value = null;
+    } else if (typeof raw === 'number' && Number.isFinite(raw)) {
+      value = raw;
+    } else if (typeof raw === 'string') {
+      const trimmed = raw.trim();
+      if (trimmed === '') {
+        value = null;
+      } else {
+        const parsed = Number(trimmed.replace(',', '.'));
+        if (!Number.isFinite(parsed)) {
+          return res.status(400).json({ error: 'Cena musí byť číslo', field });
+        }
+        value = parsed;
+      }
+    } else {
+      return res.status(400).json({ error: 'Cena musí byť číslo', field });
+    }
+    updates.push(`${field} = ?`); values.push(value);
   }
 
   // status — 'available'/'retired' only, else 400 (12 §UC-PC-009).

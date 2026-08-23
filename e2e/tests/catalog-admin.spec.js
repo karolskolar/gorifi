@@ -1610,7 +1610,11 @@ test.describe('UC-PC-009 — AdminCatalog view (UI)', () => {
     await expect(report).toBeVisible()
     await expect(report).toContainText('2 nových')
     await expect(report).toContainText('1 na kontrolu')
-    await expect(report).toContainText('1 nespracovaných')
+    // ⚠ Retarget, case (a) — PC-T12 split "Nespracované riadky" (which mixed
+    // skips with warnings, and the PM read it as "not imported") into red
+    // skipped + amber warnings. The nameless row is a real skip.
+    await expect(report).toContainText('1 preskočených')
+    await expect(report).toContainText('0 upozornení')
     await expect(report).toContainText(cleanName)
 
     // The fuzzy entry: "Je to premenovaný X?" naming the CANDIDATE (the
@@ -1620,8 +1624,11 @@ test.describe('UC-PC-009 — AdminCatalog view (UI)', () => {
     await expect(fuzzy).toContainText(`Je to premenovaný ${base}?`)
 
     // The unparsed entry renders its reason string prominently (row numbers
-    // count parsed records, and the UI says so).
+    // count parsed records, and the UI says so) — under the red SKIPPED
+    // heading whose copy says these rows were NOT imported (PC-T12).
     await expect(report.getByTestId('unparsed-entry')).toHaveCount(1)
+    await expect(report).toContainText('Preskočené riadky (1)')
+    await expect(report).toContainText('neboli importované')
 
     // The merge-flow link lands on the duplicates tab with the pair recomputed.
     // ⚠ Identified by BOTH member buttons, not by hasText: the shared DB
@@ -2006,13 +2013,14 @@ async function makeFriendSession(label) {
 test.describe('UC-PC-012 — the catalog picker on POST /api/cycles (API)', () => {
   test.beforeAll(refreshAdminToken)
 
-  test('two ticked products snapshot into the cycle: linked, all six prices FROZEN from the catalog, stock_limit_g NULL', async () => {
+  test('two ticked products snapshot into the cycle: linked, all seven prices FROZEN from the catalog, stock_limit_g NULL', async () => {
     const stem = uniq()
     const idA = await importOne(`${stem} Vyber A`, { purpose: 'Filter', desc1: 'Washed profil' })
     const idB = await importOne(`${stem} Vyber B`, { purpose: 'Espresso' })
-    // Give A the full price vocabulary so the freeze covers every column.
+    // Give A the full price vocabulary so the freeze covers every column
+    // (price_8pc12g joined in PC-T12 — retarget case (a): the enumeration grew).
     const patched = await patchCatalog(idA, {
-      price_150g: 5.5, price_200g: 6.5, price_250g: 8.8, price_500g: 15, price_1kg: 27.5, price_20pc5g: 7.4,
+      price_150g: 5.5, price_200g: 6.5, price_250g: 8.8, price_500g: 15, price_1kg: 27.5, price_20pc5g: 7.4, price_8pc12g: 6.2,
     })
     expect(patched.status()).toBe(200)
     const catalogA = await (await getCatalogRow(idA)).json()
@@ -2034,7 +2042,7 @@ test.describe('UC-PC-012 — the catalog picker on POST /api/cycles (API)', () =
     expect(snapA.description1).toBe(catalogA.description1)
     expect(snapA.purpose).toBe('Filter')
     expect(snapA.roastery).toBe(catalogA.roastery)
-    for (const f of ['price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g']) {
+    for (const f of ['price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g', 'price_8pc12g']) {
       expect(snapA[f], `${f} copied from the catalog's current price`).toBe(catalogA[f])
     }
     expect(snapB.price_250g).toBe(catalogB.price_250g)
@@ -2701,5 +2709,85 @@ test.describe('Cycle ↔ catalog reconciliation (PM 2026-08-23)', () => {
     await page.getByTestId('markup-save').click()
     await expect(page.getByTestId('markup-neutral-hint')).toHaveCount(0)
     await expect(page.getByTestId('friend-price').first()).toHaveText('10.59')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PC-T12 — price editing on the catalog: the seventh variant (price_8pc12g,
+// Brew Bags, 8 × 12 g = 96 g), number validation on the PATCH (400 on junk —
+// bindValue used to store the literal text 'abc' into a REAL column), and the
+// dialog's honesty about decision 13: manual price edits live only until the
+// next import.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test.describe('PC-T12 — catalog price editing (API)', () => {
+  // ⚠ ONE admin token app-wide — UI describes above invalidated the beforeAll token.
+  test.beforeAll(refreshAdminToken)
+
+  test('price_8pc12g is PATCHable and persists; the list carries the column', async () => {
+    const name = `${uniq()} Brew Vrecka`
+    const id = await importOne(name)
+    const res = await patchCatalog(id, { price_8pc12g: 6.2 })
+    expect(res.status()).toBe(200)
+    expect((await res.json()).price_8pc12g).toBe(6.2)
+    const detail = await (await getCatalogRow(id)).json()
+    expect(detail.price_8pc12g, 'persisted, not just echoed').toBe(6.2)
+  })
+
+  test('a junk price is a 400 naming the field — never stored as text, never silently skipped', async () => {
+    const name = `${uniq()} Odolna`
+    const id = await importOne(name) // price_250g = 8 from the import fixture
+    for (const junk of ['abc', '12abc', true, { a: 1 }, [1, 2]]) {
+      const res = await patchCatalog(id, { price_250g: junk })
+      expect(res.status(), `price_250g=${JSON.stringify(junk)}`).toBe(400)
+      const body = await res.json()
+      expect(body.field).toBe('price_250g')
+      // Nothing written — the stored price survives the refusal.
+      expect((await (await getCatalogRow(id)).json()).price_250g).toBe(8)
+    }
+  })
+
+  test('null clears, a numeric string (comma or dot) is accepted, a number is a number', async () => {
+    const name = `${uniq()} Ciselna`
+    const id = await importOne(name)
+    expect((await patchCatalog(id, { price_1kg: 36 })).status()).toBe(200)
+    expect((await patchCatalog(id, { price_150g: '5,5' })).status()).toBe(200)
+    expect((await patchCatalog(id, { price_200g: '6.5' })).status()).toBe(200)
+    expect((await patchCatalog(id, { price_250g: null })).status()).toBe(200)
+    const row = await (await getCatalogRow(id)).json()
+    expect(row.price_1kg).toBe(36)
+    expect(row.price_150g, 'decimal comma parsed like an imported price').toBe(5.5)
+    expect(row.price_200g).toBe(6.5)
+    expect(row.price_250g, 'explicit null clears').toBeNull()
+  })
+})
+
+test.describe('PC-T12 — catalog price editing (UI)', () => {
+  test('the edit dialog has all SEVEN price fields; 8ks×12g persists; the help text says imports overwrite manual prices', async ({ page }) => {
+    const token = await loginAsAdminUI(page)
+    const stem = uniq()
+    const name = `${stem} Sedma Cena`
+    await uiImportOne(token, name)
+
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-search').fill(stem)
+    await expect(page.getByTestId('catalog-row')).toHaveCount(1)
+    await page.getByTestId('catalog-row').getByRole('button', { name: 'Upraviť' }).click()
+    const dialog = page.getByTestId('catalog-edit-dialog')
+    await expect(dialog).toBeVisible()
+
+    // The new variant's input, plus the decision-13 honesty line.
+    const input = dialog.getByTestId('catalog-edit-price-8pc12g')
+    await expect(input).toBeVisible()
+    await expect(dialog).toContainText('import')
+    await expect(dialog.getByText(/najbližš\w* import\w*/i).first()).toBeVisible()
+
+    await input.fill('6.20')
+    await dialog.getByRole('button', { name: 'Uložiť' }).click()
+    await expect(dialog).not.toBeVisible()
+
+    // Persisted — reopen shows the value.
+    await page.getByTestId('catalog-row').getByRole('button', { name: 'Upraviť' }).click()
+    await expect(dialog.getByTestId('catalog-edit-price-8pc12g')).toHaveValue('6.2')
   })
 })

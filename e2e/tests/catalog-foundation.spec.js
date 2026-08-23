@@ -241,7 +241,8 @@ test.describe('UC-PC-001 schema', () => {
           'country', 'region', 'altitude', 'farm', 'variety', 'processing',
           'description1', 'description2', 'roast_type', 'purpose',
           'is_new', 'curator_pick_note', 'image', 'status',
-          'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g',
+          // price_8pc12g joined in PC-T12 (Brew Bags, 8 × 12 g) — retarget case (a).
+          'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g', 'price_8pc12g',
           'created_at', 'updated_at',
         ].sort()
       )

@@ -14,7 +14,7 @@
 // authority (backend/src/helpers/stock.js); this just keeps the +/- buttons and
 // the "Zostáva" bar honest while a cart is being built.
 export const VARIANT_GRAMS = {
-  '150g': 150, '200g': 200, '250g': 250, '500g': 500, '1kg': 1000, '20pc5g': 100
+  '150g': 150, '200g': 200, '250g': 250, '500g': 500, '1kg': 1000, '20pc5g': 100, '8pc12g': 96
 }
 
 // Coffee weight variants in display order. Data-driven so the near-identical
@@ -25,7 +25,8 @@ export const COFFEE_VARIANTS = [
   { variant: '250g', label: '250g', priceKey: 'price_250g' },
   { variant: '500g', label: '500g', priceKey: 'price_500g' },
   { variant: '1kg', label: '1kg', priceKey: 'price_1kg' },
-  { variant: '20pc5g', label: '20 ks × 5g', priceKey: 'price_20pc5g' }
+  { variant: '20pc5g', label: '20 ks × 5g', priceKey: 'price_20pc5g' },
+  { variant: '8pc12g', label: '8 ks × 12g', priceKey: 'price_8pc12g' }
 ]
 
 // ⚠ `formatPrice` USED TO LIVE HERE and is deliberately GONE (RD-GX-3, closing the
@@ -51,6 +52,7 @@ export function variantText(item) {
   if (item?.variant_label) return item.variant_label
   if (item?.variant === 'unit') return 'ks'
   if (item?.variant === '20pc5g') return '20 ks × 5g'
+  if (item?.variant === '8pc12g') return '8 ks × 12g'
   return item?.variant
 }
 

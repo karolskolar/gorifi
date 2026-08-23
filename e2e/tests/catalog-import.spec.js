@@ -127,10 +127,13 @@ test.describe('UC-PC-004 — the report is a machine contract', () => {
     // future autonomous routine consumes).
     expect(Object.keys(body)).toEqual(['report'])
     const report = body.report
+    // ⚠ Retarget, case (a) — PC-T12 split the old mixed `unparsed` bucket:
+    // `unparsed` now means strictly "skipped, nothing written" and the ADDITIVE
+    // `warnings` bucket carries "imported, but check this" entries.
     expect(Object.keys(report).sort()).toEqual(
-      ['matched', 'new', 'pending_fuzzy', 'price_changes', 'summary', 'unparsed'])
+      ['matched', 'new', 'pending_fuzzy', 'price_changes', 'summary', 'unparsed', 'warnings'])
     expect(Object.keys(report.summary).sort()).toEqual(
-      ['matched', 'new', 'pending_fuzzy', 'price_changes', 'unparsed'])
+      ['matched', 'new', 'pending_fuzzy', 'price_changes', 'unparsed', 'warnings'])
 
     expect(report.summary.new).toBe(2)
     expect(report.summary.matched).toBe(0)
@@ -183,7 +186,7 @@ test.describe('UC-PC-003 — exact match refreshes the catalog (decision 13)', (
     const second = await importCsv(csvFor([{ name, purpose: 'Filter', p250: '9,4', p1kg: '35,3' }]))
     expect(second.status()).toBe(201)
     const { report } = await second.json()
-    expect(report.summary).toEqual({ new: 0, matched: 1, price_changes: 1, pending_fuzzy: 0, unparsed: 0 })
+    expect(report.summary).toEqual({ new: 0, matched: 1, price_changes: 1, pending_fuzzy: 0, unparsed: 0, warnings: 0 })
     expect(report.matched).toEqual([{ catalog_id: catalogId, name }])
     expect(report.price_changes).toEqual([
       { catalog_id: catalogId, name, field: 'price_250g', old: 8.9, new: 9.4 },
@@ -258,7 +261,7 @@ test.describe('UC-PC-003 rule 6 — naturally idempotent', () => {
     const res = await importCsv(csv)
     expect(res.status()).toBe(201)
     const { report } = await res.json()
-    expect(report.summary).toEqual({ new: 0, matched: 2, price_changes: 0, pending_fuzzy: 0, unparsed: 0 })
+    expect(report.summary).toEqual({ new: 0, matched: 2, price_changes: 0, pending_fuzzy: 0, unparsed: 0, warnings: 0 })
   })
 
   test('the second identical import writes NOTHING (byte-compare, updated_at included)', async () => {
@@ -600,9 +603,9 @@ test.describe('UC-PC-005 — manual POST of a NEW name', () => {
 
     // …plus the SAME report shape the importers return (UC-PC-004).
     expect(Object.keys(body.report).sort()).toEqual(
-      ['matched', 'new', 'pending_fuzzy', 'price_changes', 'summary', 'unparsed'])
+      ['matched', 'new', 'pending_fuzzy', 'price_changes', 'summary', 'unparsed', 'warnings'])
     expect(Object.keys(body.report.summary).sort()).toEqual(
-      ['matched', 'new', 'pending_fuzzy', 'price_changes', 'unparsed'])
+      ['matched', 'new', 'pending_fuzzy', 'price_changes', 'unparsed', 'warnings'])
     expect(body.report.summary.new).toBe(1)
     expect(body.report.summary.matched).toBe(0)
     expect(body.report.summary.price_changes).toBe(0)
@@ -650,7 +653,7 @@ test.describe('UC-PC-005 — manual POST of a KNOWN name', () => {
     const res = await postProduct(cycleId, { name, purpose: 'Filter', price_250g: '9.4', price_1kg: '35' })
     expect(res.status()).toBe(201)
     const body = await res.json()
-    expect(body.report.summary).toEqual({ new: 0, matched: 1, price_changes: 1, pending_fuzzy: 0, unparsed: 0 })
+    expect(body.report.summary).toEqual({ new: 0, matched: 1, price_changes: 1, pending_fuzzy: 0, unparsed: 0, warnings: 0 })
     expect(body.report.matched).toEqual([{ catalog_id: catalogId, name }])
     expect(body.report.price_changes).toEqual([
       { catalog_id: catalogId, name, field: 'price_250g', old: 8.9, new: 9.4 },
@@ -796,5 +799,343 @@ test.describe('UC-PC-005 — guards and structure', () => {
     // No inline catalog SQL: the helper stays the only coffee_products writer.
     expect(src).not.toMatch(/INSERT INTO coffee_products/)
     expect(src).not.toMatch(/UPDATE coffee_products/)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PC-T12 — pack-label price parsing (`20ks x 5g` → price_20pc5g, `8ks x 12g` →
+// price_8pc12g), the honest report split (warnings ≠ skipped), and the
+// decision-13 AMENDMENT: on a refresh the sheet owns the whole price VECTOR.
+//
+// Found on staging (PM 2026-08-23): the multirow parser knew only weight
+// labels, so both pack labels fell into the "assumed 250g" fallback —
+// price_250g = 10 on four capsule products, capsules sold as 0.25 kg.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+
+const PARSING_URL = 'file://' + join(REPO_ROOT, 'backend', 'src', 'helpers', 'import-parsing.js')
+const CATALOG_IMPORT_URL = 'file://' + join(REPO_ROOT, 'backend', 'src', 'helpers', 'catalog-import.js')
+const SCHEMA_URL = 'file://' + join(REPO_ROOT, 'backend', 'src', 'db', 'schema.js')
+
+// The catalog-foundation probe idiom: run the multirow parse + catalog import in
+// a child node against a THROWAWAY temp DB (the gsheet endpoints, the only HTTP
+// carriers of the multirow format, need a live public sheet — FUP-T15). This is
+// the only way to exercise importRowsIntoCatalog's warnings path end to end.
+function importProbe(body) {
+  const dir = mkdtempSync(join(tmpdir(), 'pc-t12-probe-'))
+  const script = join(dir, 'probe.mjs')
+  const dbFile = join(dir, 'probe.sqlite')
+  writeFileSync(
+    script,
+    `import { parseMultiRowProducts } from '${PARSING_URL}';\n` +
+      `import { importRowsIntoCatalog } from '${CATALOG_IMPORT_URL}';\n` +
+      `import db from '${SCHEMA_URL}';\n` +
+      `const out = (() => {\n${body}\n})();\n` +
+      `console.log('@@PROBE@@' + JSON.stringify(out));\n`
+  )
+  try {
+    const stdout = execFileSync(process.execPath, [script], {
+      env: { ...process.env, DB_PATH: dbFile },
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+    })
+    const m = stdout.match(/@@PROBE@@(.*)/)
+    if (!m) throw new Error(`probe produced no marker. stdout:\n${stdout}`)
+    return JSON.parse(m[1])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// A multirow CSV (3 rows per product, blank-row separated) from
+// [{ name, purpose, label, price, desc, flavor, roast }].
+function multirowCsv(products) {
+  const rows = ['Cennik,,,,,,,,', ',,,,,,,,']
+  for (const p of products) {
+    rows.push(`,${p.name},,,,,,${p.purpose || 'Filter'},"${p.label || ''}"`)
+    rows.push(`,${p.desc || 'Popis'},,,,,,,"${p.price || ''}"`)
+    rows.push(`,${p.flavor || 'kakao'},,,,,,${p.roast || 'Light roast'},`)
+    rows.push(',,,,,,,,')
+  }
+  return rows.join('\n')
+}
+
+test.describe('PC-T12 — parsePriceString learns pack labels', () => {
+  let mod
+  test.beforeAll(async () => {
+    mod = await import(PARSING_URL)
+  })
+
+  test('capsule labels map to price_20pc5g — any spacing, x/×, ks/pcs', () => {
+    for (const label of ['20ks x 5g', '20 ks × 5g', '20pcs x 5g', '20KS X 5G', '20 ks x5g']) {
+      const r = mod.parsePriceString('10', label)
+      expect(r.price20pc5g, `label "${label}"`).toBe(10)
+      expect(r.price250g, `no 250g fallback for "${label}"`).toBeNull()
+      expect(r.price150g).toBeNull()
+      expect(r.price8pc12g).toBeNull()
+      expect(r.error).toBeNull()
+    }
+  })
+
+  test('brew-bag labels map to the NEW price_8pc12g', () => {
+    for (const label of ['8ks x 12g', '8 ks × 12g', '8pcs x 12g']) {
+      const r = mod.parsePriceString('11', label)
+      expect(r.price8pc12g, `label "${label}"`).toBe(11)
+      expect(r.price250g, `no 250g fallback for "${label}"`).toBeNull()
+      expect(r.error).toBeNull()
+    }
+  })
+
+  test('an UNKNOWN pack size imports NO price and warns — never the 250g fallback (the staging bug)', () => {
+    const r = mod.parsePriceString('10', '10ks x 7g')
+    expect(r.price250g, 'the bug: 10 € must NOT land in price_250g').toBeNull()
+    expect(r.price20pc5g).toBeNull()
+    expect(r.price8pc12g).toBeNull()
+    expect(r.price150g).toBeNull()
+    expect(r.price1kg).toBeNull()
+    expect(r.error).toContain('10ks x 7g')
+  })
+
+  test('the legacy weight labels parse byte-identically', () => {
+    // 250g / 1kg pair
+    const pair = mod.parsePriceString('8,9 / 35,3 EUR', '250g / 1kg')
+    expect(pair.price250g).toBe(8.9)
+    expect(pair.price1kg).toBe(35.3)
+    expect(pair.error).toBeNull()
+    // 150g single
+    const single150 = mod.parsePriceString('7,5', '150g')
+    expect(single150.price150g).toBe(7.5)
+    expect(single150.error).toBeNull()
+    // no label single price → still assumed 250g WITH the warning (weight rows
+    // keep the old fallback; only PACK labels lost it)
+    const bare = mod.parsePriceString('9,9', '')
+    expect(bare.price250g).toBe(9.9)
+    expect(bare.error).toBe('Single price found, assumed 250g')
+    // swapped sanity check untouched
+    const swapped = mod.parsePriceString('35 / 9', '250g / 1kg')
+    expect(swapped.price250g).toBe(9)
+    expect(swapped.price1kg).toBe(35)
+  })
+
+  test('parseMultiRowProducts carries pack prices onto the product row', async () => {
+    const csv = multirowCsv([
+      { name: 'Kapsule Probe', purpose: 'Nespresso', label: '20ks x 5g', price: '10' },
+      { name: 'Brew Probe', purpose: 'Brew Bags', label: '8ks x 12g', price: '11' },
+      { name: 'Divny Probe', purpose: 'Filter', label: '10ks x 7g', price: '12' },
+    ])
+    const { products, warnings } = mod.parseMultiRowProducts(csv)
+    expect(products).toHaveLength(3)
+    expect(products[0].price_20pc5g).toBe(10)
+    expect(products[0].price_250g).toBeNull()
+    expect(products[1].price_8pc12g).toBe(11)
+    expect(products[1].price_250g).toBeNull()
+    expect(products[2].price_250g, 'unknown pack: nothing priced').toBeNull()
+    expect(products[2].price_20pc5g).toBeNull()
+    expect(products[2].price_8pc12g).toBeNull()
+    expect(warnings.some((w) => String(w).includes('Divny Probe'))).toBe(true)
+  })
+})
+
+test.describe('PC-T12 — the honest report: warnings (imported) vs unparsed (skipped)', () => {
+  test('multirow warnings land in report.warnings; a real skip stays in unparsed; the warned product IS imported', async () => {
+    const stem = uniq()
+    const csv = multirowCsv([
+      { name: `${stem} Riadna`, label: '250g / 1kg', price: '9 / 36' },
+      { name: `${stem} Riadna`, label: '250g / 1kg', price: '9 / 36' }, // in-sheet dup → SKIP
+      { name: `${stem} Divne Balenie`, label: '10ks x 7g', price: '10' }, // unknown pack → WARNING
+    ])
+    const out = importProbe(`
+      const csv = ${JSON.stringify(csv)};
+      const parsed = parseMultiRowProducts(csv);
+      const report = importRowsIntoCatalog(parsed.products, 'Goriffee', { warnings: parsed.warnings });
+      const row = db.get('SELECT * FROM coffee_products WHERE name = ?', [${JSON.stringify(`${stem} Divne Balenie`)}]);
+      return { report, row };
+    `)
+    const { report, row } = out
+    // The skip: nothing written for the duplicate row.
+    expect(report.summary.unparsed).toBe(1)
+    expect(report.unparsed[0].reason).toBe('duplicate row in sheet')
+    // The warning: the product imported, flagged for a human.
+    expect(report.summary.warnings).toBe(1)
+    expect(report.warnings[0].reason).toContain(`${stem} Divne Balenie`)
+    expect(report.unparsed.some((e) => String(e.reason).includes('Divne Balenie')),
+      'the warning must NOT sit in unparsed any more').toBe(false)
+    expect(row, 'the warned product really imported').not.toBeNull()
+    // …with NO price at all — the 250g fallback for pack labels is the bug.
+    expect(row.price_250g).toBeNull()
+    expect(row.price_20pc5g).toBeNull()
+    expect(row.price_8pc12g).toBeNull()
+  })
+})
+
+test.describe('PC-T12 — decision-13 amendment: the price vector is sheet-owned on refresh', () => {
+  test('the staging self-heal: a re-import with the pack label REPLACES the bogus 250g price', async () => {
+    const stem = uniq()
+    const name = `${stem} Kapsulova`
+    // First import mimics the broken state: the price landed in price_250g.
+    const csv1 = multirowCsv([{ name, label: '250g', price: '10' }])
+    // The fixed parser now reads the sheet's real label.
+    const csv2 = multirowCsv([{ name, label: '20ks x 5g', price: '10' }])
+    const out = importProbe(`
+      const csv1 = ${JSON.stringify(csv1)};
+      const csv2 = ${JSON.stringify(csv2)};
+      const p1 = parseMultiRowProducts(csv1);
+      importRowsIntoCatalog(p1.products, 'Goriffee', { warnings: p1.warnings });
+      const before = db.get('SELECT price_250g, price_20pc5g FROM coffee_products WHERE name = ?', [${JSON.stringify(name)}]);
+      const p2 = parseMultiRowProducts(csv2);
+      const report = importRowsIntoCatalog(p2.products, 'Goriffee', { warnings: p2.warnings });
+      const after = db.get('SELECT price_250g, price_20pc5g, price_1kg FROM coffee_products WHERE name = ?', [${JSON.stringify(name)}]);
+      return { before, report, after };
+    `)
+    expect(out.before.price_250g, 'the broken state really existed').toBe(10)
+    expect(out.after.price_20pc5g, 'the capsule price lands on its real variant').toBe(10)
+    expect(out.after.price_250g, 'the bogus 250g price self-heals to NULL').toBeNull()
+    const fields = out.report.price_changes.map((c) => c.field).sort()
+    expect(fields).toEqual(['price_20pc5g', 'price_250g'])
+    const cleared = out.report.price_changes.find((c) => c.field === 'price_250g')
+    expect(cleared.old).toBe(10)
+    expect(cleared.new).toBeNull()
+  })
+
+  test('a brew-bag label lands on price_8pc12g in the catalog', async () => {
+    const stem = uniq()
+    const name = `${stem} Brew Vrecka`
+    const csv = multirowCsv([{ name, label: '8ks x 12g', price: '11' }])
+    const out = importProbe(`
+      const csv = ${JSON.stringify(csv)};
+      const parsed = parseMultiRowProducts(csv);
+      importRowsIntoCatalog(parsed.products, 'Goriffee', { warnings: parsed.warnings });
+      return db.get('SELECT price_8pc12g, price_250g FROM coffee_products WHERE name = ?', [${JSON.stringify(name)}]);
+    `)
+    expect(out.price_8pc12g).toBe(11)
+    expect(out.price_250g).toBeNull()
+  })
+
+  test('≥1 parsed price makes the DECLARED vector authoritative: an emptied 1kg cell clears price_1kg (CSV endpoint)', async () => {
+    const name = `${uniq()} Vektorova`
+    await importCsv(csvFor([{ name, purpose: 'Filter', p250: '9', p1kg: '36' }]))
+    const res = await importCsv(csvFor([{ name, purpose: 'Filter', p250: '9' }])) // 1kg cell empty
+    expect(res.status()).toBe(201)
+    const { report } = await res.json()
+    expect(report.summary.matched).toBe(1)
+    const cleared = report.price_changes.find((c) => c.field === 'price_1kg')
+    expect(cleared, 'the emptied 1kg cell is a reported price change').toBeTruthy()
+    expect(cleared.old).toBe(36)
+    expect(cleared.new).toBeNull()
+  })
+
+  test('zero parsed prices leave every price untouched (a partial parse can never blank a product)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const name = `${uniq()} Chranena`
+    await importCsv(csvFor([{ name, purpose: 'Filter', p250: '9', p1kg: '36' }]))
+    const res = await importCsv(csvFor([{ name, purpose: 'Filter', desc1: 'novy popis' }])) // no prices at all
+    expect(res.status()).toBe(201)
+    const { report } = await res.json()
+    expect(report.summary.price_changes).toBe(0)
+    const row = catalogRowByName(name)
+    expect(row.price_250g, 'prices survive a price-less refresh').toBe(9)
+    expect(row.price_1kg).toBe(36)
+    expect(row.description1, 'the text refresh still ran').toBe('novy popis')
+  })
+
+  test('the plain CSV format only owns the columns it declares: 250g/1kg move, a pack price SURVIVES', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const name = `${uniq()} Zmiesana`
+    const first = await importCsv(csvFor([{ name, purpose: 'Filter', p250: '9', p1kg: '36' }]))
+    const catalogId = (await first.json()).report.new[0].catalog_id
+    // Hand the row a capsule price the plain CSV format cannot express.
+    {
+      const db = openDb()
+      try {
+        db.prepare('UPDATE coffee_products SET price_20pc5g = 7.4 WHERE id = ?').run(catalogId)
+      } finally {
+        db.close()
+      }
+    }
+    const res = await importCsv(csvFor([{ name, purpose: 'Filter', p250: '9.5', p1kg: '36' }]))
+    expect(res.status()).toBe(201)
+    const row = catalogRowByName(name)
+    expect(row.price_250g).toBe(9.5)
+    expect(row.price_20pc5g, 'a field the format does not declare is never cleared').toBe(7.4)
+  })
+})
+
+// ── PC-T12 review fixes — the three price-clearing edges + the silent-null warning ──
+
+test.describe('PC-T12 review — vector-clear edges that must NOT clear', () => {
+  test('the manual POST declares only fields PRESENT in the body: a partial form never clears the catalog\'s other prices', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const name = `${uniq()} Manual Ciastocna`
+    // The catalog knows the product with BOTH prices…
+    await importCsv(csvFor([{ name, purpose: 'Filter', p250: '8,9', p1kg: '35' }]))
+    // …and a manual add of the KNOWN name fills in only the 250g field.
+    const cycleId = await createCycle()
+    const res = await postProduct(cycleId, { name, purpose: 'Filter', price_250g: '9.4' })
+    expect(res.status()).toBe(201)
+    const { report } = await res.json()
+    expect(report.summary.matched).toBe(1)
+    expect(report.price_changes.map((c) => c.field), 'only the supplied field moves').toEqual(['price_250g'])
+    const row = catalogRowByName(name)
+    expect(row.price_250g).toBe(9.4)
+    expect(row.price_1kg, 'a blank manual form field is "unspecified", never "clear it"').toBe(35)
+  })
+
+  test('a hand-set 500g price SURVIVES a multirow refresh (the format cannot express 500g, so it never declares it)', async () => {
+    const stem = uniq()
+    const name = `${stem} Rucne 500g`
+    const csv1 = multirowCsv([{ name, label: '250g / 1kg', price: '9 / 36' }])
+    const csv2 = multirowCsv([{ name, label: '250g / 1kg', price: '9,5 / 36' }])
+    const out = importProbe(`
+      const csv1 = ${JSON.stringify(csv1)};
+      const csv2 = ${JSON.stringify(csv2)};
+      const p1 = parseMultiRowProducts(csv1);
+      importRowsIntoCatalog(p1.products, 'Goriffee', { warnings: p1.warnings });
+      // The human repair the refresh must not undo.
+      db.run('UPDATE coffee_products SET price_500g = 15 WHERE name = ?', [${JSON.stringify(name)}]);
+      const p2 = parseMultiRowProducts(csv2);
+      const report = importRowsIntoCatalog(p2.products, 'Goriffee', { warnings: p2.warnings });
+      const after = db.get('SELECT price_250g, price_500g, price_1kg FROM coffee_products WHERE name = ?', [${JSON.stringify(name)}]);
+      return { report, after };
+    `)
+    expect(out.after.price_250g, 'the declared field refreshed').toBe(9.5)
+    expect(out.after.price_500g, 'the hand-set 500g price survives — undeclared by this format').toBe(15)
+    expect(out.after.price_1kg).toBe(36)
+    expect(out.report.price_changes.some((c) => c.field === 'price_500g')).toBe(false)
+  })
+
+  test('a zeros-only row does not ARM the vector-clear: real prices survive', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const name = `${uniq()} Nulova`
+    await importCsv(csvFor([{ name, purpose: 'Filter', p250: '9', p1kg: '36' }]))
+    const res = await importCsv(csvFor([{ name, purpose: 'Filter', p250: '0', p1kg: '0' }]))
+    expect(res.status()).toBe(201)
+    const { report } = await res.json()
+    expect(report.summary.price_changes, 'zeros arm nothing').toBe(0)
+    const row = catalogRowByName(name)
+    expect(row.price_250g).toBe(9)
+    expect(row.price_1kg).toBe(36)
+  })
+
+  test('a half-readable price pair WARNS instead of silently yielding null (the vector would clear that variant)', async () => {
+    const mod = await import(PARSING_URL)
+    const r = mod.parsePriceString('8,9 / abc', '250g / 1kg')
+    expect(r.price250g).toBe(8.9)
+    expect(r.price1kg).toBeNull()
+    expect(r.error, 'the unreadable half is named in a warning').toContain('abc')
+    // …and the reverse half too.
+    const r2 = mod.parsePriceString('xyz / 35', '250g / 1kg')
+    expect(r2.price250g).toBeNull()
+    expect(r2.price1kg).toBe(35)
+    expect(r2.error).toContain('xyz')
+    // Both halves unreadable stays silent as before — nothing parses, the
+    // refresh never arms, nothing can be cleared.
+    const r3 = mod.parsePriceString('abc / xyz', '250g / 1kg')
+    expect(r3.error).toBeNull()
+    // The two legacy warning strings stay byte-verbatim.
+    expect(mod.parsePriceString('9,9', '').error).toBe('Single price found, assumed 250g')
+    expect(mod.parsePriceString('35 / 9', '250g / 1kg').error).toBe('Prices were swapped (small variant was larger than 1kg)')
   })
 })

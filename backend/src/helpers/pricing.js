@@ -21,6 +21,7 @@ export const VARIANT_PRICE_COLUMNS = {
   '500g': 'price_500g',
   '1kg': 'price_1kg',
   '20pc5g': 'price_20pc5g',
+  '8pc12g': 'price_8pc12g',
   unit: 'price_unit',
 };
 

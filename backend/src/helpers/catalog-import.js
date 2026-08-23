@@ -20,10 +20,11 @@ import { normalizeProductName, normalizeRoastery, nameSimilarity, FUZZY_THRESHOL
 // (the GA-T8 lesson — an await between a uniqueness check and its INSERT breaks
 // the instances:1 atomicity assumption).
 
-// The six catalog "current price" columns — the sheet supplies a field when the
-// parsed row carries a NUMBER there (parsePrice yields number|null; the plain
-// CSV format supplies 250g/1kg only, the multirow format 150/200/250g/1kg).
-const SHEET_PRICE_FIELDS = ['price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g'];
+// The seven catalog "current price" columns. A parsed row DECLARES a field when
+// it carries a number OR an explicit null there (parsePrice yields number|null;
+// the plain CSV formats declare 250g/1kg only, the multirow format and the
+// manual POST declare the full vector).
+const SHEET_PRICE_FIELDS = ['price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g', 'price_8pc12g'];
 
 // Sheet-sourced metadata (resolved decision 13): refreshed on exact match, but
 // only when the sheet value is non-empty AND differs. Admin-only fields —
@@ -46,13 +47,38 @@ function refreshCatalogRow(existing, parsedRow) {
   const values = [];
   const priceChanges = [];
 
-  for (const field of SHEET_PRICE_FIELDS) {
-    const v = parsedRow[field];
-    if (typeof v !== 'number') continue; // field not supplied by the sheet
-    if (existing[field] === v) continue;
-    updates.push(`${field} = ?`);
-    values.push(v);
-    priceChanges.push({ catalog_id: existing.id, name: existing.name, field, old: existing[field], new: v });
+  // ── PC-T12 — AMENDMENT to resolved decision 13 (prices only) ──────────────
+  // On a refresh the sheet owns the whole price VECTOR, not individual cells:
+  //   • a parsed row DECLARES a price field when it carries a number or an
+  //     explicit null there. The multirow format declares six (NOT price_500g —
+  //     it has no 500g label path; a format must never clear a column it cannot
+  //     even express); the plain CSV formats declare only 250g/1kg; the manual
+  //     POST declares only the fields present in its body (SET semantics are
+  //     scoped to the SHEET refresh — a blank manual form field is
+  //     "unspecified", never "clear it");
+  //   • when ≥1 DECLARED field is a POSITIVE number, EVERY declared field is
+  //     written — numbers as the new price, nulls as NULL. A variant that left
+  //     the sheet stops being purchasable, and a mis-parsed pack price (the
+  //     2026-08-23 staging bug: `20ks x 5g` priced into price_250g) self-heals
+  //     on the next import;
+  //   • otherwise ALL prices are left untouched — a partial/failed parse must
+  //     never blank a product, and a zeros-only row (parsePrice reads "0" as
+  //     the number 0) must not arm the vector-clear either.
+  // Consequence, stated in the admin edit dialog too: manual price edits
+  // (UC-PC-009 PATCH) are temporary until the next import — the same posture
+  // decision 13 already takes for descriptions.
+  const declared = SHEET_PRICE_FIELDS.filter(
+    (f) => typeof parsedRow[f] === 'number' || parsedRow[f] === null
+  );
+  const anyPrice = declared.some((f) => typeof parsedRow[f] === 'number' && parsedRow[f] > 0);
+  if (anyPrice) {
+    for (const field of declared) {
+      const v = typeof parsedRow[field] === 'number' ? parsedRow[field] : null;
+      if (existing[field] === v) continue;
+      updates.push(`${field} = ?`);
+      values.push(v);
+      priceChanges.push({ catalog_id: existing.id, name: existing.name, field, old: existing[field], new: v });
+    }
   }
 
   for (const field of SHEET_TEXT_FIELDS) {
@@ -132,8 +158,8 @@ export function consolidateCatalogRow(parsedRow, roastery, opts = {}) {
     db.run(
       `INSERT INTO coffee_products
          (name, normalized_name, roastery, description1, description2, roast_type, purpose,
-          price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, image, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available')`,
+          price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, price_8pc12g, image, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available')`,
       [
         parsedRow.name,
         key,
@@ -148,6 +174,7 @@ export function consolidateCatalogRow(parsedRow, roastery, opts = {}) {
         typeof parsedRow.price_500g === 'number' ? parsedRow.price_500g : null,
         typeof parsedRow.price_1kg === 'number' ? parsedRow.price_1kg : null,
         typeof parsedRow.price_20pc5g === 'number' ? parsedRow.price_20pc5g : null,
+        typeof parsedRow.price_8pc12g === 'number' ? parsedRow.price_8pc12g : null,
         image,
         // status is the literal 'available' above — never caller-supplied
       ]
@@ -208,12 +235,13 @@ export function exactCatalogMatch(name, roastery) {
 // precedent).
 export function singleRowReport(result) {
   const report = {
-    summary: { new: 0, matched: 0, price_changes: 0, pending_fuzzy: 0, unparsed: 0 },
+    summary: { new: 0, matched: 0, price_changes: 0, pending_fuzzy: 0, unparsed: 0, warnings: 0 },
     new: [],
     matched: [],
     price_changes: [],
     pending_fuzzy: [],
     unparsed: [],
+    warnings: [],
   };
 
   if (result.outcome === 'skipped') {
@@ -240,6 +268,7 @@ export function singleRowReport(result) {
     price_changes: report.price_changes.length,
     pending_fuzzy: report.pending_fuzzy.length,
     unparsed: report.unparsed.length,
+    warnings: report.warnings.length,
   };
   return report;
 }
@@ -248,26 +277,36 @@ export function singleRowReport(result) {
 // orchestrator the three routes call. Runs EVERYTHING (lookups + writes) inside
 // ONE db.transaction and assembles the UC-PC-004 report:
 //
-//   { summary: { new, matched, price_changes, pending_fuzzy, unparsed },
+//   { summary: { new, matched, price_changes, pending_fuzzy, unparsed, warnings },
 //     new:           [{ catalog_id, name, needs_image }],
 //     matched:       [{ catalog_id, name }],
 //     price_changes: [{ catalog_id, name, field, old, new }],
 //     pending_fuzzy: [{ catalog_id, name, candidate_catalog_id, candidate_name, similarity }],
-//     unparsed:      [{ row, reason }] }
+//     unparsed:      [{ row, reason }],
+//     warnings:      [{ row, reason }] }
 //
 // ⚠ THE SHAPE IS A CONTRACT (brief §2.6 — the future autonomous routine
 // consumes it raw). No cycle context of any kind, no product_id, no `unchanged`
-// bucket. Multirow parser `warnings` fold into `unparsed` (row: null — a
-// warning names a product, not a row). Nothing is silently guessed or dropped.
+// bucket. Nothing is silently guessed or dropped.
+//
+// PC-T12 — the honest split (ADDITIVE, recorded): the old report folded the
+// multirow parser `warnings` into `unparsed`, which mixed "skipped, nothing
+// written" with "imported, but check this" — the PM read "Nespracované riadky"
+// as not-imported and was wrong. `unparsed` KEEPS ITS NAME but now means
+// strictly the skipped rows (missing name, in-sheet duplicate — every entry a
+// row nothing was written for), a subset of what it carried before; the NEW
+// `warnings` bucket carries the parser warnings (row: null — a warning names a
+// product, not a row). A consumer of `unparsed` sees only true skips now.
 export function importRowsIntoCatalog(parsedRows, roastery, { warnings = [] } = {}) {
   const run = db.transaction(() => {
     const report = {
-      summary: { new: 0, matched: 0, price_changes: 0, pending_fuzzy: 0, unparsed: 0 },
+      summary: { new: 0, matched: 0, price_changes: 0, pending_fuzzy: 0, unparsed: 0, warnings: 0 },
       new: [],
       matched: [],
       price_changes: [],
       pending_fuzzy: [],
       unparsed: [],
+      warnings: [],
     };
     const seenCatalogIds = new Set();
 
@@ -310,7 +349,7 @@ export function importRowsIntoCatalog(parsedRows, roastery, { warnings = [] } = 
     });
 
     for (const w of warnings) {
-      report.unparsed.push({ row: null, reason: String(w) });
+      report.warnings.push({ row: null, reason: String(w) });
     }
 
     report.summary = {
@@ -319,6 +358,7 @@ export function importRowsIntoCatalog(parsedRows, roastery, { warnings = [] } = 
       price_changes: report.price_changes.length,
       pending_fuzzy: report.pending_fuzzy.length,
       unparsed: report.unparsed.length,
+      warnings: report.warnings.length,
     };
     return report;
   });

@@ -205,8 +205,8 @@ export function createCatalogFromGroups(selection) {
     const result = db.run(
       `INSERT INTO coffee_products
          (name, normalized_name, roastery, description1, description2, roast_type, purpose,
-          price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, image, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available')`,
+          price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, price_8pc12g, image, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available')`,
       [
         newest.name,
         normalizedName,
@@ -221,6 +221,7 @@ export function createCatalogFromGroups(selection) {
         newest.price_500g ?? null,
         newest.price_1kg ?? null,
         newest.price_20pc5g ?? null,
+        newest.price_8pc12g ?? null,
         typeof newest.image === 'string' && newest.image !== '' ? newest.image : null,
       ]
     );

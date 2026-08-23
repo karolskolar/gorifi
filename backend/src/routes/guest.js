@@ -43,7 +43,7 @@ const router = Router();
 // `coffee_products cp ON cp.id = p.source_coffee_product_id`.
 const PRODUCT_COLUMNS = [
   'id', 'cycle_id', 'name', 'description1', 'description2', 'roast_type', 'purpose',
-  'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g', 'price_unit',
+  'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g', 'price_8pc12g', 'price_unit',
   'image', 'roastery', 'weight_grams', 'composition', 'variant_label',
   'source_bakery_product_id', 'source_variant_id', 'stock_limit_g',
 ]

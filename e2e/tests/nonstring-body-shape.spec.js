@@ -1387,7 +1387,7 @@ test.describe('FUP-T13 — POST /api/products with a non-string field', () => {
 
   const OPTIONAL = [
     'description1', 'description2', 'roast_type', 'purpose',
-    'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g',
+    'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g', 'price_8pc12g',
     'roastery', 'stock_limit_g',
   ]
 
@@ -1451,7 +1451,7 @@ test.describe('FUP-T13 — POST /api/products with a non-string field', () => {
 test.describe('FUP-T13 — PATCH /api/products/:id leaves every column UNCHANGED', () => {
   const PATCHABLE = [
     'name', 'description1', 'description2', 'roast_type', 'purpose',
-    'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g',
+    'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g', 'price_8pc12g',
     'image', 'roastery', 'stock_limit_g',
   ]
 

@@ -155,6 +155,7 @@ function openEdit(product) {
     price_500g: product.price_500g ?? '',
     price_1kg: product.price_1kg ?? '',
     price_20pc5g: product.price_20pc5g ?? '',
+    price_8pc12g: product.price_8pc12g ?? '',
   }
   showEdit.value = true
 }
@@ -186,6 +187,7 @@ async function saveEdit() {
     price_500g: price(f.price_500g),
     price_1kg: price(f.price_1kg),
     price_20pc5g: price(f.price_20pc5g),
+    price_8pc12g: price(f.price_8pc12g),
   }
   try {
     await api.updateCatalogProduct(editing.value.id, data)
@@ -795,7 +797,8 @@ async function logout() {
                 {{ importReport.summary.matched }} spárovaných ·
                 {{ importReport.summary.price_changes }} zmien cien ·
                 {{ importReport.summary.pending_fuzzy }} na kontrolu ·
-                {{ importReport.summary.unparsed }} nespracovaných
+                {{ importReport.summary.warnings }} upozornení ·
+                {{ importReport.summary.unparsed }} preskočených
               </h3>
 
               <div v-if="importReport.new.length > 0">
@@ -836,8 +839,24 @@ async function logout() {
                 <p class="text-xs text-muted-foreground mt-1">Produkt bol vytvorený ako nový — nič sa nezlučuje automaticky.</p>
               </div>
 
+              <!-- PC-T12 — the honest split. AMBER warnings: these products WERE
+                   imported, the parser just could not vouch for something (say so
+                   in the copy — the old mixed "Nespracované riadky" made the PM
+                   read imported rows as failures). -->
+              <div v-if="importReport.warnings && importReport.warnings.length > 0">
+                <h4 class="text-sm font-semibold mb-1 text-amber-700">Upozornenia ({{ importReport.warnings.length }})</h4>
+                <ul class="text-sm space-y-0.5">
+                  <li v-for="(entry, i) in importReport.warnings" :key="i" data-testid="warning-entry">
+                    <span class="font-medium">{{ entry.reason }}</span>
+                    <span v-if="entry.row !== null" class="text-muted-foreground"> (záznam č. {{ entry.row }})</span>
+                  </li>
+                </ul>
+                <p class="text-xs text-muted-foreground mt-1">Tieto produkty boli importované — skontrolujte im ceny a údaje.</p>
+              </div>
+
+              <!-- RED skipped: nothing was written for these rows. -->
               <div v-if="importReport.unparsed.length > 0">
-                <h4 class="text-sm font-semibold mb-1 text-destructive">Nespracované riadky ({{ importReport.unparsed.length }})</h4>
+                <h4 class="text-sm font-semibold mb-1 text-destructive">Preskočené riadky ({{ importReport.unparsed.length }})</h4>
                 <ul class="text-sm space-y-0.5">
                   <li v-for="(entry, i) in importReport.unparsed" :key="i" data-testid="unparsed-entry">
                     <span class="font-medium">{{ entry.reason }}</span>
@@ -847,7 +866,7 @@ async function logout() {
                 <!-- The row numbers count PARSED records — blank lines in the
                      physical file offset them, so the reason string is the
                      prominent half of each entry. -->
-                <p class="text-xs text-muted-foreground mt-1">Číslo záznamu počíta spracované záznamy, nie riadky súboru (prázdne riadky sa preskakujú).</p>
+                <p class="text-xs text-muted-foreground mt-1">Tieto riadky neboli importované. Číslo záznamu počíta spracované záznamy, nie riadky súboru (prázdne riadky sa preskakujú).</p>
               </div>
             </CardContent>
           </Card>
@@ -1227,8 +1246,16 @@ async function logout() {
                 <Label>20ks×5g</Label>
                 <Input v-model="editForm.price_20pc5g" type="number" step="0.01" />
               </div>
+              <div class="space-y-1">
+                <Label>8ks×12g</Label>
+                <Input v-model="editForm.price_8pc12g" type="number" step="0.01" data-testid="catalog-edit-price-8pc12g" />
+              </div>
             </div>
-            <p class="text-xs text-muted-foreground mt-1">Zmena ceny platí pre budúce cykly — ceny v existujúcich cykloch sú zmrazené.</p>
+            <!-- Decision 13 (amended in PC-T12): the sheet owns the price vector on
+                 refresh, so a manual edit is a repair that lives only until the next
+                 import — same posture as descriptions. Say so, or the admin thinks
+                 the edit is permanent. -->
+            <p class="text-xs text-muted-foreground mt-1">Zmena ceny platí pre budúce cykly — ceny v existujúcich cykloch sú zmrazené. Ručná úprava platí len do najbližšieho importu: import cenníka ceny prepíše (rovnako ako popisy).</p>
           </div>
         </div>
 

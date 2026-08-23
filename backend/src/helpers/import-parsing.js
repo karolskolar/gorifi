@@ -12,6 +12,12 @@ import { safeFetch } from './safe-fetch.js';
 // Do not "improve" the mapping here; a parsing change is out of scope for the
 // whole of module 12.
 //
+// PC-T12 (PM 2026-08-23) is the ONE sanctioned amendment since that freeze:
+// parsePriceString learns the `Nks x Mg` pack labels (see PACK_VARIANTS below)
+// and the multirow product row carries the price_20pc5g/price_8pc12g columns
+// (NOT price_500g — the format cannot express it, see the row template). The
+// weight-label paths (150g/200g/250g/1kg) are byte-identical.
+//
 // ⚠ This module deliberately imports NO db module — it is pure parsing plus the
 // gsheet fetch. e2e imports it directly (catalog-import.spec.js), which is only
 // safe while importing it cannot open or migrate a database.
@@ -150,8 +156,26 @@ function isProductSectionHeader(row) {
          rowText.includes('zrnková káva');
 }
 
-function parsePriceString(priceStr, variantLabel = '') {
-  const result = { price150g: null, price200g: null, price250g: null, price1kg: null, error: null };
+// ── Pack-size labels (PC-T12) ────────────────────────────────────────────────
+// The sheet prices capsules as `20ks x 5g` and brew bags as `8ks x 12g`. Before
+// PC-T12 both fell into the "assumed 250g" else-branch below — on staging that
+// put 10 € into price_250g for four capsule products (and made kg math count
+// them as 0.25 kg instead of 0.100). A GENERAL `Nks x Mg` match feeds an
+// explicit WHITELIST of known pack variants; an unknown pack size imports NO
+// price and warns — a pack label must NEVER fall back to 250g, that IS the bug.
+const PACK_LABEL_RE = /(\d+)\s*(?:ks|pcs)\s*[x×]\s*(\d+)\s*g/i;
+const PACK_VARIANTS = {
+  '20x5': 'price20pc5g',  // 20 × 5 g capsules → products.price_20pc5g
+  '8x12': 'price8pc12g',  // 8 × 12 g brew bags → products.price_8pc12g (new in PC-T12)
+};
+
+// Exported for the direct pure-function e2e (catalog-import.spec.js) — the
+// multirow format only travels over the non-e2e-exercisable gsheet endpoints.
+export function parsePriceString(priceStr, variantLabel = '') {
+  const result = {
+    price150g: null, price200g: null, price250g: null, price1kg: null,
+    price20pc5g: null, price8pc12g: null, error: null,
+  };
   if (!priceStr || !priceStr.trim()) return result;
 
   const normalized = priceStr.replace(/\s+/g, ' ').trim();
@@ -181,6 +205,32 @@ function parsePriceString(priceStr, variantLabel = '') {
     return isNaN(num) ? null : num;
   };
 
+  // Pack labels take their own branch and RETURN — nothing below (the 250g
+  // fallback, the swap sanity check) may ever touch a pack-labelled row. The
+  // weight-label paths below stay byte-identical to the pre-PC-T12 code.
+  const packMatch = variantLabel.match(PACK_LABEL_RE);
+  if (packMatch) {
+    const packKey = `${parseInt(packMatch[1], 10)}x${parseInt(packMatch[2], 10)}`;
+    const packField = PACK_VARIANTS[packKey];
+    if (!packField) {
+      result.error = `Neznámy formát balenia "${packMatch[0]}" — cena nebola importovaná`;
+      return result;
+    }
+    if (parts && parts.length === 2) {
+      // e.g. a hypothetical "20ks x 5g / 1kg" — pair the second price with 1kg
+      // only when the label really names it; otherwise refuse the ambiguity.
+      result[packField] = parsePrice(parts[0]);
+      if (has1kg) {
+        result.price1kg = parsePrice(parts[1]);
+      } else {
+        result.error = `Balenie "${variantLabel}": druhá cena "${parts[1]}" nemá variant — nebola importovaná`;
+      }
+    } else {
+      result[packField] = parsePrice(normalized);
+    }
+    return result;
+  }
+
   if (!parts || parts.length !== 2) {
     // Single price - determine variant from label
     const singlePrice = parsePrice(normalized);
@@ -200,6 +250,16 @@ function parsePriceString(priceStr, variantLabel = '') {
   // Two prices - assign based on label
   const price1 = parsePrice(parts[0]);
   const price2 = parsePrice(parts[1]);
+
+  // PC-T12 review fix: a half-readable pair (e.g. "8,9 / abc") used to yield a
+  // silent null — which, under the decision-13 vector refresh, silently CLEARS
+  // the stored price of that variant. Warn so it surfaces in the report's
+  // warnings bucket. Both-halves-unreadable stays silent as before (no price
+  // parses, so the refresh never arms and nothing can be cleared).
+  if ((price1 === null) !== (price2 === null)) {
+    const bad = price1 === null ? parts[0] : parts[1];
+    result.error = `Nečitateľná cena "${bad}" — tento variant nebol importovaný`;
+  }
 
   if (has150g && has1kg) {
     result.price150g = price1;
@@ -287,10 +347,20 @@ export function parseMultiRowProducts(csvContent) {
         description2: '',
         purpose: (row[7] || '').trim(),  // Filter, Espresso, etc.
         roast_type: '',
+        // ⚠ The price vector is declared (all null) on purpose: the multirow
+        // sheet is the authoritative price source, and the decision-13
+        // amendment in helpers/catalog-import.js writes every DECLARED field on
+        // a refresh — a variant absent from the sheet becomes NULL there.
+        // ⚠ price_500g is deliberately NOT declared (PC-T12 review fix):
+        // parsePriceString has no 500g label path, so this format cannot
+        // express a 500g price — and a format must never clear a column it
+        // cannot express (a hand-repaired 500g price has to survive a refresh).
         price_150g: null,
         price_200g: null,
         price_250g: null,
         price_1kg: null,
+        price_20pc5g: null,
+        price_8pc12g: null,
         _variantLabel: (row[8] || '').trim(),  // e.g., "150g", "200g / 1kg", "250g / 1kg"
         _rowStart: i + 1
       };
@@ -305,6 +375,8 @@ export function parseMultiRowProducts(csvContent) {
       currentProduct.price_200g = priceResult.price200g;
       currentProduct.price_250g = priceResult.price250g;
       currentProduct.price_1kg = priceResult.price1kg;
+      currentProduct.price_20pc5g = priceResult.price20pc5g;
+      currentProduct.price_8pc12g = priceResult.price8pc12g;
       if (priceResult.error) {
         warnings.push(`"${currentProduct.name}": ${priceResult.error}`);
       }

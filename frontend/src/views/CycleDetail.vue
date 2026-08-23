@@ -32,7 +32,7 @@ const showProductModal = ref(false)
 const productModalError = ref('')
 const editingProduct = ref(null)
 const productForm = ref({
-  name: '', description1: '', description2: '', roast_type: '', purpose: '', price_150g: '', price_200g: '', price_250g: '', price_500g: '', price_1kg: '', price_20pc5g: '', image: '', roastery: '', stock_limit_g: ''
+  name: '', description1: '', description2: '', roast_type: '', purpose: '', price_150g: '', price_200g: '', price_250g: '', price_500g: '', price_1kg: '', price_20pc5g: '', price_8pc12g: '', image: '', roastery: '', stock_limit_g: ''
 })
 const imagePreview = ref(null)
 const isDragging = ref(false)
@@ -199,6 +199,7 @@ const orderTotals = computed(() => ({
   count_500g: submittedOrders.value.reduce((sum, o) => sum + (o.count_500g || 0), 0),
   count_1kg: submittedOrders.value.reduce((sum, o) => sum + (o.count_1kg || 0), 0),
   count_20pc5g: submittedOrders.value.reduce((sum, o) => sum + (o.count_20pc5g || 0), 0),
+  count_8pc12g: submittedOrders.value.reduce((sum, o) => sum + (o.count_8pc12g || 0), 0),
   count_unit: submittedOrders.value.reduce((sum, o) => sum + (o.count_unit || 0), 0),
   total: submittedOrders.value.reduce((sum, o) => sum + (o.total || 0), 0)
 }))
@@ -210,6 +211,7 @@ const COFFEE_VARIANT_COLUMNS = [
   { label: '500g', countField: 'count_500g' },
   { label: '1kg',  countField: 'count_1kg' },
   { label: '20ks', countField: 'count_20pc5g' },
+  { label: '8ks',  countField: 'count_8pc12g' },
 ]
 
 const visibleVariantColumns = computed(() =>
@@ -539,13 +541,14 @@ function openProductModal(product = null) {
       price_500g: product.price_500g || '',
       price_1kg: product.price_1kg || '',
       price_20pc5g: product.price_20pc5g || '',
+      price_8pc12g: product.price_8pc12g || '',
       image: product.image || '',
       roastery: product.roastery || '',
       stock_limit_g: product.stock_limit_g || ''
     }
     imagePreview.value = product.image || null
   } else {
-    productForm.value = { name: '', description1: '', description2: '', roast_type: '', purpose: '', price_150g: '', price_200g: '', price_250g: '', price_500g: '', price_1kg: '', price_20pc5g: '', image: '', roastery: '', stock_limit_g: '' }
+    productForm.value = { name: '', description1: '', description2: '', roast_type: '', purpose: '', price_150g: '', price_200g: '', price_250g: '', price_500g: '', price_1kg: '', price_20pc5g: '', price_8pc12g: '', image: '', roastery: '', stock_limit_g: '' }
     imagePreview.value = null
   }
   productModalError.value = ''
@@ -562,6 +565,7 @@ async function saveProduct() {
     price_500g: productForm.value.price_500g ? parseFloat(productForm.value.price_500g) : null,
     price_1kg: productForm.value.price_1kg ? parseFloat(productForm.value.price_1kg) : null,
     price_20pc5g: productForm.value.price_20pc5g ? parseFloat(productForm.value.price_20pc5g) : null,
+    price_8pc12g: productForm.value.price_8pc12g ? parseFloat(productForm.value.price_8pc12g) : null,
     image: productForm.value.image || null,
     roastery: productForm.value.roastery || null,
     stock_limit_g: productForm.value.stock_limit_g ? parseInt(productForm.value.stock_limit_g) : null
@@ -596,6 +600,7 @@ function duplicateProduct(product) {
     price_500g: product.price_500g || '',
     price_1kg: product.price_1kg || '',
     price_20pc5g: product.price_20pc5g || '',
+    price_8pc12g: product.price_8pc12g || '',
     image: product.image || '',
     roastery: product.roastery || '',
     stock_limit_g: product.stock_limit_g || ''
@@ -1039,6 +1044,7 @@ function getStatusVariant(status) {
                     <TableHead class="text-right">500g</TableHead>
                     <TableHead class="text-right">1kg</TableHead>
                     <TableHead class="text-right">20ks×5g</TableHead>
+                    <TableHead class="text-right">8ks×12g</TableHead>
                   </template>
                   <TableHead class="text-right">{{ isBakery ? 'Akcie' : 'Zdroj' }}</TableHead>
                 </TableRow>
@@ -1156,6 +1162,16 @@ function getStatusVariant(status) {
                            :title="friendPriceTitle"
                            data-testid="friend-price">
                         {{ formatFriendPrice(product.price_20pc5g) }}
+                      </div>
+                    </TableCell>
+                    <TableCell class="text-sm text-right">
+                      <div>{{ formatPrice(product.price_8pc12g) }}</div>
+                      <div v-if="formatFriendPrice(product.price_8pc12g)"
+                           class="text-xs mt-0.5"
+                           :class="markupIsNeutral ? 'text-muted-foreground/60' : 'text-violet-600 font-medium'"
+                           :title="friendPriceTitle"
+                           data-testid="friend-price">
+                        {{ formatFriendPrice(product.price_8pc12g) }}
                       </div>
                     </TableCell>
                   </template>
@@ -1873,6 +1889,10 @@ function getStatusVariant(status) {
               <div class="space-y-1">
                 <Label>20ks×5g (EUR)</Label>
                 <Input v-model="productForm.price_20pc5g" type="number" step="0.01" />
+              </div>
+              <div class="space-y-1">
+                <Label>8ks×12g (EUR)</Label>
+                <Input v-model="productForm.price_8pc12g" type="number" step="0.01" />
               </div>
             </div>
           </div>

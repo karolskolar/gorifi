@@ -231,6 +231,13 @@ function initDb() {
     // Column already exists, ignore
   }
 
+  // Migration (PC-T12): Add price_8pc12g column for brew-bag products (8 × 12 g)
+  try {
+    db.run('ALTER TABLE products ADD COLUMN price_8pc12g REAL');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   // Migration: Add price_150g and price_200g columns for new variants
   try {
     db.run('ALTER TABLE products ADD COLUMN price_150g REAL');
@@ -998,7 +1005,7 @@ function initDb() {
       status TEXT NOT NULL DEFAULT 'available'
         CHECK (status IN ('available','retired')),
       price_150g REAL, price_200g REAL, price_250g REAL,
-      price_500g REAL, price_1kg REAL, price_20pc5g REAL,
+      price_500g REAL, price_1kg REAL, price_20pc5g REAL, price_8pc12g REAL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(normalized_name, roastery)
@@ -1021,6 +1028,15 @@ function initDb() {
   // lesson). The UNIQUE(normalized_name, roastery) above doubles as the
   // catalog lookup index.
   db.run('CREATE INDEX IF NOT EXISTS idx_products_source_coffee ON products(source_coffee_product_id)');
+
+  // Migration (PC-T12): coffee_products is an existing table on deployed DBs,
+  // so the new brew-bag price column also needs the house try/catch ALTER
+  // (the CREATE above covers fresh databases only).
+  try {
+    db.run('ALTER TABLE coffee_products ADD COLUMN price_8pc12g REAL');
+  } catch (e) {
+    // Column already exists, ignore
+  }
 
 }
 

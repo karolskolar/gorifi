@@ -672,8 +672,10 @@ router.get('/cycles', (req, res) => {
               WHEN oi.variant = '150g' THEN oi.quantity * 0.15
               WHEN oi.variant = '200g' THEN oi.quantity * 0.2
               WHEN oi.variant = '250g' THEN oi.quantity * 0.25
+              WHEN oi.variant = '500g' THEN oi.quantity * 0.5
               WHEN oi.variant = '1kg' THEN oi.quantity * 1.0
               WHEN oi.variant = '20pc5g' THEN oi.quantity * 0.1
+              WHEN oi.variant = '8pc12g' THEN oi.quantity * 0.096
               WHEN oi.variant = 'unit' THEN oi.quantity * COALESCE(p.weight_grams, 0) / 1000.0
               ELSE 0
             END
