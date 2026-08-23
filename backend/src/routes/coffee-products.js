@@ -7,10 +7,10 @@ import { bindValue } from '../helpers/bind-value.js';
 // paths again. Same magic-byte validation as before (image-store sniffs via
 // detectImageMime), same request contracts (multipart AND body base64).
 import { imageUrlFromUpload, imageUrlFromBody, storeImage } from '../helpers/image-store.js';
-import { normalizeProductName } from '../helpers/catalog.js';
+import { normalizeProductName, normalizeRoastery } from '../helpers/catalog.js';
 import { parseCsvProducts, parseGsheetCsvProducts, parseMultiRowProducts, fetchGsheetCsv } from '../helpers/import-parsing.js';
 import { importRowsIntoCatalog } from '../helpers/catalog-import.js';
-import { pendingMigrationGroups, parseGroupSelection, assignGroupsToCatalog, createCatalogFromGroups } from '../helpers/catalog-workbench.js';
+import { pendingMigrationGroups, parseGroupSelection, assignGroupsToCatalog, createCatalogFromGroups, ignoreGroups, unignoreGroups, ignoredMigrationGroups, createManualCatalogRow } from '../helpers/catalog-workbench.js';
 import { mergeCatalogRows, findDuplicatePairs } from '../helpers/catalog-merge.js';
 import { coffeeCycleWindow, catalogRanking, catalogProductStats, allTimeKgByCatalogId } from '../helpers/catalog-stats.js';
 
@@ -281,6 +281,59 @@ router.post('/migration/create', (req, res) => {
   }
 });
 
+// Workbench "Ignorovať" (PC-T13, PM gap 3): explicit dismissal for junk
+// pending groups (sheet section headers — the prod case `Nespresso kapsule`:
+// 5 snapshots, 0 order_items). Soft-delete would NOT hide them (CANDIDATE_SQL
+// has no `active` filter); this writes exactly ONE column
+// (products.migration_ignored) in ONE transaction. Same body shape as assign.
+// A group whose snapshots HAVE order_items refuses with 409 and the count —
+// real history needs a catalog identity, hiding it would drop it from stats.
+router.post('/migration/ignore', (req, res) => {
+  const selection = parseGroupSelection(req.body?.groups);
+  if (!selection) {
+    return res.status(400).json({ error: 'Neplatny vyber skupin', field: 'groups' });
+  }
+  try {
+    const result = ignoreGroups(selection);
+    if (result.outcome === 'has_orders') {
+      return res.status(409).json({
+        error: `Skupina „${result.display_name}“ má objednávky (${result.order_items}) — nie je možné ju ignorovať. Priraďte ju do katalógu.`,
+        field: 'groups',
+        order_items: result.order_items,
+      });
+    }
+    const { outcome, ...body } = result;
+    return res.json(body);
+  } catch (error) {
+    console.error('Migration ignore error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa ignorovat skupiny' });
+  }
+});
+
+// The undo — restores dismissed groups to the pending list.
+router.post('/migration/unignore', (req, res) => {
+  const selection = parseGroupSelection(req.body?.groups);
+  if (!selection) {
+    return res.status(400).json({ error: 'Neplatny vyber skupin', field: 'groups' });
+  }
+  try {
+    return res.json(unignoreGroups(selection));
+  } catch (error) {
+    console.error('Migration unignore error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa obnovit skupiny' });
+  }
+});
+
+// The review surface for dismissed groups — same row shape as /pending.
+router.get('/migration/ignored', (req, res) => {
+  try {
+    return res.json(ignoredMigrationGroups());
+  } catch (error) {
+    console.error('Migration ignored list error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa nacitat ignorovane skupiny' });
+  }
+});
+
 // One-time image conversion (admin) — 12 §UC-PC-014 (PC-T10, the
 // migration-endpoint precedent). Converts every legacy `data:%` value in
 // coffee_products.image AND in products.image rows of COFFEE cycles
@@ -546,6 +599,105 @@ const isNormalizedNameCollision = (e) =>
   e && typeof e.code === 'string' && e.code.startsWith('SQLITE_CONSTRAINT') &&
   String(e.message || '').includes('UNIQUE constraint failed: coffee_products.normalized_name, coffee_products.roastery');
 
+// The column vocabularies shared by PATCH and the PC-T13 manual POST — one
+// validation home, never forked.
+const PLAIN_FIELDS = [
+  'country', 'region', 'altitude', 'farm', 'variety', 'processing',
+  'description1', 'description2', 'roast_type', 'purpose', 'curator_pick_note',
+];
+const PRICE_FIELDS = [
+  'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g', 'price_8pc12g',
+];
+
+// Price validation (PC-T12, extracted for PC-T13): numbers only, 400 on junk —
+// bindValue used to pass any string through and `price_250g: 'abc'` stored the
+// literal TEXT into a REAL column. `null`/'' clears; a numeric string is parsed
+// like an imported price (decimal comma included). Returns { ok, value } or
+// { ok: false }.
+function parsePriceInput(raw) {
+  if (raw === null) return { ok: true, value: null };
+  if (typeof raw === 'number' && Number.isFinite(raw)) return { ok: true, value: raw };
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (trimmed === '') return { ok: true, value: null };
+    const parsed = Number(trimmed.replace(',', '.'));
+    if (!Number.isFinite(parsed)) return { ok: false };
+    return { ok: true, value: parsed };
+  }
+  return { ok: false };
+}
+
+// Manual catalog product creation (PC-T13, PM 2026-08-23 gap 1): a coffee that
+// is neither in the current sheet nor in history can now exist in the catalog
+// ("aj keď aktuálne Filter nie je dostupný, mal by byť v databáze"). Same
+// field vocabulary and validation as PATCH; the name collision is the SAME
+// dual-layer 409 field:'name' (app check + SQLITE_CONSTRAINT translation, one
+// normalizer home). Roastery resolves through normalizeRoastery — empty means
+// the `roasteries` is_default row. Fully synchronous, no await (GA-T8).
+router.post('/', (req, res) => {
+  const name = bindValue(req.body?.name);
+  const normalized = typeof name === 'string' ? normalizeProductName(name) : '';
+  if (!normalized) {
+    return res.status(400).json({ error: 'Názov je povinný', field: 'name' });
+  }
+  const roastery = normalizeRoastery(bindValue(req.body?.roastery) || '');
+
+  // status — defaults to 'available'; anything but the two states 400s.
+  let status = 'available';
+  if (req.body.status !== undefined) {
+    status = bindValue(req.body.status);
+    if (status !== 'available' && status !== 'retired') {
+      return res.status(400).json({ error: 'Neplatny stav produktu', field: 'status' });
+    }
+  }
+
+  const plain = {};
+  for (const field of PLAIN_FIELDS) {
+    const value = bindValue(req.body[field]);
+    plain[field] = value === undefined ? null : value;
+  }
+
+  const prices = {};
+  for (const field of PRICE_FIELDS) {
+    if (req.body[field] === undefined) {
+      prices[field] = null;
+      continue;
+    }
+    const parsed = parsePriceInput(req.body[field]);
+    if (!parsed.ok) {
+      return res.status(400).json({ error: 'Cena musí byť číslo', field });
+    }
+    prices[field] = parsed.value;
+  }
+
+  try {
+    // The write (app-level collision check + insert, dual collision layer)
+    // lives in the workbench helper — this file's structural pin bans catalog
+    // inserts in route code (catalog-row creation has helper homes only).
+    const result = createManualCatalogRow({
+      name,
+      normalizedName: normalized,
+      roastery,
+      plain,
+      prices,
+      isNew: !!req.body.is_new,
+      status,
+    });
+    if (result.outcome === 'name_collision') {
+      return res.status(409).json({ error: 'Produkt s tymto nazvom uz v katalogu existuje', field: 'name' });
+    }
+
+    // 201 in the LIST shape (cycles_count + all_time_kg both zero by
+    // construction — a manual row is born with no history) so the UI can
+    // append it straight from this payload, the workbench-create precedent.
+    const row = db.prepare('SELECT * FROM coffee_products WHERE id = ?').get(result.catalog_id);
+    return res.status(201).json({ ...row, cycles_count: 0, all_time_kg: 0 });
+  } catch (error) {
+    console.error('Catalog create error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa vytvorit produkt' });
+  }
+});
+
 // Catalog detail (admin) — the row + availability history (which cycles
 // offered it, per-cycle kg). The history comes from catalogProductStats (the
 // one home for per-product kg math) — never a second weight query here.
@@ -605,49 +757,24 @@ router.patch('/:id', (req, res) => {
   }
 
   // Plain text columns — unbindable values SKIP their write (the stored
-  // column survives); an explicit null still clears.
-  const PLAIN_FIELDS = [
-    'country', 'region', 'altitude', 'farm', 'variety', 'processing',
-    'description1', 'description2', 'roast_type', 'purpose', 'curator_pick_note',
-  ];
+  // column survives); an explicit null still clears. Vocabulary shared with
+  // the PC-T13 manual POST (PLAIN_FIELDS above).
   for (const field of PLAIN_FIELDS) {
     const value = bindValue(req.body[field]);
     if (value !== undefined) { updates.push(`${field} = ?`); values.push(value); }
   }
 
-  // Prices — PC-T12 (the PM's manual repair path): numbers only, 400 on junk.
-  // Before this, bindValue passed any string through and `price_250g: 'abc'`
-  // stored the literal TEXT into a REAL column, which then read as an
-  // unpriceable variant on every order surface. `null`/'' clears; a numeric
-  // string is parsed like an imported price (decimal comma included). Note
+  // Prices — PC-T12 (the PM's manual repair path): numbers only, 400 on junk;
+  // the validation lives in parsePriceInput, shared with the manual POST. Note
   // decision 13's posture (stated in the edit dialog too): a manual price edit
   // lives only until the next import, which owns the whole price vector.
-  const PRICE_FIELDS = [
-    'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g', 'price_8pc12g',
-  ];
   for (const field of PRICE_FIELDS) {
     if (req.body[field] === undefined) continue;
-    const raw = req.body[field];
-    let value;
-    if (raw === null) {
-      value = null;
-    } else if (typeof raw === 'number' && Number.isFinite(raw)) {
-      value = raw;
-    } else if (typeof raw === 'string') {
-      const trimmed = raw.trim();
-      if (trimmed === '') {
-        value = null;
-      } else {
-        const parsed = Number(trimmed.replace(',', '.'));
-        if (!Number.isFinite(parsed)) {
-          return res.status(400).json({ error: 'Cena musí byť číslo', field });
-        }
-        value = parsed;
-      }
-    } else {
+    const parsed = parsePriceInput(req.body[field]);
+    if (!parsed.ok) {
       return res.status(400).json({ error: 'Cena musí byť číslo', field });
     }
-    updates.push(`${field} = ?`); values.push(value);
+    updates.push(`${field} = ?`); values.push(parsed.value);
   }
 
   // status — 'available'/'retired' only, else 400 (12 §UC-PC-009).
@@ -708,6 +835,168 @@ router.post('/:id/image', uploadSingle('image'), (req, res) => {
 
   db.prepare('UPDATE coffee_products SET image = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(image, id);
   return res.json(db.prepare('SELECT * FROM coffee_products WHERE id = ?').get(id));
+});
+
+// ── Split declarations (PC-T13, PM gap 2 — option B) ────────────────────────
+//
+// `catalog_import_splits` maps ONE sheet row → N catalog products. The import
+// consumes it in importRowsIntoCatalog (refresh every target, create nothing,
+// no pending_fuzzy, roast_type admin-owned); findDuplicatePairs suppresses
+// sibling pairs and target↔sheet-name pairs. These routes only manage the
+// declarations. Parametric two-segment paths — they cannot shadow the literal
+// /migration/* routes (their second segment differs) but stay down here with
+// the other /:id routes by convention.
+
+// The one splits payload shape, shared by GET/POST/DELETE: every declaration
+// of this product, each with the SIBLING set (the other targets of the same
+// sheet row) so the admin sees the whole variant family. `split_of_this_row`
+// (additive, PC-T13 review fix 4) lists OTHER products declared as variants of
+// THIS product's own identity — i.e. this row is the "old combined row" whose
+// sheet line was split: the import no longer refreshes it and the duplicates
+// review hides its target pairs, so the UI warns and suggests `Vyradená`.
+function splitsPayload(productId) {
+  const product = db.prepare(
+    'SELECT normalized_name, roastery FROM coffee_products WHERE id = ?'
+  ).get(productId);
+  const splits = db.prepare(`
+    SELECT id, sheet_name, normalized_name, roastery
+    FROM catalog_import_splits WHERE coffee_product_id = ? ORDER BY id
+  `).all(productId);
+  return {
+    splits: splits.map((s) => ({
+      ...s,
+      siblings: db.prepare(`
+        SELECT cp.id, cp.name
+        FROM catalog_import_splits x
+        JOIN coffee_products cp ON cp.id = x.coffee_product_id
+        WHERE x.normalized_name = ? AND x.roastery = ? AND x.coffee_product_id != ?
+        ORDER BY cp.id
+      `).all(s.normalized_name, s.roastery, productId),
+    })),
+    split_of_this_row: product
+      ? db.prepare(`
+          SELECT cp.id, cp.name
+          FROM catalog_import_splits x
+          JOIN coffee_products cp ON cp.id = x.coffee_product_id
+          WHERE x.normalized_name = ? AND x.roastery = ? AND x.coffee_product_id != ?
+          ORDER BY cp.id
+        `).all(product.normalized_name, product.roastery, productId)
+      : [],
+  };
+}
+
+router.get('/:id/splits', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+  const product = db.prepare('SELECT id FROM coffee_products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+  try {
+    return res.json(splitsPayload(id));
+  } catch (error) {
+    console.error('Catalog splits list error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa nacitat varianty riadku' });
+  }
+});
+
+// Declare "this product is a variant of sheet row X". The identity is the
+// normalized pair (the ONE helpers/catalog.js home); the roastery is the
+// PRODUCT's — a split can never cross roasteries by construction. Dual-layer
+// duplicate refusal (app check + the exact UNIQUE-index translation).
+const isSplitCollision = (e) =>
+  e && typeof e.code === 'string' && e.code.startsWith('SQLITE_CONSTRAINT') &&
+  String(e.message || '').includes('UNIQUE constraint failed: catalog_import_splits.normalized_name, catalog_import_splits.roastery, catalog_import_splits.coffee_product_id');
+
+router.post('/:id/splits', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+  const product = db.prepare('SELECT id, roastery FROM coffee_products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+
+  const sheetName = bindValue(req.body?.sheet_name);
+  const normalized = typeof sheetName === 'string' ? normalizeProductName(sheetName) : '';
+  if (!normalized) {
+    return res.status(400).json({ error: 'Názov riadku zo sheetu je povinný', field: 'sheet_name' });
+  }
+
+  try {
+    const existing = db.prepare(
+      'SELECT id FROM catalog_import_splits WHERE normalized_name = ? AND roastery = ? AND coffee_product_id = ?'
+    ).get(normalized, product.roastery, id);
+    if (existing) {
+      return res.status(409).json({ error: 'Tento produkt už je variantom tohto riadku', field: 'sheet_name' });
+    }
+    try {
+      db.prepare(
+        'INSERT INTO catalog_import_splits (sheet_name, normalized_name, roastery, coffee_product_id) VALUES (?, ?, ?, ?)'
+      ).run(String(sheetName).trim(), normalized, product.roastery, id);
+    } catch (error) {
+      if (isSplitCollision(error)) {
+        return res.status(409).json({ error: 'Tento produkt už je variantom tohto riadku', field: 'sheet_name' });
+      }
+      throw error;
+    }
+    return res.status(201).json(splitsPayload(id));
+  } catch (error) {
+    console.error('Catalog split declare error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa ulozit variant riadku' });
+  }
+});
+
+router.delete('/:id/splits/:splitId', (req, res) => {
+  const id = Number(req.params.id);
+  const splitId = Number(req.params.splitId);
+  if (!Number.isInteger(id) || !Number.isInteger(splitId)) {
+    return res.status(404).json({ error: 'Záznam neexistuje' });
+  }
+  try {
+    const gone = db.prepare(
+      'DELETE FROM catalog_import_splits WHERE id = ? AND coffee_product_id = ?'
+    ).run(splitId, id);
+    if (gone.changes === 0) {
+      return res.status(404).json({ error: 'Záznam neexistuje' });
+    }
+    return res.json(splitsPayload(id));
+  } catch (error) {
+    console.error('Catalog split delete error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa odstranit variant riadku' });
+  }
+});
+
+// "Odpojiť od katalógu" (PC-T13, PM gap 4): return a product's history to the
+// migration workbench — the catalog row itself SURVIVES untouched (unlike
+// DELETE below, the photo and curation stay). This is exactly the operation
+// the PM ran as raw SQL on production (8 `Peach Please filter blend` snapshots
+// wrongly assigned to the Brew Bags product) — never again by hand.
+// ⚠ The ONLY write is the link column (the PC-T4 data-safety invariant), one
+// transaction; order_items, prices and every snapshot byte stay put.
+router.post('/:id/unlink', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+  const product = db.prepare('SELECT id FROM coffee_products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+  try {
+    const run = db.transaction(() =>
+      db.prepare(
+        'UPDATE products SET source_coffee_product_id = NULL WHERE source_coffee_product_id = ?'
+      ).run(id).changes
+    );
+    return res.json({ unlinked_snapshots: run() });
+  } catch (error) {
+    console.error('Catalog unlink error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa odpojit produkt' });
+  }
 });
 
 // DELETE a catalog product (admin) — PM decision 2026-08-23, which SUPERSEDES

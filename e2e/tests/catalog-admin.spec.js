@@ -2791,3 +2791,614 @@ test.describe('PC-T12 — catalog price editing (UI)', () => {
     await expect(dialog.getByTestId('catalog-edit-price-8pc12g')).toHaveValue('6.2')
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PC-T13 — the four PM gaps (2026-08-23): manual catalog product creation,
+// split-rule declarations + their duplicates suppression, workbench
+// "Ignorovať", and "Odpojiť od katalógu" (unlink). API describes first (each
+// with refreshAdminToken — the UI describes above invalidated the beforeAll
+// token), the UI describe last.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function createCatalogProduct(data) {
+  return ctx.post('/api/coffee-products', { headers: admin(), data })
+}
+
+test.describe('PC-T13 — manual catalog product creation (API)', () => {
+  test.beforeAll(refreshAdminToken)
+
+  test('POST / creates a full catalog row: defaults, normalized identity, list shape', async () => {
+    const name = `${uniq()} Rucne Pridana`
+    const res = await createCatalogProduct({
+      name,
+      purpose: 'Filter',
+      roast_type: 'Light roast',
+      country: 'Etiopia',
+      region: 'Yirgacheffe',
+      altitude: '2100 m',
+      farm: 'Idido',
+      variety: 'Heirloom',
+      processing: 'Washed',
+      description1: 'kvetinova',
+      description2: 'bergamot, citrus',
+      is_new: true,
+      curator_pick_note: 'aktualne nedostupny filter',
+      price_150g: 6,
+      price_200g: 7,
+      price_250g: '8,5',
+      price_500g: 15,
+      price_1kg: 32,
+      price_20pc5g: 9,
+      price_8pc12g: 6.2,
+    })
+    expect(res.status()).toBe(201)
+    const row = await res.json()
+    expect(row.name).toBe(name)
+    expect(row.normalized_name, 'the ONE normalization helper').toBe(name.toLowerCase())
+    expect(row.roastery, 'roastery defaults to the is_default row').toBe('Goriffee')
+    expect(row.status, 'status defaults to available').toBe('available')
+    expect(row.is_new).toBe(1)
+    expect(row.curator_pick_note).toBe('aktualne nedostupny filter')
+    expect(row.price_250g, 'decimal comma parsed like the PATCH').toBe(8.5)
+    expect(row.price_8pc12g).toBe(6.2)
+    expect(row.country).toBe('Etiopia')
+    expect(row.processing).toBe('Washed')
+    // Born with no history — the list-shape computed columns say so.
+    expect(row.cycles_count).toBe(0)
+    expect(row.all_time_kg).toBe(0)
+
+    // Persisted and listed.
+    const list = await (await ctx.get(`/api/coffee-products?q=${encodeURIComponent(name)}`, { headers: admin() })).json()
+    const listed = list.find((r) => r.id === row.id)
+    expect(listed).toBeTruthy()
+    expect(listed.cycles_count).toBe(0)
+  })
+
+  test('explicit roastery and status are honoured; junk refuses like the PATCH', async () => {
+    const name = `${uniq()} Vyradena Od Zaciatku`
+    const res = await createCatalogProduct({ name, status: 'retired' })
+    expect(res.status()).toBe(201)
+    expect((await res.json()).status).toBe('retired')
+
+    const bad = await createCatalogProduct({ name: `${uniq()} Zly Stav`, status: 'deleted' })
+    expect(bad.status()).toBe(400)
+    expect((await bad.json()).field).toBe('status')
+
+    const junkPrice = await createCatalogProduct({ name: `${uniq()} Zla Cena`, price_250g: 'abc' })
+    expect(junkPrice.status(), 'the SAME price validation as the PATCH').toBe(400)
+    expect((await junkPrice.json()).field).toBe('price_250g')
+  })
+
+  test('name is required — missing, empty and all-punctuation all 400 field:name', async () => {
+    for (const body of [{}, { name: '' }, { name: '–––' }, { name: 123 }]) {
+      const res = await createCatalogProduct(body)
+      expect(res.status(), JSON.stringify(body)).toBe(400)
+      expect((await res.json()).field).toBe('name')
+    }
+  })
+
+  test('a name collision answers the SAME dual-layer 409 field:name as the PATCH, writing nothing', async () => {
+    const name = `${uniq()} Kolizna Kava`
+    expect((await createCatalogProduct({ name })).status()).toBe(201)
+
+    // Case/diacritics variant of the same identity → 409 via the ONE normalizer.
+    const clash = await createCatalogProduct({ name: `  ${name.toUpperCase()}!  ` })
+    expect(clash.status()).toBe(409)
+    const body = await clash.json()
+    expect(body.field).toBe('name')
+
+    // Exactly one row holds the identity.
+    const list = await (await ctx.get(`/api/coffee-products?q=${encodeURIComponent(name)}`, { headers: admin() })).json()
+    expect(list.filter((r) => r.normalized_name === name.toLowerCase())).toHaveLength(1)
+  })
+})
+
+test.describe('PC-T13 — split declarations + duplicates suppression (API)', () => {
+  test.beforeAll(refreshAdminToken)
+
+  async function createdId(data) {
+    const res = await createCatalogProduct(data)
+    expect(res.status(), `create ${data.name}`).toBe(201)
+    return (await res.json()).id
+  }
+
+  function declareSplit(id, sheetName) {
+    return ctx.post(`/api/coffee-products/${id}/splits`, { headers: admin(), data: { sheet_name: sheetName } })
+  }
+
+  function getSplits(id) {
+    return ctx.get(`/api/coffee-products/${id}/splits`, { headers: admin() })
+  }
+
+  test('declare, list with siblings, refuse duplicates, remove', async () => {
+    const sheetName = `${uniq()} Peru Rieka`
+    const idA = await createdId({ name: `${sheetName} Svetla`, roast_type: 'Light' })
+    const idB = await createdId({ name: `${sheetName} Tmava`, roast_type: 'Dark' })
+
+    const res = await declareSplit(idA, sheetName)
+    expect(res.status()).toBe(201)
+    let body = await res.json()
+    expect(body.splits).toHaveLength(1)
+    expect(body.splits[0].sheet_name).toBe(sheetName)
+    expect(body.splits[0].normalized_name).toBe(sheetName.toLowerCase())
+    expect(body.splits[0].siblings, 'no sibling yet').toEqual([])
+
+    expect((await declareSplit(idB, sheetName)).status()).toBe(201)
+
+    // A's listing now names B as the sibling of the shared sheet row.
+    body = await (await getSplits(idA)).json()
+    expect(body.splits).toHaveLength(1)
+    expect(body.splits[0].siblings.map((s) => s.id)).toEqual([idB])
+
+    // Declaring the same mapping twice refuses.
+    const dup = await declareSplit(idA, `  ${sheetName.toUpperCase()} `)
+    expect(dup.status(), 'same identity via the ONE normalizer').toBe(409)
+
+    // Empty/junk sheet names refuse; unknown product 404s.
+    expect((await declareSplit(idA, '–––')).status()).toBe(400)
+    expect((await ctx.post('/api/coffee-products/99999999/splits', { headers: admin(), data: { sheet_name: 'X' } })).status()).toBe(404)
+
+    // Remove A's declaration — B keeps its own.
+    const splitId = body.splits[0].id
+    const del = await ctx.delete(`/api/coffee-products/${idA}/splits/${splitId}`, { headers: admin() })
+    expect(del.status()).toBe(200)
+    expect((await del.json()).splits).toEqual([])
+    const bSplits = await (await getSplits(idB)).json()
+    expect(bSplits.splits).toHaveLength(1)
+    expect(bSplits.splits[0].siblings).toEqual([])
+  })
+
+  test('merging a split target away TRANSFERS its mappings to the survivor (deduped) — the sheet row still refreshes, creates nothing', async () => {
+    const sheetA = `${uniq()} Zluceny Riadok`
+    const sheetB = `${uniq()} Druhy Riadok`
+    const idKeep = await createdId({ name: `${sheetA} Svetla`, roast_type: 'Light', price_250g: 5 })
+    const idGone = await createdId({ name: `${sheetA} Tmava`, roast_type: 'Dark', price_250g: 5 })
+
+    // Both are targets of sheetA; the source ALSO carries sheetB alone.
+    expect((await declareSplit(idKeep, sheetA)).status()).toBe(201)
+    expect((await declareSplit(idGone, sheetA)).status()).toBe(201)
+    expect((await declareSplit(idGone, sheetB)).status()).toBe(201)
+
+    // Merge the source away — before the fix, the FK CASCADE silently dropped
+    // its mappings with it (sheetB would re-create as `new` on the next import).
+    const merged = await merge(idKeep, idGone)
+    expect(merged.status()).toBe(200)
+
+    // The survivor carries BOTH mappings, deduped: sheetA once (it already had
+    // it — the source's duplicate row must not violate the UNIQUE), sheetB
+    // transferred.
+    const body = await (await getSplits(idKeep)).json()
+    expect(body.splits.map((s) => s.normalized_name).sort()).toEqual(
+      [sheetA.toLowerCase(), sheetB.toLowerCase()].sort()
+    )
+
+    // The next import of BOTH sheet rows still refreshes the survivor and
+    // creates nothing (separate imports — two different rows now share one
+    // target, and within one sheet the second would read as an in-sheet dup).
+    for (const [sheetName, p250] of [[sheetA, '9'], [sheetB, '8']]) {
+      const res = await importCsv(csvFor([{ name: sheetName, roast: 'Whatever + Combined', p250, p1kg: '30' }]))
+      expect(res.status()).toBe(201)
+      const report = (await res.json()).report
+      expect(report.summary.new, `${sheetName} must not re-create`).toBe(0)
+      expect(report.summary.pending_fuzzy).toBe(0)
+      expect(report.matched).toEqual([{ catalog_id: idKeep, name: `${sheetA} Svetla`, split: true }])
+    }
+    // Roast protection survives the transfer.
+    const row = await (await ctx.get(`/api/coffee-products/${idKeep}`, { headers: admin() })).json()
+    expect(row.roast_type).toBe('Light')
+    expect(row.price_250g, 'the LAST import owns the shared target price').toBe(8)
+  })
+
+  test('split targets leave the duplicates review — against their siblings AND against the sheet name, and nothing else', async () => {
+    const stem = uniq()
+    const sheetName = `${stem} Brazil Caramelo`
+    const idM = await createdId({ name: `${sheetName} Medium`, roast_type: 'Medium' })
+    const idF = await createdId({ name: `${sheetName} Full City`, roast_type: 'Full city' })
+    // A row named exactly like the sheet row, NOT itself a target.
+    const idSheet = await createdId({ name: sheetName })
+    // A near-name that is neither a target nor the sheet name — the control.
+    const idOther = await createdId({ name: `${sheetName} Special` })
+
+    const pairIds = (pairs) => pairs.map((p) => [p.a.id, p.b.id].sort().join('-'))
+    const key = (x, y) => [x, y].sort().join('-')
+
+    // Before any declaration the sibling pair is a fuzzy near-miss.
+    let pairs = (await (await duplicates()).json()).pairs
+    let idsBefore = pairIds(pairs)
+    expect(idsBefore, 'precondition: the siblings fuzzy-pair before declaring').toContain(key(idM, idF))
+    expect(idsBefore).toContain(key(idSheet, idM))
+
+    expect((await declareSplit(idM, sheetName)).status()).toBe(201)
+    expect((await declareSplit(idF, sheetName)).status()).toBe(201)
+
+    pairs = (await (await duplicates()).json()).pairs
+    const idsAfter = pairIds(pairs)
+    // Suppressed: sibling↔sibling and target↔sheet-named row.
+    expect(idsAfter, 'siblings never pair').not.toContain(key(idM, idF))
+    expect(idsAfter, 'a target never pairs with the sheet-named row').not.toContain(key(idSheet, idM))
+    expect(idsAfter).not.toContain(key(idSheet, idF))
+    // NOT suppressed: the control still pairs — suppression is minimal.
+    expect(idsAfter, 'an unrelated near-name still surfaces').toContain(key(idOther, idSheet))
+    expect(idsAfter).toContain(key(idOther, idM))
+  })
+})
+
+test.describe('PC-T13 — workbench Ignorovať (API)', () => {
+  test.beforeAll(refreshAdminToken)
+
+  function ignore(groups) {
+    return ctx.post('/api/coffee-products/migration/ignore', { headers: admin(), data: { groups } })
+  }
+
+  function unignore(groups) {
+    return ctx.post('/api/coffee-products/migration/unignore', { headers: admin(), data: { groups } })
+  }
+
+  function getIgnored() {
+    return ctx.get('/api/coffee-products/migration/ignored', { headers: admin() })
+  }
+
+  test('ignoring a junk group hides it from pending, lists it under ignored, and writes ONE column only', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const stem = `${uniq()} Nespresso Kapsule`
+    const db = openDb()
+    let snapA, snapB
+    try {
+      const c1 = seedCycle(db, `${stem} c1`, 'coffee')
+      const c2 = seedCycle(db, `${stem} c2`, 'coffee')
+      snapA = seedSnapshot(db, c1, { name: stem, price_250g: 5 })
+      snapB = seedSnapshot(db, c2, { name: stem, price_250g: 5 })
+    } finally {
+      db.close()
+    }
+
+    const { rows: before } = await pendingRowsFor(stem)
+    expect(before).toHaveLength(1)
+
+    const db2 = openDb()
+    const productsBefore = tableSnapshot(db2, 'products', ['migration_ignored'])
+    db2.close()
+
+    const res = await ignore([{ normalized_name: stem.toLowerCase(), roastery: 'Goriffee' }])
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.ignored_snapshots).toBe(2)
+    expect(body.groups_ignored).toBe(1)
+    expect(typeof body.pending_count).toBe('number')
+
+    // Gone from pending.
+    const { rows: after } = await pendingRowsFor(stem)
+    expect(after).toHaveLength(0)
+
+    // Listed under ignored, same row shape as pending.
+    const ignoredBody = await (await getIgnored()).json()
+    expect(Object.keys(ignoredBody).sort()).toEqual(['ignored', 'ignored_count'])
+    expect(ignoredBody.ignored_count).toBe(ignoredBody.ignored.length)
+    const mine = ignoredBody.ignored.find((r) => r.normalized_name === stem.toLowerCase())
+    expect(mine).toBeTruthy()
+    expect(mine.snapshots).toBe(2)
+
+    // ONE column, nothing else: byte-identical apart from migration_ignored.
+    const db3 = openDb()
+    try {
+      expect(tableSnapshot(db3, 'products', ['migration_ignored'])).toBe(productsBefore)
+      for (const id of [snapA, snapB]) {
+        const row = productRow(db3, id)
+        expect(row.migration_ignored).toBe(1)
+        expect(row.active, 'active is NEVER touched by ignore').toBe(1)
+        expect(row.source_coffee_product_id).toBeNull()
+      }
+    } finally {
+      db3.close()
+    }
+
+    // Undo: back in pending, gone from ignored.
+    const undo = await unignore([{ normalized_name: stem.toLowerCase(), roastery: 'Goriffee' }])
+    expect(undo.status()).toBe(200)
+    expect((await undo.json()).restored_snapshots).toBe(2)
+    const { rows: restored } = await pendingRowsFor(stem)
+    expect(restored).toHaveLength(1)
+    const ignoredAfter = await (await getIgnored()).json()
+    expect(ignoredAfter.ignored.some((r) => r.normalized_name === stem.toLowerCase())).toBe(false)
+  })
+
+  test('a group whose snapshots have order_items refuses with 409 and the count — real history needs a catalog identity', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const stem = `${uniq()} Objednana Kava`
+    const db = openDb()
+    try {
+      const c1 = seedCycle(db, `${stem} c1`, 'coffee')
+      const snap = seedSnapshot(db, c1, { name: stem, price_250g: 8 })
+      const friendId = Number(db
+        .prepare('INSERT INTO friends (cycle_id, name, access_token, active) VALUES (?, ?, ?, 1)')
+        .run(c1, `${stem} F`, `${uniq()}tok${Math.random().toString(36).slice(2)}`).lastInsertRowid)
+      const orderId = Number(db
+        .prepare("INSERT INTO orders (friend_id, cycle_id, status, total) VALUES (?, ?, 'submitted', 0)")
+        .run(friendId, c1).lastInsertRowid)
+      db.prepare('INSERT INTO order_items (order_id, product_id, variant, quantity, price) VALUES (?, ?, ?, 1, 10)')
+        .run(orderId, snap, '250g')
+    } finally {
+      db.close()
+    }
+
+    const res = await ignore([{ normalized_name: stem.toLowerCase(), roastery: 'Goriffee' }])
+    expect(res.status()).toBe(409)
+    const body = await res.json()
+    expect(body.order_items).toBe(1)
+    expect(body.error).toContain('objedn')
+
+    // Nothing written — the group is still pending.
+    const { rows } = await pendingRowsFor(stem)
+    expect(rows).toHaveLength(1)
+  })
+
+  test('a group whose ONLY orders are GUEST order_items refuses just the same — 409, the count, zero writes', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const stem = `${uniq()} Hostovska Kava`
+    const db = openDb()
+    try {
+      const c1 = seedCycle(db, `${stem} c1`, 'coffee')
+      const snap = seedSnapshot(db, c1, { name: stem, price_250g: 8 })
+      // A guest sub-order referencing the snapshot — NO friend order_items.
+      const hostId = Number(db
+        .prepare('INSERT INTO friends (cycle_id, name, access_token, active) VALUES (?, ?, ?, 1)')
+        .run(c1, `${stem} Host`, `${uniq()}tok${Math.random().toString(36).slice(2)}`).lastInsertRowid)
+      const linkId = Number(db
+        .prepare('INSERT INTO guest_order_links (token, host_friend_id, cycle_id, active) VALUES (?, ?, ?, 1)')
+        .run(`${uniq()}glnk${Math.random().toString(36).slice(2)}`, hostId, c1).lastInsertRowid)
+      const guestOrderId = Number(db
+        .prepare("INSERT INTO guest_orders (link_id, order_token, guest_name, guest_phone, total) VALUES (?, ?, 'Kolega', '0900123456', 10)")
+        .run(linkId, `${uniq()}gtok${Math.random().toString(36).slice(2)}`).lastInsertRowid)
+      db.prepare('INSERT INTO guest_order_items (guest_order_id, product_id, variant, quantity, price) VALUES (?, ?, ?, 1, 10)')
+        .run(guestOrderId, snap, '250g')
+    } finally {
+      db.close()
+    }
+
+    const db2 = openDb()
+    const productsBefore = tableSnapshot(db2, 'products')
+    db2.close()
+
+    const res = await ignore([{ normalized_name: stem.toLowerCase(), roastery: 'Goriffee' }])
+    expect(res.status(), 'guest history is real history').toBe(409)
+    const body = await res.json()
+    expect(body.order_items).toBe(1)
+
+    // Zero writes — the table is byte-identical and the group is still pending.
+    const db3 = openDb()
+    try {
+      expect(tableSnapshot(db3, 'products')).toBe(productsBefore)
+    } finally {
+      db3.close()
+    }
+    const { rows } = await pendingRowsFor(stem)
+    expect(rows).toHaveLength(1)
+  })
+
+  test('malformed selections 400; an already-resolved group is skip-and-report', async () => {
+    for (const bad of [undefined, [], 'x', [{}], [{ normalized_name: 'a' }]]) {
+      const res = await ignore(bad)
+      expect(res.status(), JSON.stringify(bad ?? null)).toBe(400)
+    }
+    const res = await ignore([{ normalized_name: `${uniq().toLowerCase()} nikdy neexistoval`, roastery: 'Goriffee' }])
+    expect(res.status(), 'derived keys never 404 — skip-and-report').toBe(200)
+    const body = await res.json()
+    expect(body.ignored_snapshots).toBe(0)
+    expect(body.skipped).toHaveLength(1)
+  })
+})
+
+test.describe('PC-T13 — Odpojiť od katalógu (unlink, API)', () => {
+  test.beforeAll(refreshAdminToken)
+
+  function unlink(id) {
+    return ctx.post(`/api/coffee-products/${id}/unlink`, { headers: admin() })
+  }
+
+  test('unlink returns the history to the workbench; the catalog row SURVIVES byte-identically', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const stem = `${uniq()} Peach Please`
+    const db = openDb()
+    let catId, snapA, snapB
+    try {
+      catId = seedCatalog(db, {
+        name: stem, description1: 'kuratorsky popis', image: '/api/images/deadbeefdeadbeefdeadbeefdeadbeef.png',
+        purpose: 'Filter', price_250g: 9,
+      })
+      const c1 = seedCycle(db, `${stem} c1`, 'coffee')
+      const c2 = seedCycle(db, `${stem} c2`, 'coffee')
+      snapA = seedSnapshot(db, c1, { name: stem, price_250g: 9, source_coffee_product_id: catId })
+      snapB = seedSnapshot(db, c2, { name: stem, price_250g: 9.5, source_coffee_product_id: catId })
+    } finally {
+      db.close()
+    }
+
+    const db2 = openDb()
+    const catBefore = JSON.stringify(catalogRowById(db2, catId))
+    const productsBefore = tableSnapshot(db2, 'products', ['source_coffee_product_id'])
+    db2.close()
+
+    const res = await unlink(catId)
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.unlinked_snapshots).toBe(2)
+
+    const db3 = openDb()
+    try {
+      // The catalog row is untouched — photo and curation stay (the whole
+      // difference from delete).
+      expect(JSON.stringify(catalogRowById(db3, catId))).toBe(catBefore)
+      // Only the link column moved on the snapshots.
+      expect(tableSnapshot(db3, 'products', ['source_coffee_product_id'])).toBe(productsBefore)
+      expect(productRow(db3, snapA).source_coffee_product_id).toBeNull()
+      expect(productRow(db3, snapB).source_coffee_product_id).toBeNull()
+    } finally {
+      db3.close()
+    }
+
+    // The history is back in the workbench.
+    const { rows } = await pendingRowsFor(stem)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].snapshots).toBe(2)
+
+    // Idempotent second call converges on 0.
+    const again = await unlink(catId)
+    expect(again.status()).toBe(200)
+    expect((await again.json()).unlinked_snapshots).toBe(0)
+  })
+
+  test('unknown and non-integer ids 404; a product with no history unlinks 0', async () => {
+    expect((await unlink(99999999)).status()).toBe(404)
+    expect((await ctx.post('/api/coffee-products/abc/unlink', { headers: admin() })).status()).toBe(404)
+
+    const name = `${uniq()} Bez Historie`
+    const created = await createCatalogProduct({ name })
+    expect(created.status()).toBe(201)
+    const id = (await created.json()).id
+    const res = await unlink(id)
+    expect(res.status()).toBe(200)
+    expect((await res.json()).unlinked_snapshots).toBe(0)
+    // Still there.
+    expect((await ctx.get(`/api/coffee-products/${id}`, { headers: admin() })).status()).toBe(200)
+  })
+})
+
+test.describe('PC-T13 — AdminCatalog view (UI)', () => {
+  test('"+ Nový produkt" creates a catalog product from the dialog', async ({ page }) => {
+    await loginAsAdminUI(page)
+    const name = `${uniq()} Nova Rucna`
+
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-create-button').click()
+    const dialog = page.getByTestId('catalog-edit-dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toContainText('Nový produkt')
+
+    await dialog.getByTestId('catalog-edit-name').fill(name)
+    await dialog.getByTestId('catalog-edit-price-8pc12g').fill('6.20')
+    await dialog.getByRole('button', { name: 'Uložiť' }).click()
+    await expect(dialog).not.toBeVisible()
+
+    await page.getByTestId('catalog-search').fill(name)
+    const row = page.getByTestId('catalog-row').filter({ hasText: name })
+    await expect(row).toHaveCount(1)
+    await expect(row.getByText('Dostupná')).toBeVisible()
+  })
+
+  test('workbench: Ignorovať hides a junk group into the Ignorované fold; Vrátiť restores it', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    await loginAsAdminUI(page)
+    const stem = `${uniq()} Sekcia Hlavicka`
+    const db = openDb()
+    try {
+      const c1 = seedCycle(db, `${stem} c1`, 'coffee')
+      seedSnapshot(db, c1, { name: stem, price_250g: 5 })
+    } finally {
+      db.close()
+    }
+
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-tab-migrate').click()
+    const row = page.getByTestId('workbench-row').filter({ hasText: stem })
+    await expect(row).toHaveCount(1)
+    await row.getByTestId('workbench-check').check()
+    await page.getByTestId('workbench-ignore-button').click()
+    await expect(row).toHaveCount(0)
+
+    // The fold names the count and offers the undo.
+    const fold = page.getByTestId('ignored-fold')
+    await expect(fold).toBeVisible()
+    await fold.click()
+    const ignoredRow = page.getByTestId('ignored-row').filter({ hasText: stem })
+    await expect(ignoredRow).toHaveCount(1)
+    await ignoredRow.getByTestId('ignored-restore').click()
+    await expect(ignoredRow).toHaveCount(0)
+    await expect(page.getByTestId('workbench-row').filter({ hasText: stem })).toHaveCount(1)
+  })
+
+  test('Odpojiť od katalógu: inline confirm names the cycle count, the history returns to Migrácia', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const token = await loginAsAdminUI(page)
+    const stem = `${uniq()} Odpojitelna`
+    const db = openDb()
+    let catId
+    try {
+      catId = seedCatalog(db, { name: stem, price_250g: 9 })
+      const c1 = seedCycle(db, `${stem} c1`, 'coffee')
+      seedSnapshot(db, c1, { name: stem, price_250g: 9, source_coffee_product_id: catId })
+    } finally {
+      db.close()
+    }
+
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-search').fill(stem)
+    const row = page.getByTestId('catalog-row').filter({ hasText: stem })
+    await expect(row).toHaveCount(1)
+    await row.getByTestId('catalog-unlink').click()
+    const confirm = row.getByTestId('unlink-confirm')
+    await expect(confirm).toBeVisible()
+    await expect(confirm, 'the confirm names how many cycles return').toContainText('1')
+    await confirm.getByRole('button', { name: 'Potvrdiť' }).click()
+    await expect(row.getByTestId('unlink-confirm')).toHaveCount(0)
+
+    // The catalog row survives; the history is back in the workbench.
+    const detail = await ctx.get(`/api/coffee-products/${catId}`, { headers: uiHeaders(token) })
+    expect(detail.status()).toBe(200)
+    await page.getByTestId('catalog-tab-migrate').click()
+    await expect(page.getByTestId('workbench-row').filter({ hasText: stem })).toHaveCount(1)
+  })
+
+  test('edit dialog: split declaration section — declare, see the sibling, remove', async ({ page }) => {
+    const token = await loginAsAdminUI(page)
+    const sheetName = `${uniq()} Riadok Sheetu`
+    const mk = (n, roast) => ctx.post('/api/coffee-products', { headers: uiHeaders(token), data: { name: n, roast_type: roast } })
+    const resA = await mk(`${sheetName} Svetla`, 'Light')
+    expect(resA.status()).toBe(201)
+    const idB = (await (await mk(`${sheetName} Tmava`, 'Dark')).json()).id
+    const declared = await ctx.post(`/api/coffee-products/${idB}/splits`, {
+      headers: uiHeaders(token), data: { sheet_name: sheetName },
+    })
+    expect(declared.status()).toBe(201)
+
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-search').fill(`${sheetName} Svetla`)
+    await page.getByTestId('catalog-row').getByRole('button', { name: 'Upraviť' }).click()
+    const dialog = page.getByTestId('catalog-edit-dialog')
+    await expect(dialog).toBeVisible()
+
+    // Declare through the dialog.
+    await dialog.getByTestId('split-sheet-name').fill(sheetName)
+    await dialog.getByTestId('split-declare').click()
+    const entry = dialog.getByTestId('split-entry')
+    await expect(entry).toHaveCount(1)
+    await expect(entry, 'the sibling set is visible').toContainText(`${sheetName} Tmava`)
+
+    // Remove it again.
+    await entry.getByTestId('split-remove').click()
+    await expect(dialog.getByTestId('split-entry')).toHaveCount(0)
+    await dialog.getByRole('button', { name: 'Zrušiť' }).click()
+    await expect(dialog).not.toBeVisible()
+
+    // Fix 4 (review): the "old combined row" hint. A product named exactly like
+    // the declared sheet row stops being refreshed by the import — its edit
+    // dialog must say so and point at „Vyradená“. (Tmava still declares the row.)
+    const resC = await mk(sheetName, null)
+    expect(resC.status()).toBe(201)
+    await page.getByTestId('catalog-search').fill(sheetName)
+    await page.getByTestId('catalog-row').filter({ hasText: sheetName }).first()
+      .getByRole('button', { name: 'Upraviť' }).click()
+    await expect(dialog).toBeVisible()
+    const hint = dialog.getByTestId('split-identity-hint')
+    await expect(hint).toBeVisible()
+    await expect(hint, 'names the variants').toContainText(`${sheetName} Tmava`)
+    await expect(hint, 'points at retirement').toContainText('Vyradená')
+    // And the variants themselves carry NO such hint — their identity is not a
+    // split key.
+    await dialog.getByRole('button', { name: 'Zrušiť' }).click()
+    await page.getByTestId('catalog-search').fill(`${sheetName} Tmava`)
+    await page.getByTestId('catalog-row').getByRole('button', { name: 'Upraviť' }).click()
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByTestId('split-entry')).toHaveCount(1)
+    await expect(dialog.getByTestId('split-identity-hint')).toHaveCount(0)
+  })
+})

@@ -1139,3 +1139,147 @@ test.describe('PC-T12 review — vector-clear edges that must NOT clear', () => 
     expect(mod.parsePriceString('35 / 9', '250g / 1kg').error).toBe('Prices were swapped (small variant was larger than 1kg)')
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PC-T13 — split rules, option B (PM 2026-08-23): one sheet row may be
+// represented by SEVERAL catalog products (the real case: `Brazil, Caramelo -
+// Natural` carries "Medium" and "Full city" roast in ONE row — friends must
+// pick one). A `catalog_import_splits(normalized_name, roastery,
+// coffee_product_id)` mapping tells the import to refresh EVERY target with the
+// decision-13 + PC-T12 price-vector semantics, CREATE NOTHING, and emit NO
+// pending_fuzzy entry — with `roast_type` becoming ADMIN-owned on split targets
+// (the two products differ only by roast, so the sheet must not overwrite it).
+// Split targets are reported under `matched` (one entry per target) with an
+// additive `split: true` marker — no new report bucket, the UC-PC-004 key set
+// is unchanged.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test.describe('PC-T13 — split rules: one sheet row, N catalog products', () => {
+  function createProduct(data) {
+    return ctx.post('/api/coffee-products', { headers: admin(), data })
+  }
+
+  async function createdId(data) {
+    const res = await createProduct(data)
+    expect(res.status(), `manual create of ${data.name}`).toBe(201)
+    return (await res.json()).id
+  }
+
+  function declareSplit(id, sheetName) {
+    return ctx.post(`/api/coffee-products/${id}/splits`, {
+      headers: admin(),
+      data: { sheet_name: sheetName },
+    })
+  }
+
+  async function rowById(id) {
+    const res = await ctx.get(`/api/coffee-products/${id}`, { headers: admin() })
+    expect(res.status()).toBe(200)
+    return res.json()
+  }
+
+  test('the PM acceptance flow: two split targets, import twice → 0 new, 0 pending_fuzzy, prices refreshed, roasts unchanged', async () => {
+    const sheetName = `${uniq()} Brazil Caramelo Natural`
+
+    // Two catalog products for the one sheet row — they differ only by roast.
+    const idMedium = await createdId({
+      name: `${sheetName} Medium`, roast_type: 'Medium', price_250g: 7, price_150g: 5.5,
+    })
+    const idFull = await createdId({
+      name: `${sheetName} Full City`, roast_type: 'Full city', price_250g: 7,
+    })
+
+    // Declare both as splits of the sheet row.
+    expect((await declareSplit(idMedium, sheetName)).status()).toBe(201)
+    expect((await declareSplit(idFull, sheetName)).status()).toBe(201)
+
+    // First import of the sheet row.
+    const res1 = await importCsv(csvFor([{
+      name: sheetName, desc1: 'Natural', desc2: 'karamel, orech',
+      roast: 'Medium + Full city', purpose: 'Espresso', p250: '9,5', p1kg: '38',
+    }]))
+    expect(res1.status()).toBe(201)
+    const r1 = (await res1.json()).report
+
+    // Create nothing, flag nothing.
+    expect(r1.summary.new, 'a split row NEVER creates a catalog product').toBe(0)
+    expect(r1.summary.pending_fuzzy, 'a split row NEVER lands in pending_fuzzy').toBe(0)
+    expect(r1.summary.unparsed).toBe(0)
+
+    // One matched entry PER TARGET, marked additively.
+    expect(r1.summary.matched).toBe(2)
+    const ids = r1.matched.map((e) => e.catalog_id).sort()
+    expect(ids).toEqual([idMedium, idFull].sort())
+    for (const entry of r1.matched) {
+      expect(entry.split, 'split targets carry the additive marker').toBe(true)
+    }
+
+    // Prices refreshed on BOTH targets: the CSV vehicle declares 250g/1kg, so
+    // both cells write on both rows (2 targets × 2 fields).
+    expect(r1.summary.price_changes).toBe(4)
+
+    const medium = await rowById(idMedium)
+    const full = await rowById(idFull)
+    for (const row of [medium, full]) {
+      expect(row.price_250g).toBe(9.5)
+      expect(row.price_1kg).toBe(38)
+      // Sheet-owned text fields refresh normally (decision 13)…
+      expect(row.description1).toBe('Natural')
+      expect(row.description2).toBe('karamel, orech')
+      expect(row.purpose).toBe('Espresso')
+    }
+    // …but roast_type is ADMIN-owned on split targets — the whole point.
+    expect(medium.roast_type, 'the sheet must NOT overwrite the split roast').toBe('Medium')
+    expect(full.roast_type).toBe('Full city')
+    // PC-T12 vector semantics survive: a field the CSV format cannot declare
+    // (150g) is untouched.
+    expect(medium.price_150g).toBe(5.5)
+
+    // Second import — byte-idempotent: 0 new, 0 pending_fuzzy, 0 price changes.
+    const res2 = await importCsv(csvFor([{
+      name: sheetName, desc1: 'Natural', desc2: 'karamel, orech',
+      roast: 'Medium + Full city', purpose: 'Espresso', p250: '9,5', p1kg: '38',
+    }]))
+    expect(res2.status()).toBe(201)
+    const r2 = (await res2.json()).report
+    expect(r2.summary.new).toBe(0)
+    expect(r2.summary.pending_fuzzy).toBe(0)
+    expect(r2.summary.matched).toBe(2)
+    expect(r2.summary.price_changes).toBe(0)
+    expect((await rowById(idMedium)).roast_type).toBe('Medium')
+    expect((await rowById(idFull)).roast_type).toBe('Full city')
+  })
+
+  test('a split row coexists with normal rows in one sheet; a repeated split row is an in-sheet duplicate', async () => {
+    const sheetName = `${uniq()} Kolumbia Duo`
+    const normal = `${uniq()} Obycajna Kava`
+
+    const idA = await createdId({ name: `${sheetName} Svetla`, roast_type: 'Light', price_250g: 6 })
+    const idB = await createdId({ name: `${sheetName} Tmava`, roast_type: 'Dark', price_250g: 6 })
+    expect((await declareSplit(idA, sheetName)).status()).toBe(201)
+    expect((await declareSplit(idB, sheetName)).status()).toBe(201)
+
+    const res = await importCsv(csvFor([
+      { name: sheetName, roast: 'Light + Dark', p250: '8', p1kg: '30' },
+      // The SAME sheet row twice — the second occurrence must refresh nothing
+      // (UC-PC-003 rule 5 applied to split targets).
+      { name: sheetName, roast: 'Light + Dark', p250: '8', p1kg: '30' },
+      { name: normal, roast: 'Medium', p250: '7', p1kg: '28' },
+    ]))
+    expect(res.status()).toBe(201)
+    const report = (await res.json()).report
+
+    expect(report.summary.new, 'only the normal row creates').toBe(1)
+    expect(report.new[0].name).toBe(normal)
+    expect(report.summary.matched).toBe(2)
+    // Targets refreshed ONCE: 2 targets × 2 declared fields, not 8.
+    expect(report.summary.price_changes).toBe(4)
+    expect(report.summary.unparsed).toBe(1)
+    expect(report.unparsed[0].reason).toBe('duplicate row in sheet')
+    // The split targets never enter pending_fuzzy — entries there (if any,
+    // from residue against the NEW normal row) must not name them.
+    for (const f of report.pending_fuzzy) {
+      expect([idA, idB]).not.toContain(f.catalog_id)
+    }
+  })
+})

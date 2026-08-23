@@ -66,6 +66,10 @@ const ADMIN_ENDPOINTS = [
   { method: 'get', path: '/api/coffee-products/migration/pending' },
   { method: 'post', path: '/api/coffee-products/migration/assign', data: { groups: [], catalog_id: 1 } },
   { method: 'post', path: '/api/coffee-products/migration/create', data: { groups: [] } },
+  // PC-T13 (PM 2026-08-23): workbench "Ignorovať" + undo + the ignored listing.
+  { method: 'post', path: '/api/coffee-products/migration/ignore', data: { groups: [] } },
+  { method: 'post', path: '/api/coffee-products/migration/unignore', data: { groups: [] } },
+  { method: 'get', path: '/api/coffee-products/migration/ignored' },
   // 12 §UC-PC-007/008 (PC-T5): merge tool + stateless duplicates review.
   { method: 'post', path: '/api/coffee-products/1/merge', data: { source_id: 2 } },
   { method: 'get', path: '/api/coffee-products/duplicates' },
@@ -76,6 +80,12 @@ const ADMIN_ENDPOINTS = [
   { method: 'get', path: '/api/coffee-products' },
   { method: 'get', path: '/api/coffee-products/1' },
   { method: 'patch', path: '/api/coffee-products/1', data: { country: 'evil' } },
+  // PC-T13 (PM 2026-08-23): manual catalog create, split declarations, unlink.
+  { method: 'post', path: '/api/coffee-products', data: { name: 'evil' } },
+  { method: 'get', path: '/api/coffee-products/1/splits' },
+  { method: 'post', path: '/api/coffee-products/1/splits', data: { sheet_name: 'evil' } },
+  { method: 'delete', path: '/api/coffee-products/1/splits/1' },
+  { method: 'post', path: '/api/coffee-products/1/unlink' },
   // PM 2026-08-23: a real DELETE (supersedes resolved decision 9's no-delete rule).
   { method: 'delete', path: '/api/coffee-products/1' },
   { method: 'post', path: '/api/coffee-products/1/image' },

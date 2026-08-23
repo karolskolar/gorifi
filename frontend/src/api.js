@@ -506,7 +506,19 @@ export const api = {
     return adminRequest(`/coffee-products${qs ? `?${qs}` : ''}`)
   },
   getCatalogProduct: (id) => adminRequest(`/coffee-products/${id}`),
+  // PC-T13: manual catalog product creation — a coffee that is neither in the
+  // current sheet nor in history can now exist in the catalog.
+  createCatalogProduct: (data) => adminRequest('/coffee-products', { method: 'POST', body: data }),
   updateCatalogProduct: (id, data) => adminRequest(`/coffee-products/${id}`, { method: 'PATCH', body: data }),
+  // PC-T13: "Odpojiť od katalógu" — the history returns to the workbench, the
+  // catalog row (photo, curation) survives.
+  unlinkCatalogProduct: (id) => adminRequest(`/coffee-products/${id}/unlink`, { method: 'POST' }),
+  // PC-T13: split rules (one sheet row → N catalog products).
+  getCatalogProductSplits: (id) => adminRequest(`/coffee-products/${id}/splits`),
+  addCatalogProductSplit: (id, sheetName) =>
+    adminRequest(`/coffee-products/${id}/splits`, { method: 'POST', body: { sheet_name: sheetName } }),
+  deleteCatalogProductSplit: (id, splitId) =>
+    adminRequest(`/coffee-products/${id}/splits/${splitId}`, { method: 'DELETE' }),
   deleteCatalogProduct: (id) => adminRequest(`/coffee-products/${id}`, { method: 'DELETE' }),
   uploadCatalogProductImage: (id, formData) => adminRequest(`/coffee-products/${id}/image`, { method: 'POST', body: formData }),
   importCatalogCSV: (formData) => adminRequest('/coffee-products/import', { method: 'POST', body: formData }),
@@ -523,6 +535,12 @@ export const api = {
     adminRequest('/coffee-products/migration/assign', { method: 'POST', body: { groups, catalog_id: catalogId } }),
   createMigrationProduct: (groups) =>
     adminRequest('/coffee-products/migration/create', { method: 'POST', body: { groups } }),
+  // PC-T13: explicit dismissal of junk pending groups (+ review and undo).
+  ignoreMigrationGroups: (groups) =>
+    adminRequest('/coffee-products/migration/ignore', { method: 'POST', body: { groups } }),
+  unignoreMigrationGroups: (groups) =>
+    adminRequest('/coffee-products/migration/unignore', { method: 'POST', body: { groups } }),
+  getMigrationIgnored: () => adminRequest('/coffee-products/migration/ignored'),
   // PC-T10 (12 §UC-PC-014): one-time conversion of legacy base64 images to files.
   convertCatalogImages: () => adminRequest('/coffee-products/convert-images', { method: 'POST' }),
   getCatalogDuplicates: () => adminRequest('/coffee-products/duplicates'),
