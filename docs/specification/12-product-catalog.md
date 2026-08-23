@@ -9,7 +9,8 @@
 > idempotent import report — **coffee cycle creation as a catalog picker** (snapshots
 > from ticked catalog products, the bakery flow), the **retirement of the per-cycle
 > import endpoints + UI**, the manual per-cycle POST (the one sanctioned
-> add-to-existing-cycle exception), the one-time historical migration, the
+> add-to-existing-cycle exception), the historical-migration **manual assignment
+> workbench** (resolved decision 14 — the shipped auto-migration is retired), the
 > admin merge tool, the fuzzy-duplicate review, the catalog admin view (existing admin
 > skin — shadcn, NO Podpultovka theme classes), and the cross-cycle statistics
 > (admin, `requireAdmin`). ⚠ Like 07–11 this module INCLUDES backend/schema changes.
@@ -71,16 +72,20 @@
    survivor) instead of re-asking. "Admin confirms
    merge" = runs the merge (UC-PC-007); "creates as new" = does nothing — new is
    already the state. The suspicion survives report loss because it is **recomputable**
-   (UC-PC-008). The same mechanism resolves the migration's fuzzy tail. This is an
+   (UC-PC-008). This is an
    implementation-level choice consistent with brief Decision 3 ("very-similar names
    ask for confirmation" — they do, in the report and the duplicates review; they are
-   never auto-MERGED), so it is decided here, not OPEN.
-2. **Migration runs as an admin-triggered endpoint, not a boot migration.** The house
-   try/catch boot pattern is for columns (and is used for them here); the grouping
-   migration is heavy, needs to return a fuzzy-review report, must be observable, and
-   must be re-runnable after merges. A failed boot migration would block startup;
-   a boot migration cannot render a report. `POST /api/coffee-products/migrate`
-   (UC-PC-006) is idempotent — safe to call again at any time.
+   never auto-MERGED), so it is decided here, not OPEN. ~~The same mechanism resolves
+   the migration's fuzzy tail~~ — superseded by decision 14: the migration has no
+   fuzzy anything any more; this decision now governs the IMPORT flow only.
+2. **Migration runs admin-triggered, never at boot.** The house try/catch boot
+   pattern is for columns (and is used for them here); linking history is heavy,
+   needs admin judgement, must be observable, and a failed boot migration would
+   block startup. ~~One idempotent `POST /api/coffee-products/migrate` auto-creating
+   catalog rows from exact groups + a fuzzy-review report~~ — the AUTOMATIC half of
+   this decision is **superseded by decision 14** (the shipped auto-migration merged
+   unrelated products on staging); the admin-triggered, never-boot half stands and
+   now takes the form of the manual assignment workbench (UC-PC-006).
 3. **"Goriffee-only" is realized as within-roastery matching.** The import endpoints
    accept a `roastery` body field (default = the `roasteries` `is_default` row,
    'Goriffee'). Matching candidates are ALWAYS restricted to catalog rows of the row's
@@ -166,6 +171,26 @@
     survives only until the next import carries a non-empty value for that product —
     the sheet is the roastery's current truth for its own fields; durable admin
     curation belongs in the admin-only fields. Recorded in §Accepted risks.
+14. **The AUTOMATIC migration is REPLACED by a fully MANUAL assignment workbench
+    (PM decision 2026-08-23, from staging testing of the shipped PC-T1..T8).** The
+    shipped `POST /api/coffee-products/migrate` auto-created catalog rows from
+    exact-name groups and its fuzzy suggestions **merged unrelated products** on
+    real data. The PM's replacement, verbatim: *"1. All products from the history
+    will be listed. 2. I can select (checkbox) one or more old products and assign
+    them the final product that already exists in the new db or create a new from
+    selection of these products. 3. With each selection, old products will be
+    disappearing and new products appearing."* Consequences: UC-PC-006 is rewritten
+    as the workbench (pending list + assign + create-from-selection); the shipped
+    `/migrate` endpoint, `helpers/catalog-migrate.js`'s auto-create/`fuzzy_review`
+    flow and the AdminCatalog migration trigger + report UI are RETIRED (a rework of
+    shipped code — backlog row PC-T9); **NO similarity/fuzzy math anywhere in the
+    migration flow** — identical normalized names grouping into one pending row is
+    identity (brief Decision 3), not a suggestion. Fuzzy similarity survives ONLY
+    where it already lives: the import's `pending_fuzzy` flag (UC-PC-003) and the
+    duplicates tab (UC-PC-008) — both unchanged, though the PM found
+    `FUZZY_THRESHOLD = 0.75` too loose in practice on real data (recorded follow-up
+    in §Accepted risks, not tuned here). This supersedes the auto-migration parts of
+    decision 2 and the `fuzzy_review` surface everywhere it appeared.
 
 ---
 
@@ -493,70 +518,142 @@ cycle creates no `coffee_products` row.
 
 ---
 
-## UC-PC-006 One-time historical migration (Admin)
+## UC-PC-006 Historical migration — the manual assignment workbench (Admin)
 
-**Goal:** all historical coffee snapshots get catalog rows and links, so statistics
-count from day one (brief goal (c)).
+**Goal (resolved decision 14 — REWORK of the shipped PC-T4 auto-migration):** all
+historical coffee snapshots get catalog links, so statistics count from day one
+(brief goal (c)) — but every grouping-to-catalog decision is the ADMIN's, made in a
+workbench: a pending list the admin drains by either assigning old products to an
+existing catalog product or creating a new catalog product from a selection. **No
+similarity/fuzzy math anywhere in this flow.** Grouping identical
+`(normalized_name, roastery)` keys into one pending row is NOT a suggestion — it is
+identity (brief Decision 3, the same key the UNIQUE constraint enforces).
 
-**Route contract:** `POST /api/coffee-products/migrate` — `requireAdmin` (whole-mount,
-UC-PC-009), admin-triggered (resolved decision 2), idempotent, transactional.
+**Shared definitions:**
 
-**Business rules:**
+- **Unlinked candidate set** (unchanged predicate, the PC-T4 one): `products` rows
+  whose owning cycle has `COALESCE(order_cycles.type,'coffee') = 'coffee'`, with
+  `source_bakery_product_id IS NULL` AND `source_coffee_product_id IS NULL`. Under
+  the pivot every NEW snapshot is born linked (picker UC-PC-012, manual POST
+  UC-PC-005), so this set only shrinks — the workbench drains it to empty and it
+  stays empty.
+- **Group key:** `{ normalized_name, roastery }` — roastery carried PER ENTRY, so a
+  key is unambiguous even if two roasteries ever share a name. `roastery` is the
+  normalized value (`normalizeRoastery`, NULL ⇒ default).
+- **Newest snapshot of a selection:** highest `cycle_id`, `id DESC` tiebreak (the
+  GSO-T8 same-second lesson) — the strictly-newest rule, unchanged from PC-T4.
 
-- **Candidate set:** `products` rows where the owning cycle's
-  `COALESCE(order_cycles.type, 'coffee') = 'coffee'` AND
-  `source_bakery_product_id IS NULL` AND `source_coffee_product_id IS NULL`
-  (already-linked rows are skipped — that is the idempotency; re-running after a
-  merge only picks up the still-unlinked tail). Under the pivot every NEW snapshot
-  is born linked (picker UC-PC-012, manual POST UC-PC-005), so unlinked rows are
-  purely historical — the migration is genuinely one-time plus re-runs.
-- **Grouping:** by `(normalizeProductName(name), normalizeRoastery(roastery))` — the
-  same helper the importer uses, by construction (single-home rule).
-- **Per group, inside ONE `db.transaction`** (better-sqlite3, synchronous — no
-  `await` anywhere in the handler):
-  - An exact-matching catalog row exists ⇒ backfill `source_coffee_product_id` on
-    every snapshot in the group (bulk UPDATE).
-  - None exists ⇒ create the catalog row **from the group's most recent snapshot**
-    (highest `cycle_id`, `id DESC` tiebreak — the GSO-T8 same-second lesson):
-    name (original casing), descriptions, roast_type, purpose, prices as current
-    prices, `image` = that snapshot's image if any (this is how existing per-cycle
-    images consolidate into the one catalog image), `status = 'available'`,
-    informational attributes NULL. Then backfill the links.
-  - **Fuzzy tail:** groups whose key fuzzy-matches (UC-PC-002 band) a DIFFERENT
-    group's key or an existing catalog row are still migrated as their own catalog
-    row (resolved decision 1 — same mechanism as import) and reported under
-    `fuzzy_review` for the admin to merge (UC-PC-007) or leave.
-- **Field consolidation happens ONLY on the catalog row** (PM-confirmed 2026-08-22):
-  merging the duplicate historical variants' fields — picture, name, descriptions,
-  prices — into one identity is done by CREATING the catalog row from the newest
-  snapshot (above) and, for the fuzzy tail, by the admin editing the surviving row
-  after a merge (UC-PC-007/009). It is **never** expressed as writes into old
-  cycles' snapshots: a snapshot keeps its historical name/description/price forever,
-  even when they differ from the consolidated catalog row it links to.
-- **Never mutates** snapshot names, descriptions, prices, `order_items`, or anything
-  in old cycles beyond the one new column (brief §2.3 — "never delete or alter
-  historical snapshots, prices, or order_items"; resolved decision 11 extends this
-  to CURRENT cycles too). The bulk UPDATE writes exactly `source_coffee_product_id`.
-- **Response report:** `{ summary: { groups: n, catalog_created: n, snapshots_linked:
-  n, already_linked: n, fuzzy_review: n }, catalog_created: […], fuzzy_review:
-  [{catalog_id, name, candidate_catalog_id, candidate_name, similarity}],
-  unlinked_remaining: n }` — `unlinked_remaining` must be 0 after a run (every coffee
-  snapshot groups somewhere); non-zero is a bug signal, not a state.
-- Second run on a migrated DB: all rows `already_linked`, zero writes.
+**Endpoint 1 — `GET /api/coffee-products/migration/pending`** (whole-mount
+`requireAdmin`):
 
-**Acceptance criteria:** on a DB seeded with "Pink Bourbon" in three cycles (one with
-an image) + "Pink  bourbon" (case/whitespace variant) in a fourth + a bakery cycle:
-one catalog row is created carrying the newest snapshot's metadata and the image, all
-four snapshots link to it, bakery rows stay NULL-linked, order_items and snapshot
-prices are byte-identical before/after; a second call writes nothing; a near-miss
-pair lands in `fuzzy_review`; anonymous call 401s via the api-security sweep.
+- One row per DISTINCT group key among the unlinked candidate set:
+
+  ```json
+  { "pending": [{
+      "normalized_name": "pink bourbon",
+      "roastery": "Goriffee",
+      "display_name": "Pink Bourbon",        // name of the group's newest snapshot
+      "snapshots": 4,                          // unlinked rows in the group
+      "cycles": 3,                             // COUNT(DISTINCT cycle_id)
+      "newest_cycle": { "id": 41, "name": "August 2026", "created_at": "…" },
+      "purpose": "Filter",                    // from the newest snapshot
+      "roast_type": "Light roast"             // from the newest snapshot
+  }], "pending_count": 17 }
+  ```
+
+- Ordered by `display_name` (locale-insensitive over the normalized key). No
+  similarity column, no candidate suggestions — deliberately (decision 14).
+
+**Endpoint 2 — `POST /api/coffee-products/migration/assign`** — body
+`{ groups: [{ normalized_name, roastery }...], catalog_id }`:
+
+- **404** unknown `catalog_id`; **400** `groups` missing/empty/malformed (each entry
+  needs both strings; `bindValue`-hygiene on every field).
+- **409 `field:'roastery'`** when ANY group's roastery differs from the catalog
+  row's (the UC-PC-007 merge-tool precedent — cross-roastery identity is never
+  crossed).
+- **ONE `db.transaction`** (synchronous, no `await`): for each group, bulk
+  `UPDATE products SET source_coffee_product_id = :catalog_id` over the group's
+  unlinked candidate rows. **The only write is the link column** — the PC-T4
+  data-safety invariant stands verbatim: never a snapshot name/description/price,
+  never `order_items`, never anything in any cycle beyond the one column.
+- **Raced/empty group ⇒ skip-and-report, never 404** (decision, per the module's
+  convergence conventions — the GSO-T5 "DELETE converges on the requested end
+  state" precedent): group keys are DERIVED, not stored, so "never existed" and
+  "already resolved by a parallel action" are indistinguishable; the requested end
+  state (those snapshots linked/absent from pending) already holds. Reported as
+  `skipped: [{normalized_name, roastery, reason: 'no_unlinked_rows'}]`.
+- **200 response:** `{ linked_snapshots: n, groups_linked: n, skipped: […],
+  pending_count: n }` — `pending_count` recomputed after the write so the UI drops
+  rows without a full reload (the PM's step 3: "old products will be disappearing").
+
+**Endpoint 3 — `POST /api/coffee-products/migration/create`** — body
+`{ groups: [{ normalized_name, roastery }...] }`:
+
+- **400** empty/malformed selection, or when the selection resolves to ZERO unlinked
+  snapshots (nothing to create from — and this is also the convergence guard: a
+  double-fired create finds its groups already linked and 400s instead of minting a
+  duplicate catalog row).
+- **409 `field:'roastery'`** when the selection spans two roasteries (one catalog
+  row has one roastery).
+- **ONE `db.transaction`:** create ONE catalog row from the **newest snapshot across
+  the whole selection** (the strictly-newest rule): name (original casing) +
+  recomputed `normalized_name`, roastery, `description1/2`, `roast_type`, `purpose`,
+  prices as current prices, `image` = that snapshot's image if any (how per-cycle
+  images consolidate into the one catalog image), `status='available'`,
+  informational attributes NULL (decision-13 field mapping — admin-only fields are
+  born empty). Then link ALL selected groups' unlinked snapshots to it.
+- **NOT funnelled through `consolidateCatalogRow`** (decision, justified): the
+  import helper's semantics are match-or-create with fuzzy flagging and decision-13
+  refresh — here the admin's intent is CREATE, unconditionally, with fuzzy banned
+  (decision 14), so a funnel would silently convert "create new" into
+  "match-and-refresh". One-home discipline is kept where it matters: the creator
+  uses `normalizeProductName`/`normalizeRoastery` (UC-PC-002) and the same
+  `SQLITE_CONSTRAINT` dual layer — a new row whose key collides with an EXISTING
+  catalog row is a clean **409** `field:'name'` carrying the existing
+  `catalog_id`, so the UI can offer "Priradiť k existujúcemu" instead (assign is
+  the right verb there, and the admin just learned why).
+- **201 response:** `{ catalog: <row>, linked_snapshots: n, skipped: […],
+  pending_count: n }` (the PM's "new products appearing" — the UI adds the row to
+  the catalog list from this payload).
+
+**Cross-cutting rules:**
+
+- **Field consolidation happens ONLY on the catalog row** (PM-confirmed
+  2026-08-22, unchanged): the created row carries the newest snapshot's fields;
+  further consolidation is the admin editing that row (UC-PC-009). Never expressed
+  as writes into old cycles' snapshots — a snapshot keeps its historical
+  name/description/price forever, even when they differ from the catalog row it
+  links to.
+- **Retired with this rework (PC-T9):** `POST /api/coffee-products/migrate` (404
+  after removal), `helpers/catalog-migrate.js`'s auto-create/`fuzzy_review` flow
+  (the file is removed or gutted to shared query helpers the workbench reuses —
+  implementer's call, but no auto-create path may survive anywhere), and the
+  AdminCatalog migration trigger + report UI (UC-PC-009 gains the workbench
+  instead). `ADMIN_ENDPOINTS` updated per UC-PC-011.
+
+**Acceptance criteria:** on a DB seeded with "Pink Bourbon" ×3 cycles (one with an
+image) + "Pink  bourbon" (whitespace variant) + "Pink Bourbon Honey" + a bakery
+cycle: pending lists exactly TWO rows (`pink bourbon` — 4 snapshots incl. the
+variant, `pink bourbon honey`) and no bakery row, each with newest-cycle metadata;
+NO similarity/candidate field appears anywhere in the payload; `create` on the
+`pink bourbon` selection makes one catalog row with the newest snapshot's metadata +
+image and links all 4, pending drops to 1 with `pending_count` in the response;
+`assign` of `pink bourbon honey` to an existing catalog product links its snapshots
+(only-write pin: `order_items` and all snapshot columns except the link
+byte-identical before/after); re-firing the same `assign` returns the group under
+`skipped`; re-firing the same `create` 400s (no duplicate catalog row); a
+cross-roastery assign 409s; `create` colliding with an existing key 409s naming the
+existing `catalog_id`; `POST /api/coffee-products/migrate` answers 404; anonymous
+calls on all three new routes 401 via the sweep.
 
 ---
 
 ## UC-PC-007 Admin merge tool — merge catalog B into A (Admin)
 
-**Goal:** the permanent safety valve (brief §2.3): resolve the migration's fuzzy
-tail, import near-misses, and any future duplicate.
+**Goal:** the permanent safety valve (brief §2.3): resolve import near-misses,
+workbench mistakes (two catalog rows created that turn out to be one product), and
+any future duplicate.
 
 **Route contract:** `POST /api/coffee-products/:id/merge`, body `{ source_id }` —
 merge catalog row `source_id` (B) INTO `:id` (A). `requireAdmin` (whole-mount).
@@ -656,7 +753,9 @@ reads are separate Bearer-guarded routes and must NOT be added under this mount)
   on snapshots but is no longer needed.
 - `POST /import`, `POST /import-gsheet`, `POST /import-gsheet-multirow`
   (UC-PC-003 — the catalog import), `POST /:id/merge` (UC-PC-007),
-  `POST /migrate` (UC-PC-006), `GET /duplicates` (UC-PC-008),
+  `GET /migration/pending` + `POST /migration/assign` + `POST /migration/create`
+  (UC-PC-006 — the workbench; the shipped `POST /migrate` is RETIRED per resolved
+  decision 14), `GET /duplicates` (UC-PC-008),
   `GET /stats` + `GET /:id/stats` (UC-PC-010).
 - **No `DELETE`** (resolved decision 9). **Retirement** (`status='retired'`) has NO
   effect on existing snapshots, orders or stats — it only signals "don't expect this
@@ -687,9 +786,17 @@ reads are separate Bearer-guarded routes and must NOT be added under this mount)
   the radix overlay).
 - Duplicates section (UC-PC-008's pairs) with per-pair merge buttons + an inline
   confirm (merge is destructive-ish: it deletes a row).
-- Migration trigger: a "Spustiť migráciu histórie" action rendering the UC-PC-006
-  report; visible always (the endpoint is idempotent — a re-run is safe and picks up
-  the unlinked tail).
+- **Migration workbench (replaces the shipped "Spustiť migráciu histórie" trigger +
+  report — resolved decision 14):** a table of UC-PC-006 pending rows (display
+  name, roastery, snapshots count, cycles count, newest cycle, purpose/roast) with
+  **checkboxes** and two bulk actions on the selection: **"Priradiť k existujúcemu"**
+  (opens a searchable catalog picker → `POST /migration/assign`) and **"Vytvoriť
+  nový produkt z výberu"** (→ `POST /migration/create`). Resolved rows disappear
+  from the table using the response's `pending_count`/payload (no full reload — the
+  PM's step 3), and a `create` appends its new row to the catalog list. The
+  create-collision 409 (`field:'name'` + existing `catalog_id`) renders in-context
+  offering assign instead. Empty state: **"História je zmigrovaná."** No
+  similarity hints, no suggested candidates — the picker is search, not suggestion.
 - `frontend/src/api.js` gains the corresponding admin calls (standard `request()`
   with `X-Admin-Token`).
 - A12 note: admin views are outside the iOS 16px input rule's scope (recorded
@@ -782,15 +889,21 @@ backend files).
    (standing CLAUDE.md invariant; the mount is whole-mount `requireAdmin`, the sweep
    still pins each): `GET /api/coffee-products`, `GET /api/coffee-products/1`,
    `PATCH /api/coffee-products/1`, `POST /api/coffee-products/1/image`,
-   `POST /api/coffee-products/1/merge`, `POST /api/coffee-products/migrate`,
+   `POST /api/coffee-products/1/merge`,
    `GET /api/coffee-products/duplicates`, `GET /api/coffee-products/stats`,
    `GET /api/coffee-products/1/stats`, **plus the pivot's import routes**
    `POST /api/coffee-products/import`, `POST /api/coffee-products/import-gsheet`,
-   `POST /api/coffee-products/import-gsheet-multirow` (UC-PC-003). ⚠ The RETIRED
-   per-cycle routes (`/api/products/import*/:cycleId`) have **no existing
+   `POST /api/coffee-products/import-gsheet-multirow` (UC-PC-003), **plus the
+   workbench routes (PC-T9)** `GET /api/coffee-products/migration/pending`,
+   `POST /api/coffee-products/migration/assign`,
+   `POST /api/coffee-products/migration/create` (UC-PC-006). ⚠ PC-T9 also
+   **REMOVES** the shipped `POST /api/coffee-products/migrate` row from
+   `ADMIN_ENDPOINTS` — the route retires (resolved decision 14), so its
+   anonymous-401 pin retires with it, in the same change. The RETIRED
+   per-cycle routes (`/api/products/import*/:cycleId`) had **no existing
    `ADMIN_ENDPOINTS` rows to remove** (verified 2026-08-22: `api-security.spec.js`
-   carries no `/api/products` import entry) — nothing to delete there, only adds.
-2. **New `e2e/tests/catalog-import.spec.js`:** the UC-PC-003/004/005 acceptance
+   carried no `/api/products` import entry).
+2. **`e2e/tests/catalog-import.spec.js`** (shipped in PC-T5): the UC-PC-003/004/005 acceptance
    criteria — exact match/price-change/metadata-refresh, new-row creation, fuzzy
    flag, **natural idempotency: the second identical import reports 0 new /
    N matched / 0 price_changes and writes nothing (byte-compare the catalog rows)**,
@@ -805,14 +918,35 @@ backend files).
    coverage transfers — pin that by grep-style structural assertion (one call site
    per endpoint, one definition) or accept the seam consciously in the spec file's
    comments.
-3. **New `e2e/tests/catalog-admin.spec.js`:** migration (fixture DB with duplicate
-   name variants across cycles → linked; idempotent second run; order_items
-   untouched), merge (repoint + delete + cross-roastery 409 + self-merge 400),
-   duplicates review before/after merge, catalog CRUD incl. the rename-collision
-   409, the "Chýba fotka" affordance, the image COALESCE on the friend order page,
-   and **the cycle-creation picker** (UC-PC-012: snapshot fields frozen from the
-   catalog, retired products refused/skipped, default-all-available pre-tick,
-   friend order page serving the picked products).
+3. **`e2e/tests/catalog-admin.spec.js`** (shipped in PC-T4..T8): merge (repoint +
+   delete + cross-roastery 409 + self-merge 400), duplicates review before/after
+   merge, catalog CRUD incl. the rename-collision 409, the "Chýba fotka"
+   affordance, the image COALESCE on the friend order page, and **the
+   cycle-creation picker** (UC-PC-012) — all UNTOUCHED by PC-T9.
+   **Its migration half is REWRITTEN with PC-T9** (sanctioned under case (a) of the
+   e2e-immutability rule — resolved decision 14 mandates the behavior change; cite
+   UC-PC-006 in a comment). Tests that retire WITH the `/migrate` endpoint,
+   enumerated from the shipped file:
+   - `:196` "anonymous POST /api/coffee-products/migrate is 401" — replaced by
+     anonymous-401 pins on the three workbench routes (item 1's sweep covers them
+     too; the old route instead gets a **404-after-retirement** assertion).
+   - `:210/:302/:330/:369` (grouping, newest-snapshot creation, id-DESC tiebreak,
+     exact-match backfill, per-roastery groups), `:397` (byte-identical apart from
+     the link), `:449` (idempotent second run), `:507` (`fuzzy_review`) and `:778`
+     ("a /migrate re-run links a still-unlinked snapshot to the SURVIVOR").
+   Their protected PROPERTIES survive, re-pointed at the workbench: the
+   newest-pick rule, the roastery split, the only-write/byte-identical pin and the
+   convergence pins all re-assert against `pending`/`assign`/`create` (UC-PC-006
+   acceptance criteria). The two decision-14 REMOVALS — auto-creation and
+   `fuzzy_review` — do not transfer; instead their absence is asserted (no
+   similarity field in any workbench payload, no catalog row created by anything
+   but an explicit `create`). The `:778` seam becomes: after a merge, `pending` still lists the
+   unlinked group and `assign` links it to the survivor. New workbench UI tests
+   cover the checkbox table, both bulk actions, rows disappearing without reload,
+   the create-collision 409 → assign hand-off, and the "História je zmigrovaná."
+   empty state. (The retired "Spustiť migráciu histórie" trigger has no UI e2e pin
+   — verified 2026-08-23, the string exists only in `AdminCatalog.vue` — so no
+   further spec retargeting.)
 4. **Retargeting of pipeline-authored specs pinned to the RETIRED routes
    (UC-PC-013)** — case (a) of the e2e-immutability rule (module 03 §UC-FL-013):
    each edit re-points the assertion at the new route protecting the SAME property,
@@ -825,7 +959,7 @@ backend files).
      CSV route's `roastery`) — retarget to the three new catalog routes; the guards
      they pin are mandatory on the new routes (UC-PC-003 parsing seam).
    All other pre-existing specs must pass **unchanged**.
-5. **New `e2e/tests/catalog-stats.spec.js`:** the UC-PC-010 fixture verbatim —
+5. **`e2e/tests/catalog-stats.spec.js`** (shipped): the UC-PC-010 fixture verbatim —
    including the two assertions no refactor may lose: the **cancelled guest excluded**
    and the **guest absent from every per-friend figure** (the Decision-4 pins), plus
    the JS-merge non-multiplication pin (1 friend kg + 2 × 1 guest kg = 3.0, friend
@@ -982,7 +1116,8 @@ the retired-route specs re-pointed, none deleted.
 - **The snapshot link itself:** `products.source_coffee_product_id` is how 13 maps a
   friend's `order_items` history and open-cycle offerings ("Objednať znova") onto
   catalog identities; NULL-linked rows are invisible to the passport — which is why
-  the migration (UC-PC-006) must run before 13 ships.
+  the migration workbench (UC-PC-006) must be fully worked through (pending list
+  empty) before 13 ships.
 - **Merge-transaction extension obligation:** when `friend_reviews` lands, module 13
   ADDS the review-repoint (latest-wins on the UNIQUE pair) into UC-PC-007's
   transaction. Recorded on both sides.
@@ -1012,9 +1147,12 @@ cycle-level aggregate split (Decision 4), importer parsing + column mapping,
 
 ## Accepted risks / follow-ups / OPEN items
 
-- **`FUZZY_THRESHOLD = 0.75` is a shipped default, tuned from data** (the brief's
-  Decision-5 posture applied to matching). Too low = noisy review list; too high =
-  missed duplicates that the duplicates view (UC-PC-008) still catches later.
+- **`FUZZY_THRESHOLD = 0.75` is a shipped default — and the PM found it TOO LOOSE
+  in practice on real staging data (2026-08-23):** the migration's fuzzy
+  suggestions paired unrelated products, which is what triggered the decision-14
+  workbench rework. The threshold now governs only the import `pending_fuzzy` flag
+  and the duplicates tab (UC-PC-003/008); **tuning it is a recorded follow-up, not
+  done here** — a false pair there costs one review-list row, never a merge.
 - **Catalog image edits change past cycles' display** (resolved decision 5) —
   **PM-confirmed 2026-08-22**; price/order history stays immutable.
 - **Admin edits to sheet-sourced catalog fields do not survive the next import

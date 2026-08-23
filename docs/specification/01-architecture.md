@@ -90,11 +90,15 @@ spec, so this documents the **existing** system, not a greenfield design.
   machine-readable JSON report (new / matched / price changes old→new / pending fuzzy /
   unparsed rows) — the future autonomous-import routine consumes exactly this API, so the
   report shape is a contract. Matching scope is Goriffee-only by construction.
-- **Migration (module 12, one-time):** group historical coffee `products` by the
-  normalization function → create catalog rows → backfill links. Exact groups link in
-  bulk; fuzzy tail goes to an admin review. Runs inside `db.transaction`; never mutates
-  snapshots/prices/order_items. The **merge tool** (repoint links from B to A, delete B)
-  is a permanent admin feature, transactional, and must refuse to merge across roasteries.
+- **Migration (module 12 — MANUAL WORKBENCH, reworked 2026-08-23 after staging testing):**
+  no automatic linking or creation. `GET /migration/pending` lists one row per distinct
+  (normalized_name, roastery) among unlinked coffee snapshots; the admin checkbox-selects
+  groups and either ASSIGNS them to an existing catalog product or CREATES one from the
+  selection (newest-snapshot pick). No similarity suggestions anywhere in migration —
+  the auto flow's fuzzy pairs merged unrelated products on real data. Transactional;
+  only-write on `products` = the link column; never mutates snapshots/prices/order_items.
+  The **merge tool** (repoint links from B to A, delete B) is a permanent admin feature,
+  transactional, and must refuse to merge across roasteries.
 - **[DEFERRED with module 13, PM 2026-08-22] `friend_brew_methods(friend_id, method)`** — UNIQUE pair, the `friend_subscriptions`
   pattern. Methods: `espresso` / `moka` / `filter` / `frenchpress` / `capsules`.
   Multi-select semantics (module 13): recommendations/tab-defaulting use the UNION of

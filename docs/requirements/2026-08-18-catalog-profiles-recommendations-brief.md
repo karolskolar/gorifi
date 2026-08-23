@@ -1,6 +1,6 @@
 # Requirements Brief: Product Catalog Consolidation, Friend Coffee Profiles & Recommendations
 
-**Date:** 2026-08-18 (v8, updated 2026-08-22 — PIVOT: bakery pattern — imports target the catalog; cycles pick from it)  · **Author:** Karol (PM) + Claude (research/synthesis)
+**Date:** 2026-08-18 (v9, updated 2026-08-23 — migration becomes a manual assignment workbench)  · **Author:** Karol (PM) + Claude (research/synthesis)
 **Status:** FINAL raw requirements material — input for `/draft-spec`.
 
 > **v2 rescope:** The import pipeline stays AS IS (admin pastes an adapted Google Sheet;
@@ -57,7 +57,7 @@
 - **Idempotency (automation-critical):** importing the same sheet into the same cycle twice = no duplicate snapshots, no duplicate catalog entries; second run reports "0 changes". This is the property that later makes autonomous imports safe.
 - **Import report (machine-readable JSON + rendered in admin):** N new products, M matched existing, K price changes (old→new), fuzzy-match confirmations pending, unparsed rows. Nothing is silently guessed or dropped.
 
-### 2.3 Migration of historical data ✅
+### 2.3 Migration of historical data — ⚠ matching policy SUPERSEDED by decision #16 (manual workbench; no auto-links, no fuzzy)
 
 - One-time migration: group all historical coffee `products` rows by identity key → create catalog entries → backfill `source_coffee_product_id` on every snapshot.
 - **Matching policy ✅ (same as import):** exact normalized-name matches link automatically in bulk; very-similar/similar names go to a confirmation report for manual merge decisions.
@@ -168,3 +168,10 @@ No points/loyalty program (tier discount is the collective reward). No star rati
 - Import report: returned JSON (persist later if the autonomous routine needs history).
 
 Guarded seams that must NOT change behavior: stock counting (`helpers/stock.js`), pricing (`helpers/pricing.js`), guest aggregation JS-merge rules, packing gates, per-friend vs cycle-level aggregate split (Decision 4), `instances: 1` + synchronous-handler concurrency assumptions (migration + import writes stay transactional).
+16. ✅ **Migration is a MANUAL WORKBENCH (2026-08-23, from staging testing).** The automatic
+    migration's fuzzy suggestions merged unrelated products. Replaced: all unresolved historical
+    products are listed (one row per identical name), the admin checkbox-selects one or more and
+    either assigns them to an existing catalog product or creates a new one from the selection;
+    resolved rows disappear, created products appear. No similarity suggestions anywhere in
+    migration. The 0.75 fuzzy threshold (still used by import flagging + duplicates tab) is
+    recorded as too loose on real data — tuning is a follow-up.
