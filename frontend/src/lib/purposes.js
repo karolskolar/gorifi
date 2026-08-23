@@ -16,7 +16,11 @@
 // purposeless product's tab select an empty group, i.e. silently hide product. Here
 // the fallback only affects the ORDER of line groups, and `CartLineList` appends any
 // purpose it was not given rather than dropping it, so a mismatch costs nothing.
-const PREFERRED = ['Espresso', 'Filter', 'Kapsule']
+// PC-T12: capsules rank under BOTH spellings — the sheet writes 'Nespresso'
+// where the app's original list said 'Kapsule', so capsule products were
+// falling into "others". Brew Bags joined as a first-class purpose the same
+// day (the 8 × 12 g brew-bag variant).
+const PREFERRED = ['Espresso', 'Filter', 'Kapsule', 'Nespresso', 'Brew Bags']
 
 // `products` is any array of rows carrying `purpose`. Unknown purposes keep their
 // first-appearance order and are APPENDED, never dropped — a purpose the roastery

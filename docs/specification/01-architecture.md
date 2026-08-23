@@ -59,11 +59,74 @@ spec, so this documents the **existing** system, not a greenfield design.
   `PUBLIC_BASE_URL=https://podpultovka.biz` in `/var/www/gorifi/.env` (deployment
   requirement, part of module 08's acceptance).
 
+### Catalog & passport extensions (modules 12–13 — conventions the module specs must follow)
+
+- **`coffee_products` (catalog, module 12):** one row per real-world Goriffee coffee.
+  Columns: `id`, `name`, `normalized_name`, `roastery` (default `'Goriffee'`), `country`,
+  `region`, `altitude`, `farm`, `variety`, `processing`, `description1`, `description2`,
+  `roast_type`, `purpose`, `is_new`, `curator_pick_note`, `image`,
+  `status` (`available`/`retired`), current prices (last imported), timestamps.
+  `UNIQUE(normalized_name, roastery)`. Only `country`/`purpose`/`roast_type`
+  are ever filtered or aggregated; **flavor chips were removed from v1 entirely (PM
+  2026-08-22) — no column, no auto-tagger, no display; nothing may assume they exist**; `region`/`altitude`/`farm`/`variety`/`processing` are
+  display-only (13's detail modal) and NEVER come from the importer — admin-entered once.
+- **Normalization is ONE exported function** (trim, case-fold, collapse whitespace, fold
+  punctuation) with a single home in a backend helper — the importer, the migration and
+  the merge tool must all call it; two normalizers drifting is how duplicates return.
+- **`products.source_coffee_product_id`** (nullable FK) is the ONLY schema change to an
+  existing table. `order_items`, frozen snapshot prices, and every guarded seam
+  (`helpers/stock.js`, `helpers/pricing.js`, guest aggregation JS-merge, packing gates)
+  are untouched — module specs must not propose changes there.
+- **Import layer (module 12 — bakery-pattern pivot, 2026-08-22):** imports are
+  admin-main-menu, CATALOG-targeted (`/api/coffee-products/import*`), cycle-independent.
+  Sheet parsing/column mapping is reused byte-identical from the legacy importers;
+  consolidation per parsed row: exact normalized match → update catalog current prices
+  (+report old→new); fuzzy near-miss → create-as-new-but-flagged, NEVER auto-merged;
+  no match → new catalog row ("needs image"). Naturally idempotent (re-import = 0
+  changes). **No import path touches any cycle — cycles are frozen by construction.**
+  Coffee cycle creation ticks catalog products (bakery flow, cycles.js snapshot
+  precedent) with prices frozen at snapshot time; the per-cycle import endpoints and
+  CycleDetail import UI are RETIRED with the pivot. Response is a
+  machine-readable JSON report (new / matched / price changes old→new / pending fuzzy /
+  unparsed rows) — the future autonomous-import routine consumes exactly this API, so the
+  report shape is a contract. Matching scope is Goriffee-only by construction.
+- **Migration (module 12 — MANUAL WORKBENCH, reworked 2026-08-23 after staging testing):**
+  no automatic linking or creation. `GET /migration/pending` lists one row per distinct
+  (normalized_name, roastery) among unlinked coffee snapshots; the admin checkbox-selects
+  groups and either ASSIGNS them to an existing catalog product or CREATES one from the
+  selection (newest-snapshot pick). No similarity suggestions anywhere in migration —
+  the auto flow's fuzzy pairs merged unrelated products on real data. Transactional;
+  only-write on `products` = the link column; never mutates snapshots/prices/order_items.
+  The **merge tool** (repoint links from B to A, delete B) is a permanent admin feature,
+  transactional, and must refuse to merge across roasteries.
+- **[DEFERRED with module 13, PM 2026-08-22] `friend_brew_methods(friend_id, method)`** — UNIQUE pair, the `friend_subscriptions`
+  pattern. Methods: `espresso` / `moka` / `filter` / `frenchpress` / `capsules`.
+  Multi-select semantics (module 13): recommendations/tab-defaulting use the UNION of
+  matching purposes; purpose-tab defaulting only when unambiguous; mismatch hints only
+  when a product's purpose matches NONE of the friend's methods.
+- **[DEFERRED with module 13, PM 2026-08-22] `friend_reviews(friend_id, coffee_product_id, verdict, brew_method, created_at)`** —
+  `UNIQUE(friend_id, coffee_product_id)`, verdict `up`/`mid`/`down`, upsert-latest-wins.
+  Friend-owned writes (`requireFriendOwner`); never a `transactions` row (reviews are not
+  financial events — the GSO-T6 lesson).
+- **Cross-cycle statistics (module 12):** keyed on catalog id via the snapshot link.
+  Weight authority stays `variantToKg()`; guests count in product/cycle totals ONLY,
+  never in per-friend aggregates (Decision-4 discipline); guest kg merges in JS, never as
+  a JOIN onto friend-row queries (the GSO-T6/T8 rule). Repeat-buyer counts (distinct
+  friends with the product in ≥2 cycles) must be computable per purpose and windowable
+  (last N cycles) — they power deferred social-proof badges and 13's internal ranking.
+- **New admin routes** (catalog CRUD, merge, migration trigger, stats) mount under
+  `requireAdmin` AND must be added to `ADMIN_ENDPOINTS` in `e2e/tests/api-security.spec.js`
+  (standing CLAUDE.md invariant). Friend-facing passport/review routes are Bearer +
+  ownership-guarded; catalog fields exposed to friends are the display set only.
+- **No new dependencies:** fuzzy matching is implemented in-repo (normalized edit
+  distance or trigram similarity over `normalized_name` — the candidate set is ~tens of
+  products); no fuzzy-string package.
+
 ## Permissions & roles
 
 - **Public:** health, friend login/auth-mode, cycle `/public` + `/auth`, product listing, pickup locations, payment-settings, invite-code lookup, onboarding self-signup.
 - **Friend (token, object-level ownership):** own balance/profile/subscriptions/transactions/orders/vouchers.
-- **Admin (`requireAdmin`):** everything else — cycles, products, friends, transactions, analytics, settings, invitations, onboarding-links, roasteries, bakery products.
+- **Admin (`requireAdmin`):** everything else — cycles, products, friends, transactions, analytics, settings, invitations, onboarding-links, roasteries, bakery products; from module 12 also the catalog (CRUD, merge, migration, cross-cycle stats). Friend-token surfaces grow the passport/review/brew-method routes only if module 13 is un-deferred (drafted 2026-08-22, then deferred wholesale).
 
 ## Frontend structure
 
@@ -77,6 +140,7 @@ spec, so this documents the **existing** system, not a greenfield design.
 - `frontend/src/api.js` — single API client (Bearer token for friends, bare `guestRequest()` for guests).
 - `frontend/src/lib/guest-cart.js` — guest cart logic shared by order + status screens.
 - State is per-view `ref`/`computed` (no store). Cart map keyed `productId|variant → qty`.
+- Module 12 addition: an admin catalog view (old admin skin — shadcn, NO theme classes). Module 13's friend-portal passport screen + product detail modal are DEFERRED with that module (if revived: Podpultovka skin, modal on `NeoModal` — never a hand-rolled overlay inside `.app`, per the `.app > *` rule).
 - Sequencing conventions that must survive any restyle: `loadSeq` guards on reused
   dialogs/views, per-row `rowSeq` pending maps on mutation screens, the `ready`
   auth-gate prop for friend-authenticated children of `FriendOrder`, and `v-show`

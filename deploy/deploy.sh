@@ -173,10 +173,16 @@ if [ "$DEPLOY_BACKEND" = true ]; then
 
   # Sync backend files. Exclude node_modules and the DB glob (database.sqlite +
   # -wal + -shm — deleting a live WAL file risks data loss). Chown to the app user.
+  #
+  # ⚠ PC-T10 (12 §UC-PC-014): 'src/db/uploads' holds the product image FILES
+  # (content-hash names, sibling of the SQLite file). The DB glob does NOT cover
+  # a directory — without this exclude, `--delete` wipes every uploaded image on
+  # the first deploy after PC-T10. Never remove it.
   rsync -avz --delete \
     --chown="$APP_USER:$APP_USER" \
     --exclude 'node_modules' \
     --exclude 'src/db/database.sqlite*' \
+    --exclude 'src/db/uploads' \
     "$PROJECT_DIR/backend/" \
     "$SERVER_USER@$SERVER_HOST:$REMOTE_PATH/backend/"
 

@@ -303,8 +303,16 @@ test.describe('cat-tabs scroll arrow — the friend strip', () => {
     expect(await arrow.getAttribute('role'), 'no role at all').toBeNull()
     // Nothing is lost: every category is still reachable by keyboard through the
     // tabs themselves, which are focusable and scroll into view when focused.
-    await strip.getByRole('tab').nth(5).focus()
-    expect(await page.evaluate(() => document.activeElement?.textContent?.trim())).toBe(MANY_PURPOSES[5])
+    // ⚠ Order-independent by design (PC-T12, 2026-08-23): this fixture contains
+    // 'Nespresso' and 'Brew Bags', which are now RANKED purposes, so the rendered
+    // tab order is no longer the fixture's array order. The property under test is
+    // "focusing a tab lands on that tab" — never a particular position, which is
+    // `order-shell.spec.js`'s business.
+    const fifthTab = strip.getByRole('tab').nth(5)
+    const fifthLabel = (await fifthTab.textContent())?.trim()
+    expect(MANY_PURPOSES, 'the tab renders one of the fixture purposes').toContain(fifthLabel)
+    await fifthTab.focus()
+    expect(await page.evaluate(() => document.activeElement?.textContent?.trim())).toBe(fifthLabel)
   })
 
   test('⚠ it paints ABOVE the 28px fade — sampled from the rendered pixel, not from a computed z-index', async ({ page }) => {

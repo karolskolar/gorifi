@@ -33,6 +33,8 @@ import guestLinksRouter from './routes/guest-links.js';
 import guestOrdersRouter from './routes/guest-orders.js';
 import guestRouter from './routes/guest.js';
 import magicLinkRouter from './routes/magic-link.js';
+import coffeeProductsRouter from './routes/coffee-products.js';
+import imagesRouter from './routes/images.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -92,6 +94,13 @@ app.use('/api/guest', guestRouter);
 // someone who cannot log in, so it can carry neither admin nor friend auth. Its own
 // rate-limit bucket (`magicLinkLimiter`) is applied per route inside the router.
 app.use('/api/magic-link', magicLinkRouter);
+// PC-T10 (12 §UC-PC-014): product image files. ⚠ PUBLIC BARE MOUNT on purpose —
+// friend and guest pages render these images, and the exposure is equivalent to
+// the already-public products listing that used to ship the same bytes inline
+// as base64. Deliberately NOT in ADMIN_ENDPOINTS (recorded in the spec so the
+// sweep's reviewer doesn't "fix" it). The route validates :filename against a
+// strict content-hash regex, so traversal is foreclosed by construction.
+app.use('/api/images', imagesRouter);
 
 // Fully-admin routers: every route is privileged, so gate the whole mount.
 app.use('/api/bakery-products', requireAdmin, bakeryProductsRouter);
@@ -105,6 +114,13 @@ app.use('/api/order-items', requireAdmin, orderItemsRouter);
 // the MIXED-auth /api/guest-orders router next door — nothing a host or a guest
 // does touches this flag.
 app.use('/api/guest-order-items', requireAdmin, guestOrderItemsRouter);
+
+// Module 12 (PC-T2): the coffee-product catalog — WHOLE-MOUNT admin, like
+// bakery-products. No public/friend route may ever live on this router
+// (12 §UC-PC-009); module 13's friend-facing catalog reads are separate
+// Bearer-guarded routes. Every route on it also joins ADMIN_ENDPOINTS in
+// e2e/tests/api-security.spec.js.
+app.use('/api/coffee-products', requireAdmin, coffeeProductsRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {

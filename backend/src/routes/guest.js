@@ -36,12 +36,20 @@ const router = Router();
 //   409 — the cycle closed between loading the page and submitting (lock race)
 //   400 — identity validation, empty cart, stock limits
 
+// PC-T8 (12 §UC-PC-012 image fallback): `image` COALESCEs to the catalog
+// product's image when the snapshot carries none — a READ-ONLY column change on
+// this hostile-boundary route; nothing about its gates, bounds or pricing
+// moves. Queries using this list must alias `products` as `p` and LEFT JOIN
+// `coffee_products cp ON cp.id = p.source_coffee_product_id`.
 const PRODUCT_COLUMNS = [
   'id', 'cycle_id', 'name', 'description1', 'description2', 'roast_type', 'purpose',
-  'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g', 'price_unit',
+  'price_150g', 'price_200g', 'price_250g', 'price_500g', 'price_1kg', 'price_20pc5g', 'price_8pc12g', 'price_unit',
   'image', 'roastery', 'weight_grams', 'composition', 'variant_label',
   'source_bakery_product_id', 'source_variant_id', 'stock_limit_g',
-].join(', ');
+]
+  .map((c) => (c === 'image' ? 'COALESCE(p.image, cp.image) AS image' : `p.${c}`))
+  .join(', ');
+const PRODUCT_JOIN = 'products p LEFT JOIN coffee_products cp ON cp.id = p.source_coffee_product_id';
 
 // Guests are shown FINAL prices: the markup is applied server-side (same formula
 // and rounding as friend orders, helpers/pricing.js) and the ratio is not
@@ -422,7 +430,7 @@ function statusPayload(link, cycle, order) {
     // cycle publishes no orderable product list (its listing endpoint is 410).
     const markupRatio = cycle.markup_ratio || 1.0;
     payload.products = db.prepare(
-      `SELECT ${PRODUCT_COLUMNS} FROM products WHERE cycle_id = ? AND active = 1 ORDER BY purpose, name`
+      `SELECT ${PRODUCT_COLUMNS} FROM ${PRODUCT_JOIN} WHERE p.cycle_id = ? AND p.active = 1 ORDER BY p.purpose, p.name`
     ).all(cycle.id).map((product) => withMarkup(product, markupRatio));
     // ⚠ excludeGuestOrderId: the grams THIS sub-order already holds must not be
     // shown as taken, or the guest cannot even re-pick what they already have.
@@ -445,7 +453,7 @@ router.get('/:token', guestReadLimiter, (req, res) => {
   const markupRatio = cycle.markup_ratio || 1.0;
 
   const products = db.prepare(
-    `SELECT ${PRODUCT_COLUMNS} FROM products WHERE cycle_id = ? AND active = 1 ORDER BY purpose, name`
+    `SELECT ${PRODUCT_COLUMNS} FROM ${PRODUCT_JOIN} WHERE p.cycle_id = ? AND p.active = 1 ORDER BY p.purpose, p.name`
   ).all(cycle.id).map((product) => withMarkup(product, markupRatio));
 
   res.json({

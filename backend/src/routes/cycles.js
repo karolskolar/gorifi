@@ -211,7 +211,7 @@ router.post('/', requireAdmin, (req, res) => {
   const expected_date = bindValue(req.body.expected_date);
   const type = bindValue(req.body.type);
   const plan_note = bindValue(req.body.plan_note);
-  const { bakery_product_ids, status } = req.body;
+  const { bakery_product_ids, coffee_product_ids, status } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Nazov je povinny' });
   }
@@ -262,6 +262,48 @@ router.post('/', requireAdmin, (req, res) => {
           [cycleId, bp.name, bp.description || null, bp.subtitle || null, categoryLabel, bp.price, bp.weight_grams || null, bp.composition || null, bp.image || null, bp.id]
         );
       }
+    }
+  }
+
+  // PC-T8 (12 §UC-PC-012): for COFFEE cycles, snapshot selected CATALOG products
+  // — the sibling of the bakery branch above, never a rewrite of it. Honoured
+  // only when the cycle's type resolves to 'coffee'; `coffee_product_ids` is
+  // OPTIONAL on purpose (an id-less coffee POST keeps today's empty-cycle
+  // behavior, so existing fixtures and scripted creation stay valid).
+  //
+  // NO junction table (resolved decision): a coffee catalog product snapshots to
+  // exactly ONE row per cycle (variants are price columns), so
+  // `source_coffee_product_id` IS the selection record — bakery needs
+  // `cycle_bakery_products` only because its variant explosion breaks the 1:1.
+  //
+  // Per id: only `status = 'available'` rows snapshot — a missing or RETIRED
+  // row is skipped exactly as the bakery loop's `if (!bp) continue`, so retired
+  // products can never enter a new cycle even by hand-crafted request. All six
+  // prices are COPIED from the catalog's current prices — THIS is the freeze
+  // moment (later catalog edits never touch existing snapshots). `image` stays
+  // NULL (resolved decision 5: the read-path COALESCE serves the catalog image)
+  // and `stock_limit_g` stays NULL (per-cycle, set later via the snapshot PATCH).
+  if (cycleType === 'coffee' && Array.isArray(coffee_product_ids) && coffee_product_ids.length > 0) {
+    for (const rawId of coffee_product_ids) {
+      // The ARRAY was checked, its ELEMENTS never were (the FUP-T13 lesson on
+      // the bakery loop) — `[{}]` / `[true]` must skip, never 500.
+      const cpId = bindValue(rawId);
+      const cp = cpId === undefined || cpId === null
+        ? null
+        : db.get("SELECT * FROM coffee_products WHERE id = ? AND status = 'available'", [cpId]);
+      if (!cp) continue;
+
+      db.run(
+        `INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, roastery,
+           price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, price_8pc12g,
+           image, stock_limit_g, source_coffee_product_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+        [
+          cycleId, cp.name, cp.description1, cp.description2, cp.roast_type, cp.purpose, cp.roastery,
+          cp.price_150g, cp.price_200g, cp.price_250g, cp.price_500g, cp.price_1kg, cp.price_20pc5g, cp.price_8pc12g,
+          cp.id,
+        ]
+      );
     }
   }
 
@@ -569,6 +611,108 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
   distribution.sort((a, b) => a.name.localeCompare(b.name));
 
   res.json({ cycle, distribution });
+});
+
+// Reconcile which CATALOG products a cycle offers — the picker from cycle
+// creation (UC-PC-012), reopenable for the whole life of an editable cycle
+// (PM 2026-08-23: "musí byť dostupné počas celého otvorenia cyklu").
+//
+// Semantics, and each one is deliberate:
+//  • ADD  — a requested catalog product with no snapshot here gets one, with the
+//           catalog's CURRENT prices frozen into it (the UC-PC-012 rule). Adding
+//           to a live cycle is the sanctioned ADD-only exception, exactly like the
+//           manual POST (UC-PC-005); it never touches an existing snapshot.
+//  • REACTIVATE — if an INACTIVE snapshot for that catalog product already exists
+//           (it was unticked earlier), flip `active` back to 1 instead of inserting
+//           a second row. Prices stay as they were frozen — re-adding must not
+//           silently re-price a cycle friends are already ordering from.
+//  • REMOVE — an active catalog-linked snapshot that is no longer requested is
+//           SOFT-deleted (`active = 0`), the same write the existing product DELETE
+//           does. order_items, orders and totals are untouched; a friend who already
+//           ordered it keeps their line. `removed_with_orders` reports which ones had
+//           orders so the UI can warn BEFORE the admin confirms.
+//  ⚠ Snapshots with a NULL `source_coffee_product_id` (manually added, or
+//    pre-migration history) are OUT of this reconciliation entirely — they are not
+//    catalog-governed, so an unticked box must never delete them.
+router.put('/:id/catalog-products', requireAdmin, (req, res) => {
+  const cycleId = Number(req.params.id);
+  if (!Number.isInteger(cycleId)) {
+    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
+  }
+  const cycle = db.prepare('SELECT id, status, type FROM order_cycles WHERE id = ?').get(cycleId);
+  if (!cycle) {
+    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
+  }
+  if ((cycle.type || 'coffee') !== 'coffee') {
+    return res.status(409).json({ error: 'Katalog kavy sa vztahuje len na kavove cykly', reason: 'not_coffee' });
+  }
+  if (!['open', 'planned'].includes(cycle.status)) {
+    return res.status(409).json({ error: 'Cyklus je uzamknuty — produkty sa uz nedaju menit', reason: 'closed' });
+  }
+
+  const raw = req.body?.coffee_product_ids;
+  if (!Array.isArray(raw)) {
+    return res.status(400).json({ error: 'coffee_product_ids musia byt pole', field: 'coffee_product_ids' });
+  }
+  const requested = new Set();
+  for (const entry of raw) {
+    const id = Number(bindValue(entry));
+    if (Number.isInteger(id) && id > 0) requested.add(id);
+  }
+
+  const run = db.transaction(() => {
+    const snapshots = db.prepare(
+      'SELECT id, source_coffee_product_id, active, name FROM products WHERE cycle_id = ? AND source_coffee_product_id IS NOT NULL'
+    ).all(cycleId);
+    const bySource = new Map();
+    for (const row of snapshots) bySource.set(row.source_coffee_product_id, row);
+
+    const added = [];
+    const reactivated = [];
+    const removed = [];
+    const removed_with_orders = [];
+
+    for (const catalogId of requested) {
+      const existing = bySource.get(catalogId);
+      if (existing) {
+        if (!existing.active) {
+          db.prepare('UPDATE products SET active = 1 WHERE id = ?').run(existing.id);
+          reactivated.push({ product_id: existing.id, name: existing.name });
+        }
+        continue;
+      }
+      const cp = db.prepare('SELECT * FROM coffee_products WHERE id = ?').get(catalogId);
+      if (!cp) continue; // unknown id: skipped, the UC-PC-012 bakery-`continue` rule
+      const ins = db.prepare(`
+        INSERT INTO products
+          (cycle_id, name, description1, description2, roast_type, purpose,
+           price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, price_8pc12g,
+           image, roastery, source_coffee_product_id, active)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
+      `).run(
+        cycleId, cp.name, cp.description1, cp.description2, cp.roast_type, cp.purpose,
+        cp.price_150g, cp.price_200g, cp.price_250g, cp.price_500g, cp.price_1kg, cp.price_20pc5g, cp.price_8pc12g,
+        cp.roastery, cp.id
+      );
+      added.push({ product_id: Number(ins.lastInsertRowid), name: cp.name });
+    }
+
+    for (const row of snapshots) {
+      if (!row.active || requested.has(row.source_coffee_product_id)) continue;
+      const orders = db.prepare('SELECT COUNT(*) AS c FROM order_items WHERE product_id = ?').get(row.id).c;
+      db.prepare('UPDATE products SET active = 0 WHERE id = ?').run(row.id);
+      removed.push({ product_id: row.id, name: row.name });
+      if (orders > 0) removed_with_orders.push({ product_id: row.id, name: row.name, order_items: orders });
+    }
+
+    return { added, reactivated, removed, removed_with_orders };
+  });
+
+  const result = run();
+  const active_count = db.prepare(
+    'SELECT COUNT(*) AS c FROM products WHERE cycle_id = ? AND active = 1'
+  ).get(cycleId).c;
+  return res.json({ ...result, active_count });
 });
 
 export default router;

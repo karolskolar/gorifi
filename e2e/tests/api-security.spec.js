@@ -53,6 +53,38 @@ const ADMIN_ENDPOINTS = [
   { method: 'post', path: '/api/admin/google-allowlist', data: { id_token: 'TEST:evil:evil@example.test' } },
   { method: 'delete', path: '/api/admin/google-allowlist', data: { email: 'evil@example.test' } },
   { method: 'post', path: '/api/cycles', data: { name: 'evil' } },
+  // 12 §UC-PC-011 item 1 (PC-T2): the catalog import trio. The mount is
+  // whole-mount `requireAdmin` (`app.use('/api/coffee-products', requireAdmin,
+  // …)`), but the sweep still pins each route individually — a later
+  // restructure that un-wraps the mount must redden here.
+  { method: 'post', path: '/api/coffee-products/import' },
+  { method: 'post', path: '/api/coffee-products/import-gsheet', data: { url: 'https://docs.google.com/spreadsheets/d/x/edit' } },
+  { method: 'post', path: '/api/coffee-products/import-gsheet-multirow', data: { url: 'https://docs.google.com/spreadsheets/d/x/edit' } },
+  // 12 §UC-PC-006 (PC-T9, resolved decision 14): the manual assignment
+  // workbench. The shipped POST /migrate is RETIRED (404) — its anonymous-401
+  // row retired with it, in the same change (UC-PC-011 item 1).
+  { method: 'get', path: '/api/coffee-products/migration/pending' },
+  { method: 'post', path: '/api/coffee-products/migration/assign', data: { groups: [], catalog_id: 1 } },
+  { method: 'post', path: '/api/coffee-products/migration/create', data: { groups: [] } },
+  // 12 §UC-PC-007/008 (PC-T5): merge tool + stateless duplicates review.
+  { method: 'post', path: '/api/coffee-products/1/merge', data: { source_id: 2 } },
+  { method: 'get', path: '/api/coffee-products/duplicates' },
+  // 12 §UC-PC-010 (PC-T6): cross-cycle statistics.
+  { method: 'get', path: '/api/coffee-products/stats' },
+  { method: 'get', path: '/api/coffee-products/1/stats' },
+  // 12 §UC-PC-009 (PC-T7): catalog CRUD — completes the module's 12 admin routes.
+  { method: 'get', path: '/api/coffee-products' },
+  { method: 'get', path: '/api/coffee-products/1' },
+  { method: 'patch', path: '/api/coffee-products/1', data: { country: 'evil' } },
+  // PM 2026-08-23: a real DELETE (supersedes resolved decision 9's no-delete rule).
+  { method: 'delete', path: '/api/coffee-products/1' },
+  { method: 'post', path: '/api/coffee-products/1/image' },
+  // 12 §UC-PC-014 (PC-T10): the one-time base64 → file conversion endpoint.
+  // ⚠ GET /api/images/:filename is DELIBERATELY NOT in this sweep — it is a
+  // public read (friend and guest pages render it; exposure equivalent to the
+  // already-public products listing that shipped the same bytes inline). Do
+  // not "fix" it in; its anonymous-200 pin lives in catalog-images.spec.js.
+  { method: 'post', path: '/api/coffee-products/convert-images' },
 ]
 
 const PUBLIC_ENDPOINTS = [

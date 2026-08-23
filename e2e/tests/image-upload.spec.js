@@ -50,7 +50,11 @@ test.describe('Image upload validation', () => {
     })
     expect(res.status()).toBe(200)
     const updated = await res.json()
-    expect(updated.image).toMatch(/^data:image\/png;base64,/)
+    // UC-PC-014 retarget (case a): the accepted upload is now stored as a
+    // content-hash file; the column holds the URL path. The property protected
+    // is unchanged — a real PNG is ACCEPTED and its sniffed type recorded
+    // (extension from magic bytes, not the client label).
+    expect(updated.image).toMatch(/^\/api\/images\/[a-f0-9]{32}\.png$/)
   })
 })
 
@@ -123,7 +127,9 @@ test.describe('Upload size limit (FUP-T6)', () => {
   })
 
   test('an oversized CSV import is 413, not 500', async () => {
-    const res = await ctx.post(`/api/products/import/${cycleId}`, {
+    // UC-PC-013: the per-cycle CSV import retired; the multipart vehicle is the
+    // catalog import (same uploadSingle helper, same 5 MB cap).
+    const res = await ctx.post('/api/coffee-products/import', {
       headers: { 'X-Admin-Token': adminToken },
       multipart: { file: { name: 'huge.csv', mimeType: 'text/csv', buffer: Buffer.alloc(6 * 1024 * 1024, 'a') } },
     })
@@ -175,7 +181,8 @@ test.describe('Upload size limit (FUP-T6)', () => {
       multipart: { image: { name: 'big-enough.png', mimeType: 'image/png', buffer: NEAR_LIMIT_PNG } },
     })
     expect(res.status(), '1 MB is well inside the 5 MB cap').toBe(200)
-    expect((await res.json()).image).toMatch(/^data:image\/png;base64,/)
+    // UC-PC-014 retarget (case a): stored as a file, column holds the URL.
+    expect((await res.json()).image).toMatch(/^\/api\/images\/[a-f0-9]{32}\.png$/)
   })
 
   // ⚠ Every upload route, not just one. "The guard runs before multer" is a
@@ -188,7 +195,9 @@ test.describe('Upload size limit (FUP-T6)', () => {
   for (const [label, path, field] of [
     ['products :id/image', () => `/api/products/${productId}/image`, 'image'],
     ['products create', () => '/api/products', 'image'],
-    ['products CSV import', () => `/api/products/import/${cycleId}`, 'file'],
+    // UC-PC-013 retarget: the per-cycle CSV import retired; the catalog import
+    // is the same class — no inline requireAdmin, guarded only by its MOUNT.
+    ['coffee-products CSV import', () => '/api/coffee-products/import', 'file'],
     ['bakery create', () => '/api/bakery-products', 'image'],
     ['bakery :id/image', () => `/api/bakery-products/${bakeryProductId}/image`, 'image'],
   ]) {
@@ -336,7 +345,8 @@ test.describe('Malformed or aborted multipart (FUP-T7)', () => {
       multipart: { image: { name: 'ok.png', mimeType: 'image/png', buffer: PNG_BYTES } },
     })
     expect(res.status(), 'the wrapper is transparent on the happy path').toBe(200)
-    expect((await res.json()).image).toMatch(/^data:image\/png;base64,/)
+    // UC-PC-014 retarget (case a): stored as a file, column holds the URL.
+    expect((await res.json()).image).toMatch(/^\/api\/images\/[a-f0-9]{32}\.png$/)
   })
 
   // ⚠ Same reasoning as FUP-T6's loop: "the admin guard runs before multer" is a
@@ -345,7 +355,8 @@ test.describe('Malformed or aborted multipart (FUP-T7)', () => {
   for (const [label, path] of [
     ['products :id/image', () => `/api/products/${productId}/image`],
     ['products create', () => '/api/products'],
-    ['products CSV import', () => `/api/products/import/${cycleId}`],
+    // UC-PC-013 retarget: same property, on the surviving catalog import.
+    ['coffee-products CSV import', () => '/api/coffee-products/import'],
     ['bakery create', () => '/api/bakery-products'],
     ['bakery :id/image', () => `/api/bakery-products/${bakeryProductId}/image`],
   ]) {

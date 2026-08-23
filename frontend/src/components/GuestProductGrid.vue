@@ -125,7 +125,9 @@ const groupedBakeryProducts = computed(() => {
 })
 
 const availablePurposes = computed(() => {
-  const order = ['Espresso', 'Filter', 'Kapsule']
+  // PC-T12: capsules rank under both spellings (the sheet writes 'Nespresso'),
+  // Brew Bags is first-class. Keep in step with FriendOrder.vue + purposes.js.
+  const order = ['Espresso', 'Filter', 'Kapsule', 'Nespresso', 'Brew Bags']
   const purposes = Object.keys(groupedProducts.value)
   const sorted = []
   for (const p of order) {

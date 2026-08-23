@@ -314,7 +314,239 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ---
 
+## 11. Product catalog (12) — consolidated coffee DB; module 13 drafted & ⛔ DEFERRED (emits NO rows)
+
+> **Scope note:** backend + schema module (the 07/08–11 precedent — the "no backend change" rule
+> covers 02–06 only). Spec: `12-product-catalog.md` (13 UCs after the ⚠ BAKERY-PATTERN PIVOT of
+> 2026-08-22, decided after PC-T1 shipped: imports target the CATALOG from the admin main menu,
+> cycle creation ticks catalog products, the per-cycle importers retire — decision 12; rows T2/T3/T7
+> were rewritten and T8 added for it). UC-PC-011's verification obligations are DISTRIBUTED into the
+> rows below, not a sweep row: `ADMIN_ENDPOINTS` additions split 3/1/2/2/4 across PC-T2/T4/T5/T6/T7
+> (12 admin routes total); `catalog-import.spec.js` → T2+T3, `catalog-admin.spec.js` → T4+T5+T7,
+> `catalog-stats.spec.js` → T6; the retirement's sanctioned edits to existing specs → T8. The e2e
+> harness exists — no harness task. Every row leaves the full suite green — ⚠ the :3997 gate server
+> needs GOOGLE_CLIENT_ID=test-client + GOOGLE_AUTH_TEST_MODE=1 on top of the five raised rate-limit
+> vars (PC-T1 lesson). `13-coffee-passport.md` is deferred wholesale (PM 2026-08-22) — its banner
+> forbids rows; module-13 seams named below bind only if it is ever un-deferred.
+
+- [x] PC-T1  `coffee_products` schema + `products.source_coffee_product_id` (the ONLY existing-table change) + `helpers/catalog.js` (normalizeProductName, roastery resolve, Levenshtein similarity, FUZZY_THRESHOLD) — 12 §UC-PC-001/002 ⚠ foundational: the helper is the ONE normalizer — importer (PC-T2), manual POST (PC-T3), migration (PC-T4) and merge (PC-T5) all import it; a second definition anywhere is how duplicates return. `is_new`/`curator_pick_note` ship as columns only (module-14 features). No `flavor_chips` column (resolved decision 10). UNIQUE(normalized_name, roastery) is load-bearing — never created inside a swallowing try/catch (the GA-T5 `idx_friends_google_sub` lesson).
+- [x] PC-T2  Catalog-targeted import backend: `helpers/import-parsing.js` (parsing extracted VERBATIM from products.js), `helpers/catalog-import.js` (`consolidateCatalogRow`), 3 new admin routes `POST /api/coffee-products/import` (CSV) + `/import-gsheet` + `/import-gsheet-multirow`, machine-readable JSON report — 12 §UC-PC-003/004 · model=heavy ⚠ FIRST route on the prefix after the pivot: THIS row creates `routes/coffee-products.js` + the whole-mount `app.use('/api/coffee-products', requireAdmin, …)` that PC-T4/T5/T6/T7 add routes to. ⚠ the pivot's core: imports NEVER touch any cycle (frozen-by-construction — assert zero writes to `products`/`order_cycles` on every import); naturally idempotent (re-import = 0 new / N matched / 0 price changes). ⚠ Decision 13 field rule: sheet wins for sheet-sourced fields (`description1/2`, `roast_type`, `purpose`, prices) only when non-empty AND different; admin-only fields (name, country/region/altitude/farm/variety/processing, image, status, is_new, curator_pick_note) NEVER importer-written. Fuzzy near-miss → create-as-new-but-flagged, never auto-merged. ⚠ Multirow gsheet format is the adapted sheet's PRIMARY path (CycleDetail.vue:50 default) — all three formats ship. ⚠ New routes carry the FUP-T12/T15-class input guards from birth (bindValue, string-URL check, no stack echo); old per-cycle routes stay UNTOUCHED until PC-T8. `consolidateCatalogRow` is exported for PC-T3. ADMIN_ENDPOINTS +3. Report rendering is PC-T7's (routes return JSON only). Owns `catalog-import.spec.js`'s import half (CSV as the e2e vehicle; gsheet paths covered structurally via the shared parser).
+- [x] PC-T3  Manual `POST /api/products` joins consolidation via `consolidateCatalogRow`: auto-link/create/flag, `duplicate_in_cycle` 409, bakery-cycle exemption, image dual-store — 12 §UC-PC-005 ⚠ KEPT after the pivot as the ONE sanctioned add-to-an-existing-cycle path (mid-cycle additions; ADD-only, so frozen-cycles holds — re-justified in the spec, not OPEN). Behavior change: repeated exact-name POST into one cycle now 409s (previously duplicated). Bakery cycles never touch `coffee_products`. Extends `catalog-import.spec.js`.
+- [x] PC-T4  `POST /api/coffee-products/migrate` — one-time historical migration: group by the normalizer → create catalog rows from the NEWEST snapshot → backfill links; `fuzzy_review` report — 12 §UC-PC-006 · model=heavy ⚠ router/mount already exists (PC-T2 owns it since the pivot) — this row only ADDS the route. ADMIN_ENDPOINTS +1. Newest-snapshot pick carries the `id DESC` tiebreak (GSO-T8 same-second lesson). Writes EXACTLY `source_coffee_product_id` on historical rows — names/descriptions/prices/order_items byte-identical before/after; idempotent (second run = zero writes); deliberately re-runnable after merges to link the fuzzy tail. No `await` anywhere in the handler. ⚠ PROD execution is an OPERATOR action after deploy (admin-triggered by design), not part of this row; e2e fixtures need `DB_PATH` (self-skip without). Admin trigger button + report rendering land in PC-T7 — endpoint is API-only until then.
+- [x] PC-T5  Merge tool (`POST /api/coffee-products/:id/merge` — repoint + delete, cross-roastery 409, self-merge 400) + stateless duplicates review (`GET /duplicates`) — 12 §UC-PC-007/008 · model=heavy ⚠ the ONLY catalog-row deleter in the module (decision 9 — dangling links prevented by construction): exactly TWO writes in one transaction, target-wins-entirely, no `transactions` row / no snapshot mutation (GSO-T6), 404-before-409 ordering. ADMIN_ENDPOINTS +2. "Import into a LATER cycle after merge matches the survivor, never resurrects B" is the acceptance pin. ⚠ UI (duplicates section, per-pair merge buttons with inline confirm) lands in PC-T7 — API-only here. Module-13 obligation (review-repoint into this transaction) binds only if 13 revives.
+- [x] PC-T6  Cross-cycle stats: `helpers/catalog-stats.js` pure functions + `GET /stats` + `GET /:id/stats` (ranking, windowing, purpose filter, repeat buyers, friend/guest split) — 12 §UC-PC-010 · model=heavy ⚠ the module's densest invariants: Decision-4 discipline (guests in per-product kg/value ONLY — never in any friend count or per-friend figure), guest half via `guestCycleItems()` merged in JAVASCRIPT never a JOIN (the GSO-T6/T8 multiplied-rows trap; 1 friend kg + 2×1 guest kg = 3.0 pin), `variantToKg()` as the only weight authority, window ordering with the mandatory `id DESC` tiebreak, cancelled-guest exclusion. ⚠ MUST export a per-product all-time-kg primitive — PC-T7's list column imports it. ADMIN_ENDPOINTS +2. Owns `catalog-stats.spec.js` (UC-PC-010 fixture verbatim).
+- [x] PC-T7  Catalog CRUD routes (`GET /`, `GET /:id`, `PATCH` with rename-collision 409, `POST /:id/image`) + `AdminCatalog.vue` in the MAIN MENU (list/filters incl. `Chýba fotka` needs-image affordance, edit dialog incl. informational attributes, IMPORT section — upload/URL + report rendering incl. `pending_fuzzy` "Je to premenovaný X?" with the merge-flow link, duplicates section, migration trigger + report, stats tab) + `api.js` + nav entry — 12 §UC-PC-009 ⚠ closes the seams left open earlier: PC-T2's report rendering + fuzzy link target, PC-T4's migration trigger/report UI, PC-T5's duplicates/merge UI. NO DELETE route ever (decision 9) — retirement is `status='retired'`, zero effect on snapshots/orders/stats. Old admin skin — ZERO Podpultovka/`.app`/neo/theme classes (asserted in e2e). PATCH rename recomputes `normalized_name` via the ONE helper, app-check + constraint-translation dual layer → 409 `field:'name'`; save errors render in-dialog (module-11 `modalError` lesson) — ⚠ INCLUDES CycleDetail.vue's `saveProduct`, which today swallows ALL errors and must surface PC-T3's deliberate `duplicate_in_cycle` 409 (review finding, assigned here). Headline acceptance: an image uploaded ONCE appears on a NEW cycle's picker-created snapshot on the friend order page. ADMIN_ENDPOINTS +4 (completes the 12).
+- [x] PC-T8  Cycle creation from the catalog picker + RETIRE the per-cycle importers — 12 §UC-PC-012/013 · model=heavy ⚠ the swap-over row, deliberately LAST: (a) coffee cycle creation gains the tick-list over `status='available'` catalog products (default all ticked; retired never offered), snapshotting selected products into `products` with `source_coffee_product_id` + prices FROZEN at snapshot time — NO junction table (bakery needs one only because of variant fan-out; coffee snapshots 1:1, the source id IS the selection record); `coffee_product_ids` optional in the POST body so existing fixtures survive; (b) the three `/api/products/import*/:cycleId` endpoints + CycleDetail's import UI + the three api.js functions are REMOVED in the same run. ⚠ Sanctioned edits to existing specs (enumerated in 12 §UC-PC-011 item 4, the ONLY allowed list): `image-upload.spec.js:126/191/348` retargets its multipart vehicle to `/api/coffee-products/import`; `nonstring-body-shape.spec.js:862/878/2804` retargets the FUP-T12/T15 pins to the new routes (PC-T2 built the guards; this row moves the pins). ADMIN_ENDPOINTS had no rows for the retired routes (verified). Acceptance: a full admin walkthrough — import sheet into catalog → create cycle by ticking → friend orders from the snapshot — plus the old endpoints answering 404.
+- [x] PC-T9  Migration REWORK → manual assignment workbench — 12 §UC-PC-006 (rewritten 2026-08-23)/§UC-PC-009 · model=heavy ⚠ PM staging finding: the auto-migration's fuzzy suggestions merged UNRELATED products (decision 14). Replace with: `GET /migration/pending` (one row per distinct (normalized_name, roastery) over unlinked coffee snapshots — identity grouping, NO similarity fields), `POST /migration/assign` (groups→existing catalog_id; skip-and-report raced groups, never 404 — GSO-T5 convergence; 409 field:'roastery' cross-roastery), `POST /migration/create` (ONE catalog row from the newest snapshot across the selection; NOT via consolidateCatalogRow — unconditional create, fuzzy banned; 409 field:'name'+catalog_id hands the UI off to assign). RETIRE `POST /migrate` + helpers/catalog-migrate.js auto flow + the AdminCatalog trigger/report UI → workbench UI (checkbox table, "Priradiť k existujúcemu" searchable picker, "Vytvoriť nový produkt z výberu", rows disappear on resolve, empty state "História je zmigrovaná."). ⚠ Sanctioned test edits enumerated in §UC-PC-011 item 3 ONLY (the migration half of catalog-admin.spec.js re-pointed; /migrate asserted 404; ADMIN_ENDPOINTS −1/+3). PC-T4 data-safety invariant verbatim: only products-write = the link column, one transaction.
+- [x] PC-T10  Product images → files + public cacheable URLs — 12 §UC-PC-014 · model=heavy ⚠ storage = content-hash files (sha256.ext, sniffed magic bytes) in `backend/src/db/uploads/` (sibling of the SQLite file; `UPLOADS_DIR` override). `GET /api/images/:filename` PUBLIC bare mount (deliberately NOT in ADMIN_ENDPOINTS — friend/guest pages render it; recorded), strict `^[a-f0-9]{32}\.(png|jpg|gif|webp)$` validation (traversal foreclosed by construction), `Cache-Control: immutable` (content-hash = cache busting). Write paths converted: catalog `POST /:id/image`, UC-PC-005 dual-store, products.js `POST /:id/image` + `/image-from-url` (bakery_products routes untouched). `POST /api/coffee-products/convert-images` (requireAdmin, ADMIN_ENDPOINTS +1): one-time conversion of `data:%` in coffee_products.image + coffee-cycle products.image → files+URLs; idempotent; file-then-column crash order; report incl. bytes_freed. ⚠ **`deploy.sh` MUST gain `--exclude 'src/db/uploads'` in the SAME row — without it the first deploy deletes every image.** ⚠ `backup-db.sh` addition (uploads tar + age + rclone alongside the DB) — server-side script; the deploy of that script is an OPERATOR action, residual recorded. Zero nginx/CSP changes (URL under /api); zero frontend rendering changes (`<img src>` is value-agnostic — grep-verified); ⚠ verify-don't-assume: e2e specs asserting a `data:` prefix on coffee image fixtures (product-photo specs) — §UC-PC-011 item 8.
+- [x] PC-T12  Brew Bags variant + purpose, capsule/brew-bag price parsing, catalog price editing, honest import report — PM 2026-08-23 · model=heavy ⚠ Found on staging: the multirow parser knows only 150g/200g/250g/1kg, so `20ks x 5g` and `8ks x 12g` fell into the `else` branch → **10 € landed in `price_250g` for 4 capsule products and 11 € for brew bags** (verified in the staging DB). Consequences: the friend card renders a bogus "250g" box for capsules, and kg math counts 0.25 kg instead of 0.100 (capsules) — inflating tier progress. Scope: (a) parser recognises `Nks x Mg` capsule/brew-bag labels; (b) NEW variant `8pc12g` = **96 g** added to ALL FOUR single-home maps — `helpers/pricing.js:23`, `helpers/stock.js:33`, `helpers/analytics.js:21`, `frontend/src/lib/guest-cart.js:17/28/53` — plus `FriendOrder.vue:73/259` and the `price_8pc12g` column on BOTH `coffee_products` and `products`; (c) **Brew Bags becomes a first-class purpose** alongside Espresso/Filter/Kapsule (`lib/purposes.js:19` PREFERRED + `FriendOrder.vue:433`) — ⚠ note the sheet writes `Nespresso` where the app expects `Kapsule`, so both spellings must rank; (d) catalog edit dialog gains PRICE fields (the manual repair path the PM asked for — today prices are uneditable by hand); (e) the import report splits truly-skipped rows from warnings (the "Nespracované riadky" label was wrong — those 5 rows imported fine); (f) prices become a sheet-owned SET on refresh (a variant absent from the sheet is cleared) **but only when the parse yielded ≥1 price**, so a partial parse can never blank a product — this is what makes the 5 broken rows self-heal on the next import.
+
 ## Log
+
+- 2026-08-23 · PC-T12 · (this commit) · no PR (house workflow) · **Brew Bags variant + purpose,
+  pack-label price parsing, catalog price editing, honest import report.** Origin: PM found on
+  staging that `20ks x 5g` / `8ks x 12g` fell into the parser's `else` → 10 €/11 € in `price_250g`
+  (bogus "250g" box on the friend card; 0.25 kg counted instead of 0.100 → inflated tier progress).
+  ⚠ The seventh price field `price_8pc12g` (96 g) touched **16 enumeration sites** — the implementer's
+  list was re-derived INDEPENDENTLY by the reviewer and nothing was missed. Two sites my brief had
+  MISSED and the implementer found: `friends.js` orderKilos SQL CASE and `orders.js` count_* ×3;
+  it also fixed a **pre-existing missing 500g** in that same CASE (per-friend display kg only, no
+  money path). Purposes now rank `Espresso, Filter, Kapsule, Nespresso, Brew Bags` — the sheet writes
+  `Nespresso` where the app expected `Kapsule`, so capsules had been falling into "others";
+  `order-shell`'s slice(0,3) pin survives. Catalog edit dialog gained all seven price fields (the
+  manual repair path) with copy stating that the next import overwrites them.
+  ⚠ **DECISION-13 AMENDMENT — prices are a sheet-owned VECTOR on refresh:** a format *declares* the
+  fields it can express (multirow six — NOT 500g, which it cannot express; plain CSV two; manual POST
+  only body-present fields), and a refresh writes the whole declared vector (absent ⇒ NULL, reported
+  as a price_change with `new: null`) **only when ≥1 declared value is a POSITIVE number** — so a
+  names-only CSV, an empty price cell and a zeros-only row all write nothing. This is what makes the
+  5 broken staging rows self-heal on the next import. Report contract is ADDITIVE: `unparsed` narrowed
+  to true skips, new `warnings` bucket ("boli importované — skontrolujte", amber) vs red "Preskočené".
+  Review (heavy): approve; **all 5 minors fixed in-run** — (1) manual POST no longer vector-clears from
+  a partially filled form, (2) multirow stopped clearing 500g, (3) literal 0 no longer arms the clear,
+  (4) stale comment, (5) a half-readable price pair now warns instead of silently clearing. 4 new
+  edge pins. Gate (targeted): catalog-import+foundation 62, catalog-admin 77, nonstring-body-shape
+  260/12, order-shell 28, plus the variant-map neighbours (order-product-card/guest-order/order-cartbar 56).
+  ⚠ Remaining: the 5 staging rows heal only when the multirow import is RE-RUN on staging (operator step).
+
+- 2026-08-23 · PC-T10 · 01d9f80 (amended) · no PR (house workflow) · **Product images → content-hash
+  files + public cacheable URLs.** `helpers/image-store.js` (sha256[0:32] + sniffed extension,
+  tmp+rename atomic, dedupe by content, UPLOADS_DIR = resolve(env) or sibling-of-resolved-DB —
+  the resolve() on the override was a review minor, fixed in-run); `GET /api/images/:filename`
+  PUBLIC bare mount (strict [a-f0-9]{32}.ext regex before any fs call — adversarially probed:
+  %2F/%5C/%00/double-encoding all 404; the traversal e2e proves the regex is what stops the route
+  serving the SQLite FILE itself), `Cache-Control: immutable`; deliberately NOT in ADMIN_ENDPOINTS
+  (friend/guest pages render it — recorded). All four write paths converted; `POST
+  /api/coffee-products/convert-images` (requireAdmin, ADMIN_ENDPOINTS +1) sweeps `data:%` from
+  coffee_products.image + coffee-cycle products.image (idempotent, file-then-column, bytes_freed).
+  ⚠ `deploy.sh` gained `--exclude 'src/db/uploads'` — verified against the actual rsync transfer
+  root; without it the first deploy deletes every image. `backup-db.sh` now tars+ages+rclones the
+  uploads dir alongside the DB (ships automatically — deploy.sh scp's it; ~one-backup-interval
+  residual window recorded). Retargets: case-(a) only (image-upload ×3, catalog-admin ×4,
+  catalog-import ×4); photo specs untouched (they assert geometry, never the src prefix).
+  catalog-images.spec.js NEW 17/17; targeted gate 215/3 + reviewer's independent 17 + 177/180.
+  Review (heavy, resumed once after a usage-limit kill): approve, 2 minors both fixed in-run
+  (resolve() wrap; the PATCH-base64 residual now explicitly recorded in §Accepted risks).
+  Reviewer notes kept: migration-workbench create can RELOCATE legacy base64 into the catalog
+  (next convert-images run sweeps it); GET /api/images has no rate-limit bucket (consistent with
+  every public read); trailing-slash URL variant serves the same immutable content (harmless).
+
+- 2026-08-23 · PC-T9 · (this commit) · no PR (house workflow) · **Migration reworked to the manual
+  assignment workbench** (PM staging finding: fuzzy suggestions merged unrelated products —
+  decision 14/brief #16). `catalog-migrate.js` DELETED; `catalog-workbench.js` NEW
+  (pendingMigrationGroups / assignGroupsToCatalog / createCatalogFromGroups — zero fuzzy imports,
+  one transaction per mutation, only products-write = the link column). Routes: `GET /migration/pending`
+  + `POST /migration/assign` (skip-and-report, 409 field:'roastery') + `POST /migration/create`
+  (unconditional create, newest-pick across selection, 409 field:'name'+catalog_id hand-off);
+  `POST /migrate` → 404, ADMIN_ENDPOINTS −1/+3. AdminCatalog: checkbox workbench (select-all,
+  "Priradiť k existujúcemu" searchable picker — DECOUPLED from list filters via its own unfiltered
+  fetch, retired targets allowed + labelled "· Vyradená"; "Vytvoriť nový produkt z výberu";
+  collision hand-off PREFILLS + pins the colliding product; rows drop from the payload with zero
+  pending re-fetches — pinned; empty state "História je zmigrovaná."). PC-T7 banked minors fixed
+  (loadProducts/loadStats seq guards, dead dupLoaded). Test edits exactly per §UC-PC-011 item 3
+  + ONE extra case-(a) retirement (:1450 — the spec's "no UI pin" parenthetical was factually wrong;
+  the trigger WAS pinned by testids; replacement covers strictly more). catalog-admin.spec.js 64
+  green ×2, api-security 53, review (heavy): approve, 2 minors fixed same-run (picker filter
+  coupling; blank hand-off) with fail-against-old-code pins. Residual notes: concurrent-admin
+  pending-count drift until tab revisit (accepted, matches no-reload intent); created row appends
+  regardless of active list filter (momentary); stale comment products.js:166 mentions "PC-T4
+  migration" (cosmetic).
+
+- 2026-08-22 · PC-T8 · 192d759 (amended) · no PR (house workflow) · **MODULE 12 COMPLETE — the swap-over.**
+  (a) Coffee cycle creation via catalog picker (AdminDashboard new-cycle dialog: available-only,
+  all pre-ticked, search; server: sibling of the byte-untouched bakery branch, per-element bindValue,
+  retired/unknown/unbindable SKIPPED per §UC-PC-012's bakery-`continue` rule, six prices frozen —
+  later catalog price edits provably don't move snapshots). (b) The three per-cycle import routes +
+  CycleDetail import UI + three api.js functions REMOVED (404, no tombstone). (c) ⚠ The snapshot-read
+  image COALESCE actually landed HERE (not PC-T2 — Log correction stands): snapshots store
+  `image=NULL` at picker time; `products.js` GET /cycle/:cycleId + GET /:id and BOTH guest.js
+  listings serve `COALESCE(p.image, cp.image)`; own image wins (last-duplicate-wins reliance
+  commented + empirically verified + e2e-pinned); guest listing publishes NO new fields (LEFT JOIN
+  on PK — cannot multiply rows; the hostile-boundary contract byte-equivalent). Sanctioned spec
+  edits only: image-upload ×3 + nonstring-body-shape ×3 retargeted to the catalog import routes
+  (T15.14 now STRONGER — control-import comparison instead of assumed NULL); consumerless
+  `importCycleId` fixture removed as a necessary consequence. catalog-admin.spec.js 41→55.
+  **MILESTONE FULL SUITE (the module's single sanctioned full run): 1510 passed / 26 skipped /
+  1 failed — the failure is `magic-link.spec.js:1163` (throwaway-backend flow, unrelated subsystem),
+  re-run alone = 73/73 green: the documented small-host flake, not a regression.** Review (heavy):
+  approve, 1 minor recorded — write-path responses (PATCH/POST/image on products.js) return the raw
+  row without the COALESCE (`image: null` on linked snapshots); harmless today (CycleDetail reloads
+  after save), record if a consumer ever renders write responses. Follow-up residual re-confirmed:
+  image-upload.spec.js's fixed fixture names are non-rerunnable against a USED DB since PC-T3's 409
+  (fresh-DB recipe masks it).
+
+- 2026-08-22 · PC-T7 · (this commit) · no PR (house workflow) · Catalog CRUD + `AdminCatalog.vue`
+  in the main menu (nav "Katalóg" next to Pekáreň on AdminDashboard): list/filters + needs-image
+  (client-side over the server-filtered list), edit dialog (informational attributes; `roastery`
+  deliberately NOT editable — identity-key half), import section rendering all five report buckets
+  (201-with-unparsed can never read as success; record-vs-file row caption), duplicates/merge UI with
+  inline confirm, migration trigger + report, stats tab (OMITS last_n_cycles for all-time — pinned by
+  request interception). PATCH rename = dual-layer 409 field:'name' via the one normalizer; NO DELETE
+  route (pinned). CycleDetail.vue `saveProduct` now surfaces errors in-dialog (`productModalError`,
+  module-11 idiom) — the PC-T3 review-assigned fix, 409 test included. ONE case-(a) re-point:
+  catalog-import.spec.js's whole-file UPDATE ban became unsatisfiable (PATCH/image legitimately
+  UPDATE) — re-scoped to the import half with a marker-existence guard; whole-file INSERT ban kept.
+  ⚠ Correction to earlier notes: NO snapshot-read image COALESCE exists in the tree — it is
+  UC-PC-012/PC-T8's obligation (earlier "ships in PC-T2" notes were wrong); the headline acceptance's
+  friend-page half is deferred to PC-T8 with in-file comments. Implementer was killed mid-task by a
+  usage limit and resumed (second successful resume). e2e stage: satisfied by the implementer's 9
+  UI-flow tests + reviewer's independent 125/0/0 live run — no separate e2e-tester spawned
+  (usage-conservation decision, recorded). catalog-admin.spec.js 21→41; ADMIN_ENDPOINTS +4 = the
+  module's 12 complete. Review: approve, 2 minors banked as follow-up: (1) AdminCatalog list/stats
+  watchers lack the house loadSeq guard (keystroke race, admin-only, self-heals — 3-line fix when
+  touched); (2) dead `dupLoaded` ref. Cosmetic: file-input accept omits GIF which the backend allows.
+
+- 2026-08-22 · PC-T6 · (this commit) · no PR (house workflow) · Cross-cycle stats:
+  `helpers/catalog-stats.js` (coffeeCycleWindow / catalogRanking / catalogProductStats /
+  allTimeKgByCatalogId — the PC-T7 list-column seam) + `GET /stats` (?purpose, ?last_n_cycles) +
+  `GET /:id/stats` (all-time; spec shows no params there). All seven invariants reviewer-traced:
+  Decision-4 split line-by-line (guests → kg fields only), guest half via guestCycleItems merged in
+  JS (3.0-not-4.0 pin with distinct_friends unmoved), repeat buyer = ≥2 DISTINCT cycles (counter-test
+  for 2-orders-1-cycle), variantToKg sole weight authority, id DESC window tiebreak
+  (mutation-verified), cancelled-guest exclusion, NULL links invisible. "Order trend" = the per-cycle
+  history series (spec's own wording; no up/down/flat key). catalog-stats.spec.js 14/14 (§UC-PC-010
+  fixture verbatim); ADMIN_ENDPOINTS +2. Targeted gate only: 82 green + reviewer's live 61.
+  Review (heavy): approve, 2 minors — (1) `?last_n_cycles=` (empty) 400s while `?purpose=` (empty)
+  means no-filter: DELIBERATE, now commented at the route; PC-T7's UI must OMIT the param for
+  all-time; (2) defense-in-depth note: catalogProductStats' history query has no coffee-type
+  predicate (unreachable today via PC-T3 bakery exemption + PC-T8 coffee-only picker; add the
+  predicate if the picker rules ever change).
+
+- 2026-08-22 · PC-T5 · (this commit) · no PR (house workflow) · Merge tool + duplicates review:
+  `helpers/catalog-merge.js` (mergeCatalogRows exactly TWO writes in one transaction — link UPDATE +
+  DELETE B, target byte-identical incl. updated_at; findDuplicatePairs stateless, status-ANY,
+  within-roastery, DESC-sorted). Routes: `POST /:id/merge` + `GET /duplicates` (registered ABOVE the
+  parametric routes — PC-T7's GET /:id must stay below it). Repeat merge = 404 (spec-verbatim "either
+  id unknown" — deliberately NOT the GSO-T5 idempotent-200, which would fabricate a merge that never
+  ran). catalog-admin.spec.js 8→21 (incl. the never-resurrects-B import pin and the merge→migrate-rerun
+  seam); ADMIN_ENDPOINTS +2. Targeted gate only: 21+45+33 green (+ reviewer's independent live run).
+  Review (heavy): approve, 1 minor recorded — self-merge 400 outranks 404 when BOTH ids are equal AND
+  nonexistent (spec orders only 404-before-409; PC-T7's UI must not read 404 as "existence was
+  checked"). Fixture note: seedCatalog computes normalized_name as toLowerCase() (safe for uniq()
+  names; diverges on punctuation — use the real normalizer if a punctuated fixture ever appears).
+
+- 2026-08-22 · PC-T4 · (this commit) · no PR (house workflow) · Historical migration endpoint:
+  `helpers/catalog-migrate.js` (separate file so catalog-import.js keeps its "never touches
+  products" invariant), one synchronous transaction, only-write = the link column (bulk UPDATE).
+  Newest pick = highest cycle_id + id DESC (spec-correct; the orchestrator's brief said created_at —
+  spec won). Exact groups BACKFILL-ONLY (historical prices can never overwrite catalog current
+  prices — byte-compare pinned). Create path funnels through consolidateCatalogRow (import-consistent
+  rows + opts.image from the newest snapshot). ''-normalizing names skipped → unlinked_remaining.
+  Report shape is TOP-LEVEL per §UC-PC-006 (not {report}-wrapped like the import trio).
+  catalog-admin.spec.js created (8/8, migration half; PC-T5/T7 extend). Targeted gate only
+  (new policy): 98 tests green + reviewer's live 8+43. Review (heavy): approve, 2 defer-minors —
+  (1) group-vs-existing-catalog fuzzy covered only transitively via the shared helper (add a direct
+  fixture if PC-T5/T7 touch the create path); (2) the strictly-newest-image NULL branch is recorded
+  but unpinned (pin it when PC-T7 builds the needs-image UI). ⚠ PM-visible decision recorded:
+  migration takes strictly the NEWEST snapshot's image — a product whose latest cycle had no photo
+  gets NULL even if an older cycle had one (3-line change to newest-non-null if wanted).
+
+- 2026-08-22 · PC-T3 · (this commit) · no PR (house workflow) · Manual `POST /api/products` joins
+  consolidation via `consolidateCatalogRow` (+`exactCatalogMatch`/`singleRowReport`/`parsePrice`
+  exports): auto-link/create/fuzzy-flag, `duplicate_in_cycle` 409 (guard = link OR normalized
+  identity, active rows only — reviewer-verified it can't 409 soft-deleted re-adds or the
+  "(kópia)" flow), bakery exemption (plain body, no report, byte-compared no coffee_products
+  touch), image dual-store. Whole coffee path ONE synchronous transaction. catalog-import.spec.js
+  21→33; ONE case-(a) fixture retarget in `mobile-no-h-overflow.spec.js` (5 identical names into
+  one cycle structurally unsatisfiable under the 409; property under test unchanged). Gate per the
+  NEW per-task policy (targeted files only, no full suite — user feedback 2026-08-22): 33/33 +
+  ~360 neighbour tests green. Review: approve, 2 minors both recorded: (1) `CycleDetail.vue`
+  `saveProduct` swallows all errors incl. the new 409 → assigned to PC-T7's row; (2) residual:
+  `item-packed`/`image-upload`/`ssrf` beforeAlls post fixed literal names with no status assertion —
+  not re-runnable against a long-lived DB under the 409 (fine on the fresh-DB recipe; fix-when-touched:
+  uniq() names or status asserts).
+
+- 2026-08-22 · PC-T2 · (this commit) · no PR (house workflow) · Catalog-targeted import backend
+  per the bakery-pattern pivot: `helpers/import-parsing.js` (extraction byte-diffed against HEAD —
+  identical; the two gsheet-vs-CSV desc2-alias divergences deliberately preserved),
+  `helpers/catalog-import.js` (`consolidateCatalogRow` exported for PC-T3 with an `opts.image` seam;
+  ONE synchronous transaction after the only await — GA-T8), `routes/coffee-products.js` (3 routes,
+  whole-mount `requireAdmin` — mount ownership landed here per the pivot), ADMIN_ENDPOINTS +3.
+  Decision-13 field rule enforced + e2e-pinned (admin `country`/`is_new` survive imports; empty cell
+  never blanks). Idempotency incl. `updated_at` byte-compare; in-sheet duplicates checked BEFORE any
+  refresh write. Report = 5 buckets, no cycle context. Implementer was killed mid-task by a usage
+  limit and RESUMED from its own transcript (products.js was syntactically broken at the cut — the
+  resume-with-state pattern worked). Gate: catalog-import.spec.js 21/21; full suite
+  **1421 passed / 26 skipped / 0 failed**. Review (heavy): approve, ZERO findings; 3 informational
+  notes recorded for later rows — (a) `unparsed` row numbers count parsed records, so blank lines
+  offset them vs the physical file (PC-T7 rendering note), (b) an all-nameless gsheet now 201s with
+  `unparsed` entries where legacy 400'd — PC-T7's UI must not assume 400 = nothing imported,
+  (c) `normalizeRoastery` does one lookup per row inside the tx — hoistable if a bulk path ever appears.
+
+- 2026-08-22 · PC-T1 · (this commit) · no PR (house workflow: staging confirm → --no-ff merge) ·
+  `coffee_products` + `products.source_coffee_product_id` + `idx_products_source_coffee` +
+  `helpers/catalog.js` (normalizeProductName / normalizeRoastery / nameSimilarity / FUZZY_THRESHOLD=0.75).
+  ⚠ SPEC CORRECTION folded in: 12 §UC-PC-002's similarity formula was `1 − d/max(len)`, which
+  contradicts its own acceptance example (yields 0.667 for the pinned fuzzy pair) — corrected to
+  `1 − d/(len_a+len_b)` (0.80/0.52, exact=1, ''→0) in code+spec+tests; tune UC-PC-008's threshold
+  against THIS formula. ⚠ New e2e pattern introduced deliberately: `catalog-foundation.spec.js`
+  imports pure backend helpers DIRECTLY into the Playwright worker (safe: pure fns, idempotent WAL
+  migrations, --workers=1) — header documents when to prefer the probe() subprocess idiom instead.
+  Gate: node --check clean; full suite 1383 passed / 28 skipped / 12 failed → all 12 were the gate
+  server missing GOOGLE_CLIENT_ID=test-client + GOOGLE_AUTH_TEST_MODE=1 (README §env recipe;
+  google-auth.spec.js alone = 123/123 with correct env) — NOT regressions; new spec 14/14.
+  Review: approve, 1 minor (comment precedent claim — fixed). ⚠ Gate-recipe lesson for every later
+  PC row: the :3997 server needs the GOOGLE_* pair on top of the five rate-limit vars.
 
 
 <!-- /next-task appends one line per completed task below (durable cross-session record). -->

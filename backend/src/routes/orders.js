@@ -582,6 +582,9 @@ router.get('/cycle/:cycleId', requireAdmin, (req, res) => {
     order.count_20pc5g = order.items
       .filter(i => i.variant === '20pc5g')
       .reduce((sum, i) => sum + i.quantity, 0);
+    order.count_8pc12g = order.items
+      .filter(i => i.variant === '8pc12g')
+      .reduce((sum, i) => sum + i.quantity, 0);
     order.count_unit = order.items
       .filter(i => i.variant === 'unit')
       .reduce((sum, i) => sum + i.quantity, 0);
@@ -611,6 +614,7 @@ router.get('/cycle/:cycleId', requireAdmin, (req, res) => {
         count_500g: 0,
         count_1kg: 0,
         count_20pc5g: 0,
+        count_8pc12g: 0,
         count_unit: 0
       });
     }
@@ -654,6 +658,7 @@ router.get('/cycle/:cycleId', requireAdmin, (req, res) => {
       count_500g: 0,
       count_1kg: 0,
       count_20pc5g: 0,
+      count_8pc12g: 0,
       count_unit: 0,
       guest_orders: subOrders
     });

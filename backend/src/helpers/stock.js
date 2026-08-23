@@ -30,7 +30,7 @@ import { bindValue } from './bind-value.js';
 // Variants that are not OWN keys of this map (an unknown variant, or a bakery
 // 'unit' line) score 0 g and therefore never participate in stock limits.
 export const VARIANT_GRAMS = {
-  '150g': 150, '200g': 200, '250g': 250, '500g': 500, '1kg': 1000, '20pc5g': 100,
+  '150g': 150, '200g': 200, '250g': 250, '500g': 500, '1kg': 1000, '20pc5g': 100, '8pc12g': 96,
 };
 
 // The variant is CLIENT-SUPPLIED on every order path, so this lookup must be

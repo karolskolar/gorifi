@@ -89,6 +89,9 @@ async function request(endpoint, options = {}) {
     const error = await response.json().catch(() => ({ error: 'Chyba servera' }))
     const err = new Error(error.error || 'Chyba servera')
     if (error.field) err.field = error.field
+    // The workbench create-collision 409 names the existing row so the UI can
+    // offer assign instead (12 §UC-PC-006).
+    if (error.catalog_id) err.catalogId = error.catalog_id
     throw err
   }
 
@@ -266,9 +269,8 @@ export const api = {
   createProduct: (data) => request('/products', { method: 'POST', body: data }),
   updateProduct: (id, data) => request(`/products/${id}`, { method: 'PATCH', body: data }),
   deleteProduct: (id) => request(`/products/${id}`, { method: 'DELETE' }),
-  importProducts: (cycleId, formData) => request(`/products/import/${cycleId}`, { method: 'POST', body: formData }),
-  importFromGoogleSheets: (cycleId, url, roastery) => request(`/products/import-gsheet/${cycleId}`, { method: 'POST', body: { url, roastery: roastery || null } }),
-  importFromGoogleSheetsMultirow: (cycleId, url, roastery) => request(`/products/import-gsheet-multirow/${cycleId}`, { method: 'POST', body: { url, roastery: roastery || null } }),
+  // (The three per-cycle importers retired in PC-T8 — 12 §UC-PC-013. Imports
+  // target the catalog: importCatalogCSV / importCatalogGsheet* below.)
   uploadProductImage: (id, formData) => request(`/products/${id}/image`, { method: 'POST', body: formData }),
   uploadProductImageFromUrl: (id, imageUrl) => request(`/products/${id}/image-from-url`, { method: 'POST', body: { url: imageUrl } }),
 
@@ -492,6 +494,49 @@ export const api = {
   // Who still owes for this cycle — name, amount, payment reference, host, contact
   // — plus the refund queue (paid but cancelled).
   getGuestUnpaid: (cycleId) => adminRequest(`/guest-orders/cycle/${cycleId}/unpaid`),
+
+  // Coffee product catalog (admin) — module 12. The whole /coffee-products
+  // mount is requireAdmin server-side; all calls ride X-Admin-Token.
+  getCatalogProducts: (params = {}) => {
+    const query = new URLSearchParams()
+    for (const key of ['status', 'purpose', 'roastery', 'q']) {
+      if (params[key]) query.set(key, params[key])
+    }
+    const qs = query.toString()
+    return adminRequest(`/coffee-products${qs ? `?${qs}` : ''}`)
+  },
+  getCatalogProduct: (id) => adminRequest(`/coffee-products/${id}`),
+  updateCatalogProduct: (id, data) => adminRequest(`/coffee-products/${id}`, { method: 'PATCH', body: data }),
+  deleteCatalogProduct: (id) => adminRequest(`/coffee-products/${id}`, { method: 'DELETE' }),
+  uploadCatalogProductImage: (id, formData) => adminRequest(`/coffee-products/${id}/image`, { method: 'POST', body: formData }),
+  importCatalogCSV: (formData) => adminRequest('/coffee-products/import', { method: 'POST', body: formData }),
+  importCatalogGsheet: (url, roastery) => adminRequest('/coffee-products/import-gsheet', { method: 'POST', body: { url, roastery: roastery || null } }),
+  importCatalogGsheetMultirow: (url, roastery) => adminRequest('/coffee-products/import-gsheet-multirow', { method: 'POST', body: { url, roastery: roastery || null } }),
+  // Migration workbench (module 12, PC-T9 — the manual assignment flow that
+  // replaced POST /migrate per resolved decision 14).
+  // Reconcile a cycle's catalog product selection (PM 2026-08-23) — the creation
+  // picker, reopenable while the cycle is editable.
+  setCycleCatalogProducts: (cycleId, coffeeProductIds) =>
+    adminRequest(`/cycles/${cycleId}/catalog-products`, { method: 'PUT', body: { coffee_product_ids: coffeeProductIds } }),
+  getMigrationPending: () => adminRequest('/coffee-products/migration/pending'),
+  assignMigrationGroups: (groups, catalogId) =>
+    adminRequest('/coffee-products/migration/assign', { method: 'POST', body: { groups, catalog_id: catalogId } }),
+  createMigrationProduct: (groups) =>
+    adminRequest('/coffee-products/migration/create', { method: 'POST', body: { groups } }),
+  // PC-T10 (12 §UC-PC-014): one-time conversion of legacy base64 images to files.
+  convertCatalogImages: () => adminRequest('/coffee-products/convert-images', { method: 'POST' }),
+  getCatalogDuplicates: () => adminRequest('/coffee-products/duplicates'),
+  mergeCatalogProduct: (targetId, sourceId) => adminRequest(`/coffee-products/${targetId}/merge`, { method: 'POST', body: { source_id: sourceId } }),
+  // ⚠ `last_n_cycles` is OMITTED for all time, never sent empty — the route
+  // 400s on an empty value by design (see the comment at the route).
+  getCatalogStats: ({ purpose, lastNCycles } = {}) => {
+    const query = new URLSearchParams()
+    if (purpose) query.set('purpose', purpose)
+    if (Number.isInteger(lastNCycles) && lastNCycles > 0) query.set('last_n_cycles', String(lastNCycles))
+    const qs = query.toString()
+    return adminRequest(`/coffee-products/stats${qs ? `?${qs}` : ''}`)
+  },
+  getCatalogProductStats: (id) => adminRequest(`/coffee-products/${id}/stats`),
 
   // Roasteries
   getRoasteries: () => request('/roasteries'),

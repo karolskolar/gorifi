@@ -19,6 +19,7 @@ export function variantToKg(variant, quantity) {
     '150g':   0.150,
     '200g':   0.200,
     '20pc5g': 0.100,
+    '8pc12g': 0.096,
   };
   return (map[variant] || 0) * quantity;
 }

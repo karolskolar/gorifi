@@ -1,26 +1,59 @@
 import { Router } from 'express';
-import { parse } from 'csv-parse/sync';
 import db from '../db/schema.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { safeFetch } from '../helpers/safe-fetch.js';
+// PC-T2 (12 §UC-PC-003 parsing seam): the importers' parsing/column mapping was
+// extracted VERBATIM into helpers/import-parsing.js — the catalog import
+// (routes/coffee-products.js) owns the import surface now. The three per-cycle
+// import routes RETIRED wholesale in PC-T8 (12 §UC-PC-013): a hit on them falls
+// through to Express's default 404, no tombstone handler. Only parsePrice is
+// still consumed here (the PC-T3 manual-POST consolidation path).
+import { parsePrice } from '../helpers/import-parsing.js';
+// PC-T3 (12 §UC-PC-005): the manual per-cycle POST is the ONE sanctioned
+// add-to-an-existing-cycle path and funnels its catalog half through the SAME
+// consolidation layer as the importers. helpers/catalog.js stays the one
+// normalizer (imported via catalog-import.js — never re-inlined here).
+import { consolidateCatalogRow, exactCatalogMatch, singleRowReport } from '../helpers/catalog-import.js';
+import { normalizeProductName, normalizeRoastery } from '../helpers/catalog.js';
 import { cycleAvailability } from '../helpers/stock.js';
-import { imageFromUpload, imageFromBody, detectImageMime } from '../helpers/image-upload.js';
+import { detectImageMime } from '../helpers/image-upload.js';
+// PC-T10 (12 §UC-PC-014): the image write paths here (manual POST's dual-store,
+// POST /:id/image, POST /:id/image-from-url) store content-hash FILES and write
+// the URL path into the column — base64 never enters the column on these paths
+// again. Same magic-byte validation (SEC-H2), same request contracts.
+import { imageUrlFromUpload, imageUrlFromBody, storeImage } from '../helpers/image-store.js';
 import { uploadSingle } from '../helpers/multipart.js';
 import { bindValue } from '../helpers/bind-value.js';
 
 const router = Router();
 
 // Get all products for a cycle
+//
+// PC-T8 (12 §UC-PC-012 image fallback): a snapshot with no image of its own
+// serves its catalog product's image — COALESCE(p.image, cp.image). A non-NULL
+// snapshot image (manual upload, bakery, history) still wins; the response
+// shape is unchanged (still one `image` field). The aliased column is listed
+// AFTER p.*, and better-sqlite3 resolves a duplicate result name to the LAST
+// column — pinned by the "snapshot's own image wins" e2e in catalog-admin.
 router.get('/cycle/:cycleId', (req, res) => {
   const products = db.prepare(`
-    SELECT * FROM products WHERE cycle_id = ? AND active = 1 ORDER BY purpose, name
+    SELECT p.*, COALESCE(p.image, cp.image) AS image
+    FROM products p
+    LEFT JOIN coffee_products cp ON cp.id = p.source_coffee_product_id
+    WHERE p.cycle_id = ? AND p.active = 1
+    ORDER BY p.purpose, p.name
   `).all(req.params.cycleId);
   res.json(products);
 });
 
-// Get single product
+// Get single product — same UC-PC-012 image fallback as the list read above.
 router.get('/:id', (req, res) => {
-  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  const product = db.prepare(`
+    SELECT p.*, COALESCE(p.image, cp.image) AS image
+    FROM products p
+    LEFT JOIN coffee_products cp ON cp.id = p.source_coffee_product_id
+    WHERE p.id = ?
+  `).get(req.params.id);
   if (!product) {
     return res.status(404).json({ error: 'Produkt nebol najdeny' });
   }
@@ -66,6 +99,7 @@ router.post('/', requireAdmin, uploadSingle('image'), (req, res) => {
   const price_500g = bindValue(req.body.price_500g);
   const price_1kg = bindValue(req.body.price_1kg);
   const price_20pc5g = bindValue(req.body.price_20pc5g);
+  const price_8pc12g = bindValue(req.body.price_8pc12g);
   const roastery = bindValue(req.body.roastery);
   const stock_limit_g = bindValue(req.body.stock_limit_g);
 
@@ -73,109 +107,116 @@ router.post('/', requireAdmin, uploadSingle('image'), (req, res) => {
     return res.status(400).json({ error: 'cycle_id a nazov su povinne' });
   }
 
-  // Handle image - either from file upload or base64 in body
+  // Handle image - either from file upload or base64 in body. Both are stored
+  // as a file; `image` is the URL path (PC-T10, 12 §UC-PC-014).
   let image = null;
   if (req.file) {
-    const built = imageFromUpload(req.file);
+    const built = imageUrlFromUpload(req.file);
     if (built.error) return res.status(400).json({ error: built.error });
     image = built.image;
   } else if (req.body.image) {
-    const built = imageFromBody(req.body.image);
+    const built = imageUrlFromBody(req.body.image);
     if (built.error) return res.status(400).json({ error: built.error });
     image = built.image;
   }
 
-  const result = db.prepare(`
-    INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, image, roastery, stock_limit_g)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g || null, price_1kg, price_20pc5g, image, roastery || null, stock_limit_g ? parseInt(stock_limit_g) : null);
+  // The snapshot INSERT, byte-for-byte the pre-PC-T3 statement plus the
+  // source_coffee_product_id link (12 §UC-PC-005: "INSERTs the snapshot as
+  // today PLUS source_coffee_product_id").
+  const insertSnapshot = (sourceCoffeeProductId) => db.prepare(`
+    INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, price_8pc12g, image, roastery, stock_limit_g, source_coffee_product_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_500g || null, price_1kg, price_20pc5g, price_8pc12g, image, roastery || null, stock_limit_g ? parseInt(stock_limit_g) : null, sourceCoffeeProductId);
 
-  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(result.lastInsertRowid);
-  res.status(201).json(product);
-});
+  // PC-T3 (12 §UC-PC-005): consolidation runs ONLY when the target cycle is a
+  // coffee cycle — bakery-cycle rows are never consolidated and never touch
+  // coffee_products (brief Decision 6). A nonexistent cycle_id has no type, so
+  // it takes the plain path and fails on the products FK exactly as before
+  // (500 — pinned by image-upload.spec.js's FK-fault probe; crucially it must
+  // not leave an orphan catalog row behind).
+  const cycle = db.prepare('SELECT type FROM order_cycles WHERE id = ?').get(cycle_id);
+  const isCoffeeCycle = !!cycle && (cycle.type || 'coffee') === 'coffee';
 
-// Import products from CSV (admin)
-router.post('/import/:cycleId', requireAdmin, uploadSingle('file'), (req, res) => {
-  const cycleId = req.params.cycleId;
-  // ⚠ FUP-T15 — THE RECORDED "LATENT" BLOCKER ON THIS ROUTE WAS FALSE. It read
-  // "the route requires `req.file`, so the body is multipart and every field is a
-  // string". multer parses fields with the `append-field` package, which honours
-  // bracket notation and repeated keys — so `roastery[a]=1` really did arrive as an
-  // OBJECT, was bound into the per-row INSERT below, and this route's own try/catch
-  // answered 400 with the BINDER'S OWN SENTENCE echoed to the client ("Chyba pri
-  // parsovani CSV: Too few parameter values were provided") after `console.error`
-  // wrote ~1.1 KB of stack. Unbindable ⇒ `undefined` ⇒ `|| null` ⇒ exactly what an
-  // absent `roastery` field already stores.
-  const roastery = bindValue(req.body.roastery) || null;
-
-  // Check cycle exists
-  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
-  if (!cycle) {
-    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
+  if (!isCoffeeCycle) {
+    const result = insertSnapshot(null);
+    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(result.lastInsertRowid);
+    return res.status(201).json(product);
   }
 
-  if (!req.file) {
-    return res.status(400).json({ error: 'Ziaden subor nebol nahrany' });
+  // The catalog half sees the body the way the importers see a sheet row: the
+  // admin form posts prices as strings, so they go through the SAME parsePrice
+  // an imported price gets.
+  //
+  // ⚠ PC-T12 review fix: only fields actually PRESENT in the body are DECLARED
+  // on the parsed row. The decision-13 amendment's vector-write is scoped to
+  // the SHEET refresh — on this manual path a blank/absent form field means
+  // "unspecified", never "clear it", or a partially filled manual add of a
+  // KNOWN name would wipe the catalog's other price columns.
+  const parsedRow = {
+    name,
+    description1,
+    description2,
+    roast_type,
+    purpose,
+  };
+  const manualPrices = {
+    price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, price_8pc12g,
+  };
+  for (const [field, raw] of Object.entries(manualPrices)) {
+    if (req.body[field] === undefined) continue; // absent = undeclared
+    if (raw === undefined) continue; // unbindable = treated as absent (FUP-T13)
+    parsedRow[field] = parsePrice(raw);
   }
 
-  try {
-    const csvContent = req.file.buffer.toString('utf-8');
-    const records = parse(csvContent, {
-      columns: true,
-      skip_empty_lines: true,
-      trim: true,
-      bom: true
-    });
+  // ONE synchronous transaction for the whole coffee path (the handler has no
+  // await anywhere — the GA-T8 discipline): the duplicate check, the catalog
+  // write and the snapshot INSERT commit or roll back together, so a refused
+  // POST writes nothing and an FK failure cannot strand a catalog row.
+  const createConsolidated = db.transaction(() => {
+    // Duplicate guard (12 §UC-PC-005): a POST whose exact match already has a
+    // snapshot in the TARGET cycle is refused BEFORE consolidateCatalogRow runs
+    // — a 409 must not even apply the decision-13 price refresh. "Has a
+    // snapshot" is checked by link AND by normalized identity: snapshots made
+    // before PC-T3 (or before the PC-T4 migration runs) carry no
+    // source_coffee_product_id, and re-adding one of those is the same admin
+    // mistake the module exists to catch. Active rows only — a soft-deleted
+    // product must stay re-addable.
+    const match = exactCatalogMatch(name, roastery);
+    if (match) {
+      const inCycle = db.prepare(
+        'SELECT name, roastery, source_coffee_product_id FROM products WHERE cycle_id = ? AND active = 1'
+      ).all(cycle_id);
+      const dup = inCycle.some((p) =>
+        p.source_coffee_product_id === match.id ||
+        (normalizeProductName(p.name) === match.normalized_name && normalizeRoastery(p.roastery) === match.roastery)
+      );
+      if (dup) return { duplicate: true };
+    }
 
-    // Map CSV columns to database fields
-    const insertStmt = db.prepare(`
-      INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, roastery)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    // opts.image — the UC-PC-005 dual store: the image lands on the SNAPSHOT
+    // via insertSnapshot (existing behavior, wins the UC-PC-012 COALESCE) and,
+    // when the row CREATES a catalog entry, additionally on the new catalog row
+    // (the friction win — the next cycle reuses it). A MATCH never writes the
+    // catalog image: image is admin-only there (resolved decision 13).
+    const rowResult = consolidateCatalogRow(parsedRow, roastery, { image });
+    const report = singleRowReport(rowResult);
+    // 'skipped' (a name that normalizes to '') keeps today's snapshot-only
+    // behavior: no catalog row exists to link.
+    const sourceId = rowResult.outcome === 'skipped' ? null : rowResult.catalog_id;
+    const result = insertSnapshot(sourceId);
+    return { productId: result.lastInsertRowid, report };
+  });
 
-    const insertMany = db.transaction((products) => {
-      const results = [];
-      for (const p of products) {
-        // Try to match common column names
-        const name = p.Name || p.name || p.Nazov || p.nazov || '';
-        const desc1 = p.Description1 || p.description1 || p.Popis1 || p.popis1 || '';
-        const desc2 = p.Description2 || p.description2 || p.Popis2 || p.popis2 || p.ChutovyProfil || p['Chuťový profil'] || '';
-        const roast = p.Roast || p.roast || p.Prazenie || p.prazenie || '';
-        const purpose = p.Purpose || p.purpose || p.Ucel || p.ucel || '';
-
-        // Parse prices - handle various formats
-        const parsePrice = (val) => {
-          if (!val) return null;
-          const cleaned = String(val).replace(/[^\d.,]/g, '').replace(',', '.');
-          const num = parseFloat(cleaned);
-          return isNaN(num) ? null : num;
-        };
-
-        const price250g = parsePrice(p.Price250g || p.price250g || p.Cena250g || p.cena250g || p['250g']);
-        const price1kg = parsePrice(p.Price1kg || p.price1kg || p.Cena1kg || p.cena1kg || p['1kg']);
-
-        if (name) {
-          const result = insertStmt.run(cycleId, name, desc1, desc2, roast, purpose, price250g, price1kg, roastery);
-          results.push(result.lastInsertRowid);
-        }
-      }
-      return results;
-    });
-
-    const insertedIds = insertMany(records);
-
-    const products = db.prepare(`
-      SELECT * FROM products WHERE id IN (${insertedIds.map(() => '?').join(',')})
-    `).all(...insertedIds);
-
-    res.status(201).json({
-      message: `${products.length} produktov bolo importovanych`,
-      products
-    });
-  } catch (error) {
-    console.error('CSV parse error:', error);
-    res.status(400).json({ error: 'Chyba pri parsovani CSV: ' + error.message });
+  const created = createConsolidated();
+  if (created.duplicate) {
+    return res.status(409).json({ error: 'Produkt už v tomto cykle existuje.', reason: 'duplicate_in_cycle' });
   }
+
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(created.productId);
+  // Byte-compatible 201: the snapshot row at the top level (this endpoint's
+  // consumers read fields straight off the body) plus the UC-PC-004 report
+  // with exactly one row accounted for.
+  res.status(201).json({ ...product, report: created.report });
 });
 
 // Upload image for existing product (admin)
@@ -188,11 +229,11 @@ router.post('/:id/image', requireAdmin, uploadSingle('image'), (req, res) => {
 
   let image = null;
   if (req.file) {
-    const built = imageFromUpload(req.file);
+    const built = imageUrlFromUpload(req.file);
     if (built.error) return res.status(400).json({ error: built.error });
     image = built.image;
   } else if (req.body.image) {
-    const built = imageFromBody(req.body.image);
+    const built = imageUrlFromBody(req.body.image);
     if (built.error) return res.status(400).json({ error: built.error });
     image = built.image;
   }
@@ -233,10 +274,12 @@ router.post('/:id/image-from-url', requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'URL neobsahuje platný obrázok (PNG, JPEG, GIF, WebP)' });
     }
 
-    const base64 = buffer.toString('base64');
-    const image = `data:${contentType};base64,${base64}`;
+    // PC-T10 (12 §UC-PC-014): store the fetched bytes as a content-hash file
+    // and write the URL path — never base64 into the column. storeImage cannot
+    // refuse here: detectImageMime just accepted the same buffer above.
+    const stored = storeImage(buffer);
 
-    db.prepare('UPDATE products SET image = ? WHERE id = ?').run(image, req.params.id);
+    db.prepare('UPDATE products SET image = ? WHERE id = ?').run(stored.url, req.params.id);
 
     const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
     res.json(updated);
@@ -266,6 +309,7 @@ router.patch('/:id', requireAdmin, (req, res) => {
   const price_500g = bindValue(req.body.price_500g);
   const price_1kg = bindValue(req.body.price_1kg);
   const price_20pc5g = bindValue(req.body.price_20pc5g);
+  const price_8pc12g = bindValue(req.body.price_8pc12g);
   const image = bindValue(req.body.image);
   const roastery = bindValue(req.body.roastery);
   const stock_limit_g = bindValue(req.body.stock_limit_g);
@@ -290,6 +334,7 @@ router.patch('/:id', requireAdmin, (req, res) => {
   if (price_500g !== undefined) { updates.push('price_500g = ?'); values.push(price_500g); }
   if (price_1kg !== undefined) { updates.push('price_1kg = ?'); values.push(price_1kg); }
   if (price_20pc5g !== undefined) { updates.push('price_20pc5g = ?'); values.push(price_20pc5g); }
+  if (price_8pc12g !== undefined) { updates.push('price_8pc12g = ?'); values.push(price_8pc12g); }
   if (image !== undefined) { updates.push('image = ?'); values.push(image); }
   if (active !== undefined) { updates.push('active = ?'); values.push(active ? 1 : 0); }
   if (roastery !== undefined) { updates.push('roastery = ?'); values.push(roastery || null); }
@@ -311,416 +356,6 @@ router.delete('/:id', requireAdmin, (req, res) => {
     return res.status(404).json({ error: 'Produkt nebol najdeny' });
   }
   res.status(204).send();
-});
-
-// Import products from Google Sheets URL (admin)
-router.post('/import-gsheet/:cycleId', requireAdmin, async (req, res) => {
-  const cycleId = req.params.cycleId;
-  // ⚠ FUP-T15 — same class and same file as the CSV import above: `roastery` is bound
-  // into every inserted row. Reaching it needs a live public sheet, so it is not
-  // exercisable from the e2e suite — but the shape is identical and so is the cost
-  // (this route's catch logs the whole Error, i.e. a full stack, and echoes
-  // `error.message` to the client). Unbindable ⇒ absent, exactly as `|| null` already
-  // treats an empty field.
-  const { url } = req.body;
-  const roastery = bindValue(req.body.roastery);
-
-  // Check cycle exists
-  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
-  if (!cycle) {
-    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
-  }
-
-  // ⚠ FUP-T12: a non-string reached `url.match(...)` below and threw a TypeError. The
-  // route's own try/catch already turned that into a 400, so the STATUS looked fine —
-  // but it ECHOED `url.match is not a function` to the client and still wrote ~1.2 KB
-  // of stack to the log per request. Folded into the existing presence rule: same
-  // status, same message, and a string url still reaches the parser unchanged.
-  if (typeof url !== 'string' || !url) {
-    return res.status(400).json({ error: 'URL je povinne' });
-  }
-
-  try {
-    // Extract sheet ID and gid from URL
-    // Formats:
-    // https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=TAB_ID
-    // https://docs.google.com/spreadsheets/d/SHEET_ID/edit?gid=TAB_ID
-    const sheetIdMatch = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-    if (!sheetIdMatch) {
-      return res.status(400).json({ error: 'Neplatna Google Sheets URL' });
-    }
-    const sheetId = sheetIdMatch[1];
-
-    // Extract gid (tab ID), default to 0 if not found
-    // Only include gid if explicitly provided in URL
-    const gidMatch = url.match(/[#?&]gid=(\d+)/);
-    const gidParam = gidMatch ? `&gid=${gidMatch[1]}` : '';
-
-    // Fetch CSV from Google Sheets
-    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv${gidParam}`;
-    const response = await safeFetch(csvUrl, { allowRedirects: true });
-
-    if (!response.ok) {
-      return res.status(400).json({ error: 'Nepodarilo sa nacitat Google Sheet. Skontrolujte ci je sheet verejny.' });
-    }
-
-    const csvContent = await response.text();
-
-    // Parse CSV (reusing existing logic)
-    const records = parse(csvContent, {
-      columns: true,
-      skip_empty_lines: true,
-      trim: true,
-      bom: true
-    });
-
-    // Map CSV columns to database fields
-    const insertStmt = db.prepare(`
-      INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_250g, price_1kg, roastery)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const insertMany = db.transaction((products) => {
-      const results = [];
-      for (const p of products) {
-        // Try to match common column names (Slovak and English)
-        const name = p.Name || p.name || p.Nazov || p.nazov || '';
-        const desc1 = p.Description1 || p.description1 || p.Popis1 || p.popis1 || '';
-        const desc2 = p.Description2 || p.description2 || p.Popis2 || p.popis2 || p.ChutovyProfil || p['Chuťový profil'] || p['Chutovy profil'] || '';
-        const roast = p.Roast || p.roast || p.Prazenie || p.prazenie || '';
-        const purpose = p.Purpose || p.purpose || p.Ucel || p.ucel || '';
-
-        // Parse prices - handle various formats
-        const parsePrice = (val) => {
-          if (!val) return null;
-          const cleaned = String(val).replace(/[^\d.,]/g, '').replace(',', '.');
-          const num = parseFloat(cleaned);
-          return isNaN(num) ? null : num;
-        };
-
-        const price250g = parsePrice(p.Price250g || p.price250g || p.Cena250g || p.cena250g || p['250g']);
-        const price1kg = parsePrice(p.Price1kg || p.price1kg || p.Cena1kg || p.cena1kg || p['1kg']);
-
-        if (name) {
-          const result = insertStmt.run(cycleId, name, desc1, desc2, roast, purpose, price250g, price1kg, roastery || null);
-          results.push(result.lastInsertRowid);
-        }
-      }
-      return results;
-    });
-
-    const insertedIds = insertMany(records);
-
-    if (insertedIds.length === 0) {
-      return res.status(400).json({ error: 'Ziadne produkty neboli najdene. Skontrolujte nazvy stlpcov.' });
-    }
-
-    const products = db.prepare(`
-      SELECT * FROM products WHERE id IN (${insertedIds.map(() => '?').join(',')})
-    `).all(...insertedIds);
-
-    res.status(201).json({
-      message: `${products.length} produktov bolo importovanych z Google Sheets`,
-      products
-    });
-  } catch (error) {
-    console.error('Google Sheets import error:', error);
-    res.status(400).json({ error: 'Chyba pri importe: ' + error.message });
-  }
-});
-
-// Helper functions for multi-row import
-function isSeparatorRow(row) {
-  // Separator row: mostly empty (≤1 non-empty cells)
-  const nonEmptyCells = row.filter(cell => cell && cell.trim()).length;
-  return nonEmptyCells <= 1;
-}
-
-function isProductSectionHeader(row) {
-  // Check if row is the products section header (contains "Praženie", "VOC 5-25 kg", "Zrnková káva")
-  // Be specific to avoid matching words like "ovocie" which contains "voc"
-  const rowText = row.join(' ').toLowerCase();
-  return rowText.includes('praženie') || rowText.includes('prazenie') ||
-         rowText.includes('voc 5') || rowText.includes('voc 26') ||  // VOC price columns
-         rowText.includes('zrnková káva');
-}
-
-function parsePriceString(priceStr, variantLabel = '') {
-  const result = { price150g: null, price200g: null, price250g: null, price1kg: null, error: null };
-  if (!priceStr || !priceStr.trim()) return result;
-
-  const normalized = priceStr.replace(/\s+/g, ' ').trim();
-  const labelLower = variantLabel.toLowerCase();
-
-  // Detect variant types from label
-  const has150g = labelLower.includes('150');
-  const has200g = labelLower.includes('200');
-  const has250g = labelLower.includes('250');
-  const has1kg = labelLower.includes('1kg') || labelLower.includes('1 kg');
-
-  // Try to split by common separators: " / ", "/", " - ", "-"
-  const separators = [' / ', '/', ' - ', '-'];
-  let parts = null;
-
-  for (const sep of separators) {
-    if (normalized.includes(sep)) {
-      parts = normalized.split(sep).map(p => p.trim()).filter(p => p);
-      if (parts.length === 2) break;
-    }
-  }
-
-  const parsePrice = (val) => {
-    if (!val) return null;
-    const cleaned = String(val).replace(/[^\d.,]/g, '').replace(',', '.');
-    const num = parseFloat(cleaned);
-    return isNaN(num) ? null : num;
-  };
-
-  if (!parts || parts.length !== 2) {
-    // Single price - determine variant from label
-    const singlePrice = parsePrice(normalized);
-    if (singlePrice !== null) {
-      if (has150g) {
-        result.price150g = singlePrice;
-      } else if (has200g) {
-        result.price200g = singlePrice;
-      } else {
-        result.price250g = singlePrice;
-        result.error = 'Single price found, assumed 250g';
-      }
-    }
-    return result;
-  }
-
-  // Two prices - assign based on label
-  const price1 = parsePrice(parts[0]);
-  const price2 = parsePrice(parts[1]);
-
-  if (has150g && has1kg) {
-    result.price150g = price1;
-    result.price1kg = price2;
-  } else if (has200g && has1kg) {
-    result.price200g = price1;
-    result.price1kg = price2;
-  } else {
-    // Default: 250g / 1kg
-    result.price250g = price1;
-    result.price1kg = price2;
-  }
-
-  // Sanity check: 1kg should be more expensive than smaller variants
-  const smallPrice = result.price150g || result.price200g || result.price250g;
-  if (smallPrice && result.price1kg && result.price1kg < smallPrice) {
-    // Swap them
-    if (result.price150g) {
-      [result.price150g, result.price1kg] = [result.price1kg, result.price150g];
-    } else if (result.price200g) {
-      [result.price200g, result.price1kg] = [result.price1kg, result.price200g];
-    } else {
-      [result.price250g, result.price1kg] = [result.price1kg, result.price250g];
-    }
-    result.error = 'Prices were swapped (small variant was larger than 1kg)';
-  }
-
-  return result;
-}
-
-function parseMultiRowProducts(csvContent) {
-  const records = parse(csvContent, {
-    columns: false,      // Keep as arrays, don't auto-detect headers
-    skip_empty_lines: false,  // Need to detect separator rows
-    trim: true,
-    bom: true,
-    relax_column_count: true  // Handle rows with varying column counts
-  });
-
-  const products = [];
-  const warnings = [];
-  let currentProduct = null;
-  let rowInProduct = 0;
-  let productIndex = 0;
-  let inProductSection = false;
-
-  for (let i = 0; i < records.length; i++) {
-    const row = records[i];
-
-    // Skip header rows (first ~10 rows until we hit a separator followed by product)
-    if (!inProductSection) {
-      if (isSeparatorRow(row)) {
-        inProductSection = true;  // Next non-separator row starts products
-      }
-      continue;
-    }
-
-    // Skip product section header row (e.g., "Zrnková káva | Praženie | VOC...")
-    if (isProductSectionHeader(row)) {
-      continue;
-    }
-
-    // Detect separator row
-    if (isSeparatorRow(row)) {
-      // Finalize current product if we have one
-      if (currentProduct && currentProduct.name) {
-        products.push(currentProduct);
-        productIndex++;
-      }
-      currentProduct = null;
-      rowInProduct = 0;
-      continue;
-    }
-
-    // Process product rows based on actual Goriffee sheet structure:
-    // Row 1: B=name, H=purpose (Filter/Espresso), I=price format label (250g / 1kg)
-    // Row 2: B=description, I=actual price "8,9 / 35,3 EUR"
-    // Row 3: B=flavor profile, H=roast level (Light roast/Medium roast)
-
-    if (rowInProduct === 0) {
-      // Row 1: Name (B=1), Purpose (H=7), Variant label (I=8)
-      currentProduct = {
-        name: (row[1] || '').trim(),
-        description1: '',
-        description2: '',
-        purpose: (row[7] || '').trim(),  // Filter, Espresso, etc.
-        roast_type: '',
-        price_150g: null,
-        price_200g: null,
-        price_250g: null,
-        price_1kg: null,
-        _variantLabel: (row[8] || '').trim(),  // e.g., "150g", "200g / 1kg", "250g / 1kg"
-        _rowStart: i + 1
-      };
-      rowInProduct = 1;
-    } else if (rowInProduct === 1) {
-      // Row 2: Description (B=1), Price (I=8)
-      currentProduct.description1 = (row[1] || '').trim();
-
-      // Parse price from column I (index 8) using variant label from row 1
-      const priceResult = parsePriceString(row[8] || '', currentProduct._variantLabel);
-      currentProduct.price_150g = priceResult.price150g;
-      currentProduct.price_200g = priceResult.price200g;
-      currentProduct.price_250g = priceResult.price250g;
-      currentProduct.price_1kg = priceResult.price1kg;
-      if (priceResult.error) {
-        warnings.push(`"${currentProduct.name}": ${priceResult.error}`);
-      }
-
-      rowInProduct = 2;
-    } else if (rowInProduct === 2) {
-      // Row 3: Flavor profile (B=1), Roast type (H=7)
-      currentProduct.description2 = (row[1] || '').trim();
-      currentProduct.roast_type = (row[7] || '').trim();  // Light roast, Medium roast, etc.
-
-      // Product complete - add it
-      if (currentProduct.name) {
-        products.push(currentProduct);
-        productIndex++;
-      }
-
-      currentProduct = null;
-      rowInProduct = 0;
-    }
-  }
-
-  // Handle last product if file doesn't end with separator
-  if (currentProduct && currentProduct.name) {
-    products.push(currentProduct);
-  }
-
-  return { products, warnings };
-}
-
-// Import products from Google Sheets with multi-row format (3 rows per product) (admin)
-router.post('/import-gsheet-multirow/:cycleId', requireAdmin, async (req, res) => {
-  const cycleId = req.params.cycleId;
-  // ⚠ FUP-T15 — same class and same file as the CSV import above: `roastery` is bound
-  // into every inserted row. Reaching it needs a live public sheet, so it is not
-  // exercisable from the e2e suite — but the shape is identical and so is the cost
-  // (this route's catch logs the whole Error, i.e. a full stack, and echoes
-  // `error.message` to the client). Unbindable ⇒ absent, exactly as `|| null` already
-  // treats an empty field.
-  const { url } = req.body;
-  const roastery = bindValue(req.body.roastery);
-
-  // Check cycle exists
-  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
-  if (!cycle) {
-    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
-  }
-
-  // ⚠ FUP-T12: a non-string reached `url.match(...)` below and threw a TypeError. The
-  // route's own try/catch already turned that into a 400, so the STATUS looked fine —
-  // but it ECHOED `url.match is not a function` to the client and still wrote ~1.2 KB
-  // of stack to the log per request. Folded into the existing presence rule: same
-  // status, same message, and a string url still reaches the parser unchanged.
-  if (typeof url !== 'string' || !url) {
-    return res.status(400).json({ error: 'URL je povinne' });
-  }
-
-  try {
-    // Extract sheet ID and gid from URL
-    const sheetIdMatch = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-    if (!sheetIdMatch) {
-      return res.status(400).json({ error: 'Neplatna Google Sheets URL' });
-    }
-    const sheetId = sheetIdMatch[1];
-
-    // Only include gid if explicitly provided in URL
-    const gidMatch = url.match(/[#?&]gid=(\d+)/);
-    const gidParam = gidMatch ? `&gid=${gidMatch[1]}` : '';
-
-    // Fetch CSV from Google Sheets
-    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv${gidParam}`;
-    const response = await safeFetch(csvUrl, { allowRedirects: true });
-
-    if (!response.ok) {
-      return res.status(400).json({
-        error: 'Nepodarilo sa nacitat Google Sheet. Skontrolujte ci je sheet verejny.'
-      });
-    }
-
-    const csvContent = await response.text();
-
-    // Parse with multi-row logic
-    const { products, warnings } = parseMultiRowProducts(csvContent);
-
-    if (products.length === 0) {
-      return res.status(400).json({
-        error: 'Ziadne produkty neboli najdene. Skontrolujte format sheetu (3 riadky na produkt, oddelene prazdnym riadkom).'
-      });
-    }
-
-    // Insert products into database (without transaction wrapper to avoid sql.js issues)
-    const insertedIds = [];
-    for (const p of products) {
-      if (p.name) {
-        const result = db.prepare(`
-          INSERT INTO products (cycle_id, name, description1, description2, roast_type, purpose, price_150g, price_200g, price_250g, price_1kg, roastery)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(cycleId, p.name, p.description1, p.description2, p.roast_type, p.purpose, p.price_150g, p.price_200g, p.price_250g, p.price_1kg, roastery || null);
-        insertedIds.push(result.lastInsertRowid);
-      }
-    }
-
-    if (insertedIds.length === 0) {
-      return res.status(400).json({
-        error: 'Ziadne produkty neboli importovane. Skontrolujte format sheetu.'
-      });
-    }
-
-    const insertedProducts = db.prepare(`
-      SELECT * FROM products WHERE id IN (${insertedIds.map(() => '?').join(',')})
-    `).all(...insertedIds);
-
-    res.status(201).json({
-      message: `${insertedProducts.length} produktov bolo importovanych z Google Sheets`,
-      products: insertedProducts,
-      warnings: warnings
-    });
-
-  } catch (error) {
-    console.error('Google Sheets multi-row import error:', error);
-    res.status(400).json({ error: 'Chyba pri importe: ' + error.message });
-  }
 });
 
 export default router;

@@ -70,7 +70,7 @@ const changesNotificationDismissed = ref(false) // Track if "changes not saved" 
 const availability = ref({}) // { productId: { stock_limit_g, ordered_g, remaining_g } }
 
 // Variant weight map in grams
-const variantGrams = { '150g': 150, '200g': 200, '250g': 250, '500g': 500, '1kg': 1000, '20pc5g': 100 }
+const variantGrams = { '150g': 150, '200g': 200, '250g': 250, '500g': 500, '1kg': 1000, '20pc5g': 100, '8pc12g': 96 }
 
 // Pickup location state
 const pickupLocations = ref([])
@@ -257,6 +257,7 @@ const cartItems = computed(() => {
         else if (variant === '1kg') basePrice = product.price_1kg
         else if (variant === '500g') basePrice = product.price_500g
         else if (variant === '20pc5g') basePrice = product.price_20pc5g
+        else if (variant === '8pc12g') basePrice = product.price_8pc12g
         else if (variant === '150g') basePrice = product.price_150g
         else if (variant === '200g') basePrice = product.price_200g
         else basePrice = product.price_250g
@@ -381,7 +382,8 @@ const COFFEE_VARIANTS = [
   { field: 'price_250g', variant: '250g', label: '250g' },
   { field: 'price_500g', variant: '500g', label: '500g' },
   { field: 'price_1kg', variant: '1kg', label: '1kg' },
-  { field: 'price_20pc5g', variant: '20pc5g', label: '20 ks × 5g' }
+  { field: 'price_20pc5g', variant: '20pc5g', label: '20 ks × 5g' },
+  { field: 'price_8pc12g', variant: '8pc12g', label: '8 ks × 12g' }
 ]
 
 function coffeeVariants(product) {
@@ -429,8 +431,12 @@ function onQty(productId, variant, next) {
 }
 
 const availablePurposes = computed(() => {
-  // Order: Espresso, Filter, Kapsule, then others
-  const order = ['Espresso', 'Filter', 'Kapsule']
+  // Order: Espresso, Filter, capsules (BOTH spellings — the sheet writes
+  // 'Nespresso' where the app used to expect 'Kapsule'), Brew Bags, then others
+  // (PC-T12). Must stay in step with lib/purposes.js PREFERRED and
+  // GuestProductGrid.vue — three copies of one rule (see purposes.js for why
+  // they are not unified).
+  const order = ['Espresso', 'Filter', 'Kapsule', 'Nespresso', 'Brew Bags']
   const purposes = Object.keys(groupedProducts.value)
   const sorted = []
   for (const p of order) {

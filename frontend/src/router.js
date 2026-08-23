@@ -72,6 +72,13 @@ const routes = [
     name: 'admin-bakery-products',
     component: () => import('./views/AdminBakeryProducts.vue')
   },
+  // Coffee product catalog — module 12 (PC-T7): the "unified import tool in
+  // the main menu" (12 §UC-PC-009).
+  {
+    path: '/admin/catalog',
+    name: 'admin-catalog',
+    component: () => import('./views/AdminCatalog.vue')
+  },
   {
     path: '/admin/analytics/live',
     name: 'analytics-live',
