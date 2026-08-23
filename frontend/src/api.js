@@ -89,6 +89,9 @@ async function request(endpoint, options = {}) {
     const error = await response.json().catch(() => ({ error: 'Chyba servera' }))
     const err = new Error(error.error || 'Chyba servera')
     if (error.field) err.field = error.field
+    // The workbench create-collision 409 names the existing row so the UI can
+    // offer assign instead (12 §UC-PC-006).
+    if (error.catalog_id) err.catalogId = error.catalog_id
     throw err
   }
 
@@ -508,7 +511,13 @@ export const api = {
   importCatalogCSV: (formData) => adminRequest('/coffee-products/import', { method: 'POST', body: formData }),
   importCatalogGsheet: (url, roastery) => adminRequest('/coffee-products/import-gsheet', { method: 'POST', body: { url, roastery: roastery || null } }),
   importCatalogGsheetMultirow: (url, roastery) => adminRequest('/coffee-products/import-gsheet-multirow', { method: 'POST', body: { url, roastery: roastery || null } }),
-  migrateCatalog: () => adminRequest('/coffee-products/migrate', { method: 'POST' }),
+  // Migration workbench (module 12, PC-T9 — the manual assignment flow that
+  // replaced POST /migrate per resolved decision 14).
+  getMigrationPending: () => adminRequest('/coffee-products/migration/pending'),
+  assignMigrationGroups: (groups, catalogId) =>
+    adminRequest('/coffee-products/migration/assign', { method: 'POST', body: { groups, catalog_id: catalogId } }),
+  createMigrationProduct: (groups) =>
+    adminRequest('/coffee-products/migration/create', { method: 'POST', body: { groups } }),
   getCatalogDuplicates: () => adminRequest('/coffee-products/duplicates'),
   mergeCatalogProduct: (targetId, sourceId) => adminRequest(`/coffee-products/${targetId}/merge`, { method: 'POST', body: { source_id: sourceId } }),
   // ⚠ `last_n_cycles` is OMITTED for all time, never sent empty — the route

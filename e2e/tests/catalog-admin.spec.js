@@ -1,12 +1,17 @@
-// PC-T4 — 12 §UC-PC-006: POST /api/coffee-products/migrate, the one-time (but
-// idempotent and deliberately re-runnable) historical migration. Groups every
-// unlinked historical coffee snapshot by the ONE normalization helper, creates
-// catalog rows from the NEWEST snapshot per group (highest cycle_id, id DESC
-// tiebreak — the GSO-T8 same-second lesson), backfills
-// `products.source_coffee_product_id`, and returns the report incl.
-// `fuzzy_review`.
+// PC-T9 — 12 §UC-PC-006 (REWRITTEN, resolved decision 14): the MANUAL
+// assignment workbench replaces the shipped PC-T4 auto-migration (its fuzzy
+// suggestions merged unrelated products on staging). Three admin routes:
+//   GET  /api/coffee-products/migration/pending  — one row per distinct
+//        (normalized_name, roastery) over the unlinked coffee snapshots
+//   POST /api/coffee-products/migration/assign   — groups → existing catalog_id
+//   POST /api/coffee-products/migration/create   — ONE catalog row from the
+//        newest snapshot across the selection, then link everything selected
+// The shipped POST /migrate is RETIRED (404). NO similarity/fuzzy math exists
+// anywhere in this flow. The migration half of this file was rewritten under
+// case (a) of the e2e-immutability rule — the retired tests and the properties
+// that transfer are enumerated in 12 §UC-PC-011 item 3.
 //
-// ⚠ This file is the module's ADMIN-surface spec. PC-T4 owns the migration
+// ⚠ This file is the module's ADMIN-surface spec. PC-T9 owns the workbench
 // half (§§1–5); PC-T5 added the merge tool + stateless duplicates review
 // (§§6–10, 12 §UC-PC-007/008); PC-T7 (catalog CRUD + AdminCatalog.vue)
 // extends it later.
@@ -142,8 +147,35 @@ function tableSnapshot(db, table, excludeCols = []) {
   return JSON.stringify(db.prepare(`SELECT ${cols.join(', ')} FROM ${table} ORDER BY id`).all())
 }
 
-function migrate() {
-  return ctx.post('/api/coffee-products/migrate', { headers: admin() })
+// ── PC-T9 workbench helpers (12 §UC-PC-006) ───────────────────────────────────
+
+function getPending() {
+  return ctx.get('/api/coffee-products/migration/pending', { headers: admin() })
+}
+
+function assign(groups, catalogId, extra = {}) {
+  return ctx.post('/api/coffee-products/migration/assign', {
+    headers: admin(),
+    data: { groups, catalog_id: catalogId, ...extra },
+  })
+}
+
+function createFrom(groups) {
+  return ctx.post('/api/coffee-products/migration/create', {
+    headers: admin(),
+    data: { groups },
+  })
+}
+
+// Find OUR pending rows (the shared DB carries residue groups from other
+// tests/runs — never assert global counts).
+async function pendingRowsFor(stem) {
+  const res = await getPending()
+  expect(res.status()).toBe(200)
+  const body = await res.json()
+  expect(typeof body.pending_count).toBe('number')
+  expect(body.pending_count).toBe(body.pending.length)
+  return { body, rows: body.pending.filter((r) => r.display_name.includes(stem) || r.normalized_name.includes(stem.toLowerCase())) }
 }
 
 // ── PC-T5 fixture helpers (merge + duplicates) ────────────────────────────────
@@ -190,183 +222,127 @@ async function importOne(name, extra = {}, roastery) {
   return entry.catalog_id
 }
 
-// ── 1. auth ───────────────────────────────────────────────────────────────────
+// ── 1. route guards + the retired /migrate ────────────────────────────────────
 
-test.describe('UC-PC-006 — route guard', () => {
-  test('anonymous POST /api/coffee-products/migrate is 401', async () => {
+test.describe('UC-PC-006 — route guards + the retired endpoint', () => {
+  test('anonymous calls on all three workbench routes are 401', async () => {
     const anon = await playwrightRequest.newContext({ baseURL: BASE_URL })
     try {
-      const res = await anon.post('/api/coffee-products/migrate')
-      expect(res.status(), 'the migration must not be reachable anonymously').toBe(401)
+      expect((await anon.get('/api/coffee-products/migration/pending')).status()).toBe(401)
+      expect((await anon.post('/api/coffee-products/migration/assign', { data: { groups: [], catalog_id: 1 } })).status()).toBe(401)
+      expect((await anon.post('/api/coffee-products/migration/create', { data: { groups: [] } })).status()).toBe(401)
     } finally {
       await anon.dispose()
     }
   })
+
+  test('POST /api/coffee-products/migrate is RETIRED — 404 even to an authenticated admin (resolved decision 14)', async () => {
+    const res = await ctx.post('/api/coffee-products/migrate', { headers: admin() })
+    expect(res.status(), 'the auto-migration is gone, no tombstone handler').toBe(404)
+  })
 })
 
-// ── 2. the acceptance fixture: multi-cycle history → ONE catalog row ─────────
+// ── 2. GET /migration/pending — identity grouping, zero fuzzy ─────────────────
 
-test.describe('UC-PC-006 — grouping, newest-snapshot creation, backfill', () => {
-  test('multi-cycle history (incl. a case/whitespace variant) groups to ONE catalog row from the newest snapshot; bakery rows stay NULL-linked', async () => {
+test.describe('UC-PC-006 — pending grouping', () => {
+  test('the acceptance fixture: identical identities group into ONE row from the newest snapshot, near-names stay SEPARATE, bakery rows never appear — and NO similarity/candidate field exists anywhere', async () => {
     test.skip(!DB_PATH, NEEDS_DB)
     const stem = `${uniq()} Pink Bourbon`
-    const image = 'data:image/png;base64,PCT4IMG'
+    const honey = `${stem} Honey`
     const db = openDb()
-    let ids
+    let cNewest
     try {
       const c1 = seedCycle(db, `${stem} c1`, 'coffee')
-      const c2 = seedCycle(db, `${stem} c2`, null) // NULL type must COALESCE to coffee
-      const c3 = seedCycle(db, `${stem} c3`, 'coffee') // newest (highest cycle_id)
-      const c4 = seedCycle(db, `${stem} c4`, 'coffee')
+      const c2 = seedCycle(db, `${stem} c2`, null) // NULL type COALESCEs to coffee
+      cNewest = seedCycle(db, `${stem} c3`, 'coffee')
       const bk = seedCycle(db, `${stem} bakery`, 'bakery')
-      ids = {
-        s1: seedSnapshot(db, c1, { name: stem.toUpperCase(), description1: 'stary profil', price_250g: 8 }),
-        // Case/whitespace/punctuation variant of the same identity — must land
-        // in the SAME group via the one normalization helper.
-        s2: seedSnapshot(db, c2, { name: `  ${stem}!  `, description1: 'stredny profil', price_250g: 8.5 }),
-        s3: seedSnapshot(db, c3, { name: stem, description1: 'starsi profil', price_250g: 9 }),
-        // NEWEST snapshot of the group (highest cycle_id = c4): carries the
-        // metadata and the image the catalog row must be built from.
-        s4: seedSnapshot(db, c4, {
-          name: stem,
-          description1: 'najnovsi profil',
-          description2: 'kvety, med',
-          roast_type: 'Light roast',
-          purpose: 'Filter',
-          price_250g: 9.9,
-          price_1kg: 39,
-          image,
-        }),
-        bakeryRow: seedSnapshot(db, bk, { name: stem, price_250g: 5 }),
-        bakerySourced: seedSnapshot(db, c3, { name: stem, price_250g: 5, source_bakery_product_id: 999999 }),
-      }
+      seedSnapshot(db, c1, { name: stem.toUpperCase(), description1: 'stary profil', price_250g: 8 })
+      // Case/whitespace/punctuation variant — SAME identity via the one
+      // normalization helper (identity, not a suggestion — decision 14).
+      seedSnapshot(db, c2, { name: `  ${stem}!  `, description1: 'stredny profil', price_250g: 8.5 })
+      seedSnapshot(db, c2, { name: stem, price_250g: 8.7 })
+      // The group's NEWEST snapshot (highest cycle_id) supplies display
+      // metadata for the pending row.
+      seedSnapshot(db, cNewest, {
+        name: stem, description1: 'najnovsi profil', roast_type: 'Light roast', purpose: 'Filter', price_250g: 9.9,
+      })
+      // A near-name is its OWN pending row — never folded, never suggested.
+      seedSnapshot(db, c1, { name: honey, price_250g: 9 })
+      // Bakery-cycle and bakery-sourced rows are outside the candidate set.
+      seedSnapshot(db, bk, { name: stem, price_250g: 5 })
+      seedSnapshot(db, cNewest, { name: stem, price_250g: 5, source_bakery_product_id: 999999 })
     } finally {
       db.close()
     }
 
-    const res = await migrate()
+    const res = await getPending()
     expect(res.status()).toBe(200)
-    const report = await res.json()
+    const raw = await res.text()
+    // Decision 14: no similarity math, no candidate suggestions — ANYWHERE in
+    // the payload.
+    expect(raw).not.toMatch(/similarity|candidate|fuzzy/i)
+    const body = JSON.parse(raw)
+    expect(Object.keys(body).sort()).toEqual(['pending', 'pending_count'])
+    expect(body.pending_count).toBe(body.pending.length)
 
-    // The report shape is the UC-PC-006 contract, key-for-key.
-    expect(Object.keys(report).sort()).toEqual(['catalog_created', 'fuzzy_review', 'summary', 'unlinked_remaining'])
-    expect(Object.keys(report.summary).sort()).toEqual(
-      ['already_linked', 'catalog_created', 'fuzzy_review', 'groups', 'snapshots_linked'])
-    expect(report.summary.catalog_created).toBe(report.catalog_created.length)
-    expect(report.summary.fuzzy_review).toBe(report.fuzzy_review.length)
-    // Every coffee snapshot groups somewhere — non-zero is a bug signal.
-    expect(report.unlinked_remaining).toBe(0)
+    const rows = body.pending.filter((r) => r.normalized_name.startsWith(stem.toLowerCase()))
+    expect(rows, 'exactly TWO pending rows: the identity group and the near-name').toHaveLength(2)
 
-    const key = stem.toLowerCase()
-    const db2 = openDb()
-    try {
-      // Exactly ONE catalog row for the whole group, built from the NEWEST
-      // snapshot: its exact name string (original casing/whitespace), its
-      // metadata, its prices as current prices, its image.
-      const rows = catalogByNormalized(db2, key)
-      expect(rows).toHaveLength(1)
-      const cat = rows[0]
-      expect(cat.name).toBe(stem)
-      expect(cat.description1).toBe('najnovsi profil')
-      expect(cat.description2).toBe('kvety, med')
-      expect(cat.roast_type).toBe('Light roast')
-      expect(cat.purpose).toBe('Filter')
-      expect(cat.price_250g).toBe(9.9)
-      expect(cat.price_1kg).toBe(39)
-      expect(cat.image).toBe(image)
-      expect(cat.status).toBe('available')
-      // Informational attributes are NEVER migration-written.
-      for (const col of ['country', 'region', 'altitude', 'farm', 'variety', 'processing', 'curator_pick_note']) {
-        expect(cat[col], `${col} must stay NULL`).toBeNull()
-      }
-      expect(cat.is_new).toBe(0)
+    const main = rows.find((r) => r.normalized_name === stem.toLowerCase())
+    const near = rows.find((r) => r.normalized_name === honey.toLowerCase())
+    expect(main).toBeTruthy()
+    expect(near).toBeTruthy()
 
-      // All four coffee snapshots link to it; bakery-shaped rows stay NULL.
-      for (const sid of [ids.s1, ids.s2, ids.s3, ids.s4]) {
-        expect(productRow(db2, sid).source_coffee_product_id, `snapshot ${sid} linked`).toBe(cat.id)
-      }
-      expect(productRow(db2, ids.bakeryRow).source_coffee_product_id, 'bakery-cycle row untouched').toBeNull()
-      expect(productRow(db2, ids.bakerySourced).source_coffee_product_id, 'bakery-sourced row untouched').toBeNull()
+    // The pending row shape is the UC-PC-006 contract, key-for-key.
+    expect(Object.keys(main).sort()).toEqual(
+      ['cycles', 'display_name', 'newest_cycle', 'normalized_name', 'purpose', 'roast_type', 'roastery', 'snapshots'])
+    expect(main.display_name, 'display_name = the newest snapshot’s original casing').toBe(stem)
+    expect(main.roastery).toBe('Goriffee')
+    expect(main.snapshots, 'all four unlinked rows incl. the variants').toBe(4)
+    expect(main.cycles, 'COUNT(DISTINCT cycle_id)').toBe(3)
+    expect(main.purpose, 'from the newest snapshot').toBe('Filter')
+    expect(main.roast_type).toBe('Light roast')
+    expect(Object.keys(main.newest_cycle).sort()).toEqual(['created_at', 'id', 'name'])
+    expect(main.newest_cycle.id).toBe(cNewest)
+    expect(main.newest_cycle.name).toBe(`${stem} c3`)
 
-      // The report accounts for the created row by name.
-      const created = report.catalog_created.find((e) => e.catalog_id === cat.id)
-      expect(created).toBeTruthy()
-      expect(Object.keys(created).sort()).toEqual(['catalog_id', 'name', 'needs_image'])
-      expect(created.name).toBe(stem)
-      expect(created.needs_image).toBe(false)
-    } finally {
-      db2.close()
-    }
+    // Ordered by display_name over the normalized key: base before the
+    // longer near-name.
+    expect(body.pending.indexOf(main)).toBeLessThan(body.pending.indexOf(near))
+
+    // Bakery rows contributed nothing (4 + 1 accounted for above; a bakery
+    // leak would have made snapshots 5 or a third row — both asserted already).
   })
 
-  test('same-second collision: two snapshots in ONE cycle — the higher id wins (id DESC tiebreak)', async () => {
+  test('pending is READ-ONLY: the GET creates no catalog row and writes nothing (byte-compare)', async () => {
     test.skip(!DB_PATH, NEEDS_DB)
-    const name = `${uniq()} Cerro Azul`
+    const name = `${uniq()} Iba Citanie`
     const db = openDb()
-    let older, newer
+    let before
     try {
       const c = seedCycle(db, `${name} cycle`, 'coffee')
-      older = seedSnapshot(db, c, { name, description1: 'older twin', price_250g: 7 })
-      newer = seedSnapshot(db, c, { name, description1: 'newer twin', price_250g: 7.5 })
+      seedSnapshot(db, c, { name, price_250g: 8 })
+      before = {
+        products: tableSnapshot(db, 'products'),
+        catalog: tableSnapshot(db, 'coffee_products'),
+      }
     } finally {
       db.close()
     }
 
-    expect((await migrate()).status()).toBe(200)
+    const { rows } = await pendingRowsFor(name)
+    expect(rows, 'the group is listed').toHaveLength(1)
 
     const db2 = openDb()
     try {
-      const rows = catalogByNormalized(db2, name.toLowerCase())
-      expect(rows).toHaveLength(1)
-      expect(rows[0].description1, 'the id DESC twin supplies the metadata').toBe('newer twin')
-      expect(rows[0].price_250g).toBe(7.5)
-      expect(productRow(db2, older).source_coffee_product_id).toBe(rows[0].id)
-      expect(productRow(db2, newer).source_coffee_product_id).toBe(rows[0].id)
+      expect(tableSnapshot(db2, 'products'), 'no products write — a catalog row exists only after an explicit create').toBe(before.products)
+      expect(tableSnapshot(db2, 'coffee_products'), 'no catalog row created by a read').toBe(before.catalog)
     } finally {
       db2.close()
     }
   })
 
-  test('a group exact-matching an EXISTING catalog row backfills links and leaves the row byte-identical (no decision-13 refresh)', async () => {
-    test.skip(!DB_PATH, NEEDS_DB)
-    const name = `${uniq()} Existing Match`
-    const db = openDb()
-    let snapId, catalogBefore
-    try {
-      // A pre-existing catalog row (as an earlier import would have created it).
-      db.prepare(
-        `INSERT INTO coffee_products (name, normalized_name, roastery, price_250g, status)
-         VALUES (?, ?, 'Goriffee', 8.9, 'available')`
-      ).run(name, name.toLowerCase())
-      const c = seedCycle(db, `${name} cycle`, 'coffee')
-      // Historical snapshot with a DIFFERENT price — the migration must link,
-      // never refresh (an exact match backfills only; prices are the exact
-      // divergence decision 13 would have overwritten).
-      snapId = seedSnapshot(db, c, { name: name.toUpperCase(), description1: 'iny popis', price_250g: 99 })
-      catalogBefore = JSON.stringify(
-        db.prepare('SELECT * FROM coffee_products WHERE normalized_name = ? AND roastery = ?').get(name.toLowerCase(), 'Goriffee')
-      )
-    } finally {
-      db.close()
-    }
-
-    const res = await migrate()
-    expect(res.status()).toBe(200)
-    const report = await res.json()
-
-    const db2 = openDb()
-    try {
-      const rows = catalogByNormalized(db2, name.toLowerCase())
-      expect(rows, 'no second catalog row for the same identity').toHaveLength(1)
-      expect(JSON.stringify(rows[0]), 'the existing catalog row is byte-identical — backfill only').toBe(catalogBefore)
-      expect(productRow(db2, snapId).source_coffee_product_id).toBe(rows[0].id)
-      expect(report.catalog_created.some((e) => e.catalog_id === rows[0].id), 'a matched group creates nothing').toBe(false)
-    } finally {
-      db2.close()
-    }
-  })
-
-  test('same name under a different roastery is a different group — two catalog rows', async () => {
+  test('same name under a different roastery is a DIFFERENT pending row (roastery is half the key)', async () => {
     test.skip(!DB_PATH, NEEDS_DB)
     const name = `${uniq()} Dvojka`
     const other = `Praziaren ${uniq()}`
@@ -379,171 +355,416 @@ test.describe('UC-PC-006 — grouping, newest-snapshot creation, backfill', () =
       db.close()
     }
 
-    expect((await migrate()).status()).toBe(200)
-
-    const db2 = openDb()
-    try {
-      expect(catalogByNormalized(db2, name.toLowerCase(), 'Goriffee')).toHaveLength(1)
-      expect(catalogByNormalized(db2, name.toLowerCase(), other)).toHaveLength(1)
-    } finally {
-      db2.close()
-    }
+    const { rows } = await pendingRowsFor(name)
+    expect(rows).toHaveLength(2)
+    expect(rows.map((r) => r.roastery).sort()).toEqual(['Goriffee', other].sort())
+    for (const r of rows) expect(r.snapshots).toBe(1)
   })
 })
 
-// ── 3. the frozen-history pin: exactly one column, nothing else ───────────────
+// ── 3. POST /migration/assign — groups → an existing catalog product ──────────
 
-test.describe('UC-PC-006 — historical rows byte-identical apart from the link column', () => {
-  test('products (minus source_coffee_product_id), order_items and orders are byte-identical before/after', async () => {
+test.describe('UC-PC-006 — assign to an existing catalog product', () => {
+  test('links every unlinked snapshot of the selection; the ONLY write is the link column (catalog row, snapshots, order_items, orders byte-identical)', async () => {
     test.skip(!DB_PATH, NEEDS_DB)
-    const name = `${uniq()} Frozen History`
+    const stem = uniq()
+    const targetName = `${stem} Cielovy Produkt`
+    const oldName = `${stem} Stary Nazov`
+    const catalogId = await importOne(targetName, { purpose: 'Filter' })
+
     const db = openDb()
-    let before
+    let s1, s2, before
     try {
-      const c = seedCycle(db, `${name} cycle`, 'coffee')
-      const pid = seedSnapshot(db, c, { name, description1: 'popis', price_250g: 8, price_1kg: 30 })
-      // Non-vacuity: a real order_items row referencing the fixture snapshot,
-      // so "order_items untouched" is proven against data that exists.
+      const c1 = seedCycle(db, `${oldName} c1`, 'coffee')
+      const c2 = seedCycle(db, `${oldName} c2`, 'coffee')
+      s1 = seedSnapshot(db, c1, { name: oldName, description1: 'historicky popis', price_250g: 7 })
+      s2 = seedSnapshot(db, c2, { name: oldName.toUpperCase(), price_250g: 7.5 })
+      // Non-vacuity for the order_items pin: a real submitted order on the
+      // fixture snapshot.
       const friend = db.prepare('SELECT id FROM friends ORDER BY id LIMIT 1').get()
       expect(friend, 'seeded target must carry at least one friend (run e2e/seed.mjs)').toBeTruthy()
       const ord = db
-        .prepare("INSERT INTO orders (friend_id, cycle_id, status, total) VALUES (?, ?, 'submitted', 16)")
-        .run(friend.id, c)
+        .prepare("INSERT INTO orders (friend_id, cycle_id, status, total) VALUES (?, ?, 'submitted', 14)")
+        .run(friend.id, c1)
       db.prepare(
-        "INSERT INTO order_items (order_id, product_id, variant, quantity, price) VALUES (?, ?, '250g', 2, 8)"
-      ).run(Number(ord.lastInsertRowid), pid)
-
+        "INSERT INTO order_items (order_id, product_id, variant, quantity, price) VALUES (?, ?, '250g', 2, 7)"
+      ).run(Number(ord.lastInsertRowid), s1)
       before = {
         products: tableSnapshot(db, 'products', ['source_coffee_product_id']),
         orderItems: tableSnapshot(db, 'order_items'),
         orders: tableSnapshot(db, 'orders'),
-        cycles: tableSnapshot(db, 'order_cycles'),
+        catalog: tableSnapshot(db, 'coffee_products'),
       }
     } finally {
       db.close()
     }
 
-    expect((await migrate()).status()).toBe(200)
+    const { body: pendingBefore, rows } = await pendingRowsFor(oldName)
+    expect(rows).toHaveLength(1)
+    const group = { normalized_name: rows[0].normalized_name, roastery: rows[0].roastery }
+
+    const res = await assign([group], catalogId)
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(Object.keys(body).sort()).toEqual(['groups_linked', 'linked_snapshots', 'pending_count', 'skipped'])
+    expect(body.linked_snapshots).toBe(2)
+    expect(body.groups_linked).toBe(1)
+    expect(body.skipped).toEqual([])
+    // pending_count recomputed AFTER the write — the UI drops the row from it.
+    expect(body.pending_count).toBe(pendingBefore.pending_count - 1)
 
     const db2 = openDb()
     try {
-      expect(tableSnapshot(db2, 'products', ['source_coffee_product_id']),
-        'the migration writes EXACTLY source_coffee_product_id — every other products byte survives').toBe(before.products)
-      expect(tableSnapshot(db2, 'order_items'), 'order_items must not move').toBe(before.orderItems)
-      expect(tableSnapshot(db2, 'orders'), 'orders must not move').toBe(before.orders)
-      expect(tableSnapshot(db2, 'order_cycles'), 'order_cycles must not move').toBe(before.cycles)
-      // And the link DID land (the exclusion above is not hiding a no-op run).
-      const linked = db2
-        .prepare('SELECT source_coffee_product_id FROM products WHERE name = ?')
-        .get(name)
-      expect(linked.source_coffee_product_id).not.toBeNull()
+      expect(productRow(db2, s1).source_coffee_product_id).toBe(catalogId)
+      expect(productRow(db2, s2).source_coffee_product_id).toBe(catalogId)
+      // The PC-T4 data-safety invariant verbatim: the link column and NOTHING
+      // else — snapshot names/descriptions/prices, order_items, orders and the
+      // catalog row itself (assign never refreshes metadata) are byte-identical.
+      expect(tableSnapshot(db2, 'products', ['source_coffee_product_id'])).toBe(before.products)
+      expect(tableSnapshot(db2, 'order_items')).toBe(before.orderItems)
+      expect(tableSnapshot(db2, 'orders')).toBe(before.orders)
+      expect(tableSnapshot(db2, 'coffee_products'), 'assign touches NO catalog column').toBe(before.catalog)
     } finally {
       db2.close()
     }
+
+    // The group left the pending list.
+    const { rows: after } = await pendingRowsFor(oldName)
+    expect(after).toHaveLength(0)
   })
-})
 
-// ── 4. idempotency: second run = zero writes ──────────────────────────────────
-
-test.describe('UC-PC-006 — idempotent, deliberately re-runnable', () => {
-  test('a second run writes NOTHING (byte-compare) and reports zero created/linked', async () => {
+  test('re-firing the same assign converges: 200 with the group under skipped, never a 404 (GSO-T5 convergence)', async () => {
     test.skip(!DB_PATH, NEEDS_DB)
-    const name = `${uniq()} Idempotent`
+    const stem = uniq()
+    const catalogId = await importOne(`${stem} Konvergentny`)
+    const oldName = `${stem} Zanikla Skupina`
+
+    const db = openDb()
+    try {
+      const c = seedCycle(db, `${oldName} cycle`, 'coffee')
+      seedSnapshot(db, c, { name: oldName, price_250g: 8 })
+    } finally {
+      db.close()
+    }
+
+    const { rows } = await pendingRowsFor(oldName)
+    const group = { normalized_name: rows[0].normalized_name, roastery: rows[0].roastery }
+
+    expect((await assign([group], catalogId)).status()).toBe(200)
+
+    // Second fire: the group key is derived, not stored — "already resolved"
+    // and "never existed" are indistinguishable, and the requested end state
+    // already holds. Skip-and-report, never 404.
+    const second = await assign([group], catalogId)
+    expect(second.status()).toBe(200)
+    const body = await second.json()
+    expect(body.linked_snapshots).toBe(0)
+    expect(body.groups_linked).toBe(0)
+    expect(body.skipped).toEqual([
+      { normalized_name: group.normalized_name, roastery: group.roastery, reason: 'no_unlinked_rows' },
+    ])
+
+    // A group that NEVER existed behaves identically (same indistinguishability).
+    const ghost = await assign([{ normalized_name: `${stem} nikdy neexistoval`, roastery: 'Goriffee' }], catalogId)
+    expect(ghost.status()).toBe(200)
+    expect((await ghost.json()).skipped[0].reason).toBe('no_unlinked_rows')
+  })
+
+  test('cross-roastery assign is 409 field:roastery with NOTHING written', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const stem = uniq()
+    const catalogId = await importOne(`${stem} Domaci`) // roastery = default Goriffee
+    const other = `Praziaren ${uniq()}`
+    const oldName = `${stem} Cudzi`
+
     const db = openDb()
     let snapId
     try {
-      const c1 = seedCycle(db, `${name} c1`, 'coffee')
-      const c2 = seedCycle(db, `${name} c2`, 'coffee')
-      seedSnapshot(db, c1, { name, price_250g: 8 })
-      snapId = seedSnapshot(db, c2, { name: name.toUpperCase(), price_250g: 8.5 })
+      const c = seedCycle(db, `${oldName} cycle`, 'coffee')
+      snapId = seedSnapshot(db, c, { name: oldName, price_250g: 8, roastery: other })
     } finally {
       db.close()
     }
 
-    const first = await migrate()
-    expect(first.status()).toBe(200)
-    const firstReport = await first.json()
-    expect(firstReport.unlinked_remaining).toBe(0)
+    const { rows } = await pendingRowsFor(oldName)
+    expect(rows).toHaveLength(1)
+    const res = await assign([{ normalized_name: rows[0].normalized_name, roastery: other }], catalogId)
+    expect(res.status()).toBe(409)
+    const body = await res.json()
+    expect(body.field).toBe('roastery')
 
     const db2 = openDb()
-    let before, linkedTo
     try {
-      before = {
-        products: tableSnapshot(db2, 'products'),
-        catalog: tableSnapshot(db2, 'coffee_products'),
-      }
-      linkedTo = productRow(db2, snapId).source_coffee_product_id
-      expect(linkedTo).not.toBeNull()
+      expect(productRow(db2, snapId).source_coffee_product_id, 'cross-roastery identity is never crossed').toBeNull()
     } finally {
       db2.close()
     }
+  })
 
-    const second = await migrate()
-    expect(second.status()).toBe(200)
-    const report = await second.json()
+  test('unknown catalog_id 404; malformed groups/catalog_id 400 (bindValue hygiene on every field)', async () => {
+    const group = { normalized_name: 'x', roastery: 'Goriffee' }
 
-    // Already-linked rows are skipped; the run creates and links nothing.
-    expect(report.summary.catalog_created).toBe(0)
-    expect(report.summary.snapshots_linked).toBe(0)
-    expect(report.summary.groups).toBe(0)
-    expect(report.catalog_created).toEqual([])
-    expect(report.summary.already_linked).toBeGreaterThanOrEqual(2)
-    expect(report.unlinked_remaining).toBe(0)
+    expect((await assign([group], 99999999)).status(), 'unknown catalog_id').toBe(404)
+    expect((await assign([group], 'abc')).status(), 'non-integer catalog_id matches no row').toBe(404)
 
-    const db3 = openDb()
-    try {
-      expect(tableSnapshot(db3, 'products'), 'second run: zero products writes').toBe(before.products)
-      expect(tableSnapshot(db3, 'coffee_products'), 'second run: zero catalog writes').toBe(before.catalog)
-      expect(productRow(db3, snapId).source_coffee_product_id, 'links survive the re-run').toBe(linkedTo)
-    } finally {
-      db3.close()
+    const catalogId = await importOne(`${uniq()} Validacny Terc`)
+    for (const [label, groups] of [
+      ['missing groups', undefined],
+      ['non-array groups', { normalized_name: 'x', roastery: 'y' }],
+      ['empty groups', []],
+      ['entry missing roastery', [{ normalized_name: 'x' }]],
+      ['non-string normalized_name', [{ normalized_name: 123, roastery: 'Goriffee' }]],
+      ['non-string roastery', [{ normalized_name: 'x', roastery: ['G'] }]],
+      ['null entry', [null]],
+    ]) {
+      const res = await assign(groups, catalogId)
+      expect(res.status(), `${label} must 400`).toBe(400)
+      expect((await res.json()).field, label).toBe('groups')
+    }
+
+    for (const [label, data] of [
+      ['missing catalog_id', { groups: [group] }],
+      ['object catalog_id', { groups: [group], catalog_id: {} }],
+      ['boolean catalog_id', { groups: [group], catalog_id: true }],
+    ]) {
+      const res = await ctx.post('/api/coffee-products/migration/assign', { headers: admin(), data })
+      expect(res.status(), `${label} must 400`).toBe(400)
+      expect((await res.json()).field, label).toBe('catalog_id')
     }
   })
 })
 
-// ── 5. the fuzzy tail: create-as-new-but-flagged, never auto-merged ──────────
+// ── 4. POST /migration/create — ONE row from the newest snapshot ──────────────
 
-test.describe('UC-PC-006 — fuzzy_review', () => {
-  test('a near-miss group pair is migrated as TWO rows and reported under fuzzy_review', async () => {
+test.describe('UC-PC-006 — create a catalog product from a selection', () => {
+  test('the acceptance fixture: ONE catalog row from the NEWEST snapshot (decision-13 fields + image), all snapshots linked, pending_count drops', async () => {
     test.skip(!DB_PATH, NEEDS_DB)
     const stem = `${uniq()} Pink Bourbon`
-    const variant = `${stem} Honey`
+    const image = 'data:image/png;base64,PCT9IMG'
+    const db = openDb()
+    let ids, before
+    try {
+      const c1 = seedCycle(db, `${stem} c1`, 'coffee')
+      const c2 = seedCycle(db, `${stem} c2`, 'coffee')
+      const c3 = seedCycle(db, `${stem} c3`, 'coffee')
+      ids = {
+        s1: seedSnapshot(db, c1, { name: stem.toUpperCase(), description1: 'stary profil', price_250g: 8 }),
+        s2: seedSnapshot(db, c2, { name: `  ${stem}!  `, description1: 'stredny profil', price_250g: 8.5 }),
+        s3: seedSnapshot(db, c2, { name: stem, price_250g: 8.7 }),
+        // NEWEST across the selection — the catalog row is built from THIS one,
+        // incl. its image (per-cycle images consolidate into the catalog image).
+        s4: seedSnapshot(db, c3, {
+          name: stem,
+          description1: 'najnovsi profil',
+          description2: 'kvety, med',
+          roast_type: 'Light roast',
+          purpose: 'Filter',
+          price_250g: 9.9,
+          price_1kg: 39,
+          image,
+        }),
+      }
+      before = {
+        products: tableSnapshot(db, 'products', ['source_coffee_product_id']),
+        orderItems: tableSnapshot(db, 'order_items'),
+      }
+    } finally {
+      db.close()
+    }
+
+    const { body: pendingBefore, rows } = await pendingRowsFor(stem)
+    expect(rows).toHaveLength(1)
+    const group = { normalized_name: rows[0].normalized_name, roastery: rows[0].roastery }
+
+    const res = await createFrom([group])
+    expect(res.status()).toBe(201)
+    const raw = await res.text()
+    expect(raw, 'decision 14 — no fuzzy anywhere in the workbench').not.toMatch(/similarity|candidate|fuzzy/i)
+    const body = JSON.parse(raw)
+    expect(Object.keys(body).sort()).toEqual(['catalog', 'linked_snapshots', 'pending_count', 'skipped'])
+    expect(body.linked_snapshots).toBe(4)
+    expect(body.skipped).toEqual([])
+    expect(body.pending_count).toBe(pendingBefore.pending_count - 1)
+
+    const cat = body.catalog
+    expect(cat.name, 'original casing of the newest snapshot').toBe(stem)
+    expect(cat.normalized_name).toBe(stem.toLowerCase())
+    expect(cat.roastery).toBe('Goriffee')
+    expect(cat.description1).toBe('najnovsi profil')
+    expect(cat.description2).toBe('kvety, med')
+    expect(cat.roast_type).toBe('Light roast')
+    expect(cat.purpose).toBe('Filter')
+    expect(cat.price_250g).toBe(9.9)
+    expect(cat.price_1kg).toBe(39)
+    expect(cat.image).toBe(image)
+    expect(cat.status).toBe('available')
+    // Informational attributes are born empty (decision 13).
+    for (const col of ['country', 'region', 'altitude', 'farm', 'variety', 'processing', 'curator_pick_note']) {
+      expect(cat[col], `${col} must be NULL`).toBeNull()
+    }
+    expect(cat.is_new).toBe(0)
+
+    const db2 = openDb()
+    try {
+      // One row in the DB, matching the payload.
+      const dbRows = catalogByNormalized(db2, stem.toLowerCase())
+      expect(dbRows).toHaveLength(1)
+      expect(dbRows[0].id).toBe(cat.id)
+      // ALL selected snapshots linked; nothing but the link column moved.
+      for (const sid of [ids.s1, ids.s2, ids.s3, ids.s4]) {
+        expect(productRow(db2, sid).source_coffee_product_id, `snapshot ${sid} linked`).toBe(cat.id)
+      }
+      expect(tableSnapshot(db2, 'products', ['source_coffee_product_id'])).toBe(before.products)
+      expect(tableSnapshot(db2, 'order_items')).toBe(before.orderItems)
+    } finally {
+      db2.close()
+    }
+  })
+
+  test('same-second collision: two snapshots in ONE cycle — the higher id supplies the metadata (id DESC tiebreak)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const name = `${uniq()} Cerro Azul`
+    const db = openDb()
+    let older, newer
+    try {
+      const c = seedCycle(db, `${name} cycle`, 'coffee')
+      older = seedSnapshot(db, c, { name, description1: 'older twin', price_250g: 7 })
+      newer = seedSnapshot(db, c, { name, description1: 'newer twin', price_250g: 7.5 })
+    } finally {
+      db.close()
+    }
+
+    const { rows } = await pendingRowsFor(name)
+    const res = await createFrom([{ normalized_name: rows[0].normalized_name, roastery: rows[0].roastery }])
+    expect(res.status()).toBe(201)
+    const cat = (await res.json()).catalog
+    expect(cat.description1, 'the id DESC twin supplies the metadata').toBe('newer twin')
+    expect(cat.price_250g).toBe(7.5)
+
+    const db2 = openDb()
+    try {
+      expect(productRow(db2, older).source_coffee_product_id).toBe(cat.id)
+      expect(productRow(db2, newer).source_coffee_product_id).toBe(cat.id)
+    } finally {
+      db2.close()
+    }
+  })
+
+  test('a MULTI-GROUP selection makes ONE row from the newest snapshot across ALL of it and links every group; two roasteries in one selection 409', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const stem = uniq()
+    const nameA = `${stem} Alfa`
+    const nameB = `${stem} Alfa Novsi`
     const db = openDb()
     let sA, sB
     try {
       const c1 = seedCycle(db, `${stem} c1`, 'coffee')
       const c2 = seedCycle(db, `${stem} c2`, 'coffee')
-      sA = seedSnapshot(db, c1, { name: stem, price_250g: 8 })
-      sB = seedSnapshot(db, c2, { name: variant, price_250g: 9 })
+      sA = seedSnapshot(db, c1, { name: nameA, description1: 'stara identita', price_250g: 7 })
+      sB = seedSnapshot(db, c2, { name: nameB, description1: 'nova identita', price_250g: 9 })
     } finally {
       db.close()
     }
 
-    const res = await migrate()
-    expect(res.status()).toBe(200)
-    const report = await res.json()
+    const { rows } = await pendingRowsFor(stem)
+    expect(rows).toHaveLength(2)
+    const groups = rows.map((r) => ({ normalized_name: r.normalized_name, roastery: r.roastery }))
+
+    // Cross-roastery selection refuses first (one catalog row has one roastery).
+    const bad = await createFrom([groups[0], { ...groups[1], roastery: `Ina ${uniq()}` }])
+    expect(bad.status()).toBe(409)
+    expect((await bad.json()).field).toBe('roastery')
+
+    const res = await createFrom(groups)
+    expect(res.status()).toBe(201)
+    const body = await res.json()
+    expect(body.linked_snapshots).toBe(2)
+    const cat = body.catalog
+    expect(cat.name, 'newest across the WHOLE selection names the row').toBe(nameB)
+    expect(cat.description1).toBe('nova identita')
 
     const db2 = openDb()
     try {
-      const a = catalogByNormalized(db2, stem.toLowerCase())
-      const b = catalogByNormalized(db2, variant.toLowerCase())
-      expect(a, 'never auto-merged — both groups become their own row').toHaveLength(1)
-      expect(b).toHaveLength(1)
-      expect(productRow(db2, sA).source_coffee_product_id).toBe(a[0].id)
-      expect(productRow(db2, sB).source_coffee_product_id).toBe(b[0].id)
+      expect(productRow(db2, sA).source_coffee_product_id, 'the OTHER group links to the same new row').toBe(cat.id)
+      expect(productRow(db2, sB).source_coffee_product_id).toBe(cat.id)
+      // Only ONE catalog row came out of the selection.
+      expect(catalogByNormalized(db2, nameB.toLowerCase())).toHaveLength(1)
+      expect(catalogByNormalized(db2, nameA.toLowerCase())).toHaveLength(0)
+    } finally {
+      db2.close()
+    }
+  })
 
-      // The pair is flagged for the admin (either direction — group processing
-      // order decides which row names the other as candidate).
-      const pair = report.fuzzy_review.find(
-        (e) =>
-          (e.catalog_id === a[0].id && e.candidate_catalog_id === b[0].id) ||
-          (e.catalog_id === b[0].id && e.candidate_catalog_id === a[0].id)
-      )
-      expect(pair, 'the near-miss pair must land in fuzzy_review').toBeTruthy()
-      expect(Object.keys(pair).sort()).toEqual(
-        ['candidate_catalog_id', 'candidate_name', 'catalog_id', 'name', 'similarity'])
-      expect(pair.similarity).toBeGreaterThanOrEqual(0.75)
-      expect(pair.similarity).toBeLessThan(1)
+  test('a key collision with an EXISTING catalog row is 409 field:name carrying the existing catalog_id — the assign hand-off — and writes NOTHING', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const name = `${uniq()} Existujuci Nazov`
+    const existingId = await importOne(name)
+
+    const db = openDb()
+    let snapId, before
+    try {
+      const c = seedCycle(db, `${name} cycle`, 'coffee')
+      snapId = seedSnapshot(db, c, { name: name.toUpperCase(), price_250g: 9 })
+      before = tableSnapshot(db, 'coffee_products')
+    } finally {
+      db.close()
+    }
+
+    const { rows } = await pendingRowsFor(name)
+    const res = await createFrom([{ normalized_name: rows[0].normalized_name, roastery: rows[0].roastery }])
+    expect(res.status()).toBe(409)
+    const body = await res.json()
+    expect(body.field).toBe('name')
+    expect(body.catalog_id, 'the 409 names the existing row so the UI can offer assign instead').toBe(existingId)
+
+    const db2 = openDb()
+    try {
+      expect(tableSnapshot(db2, 'coffee_products'), 'no duplicate row, no refresh').toBe(before)
+      expect(productRow(db2, snapId).source_coffee_product_id, 'the refused create links nothing').toBeNull()
+    } finally {
+      db2.close()
+    }
+  })
+
+  test('empty/malformed selection 400; a double-fired create finds ZERO unlinked snapshots and 400s (no duplicate catalog row)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    for (const [label, groups] of [
+      ['missing groups', undefined],
+      ['empty groups', []],
+      ['non-array groups', 'x'],
+      ['entry missing normalized_name', [{ roastery: 'Goriffee' }]],
+      ['non-string roastery', [{ normalized_name: 'x', roastery: 5.5 }]],
+    ]) {
+      const res = await ctx.post('/api/coffee-products/migration/create', {
+        headers: admin(),
+        data: groups === undefined ? {} : { groups },
+      })
+      expect(res.status(), `${label} must 400`).toBe(400)
+      expect((await res.json()).field, label).toBe('groups')
+    }
+
+    const name = `${uniq()} Dvojity Vystrel`
+    const db = openDb()
+    try {
+      const c = seedCycle(db, `${name} cycle`, 'coffee')
+      seedSnapshot(db, c, { name, price_250g: 8 })
+    } finally {
+      db.close()
+    }
+
+    const { rows } = await pendingRowsFor(name)
+    const group = { normalized_name: rows[0].normalized_name, roastery: rows[0].roastery }
+
+    expect((await createFrom([group])).status()).toBe(201)
+
+    // The double-fire guard: the groups are already linked, the selection
+    // resolves to zero unlinked snapshots — 400, never a second catalog row.
+    const second = await createFrom([group])
+    expect(second.status()).toBe(400)
+
+    const db2 = openDb()
+    try {
+      expect(catalogByNormalized(db2, name.toLowerCase()), 'no duplicate catalog row from the double fire').toHaveLength(1)
     } finally {
       db2.close()
     }
@@ -775,55 +996,50 @@ test.describe('UC-PC-007 — post-merge imports meet the survivor', () => {
     expect(r3.new.some((e) => e.name === nameA)).toBe(false)
   })
 
-  test('after a merge, a /migrate re-run links a still-unlinked snapshot to the SURVIVOR (the re-runnability seam)', async () => {
+  test('after a merge, pending still lists an unlinked group and assign links it to the SURVIVOR (the re-runnability seam, re-pointed at the workbench per UC-PC-011 item 3)', async () => {
     test.skip(!DB_PATH, NEEDS_DB)
     const stem = `${uniq()} Zeleny Vrch`
     const variant = `${stem} Honey`
+
+    // Two catalog rows (as the workbench or an import would create them)…
+    const res = await importCsv(csvFor([
+      { name: stem, p250: '8,0' },
+      { name: variant, p250: '9,0' },
+    ]))
+    expect(res.status()).toBe(201)
+    const r = (await res.json()).report
+    const A = r.new.find((e) => e.name === stem).catalog_id
+    const B = r.new.find((e) => e.name === variant).catalog_id
+
+    // …the admin merges B into A…
+    expect((await merge(A, B)).status()).toBe(200)
+
+    // …and a LATER unlinked snapshot bearing B's retired identity surfaces in
+    // the workbench, where the admin assigns it to the SURVIVOR — B is never
+    // resurrected (the workbench replaces the /migrate re-run seam).
     const db = openDb()
+    let lateSnap
     try {
-      const c1 = seedCycle(db, `${stem} c1`, 'coffee')
-      const c2 = seedCycle(db, `${stem} c2`, 'coffee')
-      seedSnapshot(db, c1, { name: stem, price_250g: 8 })
-      seedSnapshot(db, c2, { name: variant, price_250g: 9 })
+      const c = seedCycle(db, `${stem} c3`, 'coffee')
+      lateSnap = seedSnapshot(db, c, { name: variant.toUpperCase(), price_250g: 8.5 })
     } finally {
       db.close()
     }
 
-    // First migration: two rows + a fuzzy_review pair (the PC-T4 behavior).
-    expect((await migrate()).status()).toBe(200)
+    const { rows } = await pendingRowsFor(variant)
+    expect(rows, 'the unlinked group is listed after the merge').toHaveLength(1)
+
+    const linkRes = await assign(
+      [{ normalized_name: rows[0].normalized_name, roastery: rows[0].roastery }], A)
+    expect(linkRes.status()).toBe(200)
+    expect((await linkRes.json()).linked_snapshots).toBe(1)
+
     const db2 = openDb()
-    let A, B, c3
     try {
-      A = catalogByNormalized(db2, stem.toLowerCase())[0].id
-      B = catalogByNormalized(db2, variant.toLowerCase())[0].id
-      c3 = seedCycle(db2, `${stem} c3`, 'coffee')
+      expect(productRow(db2, lateSnap).source_coffee_product_id, 'the late snapshot links to the survivor').toBe(A)
+      expect(catalogByNormalized(db2, variant.toLowerCase()), 'B\u2019s identity is not resurrected').toHaveLength(0)
     } finally {
       db2.close()
-    }
-
-    // The admin resolves the fuzzy pair with the merge…
-    expect((await merge(A, B)).status()).toBe(200)
-
-    // …and a LATER unlinked snapshot bearing the survivor's identity is picked
-    // up by the re-run and linked to A — B is never recreated.
-    const db3 = openDb()
-    let lateSnap
-    try {
-      lateSnap = seedSnapshot(db3, c3, { name: stem.toUpperCase(), price_250g: 8.5 })
-    } finally {
-      db3.close()
-    }
-    const rerun = await migrate()
-    expect(rerun.status()).toBe(200)
-    expect((await rerun.json()).unlinked_remaining).toBe(0)
-
-    const db4 = openDb()
-    try {
-      expect(productRow(db4, lateSnap).source_coffee_product_id, 'the late snapshot links to the survivor').toBe(A)
-      expect(catalogByNormalized(db4, stem.toLowerCase())).toHaveLength(1)
-      expect(catalogByNormalized(db4, variant.toLowerCase()), 'B’s identity is not resurrected by the re-run').toHaveLength(0)
-    } finally {
-      db4.close()
     }
   })
 })
@@ -1447,17 +1663,9 @@ test.describe('UC-PC-009 — AdminCatalog view (UI)', () => {
     await expect(page.getByTestId('catalog-row').first()).toContainText(keeper)
   })
 
-  test('migration trigger renders the UC-PC-006 report (idempotent — safe to fire from the UI at any time)', async ({ page }) => {
-    await loginAsAdminUI(page)
-    await page.goto('/admin/catalog')
-    await page.getByTestId('catalog-tab-migrate').click()
-    await page.getByTestId('migrate-button').click()
-    const report = page.getByTestId('migrate-report')
-    await expect(report).toBeVisible()
-    await expect(report).toContainText('Výsledok migrácie')
-    await expect(report).toContainText('vytvorených')
-    await expect(report).toContainText('prepojených')
-  })
+  // (The PC-T7 "migration trigger renders the report" UI test retired with the
+  // trigger itself — resolved decision 14; the workbench UI describe below is
+  // its replacement, per UC-PC-011 item 3.)
 
   test('stats tab renders the ranking with the imported product (window OMITTED for all time)', async ({ page }) => {
     const token = await loginAsAdminUI(page)
@@ -1494,6 +1702,194 @@ test.describe('UC-PC-009 — AdminCatalog view (UI)', () => {
     // neo primitives may appear on an admin view (01-architecture scope rule).
     const themed = page.locator('.app, .appbar, .cartbar, .cat-tabs, .modal-layer, .tabgroup, .vbox, .stepper, .m-foot, .inp, .h-screen.hl, .catarrow')
     await expect(themed).toHaveCount(0)
+  })
+})
+
+// ── PC-T9 — the migration workbench UI (12 §UC-PC-006/009, resolved decision 14)
+
+test.describe('UC-PC-006 — migration workbench (UI)', () => {
+  test('the workbench table renders pending rows with checkboxes; assign via the searchable picker drops the row WITHOUT a reload', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const token = await loginAsAdminUI(page)
+    const stem = uniq()
+    const targetName = `${stem} Cielovka`
+    const targetId = await uiImportOne(token, targetName)
+    const oldA = `${stem} Historicka Alfa`
+    const oldB = `${stem} Ina Kava`
+    const db = openDb()
+    try {
+      const c1 = seedCycle(db, `${stem} c1`, 'coffee')
+      const c2 = seedCycle(db, `${stem} c2`, 'coffee')
+      seedSnapshot(db, c1, { name: oldA, price_250g: 8 })
+      seedSnapshot(db, c2, { name: oldA.toUpperCase(), price_250g: 8.5 })
+      seedSnapshot(db, c1, { name: oldB, price_250g: 9 })
+    } finally {
+      db.close()
+    }
+
+    await page.goto('/admin/catalog')
+
+    // ⚠ Leave a products-tab filter ON that excludes the assign target: the
+    // picker must source its own UNFILTERED candidate set, never the filtered
+    // `products` list (review finding, PC-T9) — otherwise a stray filter
+    // silently hides valid targets.
+    await page.getByTestId('catalog-search').fill('zzz-nikde-nic-nenajde')
+    await expect(page.getByTestId('catalog-row')).toHaveCount(0)
+
+    await page.getByTestId('catalog-tab-migrate').click()
+    await expect(page.getByTestId('workbench-table')).toBeVisible()
+    await expect(page.getByTestId('workbench-count')).toBeVisible()
+
+    const rowA = page.getByTestId('workbench-row').filter({ hasText: oldA })
+    const rowB = page.getByTestId('workbench-row').filter({ hasText: oldB })
+    await expect(rowA).toHaveCount(1)
+    await expect(rowB).toHaveCount(1)
+    // Identity grouping on screen: the two cased variants are ONE row with
+    // snapshots=2, cycles=2.
+    await expect(rowA.getByTestId('workbench-snapshots')).toHaveText('2')
+    await expect(rowA.getByTestId('workbench-cycles')).toHaveText('2')
+    // No similarity hints, no suggested candidates anywhere in the workbench.
+    await expect(page.getByTestId('workbench-table')).not.toContainText(/zhoda|%/i)
+
+    // From here on the UI must update from the RESPONSE payload — never a
+    // pending re-fetch, never a reload (the PM's step 3).
+    const pendingGets = []
+    page.on('request', (req) => {
+      if (req.url().includes('/migration/pending')) pendingGets.push(req.url())
+    })
+
+    await rowA.getByTestId('workbench-check').check()
+    await page.getByTestId('workbench-assign-button').click()
+    const dialog = page.getByTestId('assign-dialog')
+    await expect(dialog).toBeVisible()
+    await dialog.getByTestId('assign-search').fill(targetName)
+    const option = dialog.getByTestId('assign-option')
+    await expect(option).toHaveCount(1)
+    await option.click()
+    await expect(dialog).not.toBeVisible()
+
+    await expect(rowA, 'the resolved row disappears').toHaveCount(0)
+    await expect(rowB, 'the untouched row stays').toHaveCount(1)
+    expect(pendingGets, 'rows drop from the response payload, not a re-fetch').toEqual([])
+
+    // The links really landed: the target now has two offering cycles.
+    const detail = await (await ctx.get(`/api/coffee-products/${targetId}`, { headers: uiHeaders(token) })).json()
+    expect(detail.history.length).toBe(2)
+  })
+
+  test('create-from-selection drops the row and the new product appears in the catalog list', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    await loginAsAdminUI(page)
+    const stem = uniq()
+    const oldName = `${stem} Novy Z Vyberu`
+    const db = openDb()
+    try {
+      const c = seedCycle(db, `${stem} c1`, 'coffee')
+      seedSnapshot(db, c, { name: oldName, purpose: 'Filter', price_250g: 8 })
+    } finally {
+      db.close()
+    }
+
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-tab-migrate').click()
+    const row = page.getByTestId('workbench-row').filter({ hasText: oldName })
+    await expect(row).toHaveCount(1)
+    await row.getByTestId('workbench-check').check()
+    await page.getByTestId('workbench-create-button').click()
+    await expect(row, 'the resolved row disappears').toHaveCount(0)
+
+    // "New products appearing": the catalog list carries the created row.
+    await page.getByTestId('catalog-tab-products').click()
+    await page.getByTestId('catalog-search').fill(oldName)
+    const catRow = page.getByTestId('catalog-row').filter({ hasText: oldName })
+    await expect(catRow).toHaveCount(1)
+    await expect(catRow.getByText('Dostupná')).toBeVisible()
+  })
+
+  test('a create collision renders the 409 in-context and hands off to assign', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const token = await loginAsAdminUI(page)
+    const stem = uniq()
+    const name = `${stem} Kolizna Kava`
+    await uiImportOne(token, name) // the EXISTING catalog identity
+    const db = openDb()
+    let snapId
+    try {
+      const c = seedCycle(db, `${stem} c1`, 'coffee')
+      snapId = seedSnapshot(db, c, { name: name.toUpperCase(), price_250g: 8 })
+    } finally {
+      db.close()
+    }
+
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-tab-migrate').click()
+    const row = page.getByTestId('workbench-row').filter({ hasText: name.toUpperCase() })
+    await expect(row).toHaveCount(1)
+    await row.getByTestId('workbench-check').check()
+    await page.getByTestId('workbench-create-button').click()
+
+    // The 409 renders IN-CONTEXT, offering assign instead (the admin just
+    // learned why assign is the right verb).
+    const err = page.getByTestId('workbench-error')
+    await expect(err).toBeVisible()
+    await expect(err).toContainText('existuje')
+    await err.getByTestId('workbench-assign-handoff').click()
+    const dialog = page.getByTestId('assign-dialog')
+    await expect(dialog).toBeVisible()
+    // The hand-off SPENDS the 409's catalog_id (review finding, PC-T9): the
+    // picker opens with the colliding product prefilled in the search and
+    // visible as the first candidate — never blank.
+    await expect(dialog.getByTestId('assign-search')).toHaveValue(name)
+    const option = dialog.getByTestId('assign-option')
+    await expect(option.first()).toContainText(name)
+    await option.first().click()
+    await expect(dialog).not.toBeVisible()
+    await expect(row, 'the hand-off resolves the row').toHaveCount(0)
+
+    // Linked to the EXISTING row — no duplicate was ever created.
+    const db2 = openDb()
+    try {
+      expect(catalogByNormalized(db2, name.toLowerCase())).toHaveLength(1)
+      expect(productRow(db2, snapId).source_coffee_product_id).toBe(catalogByNormalized(db2, name.toLowerCase())[0].id)
+    } finally {
+      db2.close()
+    }
+  })
+
+  test('empty state: "História je zmigrovaná." once the pending list is drained', async ({ page }) => {
+    const token = await loginAsAdminUI(page)
+
+    // Drain EVERYTHING over the API (residue from earlier tests included):
+    // create per group; a name collision hands off to assign — exactly the
+    // workbench contract. A 400 marks a group raced away mid-loop.
+    for (let guard = 0; guard < 300; guard++) {
+      const res = await ctx.get('/api/coffee-products/migration/pending', { headers: uiHeaders(token) })
+      expect(res.status()).toBe(200)
+      const { pending } = await res.json()
+      if (pending.length === 0) break
+      const g = pending[0]
+      const groups = [{ normalized_name: g.normalized_name, roastery: g.roastery }]
+      const created = await ctx.post('/api/coffee-products/migration/create', {
+        headers: uiHeaders(token), data: { groups },
+      })
+      if (created.status() === 201) continue
+      if (created.status() === 409) {
+        const body = await created.json()
+        const assigned = await ctx.post('/api/coffee-products/migration/assign', {
+          headers: uiHeaders(token), data: { groups, catalog_id: body.catalog_id },
+        })
+        expect(assigned.status()).toBe(200)
+        continue
+      }
+      expect(created.status(), 'a drain step must create, collide, or find the group already resolved').toBe(400)
+    }
+    const final = await ctx.get('/api/coffee-products/migration/pending', { headers: uiHeaders(token) })
+    expect((await final.json()).pending_count, 'the drain finished').toBe(0)
+
+    await page.goto('/admin/catalog')
+    await page.getByTestId('catalog-tab-migrate').click()
+    await expect(page.getByTestId('workbench-empty')).toHaveText('História je zmigrovaná.')
+    await expect(page.getByTestId('workbench-table')).toHaveCount(0)
   })
 })
 

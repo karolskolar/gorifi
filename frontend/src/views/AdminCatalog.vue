@@ -4,7 +4,9 @@
 // (incl. the needs-image affordance), edit dialog (metadata + informational
 // attributes), IMPORT section (CSV + gsheet, UC-PC-004 report rendering incl.
 // pending_fuzzy → merge-flow links), duplicates review with per-pair merge
-// (inline confirm), migration trigger + report, and the stats tab.
+// (inline confirm), the MIGRATION WORKBENCH (PC-T9, resolved decision 14 —
+// checkbox table + assign/create bulk actions, replacing the retired
+// auto-migration trigger; NO similarity hints anywhere), and the stats tab.
 //
 // ⚠ OLD ADMIN SKIN ONLY — shadcn components like every other Admin*.vue view.
 // Zero Podpultovka theme classes (.app / neo/ / theme classes) — asserted in
@@ -50,19 +52,27 @@ const filterNeedsImage = ref(false)
 
 const PURPOSES = ['Espresso', 'Filter', 'Kapsule']
 
+// Sequence guard (the GSO-T2 dialog rule, banked from PC-T7's review): the
+// filter watcher fires per keystroke, so a slow earlier response must not
+// overwrite a newer one.
+let productsSeq = 0
 async function loadProducts() {
+  const seq = ++productsSeq
   loading.value = true
   try {
-    products.value = await api.getCatalogProducts({
+    const rows = await api.getCatalogProducts({
       status: filterStatus.value,
       purpose: filterPurpose.value,
       roastery: filterRoastery.value,
       q: filterQ.value,
     })
+    if (seq !== productsSeq) return
+    products.value = rows
   } catch (e) {
+    if (seq !== productsSeq) return
     error.value = e.message
   } finally {
-    loading.value = false
+    if (seq === productsSeq) loading.value = false
   }
 }
 
@@ -281,23 +291,164 @@ async function confirmMerge() {
   }
 }
 
-// ── Migration ─────────────────────────────────────────────────────────────────
-const migrating = ref(false)
-const migrateError = ref('')
-const migrateReport = ref(null)
+// ── Migration workbench (PC-T9, 12 §UC-PC-006 — resolved decision 14) ────────
+//
+// The pending list the admin drains manually: select groups (checkboxes),
+// then either assign them to an EXISTING catalog product (searchable picker)
+// or create a NEW one from the selection. Resolved rows disappear from the
+// RESPONSE payload — never a re-fetch, never a reload (the PM's step 3). No
+// similarity hints, no suggested candidates — the picker is search, not
+// suggestion.
+const pendingRows = ref([])
+const pendingLoading = ref(false)
+// In-context (tab-level) error — carries the create-collision 409's
+// catalog_id so the UI can offer assign instead, with the colliding product
+// pinned and prefiltered in the picker (the 409's catalog_id is SPENT, not
+// just a truthiness gate).
+const migError = ref('')
+const migErrorCatalogId = ref(null)
+const selected = ref({}) // group key → true
+let pendingSeq = 0
 
-async function runMigration() {
-  migrating.value = true
-  migrateError.value = ''
+const groupKey = (g) => `${g.normalized_name}\u0000${g.roastery}`
+const selectedRows = computed(() => pendingRows.value.filter((r) => selected.value[groupKey(r)]))
+const selectedGroups = computed(() =>
+  selectedRows.value.map((r) => ({ normalized_name: r.normalized_name, roastery: r.roastery }))
+)
+const allSelected = computed(
+  () => pendingRows.value.length > 0 && selectedRows.value.length === pendingRows.value.length
+)
+
+function toggleSelectAll(event) {
+  const on = event.target.checked
+  const next = {}
+  if (on) for (const r of pendingRows.value) next[groupKey(r)] = true
+  selected.value = next
+}
+
+async function loadPending() {
+  const seq = ++pendingSeq
+  pendingLoading.value = true
+  migError.value = ''
+  migErrorCatalogId.value = null
   try {
-    // Idempotent + deliberately re-runnable (after merges it links the
-    // still-unlinked fuzzy tail) — visible always for exactly that reason.
-    migrateReport.value = await api.migrateCatalog()
-    await loadProducts()
+    const result = await api.getMigrationPending()
+    if (seq !== pendingSeq) return
+    pendingRows.value = result.pending
+    selected.value = {}
   } catch (e) {
-    migrateError.value = e.message
+    if (seq !== pendingSeq) return
+    migError.value = e.message
   } finally {
-    migrating.value = false
+    if (seq === pendingSeq) pendingLoading.value = false
+  }
+}
+
+// Resolved rows disappear in place (assign's skipped groups too — a skipped
+// group has no unlinked rows left, i.e. it is resolved either way).
+function removeResolved(keys) {
+  const drop = new Set(keys)
+  pendingRows.value = pendingRows.value.filter((r) => !drop.has(groupKey(r)))
+  selected.value = {}
+}
+
+// Assign dialog — searchable catalog picker. Errors render IN-DIALOG (the
+// module-11 modalError idiom).
+const showAssign = ref(false)
+const assignSearch = ref('')
+const assignError = ref('')
+const assignBusy = ref(false)
+
+// ⚠ The picker's candidate set is its OWN unfiltered fetch, never
+// `products.value` — that list reflects the products tab's status/purpose/
+// roastery/q filters, and a filter left on that tab would silently hide valid
+// assign targets. Retired products stay assignable (UC-PC-006 is silent, so
+// any EXISTING catalog product is a valid target — the admin knows best; the
+// backend has always allowed it) and are labelled "Vyradená" in the list.
+const pickerProducts = ref([])
+const pickerLoading = ref(false)
+// The create-collision hand-off pins the colliding product: prefill the
+// search with its name and float it to the top, so the 409's catalog_id is
+// actually spent, not just gated on.
+const pinnedId = ref(null)
+let pickerSeq = 0
+
+// Diacritic/case-insensitive search — mirrors the server's normalization
+// (search, not suggestion).
+const searchNorm = (s) =>
+  String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+const assignCandidates = computed(() => {
+  const q = searchNorm(assignSearch.value.trim())
+  const rows = q
+    ? pickerProducts.value.filter((p) => searchNorm(p.name).includes(q))
+    : pickerProducts.value
+  if (!pinnedId.value) return rows
+  const pin = rows.filter((p) => p.id === pinnedId.value)
+  return pin.length ? [...pin, ...rows.filter((p) => p.id !== pinnedId.value)] : rows
+})
+
+async function openAssignDialog(pinId = null) {
+  assignError.value = ''
+  assignSearch.value = ''
+  pinnedId.value = pinId
+  showAssign.value = true
+  const seq = ++pickerSeq
+  pickerLoading.value = true
+  try {
+    const rows = await api.getCatalogProducts({}) // unfiltered on purpose
+    if (seq !== pickerSeq) return
+    pickerProducts.value = rows
+    if (pinId) {
+      const hit = rows.find((p) => p.id === pinId)
+      if (hit) assignSearch.value = hit.name
+    }
+  } catch (e) {
+    if (seq !== pickerSeq) return
+    assignError.value = e.message
+  } finally {
+    if (seq === pickerSeq) pickerLoading.value = false
+  }
+}
+
+async function confirmAssign(catalogId) {
+  if (assignBusy.value || selectedRows.value.length === 0) return
+  assignBusy.value = true
+  assignError.value = ''
+  try {
+    const keys = selectedRows.value.map(groupKey)
+    await api.assignMigrationGroups(selectedGroups.value, catalogId)
+    showAssign.value = false
+    migError.value = ''
+    migErrorCatalogId.value = null
+    removeResolved(keys)
+  } catch (e) {
+    assignError.value = e.message
+  } finally {
+    assignBusy.value = false
+  }
+}
+
+const createBusy = ref(false)
+async function createFromSelection() {
+  if (createBusy.value || selectedRows.value.length === 0) return
+  createBusy.value = true
+  migError.value = ''
+  migErrorCatalogId.value = null
+  try {
+    const keys = selectedRows.value.map(groupKey)
+    const result = await api.createMigrationProduct(selectedGroups.value)
+    removeResolved(keys)
+    // "New products appearing": append the created row (already in the list
+    // shape — cycles_count + all_time_kg ride in the payload).
+    products.value = [...products.value, result.catalog]
+  } catch (e) {
+    migError.value = e.message
+    // The create-collision 409 hands off to assign (the admin just learned
+    // why assign is the right verb — the identity already exists). Keep the
+    // id so the hand-off opens the picker WITH the colliding product.
+    migErrorCatalogId.value = (e.field === 'name' && e.catalogId) || null
+  } finally {
+    createBusy.value = false
   }
 }
 
@@ -313,18 +464,25 @@ const statsDetail = ref(null)
 const showStatsDetail = ref(false)
 const sortKey = ref('total_kg')
 
+// Same sequence guard as loadProducts — the [statsPurpose, statsWindow]
+// watcher can fire in quick succession.
+let statsSeq = 0
 async function loadStats() {
+  const seq = ++statsSeq
   statsLoading.value = true
   statsError.value = ''
   try {
-    statsData.value = await api.getCatalogStats({
+    const result = await api.getCatalogStats({
       purpose: statsPurpose.value || undefined,
       lastNCycles: statsWindow.value ? parseInt(statsWindow.value) : undefined,
     })
+    if (seq !== statsSeq) return
+    statsData.value = result
   } catch (e) {
+    if (seq !== statsSeq) return
     statsError.value = e.message
   } finally {
-    statsLoading.value = false
+    if (seq === statsSeq) statsLoading.value = false
   }
 }
 
@@ -347,13 +505,15 @@ async function openStatsDetail(catalogId) {
   }
 }
 
-// Lazy-load tab data on first visit.
-const dupLoaded = ref(false)
+// Lazy-load tab data on visit. (The dead `dupLoaded` ref from PC-T7 is gone —
+// duplicates deliberately re-fetch on every visit, stats only on the first.)
 const statsLoaded = ref(false)
 watch(activeTab, (tab) => {
   if (tab === 'duplicates') {
-    dupLoaded.value = true
     loadDuplicates()
+  }
+  if (tab === 'migrate') {
+    loadPending()
   }
   if (tab === 'stats' && !statsLoaded.value) {
     statsLoaded.value = true
@@ -667,57 +827,70 @@ async function logout() {
           </div>
         </TabsContent>
 
-        <!-- ── Migration ────────────────────────────────────────────────── -->
+        <!-- ── Migration workbench (PC-T9, resolved decision 14) ─────────── -->
         <TabsContent value="migrate">
-          <Card class="mb-4">
-            <CardContent class="p-4">
-              <h3 class="text-sm font-medium mb-2">Migrácia histórie</h3>
-              <p class="text-xs text-muted-foreground mb-3">
-                Zoskupí historické produkty z cyklov podľa názvu, vytvorí záznamy v katalógu a prepojí históriu.
-                Beh je idempotentný — opakované spustenie je bezpečné a po zlúčení duplicít doprepája zvyšok.
-              </p>
-              <Button @click="runMigration" :disabled="migrating" data-testid="migrate-button">
-                {{ migrating ? 'Migrujem...' : 'Spustiť migráciu histórie' }}
+          <!-- In-context error; the create-collision 409 offers assign instead. -->
+          <Alert v-if="migError" variant="destructive" class="mb-4" data-testid="workbench-error">
+            <AlertDescription class="flex flex-wrap items-center gap-2">
+              <span>{{ migError }}</span>
+              <Button v-if="migErrorCatalogId" variant="outline" size="sm" data-testid="workbench-assign-handoff" @click="openAssignDialog(migErrorCatalogId)">
+                Priradiť k existujúcemu
               </Button>
-            </CardContent>
-          </Card>
-
-          <Alert v-if="migrateError" variant="destructive" class="mb-4">
-            <AlertDescription>{{ migrateError }}</AlertDescription>
+            </AlertDescription>
           </Alert>
 
-          <Card v-if="migrateReport" data-testid="migrate-report">
-            <CardContent class="p-4 space-y-4">
-              <h3 class="text-sm font-medium">
-                Výsledok migrácie:
-                {{ migrateReport.summary.catalog_created }} vytvorených ·
-                {{ migrateReport.summary.snapshots_linked }} prepojených ·
-                {{ migrateReport.summary.already_linked }} už prepojených ·
-                {{ migrateReport.summary.fuzzy_review }} na kontrolu
-              </h3>
-              <p v-if="migrateReport.unlinked_remaining > 0" class="text-sm text-destructive">
-                Neprepojených zostáva: {{ migrateReport.unlinked_remaining }}
+          <div v-if="pendingLoading" class="text-center py-12 text-muted-foreground">Načítavam...</div>
+
+          <div v-else-if="pendingRows.length === 0 && !migError" class="text-center py-12 text-muted-foreground" data-testid="workbench-empty">História je zmigrovaná.</div>
+
+          <template v-else-if="pendingRows.length > 0">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <p class="text-sm text-muted-foreground" data-testid="workbench-count">
+                Nespárované produkty z histórie: <span class="font-medium text-foreground">{{ pendingRows.length }}</span>
               </p>
-
-              <div v-if="migrateReport.catalog_created.length > 0">
-                <h4 class="text-sm font-semibold mb-1">Vytvorené v katalógu ({{ migrateReport.catalog_created.length }})</h4>
-                <ul class="text-sm space-y-0.5 text-muted-foreground">
-                  <li v-for="entry in migrateReport.catalog_created" :key="entry.catalog_id">{{ entry.name }}</li>
-                </ul>
+              <div class="flex gap-2">
+                <Button :disabled="selectedRows.length === 0" data-testid="workbench-assign-button" @click="openAssignDialog()">
+                  Priradiť k existujúcemu
+                </Button>
+                <Button :disabled="selectedRows.length === 0 || createBusy" variant="outline" data-testid="workbench-create-button" @click="createFromSelection">
+                  Vytvoriť nový produkt z výberu
+                </Button>
               </div>
+            </div>
 
-              <div v-if="migrateReport.fuzzy_review.length > 0">
-                <h4 class="text-sm font-semibold mb-1 text-amber-700">Na kontrolu — možné duplicity ({{ migrateReport.fuzzy_review.length }})</h4>
-                <ul class="space-y-1">
-                  <li v-for="(entry, i) in migrateReport.fuzzy_review" :key="i" class="text-sm flex flex-wrap items-center gap-2">
-                    <span class="font-medium">{{ entry.name }}</span>
-                    <span class="text-muted-foreground">— Je to premenovaný {{ entry.candidate_name }}?</span>
-                    <Button variant="outline" size="sm" @click="goToDuplicates">Skontrolovať a zlúčiť</Button>
-                  </li>
-                </ul>
-              </div>
-            </CardContent>
-          </Card>
+            <Card>
+              <Table data-testid="workbench-table">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead class="w-10">
+                      <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" class="rounded" aria-label="Vybrať všetko" />
+                    </TableHead>
+                    <TableHead>Názov</TableHead>
+                    <TableHead>Pražiareň</TableHead>
+                    <TableHead class="text-right">Záznamy</TableHead>
+                    <TableHead class="text-right">Cykly</TableHead>
+                    <TableHead>Najnovší cyklus</TableHead>
+                    <TableHead>Účel</TableHead>
+                    <TableHead>Praženie</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow v-for="row in pendingRows" :key="groupKey(row)" data-testid="workbench-row">
+                    <TableCell>
+                      <input type="checkbox" v-model="selected[groupKey(row)]" data-testid="workbench-check" class="rounded" :aria-label="`Vybrať ${row.display_name}`" />
+                    </TableCell>
+                    <TableCell class="font-medium">{{ row.display_name }}</TableCell>
+                    <TableCell class="text-sm text-muted-foreground">{{ row.roastery }}</TableCell>
+                    <TableCell class="text-right text-sm" data-testid="workbench-snapshots">{{ row.snapshots }}</TableCell>
+                    <TableCell class="text-right text-sm" data-testid="workbench-cycles">{{ row.cycles }}</TableCell>
+                    <TableCell class="text-sm text-muted-foreground">{{ row.newest_cycle.name }}</TableCell>
+                    <TableCell class="text-sm">{{ row.purpose || '-' }}</TableCell>
+                    <TableCell class="text-sm">{{ row.roast_type || '-' }}</TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </Card>
+          </template>
         </TabsContent>
 
         <!-- ── Stats ────────────────────────────────────────────────────── -->
@@ -945,6 +1118,52 @@ async function logout() {
         <DialogFooter>
           <Button variant="outline" @click="showEdit = false">Zrušiť</Button>
           <Button @click="saveEdit" :disabled="!editForm.name || !editForm.name.trim()">Uložiť</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Assign picker (migration workbench) — a searchable catalog PICKER,
+         deliberately without suggestions (decision 14: search, not suggestion).
+         Errors render in-dialog (the module-11 modalError idiom). -->
+    <Dialog :open="showAssign" @update:open="showAssign = $event">
+      <DialogContent class="max-w-lg max-h-[90vh] overflow-y-auto" data-testid="assign-dialog">
+        <DialogHeader>
+          <DialogTitle>Priradiť k existujúcemu produktu</DialogTitle>
+        </DialogHeader>
+
+        <Alert v-if="assignError" variant="destructive" data-testid="assign-error">
+          <AlertDescription>{{ assignError }}</AlertDescription>
+        </Alert>
+
+        <div class="space-y-3 py-2">
+          <p class="text-sm text-muted-foreground">
+            Vybrané skupiny ({{ selectedRows.length }}) sa prepoja na zvolený produkt v katalógu.
+          </p>
+          <Input v-model="assignSearch" data-testid="assign-search" placeholder="Hľadať v katalógu..." />
+          <p v-if="pickerLoading" class="text-sm text-muted-foreground py-4 text-center">
+            Načítavam...
+          </p>
+          <p v-else-if="assignCandidates.length === 0" class="text-sm text-muted-foreground py-4 text-center">
+            Žiadny produkt nezodpovedá hľadaniu.
+          </p>
+          <ul v-else class="divide-y border rounded-md max-h-72 overflow-y-auto">
+            <li v-for="p in assignCandidates" :key="p.id">
+              <button
+                type="button"
+                class="w-full flex items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-muted disabled:opacity-50"
+                :disabled="assignBusy"
+                data-testid="assign-option"
+                @click="confirmAssign(p.id)"
+              >
+                <span class="font-medium">{{ p.name }}</span>
+                <span class="text-xs text-muted-foreground whitespace-nowrap">{{ p.roastery }}{{ p.status === 'retired' ? ' · Vyradená' : '' }}</span>
+              </button>
+            </li>
+          </ul>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" @click="showAssign = false">Zrušiť</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

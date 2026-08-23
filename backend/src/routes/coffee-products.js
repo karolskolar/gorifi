@@ -6,13 +6,14 @@ import { imageFromUpload, imageFromBody } from '../helpers/image-upload.js';
 import { normalizeProductName } from '../helpers/catalog.js';
 import { parseCsvProducts, parseGsheetCsvProducts, parseMultiRowProducts, fetchGsheetCsv } from '../helpers/import-parsing.js';
 import { importRowsIntoCatalog } from '../helpers/catalog-import.js';
-import { migrateHistoricalSnapshots } from '../helpers/catalog-migrate.js';
+import { pendingMigrationGroups, parseGroupSelection, assignGroupsToCatalog, createCatalogFromGroups } from '../helpers/catalog-workbench.js';
 import { mergeCatalogRows, findDuplicatePairs } from '../helpers/catalog-merge.js';
 import { coffeeCycleWindow, catalogRanking, catalogProductStats, allTimeKgByCatalogId } from '../helpers/catalog-stats.js';
 
 // Coffee-product catalog routes — module 12 (PC-T2 opened this file with the
-// three UC-PC-003 import endpoints; PC-T4/T5/T6/T7 add migrate/merge/
-// duplicates/CRUD/stats to the SAME router).
+// three UC-PC-003 import endpoints; PC-T5/T6/T7 added merge/duplicates/CRUD/
+// stats; PC-T9 replaced PC-T4's auto-migration with the manual assignment
+// workbench — all on the SAME router).
 //
 // ⚠ WHOLE-MOUNT ADMIN: index.js mounts this as
 //   app.use('/api/coffee-products', requireAdmin, coffeeProductsRouter)
@@ -164,18 +165,113 @@ router.post('/import-gsheet-multirow', async (req, res) => {
   }
 });
 
-// One-time historical migration (admin) — 12 §UC-PC-006 (PC-T4). Idempotent
-// and deliberately re-runnable (after merges it links the still-unlinked
-// fuzzy tail). Fully synchronous — no await anywhere (GA-T8); the helper runs
-// everything inside ONE db.transaction. The admin trigger + report rendering
-// land in PC-T7; until then this is API-only.
-router.post('/migrate', (req, res) => {
+// ── The migration workbench (admin) — 12 §UC-PC-006 (PC-T9) ────────────────
+//
+// REPLACES the shipped POST /migrate (resolved decision 14 — the auto-flow's
+// fuzzy suggestions merged unrelated products; the retired route now answers
+// 404, no tombstone handler). NO similarity/fuzzy math anywhere in these three
+// routes. Fully synchronous — no await (GA-T8); each mutating handler is ONE
+// db.transaction inside the helper. Literal paths, registered ABOVE the
+// parametric routes like /duplicates and /stats.
+
+// The pending list: one row per distinct (normalized_name, roastery) over the
+// unlinked historical coffee snapshots. Read-only.
+router.get('/migration/pending', (req, res) => {
   try {
-    const report = migrateHistoricalSnapshots();
-    return res.json(report);
+    return res.json(pendingMigrationGroups());
   } catch (error) {
-    console.error('Catalog migration error:', error.message);
-    return res.status(500).json({ error: 'Nepodarilo sa migrovat historicke produkty' });
+    console.error('Migration pending error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa nacitat nespracovane produkty' });
+  }
+});
+
+// Assign the selected groups to an EXISTING catalog product. Raced/empty
+// groups are skip-and-report (never 404 — group keys are derived, not stored);
+// cross-roastery is refused unconditionally.
+router.post('/migration/assign', (req, res) => {
+  const selection = parseGroupSelection(req.body?.groups);
+  if (!selection) {
+    return res.status(400).json({ error: 'Neplatny vyber skupin', field: 'groups' });
+  }
+
+  // catalog_id — bindValue hygiene (FUP-T13): missing/unbindable is a 400
+  // about the request shape; a non-integer can match no row, so it is the
+  // same 404 as an unknown id (the merge-route pattern).
+  const rawId = bindValue(req.body?.catalog_id);
+  if (rawId === undefined || rawId === null || rawId === '') {
+    return res.status(400).json({ error: 'catalog_id je povinne', field: 'catalog_id' });
+  }
+  const catalogId = Number(rawId);
+  if (!Number.isInteger(catalogId)) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+
+  try {
+    const catalog = db.prepare('SELECT id, roastery FROM coffee_products WHERE id = ?').get(catalogId);
+    if (!catalog) {
+      return res.status(404).json({ error: 'Produkt neexistuje' });
+    }
+    // Cross-roastery identity is never crossed (the UC-PC-007 merge-tool
+    // precedent) — ANY group under another roastery refuses the whole call.
+    if (selection.some((g) => g.roastery !== catalog.roastery)) {
+      return res.status(409).json({ error: 'Produkty patria roznym praziarniam', field: 'roastery' });
+    }
+    return res.json(assignGroupsToCatalog(selection, catalogId));
+  } catch (error) {
+    console.error('Migration assign error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa priradit produkty' });
+  }
+});
+
+// Create ONE catalog product from the newest snapshot across the selection,
+// then link everything selected. Unconditional create — deliberately NOT via
+// consolidateCatalogRow (its match-or-refresh semantics would silently convert
+// "create new" into "match-and-refresh"; fuzzy is banned here).
+router.post('/migration/create', (req, res) => {
+  const selection = parseGroupSelection(req.body?.groups);
+  if (!selection) {
+    return res.status(400).json({ error: 'Neplatny vyber skupin', field: 'groups' });
+  }
+  // One catalog row has one roastery — a selection spanning two refuses.
+  if (selection.some((g) => g.roastery !== selection[0].roastery)) {
+    return res.status(409).json({ error: 'Produkty patria roznym praziarniam', field: 'roastery' });
+  }
+
+  try {
+    const result = createCatalogFromGroups(selection);
+    if (result.outcome === 'nothing_to_create') {
+      // Zero unlinked snapshots — nothing to create from. Also the
+      // double-fire guard: a repeated create 400s instead of minting a
+      // duplicate catalog row.
+      return res.status(400).json({ error: 'Ziadne neprepojene produkty vo vybere', field: 'groups' });
+    }
+    if (result.outcome === 'name_collision') {
+      // The assign hand-off: the 409 names the existing row so the UI can
+      // offer "Priradiť k existujúcemu" instead.
+      return res.status(409).json({
+        error: 'Produkt s tymto nazvom uz v katalogu existuje',
+        field: 'name',
+        catalog_id: result.catalog_id,
+      });
+    }
+    // Return the created row in the LIST shape (cycles_count + all_time_kg)
+    // so the UI can append it to the catalog list straight from this payload.
+    const row = db.prepare(`
+      SELECT cp.*,
+        (SELECT COUNT(DISTINCT p.cycle_id) FROM products p
+          WHERE p.source_coffee_product_id = cp.id) AS cycles_count
+      FROM coffee_products cp WHERE cp.id = ?
+    `).get(result.catalog_id);
+    const kg = allTimeKgByCatalogId();
+    return res.status(201).json({
+      catalog: { ...row, all_time_kg: kg.get(row.id) || 0 },
+      linked_snapshots: result.linked_snapshots,
+      skipped: result.skipped,
+      pending_count: result.pending_count,
+    });
+  } catch (error) {
+    console.error('Migration create error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa vytvorit produkt' });
   }
 });
 
@@ -306,7 +402,7 @@ router.post('/:id/merge', (req, res) => {
 //
 // ⚠ ROUTE ORDERING: the parametric GET /:id, PATCH /:id and POST /:id/image
 // below are registered AFTER every literal path (/duplicates, /stats, /import*,
-// /migrate) and after GET /:id/stats — express matches in registration order,
+// /migration/*) and after GET /:id/stats — express matches in registration order,
 // so keeping them at the END of this file is what stops /:id from shadowing
 // /duplicates or /stats. Never move them up.
 //

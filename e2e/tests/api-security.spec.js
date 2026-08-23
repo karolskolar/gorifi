@@ -60,8 +60,12 @@ const ADMIN_ENDPOINTS = [
   { method: 'post', path: '/api/coffee-products/import' },
   { method: 'post', path: '/api/coffee-products/import-gsheet', data: { url: 'https://docs.google.com/spreadsheets/d/x/edit' } },
   { method: 'post', path: '/api/coffee-products/import-gsheet-multirow', data: { url: 'https://docs.google.com/spreadsheets/d/x/edit' } },
-  // 12 §UC-PC-006 (PC-T4): the historical migration.
-  { method: 'post', path: '/api/coffee-products/migrate' },
+  // 12 §UC-PC-006 (PC-T9, resolved decision 14): the manual assignment
+  // workbench. The shipped POST /migrate is RETIRED (404) — its anonymous-401
+  // row retired with it, in the same change (UC-PC-011 item 1).
+  { method: 'get', path: '/api/coffee-products/migration/pending' },
+  { method: 'post', path: '/api/coffee-products/migration/assign', data: { groups: [], catalog_id: 1 } },
+  { method: 'post', path: '/api/coffee-products/migration/create', data: { groups: [] } },
   // 12 §UC-PC-007/008 (PC-T5): merge tool + stateless duplicates review.
   { method: 'post', path: '/api/coffee-products/1/merge', data: { source_id: 2 } },
   { method: 'get', path: '/api/coffee-products/duplicates' },
