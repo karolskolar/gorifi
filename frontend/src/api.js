@@ -518,6 +518,8 @@ export const api = {
     adminRequest('/coffee-products/migration/assign', { method: 'POST', body: { groups, catalog_id: catalogId } }),
   createMigrationProduct: (groups) =>
     adminRequest('/coffee-products/migration/create', { method: 'POST', body: { groups } }),
+  // PC-T10 (12 §UC-PC-014): one-time conversion of legacy base64 images to files.
+  convertCatalogImages: () => adminRequest('/coffee-products/convert-images', { method: 'POST' }),
   getCatalogDuplicates: () => adminRequest('/coffee-products/duplicates'),
   mergeCatalogProduct: (targetId, sourceId) => adminRequest(`/coffee-products/${targetId}/merge`, { method: 'POST', body: { source_id: sourceId } }),
   // ⚠ `last_n_cycles` is OMITTED for all time, never sent empty — the route

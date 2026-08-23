@@ -344,6 +344,30 @@ async function loadPending() {
   }
 }
 
+// One-time image conversion (PC-T10, 12 §UC-PC-014) — a small action near the
+// workbench: converts legacy base64 image columns to files + URLs and renders
+// the report counts.
+const convertBusy = ref(false)
+const convertResult = ref(null)
+const convertError = ref('')
+
+async function convertImages() {
+  convertBusy.value = true
+  convertError.value = ''
+  try {
+    convertResult.value = await api.convertCatalogImages()
+  } catch (e) {
+    convertError.value = e.message || 'Konverzia obrázkov zlyhala'
+  } finally {
+    convertBusy.value = false
+  }
+}
+
+function formatBytes(n) {
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${Math.round(n / 1024)} kB`
+}
+
 // Resolved rows disappear in place (assign's skipped groups too — a skipped
 // group has no unlinked rows left, i.e. it is resolved either way).
 function removeResolved(keys) {
@@ -891,6 +915,26 @@ async function logout() {
               </Table>
             </Card>
           </template>
+
+          <!-- One-time image conversion (PC-T10, 12 §UC-PC-014) -->
+          <Card class="mt-8">
+            <CardContent class="p-4">
+              <div class="flex flex-wrap items-center gap-3">
+                <Button variant="outline" :disabled="convertBusy" data-testid="convert-images-button" @click="convertImages">
+                  Konvertovať obrázky na súbory
+                </Button>
+                <span v-if="convertResult" class="text-sm text-muted-foreground" data-testid="convert-images-result">
+                  Skonvertované: {{ convertResult.converted_catalog }} v katalógu, {{ convertResult.converted_snapshots }} v cykloch
+                  · preskočené: {{ convertResult.skipped.length }}
+                  · uvoľnené: {{ formatBytes(convertResult.bytes_freed) }}
+                </span>
+                <span v-if="convertError" class="text-sm text-destructive" data-testid="convert-images-error">{{ convertError }}</span>
+              </div>
+              <p class="text-xs text-muted-foreground mt-2">
+                Presunie obrázky uložené v databáze (base64) do súborov. Opakované spustenie je bezpečné.
+              </p>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <!-- ── Stats ────────────────────────────────────────────────────── -->

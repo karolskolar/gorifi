@@ -1398,17 +1398,21 @@ test.describe('UC-PC-009 — catalog CRUD (API)', () => {
     expect((await getCatalogRow(id)).status()).toBe(200)
   })
 
-  test('POST /:id/image stores the sniffed data: URI; the list serves it; unknown id 404; junk bytes 400', async () => {
+  // UC-PC-014 retarget (case a): the upload is stored as a content-hash FILE
+  // and the column holds the URL path — the protected property (magic-byte
+  // sniffing decides the type, junk bytes 400, the list serves the value) is
+  // unchanged; only the stored representation moved.
+  test('POST /:id/image stores a content-hash file URL; the list serves it; unknown id 404; junk bytes 400', async () => {
     const name = `${uniq()} Fotogenicka`
     const id = await importOne(name)
 
     const res = await uploadImage(id)
     expect(res.status()).toBe(200)
     const body = await res.json()
-    expect(body.image, 'magic-byte sniffed mime, not the client label').toMatch(/^data:image\/png;base64,/)
+    expect(body.image, 'magic-byte sniffed extension, not the client label').toMatch(/^\/api\/images\/[a-f0-9]{32}\.png$/)
 
     const listRow = (await (await getCatalog(`?q=${encodeURIComponent(name)}`)).json()).find((r) => r.id === id)
-    expect(listRow.image).toMatch(/^data:image\/png;base64,/)
+    expect(listRow.image).toMatch(/^\/api\/images\/[a-f0-9]{32}\.png$/)
 
     expect((await uploadImage(99999999)).status()).toBe(404)
 
@@ -1559,7 +1563,8 @@ test.describe('UC-PC-009 — AdminCatalog view (UI)', () => {
     await expect(dialog.getByTestId('catalog-image-preview')).toBeVisible()
 
     const detail = await (await ctx.get(`/api/coffee-products/${id}`, { headers: uiHeaders(token) })).json()
-    expect(detail.image).toMatch(/^data:image\/png;base64,/)
+    // UC-PC-014 retarget (case a): stored as a file, column holds the URL.
+    expect(detail.image).toMatch(/^\/api\/images\/[a-f0-9]{32}\.png$/)
   })
 
   test('import section drives a real CSV import and renders the UC-PC-004 report buckets incl. pending_fuzzy → merge flow', async ({ page }) => {
@@ -2155,7 +2160,9 @@ test.describe('UC-PC-012 — the image COALESCE on the snapshot read paths (API)
     })
     expect(up.status()).toBe(200)
     const catalogImage = (await up.json()).image
-    expect(catalogImage).toMatch(/^data:image\/png;base64,/)
+    // UC-PC-014 retarget (case a): stored as a file, column holds the URL —
+    // the COALESCE assertions below are value-agnostic and unchanged.
+    expect(catalogImage).toMatch(/^\/api\/images\/[a-f0-9]{32}\.png$/)
 
     const res = await createCycle({ name: `${stem} foto cyklus`, type: 'coffee', coffee_product_ids: [id] })
     expect(res.status()).toBe(201)

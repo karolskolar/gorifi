@@ -50,7 +50,11 @@ test.describe('Image upload validation', () => {
     })
     expect(res.status()).toBe(200)
     const updated = await res.json()
-    expect(updated.image).toMatch(/^data:image\/png;base64,/)
+    // UC-PC-014 retarget (case a): the accepted upload is now stored as a
+    // content-hash file; the column holds the URL path. The property protected
+    // is unchanged — a real PNG is ACCEPTED and its sniffed type recorded
+    // (extension from magic bytes, not the client label).
+    expect(updated.image).toMatch(/^\/api\/images\/[a-f0-9]{32}\.png$/)
   })
 })
 
@@ -177,7 +181,8 @@ test.describe('Upload size limit (FUP-T6)', () => {
       multipart: { image: { name: 'big-enough.png', mimeType: 'image/png', buffer: NEAR_LIMIT_PNG } },
     })
     expect(res.status(), '1 MB is well inside the 5 MB cap').toBe(200)
-    expect((await res.json()).image).toMatch(/^data:image\/png;base64,/)
+    // UC-PC-014 retarget (case a): stored as a file, column holds the URL.
+    expect((await res.json()).image).toMatch(/^\/api\/images\/[a-f0-9]{32}\.png$/)
   })
 
   // ⚠ Every upload route, not just one. "The guard runs before multer" is a
@@ -340,7 +345,8 @@ test.describe('Malformed or aborted multipart (FUP-T7)', () => {
       multipart: { image: { name: 'ok.png', mimeType: 'image/png', buffer: PNG_BYTES } },
     })
     expect(res.status(), 'the wrapper is transparent on the happy path').toBe(200)
-    expect((await res.json()).image).toMatch(/^data:image\/png;base64,/)
+    // UC-PC-014 retarget (case a): stored as a file, column holds the URL.
+    expect((await res.json()).image).toMatch(/^\/api\/images\/[a-f0-9]{32}\.png$/)
   })
 
   // ⚠ Same reasoning as FUP-T6's loop: "the admin guard runs before multer" is a

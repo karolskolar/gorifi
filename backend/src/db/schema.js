@@ -1072,6 +1072,9 @@ initDb();
 
 export default dbHelpers;
 export {
+  // PC-T10 (12 §UC-PC-014): the resolved DB file path — helpers/image-store.js
+  // derives the uploads directory from it (a SIBLING of the SQLite file).
+  dbPath,
   saveDb,
   generateUid,
   generateInviteCode,

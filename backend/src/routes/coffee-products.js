@@ -2,7 +2,11 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { uploadSingle } from '../helpers/multipart.js';
 import { bindValue } from '../helpers/bind-value.js';
-import { imageFromUpload, imageFromBody } from '../helpers/image-upload.js';
+// PC-T10 (12 §UC-PC-014): the image write paths store content-hash FILES and
+// write the URL path into the column — base64 never enters a column on these
+// paths again. Same magic-byte validation as before (image-store sniffs via
+// detectImageMime), same request contracts (multipart AND body base64).
+import { imageUrlFromUpload, imageUrlFromBody, storeImage } from '../helpers/image-store.js';
 import { normalizeProductName } from '../helpers/catalog.js';
 import { parseCsvProducts, parseGsheetCsvProducts, parseMultiRowProducts, fetchGsheetCsv } from '../helpers/import-parsing.js';
 import { importRowsIntoCatalog } from '../helpers/catalog-import.js';
@@ -272,6 +276,79 @@ router.post('/migration/create', (req, res) => {
   } catch (error) {
     console.error('Migration create error:', error.message);
     return res.status(500).json({ error: 'Nepodarilo sa vytvorit produkt' });
+  }
+});
+
+// One-time image conversion (admin) — 12 §UC-PC-014 (PC-T10, the
+// migration-endpoint precedent). Converts every legacy `data:%` value in
+// coffee_products.image AND in products.image rows of COFFEE cycles
+// (COALESCE(order_cycles.type,'coffee')='coffee', source_bakery_product_id IS
+// NULL — bakery is out of scope) to a content-hash file + URL, so old cycles'
+// friend pages get the payload win too.
+//
+// Idempotent: rows already holding URL values or NULL don't match the LIKE and
+// are never touched — a second run converts 0. Per row the FILE is written
+// first (inside storeImage), the column second, so a crash between the two
+// leaves a valid state: the old base64 still in the column, an orphan file on
+// disk that the re-run reuses by hash. An unparseable/non-raster legacy value
+// is SKIPPED and reported, never dropped.
+//
+// Fully synchronous, no await (writeFileSync — consistent with the
+// `instances: 1` + synchronous-handler concurrency model; ~10 MB of writes is
+// a one-time admin action, not a hot path). Registered ABOVE the parametric
+// routes, like /duplicates.
+router.post('/convert-images', (req, res) => {
+  try {
+    const skipped = [];
+    let bytesFreed = 0;
+
+    const convertRows = (table, rows) => {
+      let converted = 0;
+      for (const row of rows) {
+        const m = /^data:([^;,]+);base64,(.*)$/s.exec(row.image);
+        if (!m) {
+          skipped.push({ table, id: row.id, reason: 'unparseable' });
+          continue;
+        }
+        // File first (storeImage writes it before returning), column second.
+        const stored = storeImage(Buffer.from(m[2], 'base64'));
+        if (stored.error) {
+          skipped.push({ table, id: row.id, reason: 'not_an_image' });
+          continue;
+        }
+        db.prepare(`UPDATE ${table} SET image = ? WHERE id = ?`).run(stored.url, row.id);
+        // The PM-visible payoff number: base64 string length removed from columns.
+        bytesFreed += row.image.length;
+        converted++;
+      }
+      return converted;
+    };
+
+    const catalogRows = db.prepare(
+      "SELECT id, image FROM coffee_products WHERE image LIKE 'data:%'"
+    ).all();
+    const snapshotRows = db.prepare(`
+      SELECT p.id, p.image
+      FROM products p
+      JOIN order_cycles c ON c.id = p.cycle_id
+      WHERE p.image LIKE 'data:%'
+        AND COALESCE(c.type, 'coffee') = 'coffee'
+        AND p.source_bakery_product_id IS NULL
+    `).all();
+
+    const converted_catalog = convertRows('coffee_products', catalogRows);
+    const converted_snapshots = convertRows('products', snapshotRows);
+
+    return res.json({
+      converted_catalog,
+      converted_snapshots,
+      skipped,
+      bytes_freed: bytesFreed,
+      second_run_hint: 'Opakované spustenie je bezpečné — už skonvertované riadky sa preskočia.',
+    });
+  } catch (error) {
+    console.error('Image conversion error:', error.message);
+    return res.status(500).json({ error: 'Nepodarilo sa skonvertovat obrazky' });
   }
 });
 
@@ -584,11 +661,11 @@ router.post('/:id/image', uploadSingle('image'), (req, res) => {
 
   let image = null;
   if (req.file) {
-    const built = imageFromUpload(req.file);
+    const built = imageUrlFromUpload(req.file);
     if (built.error) return res.status(400).json({ error: built.error });
     image = built.image;
   } else if (req.body.image) {
-    const built = imageFromBody(req.body.image);
+    const built = imageUrlFromBody(req.body.image);
     if (built.error) return res.status(400).json({ error: built.error });
     image = built.image;
   }

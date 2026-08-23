@@ -1323,7 +1323,10 @@ cycle-level aggregate split (Decision 4), importer parsing + column mapping,
   module and deliberately out of its scope (retiring it would need its own
   spec-impact pass; UC-PC-005's ADD-only rule and decision 11's principle do not
   govern a pre-existing admin capability). Recorded so nobody mistakes decision 11
-  for a claim the codebase cannot express a snapshot edit at all.
+  for a claim the codebase cannot express a snapshot edit at all. ⚠ Post-PC-T10
+  this includes the base64-specific half: the PATCH still writes any string
+  (base64 included) into `products.image` verbatim — pre-existing, admin-only,
+  and self-correcting (a convert-images re-run sweeps `data:%` values back out).
 - **A mistake in the ticked product set is recoverable additively only** — a wrongly
   UNTICKED product is added later via the manual POST (UC-PC-005); a wrongly TICKED
   one is soft-deleted via the existing product DELETE (`active = 0`). Neither breaks

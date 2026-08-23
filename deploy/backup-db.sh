@@ -7,6 +7,9 @@
 #
 # Restore: rclone copy gdrive:db-backups/<file>.age . && \
 #          age -d -i /var/www/gorifi/secrets/backup-age-key.txt <file>.age > database.sqlite
+# Restore uploads: rclone copy gdrive:db-backups/gorifi-uploads-<TS>-<label>.tar.age . && \
+#          age -d -i /var/www/gorifi/secrets/backup-age-key.txt gorifi-uploads-*.tar.age > uploads.tar && \
+#          tar -xf uploads.tar -C /var/www/gorifi/backend/src/db/
 set -euo pipefail
 
 DB="${DB_PATH:-/var/www/gorifi/backend/src/db/database.sqlite}"
@@ -42,5 +45,22 @@ rclone lsf "$REMOTE/" | grep -qx "$NAME" \
   || { echo "backup: upload verification FAILED for $NAME" >&2; exit 1; }
 echo "backup: uploaded $REMOTE/$NAME ($(du -h "$WORK/$NAME" | cut -f1))"
 
-# 4. Retention: prune Drive copies older than KEEP_DAYS.
+# 4. PC-T10 (12 §UC-PC-014): product images are FILES next to the DB now
+#    (uploads/, content-hash names), so they are no longer inside the sqlite
+#    snapshot. Tar the whole dir and ship it alongside the DB, encrypted with
+#    the same age key. Shipping the whole ~10 MB each run is fine at this size.
+#    Skipped cleanly when the dir does not exist yet (pre-PC-T10 server).
+UPLOADS="${UPLOADS_DIR:-$(dirname "$DB")/uploads}"
+if [ -d "$UPLOADS" ]; then
+  UNAME="gorifi-uploads-${TS}-${LABEL}.tar.age"
+  tar -C "$(dirname "$UPLOADS")" -cf "$WORK/uploads.tar" "$(basename "$UPLOADS")"
+  age -R "$PUBFILE" -o "$WORK/$UNAME" "$WORK/uploads.tar"
+  rclone copy "$WORK/$UNAME" "$REMOTE/" --no-traverse
+  rclone lsf "$REMOTE/" | grep -qx "$UNAME" \
+    || { echo "backup: upload verification FAILED for $UNAME" >&2; exit 1; }
+  echo "backup: uploaded $REMOTE/$UNAME ($(du -h "$WORK/$UNAME" | cut -f1))"
+fi
+
+# 5. Retention: prune Drive copies older than KEEP_DAYS (DB snapshots and
+#    uploads tars alike — same remote dir).
 rclone delete "$REMOTE/" --min-age "${KEEP_DAYS}d" 2>/dev/null || true

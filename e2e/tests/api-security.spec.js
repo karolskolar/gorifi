@@ -77,6 +77,12 @@ const ADMIN_ENDPOINTS = [
   { method: 'get', path: '/api/coffee-products/1' },
   { method: 'patch', path: '/api/coffee-products/1', data: { country: 'evil' } },
   { method: 'post', path: '/api/coffee-products/1/image' },
+  // 12 §UC-PC-014 (PC-T10): the one-time base64 → file conversion endpoint.
+  // ⚠ GET /api/images/:filename is DELIBERATELY NOT in this sweep — it is a
+  // public read (friend and guest pages render it; exposure equivalent to the
+  // already-public products listing that shipped the same bytes inline). Do
+  // not "fix" it in; its anonymous-200 pin lives in catalog-images.spec.js.
+  { method: 'post', path: '/api/coffee-products/convert-images' },
 ]
 
 const PUBLIC_ENDPOINTS = [

@@ -756,9 +756,13 @@ test.describe('UC-PC-005 — image dual-store', () => {
     const res = await postProduct(cycleId, { name, price_250g: '8', image: PNG_DATA_URI })
     expect(res.status()).toBe(201)
     const body = await res.json()
-    expect(body.image, 'existing behavior: the snapshot keeps its own image').toBe(PNG_DATA_URI)
+    // UC-PC-014 retarget (case a): the body base64 is stored as a content-hash
+    // FILE and both columns hold the URL path. The protected property — the
+    // dual store: same image on the snapshot AND the new catalog row — is
+    // unchanged; content-hash dedupe means the two URLs are IDENTICAL.
+    expect(body.image, 'existing behavior: the snapshot keeps its own image').toMatch(/^\/api\/images\/[a-f0-9]{32}\.png$/)
     expect(body.report.new[0].needs_image).toBe(false)
-    expect(catalogRowByName(name).image, 'the friction win: the next cycle reuses this image').toBe(PNG_DATA_URI)
+    expect(catalogRowByName(name).image, 'the friction win: the next cycle reuses this image').toBe(body.image)
   })
 
   test('an image on a MATCHING POST stays on the snapshot only — image is admin-only on the catalog (decision 13)', async () => {
@@ -770,7 +774,8 @@ test.describe('UC-PC-005 — image dual-store', () => {
     expect(res.status()).toBe(201)
     const body = await res.json()
     expect(body.report.summary.matched).toBe(1)
-    expect(body.image).toBe(PNG_DATA_URI)
+    // UC-PC-014 retarget (case a): stored as a file, snapshot column holds the URL.
+    expect(body.image).toMatch(/^\/api\/images\/[a-f0-9]{32}\.png$/)
     expect(catalogRowByName(name).image, 'a match never writes the catalog image').toBeNull()
   })
 })

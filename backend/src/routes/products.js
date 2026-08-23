@@ -16,7 +16,12 @@ import { parsePrice } from '../helpers/import-parsing.js';
 import { consolidateCatalogRow, exactCatalogMatch, singleRowReport } from '../helpers/catalog-import.js';
 import { normalizeProductName, normalizeRoastery } from '../helpers/catalog.js';
 import { cycleAvailability } from '../helpers/stock.js';
-import { imageFromUpload, imageFromBody, detectImageMime } from '../helpers/image-upload.js';
+import { detectImageMime } from '../helpers/image-upload.js';
+// PC-T10 (12 §UC-PC-014): the image write paths here (manual POST's dual-store,
+// POST /:id/image, POST /:id/image-from-url) store content-hash FILES and write
+// the URL path into the column — base64 never enters the column on these paths
+// again. Same magic-byte validation (SEC-H2), same request contracts.
+import { imageUrlFromUpload, imageUrlFromBody, storeImage } from '../helpers/image-store.js';
 import { uploadSingle } from '../helpers/multipart.js';
 import { bindValue } from '../helpers/bind-value.js';
 
@@ -101,14 +106,15 @@ router.post('/', requireAdmin, uploadSingle('image'), (req, res) => {
     return res.status(400).json({ error: 'cycle_id a nazov su povinne' });
   }
 
-  // Handle image - either from file upload or base64 in body
+  // Handle image - either from file upload or base64 in body. Both are stored
+  // as a file; `image` is the URL path (PC-T10, 12 §UC-PC-014).
   let image = null;
   if (req.file) {
-    const built = imageFromUpload(req.file);
+    const built = imageUrlFromUpload(req.file);
     if (built.error) return res.status(400).json({ error: built.error });
     image = built.image;
   } else if (req.body.image) {
-    const built = imageFromBody(req.body.image);
+    const built = imageUrlFromBody(req.body.image);
     if (built.error) return res.status(400).json({ error: built.error });
     image = built.image;
   }
@@ -215,11 +221,11 @@ router.post('/:id/image', requireAdmin, uploadSingle('image'), (req, res) => {
 
   let image = null;
   if (req.file) {
-    const built = imageFromUpload(req.file);
+    const built = imageUrlFromUpload(req.file);
     if (built.error) return res.status(400).json({ error: built.error });
     image = built.image;
   } else if (req.body.image) {
-    const built = imageFromBody(req.body.image);
+    const built = imageUrlFromBody(req.body.image);
     if (built.error) return res.status(400).json({ error: built.error });
     image = built.image;
   }
@@ -260,10 +266,12 @@ router.post('/:id/image-from-url', requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'URL neobsahuje platný obrázok (PNG, JPEG, GIF, WebP)' });
     }
 
-    const base64 = buffer.toString('base64');
-    const image = `data:${contentType};base64,${base64}`;
+    // PC-T10 (12 §UC-PC-014): store the fetched bytes as a content-hash file
+    // and write the URL path — never base64 into the column. storeImage cannot
+    // refuse here: detectImageMime just accepted the same buffer above.
+    const stored = storeImage(buffer);
 
-    db.prepare('UPDATE products SET image = ? WHERE id = ?').run(image, req.params.id);
+    db.prepare('UPDATE products SET image = ? WHERE id = ?').run(stored.url, req.params.id);
 
     const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
     res.json(updated);
