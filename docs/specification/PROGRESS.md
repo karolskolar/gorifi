@@ -344,6 +344,19 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## Log
 
+- 2026-08-23 · PC-T13 follow-up · (this commit) · **split declarable AT CREATION.** PM feedback from
+  staging: he opened "Nový produkt", looked for the split declaration and found none — the section was
+  `v-if="!createMode"`, so the flow was save-then-reopen. Wrong shape for the real use case (the split
+  is *why* the two variant products exist). `POST /api/coffee-products` now takes an optional `split_of`
+  (raw sheet-row name): trimmed, run through the ONE normalizer, empty/whitespace/normalizes-to-nothing
+  ⇒ "no split" (never an error), non-string ⇒ absent; the `catalog_import_splits` row is written INSIDE
+  the product-insert transaction with `INSERT OR IGNORE` on the UNIQUE triple so a create can never 409
+  on the mapping. `split_of` is not a column and never reaches the row insert. Create dialog gained the
+  field as the `v-else` of the edit-mode section (edit path untouched). 3 new pins incl. the full
+  acceptance reached purely through create (two births with one `split_of`, import TWICE → 0 new,
+  0 pending_fuzzy, both refreshed 6→9, roasts preserved) and a UI pin that the dialog really sends it.
+  Targeted gate: 209 passed / 0 failed.
+
 - 2026-08-23 · PC-T13 · (this commit) · no PR (house workflow) · **The four production-migration gaps.**
   (1) `POST /api/coffee-products` + "+ Nový produkt" dialog — a coffee that is in neither the sheet nor
   history can finally exist; validation genuinely SHARED with PATCH (`parsePriceInput`, `PLAIN_FIELDS`,

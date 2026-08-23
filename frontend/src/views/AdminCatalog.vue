@@ -242,6 +242,7 @@ function openCreate() {
   editForm.value = {
     name: '',
     roastery: '',
+    split_of: '',
     description1: '',
     description2: '',
     roast_type: '',
@@ -334,6 +335,8 @@ async function saveEdit() {
       // Roastery only in create mode — empty means the server default
       // (the roasteries is_default row).
       if (f.roastery) data.roastery = f.roastery
+      // Split declarable at birth (PM staging feedback) — empty means none.
+      if (f.split_of && f.split_of.trim()) data.split_of = f.split_of.trim()
       const created = await api.createCatalogProduct(data)
       // The 201 arrives in the list shape (cycles_count + all_time_kg) — append
       // straight from the payload, the workbench-create precedent.
@@ -1527,6 +1530,18 @@ async function logout() {
                 Pridať
               </Button>
             </div>
+          </div>
+          <!-- Create mode: the split is declarable AT BIRTH (PM staging
+               feedback) — for two-variant sheet rows it is the reason the
+               product exists. Written with the create in one transaction. -->
+          <div v-else>
+            <h4 class="text-sm font-semibold mb-1">Variant riadku z cenníka</h4>
+            <p class="text-xs text-muted-foreground mb-2">
+              Ak jeden riadok cenníka predstavuje viac produktov (napr. dve praženia),
+              zadajte tu názov riadku presne ako v cenníku. Import potom obnoví ceny
+              všetkých variantov, nič nové nevytvorí a praženie neprepíše.
+            </p>
+            <Input v-model="editForm.split_of" data-testid="create-split-of" placeholder="Názov riadku v cenníku..." />
           </div>
 
           <!-- Curation fields -->

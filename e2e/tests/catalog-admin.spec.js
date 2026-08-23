@@ -2948,6 +2948,52 @@ test.describe('PC-T13 — split declarations + duplicates suppression (API)', ()
     expect(bSplits.splits[0].siblings).toEqual([])
   })
 
+  test('split_of at CREATION: two products born with the same sheet row — import twice → 0 new, 0 pending_fuzzy, prices refreshed, roasts preserved', async () => {
+    const sheetName = `${uniq()} Rovno Pri Vytvoreni`
+    // The PM flow: both variants created in one go, each declaring the split
+    // in the create call itself — no save + re-open via Upraviť.
+    const idM = await createdId({
+      name: `${sheetName} Medium`, roast_type: 'Medium', price_250g: 6, split_of: sheetName,
+    })
+    const idF = await createdId({
+      // Whitespace around the value trims; identity via the ONE normalizer.
+      name: `${sheetName} Full City`, roast_type: 'Full city', price_250g: 6, split_of: `  ${sheetName}  `,
+    })
+
+    // Born declared: each lists the mapping with the other as the sibling.
+    const born = await (await getSplits(idM)).json()
+    expect(born.splits).toHaveLength(1)
+    expect(born.splits[0].normalized_name).toBe(sheetName.toLowerCase())
+    expect(born.splits[0].siblings.map((s) => s.id)).toEqual([idF])
+
+    // The same acceptance as the edit-mode path, reached purely through create.
+    for (const run of [1, 2]) {
+      const res = await importCsv(csvFor([{
+        name: sheetName, roast: 'Medium + Full city', p250: '9', p1kg: '33',
+      }]))
+      expect(res.status()).toBe(201)
+      const report = (await res.json()).report
+      expect(report.summary.new, `run ${run}: never creates`).toBe(0)
+      expect(report.summary.pending_fuzzy, `run ${run}: never flags`).toBe(0)
+      expect(report.matched.map((e) => e.catalog_id).sort()).toEqual([idM, idF].sort())
+    }
+    const m = await (await ctx.get(`/api/coffee-products/${idM}`, { headers: admin() })).json()
+    const f = await (await ctx.get(`/api/coffee-products/${idF}`, { headers: admin() })).json()
+    expect(m.price_250g).toBe(9)
+    expect(f.price_250g).toBe(9)
+    expect(m.roast_type, 'roast stays admin-owned').toBe('Medium')
+    expect(f.roast_type).toBe('Full city')
+  })
+
+  test('an empty/whitespace split_of means "no split" — 201 and no mapping row', async () => {
+    for (const v of ['', '   ', '–––']) {
+      const res = await createCatalogProduct({ name: `${uniq()} Bez Splitu`, split_of: v })
+      expect(res.status(), `split_of=${JSON.stringify(v)}`).toBe(201)
+      const id = (await res.json()).id
+      expect((await (await getSplits(id)).json()).splits, 'no mapping was written').toEqual([])
+    }
+  })
+
   test('merging a split target away TRANSFERS its mappings to the survivor (deduped) — the sheet row still refreshes, creates nothing', async () => {
     const sheetA = `${uniq()} Zluceny Riadok`
     const sheetB = `${uniq()} Druhy Riadok`
@@ -3264,9 +3310,10 @@ test.describe('PC-T13 — Odpojiť od katalógu (unlink, API)', () => {
 })
 
 test.describe('PC-T13 — AdminCatalog view (UI)', () => {
-  test('"+ Nový produkt" creates a catalog product from the dialog', async ({ page }) => {
-    await loginAsAdminUI(page)
+  test('"+ Nový produkt" creates a catalog product from the dialog — split declarable AT BIRTH', async ({ page }) => {
+    const token = await loginAsAdminUI(page)
     const name = `${uniq()} Nova Rucna`
+    const sheetName = `${name} Riadok`
 
     await page.goto('/admin/catalog')
     await page.getByTestId('catalog-create-button').click()
@@ -3276,6 +3323,9 @@ test.describe('PC-T13 — AdminCatalog view (UI)', () => {
 
     await dialog.getByTestId('catalog-edit-name').fill(name)
     await dialog.getByTestId('catalog-edit-price-8pc12g').fill('6.20')
+    // The PM flow: the split is the reason the product exists — declared here,
+    // not via a save + re-open through Upraviť.
+    await dialog.getByTestId('create-split-of').fill(sheetName)
     await dialog.getByRole('button', { name: 'Uložiť' }).click()
     await expect(dialog).not.toBeVisible()
 
@@ -3283,6 +3333,13 @@ test.describe('PC-T13 — AdminCatalog view (UI)', () => {
     const row = page.getByTestId('catalog-row').filter({ hasText: name })
     await expect(row).toHaveCount(1)
     await expect(row.getByText('Dostupná')).toBeVisible()
+
+    // The mapping was written with the create (same transaction server-side).
+    const list = await (await ctx.get(`/api/coffee-products?q=${encodeURIComponent(name)}`, { headers: uiHeaders(token) })).json()
+    const created = list.find((r) => r.name === name)
+    expect(created).toBeTruthy()
+    const splits = await (await ctx.get(`/api/coffee-products/${created.id}/splits`, { headers: uiHeaders(token) })).json()
+    expect(splits.splits.map((s) => s.sheet_name)).toEqual([sheetName])
   })
 
   test('workbench: Ignorovať hides a junk group into the Ignorované fold; Vrátiť restores it', async ({ page }) => {

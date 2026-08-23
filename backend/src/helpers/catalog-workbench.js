@@ -392,7 +392,14 @@ function newestHead(selection, groups) {
 // consolidation, createCatalogFromGroups above, and this). Same admin-intent
 // unconditional-create posture and the same dual collision layer as the
 // workbench create: fuzzy is not consulted — a manual add is deliberate.
-export function createManualCatalogRow({ name, normalizedName, roastery, plain, prices, isNew, status }) {
+// `splitOf` ({ sheetName, normalizedName } | null): declare the new product a
+// variant of a sheet row AT BIRTH (PM staging feedback — for two-variant rows
+// the split is the reason the product exists, so it must not require a save
+// and a re-open). The mapping insert runs INSIDE the same transaction as the
+// product insert; INSERT OR IGNORE converges defensively on the UNIQUE triple
+// (a brand-new product cannot already carry the mapping, but the write must
+// not be able to 409 the whole create over it).
+export function createManualCatalogRow({ name, normalizedName, roastery, plain, prices, isNew, status, splitOf = null }) {
   const run = db.transaction(() => {
     const clash = db.get(
       'SELECT id FROM coffee_products WHERE normalized_name = ? AND roastery = ?',
@@ -416,6 +423,14 @@ export function createManualCatalogRow({ name, normalizedName, roastery, plain, 
         prices.price_1kg, prices.price_20pc5g, prices.price_8pc12g,
       ]
     );
+    if (splitOf) {
+      db.run(
+        `INSERT OR IGNORE INTO catalog_import_splits
+           (sheet_name, normalized_name, roastery, coffee_product_id)
+         VALUES (?, ?, ?, ?)`,
+        [splitOf.sheetName, splitOf.normalizedName, roastery, result.lastInsertRowid]
+      );
+    }
     return { outcome: 'created', catalog_id: result.lastInsertRowid };
   });
   try {

@@ -670,6 +670,24 @@ router.post('/', (req, res) => {
     prices[field] = parsed.value;
   }
 
+  // split_of (optional, PM staging feedback): declare the new product a
+  // variant of a sheet row AT BIRTH — for two-variant rows the split is the
+  // reason the product exists, so it must not require save + re-open. An
+  // empty/whitespace value (or one that normalizes to nothing) means "no
+  // split", never an error; non-string junk is treated as absent (the
+  // bindValue posture of the plain fields). The mapping row is written inside
+  // the SAME transaction as the product insert, roastery = the product's
+  // resolved roastery, identity via the ONE normalizer.
+  let splitOf = null;
+  const splitOfRaw = bindValue(req.body?.split_of);
+  if (typeof splitOfRaw === 'string') {
+    const trimmed = splitOfRaw.trim();
+    const splitNormalized = normalizeProductName(trimmed);
+    if (splitNormalized) {
+      splitOf = { sheetName: trimmed, normalizedName: splitNormalized };
+    }
+  }
+
   try {
     // The write (app-level collision check + insert, dual collision layer)
     // lives in the workbench helper — this file's structural pin bans catalog
@@ -682,6 +700,7 @@ router.post('/', (req, res) => {
       prices,
       isNew: !!req.body.is_new,
       status,
+      splitOf,
     });
     if (result.outcome === 'name_collision') {
       return res.status(409).json({ error: 'Produkt s tymto nazvom uz v katalogu existuje', field: 'name' });
