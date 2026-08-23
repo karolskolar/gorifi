@@ -363,6 +363,108 @@ function cancelEditingCycleName() {
   cycleNameEdit.value = ''
 }
 
+// ── Friend-facing price check (PM 2026-08-23) ───────────────────────────────
+// The snapshot price is the base; a friend pays base × markup_ratio. The formula
+// is byte-identical to the ONE the friend page and the order endpoint use
+// (FriendOrder.vue applyMarkup / helpers/pricing.js applyMarkup) — if it ever
+// drifts, this control column stops being a control. `cycle` is reloaded by
+// saveMarkup(), so these recompute the moment the markup is saved.
+const markupRatioLive = computed(() => cycle.value?.markup_ratio || 1.0)
+const markupIsNeutral = computed(() => Math.abs(markupRatioLive.value - 1) < 0.0001)
+const friendPriceTitle = computed(() =>
+  markupIsNeutral.value
+    ? 'Prirážka nie je nastavená — priatelia platia rovnakú cenu'
+    : `Cena pre priateľov (× ${markupRatioLive.value.toFixed(2)})`
+)
+
+function friendPrice(base) {
+  if (base === null || base === undefined || base === '') return null
+  const n = Number(base)
+  if (!Number.isFinite(n) || n === 0) return null
+  return Math.round(n * markupRatioLive.value * 100) / 100
+}
+
+function formatFriendPrice(base) {
+  const p = friendPrice(base)
+  return p === null ? null : p.toFixed(2)
+}
+
+// ── Catalog product picker, reopenable while the cycle is editable ──────────
+const showCatalogPicker = ref(false)
+const catalogAll = ref([])
+const catalogSearch = ref('')
+const catalogPicked = ref([])
+const catalogLoading = ref(false)
+const catalogSaving = ref(false)
+const catalogError = ref('')
+const catalogResult = ref(null)
+
+// Editable = the admin can still change what the cycle offers (server enforces
+// the same rule and 409s otherwise).
+const cycleEditable = computed(() => ['open', 'planned'].includes(cycle.value?.status))
+
+const catalogFiltered = computed(() => {
+  const q = catalogSearch.value.trim().toLowerCase()
+  if (!q) return catalogAll.value
+  return catalogAll.value.filter(p => (p.name || '').toLowerCase().includes(q))
+})
+
+const catalogRemovedCount = computed(() => {
+  const picked = new Set(catalogPicked.value)
+  return products.value.filter(p => p.source_coffee_product_id && !picked.has(p.source_coffee_product_id)).length
+})
+const catalogAddedCount = computed(() => {
+  const present = new Set(products.value.filter(p => p.source_coffee_product_id).map(p => p.source_coffee_product_id))
+  return catalogPicked.value.filter(id => !present.has(id)).length
+})
+
+async function openCatalogPicker() {
+  catalogError.value = ''
+  catalogResult.value = null
+  catalogSearch.value = ''
+  // Pre-tick exactly what the cycle offers today (catalog-linked rows only).
+  catalogPicked.value = products.value
+    .filter(p => p.source_coffee_product_id)
+    .map(p => p.source_coffee_product_id)
+  showCatalogPicker.value = true
+  catalogLoading.value = true
+  try {
+    const list = await api.getCatalogProducts({})
+    const rows = Array.isArray(list) ? list : (list.products || [])
+    // Offer available products PLUS anything already in this cycle (so a retired
+    // product the cycle still carries can be seen and unticked, never silently dropped).
+    const inCycle = new Set(catalogPicked.value)
+    catalogAll.value = rows.filter(p => p.status !== 'retired' || inCycle.has(p.id))
+  } catch (e) {
+    catalogError.value = e.message
+  } finally {
+    catalogLoading.value = false
+  }
+}
+
+function toggleCatalogPick(id) {
+  const i = catalogPicked.value.indexOf(id)
+  if (i === -1) catalogPicked.value.push(id)
+  else catalogPicked.value.splice(i, 1)
+}
+
+async function saveCatalogPicker() {
+  catalogSaving.value = true
+  catalogError.value = ''
+  try {
+    const res = await api.setCycleCatalogProducts(cycleId.value, catalogPicked.value)
+    catalogResult.value = res
+    await loadAll()
+    // Keep the dialog open ONLY when something needs saying (removed products
+    // that friends had already ordered); otherwise close it.
+    if (!res.removed_with_orders?.length) showCatalogPicker.value = false
+  } catch (e) {
+    catalogError.value = e.message
+  } finally {
+    catalogSaving.value = false
+  }
+}
+
 async function saveMarkup() {
   markupSaving.value = true
   error.value = ''
@@ -792,7 +894,15 @@ function getStatusVariant(status) {
         <TabsContent value="products">
           <div class="flex justify-between items-center mb-4">
             <h2 class="text-lg font-semibold">Produkty ({{ products.length }})</h2>
-            <Button @click="openProductModal()">
+            <!-- PM 2026-08-23: coffee products are managed globally in Katalóg; this
+                 cycle only decides WHICH of them it offers, and that must stay
+                 changeable for as long as the cycle is editable. The old manual
+                 "+ Pridať produkt" (and the per-row edit/duplicate/delete) is gone
+                 for coffee — bakery keeps it until that module is retired. -->
+            <Button v-if="!isBakery" :disabled="!cycleEditable" data-testid="cycle-catalog-picker-open" @click="openCatalogPicker()">
+              Spravovať produkty z katalógu
+            </Button>
+            <Button v-else @click="openProductModal()">
               + Pridať produkt
             </Button>
           </div>
@@ -839,6 +949,7 @@ function getStatusVariant(status) {
                 <div class="flex items-center gap-2">
                   <Input
                     v-model.number="markupPercent"
+                    data-testid="markup-input"
                     type="number"
                     step="1"
                     min="0"
@@ -849,6 +960,7 @@ function getStatusVariant(status) {
                   <span class="text-muted-foreground">%</span>
                   <Button
                     @click="saveMarkup"
+                    data-testid="markup-save"
                     :disabled="markupSaving"
                     size="sm"
                   >
@@ -894,6 +1006,16 @@ function getStatusVariant(status) {
           <!-- (Import section retired in PC-T8 — 12 §UC-PC-013: products enter a
                cycle via the catalog picker at creation; sheet imports live in
                /admin/catalog.) -->
+          <!-- Price-check legend (PM 2026-08-23): the cycle price on top, what a
+               friend actually sees underneath, so a wrong markup is visible at a glance. -->
+          <div v-if="!isBakery" class="flex items-center gap-3 mb-2 text-xs text-muted-foreground" data-testid="price-legend">
+            <span>V cenových stĺpcoch: <span class="font-medium text-foreground">cena cyklu</span> /
+              <span :class="markupIsNeutral ? '' : 'text-violet-600 font-medium'">cena pre priateľov</span></span>
+            <span v-if="markupIsNeutral" class="text-amber-700" data-testid="markup-neutral-hint">
+              prirážka je 0 % — priatelia platia rovnaké ceny
+            </span>
+            <span v-else class="text-violet-600">× {{ markupRatioLive.toFixed(2) }}</span>
+          </div>
           <Card>
             <Table>
               <TableHeader>
@@ -918,7 +1040,7 @@ function getStatusVariant(status) {
                     <TableHead class="text-right">1kg</TableHead>
                     <TableHead class="text-right">20ks×5g</TableHead>
                   </template>
-                  <TableHead class="text-right">Akcie</TableHead>
+                  <TableHead class="text-right">{{ isBakery ? 'Akcie' : 'Zdroj' }}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -976,14 +1098,72 @@ function getStatusVariant(status) {
                     </TableCell>
                     <TableCell class="text-sm">{{ product.roast_type || '-' }}</TableCell>
                     <TableCell class="text-sm">{{ product.purpose || '-' }}</TableCell>
-                    <TableCell class="text-sm text-right">{{ formatPrice(product.price_150g) }}</TableCell>
-                    <TableCell class="text-sm text-right">{{ formatPrice(product.price_200g) }}</TableCell>
-                    <TableCell class="text-sm text-right">{{ formatPrice(product.price_250g) }}</TableCell>
-                    <TableCell class="text-sm text-right">{{ formatPrice(product.price_500g) }}</TableCell>
-                    <TableCell class="text-sm text-right">{{ formatPrice(product.price_1kg) }}</TableCell>
-                    <TableCell class="text-sm text-right">{{ formatPrice(product.price_20pc5g) }}</TableCell>
+                    <TableCell class="text-sm text-right">
+                      <div>{{ formatPrice(product.price_150g) }}</div>
+                      <div v-if="formatFriendPrice(product.price_150g)"
+                           class="text-xs mt-0.5"
+                           :class="markupIsNeutral ? 'text-muted-foreground/60' : 'text-violet-600 font-medium'"
+                           :title="friendPriceTitle"
+                           data-testid="friend-price">
+                        {{ formatFriendPrice(product.price_150g) }}
+                      </div>
+                    </TableCell>
+                    <TableCell class="text-sm text-right">
+                      <div>{{ formatPrice(product.price_200g) }}</div>
+                      <div v-if="formatFriendPrice(product.price_200g)"
+                           class="text-xs mt-0.5"
+                           :class="markupIsNeutral ? 'text-muted-foreground/60' : 'text-violet-600 font-medium'"
+                           :title="friendPriceTitle"
+                           data-testid="friend-price">
+                        {{ formatFriendPrice(product.price_200g) }}
+                      </div>
+                    </TableCell>
+                    <TableCell class="text-sm text-right">
+                      <div>{{ formatPrice(product.price_250g) }}</div>
+                      <div v-if="formatFriendPrice(product.price_250g)"
+                           class="text-xs mt-0.5"
+                           :class="markupIsNeutral ? 'text-muted-foreground/60' : 'text-violet-600 font-medium'"
+                           :title="friendPriceTitle"
+                           data-testid="friend-price">
+                        {{ formatFriendPrice(product.price_250g) }}
+                      </div>
+                    </TableCell>
+                    <TableCell class="text-sm text-right">
+                      <div>{{ formatPrice(product.price_500g) }}</div>
+                      <div v-if="formatFriendPrice(product.price_500g)"
+                           class="text-xs mt-0.5"
+                           :class="markupIsNeutral ? 'text-muted-foreground/60' : 'text-violet-600 font-medium'"
+                           :title="friendPriceTitle"
+                           data-testid="friend-price">
+                        {{ formatFriendPrice(product.price_500g) }}
+                      </div>
+                    </TableCell>
+                    <TableCell class="text-sm text-right">
+                      <div>{{ formatPrice(product.price_1kg) }}</div>
+                      <div v-if="formatFriendPrice(product.price_1kg)"
+                           class="text-xs mt-0.5"
+                           :class="markupIsNeutral ? 'text-muted-foreground/60' : 'text-violet-600 font-medium'"
+                           :title="friendPriceTitle"
+                           data-testid="friend-price">
+                        {{ formatFriendPrice(product.price_1kg) }}
+                      </div>
+                    </TableCell>
+                    <TableCell class="text-sm text-right">
+                      <div>{{ formatPrice(product.price_20pc5g) }}</div>
+                      <div v-if="formatFriendPrice(product.price_20pc5g)"
+                           class="text-xs mt-0.5"
+                           :class="markupIsNeutral ? 'text-muted-foreground/60' : 'text-violet-600 font-medium'"
+                           :title="friendPriceTitle"
+                           data-testid="friend-price">
+                        {{ formatFriendPrice(product.price_20pc5g) }}
+                      </div>
+                    </TableCell>
                   </template>
-                  <TableCell class="text-right">
+                  <TableCell v-if="!isBakery" class="text-right text-xs text-muted-foreground" data-testid="product-origin">
+                    <span v-if="product.source_coffee_product_id">z katalógu</span>
+                    <span v-else title="Nie je napojený na katalóg — pridaný manuálne alebo pred migráciou">mimo katalógu</span>
+                  </TableCell>
+                  <TableCell v-else class="text-right">
                     <Button variant="ghost" size="sm" @click="openProductModal(product)">Upraviť</Button>
                     <Button variant="ghost" size="sm" @click="duplicateProduct(product)" title="Duplikovať">
                       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
@@ -1706,4 +1886,65 @@ function getStatusVariant(status) {
     </Dialog>
 
   </div>
+
+    <!-- Catalog product picker for an existing cycle (PM 2026-08-23) -->
+    <Dialog :open="showCatalogPicker" @update:open="showCatalogPicker = $event">
+      <DialogContent class="max-w-lg sm:max-w-2xl lg:max-w-4xl xl:max-w-5xl 2xl:max-w-6xl max-h-[90vh] overflow-y-auto" data-testid="cycle-catalog-dialog">
+        <DialogHeader>
+          <DialogTitle>Produkty z katalógu v tomto cykle</DialogTitle>
+        </DialogHeader>
+
+        <div class="space-y-3">
+          <p class="text-sm text-muted-foreground">
+            Zaškrtnuté produkty cyklus ponúka. Odškrtnutím sa produkt z cyklu odstráni —
+            už zadané objednávky, ceny ani množstvá sa nezmenia.
+          </p>
+
+          <Input v-model="catalogSearch" placeholder="Hľadať produkt..." data-testid="cycle-catalog-search" />
+
+          <div v-if="catalogLoading" class="text-sm text-muted-foreground py-4 text-center">Načítavam katalóg…</div>
+          <div v-else class="max-h-[38vh] lg:max-h-[50vh] overflow-y-auto border rounded-md p-2 grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-x-6 gap-y-0.5">
+            <label
+              v-for="cp in catalogFiltered"
+              :key="cp.id"
+              class="flex items-center gap-2 p-1.5 rounded hover:bg-muted cursor-pointer"
+              data-testid="cycle-catalog-row"
+            >
+              <input type="checkbox" class="rounded" :checked="catalogPicked.includes(cp.id)" @change="toggleCatalogPick(cp.id)" />
+              <span class="text-sm flex-1">{{ cp.name }}</span>
+              <Badge v-if="cp.purpose" variant="outline" class="text-xs">{{ cp.purpose }}</Badge>
+              <span v-if="cp.status === 'retired'" class="text-xs text-amber-700">vyradená</span>
+            </label>
+            <div v-if="catalogFiltered.length === 0" class="text-sm text-muted-foreground text-center py-2 lg:col-span-2 2xl:col-span-3">
+              Žiadne produkty v katalógu
+            </div>
+          </div>
+
+          <div class="text-sm" data-testid="cycle-catalog-summary">
+            Vybraných: <span class="font-medium">{{ catalogPicked.length }}</span>
+            <span v-if="catalogAddedCount" class="text-green-700"> · pridá sa {{ catalogAddedCount }}</span>
+            <span v-if="catalogRemovedCount" class="text-destructive"> · odstráni sa {{ catalogRemovedCount }}</span>
+          </div>
+
+          <Alert v-if="catalogError" variant="destructive" data-testid="cycle-catalog-error">
+            <AlertDescription>{{ catalogError }}</AlertDescription>
+          </Alert>
+
+          <Alert v-if="catalogResult?.removed_with_orders?.length" data-testid="cycle-catalog-warning">
+            <AlertDescription>
+              <span class="font-medium">Pozor:</span> odstránené produkty, ktoré už niekto objednal:
+              {{ catalogResult.removed_with_orders.map(r => r.name).join(', ') }}.
+              Objednávky zostávajú nezmenené, produkt sa len prestal ponúkať.
+            </AlertDescription>
+          </Alert>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" :disabled="catalogSaving" @click="showCatalogPicker = false">Zavrieť</Button>
+          <Button :disabled="catalogSaving || catalogLoading" data-testid="cycle-catalog-save" @click="saveCatalogPicker">
+            {{ catalogSaving ? 'Ukladám…' : 'Uložiť výber' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 </template>

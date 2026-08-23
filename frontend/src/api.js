@@ -514,6 +514,10 @@ export const api = {
   importCatalogGsheetMultirow: (url, roastery) => adminRequest('/coffee-products/import-gsheet-multirow', { method: 'POST', body: { url, roastery: roastery || null } }),
   // Migration workbench (module 12, PC-T9 — the manual assignment flow that
   // replaced POST /migrate per resolved decision 14).
+  // Reconcile a cycle's catalog product selection (PM 2026-08-23) — the creation
+  // picker, reopenable while the cycle is editable.
+  setCycleCatalogProducts: (cycleId, coffeeProductIds) =>
+    adminRequest(`/cycles/${cycleId}/catalog-products`, { method: 'PUT', body: { coffee_product_ids: coffeeProductIds } }),
   getMigrationPending: () => adminRequest('/coffee-products/migration/pending'),
   assignMigrationGroups: (groups, catalogId) =>
     adminRequest('/coffee-products/migration/assign', { method: 'POST', body: { groups, catalog_id: catalogId } }),

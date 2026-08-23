@@ -1908,11 +1908,14 @@ test.describe('UC-PC-006 — migration workbench (UI)', () => {
 })
 
 test.describe('UC-PC-005 follow-up — CycleDetail saveProduct surfaces the duplicate_in_cycle 409 in-dialog', () => {
-  test('adding an exact-name duplicate into one cycle shows the 409 inside the product dialog', async ({ page }) => {
-    // Review-assigned obligation (PROGRESS PC-T7 row): saveProduct used to
-    // swallow ALL errors — PC-T3's deliberate 409 closed the dialog's own
-    // await chain silently and the admin never learned the product was not
-    // created.
+  // ⚠ RETARGET, case (a) — PM 2026-08-23 removed the manual product dialog from
+  // COFFEE cycle detail (coffee products are managed globally in Katalóg; the cycle
+  // only ticks which of them it offers). Driving the 409 through that UI is
+  // therefore structurally unsatisfiable. What survives and is pinned here: the
+  // 409 itself still comes from the API, and the coffee cycle detail really offers
+  // no manual product management. The in-dialog `modalError` surface itself is NOT
+  // dead — the dialog still serves bakery cycles, which is why PC-T7's fix stays.
+  test('the duplicate_in_cycle 409 still comes from the API, and coffee cycle detail offers no manual product UI', async ({ page }) => {
     const token = await loginAsAdminUI(page)
     const stem = uniq()
     const cycleRes = await ctx.post('/api/cycles', {
@@ -1922,25 +1925,24 @@ test.describe('UC-PC-005 follow-up — CycleDetail saveProduct surfaces the dupl
     expect(cycleRes.status()).toBe(201)
     const cycleId = (await cycleRes.json()).id
     const productName = `${stem} Duplikat`
-    const createRes = await ctx.post('/api/products', {
+
+    const first = await ctx.post('/api/products', {
       headers: uiHeaders(token),
       data: { cycle_id: cycleId, name: productName, price_250g: 9 },
     })
-    expect(createRes.status()).toBe(201)
+    expect(first.status()).toBe(201)
+    const dup = await ctx.post('/api/products', {
+      headers: uiHeaders(token),
+      data: { cycle_id: cycleId, name: productName, price_250g: 9 },
+    })
+    expect(dup.status(), 'the PC-T3 guard is untouched').toBe(409)
+    expect((await dup.json()).reason).toBe('duplicate_in_cycle')
 
     await page.goto(`/admin/cycle/${cycleId}`)
-    await page.getByRole('button', { name: '+ Pridať produkt' }).click()
-    const dialog = page.getByRole('dialog')
-    await expect(dialog).toBeVisible()
-    // The name field is the first visible text input in the dialog (the file
-    // input above it is hidden).
-    await dialog.locator('input:visible').first().fill(productName)
-    await dialog.getByRole('button', { name: 'Uložiť' }).click()
-
-    const error = dialog.getByTestId('product-modal-error')
-    await expect(error, 'the 409 renders IN-DIALOG (module-11 modalError)').toBeVisible()
-    await expect(error).toContainText('existuje')
-    await expect(dialog, 'the dialog stays open on a failed save').toBeVisible()
+    await expect(page.getByRole('button', { name: '+ Pridať produkt' }), 'manual add is gone for coffee').toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Upraviť' }), 'no per-row edit on coffee').toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Vymazať' }), 'no per-row delete on coffee').toHaveCount(0)
+    await expect(page.getByTestId('cycle-catalog-picker-open'), 'the catalog picker replaces them').toBeVisible()
   })
 })
 
@@ -2359,8 +2361,9 @@ test.describe('UC-PC-012/013 — admin UI (picker + retired import section)', ()
     const cycleId = (await cycle.json()).id
 
     await page.goto(`/admin/cycle/${cycleId}`)
-    // The products tab still works (its other functions stay)…
-    await expect(page.getByRole('button', { name: '+ Pridať produkt' })).toBeVisible()
+    // The products tab still works (its other functions stay) — ⚠ RETARGET, case (a):
+    // PM 2026-08-23 replaced the manual "+ Pridať produkt" with the catalog picker.
+    await expect(page.getByTestId('cycle-catalog-picker-open')).toBeVisible()
     // …but the whole import section is GONE.
     await expect(page.getByText('Import produktov')).toHaveCount(0)
     await expect(page.getByText('Z Google Sheets')).toHaveCount(0)
@@ -2541,5 +2544,162 @@ test.describe('Catalog delete (PM 2026-08-23)', () => {
     const after = await request.get('/api/coffee-products', { headers: uiHeaders(await page.evaluate(() => localStorage.getItem('adminToken'))) })
     const list = await after.json()
     expect((list.products || list).some?.(p => p.name === name) ?? false).toBe(false)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PM 2026-08-23 — the catalog picker must stay usable for the whole life of an
+// editable cycle (add a forgotten product, drop a wrong one), the cycle detail no
+// longer manages coffee products itself, and the price columns double as a
+// friend-price control.
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('Cycle ↔ catalog reconciliation (PM 2026-08-23)', () => {
+  // ⚠ ONE admin token app-wide: the UI tests above logged in through the browser
+  // and invalidated the beforeAll token, so the API half re-mints it (the
+  // refreshAdminToken idiom used by the other describes in this file).
+  test.beforeAll(refreshAdminToken)
+
+  test('adds, reactivates and soft-removes — order history never moves', async ({ request }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const db = openDb()
+    const stem = uniq()
+    const keepId = seedCatalog(db, { name: `${stem} Keep`, price_250g: 7.6 })
+    const addId = seedCatalog(db, { name: `${stem} Add`, price_250g: 9.9 })
+    const dropId = seedCatalog(db, { name: `${stem} Drop`, price_250g: 5.5 })
+    const cycleId = seedCycle(db, `${stem} Live`, 'coffee')
+    db.prepare("UPDATE order_cycles SET status = 'open' WHERE id = ?").run(cycleId)
+    db.close()
+
+    // Start with Keep + Drop.
+    let res = await request.put(`/api/cycles/${cycleId}/catalog-products`, {
+      headers: admin(), data: { coffee_product_ids: [keepId, dropId] },
+    })
+    expect(res.status()).toBe(200)
+    expect((await res.json()).added.length).toBe(2)
+
+    // Swap Drop for Add — the whole point of the row: a live cycle stays editable.
+    res = await request.put(`/api/cycles/${cycleId}/catalog-products`, {
+      headers: admin(), data: { coffee_product_ids: [keepId, addId] },
+    })
+    const body = await res.json()
+    expect(body.added.map(a => a.name)).toEqual([`${stem} Add`])
+    expect(body.removed.map(r => r.name)).toEqual([`${stem} Drop`])
+    expect(body.active_count).toBe(2)
+
+    const db2 = openDb()
+    // Removal is SOFT: the row survives with active = 0 (order_items keep pointing at it).
+    const dropped = db2.prepare(
+      'SELECT active FROM products WHERE cycle_id = ? AND source_coffee_product_id = ?'
+    ).get(cycleId, dropId)
+    expect(dropped.active).toBe(0)
+
+    // Re-ticking REACTIVATES the same row — never a duplicate.
+    db2.close()
+    res = await request.put(`/api/cycles/${cycleId}/catalog-products`, {
+      headers: admin(), data: { coffee_product_ids: [keepId, addId, dropId] },
+    })
+    const back = await res.json()
+    expect(back.reactivated.map(r => r.name)).toEqual([`${stem} Drop`])
+    expect(back.added).toEqual([])
+    const db3 = openDb()
+    expect(db3.prepare(
+      'SELECT COUNT(*) AS c FROM products WHERE cycle_id = ? AND source_coffee_product_id = ?'
+    ).get(cycleId, dropId).c, 'exactly one snapshot per catalog product per cycle').toBe(1)
+    db3.close()
+  })
+
+  test('⚠ snapshots with no catalog link are NEVER touched by an untick', async ({ request }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const db = openDb()
+    const stem = uniq()
+    const catId = seedCatalog(db, { name: `${stem} Linked` })
+    const cycleId = seedCycle(db, `${stem} Mixed`, 'coffee')
+    db.prepare("UPDATE order_cycles SET status = 'open' WHERE id = ?").run(cycleId)
+    const manual = seedSnapshot(db, cycleId, { name: `${stem} Manual`, price_250g: 4.2 })
+    db.close()
+
+    await request.put(`/api/cycles/${cycleId}/catalog-products`, {
+      headers: admin(), data: { coffee_product_ids: [catId] },
+    })
+    // An empty selection would remove every CATALOG row — the manual one must survive both.
+    await request.put(`/api/cycles/${cycleId}/catalog-products`, {
+      headers: admin(), data: { coffee_product_ids: [] },
+    })
+
+    const db2 = openDb()
+    const row = db2.prepare('SELECT active, name, price_250g FROM products WHERE id = ?').get(manual)
+    expect(row.active, 'an unlinked snapshot is outside the reconciliation').toBe(1)
+    expect(row.price_250g).toBe(4.2)
+    db2.close()
+  })
+
+  test('a locked cycle refuses (409) and a bakery cycle refuses (409); bad body 400', async ({ request }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const db = openDb()
+    const stem = uniq()
+    const locked = seedCycle(db, `${stem} Locked`, 'coffee')
+    db.prepare("UPDATE order_cycles SET status = 'locked' WHERE id = ?").run(locked)
+    const bakery = seedCycle(db, `${stem} Bakery`, 'bakery')
+    db.prepare("UPDATE order_cycles SET status = 'open' WHERE id = ?").run(bakery)
+    const open = seedCycle(db, `${stem} Open`, 'coffee')
+    db.prepare("UPDATE order_cycles SET status = 'open' WHERE id = ?").run(open)
+    db.close()
+
+    let res = await request.put(`/api/cycles/${locked}/catalog-products`, { headers: admin(), data: { coffee_product_ids: [] } })
+    expect(res.status()).toBe(409)
+    expect((await res.json()).reason).toBe('closed')
+
+    res = await request.put(`/api/cycles/${bakery}/catalog-products`, { headers: admin(), data: { coffee_product_ids: [] } })
+    expect(res.status()).toBe(409)
+    expect((await res.json()).reason).toBe('not_coffee')
+
+    for (const bad of [{}, { coffee_product_ids: 'x' }, { coffee_product_ids: 5 }]) {
+      res = await request.put(`/api/cycles/${open}/catalog-products`, { headers: admin(), data: bad })
+      expect(res.status(), JSON.stringify(bad)).toBe(400)
+    }
+    res = await request.put('/api/cycles/99999999/catalog-products', { headers: admin(), data: { coffee_product_ids: [] } })
+    expect(res.status()).toBe(404)
+  })
+
+  test('UI: the picker reopens on a live cycle, adds a product, and the friend-price column follows the markup', async ({ page, request }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const db = openDb()
+    const stem = uniq()
+    const inCycle = seedCatalog(db, { name: `${stem} VCykle`, price_250g: 8.9, purpose: 'Espresso' })
+    seedCatalog(db, { name: `${stem} Zabudnuty`, price_250g: 6.0, purpose: 'Filter' })
+    const cycleId = seedCycle(db, `${stem} Zivy`, 'coffee')
+    db.prepare("UPDATE order_cycles SET status = 'open', markup_ratio = 1.0 WHERE id = ?").run(cycleId)
+    db.close()
+    await request.put(`/api/cycles/${cycleId}/catalog-products`, { headers: admin(), data: { coffee_product_ids: [inCycle] } })
+
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${cycleId}`)
+
+    // The manual add button is gone for coffee; the catalog picker is there instead.
+    await expect(page.getByRole('button', { name: '+ Pridať produkt' })).toHaveCount(0)
+    await expect(page.getByTestId('cycle-catalog-picker-open')).toBeVisible()
+    // No per-row edit/duplicate/delete on a coffee cycle.
+    await expect(page.getByRole('button', { name: 'Upraviť' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Vymazať' })).toHaveCount(0)
+
+    // Markup 0 % ⇒ friend price equals the base, and the legend says so.
+    await expect(page.getByTestId('markup-neutral-hint')).toBeVisible()
+    await expect(page.getByTestId('friend-price').first()).toHaveText('8.90')
+
+    // Add the forgotten product through the picker.
+    await page.getByTestId('cycle-catalog-picker-open').click()
+    const dialog = page.getByTestId('cycle-catalog-dialog')
+    await expect(dialog).toBeVisible()
+    await dialog.getByTestId('cycle-catalog-search').fill(`${stem} Zabudnuty`)
+    await dialog.getByTestId('cycle-catalog-row').first().locator('input[type="checkbox"]').check()
+    await page.getByTestId('cycle-catalog-save').click()
+    await expect(dialog).toBeHidden()
+    await expect(page.getByRole('cell', { name: `${stem} Zabudnuty` })).toBeVisible()
+
+    // Set a 19 % markup: the control column must follow after Uložiť.
+    await page.getByTestId('markup-input').fill('19')
+    await page.getByTestId('markup-save').click()
+    await expect(page.getByTestId('markup-neutral-hint')).toHaveCount(0)
+    await expect(page.getByTestId('friend-price').first()).toHaveText('10.59')
   })
 })
