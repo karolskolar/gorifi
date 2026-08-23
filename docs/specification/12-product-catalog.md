@@ -127,6 +127,16 @@
    tool is the ONLY path that deletes a catalog row (after repointing every link), so
    a dangling `source_coffee_product_id` cannot be created by this module (the GSO-T9
    dangling-pointer lesson, prevented by construction instead of tolerated).
+    ⚠ **SUPERSEDED IN PART (PM 2026-08-23):** a real `DELETE /api/coffee-products/:id`
+    now exists — the admin asked for it for rows imported by mistake. Retirement
+    (`status='retired'`) stays available and is still the non-destructive option, and the
+    merge is still the only deleter that PRESERVES history links. The delete route clears
+    `products.source_coffee_product_id` for the row **inside the same transaction** (the
+    GSO-T9 dangling-pointer lesson: an unlinked snapshot lands in no stats bucket, a
+    dangling one is worse — it points at nothing); the affected snapshots keep every byte
+    of their own data and reappear in the migration workbench. Confirmed in a modal that
+    names the history cost. Pinned by the "Catalog delete" describe in
+    `catalog-admin.spec.js`; the two old no-DELETE assertions were retargeted (case a).
 10. **Flavor chips (auto-tag + admin override + column) DEFERRED by PM decision
     2026-08-22** — the chips risk being misleading and are skipped for v1 entirely
     (no `flavor_chips` column, no `autoTagFlavorChips`, no admin override UI).

@@ -790,11 +790,21 @@ test.describe('UC-PC-007/008 — route guards', () => {
     }
   })
 
-  test('no standalone catalog DELETE route exists (decision 9 — the merge is the ONLY deleter)', async () => {
-    // A REAL catalog row, so a hypothetical DELETE route would have a target.
-    const id = await importOne(`${uniq()} Nezmazatelny`)
+  // ⚠ RETARGET, case (a) — PM decision 2026-08-23 SUPERSEDES resolved decision 9's
+  // "no DELETE route ever": a real DELETE now exists (the admin asked for it for
+  // mistakenly imported rows). The property this test still owns is the one that
+  // matters — the merge remains the only deleter that PRESERVES the links, and a
+  // delete must never strand them. The dangling-pointer and unlink assertions live
+  // in the "Catalog delete (PM 2026-08-23)" describe at the end of this file.
+  test('DELETE exists (PM 2026-08-23) and leaves no dangling link behind', async () => {
+    const id = await importOne(`${uniq()} Zmazatelny`)
     const res = await ctx.delete(`/api/coffee-products/${id}`, { headers: admin() })
-    expect(res.status(), 'DELETE /api/coffee-products/:id must not exist').toBe(404)
+    expect(res.status(), 'DELETE /api/coffee-products/:id is a real route now').toBe(200)
+    const body = await res.json()
+    expect(body.deleted.id).toBe(id)
+    // Gone for good: a second delete cannot find it.
+    const again = await ctx.delete(`/api/coffee-products/${id}`, { headers: admin() })
+    expect(again.status()).toBe(404)
   })
 })
 
@@ -1383,18 +1393,17 @@ test.describe('UC-PC-009 — catalog CRUD (API)', () => {
     expect((await patchCatalog(id, { status: 'available' })).status()).toBe(200)
   })
 
-  test('roastery is NOT PATCH-editable (half of the identity key), and there is NO DELETE route (decision 9)', async () => {
+  // ⚠ RETARGET, case (a) — the no-DELETE half is superseded by the PM's 2026-08-23
+  // decision (a real DELETE exists; see the "Catalog delete" describe). The
+  // roastery-immutability half is untouched and is what this test now owns.
+  test('roastery is NOT PATCH-editable (half of the identity key)', async () => {
     const name = `${uniq()} Stara Hora`
     const id = await importOne(name)
 
     const res = await patchCatalog(id, { roastery: 'Ina Praziaren' })
     expect(res.status()).toBe(200)
     expect((await res.json()).roastery, 'roastery must survive a PATCH attempt').toBe('Goriffee')
-
-    // Decision 9: no DELETE route exists on the catalog — express falls through.
-    const del = await ctx.delete(`/api/coffee-products/${id}`, { headers: admin() })
-    expect(del.status(), 'DELETE /api/coffee-products/:id must not exist').toBe(404)
-    // The row survives the attempt.
+    // The row survives a PATCH that tried to move it to another roastery.
     expect((await getCatalogRow(id)).status()).toBe(200)
   })
 
@@ -2404,5 +2413,133 @@ test.describe('UC-PC-012/013 — admin UI (picker + retired import section)', ()
     const img = card.locator('img')
     await expect(img).toBeVisible()
     await expect(img, 'the friend order page serves the catalog image via the COALESCE').toHaveAttribute('src', catalogImage)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PM 2026-08-23 — DELETE a catalog product. SUPERSEDES resolved decision 9's
+// "no DELETE route ever" (retirement via status='retired' stays as the
+// non-destructive option). ⚠ The invariant under test is the dangling-pointer
+// rule (GSO-T9): a deleted catalog row must never leave `products` rows pointing
+// at a nonexistent id — the links are cleared in the SAME transaction, and the
+// snapshots keep every byte of their own data.
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('Catalog delete (PM 2026-08-23)', () => {
+  test('deleting an unused product removes exactly that row', async ({ request }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const db = openDb()
+    const name = `${uniq()} Del Unused`
+    const id = seedCatalog(db, { name })
+    const before = db.prepare('SELECT COUNT(*) AS c FROM coffee_products').get().c
+
+    const res = await request.delete(`/api/coffee-products/${id}`, { headers: admin() })
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.deleted.id).toBe(id)
+    expect(body.deleted.name).toBe(name)
+    expect(body.unlinked_snapshots).toBe(0)
+
+    expect(db.prepare('SELECT COUNT(*) AS c FROM coffee_products WHERE id = ?').get(id).c).toBe(0)
+    expect(db.prepare('SELECT COUNT(*) AS c FROM coffee_products').get().c).toBe(before - 1)
+    db.close()
+  })
+
+  test('⚠ deleting a product WITH history unlinks its snapshots — never a dangling pointer, and no snapshot data moves', async ({ request }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const db = openDb()
+    const cycleId = seedCycle(db, `${uniq()} Del Cycle`, 'coffee')
+    const catalogId = seedCatalog(db, { name: `${uniq()} Del WithHistory` })
+    const s1 = seedSnapshot(db, cycleId, { name: 'Snap One', price_250g: 9.5, source_coffee_product_id: catalogId })
+    const s2 = seedSnapshot(db, cycleId, { name: 'Snap Two', price_1kg: 33, source_coffee_product_id: catalogId })
+    const rawBefore = db.prepare('SELECT * FROM products WHERE id IN (?, ?) ORDER BY id').all(s1, s2)
+
+    const res = await request.delete(`/api/coffee-products/${catalogId}`, { headers: admin() })
+    expect(res.status()).toBe(200)
+    expect((await res.json()).unlinked_snapshots).toBe(2)
+
+    // No dangling pointer anywhere in the table — the whole point.
+    const dangling = db.prepare(
+      `SELECT COUNT(*) AS c FROM products p
+        WHERE p.source_coffee_product_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM coffee_products cp WHERE cp.id = p.source_coffee_product_id)`
+    ).get().c
+    expect(dangling, 'no products row may point at a deleted catalog id').toBe(0)
+
+    // Snapshots survive byte-identical apart from the link column.
+    const rawAfter = db.prepare('SELECT * FROM products WHERE id IN (?, ?) ORDER BY id').all(s1, s2)
+    expect(rawAfter.length).toBe(2)
+    rawAfter.forEach((row, i) => {
+      expect(row.source_coffee_product_id).toBe(null)
+      const { source_coffee_product_id: _a, ...afterRest } = row
+      const { source_coffee_product_id: _b, ...beforeRest } = rawBefore[i]
+      expect(afterRest).toEqual(beforeRest)
+    })
+    db.close()
+  })
+
+  test('the unlinked snapshots come back in the migration workbench', async ({ request }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const db = openDb()
+    const cycleId = seedCycle(db, `${uniq()} Del Reappear Cycle`, 'coffee')
+    const productName = `${uniq()} Del Reappear`
+    const catalogId = seedCatalog(db, { name: productName })
+    seedSnapshot(db, cycleId, { name: productName, source_coffee_product_id: catalogId })
+
+    const pendingBefore = await (await request.get('/api/coffee-products/migration/pending', { headers: admin() })).json()
+    expect(pendingBefore.pending.some(g => g.display_name === productName)).toBe(false)
+
+    await request.delete(`/api/coffee-products/${catalogId}`, { headers: admin() })
+
+    const pendingAfter = await (await request.get('/api/coffee-products/migration/pending', { headers: admin() })).json()
+    expect(
+      pendingAfter.pending.some(g => g.display_name === productName),
+      'a deleted catalog product returns its history to the workbench'
+    ).toBe(true)
+    db.close()
+  })
+
+  test('unknown and non-integer ids 404 without touching anything', async ({ request }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const db = openDb()
+    const before = db.prepare('SELECT COUNT(*) AS c FROM coffee_products').get().c
+    for (const bad of ['99999999', 'abc', '1.5']) {
+      const res = await request.delete(`/api/coffee-products/${bad}`, { headers: admin() })
+      expect(res.status(), `DELETE /${bad}`).toBe(404)
+    }
+    expect(db.prepare('SELECT COUNT(*) AS c FROM coffee_products').get().c).toBe(before)
+    db.close()
+  })
+
+  test('UI: Odstrániť asks for confirmation, then removes the row from the list', async ({ page, request }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const db = openDb()
+    const name = `${uniq()} Del UI`
+    const id = seedCatalog(db, { name })
+    db.close()
+
+    await loginAsAdminUI(page)
+    await page.goto('/admin/catalog')
+    await page.getByPlaceholder('Názov produktu...').fill(name)
+    await expect(page.getByRole('cell', { name })).toBeVisible()
+
+    // The dialog gates the delete: dismissing it changes nothing.
+    await page.getByTestId(`catalog-delete-${id}`).click()
+    const dialog = page.getByTestId('catalog-delete-dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toContainText(name)
+    await dialog.getByRole('button', { name: 'Zrušiť' }).click()
+    await expect(dialog).toBeHidden()
+    await expect(page.getByRole('cell', { name })).toBeVisible()
+
+    // Confirming removes it from the table without a reload.
+    await page.getByTestId(`catalog-delete-${id}`).click()
+    await page.getByTestId('catalog-delete-confirm').click()
+    await expect(page.getByTestId('catalog-delete-dialog')).toBeHidden()
+    await expect(page.getByRole('cell', { name })).toHaveCount(0)
+
+    // And it is really gone from the API, not just the DOM.
+    const after = await request.get('/api/coffee-products', { headers: uiHeaders(await page.evaluate(() => localStorage.getItem('adminToken'))) })
+    const list = await after.json()
+    expect((list.products || list).some?.(p => p.name === name) ?? false).toBe(false)
   })
 })

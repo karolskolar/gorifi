@@ -507,6 +507,7 @@ export const api = {
   },
   getCatalogProduct: (id) => adminRequest(`/coffee-products/${id}`),
   updateCatalogProduct: (id, data) => adminRequest(`/coffee-products/${id}`, { method: 'PATCH', body: data }),
+  deleteCatalogProduct: (id) => adminRequest(`/coffee-products/${id}`, { method: 'DELETE' }),
   uploadCatalogProductImage: (id, formData) => adminRequest(`/coffee-products/${id}/image`, { method: 'POST', body: formData }),
   importCatalogCSV: (formData) => adminRequest('/coffee-products/import', { method: 'POST', body: formData }),
   importCatalogGsheet: (url, roastery) => adminRequest('/coffee-products/import-gsheet', { method: 'POST', body: { url, roastery: roastery || null } }),

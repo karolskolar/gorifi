@@ -95,6 +95,42 @@ const modalError = ref('')
 const editForm = ref({})
 const imageUploading = ref(false)
 
+// Delete confirmation (PM 2026-08-23). A real delete, not the `status='retired'`
+// soft path — but confirmed in a modal because it is irreversible AND, for a product
+// with history, it UNLINKS those snapshots (they keep every byte of their own data
+// and reappear in Migrácia; the backend clears the pointers inside the delete
+// transaction, so nothing is ever left dangling — the GSO-T9 lesson).
+const showDelete = ref(false)
+const deleteTarget = ref(null)
+const deleteError = ref('')
+const deleting = ref(false)
+const lastDeleted = ref(null)
+
+function openDelete(product) {
+  deleteTarget.value = product
+  deleteError.value = ''
+  showDelete.value = true
+}
+
+async function confirmDelete() {
+  if (!deleteTarget.value || deleting.value) return
+  deleting.value = true
+  deleteError.value = ''
+  const target = deleteTarget.value
+  try {
+    const res = await api.deleteCatalogProduct(target.id)
+    // Drop the row locally — no refetch (the workbench precedent).
+    products.value = products.value.filter(p => p.id !== target.id)
+    lastDeleted.value = { name: res?.deleted?.name || target.name, unlinked: res?.unlinked_snapshots || 0 }
+    showDelete.value = false
+    deleteTarget.value = null
+  } catch (e) {
+    deleteError.value = e.message || 'Produkt sa nepodarilo odstrániť'
+  } finally {
+    deleting.value = false
+  }
+}
+
 function openEdit(product) {
   editing.value = product
   modalError.value = ''
@@ -682,6 +718,13 @@ async function logout() {
                   <TableCell class="text-right text-sm">{{ formatKg(product.all_time_kg) }}</TableCell>
                   <TableCell class="text-right">
                     <Button variant="ghost" size="sm" @click="openEdit(product)">Upraviť</Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="text-destructive"
+                      :data-testid="`catalog-delete-${product.id}`"
+                      @click="openDelete(product)"
+                    >Odstrániť</Button>
                   </TableCell>
                 </TableRow>
               </TableBody>
@@ -1020,6 +1063,36 @@ async function logout() {
     </main>
 
     <!-- Edit dialog -->
+    <!-- Delete confirmation (PM 2026-08-23) -->
+    <Dialog :open="showDelete" @update:open="showDelete = $event">
+      <DialogContent class="max-w-lg" data-testid="catalog-delete-dialog">
+        <DialogHeader>
+          <DialogTitle>Odstrániť produkt z katalógu?</DialogTitle>
+        </DialogHeader>
+        <div v-if="deleteTarget" class="space-y-3 text-sm">
+          <p class="font-medium">{{ deleteTarget.name }}</p>
+          <p v-if="deleteTarget.cycles_count > 0" class="text-amber-700" data-testid="delete-history-warning">
+            Tento produkt je použitý v {{ deleteTarget.cycles_count }} cykloch
+            ({{ formatKg(deleteTarget.all_time_kg) }} spolu). Objednávky, ceny ani
+            množstvá sa nezmenia — tieto cykly sa však znova objavia v Migrácii ako
+            nezaradené.
+          </p>
+          <p v-else class="text-muted-foreground">Produkt nie je použitý v žiadnom cykle.</p>
+          <p class="text-muted-foreground">
+            Ak ho chcete len prestať ponúkať v nových cykloch, použite namiesto toho
+            stav „Vyradená“ v úprave produktu.
+          </p>
+          <p v-if="deleteError" class="text-destructive" data-testid="delete-error">{{ deleteError }}</p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" :disabled="deleting" @click="showDelete = false">Zrušiť</Button>
+          <Button variant="destructive" :disabled="deleting" data-testid="catalog-delete-confirm" @click="confirmDelete">
+            {{ deleting ? 'Odstraňujem…' : 'Odstrániť' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
     <Dialog :open="showEdit" @update:open="showEdit = $event">
       <DialogContent class="max-w-2xl max-h-[90vh] overflow-y-auto" data-testid="catalog-edit-dialog">
         <DialogHeader>

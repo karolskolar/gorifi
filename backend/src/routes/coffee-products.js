@@ -674,4 +674,43 @@ router.post('/:id/image', uploadSingle('image'), (req, res) => {
   return res.json(db.prepare('SELECT * FROM coffee_products WHERE id = ?').get(id));
 });
 
+// DELETE a catalog product (admin) — PM decision 2026-08-23, which SUPERSEDES
+// resolved decision 9's "no DELETE route ever" (retirement via status='retired'
+// stays available and is still the non-destructive option; the admin asked for a
+// real delete for rows imported by mistake).
+//
+// ⚠ THE DANGLING-POINTER RULE (the GSO-T9 lesson, and the reason this is one
+// transaction): `products.source_coffee_product_id` was added by a bare ALTER with
+// NO foreign key, so deleting a catalog row would leave historical snapshots
+// pointing at nothing — such rows land in NO stats bucket and vanish from the
+// reports (exactly how a dangling `root_friend_id` once erased reward volume).
+// So the links are CLEARED FIRST, in the same transaction as the delete. The
+// affected snapshots keep every byte of their own data (name, prices, order_items)
+// and simply become unlinked again — they reappear in the migration workbench,
+// which is the correct end state for "this catalog product should not exist".
+// Registered LAST: parametric, below every literal path.
+router.delete('/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+  const product = db.prepare('SELECT * FROM coffee_products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ error: 'Produkt neexistuje' });
+  }
+
+  const run = db.transaction(() => {
+    // Only write to `products` is the link column — the PC-T4 data-safety
+    // invariant, unchanged: no snapshot data, no prices, no order_items.
+    const unlinked = db.prepare(
+      'UPDATE products SET source_coffee_product_id = NULL WHERE source_coffee_product_id = ?'
+    ).run(id);
+    db.prepare('DELETE FROM coffee_products WHERE id = ?').run(id);
+    return unlinked.changes;
+  });
+
+  const unlinked_snapshots = run();
+  return res.json({ deleted: { id, name: product.name }, unlinked_snapshots });
+});
+
 export default router;

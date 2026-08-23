@@ -76,6 +76,8 @@ const ADMIN_ENDPOINTS = [
   { method: 'get', path: '/api/coffee-products' },
   { method: 'get', path: '/api/coffee-products/1' },
   { method: 'patch', path: '/api/coffee-products/1', data: { country: 'evil' } },
+  // PM 2026-08-23: a real DELETE (supersedes resolved decision 9's no-delete rule).
+  { method: 'delete', path: '/api/coffee-products/1' },
   { method: 'post', path: '/api/coffee-products/1/image' },
   // 12 §UC-PC-014 (PC-T10): the one-time base64 → file conversion endpoint.
   // ⚠ GET /api/images/:filename is DELIBERATELY NOT in this sweep — it is a
