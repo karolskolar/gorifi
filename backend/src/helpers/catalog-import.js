@@ -42,7 +42,12 @@ function exactMatch(key, roastery) {
 // Exact-match refresh per resolved decision 13. Returns the per-row result;
 // writes only when something actually differs (no write-churn — this is what
 // makes re-imports naturally idempotent, byte-for-byte, updated_at included).
-function refreshCatalogRow(existing, parsedRow) {
+//
+// opts.protectRoast (PC-T13, split rules): on a SPLIT TARGET `roast_type` is
+// ADMIN-owned — the N targets of one sheet row differ only by roast, so the
+// sheet's combined roast string ("Medium + Full city") must never overwrite
+// the per-target value. Everything else stays sheet-owned.
+function refreshCatalogRow(existing, parsedRow, opts = {}) {
   const updates = [];
   const values = [];
   const priceChanges = [];
@@ -81,7 +86,10 @@ function refreshCatalogRow(existing, parsedRow) {
     }
   }
 
-  for (const field of SHEET_TEXT_FIELDS) {
+  const textFields = opts.protectRoast
+    ? SHEET_TEXT_FIELDS.filter((f) => f !== 'roast_type')
+    : SHEET_TEXT_FIELDS;
+  for (const field of textFields) {
     const v = parsedRow[field];
     if (typeof v !== 'string' || v.trim() === '') continue; // an empty cell never blanks
     if (existing[field] === v) continue;
@@ -215,6 +223,20 @@ export function consolidateCatalogRow(parsedRow, roastery, opts = {}) {
   };
 }
 
+// splitTargetsFor(normalizedName, roastery) — PC-T13 (split rules, option B):
+// the catalog rows declared as variants of ONE sheet row. Read via a JOIN so a
+// dangling mapping (impossible while the FK CASCADE holds, tolerated anyway)
+// can never surface a phantom target. Order by id for a stable report.
+export function splitTargetsFor(normalizedName, roastery) {
+  return db.all(
+    `SELECT cp.* FROM catalog_import_splits s
+       JOIN coffee_products cp ON cp.id = s.coffee_product_id
+      WHERE s.normalized_name = ? AND s.roastery = ?
+      ORDER BY cp.id`,
+    [normalizedName, roastery]
+  );
+}
+
 // exactCatalogMatch(name, roastery) — PC-T3 (12 §UC-PC-005): the manual POST's
 // `duplicate_in_cycle` pre-check needs the WOULD-BE exact match BEFORE any
 // write happens (a refused POST must not even run the decision-13 price
@@ -309,12 +331,45 @@ export function importRowsIntoCatalog(parsedRows, roastery, { warnings = [] } = 
       warnings: [],
     };
     const seenCatalogIds = new Set();
+    // One roastery per import run (the routes' contract) — resolve it once for
+    // the split lookups; consolidateCatalogRow keeps resolving its own.
+    const resolvedRoastery = normalizeRoastery(roastery);
 
     parsedRows.forEach((parsedRow, i) => {
       // Sheet row for the report: the multirow parser stamps the product's real
       // CSV row (_rowStart); columns-with-headers formats count the header as
       // row 1, so data row i sits at i + 2.
       const rowNo = typeof parsedRow._rowStart === 'number' ? parsedRow._rowStart : i + 2;
+
+      // ── PC-T13 split rules (option B), checked BEFORE consolidation ────────
+      // A sheet row whose (normalized_name, roastery) has declared split
+      // targets refreshes EVERY target (decision-13 + PC-T12 vector semantics,
+      // roast_type protected), CREATES NOTHING, and never enters the fuzzy
+      // path — so no pending_fuzzy entry can exist for a split target. Targets
+      // are reported under `matched` with an ADDITIVE `split: true` marker
+      // (the UC-PC-004 bucket vocabulary is unchanged). Deliberately scoped to
+      // the import orchestrator: the manual per-cycle POST (UC-PC-005) links a
+      // snapshot to exactly ONE catalog row, which a 1→N mapping cannot answer.
+      const key = normalizeProductName(parsedRow.name);
+      if (key !== '') {
+        const targets = splitTargetsFor(key, resolvedRoastery);
+        if (targets.length > 0) {
+          const fresh = targets.filter((t) => !seenCatalogIds.has(t.id));
+          if (fresh.length === 0) {
+            // Every target already refreshed this run — the same sheet row
+            // twice (UC-PC-003 rule 5: skipped, nothing written).
+            report.unparsed.push({ row: rowNo, reason: 'duplicate row in sheet' });
+            return;
+          }
+          for (const target of fresh) {
+            const refreshed = refreshCatalogRow(target, parsedRow, { protectRoast: true });
+            seenCatalogIds.add(target.id);
+            report.matched.push({ catalog_id: target.id, name: target.name, split: true });
+            report.price_changes.push(...refreshed.price_changes);
+          }
+          return;
+        }
+      }
 
       const result = consolidateCatalogRow(parsedRow, roastery, { seenCatalogIds });
 

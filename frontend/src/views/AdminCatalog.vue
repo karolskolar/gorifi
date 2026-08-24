@@ -89,6 +89,11 @@ function formatKg(v) {
 // ── Edit dialog ───────────────────────────────────────────────────────────────
 const showEdit = ref(false)
 const editing = ref(null)
+// PC-T13: the SAME dialog doubles as "+ Nový produkt" — create mode has no
+// image column (upload comes after creation, via edit), an EDITABLE roastery
+// select (edit mode keeps it frozen — half of the identity key) and no split
+// section (a split names an existing product).
+const createMode = ref(false)
 // Save errors render IN-DIALOG (the module-11 modalError lesson: a page-level
 // Alert hides behind the radix overlay — do not "fix" this to the page Alert).
 const modalError = ref('')
@@ -131,9 +136,145 @@ async function confirmDelete() {
   }
 }
 
+// PC-T13 — "Odpojiť od katalógu": the history returns to Migrácia, the catalog
+// row (photo, curation) survives. Inline confirm in the row, named by how many
+// cycles come back — the operation the PM had to run as raw SQL on production.
+const pendingUnlink = ref(null)
+const unlinkBusy = ref(false)
+
+function cyklyLabel(n) {
+  if (n === 1) return '1 cyklus'
+  if (n >= 2 && n <= 4) return `${n} cykly`
+  return `${n} cyklov`
+}
+
+async function confirmUnlink(product) {
+  if (unlinkBusy.value) return
+  unlinkBusy.value = true
+  error.value = ''
+  try {
+    await api.unlinkCatalogProduct(product.id)
+    // The row survives — only its computed history columns drop to zero.
+    products.value = products.value.map((p) =>
+      p.id === product.id ? { ...p, cycles_count: 0, all_time_kg: 0 } : p
+    )
+    pendingUnlink.value = null
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    unlinkBusy.value = false
+  }
+}
+
+// PC-T13 — split declarations ("tento produkt je variant riadku …"). Loaded
+// per edit-dialog open; declare/remove refresh from the response payload.
+const splits = ref([])
+// PC-T13 review fix 4 — the "old combined row" honesty hint: products declared
+// as variants of THIS product's own identity. When non-empty (and this product
+// is not itself one of its own targets), the import no longer refreshes this
+// row's prices and the duplicates review hides its target pairs — say so and
+// point at `Vyradená`.
+const splitOfThisRow = ref([])
+const identityIsSplit = computed(() =>
+  !createMode.value &&
+  editing.value &&
+  splitOfThisRow.value.length > 0 &&
+  // If this product ALSO declared itself a variant of its own row, the import
+  // still refreshes it as a split target — no warning then.
+  !splits.value.some((s) => s.normalized_name === editing.value.normalized_name)
+)
+const splitInput = ref('')
+const splitBusy = ref(false)
+let splitsSeq = 0
+
+function applySplitsPayload(res) {
+  splits.value = res.splits
+  splitOfThisRow.value = res.split_of_this_row || []
+}
+
+async function loadSplits(id) {
+  const seq = ++splitsSeq
+  try {
+    const res = await api.getCatalogProductSplits(id)
+    if (seq !== splitsSeq) return
+    applySplitsPayload(res)
+  } catch (e) {
+    if (seq === splitsSeq) modalError.value = e.message
+  }
+}
+
+async function declareSplit() {
+  if (!editing.value || splitBusy.value || !splitInput.value.trim()) return
+  splitBusy.value = true
+  modalError.value = ''
+  try {
+    const res = await api.addCatalogProductSplit(editing.value.id, splitInput.value.trim())
+    applySplitsPayload(res)
+    splitInput.value = ''
+  } catch (e) {
+    modalError.value = e.message
+  } finally {
+    splitBusy.value = false
+  }
+}
+
+async function removeSplit(splitId) {
+  if (!editing.value || splitBusy.value) return
+  splitBusy.value = true
+  modalError.value = ''
+  try {
+    const res = await api.deleteCatalogProductSplit(editing.value.id, splitId)
+    applySplitsPayload(res)
+  } catch (e) {
+    modalError.value = e.message
+  } finally {
+    splitBusy.value = false
+  }
+}
+
+function openCreate() {
+  createMode.value = true
+  editing.value = null
+  modalError.value = ''
+  splits.value = []
+  splitOfThisRow.value = []
+  splitInput.value = ''
+  editForm.value = {
+    name: '',
+    roastery: '',
+    split_of: '',
+    description1: '',
+    description2: '',
+    roast_type: '',
+    purpose: '',
+    status: 'available',
+    is_new: false,
+    curator_pick_note: '',
+    country: '',
+    region: '',
+    altitude: '',
+    farm: '',
+    variety: '',
+    processing: '',
+    price_150g: '',
+    price_200g: '',
+    price_250g: '',
+    price_500g: '',
+    price_1kg: '',
+    price_20pc5g: '',
+    price_8pc12g: '',
+  }
+  showEdit.value = true
+}
+
 function openEdit(product) {
+  createMode.value = false
   editing.value = product
   modalError.value = ''
+  splits.value = []
+  splitOfThisRow.value = []
+  splitInput.value = ''
+  loadSplits(product.id) // non-blocking; errors land in modalError
   editForm.value = {
     name: product.name || '',
     description1: product.description1 || '',
@@ -163,7 +304,7 @@ function openEdit(product) {
 const price = (v) => (v === '' || v === null || v === undefined ? null : parseFloat(v))
 
 async function saveEdit() {
-  if (!editing.value) return
+  if (!createMode.value && !editing.value) return
   modalError.value = ''
   const f = editForm.value
   const data = {
@@ -190,11 +331,23 @@ async function saveEdit() {
     price_8pc12g: price(f.price_8pc12g),
   }
   try {
-    await api.updateCatalogProduct(editing.value.id, data)
+    if (createMode.value) {
+      // Roastery only in create mode — empty means the server default
+      // (the roasteries is_default row).
+      if (f.roastery) data.roastery = f.roastery
+      // Split declarable at birth (PM staging feedback) — empty means none.
+      if (f.split_of && f.split_of.trim()) data.split_of = f.split_of.trim()
+      const created = await api.createCatalogProduct(data)
+      // The 201 arrives in the list shape (cycles_count + all_time_kg) — append
+      // straight from the payload, the workbench-create precedent.
+      products.value = [...products.value, created]
+    } else {
+      await api.updateCatalogProduct(editing.value.id, data)
+      await loadProducts()
+    }
     showEdit.value = false
-    await loadProducts()
   } catch (e) {
-    // The rename-collision 409 (field:'name') and every other save error land
+    // The name-collision 409 (field:'name') and every other save error land
     // here, inside the dialog.
     modalError.value = e.message
   }
@@ -414,6 +567,68 @@ function removeResolved(keys) {
   selected.value = {}
 }
 
+// ── PC-T13 — "Ignorovať" + the Ignorované fold ────────────────────────────────
+// Junk pending groups (sheet section headers) get an explicit dismissal.
+// A group with order_items refuses server-side (409) — real history needs a
+// catalog identity. Rows move between the two local lists off the response,
+// never a refetch (the workbench convention).
+const ignoredRows = ref([])
+const showIgnored = ref(false)
+const ignoreBusy = ref(false)
+let ignoredSeq = 0
+
+async function loadIgnored() {
+  const seq = ++ignoredSeq
+  try {
+    const res = await api.getMigrationIgnored()
+    if (seq !== ignoredSeq) return
+    ignoredRows.value = res.ignored
+  } catch (e) {
+    // Non-fatal: the fold just stays empty; the next action reloads it.
+  }
+}
+
+async function ignoreSelection() {
+  if (ignoreBusy.value || selectedRows.value.length === 0) return
+  ignoreBusy.value = true
+  migError.value = ''
+  migErrorCatalogId.value = null
+  try {
+    const rows = selectedRows.value.slice()
+    const keys = rows.map(groupKey)
+    const result = await api.ignoreMigrationGroups(selectedGroups.value)
+    removeResolved(keys)
+    // Only actually-ignored groups enter the fold — skipped ones had no
+    // unlinked rows left (resolved elsewhere) and would ghost in the list.
+    const skipped = new Set((result.skipped || []).map((s) => `${s.normalized_name}\u0000${s.roastery}`))
+    ignoredRows.value = [...ignoredRows.value, ...rows.filter((r) => !skipped.has(groupKey(r)))]
+  } catch (e) {
+    // The has-orders 409 lands here with the group name and count in the message.
+    migError.value = e.message
+  } finally {
+    ignoreBusy.value = false
+  }
+}
+
+async function restoreGroup(row) {
+  migError.value = ''
+  try {
+    const result = await api.unignoreMigrationGroups([{ normalized_name: row.normalized_name, roastery: row.roastery }])
+    // Either way the row's ignored state is gone — drop it from the fold.
+    ignoredRows.value = ignoredRows.value.filter((r) => groupKey(r) !== groupKey(row))
+    // Symmetric with ignoreSelection: a raced `skipped` restore (the group is
+    // no longer ignored — resolved elsewhere) must NOT ghost a pending row.
+    const skipped = new Set((result.skipped || []).map((s) => `${s.normalized_name}\u0000${s.roastery}`))
+    if (!skipped.has(groupKey(row))) {
+      pendingRows.value = [...pendingRows.value, row].sort((a, b) =>
+        a.normalized_name < b.normalized_name ? -1 : a.normalized_name > b.normalized_name ? 1 : 0
+      )
+    }
+  } catch (e) {
+    migError.value = e.message
+  }
+}
+
 // Assign dialog — searchable catalog picker. Errors render IN-DIALOG (the
 // module-11 modalError idiom).
 const showAssign = ref(false)
@@ -576,6 +791,7 @@ watch(activeTab, (tab) => {
   }
   if (tab === 'migrate') {
     loadPending()
+    loadIgnored()
   }
   if (tab === 'stats' && !statsLoaded.value) {
     statsLoaded.value = true
@@ -635,6 +851,11 @@ async function logout() {
 
         <!-- ── Products ─────────────────────────────────────────────────── -->
         <TabsContent value="products">
+          <!-- PC-T13: manual creation — a coffee that is neither in the sheet
+               nor in history can exist in the catalog. -->
+          <div class="flex justify-end mb-3">
+            <Button data-testid="catalog-create-button" @click="openCreate">+ Nový produkt</Button>
+          </div>
           <Card class="mb-4">
             <CardContent class="p-4">
               <div class="flex flex-wrap items-end gap-3">
@@ -719,14 +940,31 @@ async function logout() {
                   <TableCell class="text-right text-sm">{{ product.cycles_count }}</TableCell>
                   <TableCell class="text-right text-sm">{{ formatKg(product.all_time_kg) }}</TableCell>
                   <TableCell class="text-right">
-                    <Button variant="ghost" size="sm" @click="openEdit(product)">Upraviť</Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      class="text-destructive"
-                      :data-testid="`catalog-delete-${product.id}`"
-                      @click="openDelete(product)"
-                    >Odstrániť</Button>
+                    <!-- PC-T13: "Odpojiť" (unlink) with an inline confirm naming
+                         how many cycles return to Migrácia — the catalog row
+                         (photo, curation) survives, unlike Odstrániť. -->
+                    <div v-if="pendingUnlink === product.id" class="flex items-center justify-end gap-2 text-sm" data-testid="unlink-confirm">
+                      <span>{{ cyklyLabel(product.cycles_count) }} sa vráti do Migrácie ako nezaradené. Produkt (fotka aj údaje) zostáva.</span>
+                      <Button variant="destructive" size="sm" :disabled="unlinkBusy" @click="confirmUnlink(product)">Potvrdiť</Button>
+                      <Button variant="outline" size="sm" :disabled="unlinkBusy" @click="pendingUnlink = null">Zrušiť</Button>
+                    </div>
+                    <template v-else>
+                      <Button variant="ghost" size="sm" @click="openEdit(product)">Upraviť</Button>
+                      <Button
+                        v-if="product.cycles_count > 0"
+                        variant="ghost"
+                        size="sm"
+                        data-testid="catalog-unlink"
+                        @click="pendingUnlink = product.id"
+                      >Odpojiť</Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        class="text-destructive"
+                        :data-testid="`catalog-delete-${product.id}`"
+                        @click="openDelete(product)"
+                      >Odstrániť</Button>
+                    </template>
                   </TableCell>
                 </TableRow>
               </TableBody>
@@ -941,6 +1179,11 @@ async function logout() {
                 <Button :disabled="selectedRows.length === 0 || createBusy" variant="outline" data-testid="workbench-create-button" @click="createFromSelection">
                   Vytvoriť nový produkt z výberu
                 </Button>
+                <!-- PC-T13: explicit dismissal for junk groups (sheet section
+                     headers). Groups with order_items refuse server-side. -->
+                <Button :disabled="selectedRows.length === 0 || ignoreBusy" variant="outline" data-testid="workbench-ignore-button" @click="ignoreSelection">
+                  Ignorovať
+                </Button>
               </div>
             </div>
 
@@ -977,6 +1220,35 @@ async function logout() {
               </Table>
             </Card>
           </template>
+
+          <!-- PC-T13: the Ignorované fold — review + undo for dismissed groups. -->
+          <Card v-if="ignoredRows.length > 0" class="mt-4">
+            <CardContent class="p-4">
+              <button
+                type="button"
+                class="text-sm font-medium flex items-center gap-2"
+                data-testid="ignored-fold"
+                @click="showIgnored = !showIgnored"
+              >
+                <span aria-hidden="true">{{ showIgnored ? '▾' : '▸' }}</span>
+                Ignorované ({{ ignoredRows.length }})
+              </button>
+              <div v-if="showIgnored" class="mt-3 divide-y">
+                <div
+                  v-for="row in ignoredRows"
+                  :key="groupKey(row)"
+                  data-testid="ignored-row"
+                  class="flex flex-wrap items-center justify-between gap-2 py-2 text-sm"
+                >
+                  <div>
+                    <span class="font-medium">{{ row.display_name }}</span>
+                    <span class="text-muted-foreground"> · {{ row.roastery }} · {{ row.snapshots }} zázn. / {{ row.cycles }} cyklov</span>
+                  </div>
+                  <Button variant="outline" size="sm" data-testid="ignored-restore" @click="restoreGroup(row)">Vrátiť</Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
 
           <!-- One-time image conversion (PC-T10, 12 §UC-PC-014) -->
           <Card class="mt-8">
@@ -1115,17 +1387,18 @@ async function logout() {
     <Dialog :open="showEdit" @update:open="showEdit = $event">
       <DialogContent class="max-w-2xl max-h-[90vh] overflow-y-auto" data-testid="catalog-edit-dialog">
         <DialogHeader>
-          <DialogTitle>Upraviť produkt</DialogTitle>
+          <DialogTitle>{{ createMode ? 'Nový produkt' : 'Upraviť produkt' }}</DialogTitle>
         </DialogHeader>
 
         <Alert v-if="modalError" variant="destructive" data-testid="catalog-modal-error">
           <AlertDescription>{{ modalError }}</AlertDescription>
         </Alert>
 
-        <div v-if="editing" class="space-y-4 py-2">
+        <div v-if="editing || createMode" class="space-y-4 py-2">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <!-- Left column: image -->
-            <div>
+            <!-- Left column: image (edit only — a new product uploads its photo
+                 afterwards through Upraviť, the POST /:id/image home) -->
+            <div v-if="!createMode">
               <Label class="mb-2">Fotografia produktu</Label>
               <div class="border rounded-lg p-4 text-center">
                 <img v-if="editing.image" :src="editing.image" class="max-h-40 mx-auto rounded mb-2" data-testid="catalog-image-preview" />
@@ -1142,7 +1415,12 @@ async function logout() {
               </div>
               <div class="space-y-1">
                 <Label>Pražiareň</Label>
-                <Input :model-value="editing.roastery" disabled />
+                <!-- Editable ONLY at creation — it is half of the identity key. -->
+                <select v-if="createMode" v-model="editForm.roastery" data-testid="catalog-create-roastery" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                  <option value="">— Predvolená —</option>
+                  <option v-for="r in roasteries" :key="r.id" :value="r.name">{{ r.name }}</option>
+                </select>
+                <Input v-else :model-value="editing.roastery" disabled />
               </div>
               <div class="space-y-1">
                 <Label>Účel</Label>
@@ -1204,6 +1482,66 @@ async function logout() {
                 <Input v-model="editForm.processing" />
               </div>
             </div>
+          </div>
+
+          <!-- PC-T13: split declarations — "tento produkt je variant riadku …".
+               Edit mode only: a split names an EXISTING catalog product. -->
+          <div v-if="!createMode">
+            <h4 class="text-sm font-semibold mb-1">Variant riadku z cenníka</h4>
+            <!-- Fix 4 (review): the "old combined row" — its sheet line is split
+                 into other products, so the import no longer refreshes THIS row
+                 and it can sit in cycles with frozen prices. Display only. -->
+            <p
+              v-if="identityIsSplit"
+              class="text-xs text-amber-700 bg-amber-50 border border-amber-300 rounded-md px-2 py-1.5 mb-2"
+              data-testid="split-identity-hint"
+            >
+              Tento riadok cenníka je rozdelený na {{ splitOfThisRow.length }}
+              {{ splitOfThisRow.length === 1 ? 'produkt' : (splitOfThisRow.length <= 4 ? 'produkty' : 'produktov') }}:
+              {{ splitOfThisRow.map((x) => x.name).join(', ') }}.
+              Import už tomuto produktu ceny neaktualizuje — pravdepodobne ho chcete
+              prepnúť na stav „Vyradená“.
+            </p>
+            <p class="text-xs text-muted-foreground mb-2">
+              Ak jeden riadok cenníka predstavuje viac produktov (napr. dve praženia),
+              zadajte tu názov riadku. Import potom obnoví ceny všetkých variantov,
+              nič nové nevytvorí a praženie neprepíše.
+            </p>
+            <ul v-if="splits.length > 0" class="space-y-1 mb-2">
+              <li
+                v-for="s in splits"
+                :key="s.id"
+                data-testid="split-entry"
+                class="flex flex-wrap items-center justify-between gap-2 text-sm border rounded-md px-2 py-1"
+              >
+                <span>
+                  <span class="font-medium">{{ s.sheet_name }}</span>
+                  <span v-if="s.siblings.length > 0" class="text-muted-foreground">
+                    · ďalšie varianty: {{ s.siblings.map((x) => x.name).join(', ') }}
+                  </span>
+                  <span v-else class="text-muted-foreground"> · zatiaľ jediný variant</span>
+                </span>
+                <Button variant="ghost" size="sm" data-testid="split-remove" :disabled="splitBusy" @click="removeSplit(s.id)">Odstrániť</Button>
+              </li>
+            </ul>
+            <div class="flex gap-2">
+              <Input v-model="splitInput" data-testid="split-sheet-name" placeholder="Názov riadku v cenníku..." />
+              <Button variant="outline" data-testid="split-declare" :disabled="!splitInput.trim() || splitBusy" @click="declareSplit" class="whitespace-nowrap">
+                Pridať
+              </Button>
+            </div>
+          </div>
+          <!-- Create mode: the split is declarable AT BIRTH (PM staging
+               feedback) — for two-variant sheet rows it is the reason the
+               product exists. Written with the create in one transaction. -->
+          <div v-else>
+            <h4 class="text-sm font-semibold mb-1">Variant riadku z cenníka</h4>
+            <p class="text-xs text-muted-foreground mb-2">
+              Ak jeden riadok cenníka predstavuje viac produktov (napr. dve praženia),
+              zadajte tu názov riadku presne ako v cenníku. Import potom obnoví ceny
+              všetkých variantov, nič nové nevytvorí a praženie neprepíše.
+            </p>
+            <Input v-model="editForm.split_of" data-testid="create-split-of" placeholder="Názov riadku v cenníku..." />
           </div>
 
           <!-- Curation fields -->

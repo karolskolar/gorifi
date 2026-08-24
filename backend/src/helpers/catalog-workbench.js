@@ -23,6 +23,9 @@ import { normalizeProductName, normalizeRoastery } from './catalog.js';
 // that are neither bakery-sourced nor already linked. Under the pivot every
 // NEW snapshot is born linked, so this set only shrinks — the workbench
 // drains it to empty and it stays empty.
+// PC-T13: `COALESCE(p.migration_ignored, 0) = 0` hides explicitly dismissed
+// junk groups (sheet section headers etc.) — the "Ignorovať" action. COALESCE
+// because the column arrived by bare ALTER (existing rows hold NULL).
 const CANDIDATE_SQL = `
   SELECT p.*, oc.name AS cycle_name, oc.created_at AS cycle_created_at
   FROM products p
@@ -30,7 +33,15 @@ const CANDIDATE_SQL = `
   WHERE COALESCE(oc.type, 'coffee') = 'coffee'
     AND p.source_bakery_product_id IS NULL
     AND p.source_coffee_product_id IS NULL
+    AND COALESCE(p.migration_ignored, 0) = 0
   ORDER BY p.cycle_id DESC, p.id DESC`;
+
+// The dismissed half of the same candidate set — what "Ignorované (N)" lists
+// and what unignore restores from. Identical predicate apart from the flag.
+const IGNORED_SQL = CANDIDATE_SQL.replace(
+  'COALESCE(p.migration_ignored, 0) = 0',
+  'COALESCE(p.migration_ignored, 0) = 1'
+);
 
 const groupKeyOf = (normalizedName, roastery) => `${normalizedName}\u0000${roastery}`;
 
@@ -39,9 +50,9 @@ const groupKeyOf = (normalizedName, roastery) => `${normalizedName}\u0000${roast
 // (highest cycle_id, `id DESC` tiebreak — the GSO-T8 same-second lesson), so
 // each group's FIRST snapshot is its newest. A name normalizing to '' has no
 // identity (the importers' skip) and stays out of every group.
-function loadGroups() {
+function loadGroups(sql = CANDIDATE_SQL) {
   const groups = new Map();
-  for (const snap of db.all(CANDIDATE_SQL)) {
+  for (const snap of db.all(sql)) {
     const key = normalizeProductName(snap.name);
     if (key === '') continue;
     const roastery = normalizeRoastery(snap.roastery);
@@ -69,8 +80,14 @@ function countPendingGroups() {
 // plain compare is the locale-insensitive order). No similarity column, no
 // candidate suggestions — deliberately (decision 14).
 export function pendingMigrationGroups() {
-  const groups = loadGroups();
-  const pending = [...groups.values()]
+  const pending = groupRows(loadGroups());
+  return { pending, pending_count: pending.length };
+}
+
+// The shared group → list-row projection (pending and ignored use the SAME
+// shape — the pending row shape is pinned key-for-key in the e2e).
+function groupRows(groups) {
+  return [...groups.values()]
     .map((group) => {
       const newest = group.snapshots[0];
       const cycleIds = new Set(group.snapshots.map((s) => s.cycle_id));
@@ -90,7 +107,98 @@ export function pendingMigrationGroups() {
       };
     })
     .sort((a, b) => (a.normalized_name < b.normalized_name ? -1 : a.normalized_name > b.normalized_name ? 1 : 0));
-  return { pending, pending_count: pending.length };
+}
+
+// GET /migration/ignored — the review surface for dismissed groups (PC-T13).
+export function ignoredMigrationGroups() {
+  const ignored = groupRows(loadGroups(IGNORED_SQL));
+  return { ignored, ignored_count: ignored.length };
+}
+
+// POST /migration/ignore — dismiss the selected pending groups (PC-T13).
+// ⚠ ONE column (`migration_ignored`), ONE transaction — `active`, order_items
+// and every other byte stay untouched (the PC-T4 data-safety posture).
+// ⚠ A group whose snapshots carry order_items (friend OR guest) REFUSES the
+// whole call: junk never has orders, and a group WITH orders needs a catalog
+// identity for the stats — hiding it would silently drop real history.
+// Raced/empty groups are skip-and-report, the assign convention.
+export function ignoreGroups(selection) {
+  const run = db.transaction(() => {
+    const groups = loadGroups();
+    // Refuse-before-write: scan the WHOLE selection for order_items first.
+    for (const g of selection) {
+      const group = groups.get(g.gk);
+      if (!group || group.snapshots.length === 0) continue;
+      const ids = group.snapshots.map((s) => s.id);
+      const ph = ids.map(() => '?').join(',');
+      const own = db.get(`SELECT COUNT(*) AS n FROM order_items WHERE product_id IN (${ph})`, ids).n;
+      const guest = db.get(`SELECT COUNT(*) AS n FROM guest_order_items WHERE product_id IN (${ph})`, ids).n;
+      if (own + guest > 0) {
+        return {
+          outcome: 'has_orders',
+          display_name: group.snapshots[0].name,
+          order_items: own + guest,
+        };
+      }
+    }
+
+    let ignoredSnapshots = 0;
+    let groupsIgnored = 0;
+    const skipped = [];
+    for (const g of selection) {
+      const group = groups.get(g.gk);
+      if (!group || group.snapshots.length === 0) {
+        skipped.push({ normalized_name: g.normalized_name, roastery: g.roastery, reason: 'no_unlinked_rows' });
+        continue;
+      }
+      const ids = group.snapshots.map((s) => s.id);
+      db.run(
+        `UPDATE products SET migration_ignored = 1 WHERE id IN (${ids.map(() => '?').join(',')})`,
+        ids
+      );
+      ignoredSnapshots += ids.length;
+      groupsIgnored += 1;
+    }
+    return {
+      outcome: 'ignored',
+      ignored_snapshots: ignoredSnapshots,
+      groups_ignored: groupsIgnored,
+      skipped,
+      pending_count: countPendingGroups(),
+    };
+  });
+  return run();
+}
+
+// POST /migration/unignore — the undo (PC-T13). Same one-column discipline.
+export function unignoreGroups(selection) {
+  const run = db.transaction(() => {
+    const groups = loadGroups(IGNORED_SQL);
+    let restoredSnapshots = 0;
+    let groupsRestored = 0;
+    const skipped = [];
+    for (const g of selection) {
+      const group = groups.get(g.gk);
+      if (!group || group.snapshots.length === 0) {
+        skipped.push({ normalized_name: g.normalized_name, roastery: g.roastery, reason: 'not_ignored' });
+        continue;
+      }
+      const ids = group.snapshots.map((s) => s.id);
+      db.run(
+        `UPDATE products SET migration_ignored = 0 WHERE id IN (${ids.map(() => '?').join(',')})`,
+        ids
+      );
+      restoredSnapshots += ids.length;
+      groupsRestored += 1;
+    }
+    return {
+      restored_snapshots: restoredSnapshots,
+      groups_restored: groupsRestored,
+      skipped,
+      pending_count: countPendingGroups(),
+    };
+  });
+  return run();
 }
 
 // Shared by both mutating endpoints: validate the request's `groups` array.
@@ -274,6 +382,64 @@ function newestHead(selection, groups) {
     }
   }
   return newest;
+}
+
+// PC-T13 — the manual catalog creation write (POST /api/coffee-products). The
+// route validates the request shape (shared PATCH vocabularies); the app-level
+// collision check + INSERT live HERE because routes/coffee-products.js carries
+// a structural pin — no `INSERT INTO coffee_products` anywhere in the routes
+// file, catalog-row creation has helper homes only (catalog-import.js's
+// consolidation, createCatalogFromGroups above, and this). Same admin-intent
+// unconditional-create posture and the same dual collision layer as the
+// workbench create: fuzzy is not consulted — a manual add is deliberate.
+// `splitOf` ({ sheetName, normalizedName } | null): declare the new product a
+// variant of a sheet row AT BIRTH (PM staging feedback — for two-variant rows
+// the split is the reason the product exists, so it must not require a save
+// and a re-open). The mapping insert runs INSIDE the same transaction as the
+// product insert; INSERT OR IGNORE converges defensively on the UNIQUE triple
+// (a brand-new product cannot already carry the mapping, but the write must
+// not be able to 409 the whole create over it).
+export function createManualCatalogRow({ name, normalizedName, roastery, plain, prices, isNew, status, splitOf = null }) {
+  const run = db.transaction(() => {
+    const clash = db.get(
+      'SELECT id FROM coffee_products WHERE normalized_name = ? AND roastery = ?',
+      [normalizedName, roastery]
+    );
+    if (clash) return { outcome: 'name_collision' };
+    const result = db.run(
+      `INSERT INTO coffee_products
+         (name, normalized_name, roastery,
+          country, region, altitude, farm, variety, processing,
+          description1, description2, roast_type, purpose, curator_pick_note,
+          is_new, status,
+          price_150g, price_200g, price_250g, price_500g, price_1kg, price_20pc5g, price_8pc12g)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        name, normalizedName, roastery,
+        plain.country, plain.region, plain.altitude, plain.farm, plain.variety, plain.processing,
+        plain.description1, plain.description2, plain.roast_type, plain.purpose, plain.curator_pick_note,
+        isNew ? 1 : 0, status,
+        prices.price_150g, prices.price_200g, prices.price_250g, prices.price_500g,
+        prices.price_1kg, prices.price_20pc5g, prices.price_8pc12g,
+      ]
+    );
+    if (splitOf) {
+      db.run(
+        `INSERT OR IGNORE INTO catalog_import_splits
+           (sheet_name, normalized_name, roastery, coffee_product_id)
+         VALUES (?, ?, ?, ?)`,
+        [splitOf.sheetName, splitOf.normalizedName, roastery, result.lastInsertRowid]
+      );
+    }
+    return { outcome: 'created', catalog_id: result.lastInsertRowid };
+  });
+  try {
+    return run();
+  } catch (e) {
+    // The UNIQUE index catches what the check raced past — nothing written.
+    if (isCatalogKeyCollision(e)) return { outcome: 'name_collision' };
+    throw e;
+  }
 }
 
 function isCatalogKeyCollision(e) {

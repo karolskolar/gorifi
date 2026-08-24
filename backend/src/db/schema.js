@@ -1038,6 +1038,45 @@ function initDb() {
     // Column already exists, ignore
   }
 
+  // Split rules (PC-T13, PM option B): one sheet row → N catalog products (the
+  // real case: `Brazil, Caramelo - Natural` carries two roasts in ONE row).
+  // The import refreshes EVERY target of a (normalized_name, roastery) key,
+  // creates nothing, and never flags the targets as duplicates; `roast_type`
+  // is ADMIN-owned on split targets. `sheet_name` keeps the admin's original
+  // casing for display; matching always uses the normalized pair (the ONE
+  // helpers/catalog.js home).
+  //
+  // ⚠ The UNIQUE lives INSIDE the CREATE (the GA-T5 lesson — never a
+  // separately-created index in a swallowing try/catch). The FK CASCADE relies
+  // on `foreign_keys = ON` (set above, the GSO-T9 precedent) and covers the
+  // catalog DELETE route: a deleted product's mappings must not dangle. The
+  // MERGE tool does NOT lean on it — it TRANSFERS the source's mappings to the
+  // surviving row (deduped) inside its own transaction, because cascading them
+  // away would silently shrink a sheet row's target set (catalog-merge.js).
+  db.run(`
+    CREATE TABLE IF NOT EXISTS catalog_import_splits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sheet_name TEXT NOT NULL,
+      normalized_name TEXT NOT NULL,
+      roastery TEXT NOT NULL,
+      coffee_product_id INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(normalized_name, roastery, coffee_product_id),
+      FOREIGN KEY (coffee_product_id) REFERENCES coffee_products(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Migration (PC-T13): the workbench "Ignorovať" flag. An explicit dismissal
+  // for junk pending groups (sheet section headers etc.) — soft-delete does
+  // NOT help because CANDIDATE_SQL has no `active` filter. House try/catch
+  // ALTER; the ONLY writers are the /migration/ignore + /migration/unignore
+  // endpoints, one column, one transaction.
+  try {
+    db.run('ALTER TABLE products ADD COLUMN migration_ignored INTEGER DEFAULT 0');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
 }
 
 // Retained as a no-op for backward compatibility. better-sqlite3 persists every
