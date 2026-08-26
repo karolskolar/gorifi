@@ -225,11 +225,19 @@ the router's header comment must state the mix (the guest-orders.js:17-27 idiom)
 
 **`GET /api/guest-links/cycle/:cycleId/all`** — `requireAdmin`.
 
-- 404 unknown cycle. Otherwise `{ links: [{ id, token, active, created_at,
+- 404 unknown cycle. Otherwise `{ links: [{ id, token, cycle_id, active, created_at,
   host_friend_id, host_name, host_active }] }` — every share link of the cycle
   (`JOIN friends` for the host name/active flag). `LINK_COLUMNS`
   (guest-links.js:8) is reused; **`order_token` is not link data and does not appear
   here** (it rides the sub-order rows, UC-GR-006).
+  ⚠ **AMENDED after GR-T3 (review finding 1): `cycle_id` was missing from the list
+  above while the same paragraph mandated reusing `LINK_COLUMNS` — the two were
+  unsatisfiable together.** The reuse instruction wins and the key list now says so.
+  Reusing the one column list is what buys the property that a future column cannot
+  land on the host surface and not the admin one; a hand-written admin list would
+  defeat it, and `cycle_id` is a constant per request so it discloses nothing.
+  `guest-order-recovery.spec.js` asserts `body.link.cycle_id`, so "correcting" the
+  payload to match the old list reddens a test.
 - **Deliberately a separate endpoint, not a fold into the orders-tab payload**
   (`GET /api/orders/cycle/:cycleId`, orders.js:640-681): that payload is built over
   friend orders and already carries the nested `guest_orders`; link data has its one
@@ -430,6 +438,23 @@ tokens** (01-architecture scope rule).
 **non-blocking** (failure must not stop the tab rendering — the `loadGuestUnpaid`
 precedent at CycleDetail.vue:342) and with a **`loadSeq` guard** (repo convention).
 Links join to rows client-side by `host_friend_id`.
+
+⚠ **ADDED after GR-T3 (review finding 2) — two shipped contracts this UI must not
+assume away:**
+1. **`POST …/host/:friendId` is NOT a token-retrieval path for a deactivated host.**
+   The `inactive_host` gate is evaluated BEFORE the existing-link lookup, so a
+   deactivated host who ALREADY has a link answers **409 `reason:'inactive_host'` with
+   no `link` in the body** (verified live). The create button's error path must render
+   that reason; the LISTING (`GET …/cycle/:id/all`) is the complete source of tokens —
+   it carries inactive hosts' links plus `host_active`.
+2. **The two POSTs on this prefix answer DIFFERENT shapes** — the admin create returns
+   `{ link, created }`, the host's own POST returns `{ link, regenerated, …loadSubOrders() }`.
+   Do not write a client that assumes symmetry; `createGuestLinkForHost` is its own
+   `api.js` method for exactly that reason.
+3. And the state that follows from D3: an existing **inactive** link is returned
+   **untouched** (`created: false`, `active: 0`) — the admin create neither regenerates
+   nor reactivates. So the UI must **mark a revoked link as revoked** rather than
+   offering it for forwarding as if it worked; only the host can reactivate it.
 
 **Per friend row — the share link ("Hosťovský odkaz"):**
 

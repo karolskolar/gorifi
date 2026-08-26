@@ -1005,3 +1005,266 @@ test.describe('UC-GR-002/003 + D7 — the guest surface uses the canonical URL',
     expect(view.guest_orders[0].status).toBe('cancelled')
   })
 })
+
+// ---------------------------------------------------------------------------
+// UC-GR-004 / D3 — the ADMIN half of the now-MIXED /api/guest-links router.
+//
+// PO requirement 1: the admin must be able to read every host's guest link for a
+// cycle (to forward it when a colleague loses it) and to CREATE one for a friend
+// who has not shared yet. D3 fixes the ceiling: READ + CREATE only. There is no
+// admin regenerate, no deactivate and no reactivate — revocation stays host-only,
+// because an admin regenerate silently severs every colleague already holding the
+// URL (that is literally the incident) and an admin reactivate would republish a
+// link the host deliberately revoked after a leak.
+//
+// ⚠ The idempotency test below (`token asserted UNCHANGED`) IS the machine proof of
+// the non-capability: the only way an admin route on this router can rotate a token
+// is through this POST, so a future "improvement" that makes create-if-missing
+// regenerate reddens by name here.
+
+async function adminLinks(cycleId) {
+  const res = await admin(`/api/guest-links/cycle/${cycleId}/all`)
+  expect(res.status(), 'admin link listing').toBe(200)
+  return (await res.json()).links
+}
+
+const adminCreateLink = (cycleId, friendId) =>
+  admin(`/api/guest-links/cycle/${cycleId}/host/${friendId}`, { method: 'post' })
+
+test.describe('UC-GR-004 — admin reads + creates host share links', () => {
+  test('the read returns EVERY host\'s link for the cycle, with the token and the host name', async () => {
+    await refreshAdminToken()
+    const cycleA = await makeCycle('linksA')
+    const cycleB = await makeCycle('linksB')
+    const hostOne = await makeHost('linksone')
+    const hostTwo = await makeHost('linkstwo')
+    const linkOne = await shareLink(hostOne, cycleA.id)
+    const linkTwo = await shareLink(hostTwo, cycleA.id)
+    // A link in ANOTHER cycle for the same host must not leak into this listing.
+    const elsewhere = await shareLink(hostOne, cycleB.id)
+
+    const links = await adminLinks(cycleA.id)
+    const byHost = new Map(links.map((l) => [l.host_friend_id, l]))
+
+    expect(byHost.get(hostOne.id), 'host one is listed').toBeTruthy()
+    expect(byHost.get(hostOne.id).token, 'the token IS the point — it is what the admin forwards').toBe(linkOne.token)
+    expect(byHost.get(hostOne.id).host_name).toBe(hostOne.name)
+    expect(byHost.get(hostOne.id).host_active).toBe(1)
+    expect(byHost.get(hostOne.id).active).toBe(1)
+    expect(byHost.get(hostOne.id).id).toBe(linkOne.id)
+    expect(typeof byHost.get(hostOne.id).created_at).toBe('string')
+
+    expect(byHost.get(hostTwo.id).token).toBe(linkTwo.token)
+    expect(byHost.get(hostTwo.id).host_name).toBe(hostTwo.name)
+
+    expect(links.map((l) => l.token), 'cycle-scoped: the other cycle\'s link stays out')
+      .not.toContain(elsewhere.token)
+
+    // `order_token` is sub-order data, not link data (UC-GR-004) — GR-T5 publishes
+    // it on the sub-order rows, never here.
+    expect(JSON.stringify(links)).not.toContain('order_token')
+  })
+
+  test('the read reports a DEACTIVATED link and a DEACTIVATED host as state, with no way to flip either', async () => {
+    await refreshAdminToken()
+    const cycle = await makeCycle('linkstate')
+    const revoker = await makeHost('linkrevoke')
+    const gone = await makeHost('linkgone')
+    const revoked = await shareLink(revoker, cycle.id)
+    const orphaned = await shareLink(gone, cycle.id)
+
+    // Host-only revocation (PATCH /guest-links/:id) — the capability D3 keeps host-side.
+    expect((await ctx.patch(`/api/guest-links/${revoked.id}`, {
+      headers: revoker.auth, data: { active: 0 },
+    })).status()).toBe(200)
+    expect((await admin(`/api/friends/${gone.id}`, { method: 'patch', data: { active: 0 } })).status()).toBe(200)
+
+    const links = await adminLinks(cycle.id)
+    const byHost = new Map(links.map((l) => [l.host_friend_id, l]))
+    expect(byHost.get(revoker.id).active, 'a revoked link is LISTED with active 0, not hidden').toBe(0)
+    expect(byHost.get(revoker.id).host_active).toBe(1)
+    expect(byHost.get(gone.id).active, 'the link row itself is untouched by the host going inactive').toBe(1)
+    expect(byHost.get(gone.id).host_active, 'but the host flag tells the admin it is dead anyway').toBe(0)
+  })
+
+  test('the read 404s an unknown cycle', async () => {
+    await refreshAdminToken()
+    const res = await admin('/api/guest-links/cycle/99999999/all')
+    expect(res.status()).toBe(404)
+  })
+
+  test('create-if-missing: 201 for a linkless friend, and the host\'s own GET then returns it', async () => {
+    await refreshAdminToken()
+    const cycle = await makeCycle('linkcreate')
+    const host = await makeHost('linkcreate')
+
+    // The host has never shared — their own view says so.
+    expect((await hostView(host, cycle.id)).link, 'no link yet').toBeFalsy()
+
+    const res = await adminCreateLink(cycle.id, host.id)
+    expect(res.status(), 'a fresh link is a creation').toBe(201)
+    const body = await res.json()
+    expect(body.created).toBe(true)
+    expect(body.link.active, 'created active — a link the admin forwards must work').toBe(1)
+    expect(body.link.host_friend_id).toBe(host.id)
+    expect(body.link.cycle_id).toBe(cycle.id)
+    expect(body.link.token).toMatch(/^[A-Z2-9]{14}$/)
+
+    // The host sees it on their next dialog open — no notification mechanism exists.
+    const view = await hostView(host, cycle.id)
+    expect(view.link.token).toBe(body.link.token)
+
+    // And it actually works as a guest ordering link.
+    const product = await addProduct(cycle.id, { name: `GR linkcreate ${uniq}`, purpose: 'Espresso', price_250g: 9 })
+    const created = await submitGuest(body.link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+    expect(created.order.total).toBeGreaterThan(0)
+  })
+
+  test('create-if-missing is IDEMPOTENT and the token is byte-identical on repeat — the no-regenerate proof (D3)', async () => {
+    await refreshAdminToken()
+    const cycle = await makeCycle('linkidem')
+    const host = await makeHost('linkidem')
+    const original = await shareLink(host, cycle.id)
+
+    // A guest is already holding the URL — this is the incident's setup.
+    const product = await addProduct(cycle.id, { name: `GR linkidem ${uniq}`, purpose: 'Espresso', price_250g: 10 })
+    const guest = await submitGuest(original.token, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+
+    for (const attempt of [1, 2, 3]) {
+      const res = await adminCreateLink(cycle.id, host.id)
+      expect(res.status(), `attempt ${attempt} returns the existing row, not a creation`).toBe(200)
+      const body = await res.json()
+      expect(body.created).toBe(false)
+      expect(body.link.id).toBe(original.id)
+      expect(body.link.token, `attempt ${attempt}: THE TOKEN MUST NOT ROTATE (D3 — no admin regenerate)`)
+        .toBe(original.token)
+      expect(body.link.active, 'and `active` is never written by this route').toBe(1)
+    }
+
+    // The guest's own ordering surface is still alive on the ORIGINAL token, which
+    // is the property an admin regenerate would have destroyed.
+    expect((await ctx.get(`/api/guest/${original.token}`)).status()).toBe(200)
+    expect((await ctx.get(canonicalPath(guest.order.order_token))).status()).toBe(200)
+  })
+
+  test('create-if-missing returns a REVOKED existing link untouched — it never reactivates (D3)', async () => {
+    await refreshAdminToken()
+    const cycle = await makeCycle('linkrevoked')
+    const host = await makeHost('linkrevoked')
+    const link = await shareLink(host, cycle.id)
+    expect((await ctx.patch(`/api/guest-links/${link.id}`, {
+      headers: host.auth, data: { active: 0 },
+    })).status()).toBe(200)
+
+    const res = await adminCreateLink(cycle.id, host.id)
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.created).toBe(false)
+    expect(body.link.id).toBe(link.id)
+    expect(body.link.token).toBe(link.token)
+    expect(body.link.active, 'a link the host deliberately revoked STAYS revoked').toBe(0)
+
+    // Proof at the guest door: the link is still shut.
+    expect((await ctx.get(`/api/guest/${link.token}`)).status()).toBe(410)
+
+    // And the DB row agrees, not just the response.
+    expect((await adminLinks(cycle.id)).find((l) => l.id === link.id).active).toBe(0)
+  })
+
+  test('create: 404 unknown cycle, 404 unknown friend, 409 `inactive_host` for a deactivated friend', async () => {
+    await refreshAdminToken()
+    const cycle = await makeCycle('linkgates')
+    const host = await makeHost('linkgates')
+
+    expect((await adminCreateLink(99999999, host.id)).status()).toBe(404)
+    expect((await adminCreateLink(cycle.id, 99999999)).status()).toBe(404)
+
+    expect((await admin(`/api/friends/${host.id}`, { method: 'patch', data: { active: 0 } })).status()).toBe(200)
+    const res = await adminCreateLink(cycle.id, host.id)
+    expect(res.status(), 'creating a link for an inactive host would hand the admin a dead URL').toBe(409)
+    const body = await res.json()
+    expect(body.reason).toBe('inactive_host')
+    expect(typeof body.error).toBe('string')
+
+    // Nothing was written.
+    expect((await adminLinks(cycle.id)).filter((l) => l.host_friend_id === host.id)).toHaveLength(0)
+  })
+
+  test('no cycle-status gate — a locked cycle still yields a link (mirrors the host\'s own POST)', async () => {
+    await refreshAdminToken()
+    const cycle = await makeCycle('linklocked')
+    const host = await makeHost('linklocked')
+    await setCycleStatus(cycle.id, 'locked')
+
+    const res = await adminCreateLink(cycle.id, host.id)
+    expect(res.status()).toBe(201)
+    // Inert, as the spec says: `resolveLink` 410s a non-open cycle.
+    expect((await ctx.get(`/api/guest/${(await res.json()).link.token}`)).status()).toBe(410)
+  })
+
+  test('BOTH auth directions: the new admin routes refuse anonymous and friend tokens; the three host routes refuse an admin token', async () => {
+    await refreshAdminToken()
+    const cycle = await makeCycle('linkauth')
+    const host = await makeHost('linkauth')
+    const link = await shareLink(host, cycle.id)
+
+    const adminPaths = [
+      { method: 'get', path: `/api/guest-links/cycle/${cycle.id}/all` },
+      { method: 'post', path: `/api/guest-links/cycle/${cycle.id}/host/${host.id}` },
+    ]
+    for (const ep of adminPaths) {
+      expect((await ctx[ep.method](ep.path)).status(), `${ep.path} anonymous`).toBe(401)
+      expect((await ctx[ep.method](ep.path, { headers: host.auth })).status(),
+        `${ep.path} must not accept a friend Bearer token`).toBe(401)
+      expect((await ctx[ep.method](ep.path, { headers: { 'X-Friends-Password': 'whatever' } })).status(),
+        `${ep.path} must not accept the shared friends password`).toBe(401)
+    }
+
+    // The mount is BARE and gated per route: the three HOST routes must still
+    // refuse an admin token (wrapping the mount in requireAdmin would break them,
+    // wrapping it in requireHost would break the two above).
+    const hostPaths = [
+      { method: 'get', path: `/api/guest-links/cycle/${cycle.id}` },
+      { method: 'post', path: `/api/guest-links/cycle/${cycle.id}` },
+      { method: 'patch', path: `/api/guest-links/${link.id}` },
+    ]
+    for (const ep of hostPaths) {
+      expect((await admin(ep.path, { method: ep.method })).status(),
+        `${ep.path} is a friend surface, not an admin one`).toBe(401)
+    }
+
+    // And the host's own routes still work — the mix did not disturb them.
+    expect((await ctx.get(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })).status()).toBe(200)
+  })
+
+  test('the admin has NO regenerate / deactivate / reactivate on guest links (D3 non-capability)', async () => {
+    await refreshAdminToken()
+    const cycle = await makeCycle('linkncap')
+    const host = await makeHost('linkncap')
+    const link = await shareLink(host, cycle.id)
+
+    // No admin route on this prefix may write `token` or `active`. The plausible
+    // shapes a future row might reach for all stay unauthorized-or-absent.
+    const attempts = [
+      { method: 'patch', path: `/api/guest-links/${link.id}`, data: { active: 0 } },
+      { method: 'patch', path: `/api/guest-links/cycle/${cycle.id}/host/${host.id}`, data: { active: 0 } },
+      { method: 'post', path: `/api/guest-links/${link.id}/regenerate` },
+      { method: 'post', path: `/api/guest-links/cycle/${cycle.id}/host/${host.id}/regenerate` },
+      { method: 'delete', path: `/api/guest-links/${link.id}` },
+    ]
+    for (const a of attempts) {
+      const status = (await admin(a.path, { method: a.method, data: a.data })).status()
+      expect([401, 404, 405], `${a.method.toUpperCase()} ${a.path} must not be an admin capability`)
+        .toContain(status)
+    }
+
+    // A body smuggled into the create route changes nothing either.
+    const smuggle = await admin(`/api/guest-links/cycle/${cycle.id}/host/${host.id}`, {
+      method: 'post', data: { active: 0, token: 'SMUGGLEDTOKEN' },
+    })
+    expect(smuggle.status()).toBe(200)
+    const after = (await adminLinks(cycle.id)).find((l) => l.id === link.id)
+    expect(after.token, 'the request body is never spread into SQL').toBe(link.token)
+    expect(after.active).toBe(1)
+  })
+})

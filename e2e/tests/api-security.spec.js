@@ -27,6 +27,15 @@ const ADMIN_ENDPOINTS = [
   // half is gated by friend identity instead — see guest-host-view.spec.js).
   { method: 'patch', path: '/api/guest-orders/1/paid', data: { paid: true } },
   { method: 'get', path: '/api/guest-orders/cycle/1/unpaid' },
+  // 14 §UC-GR-004 / §UC-GR-010 item 1 (GR-T3): the admin half of the now-MIXED
+  // /api/guest-links router — READ every host's share link for a cycle, and CREATE
+  // one for a friend who has not shared yet. ⚠ The three HOST routes on the same
+  // prefix stay in `FRIEND_IDENTITY_ENDPOINTS` below — the two sweeps must not be
+  // merged, because the mount is BARE and each route carries its own guard.
+  // ⚠ D3: there is deliberately NO admin regenerate/deactivate/reactivate route to
+  // add here — revocation stays host-only.
+  { method: 'get', path: '/api/guest-links/cycle/1/all' },
+  { method: 'post', path: '/api/guest-links/cycle/1/host/1' },
   // 07 §UC-IA-008 item 1: the approval endpoint MINTS A LOGIN for a new friend, and
   // it lives on the MIXED /api/invitations mount (GET /code/:code and POST /register
   // are public), so its guard is per-route rather than on the mount. Anonymous must
