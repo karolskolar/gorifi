@@ -144,42 +144,113 @@ function toggleExpandProduct(key) {
 // themselves (§Edge Cases: "host has no own order at lock time") — otherwise the
 // guest sub-orders nested under them, and the money owed for them, would be
 // invisible on this screen. Such a row contributes 0 to every total below.
-const submittedOrders = computed(() => orders.value.filter(
+const listedOrders = computed(() => orders.value.filter(
   o => o.status === 'submitted' || o.status === 'draft' || (o.guest_orders && o.guest_orders.length > 0)
 ))
 
-// Group by product: { productKey: { product_name, purpose, variant, total_quantity, total_price, friends: [{ friend_name, quantity, price }] } }
+// ⚠ THE ONE PREDICATE FOR EVERY FIGURE IN THIS TAB (product decision, 2026-08-26).
+// A `draft` is a cart the friend saved and never submitted — reachable in normal
+// use, because `doSubmitOrder()` PUTs the cart (which get-or-creates the row as
+// 'draft', orders.js) and only then submits, so any failed submit leaves one behind.
+// It is LISTED, so the admin can see a cart exists (the "Rozpracované" badge), but it
+// contributes to NOTHING on this screen — same as a friend who never ordered. What
+// people have in their carts gets its own view later; it is never mixed into the
+// figures for what was ordered.
+//
+// This is the same predicate as `helpers/stock.js` (`o.status = 'submitted'`), the
+// Sumár sheet (`cycles.js`) and "Podľa produktu" above. All four now agree.
+function isOrdered(order) {
+  return order.status === 'submitted'
+}
+
+// The heading count: parties who actually ordered something — a submitted own order,
+// or live guest bags (a host with no own order is still a party, §Edge Cases). A
+// draft-only row is listed but not counted, because it is not an order.
+const orderedPartiesCount = computed(() => listedOrders.value.filter(
+  (o) => isOrdered(o) || (o.guest_orders || []).some((sub) => !isGuestCancelled(sub))
+).length)
+
+// Group by product: { productKey: { product_name, purpose, variant, total_quantity, total_price, buyers: [{ name, is_guest, host_name, quantity, price }] } }
+//
+// ⚠ THE GUEST HALF IS NOT OPTIONAL, and leaving it out was a real reported bug.
+// `helpers/stock.js` counts guest bags against `products.stock_limit_g`, so while
+// this sheet listed friend items only it showed FEWER kilos than the friend-facing
+// "Zostáva … z …" bar had already subtracted — 1 ks here against 0.5 kg claimed,
+// which reads as a broken counter rather than a missing half. The Sumár tab's
+// ordering sheet (GET /api/cycles/:id/summary) merges the two server-side for the
+// same reason (§UC-GSO-013, Decision 4: cycle-LEVEL quantities include guests);
+// this view is the client-side twin of that rule and must stay in step with it.
+//
+// Merged into the SAME `product_id|variant` line as the friend items, exactly as
+// the server-side sheet does — a guest's 250 g of X is not a separate product.
+// Decision 4's other half still holds: this is a quantity aggregate, not a
+// per-friend one, so a guest appearing here inflates no count of friends
+// (`orderedPartiesCount`, the balances and the friend view are untouched).
 const ordersByProduct = computed(() => {
   const map = {}
-  for (const order of submittedOrders.value) {
-    if (!order.items) continue
-    for (const item of order.items) {
-      const key = `${item.product_id}-${item.variant}`
-      if (!map[key]) {
-        map[key] = {
-          key,
-          product_name: item.product_name,
-          variant_label: item.variant_label || null,
-          purpose: item.purpose,
-          variant: item.variant,
-          total_quantity: 0,
-          total_price: 0,
-          friends: []
-        }
+
+  function addLine(item, buyer) {
+    const key = `${item.product_id}-${item.variant}`
+    if (!map[key]) {
+      map[key] = {
+        key,
+        product_name: item.product_name,
+        variant_label: item.variant_label || null,
+        purpose: item.purpose,
+        variant: item.variant,
+        total_quantity: 0,
+        total_price: 0,
+        buyers: []
       }
-      map[key].total_quantity += item.quantity
-      map[key].total_price += item.price * item.quantity
-      map[key].friends.push({
-        friend_name: order.friend_name,
-        quantity: item.quantity,
-        price: item.price * item.quantity
-      })
+    }
+    map[key].total_quantity += item.quantity
+    map[key].total_price += item.price * item.quantity
+    map[key].buyers.push({
+      ...buyer,
+      quantity: item.quantity,
+      price: item.price * item.quantity
+    })
+  }
+
+  // ⚠ Iterates `orders` (every listed party), NOT `listedOrders`, and gates the
+  // two halves separately — they answer different questions:
+  //
+  //   friend items — ONLY `status === 'submitted'`, the same predicate
+  //     `helpers/stock.js` and the Sumár sheet (`cycles.js`, `o.status = 'submitted'`)
+  //     use. A DRAFT is a cart nobody has ordered: it reserves no stock, so counting
+  //     it here made this table report MORE than the friend-facing "Zostáva … kg" bar
+  //     had subtracted — the same divergence as the missing guest half, in the other
+  //     direction. Reachable without any bug: `PUT /api/orders/cycle/:id/friend/:id`
+  //     get-or-creates the row with the schema default 'draft' (orders.js), so any
+  //     client that saves a cart and never submits leaves one. `listedOrders` still
+  //     carries drafts on purpose — they are LISTED as a status, never as a figure
+  //     (see `isOrdered`).
+  //
+  //   guest bags — EVERY listed party's, whatever their own order status. A host with
+  //     guest bags and no own order at all (`status: 'none'`) is the §Edge Cases case
+  //     the API builds a synthetic row for, and their colleagues' bags still have to
+  //     be bought (the GSO-T7 rule: such a host IS packable).
+  for (const order of orders.value) {
+    if (order.status === 'submitted') {
+      for (const item of order.items || []) {
+        addLine(item, { name: order.friend_name, is_guest: false })
+      }
+    }
+    // Cancelled sub-orders are excluded — the same status predicate every backend
+    // guest aggregate applies (their item rows are KEPT on purpose, so the filter
+    // is the whole mechanism), via the shared nullable-status helper.
+    for (const sub of order.guest_orders || []) {
+      if (isGuestCancelled(sub)) continue
+      for (const item of sub.items || []) {
+        addLine(item, { name: sub.guest_name, is_guest: true, host_name: sub.host_name || order.friend_name })
+      }
     }
   }
-  // Sort friends within each product by quantity desc
+
+  // Sort buyers within each product by quantity desc
   const result = Object.values(map)
   for (const p of result) {
-    p.friends.sort((a, b) => b.quantity - a.quantity)
+    p.buyers.sort((a, b) => b.quantity - a.quantity)
   }
   // Sort products by purpose then name
   result.sort((a, b) => {
@@ -192,16 +263,35 @@ const ordersByProduct = computed(() => {
   return result
 })
 
-const orderTotals = computed(() => ({
-  count_150g: submittedOrders.value.reduce((sum, o) => sum + (o.count_150g || 0), 0),
-  count_200g: submittedOrders.value.reduce((sum, o) => sum + (o.count_200g || 0), 0),
-  count_250g: submittedOrders.value.reduce((sum, o) => sum + (o.count_250g || 0), 0),
-  count_500g: submittedOrders.value.reduce((sum, o) => sum + (o.count_500g || 0), 0),
-  count_1kg: submittedOrders.value.reduce((sum, o) => sum + (o.count_1kg || 0), 0),
-  count_20pc5g: submittedOrders.value.reduce((sum, o) => sum + (o.count_20pc5g || 0), 0),
-  count_8pc12g: submittedOrders.value.reduce((sum, o) => sum + (o.count_8pc12g || 0), 0),
-  count_unit: submittedOrders.value.reduce((sum, o) => sum + (o.count_unit || 0), 0),
-  total: submittedOrders.value.reduce((sum, o) => sum + (o.total || 0), 0)
+// The "Podľa priateľa" footer AND which variant columns are shown. Built from the
+// ORDERED rows only — a draft cart contributed both money and pieces here, which made
+// this footer disagree with "Podľa produktu", the Sumár sheet and the stock counter
+// all at once.
+const orderTotals = computed(() => {
+  const ordered = listedOrders.value.filter(isOrdered)
+  return {
+    count_150g: ordered.reduce((sum, o) => sum + (o.count_150g || 0), 0),
+    count_200g: ordered.reduce((sum, o) => sum + (o.count_200g || 0), 0),
+    count_250g: ordered.reduce((sum, o) => sum + (o.count_250g || 0), 0),
+    count_500g: ordered.reduce((sum, o) => sum + (o.count_500g || 0), 0),
+    count_1kg: ordered.reduce((sum, o) => sum + (o.count_1kg || 0), 0),
+    count_20pc5g: ordered.reduce((sum, o) => sum + (o.count_20pc5g || 0), 0),
+    count_8pc12g: ordered.reduce((sum, o) => sum + (o.count_8pc12g || 0), 0),
+    count_unit: ordered.reduce((sum, o) => sum + (o.count_unit || 0), 0),
+    total: ordered.reduce((sum, o) => sum + (o.total || 0), 0)
+  }
+})
+
+// The "Podľa produktu" footer, derived from the lines the table actually renders.
+// ⚠ It CANNOT reuse `orderTotals.total` any more: that sums `orders.total`, i.e.
+// friends only, so once the guest bags joined the lines above the Ks column would
+// have counted them and the Suma column would not — the two halves of one footer
+// row disagreeing. Guests pay the admin directly (Decision 1), so this figure is
+// "what this cycle is worth", not "what the friends owe"; the friend view's own
+// footer still uses `orderTotals` and is unchanged.
+const productViewTotals = computed(() => ({
+  quantity: ordersByProduct.value.reduce((sum, p) => sum + p.total_quantity, 0),
+  total: ordersByProduct.value.reduce((sum, p) => sum + p.total_price, 0)
 }))
 
 const COFFEE_VARIANT_COLUMNS = [
@@ -1273,8 +1363,8 @@ function getStatusVariant(status) {
         <!-- Orders Tab -->
         <TabsContent value="orders">
           <div class="flex items-center justify-between mb-4">
-            <h2 class="text-lg font-semibold">Objednávky ({{ submittedOrders.length }})</h2>
-            <div v-if="submittedOrders.length > 0" class="flex gap-1 bg-muted rounded-lg p-1">
+            <h2 class="text-lg font-semibold">Objednávky ({{ orderedPartiesCount }})</h2>
+            <div v-if="listedOrders.length > 0" class="flex gap-1 bg-muted rounded-lg p-1">
               <button
                 @click="ordersView = 'friend'"
                 :class="['px-3 py-1 text-sm rounded-md transition-colors', ordersView === 'friend' ? 'bg-background shadow font-medium' : 'text-muted-foreground hover:text-foreground']"
@@ -1427,13 +1517,23 @@ function getStatusVariant(status) {
                     <TableCell class="text-center font-medium">{{ product.total_quantity }}</TableCell>
                     <TableCell class="text-right">{{ formatPrice(product.total_price) }}</TableCell>
                   </TableRow>
-                  <!-- Expanded friends list -->
+                  <!-- Expanded buyer list: friends and guests, the guests marked
+                       violet with their host — the same treatment the nested
+                       sub-orders get in the friend view, so a bag reads the same
+                       wherever it is shown. Without the marker a guest would be
+                       indistinguishable from a friend on a screen where only
+                       friends carry a balance. -->
                   <template v-if="expandedProducts.has(product.key)">
-                    <TableRow v-for="(f, i) in product.friends" :key="`${product.key}-${i}`" class="bg-muted/30">
+                    <TableRow v-for="(b, i) in product.buyers" :key="`${product.key}-${i}`" class="bg-muted/30">
                       <TableCell></TableCell>
-                      <TableCell class="text-sm text-muted-foreground">{{ f.friend_name }}</TableCell>
-                      <TableCell class="text-center text-sm text-muted-foreground">{{ f.quantity }}</TableCell>
-                      <TableCell class="text-right text-sm text-muted-foreground">{{ formatPrice(f.price) }}</TableCell>
+                      <TableCell class="text-sm text-muted-foreground">
+                        {{ b.name }}
+                        <span v-if="b.is_guest" class="text-xs text-violet-600">
+                          — hosť<template v-if="b.host_name">, pozval {{ firstName(b.host_name) }}</template>
+                        </span>
+                      </TableCell>
+                      <TableCell class="text-center text-sm text-muted-foreground">{{ b.quantity }}</TableCell>
+                      <TableCell class="text-right text-sm text-muted-foreground">{{ formatPrice(b.price) }}</TableCell>
                     </TableRow>
                   </template>
                 </template>
@@ -1442,8 +1542,8 @@ function getStatusVariant(status) {
                 <TableRow class="font-semibold bg-muted">
                   <TableCell></TableCell>
                   <TableCell>Celkom</TableCell>
-                  <TableCell class="text-center">{{ ordersByProduct.reduce((s, p) => s + p.total_quantity, 0) }}</TableCell>
-                  <TableCell class="text-right">{{ formatPrice(orderTotals.total) }}</TableCell>
+                  <TableCell class="text-center">{{ productViewTotals.quantity }}</TableCell>
+                  <TableCell class="text-right">{{ formatPrice(productViewTotals.total) }}</TableCell>
                 </TableRow>
               </tfoot>
             </Table>
@@ -1473,11 +1573,13 @@ function getStatusVariant(status) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                <template v-for="order in submittedOrders" :key="order.id || order.friend_id">
+                <template v-for="order in listedOrders" :key="order.id || order.friend_id">
                   <TableRow>
                     <TableCell class="p-2">
+                      <!-- Only an ORDERED row has items to expand. A draft's cart
+                           lines are not shown here at all (see `isOrdered`). -->
                       <button
-                        v-if="order.status !== 'none'"
+                        v-if="isOrdered(order)"
                         @click="toggleExpand(order.id)"
                         class="w-8 h-8 flex items-center justify-center rounded hover:bg-muted transition-colors"
                       >
@@ -1494,8 +1596,8 @@ function getStatusVariant(status) {
                     </TableCell>
                     <TableCell class="font-medium">{{ order.friend_name }}</TableCell>
                     <TableCell class="text-right">
-                      {{ formatPrice((order.total || 0) + (order.delivery_fee || 0)) }}
-                      <div v-if="order.delivery_fee" class="text-xs text-muted-foreground">
+                      {{ formatPrice(isOrdered(order) ? (order.total || 0) + (order.delivery_fee || 0) : 0) }}
+                      <div v-if="isOrdered(order) && order.delivery_fee" class="text-xs text-muted-foreground">
                         ({{ formatPrice(order.total) }} + {{ formatPrice(order.delivery_fee) }} doručenie)
                       </div>
                     </TableCell>
@@ -1503,14 +1605,14 @@ function getStatusVariant(status) {
                       <BalanceBadge :balance="order.friend_balance || 0" />
                     </TableCell>
                     <template v-if="isBakery">
-                      <TableCell class="text-center">{{ order.count_unit || 0 }}</TableCell>
+                      <TableCell class="text-center">{{ isOrdered(order) ? (order.count_unit || 0) : 0 }}</TableCell>
                     </template>
                     <template v-else>
                       <TableCell
                         v-for="col in visibleVariantColumns"
                         :key="col.label"
                         class="text-center"
-                      >{{ order[col.countField] || 0 }}</TableCell>
+                      >{{ isOrdered(order) ? (order[col.countField] || 0) : 0 }}</TableCell>
                     </template>
                     <TableCell>
                       <div class="flex flex-wrap gap-1">
@@ -1544,8 +1646,14 @@ function getStatusVariant(status) {
                       </div>
                     </TableCell>
                     <TableCell class="text-center">
+                      <!-- ⚠ ORDERED rows only. `PATCH /api/orders/:id/paid` posts a
+                           `transactions` row for `order.total`, so offering this on a
+                           DRAFT turned an unsubmitted cart's value into a real payment
+                           against the friend's balance. The route refuses it now
+                           (400, mirroring `PATCH /:id/packed`); this stops the admin
+                           being offered a control that can only fail. -->
                       <button
-                        v-if="order.status !== 'none'"
+                        v-if="isOrdered(order)"
                         @click="togglePaid(order)"
                         :class="['w-6 h-6 rounded border-2 flex items-center justify-center mx-auto', order.paid ? 'bg-green-500 border-green-500 text-white' : 'border-border']"
                       >
@@ -1557,7 +1665,7 @@ function getStatusVariant(status) {
                     </TableCell>
                   </TableRow>
                   <!-- Expanded items row -->
-                  <TableRow v-if="order.status !== 'none' && expandedOrders.has(order.id)">
+                  <TableRow v-if="isOrdered(order) && expandedOrders.has(order.id)">
                     <TableCell :colspan="6 + (isBakery ? 1 : visibleVariantColumns.length)" class="bg-muted/50 p-4">
                       <div v-if="order.items && order.items.length > 0" class="space-y-1">
                         <div v-for="item in order.items" :key="`${item.product_id}-${item.variant}`" class="flex justify-between py-1 text-sm">

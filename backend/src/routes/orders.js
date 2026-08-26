@@ -405,6 +405,21 @@ router.patch('/:id/paid', requireAdmin, (req, res) => {
     return res.status(404).json({ error: 'Objednavka neexistuje' });
   }
 
+  // ⚠ A DRAFT MAY NOT BE MARKED PAID. Marking paid INSERTs a `payment` transaction
+  // for `order.total` (below), which moves the friend's real balance — so on a draft
+  // it turned the value of a cart nobody ever submitted into a real payment record,
+  // invisible to every aggregate that filters on `status = 'submitted'` (the Sumár
+  // sheet, the analytics, the stock counter) while still sitting in the ledger.
+  // Reachable through the UI: the checkbox rendered for every row that was not
+  // 'none', and a failed submit leaves a draft behind (`doSubmitOrder` PUTs the cart
+  // first, and the get-or-create above inserts it as 'draft').
+  //
+  // Mirrors the guard `PATCH /:id/packed` has always had — same shape, same reason:
+  // a whole-order flag only means something once there IS an order.
+  if (order.status !== 'submitted') {
+    return res.status(400).json({ error: 'Len odoslané objednávky môžu byť označené ako zaplatené' });
+  }
+
   // Use transaction to ensure consistency
   const togglePaid = db.transaction(() => {
     if (paid && !order.paid) {
