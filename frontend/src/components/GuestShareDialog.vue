@@ -161,8 +161,9 @@ async function nativeShare() {
 //   render "Odkaz je deaktivovaný— kolegovia…".
 // · No `line-height` fix-ups are needed here: every text-bearing element carries
 //   a class already in UC-DS-001 A10 (`.sub`, `.banner`, `.copyrow .val`,
-//   `.confirmbox`) or in A9 (`.btn`), and the only unclassed block — the actions
-//   row — contains buttons only. Nothing here may widen A10.
+//   `.confirmbox`, and `.field-help` for the two UC-GR-009 standing lines) or in
+//   A9 (`.btn`), and the only unclassed block — the actions row — contains
+//   buttons only. Nothing here may widen A10.
 </script>
 
 <template>
@@ -217,6 +218,20 @@ async function nativeShare() {
              swallow the copy button's label. -->
         <NeoCopyRow :value="guestUrl" value-testid="guest-link-url" />
 
+        <!-- ⚠ 14 §UC-GR-009 line 1 — the standing "one link for everyone"
+             statement. The recovery incident's host almost certainly regenerated
+             because "Vygenerovať nový odkaz" read as "share with one more
+             colleague", which silently severed every colleague already holding
+             the old URL. It answers the copy row directly above it, so it sits
+             immediately under it, and only in the link-exists state (with no link
+             there is nothing to mis-share yet).
+             ⚠ `div.field-help`, NOT `p.sub`: `share-dialog.spec.js:239,:579` pin
+             `dialog.locator('p.sub')` as a SINGLE element, so a second one here
+             is a strict-mode violation in an immutable spec. `.field-help` is
+             A10-covered, so no line-height fix-up is needed and A10 does not
+             widen. Copy is DRAFT pending PO sign-off (14 §OPEN). -->
+        <div class="field-help" data-testid="share-standing-copy">Ten istý odkaz platí pre všetkých kolegov — každý si cez neho vytvorí vlastnú objednávku. Pre ďalšieho kolegu nevytvárajte nový odkaz.</div>
+
         <!-- Native share sheet — rendered only where navigator.share exists. -->
         <button
           v-if="canNativeShare"
@@ -226,6 +241,15 @@ async function nativeShare() {
         >
           <NeoIcon name="share" /> Zdieľať odkaz
         </button>
+
+        <!-- ⚠ 14 §UC-GR-009 line 2 — when regeneration IS the right move. It is
+             STANDING text directly above the actions row, deliberately NOT copy
+             inside the `.confirmbox`: the host has to read it BEFORE reaching for
+             the button, and the box's copy plus its single `<b>` are pinned
+             verbatim by `share-dialog.spec.js:417-418`. "dostal" refers to
+             *odkaz* (a third-party noun), not the reader, so the vy-form register
+             pin holds. Copy is DRAFT pending PO sign-off (14 §OPEN). -->
+        <div class="field-help" data-testid="regen-guidance">Nový odkaz vygenerujte len vtedy, ak sa pôvodný dostal k nesprávnym ľuďom — kolegom potom treba poslať nový.</div>
 
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <!-- Deactivation is REVERSIBLE — the same button toggles back. -->

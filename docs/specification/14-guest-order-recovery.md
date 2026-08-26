@@ -870,5 +870,23 @@ because the PO made the property itself a requirement):
   (UC-GR-009), the host copy button label + title (UC-GR-007), the admin confirm
   copy incl. the paid/refund warning and "Vytvoriť hosťovský odkaz" / "Hosťovský
   odkaz" / "neaktívny" / "Odkaz na objednávku" (UC-GR-008), and the confirmation
-  mail's subject + body copy (UC-GR-011 rule 6). All are marked draft; none is
-  pinned by a shipped spec, so sign-off can land as a copy-only change.
+  mail's subject + body copy (UC-GR-011 rule 6). All are marked draft.
+  ⚠ AMENDED after GR-T7 landed (review finding 1): "none is pinned by a shipped
+  spec" is no longer true for the two UC-GR-009 lines — they are pinned by
+  `toHaveText` across 5 tests in `e2e/tests/guest-order-recovery.spec.js`. It is
+  still a copy-only change, but the sign-off edit is **two constants plus their
+  spec strings**: `STANDING_COPY` / `REGEN_GUIDANCE` at the top of that spec file
+  (hoisted for exactly this reason) and the literals in the SFC. Every later row's
+  drafted copy will be pinned in the same file — assume the same two-place edit.
+- `OPEN:` (raised by the GR-T7 review, finding 3 — a COPY question, needs a PO
+  answer because the fix is a spec amendment, not an implementation choice) on a
+  **deactivated** link both UC-GR-009 lines still render, so "Ten istý odkaz platí
+  pre všetkých kolegov — každý si cez neho vytvorí vlastnú objednávku." sits ~2 rows
+  below the warn banner "Odkaz je deaktivovaný — kolegovia si cez neho nemôžu
+  objednať." The two read as contradictory in that ONE state. §UC-GR-009 scopes both
+  lines to "the link-exists state" without splitting active/deactivated, so the
+  shipped behaviour is spec-conformant and is pinned deliberately
+  (`guest-order-recovery.spec.js` deactivated-link test). Resolutions: (a) leave it
+  — the deactivated state is transient and the banner already says what is true now;
+  (b) suppress line 1 while `!link.active`; (c) reword line 1 to be tense-neutral.
+  No option changes any behaviour.
