@@ -359,7 +359,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 > no-op); the mail describe self-skips without the spawn-capable env (08/09 precedent).
 
 - [x] GR-T7  Share dialog standing copy: one-link-for-all + regenerate-only-on-a-leak (two `field-help` lines + testids `share-standing-copy`/`regen-guidance`) — 14 §UC-GR-009 ⚠ fully independent, deliberately FIRST: it is the PO's explicit ask and shrinks the incident's recurrence window while the rest of the module builds. Additive against every `share-dialog.spec.js` pin (no `p.sub` — strict-mode pin at :239/:579; no new `<b>` in subtitle; `.confirmbox` untouched); this row edits ZERO existing spec files — the one sanctioned share-dialog edit (:594-595 payload-pin inversion) is GR-T5's, not this row's. Both strings render from BOTH entry points (one shared GuestShareDialog — GSO-T2 rule).
-- [ ] GR-T1  order_token-alone resolver + public `GET/PUT /api/guest/o/:orderToken` (+ invite-request) + pair-form delegation — 14 §UC-GR-001/002(API) · model=heavy ⚠ FOUNDATION: extracts guest.js's GET/PUT/invite-request handler bodies into shared functions over a resolved `{link, cycle, order}` — the paid-freeze guard, the literal-`items:[]`-only cancel rule and every 409/410 write gate move VERBATIM ("two copies is how one stops enforcing it"); GR-T2/T5/T8 all compose on the canonical form this makes real. Route-ordering hazard: `/o/…` must register before `/:token`. Read stays 404-only (GSO-T4 asymmetry), unknown token = uniform 404 (no oracle, D2). ⚠ **EXTENDS** `e2e/tests/guest-order-recovery.spec.js` — GR-T7 already created it (it was sequenced first), so add a new describe; do NOT create a second file and do NOT overwrite the UC-GR-009 describe. Its `STANDING_COPY`/`REGEN_GUIDANCE` constants and its `admin`/`refreshAdminToken`/`makeHost`/`makeCycle`/`shareLink`/`signInAsHost`/`gotoPortal`/`portalCard`/`openFromOrderPage` helpers are there to reuse; this row adds `submitGuest`/`addProduct`/`hostView` to the same file. Canonical/pair parity + regeneration-recovery API tests land here; the full incident end-to-end completes in GR-T4. Sanctioned spec edits: `guest-status.spec.js` :203 rewritten to the new contract + :230 inverse pin, `guest-host-view.spec.js` :605-630 (underOld 404→200 + ordering counter-pin). ⚠ On landing, CLAUDE.md's GSO-T4 "orderToken only resolves under its own link" bullet gets the `~~…~~ SUPERSEDED` annotation (module-11 idiom).
+- [x] GR-T1  order_token-alone resolver + public `GET/PUT /api/guest/o/:orderToken` (+ invite-request) + pair-form delegation — 14 §UC-GR-001/002(API) · model=heavy ⚠ FOUNDATION: extracts guest.js's GET/PUT/invite-request handler bodies into shared functions over a resolved `{link, cycle, order}` — the paid-freeze guard, the literal-`items:[]`-only cancel rule and every 409/410 write gate move VERBATIM ("two copies is how one stops enforcing it"); GR-T2/T5/T8 all compose on the canonical form this makes real. Route-ordering hazard: `/o/…` must register before `/:token`. Read stays 404-only (GSO-T4 asymmetry), unknown token = uniform 404 (no oracle, D2). ⚠ **EXTENDS** `e2e/tests/guest-order-recovery.spec.js` — GR-T7 already created it (it was sequenced first), so add a new describe; do NOT create a second file and do NOT overwrite the UC-GR-009 describe. Its `STANDING_COPY`/`REGEN_GUIDANCE` constants and its `admin`/`refreshAdminToken`/`makeHost`/`makeCycle`/`shareLink`/`signInAsHost`/`gotoPortal`/`portalCard`/`openFromOrderPage` helpers are there to reuse; this row adds `submitGuest`/`addProduct`/`hostView` to the same file. Canonical/pair parity + regeneration-recovery API tests land here; the full incident end-to-end completes in GR-T4. Sanctioned spec edits: `guest-status.spec.js` :203 rewritten to the new contract + :230 inverse pin, `guest-host-view.spec.js` :605-630 (underOld 404→200 + ordering counter-pin). ⚠ On landing, CLAUDE.md's GSO-T4 "orderToken only resolves under its own link" bullet gets the `~~…~~ SUPERSEDED` annotation (module-11 idiom).
 - [ ] GR-T2  Canonical URL on the guest surface: SPA route `/g/o/:orderToken`, `router.replace` re-canonicalisation (on success only, never on 404 — D7), `status_path` emits canonical, localStorage update-by-scan — 14 §UC-GR-002(page)/003 ⚠ needs GR-T1. `gorifi_guest_orders` SHAPE stays pair-keyed forever (deliberate non-migration; update-by-scan must never CREATE an entry). Sanctioned spec edits: `guest-order.spec.js` :885 `status_path` regex → `/g\/o\/[A-Z2-9]{12,}$/`, `guest-payment-modal.spec.js` :671 copy-row regex, `guest-invite-dead.spec.js` :648 stored status_url equality (that file's direct pair-form `page.goto`s stay untouched — they ARE the legacy regression net). 00-overview §Glossary "Status URL / pair token" entry updated here.
 - [ ] GR-T3  Admin reads + creates host share links: `GET /api/guest-links/cycle/:id/all` + `POST /api/guest-links/cycle/:id/host/:friendId` (requireAdmin per-route) — 14 §UC-GR-004 ⚠ independent of GR-T1/T2; endpoints only — the admin UI consumer is GR-T6's. `guest-links.js` becomes a MIXED router (the guest-orders.js:17-27 header idiom — NEVER wrap the mount; the three host routes stay host-authenticated). Explicit NON-capability recorded in the router header: no admin write of token/active EVER (D3 — an admin regenerate would sever colleagues silently; a reactivate would republish a deliberately revoked leak). Create-if-missing is idempotent with the token asserted UNCHANGED on repeat (the no-regenerate proof); 409 inactive host; friend Bearer 401s. ADMIN_ENDPOINTS +2 (`api-security.spec.js` — the host routes stay in FRIEND_IDENTITY_ENDPOINTS, sweeps must not merge the lists).
 - [ ] GR-T4  Admin soft-cancel: `POST /api/guest-orders/:id/cancel` — NO paid blockade, refund-queue landing, 409 closed — 14 §UC-GR-005 · model=heavy ⚠ ordered after GR-T1/T2 so the full incident end-to-end (regenerated link → old pair URL still renders → admin cancels PAID order → refund queue shows item-recomputed amount) completes here in `guest-order-recovery.spec.js`. SOFT cancel keeping item rows (the status predicate in `helpers/stock.js` is the release mechanism — `remaining_g` recovery asserted); `paid`/`paid_at`/`delivered` untouched (paid=1 + cancelled = the INTENDED refund-queue routing, D4); in-transaction cycle re-check (guest-orders.js:186-204 template); idempotent 200 `already_cancelled`; 409 `closed` on non-open cycles (D5 — post-lock the coffee is bought; the refund workflow covers the money). ⚠ NO `transactions` row EVER (GSO-T6 — before/after row count pinned). Host DELETE keeps its paid-409 (the escalation now has a working target). ADMIN_ENDPOINTS +1.
@@ -368,6 +368,60 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [ ] GR-T8  Guest order-confirmation e-mail on submit: `deliverGuestConfirmation` (module-08 seam), fire-and-forget POST-COMMIT, canonical URL via `resolveLoginUrl`/`PUBLIC_BASE_URL` — 14 §UC-GR-011 · model=heavy ⚠ needs GR-T1+T2 (the mailed URL must resolve). Heavy despite small surface — the GA-T8 hazard class IS the design: the submit handler stays a plain synchronous `(req,res)` function (no `async`, no `await` anywhere — an awaited send both fails the 201 on mail trouble and reopens the out-of-transaction stock-check race); the send fires strictly after the insert transaction commits as a floating promise (deliverMagicLink template verbatim in structure, D11). Send ONLY when `guest_email` present (existing `validateIdentity` + the mailer's own `EMAIL_SHAPE` gate — no new validation invented); content = the 201's facts via `guestPaymentReference` (one formatter); send-on-CREATE only (D10 — edit/cancel mails are a NAMED follow-up, must not be "completed" here); no new rate-limit bucket (rides `guestWriteLimiter`; the deliberate contrast to the magic-link split is recorded). e2e on the shared `e2e/mailgun-harness.js` (reuse, never fork; self-skips without the spawn env): one send with reference/total/canonical URL in BOTH parts, zero sends without e-mail, 201 survives stub 500, no send on PUT/`items:[]`, `PUBLIC_BASE_URL` beats Origin. ⚠ Operator note: verify `PUBLIC_BASE_URL` on prod before enabling `MAILGUN_*`. Subject/body DRAFT.
 
 ## Log
+
+- 2026-08-26 · GR-T1 · (this commit) · no PR (project convention) · **THE INCIDENT IS FIXED: the
+  guest's order URL no longer depends on the share link.** `resolveGuestOrderByOrderToken` +
+  `findLinkById` reverse-look-up the link FROM the order, so `order_token` alone is the credential;
+  three canonical PUBLIC routes (`GET/PUT /api/guest/o/:orderToken`, `POST …/invite-request`) and the
+  three legacy pair routes all delegate to ONE set of shared handlers (`handleStatusRead` /
+  `handleStatusEdit` / `handleInviteRequest`) over a resolved `{link, cycle, order}`. Verified end to
+  end at API level: submit → host regenerates → **the guest's ORIGINAL URL returns 200** with the same
+  order id, the same `G<id> / Name / Cycle` reference and the same amount, while `/g/<retired>`'s
+  listing and submit still 404 — regeneration keeps its entire revocation purpose on the ORDERING
+  surface, which is the whole point of the split.
+  ⚠ **The extraction is a MOVE, not a rewrite, and that was proved three ways, not asserted:** the
+  orchestrator's `git diff` filtered to REMOVED lines matching every gate pattern is EMPTY; the
+  reviewer `sed`-extracted the old handler bodies and byte-diffed them against the new shared
+  functions (identical but for a blank line and a brace); and three mutations each reddened named
+  tests — paid-freeze (recovery + `guest-status-shell.spec.js:692`), literal-`items:[]`-only cancel
+  (`PUT {}` 400→200), cancelled-is-terminal (recovery + `guest-status.spec.js:555`).
+  ⚠ **The property that could have silently inverted — which link a gate reads — was proved BY
+  REQUEST against the live gate:** a PUT through a LIVE foreign link half onto an order whose OWN link
+  is deactivated still 410s (and still refuses `items: []`), a locked cycle still 409s, a paid order
+  still 409s. `req.params.token` is read in exactly one place and reaches no query, no gate and no
+  response. `grep async|await` on `guest.js` is EMPTY (GA-T8 synchronous-handler rule).
+  Route ordering confirmed by request, not by reading: `/api/guest/o/NOSUCH` answers the ORDER 404
+  message while `/api/guest/NOSUCH` answers the LINK one.
+  Stale-half log verified empirically for leakage: 18 lines in the running gate, zero 14-char token
+  matches — only `guest_orders.id` is interpolated.
+  Sanctioned spec retargets: `guest-status.spec.js` :203 (pair→any-half, payloads `JSON.stringify`-
+  equal across three halves, plus a sharper pin that a foreign half smuggles in no foreign products)
+  and :230 (+inverse pin); `guest-host-view.spec.js` :624-625 (**404 → 200** — that line IS the
+  recovery — plus the canonical form and the ordering-surface counter-pin). `guest-invite-dead.spec.js`
+  deliberately UNTOUCHED (the legacy regression net).
+  ⚠ **One UNSANCTIONED retarget, flagged by the implementer and RATIFIED by the orchestrator:**
+  `guest-lead-capture.spec.js:310` pinned "a foreign link token 404s" for invite-request, which
+  §UC-GR-002 makes structurally impossible — forced, not chosen. It is a SHARPENING: the uniform-404
+  no-oracle pin moves to the genuine misses (unknown ORDER token under three link halves,
+  `new Set(...).size === 1`) and the property the 404 was a blunt proxy for is asserted DIRECTLY
+  (`invited_by_friend_id` is the ORDER's host, explicitly not the other's). §UC-GR-010 amended to
+  include the file; §UC-GR-001's "invite-request keeps its gating EXACTLY" resolved in favour of
+  §UC-GR-002 (the 404 set necessarily shrinks).
+  CLAUDE.md: the GSO-T4 pair-credential bullet now carries `~~…~~ SUPERSEDED` with the incident as
+  its reason.
+  Gate re-run independently by the orchestrator on its own server restart: **197 passed**
+  (guest-order-recovery, guest-status, guest-status-shell, guest-host-view, guest-lead-capture,
+  guest-order, api-security) + **89 passed** (guest-payment-modal, guest-invite-dead,
+  guest-order-shell, guest-admin-view, guest-link, share-dialog). Full suite deliberately not run.
+  Review: **approve**, 1 round, 1 minor — FIXED here: `uniquePhone`'s seed was 6 digits (wraps every
+  ~16.7 min) while `idx_invitations_phone_pending` is persistent, so two runs against a long-lived DB
+  could collide and the 409 would read like a broken gate; now an 8-digit run-scoped seed mirroring
+  `guest-lead-capture.spec.js:43`. Re-verified: 35 passed.
+  ⚠ For later rows: `handleStatusRead/Edit/handleInviteRequest` are the seam GR-T2/T5/T8 compose on;
+  `POST /:token/orders` was deliberately left alone and still emits the PAIR `status_path` — **GR-T2
+  changes that line**. `resolveGuestOrderByOrderToken` is 404-only BY DESIGN, so GR-T4's admin cancel
+  must not route through it. `guest-status-shell.spec.js` is a second live consumer of the paid-freeze
+  and cancel-intent gates (found by mutation, not by reading) — run it when touching these handlers.
 
 - 2026-08-26 · GR-T7 · (this commit) · no PR (project convention: feature branch, merge on PO
   confirmation) · **Share dialog standing copy — the first module-14 row, sequenced first because

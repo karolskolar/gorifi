@@ -93,6 +93,47 @@ async function shareLink(host, cycleId) {
   return (await res.json()).link
 }
 
+async function addProduct(cycleId, data) {
+  const res = await admin('/api/products', { method: 'post', data: { cycle_id: cycleId, ...data } })
+  expect(res.status(), 'product create').toBe(201)
+  return res.json()
+}
+
+async function setCycleStatus(cycleId, status) {
+  expect((await admin(`/api/cycles/${cycleId}`, { method: 'patch', data: { status } })).status()).toBe(200)
+}
+
+const IDENTITY = { guest_name: 'Martina Tomasova', guest_phone: '0901 234 567' }
+
+// A unique 12-digit phone per call. ⚠ `validateIdentity` requires at least NINE
+// digits, and `invitations` carries a partial unique index on a PENDING phone
+// (`idx_invitations_phone_pending`), so a lead-capture fixture needs both.
+// ⚠ The seed is 8 digits and RUN-SCOPED, mirroring `guest-lead-capture.spec.js:43`
+// for its stated reason: `idx_invitations_phone_pending` is PERSISTENT while
+// `phoneSeq` resets every run, so a 6-digit seed (which wraps every ~16.7 min)
+// lets two runs against a long-lived DB — staging, or a `DB_PATH` kept for days —
+// reuse a number. The second run then gets 409 instead of 201 from
+// `invite-request`, which reads like a broken gate rather than a fixture
+// collision. Later GR rows extend this file and add more lead rows, so the
+// collision surface only grows.
+const phoneSeed = String(Date.now()).slice(-8)
+let phoneSeq = 0
+const uniquePhone = () => `09${phoneSeed}${String(++phoneSeq).padStart(2, '0')}`
+
+// A guest sub-order is only ever created through the public submit (GSO-T3).
+async function submitGuest(linkToken, items, identity = IDENTITY) {
+  const res = await ctx.post(`/api/guest/${linkToken}/orders`, { data: { ...identity, items } })
+  expect(res.status(), 'guest submit').toBe(201)
+  return res.json()
+}
+
+// The host's "Objednávky kolegov" payload.
+async function hostView(host, cycleId) {
+  const res = await ctx.get(`/api/guest-links/cycle/${cycleId}`, { headers: host.auth })
+  expect(res.status(), 'host view').toBe(200)
+  return res.json()
+}
+
 // FriendPortal resolves the stored session against GET /api/friends?active=true,
 // which is admin-gated — an anonymous browser gets 401 (pre-existing app gap, see
 // e2e/README.md), so that ONE response is stubbed. Everything under test still
@@ -344,5 +385,383 @@ test.describe('UC-GR-009 — share dialog standing copy', () => {
     await expect(dialog.locator('.confirmbox')).toBeVisible()
     expect(await overflow(page)).toEqual({ scrollW: 320, clientW: 320 })
     expect(await outside()).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GR-T1 / 14 §UC-GR-001 + §UC-GR-002 (API half)
+//
+// THE INCIDENT: a guest paid, her host regenerated the share link, and
+// `resolveGuestOrder()` resolved `order_token AND link_id` where `link_id` came
+// from the CURRENT link token — so her saved URL 404'd forever while her order sat
+// in the DB. The share link and the per-order URL are two credentials with
+// DIFFERENT LIFETIMES: regeneration must keep revoking the former (nobody new may
+// order through a leaked link) without killing the latter.
+//
+// So `order_token` alone is the credential from here on (D1/D2 — same generator,
+// same 14 chars of `CODE_ALPHABET` entropy, SEC-S2), reachable two ways:
+//   canonical  GET/PUT /api/guest/o/:orderToken (+ /invite-request)
+//   legacy     GET/PUT /api/guest/:token/orders/:orderToken — the `:token` half is
+//              ignored for resolution AND authorization; it is URL carriage only.
+//
+// ⚠ These routes are PUBLIC BY DESIGN and must never join `ADMIN_ENDPOINTS`.
+//
+// ⚠ The risky half of this row is the EXTRACTION: both URL forms must run the SAME
+// handler bodies over a resolved `{ link, cycle, order }`. Two copies of the
+// paid-freeze guard or the literal-`items:[]`-only cancel rule is how one of them
+// stops enforcing it — so every gate is asserted through the CANONICAL form here
+// (guest-status.spec.js keeps asserting them through the legacy one, unchanged).
+
+const canonicalPath = (orderToken) => `/api/guest/o/${orderToken}`
+const pairPath = (linkToken, orderToken) => `/api/guest/${linkToken}/orders/${orderToken}`
+
+// One host + open coffee cycle + one product + link + a submitted sub-order.
+async function orderScenario(label, { productData } = {}) {
+  const host = await makeHost(label)
+  const cycle = await makeCycle(label)
+  const product = await addProduct(cycle.id, {
+    name: `GR ${label} ${uniq}`, purpose: 'Espresso', price_250g: 10, price_1kg: 30, ...productData,
+  })
+  const link = await shareLink(host, cycle.id)
+  const created = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+  return { host, cycle, product, link, created, orderToken: created.order.order_token }
+}
+
+test.describe('UC-GR-001/002 — order_token alone is the credential', () => {
+  test('THE INCIDENT: after a regeneration the guest\'s ORIGINAL pair URL still resolves — and so do the new pair form and the canonical form', async () => {
+    await refreshAdminToken()
+    const { host, cycle, link, created, orderToken } = await orderScenario('incident')
+
+    // The host regenerates (UPDATE on the same row — guest-links.js:51-59).
+    const regen = await ctx.post(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })
+    expect(regen.status()).toBe(200)
+    const fresh = (await regen.json()).link
+    expect(fresh.id, 'regeneration keeps the ROW').toBe(link.id)
+    expect(fresh.token, 'only the token moves').not.toBe(link.token)
+
+    // ⚠ THE RECOVERY. Before this row the first of these was a permanent 404.
+    const underOld = await ctx.get(pairPath(link.token, orderToken))
+    expect(underOld.status(), 'the RETIRED link half must not kill the order URL').toBe(200)
+    const underNew = await ctx.get(pairPath(fresh.token, orderToken))
+    expect(underNew.status()).toBe(200)
+    const canonicalRes = await ctx.get(canonicalPath(orderToken))
+    expect(canonicalRes.status()).toBe(200)
+
+    const [oldBody, newBody, canonBody] = [await underOld.json(), await underNew.json(), await canonicalRes.json()]
+    for (const [label, body] of [['old pair', oldBody], ['new pair', newBody], ['canonical', canonBody]]) {
+      expect(body.order.id, label).toBe(created.order.id)
+      // The payment reference is what she needs to see what she owes.
+      expect(body.payment.reference, label).toBe(`G${created.order.id} / ${IDENTITY.guest_name} / ${cycle.name}`)
+      expect(body.payment.amount, label).toBe(10)
+    }
+    // All three forms answer with the SAME payload — one resolver, one handler.
+    expect(JSON.stringify(oldBody)).toBe(JSON.stringify(canonBody))
+    expect(JSON.stringify(newBody)).toBe(JSON.stringify(canonBody))
+
+    // …and she can still act on it through the URL she saved.
+    const edited = await ctx.put(pairPath(link.token, orderToken), {
+      data: { items: [{ product_id: (await hostView(host, cycle.id)).guest_orders[0].items[0].product_id, variant: '1kg', quantity: 1 }] },
+    })
+    expect(edited.status(), 'the write half works through the retired link half too').toBe(200)
+    expect((await edited.json()).order.total).toBe(30)
+
+    // ⚠ THE COUNTER-PIN: regeneration keeps its WHOLE purpose on the ORDERING
+    // surface. Nobody new may order through the leaked link.
+    expect((await ctx.get(`/api/guest/${link.token}`)).status(), 'the retired link lists nothing').toBe(404)
+    const lateSubmit = await ctx.post(`/api/guest/${link.token}/orders`, {
+      data: { ...IDENTITY, items: [{ product_id: 1, variant: '250g', quantity: 1 }] },
+    })
+    expect(lateSubmit.status(), 'the retired link takes no new sub-orders').toBe(404)
+    // The fresh token still does both.
+    expect((await ctx.get(`/api/guest/${fresh.token}`)).status()).toBe(200)
+  })
+
+  test('the canonical GET returns a payload identical to the pair GET, with the pinned statusPayload shape', async () => {
+    await refreshAdminToken()
+    const { link, orderToken } = await orderScenario('parity')
+
+    const viaPair = await ctx.get(pairPath(link.token, orderToken))
+    const viaCanonical = await ctx.get(canonicalPath(orderToken))
+    expect(viaPair.status()).toBe(200)
+    expect(viaCanonical.status()).toBe(200)
+    const body = await viaCanonical.json()
+    expect(JSON.stringify(await viaPair.json())).toBe(JSON.stringify(body))
+
+    // statusPayload is EXTENDED, never reshaped (GSO-T4/T6).
+    expect(Object.keys(body).sort()).toEqual([
+      'availability', 'cycle', 'editable', 'host', 'invite_request', 'items',
+      'items_editable', 'order', 'payment', 'products',
+    ])
+    expect(body.editable).toBe(true)
+    expect(body.items_editable).toBe(true)
+  })
+
+  test('route ordering: /api/guest/o/:orderToken is NOT swallowed by GET /:token', async () => {
+    await refreshAdminToken()
+    const { orderToken } = await orderScenario('ordering')
+
+    // Proven by REQUEST, not by reading the file: the listing route answers with
+    // `products` + `host` and no `order`, and its 404 carries a DIFFERENT message.
+    const hit = await ctx.get(canonicalPath(orderToken))
+    expect(hit.status()).toBe(200)
+    const body = await hit.json()
+    expect(body.order, 'a status payload, not a product listing').toBeTruthy()
+
+    // The decisive one: a garbage order token under the canonical form must answer
+    // the ORDER 404, never the LINK 404 that `GET /:token` would produce.
+    const miss = await ctx.get(canonicalPath('ZZZZZZZZZZZZZZ'))
+    expect(miss.status()).toBe(404)
+    expect((await miss.json()).error).toBe('Táto objednávka neexistuje')
+  })
+
+  test('no oracle (D2): an unknown order token answers the SAME uniform 404 in both URL forms', async () => {
+    await refreshAdminToken()
+    const { link } = await orderScenario('oracle')
+
+    const cases = [
+      canonicalPath('THISORDERDOESNOTEXIST'),
+      canonicalPath('ZZZZZZZZZZZZZZ'),
+      pairPath(link.token, 'THISORDERDOESNOTEXIST'),
+      pairPath('THISLINKDOESNOTEXIST', 'THISORDERDOESNOTEXIST'),
+    ]
+    for (const path of cases) {
+      const res = await ctx.get(path)
+      expect(res.status(), path).toBe(404)
+      expect((await res.json()).error, path).toBe('Táto objednávka neexistuje')
+    }
+  })
+
+  test('the read side stays 404-ONLY through the canonical form: a locked cycle and a dead link both still GET 200 with the payment block', async () => {
+    await refreshAdminToken()
+    const { host, cycle, link, created, orderToken } = await orderScenario('readonly')
+
+    // Locked cycle — the GSO-T4 asymmetry: the listing 410s, the status URL must not.
+    await setCycleStatus(cycle.id, 'locked')
+    const locked = await ctx.get(canonicalPath(orderToken))
+    expect(locked.status()).toBe(200)
+    const lockedBody = await locked.json()
+    expect(lockedBody.editable).toBe(false)
+    expect(lockedBody.items_editable).toBe(false)
+    expect(lockedBody.payment.reference).toBe(`G${created.order.id} / ${IDENTITY.guest_name} / ${cycle.name}`)
+    // …and the orderable listing is NOT published while un-editable (that is what
+    // stops the status GET leaking what a locked cycle 410s).
+    expect(lockedBody.products, 'no product grid while not editable').toBeUndefined()
+    expect(lockedBody.availability).toBeUndefined()
+
+    // Deactivated link — same read, still open.
+    await setCycleStatus(cycle.id, 'open')
+    expect((await ctx.patch(`/api/guest-links/${link.id}`, { headers: host.auth, data: { active: false } })).status()).toBe(200)
+    const dead = await ctx.get(canonicalPath(orderToken))
+    expect(dead.status(), 'a dead link must never hide the guest\'s own record').toBe(200)
+    expect((await dead.json()).editable).toBe(false)
+  })
+
+  test('WRITE GATES survive the extraction — through the canonical form: 410 dead link, 409 locked, 409 cancelled (terminal)', async () => {
+    await refreshAdminToken()
+
+    // 410 — deactivated link.
+    const dead = await orderScenario('gate410')
+    expect((await ctx.patch(`/api/guest-links/${dead.link.id}`, { headers: dead.host.auth, data: { active: false } })).status()).toBe(200)
+    const res410 = await ctx.put(canonicalPath(dead.orderToken), {
+      data: { items: [{ product_id: dead.product.id, variant: '250g', quantity: 2 }] },
+    })
+    expect(res410.status()).toBe(410)
+    expect((await res410.json()).reason).toBe('inactive')
+
+    // 409 closed — edits end at the lock.
+    const locked = await orderScenario('gate409closed')
+    await setCycleStatus(locked.cycle.id, 'locked')
+    const res409 = await ctx.put(canonicalPath(locked.orderToken), {
+      data: { items: [{ product_id: locked.product.id, variant: '250g', quantity: 2 }] },
+    })
+    expect(res409.status()).toBe(409)
+    expect((await res409.json()).reason).toBe('closed')
+
+    // 409 cancelled — TERMINAL, no edge back (and it is also what stops a guest
+    // reviving what the host's soft-delete removed).
+    const gone = await orderScenario('gate409cancelled')
+    expect((await ctx.put(canonicalPath(gone.orderToken), { data: { items: [] } })).status()).toBe(200)
+    const revive = await ctx.put(canonicalPath(gone.orderToken), {
+      data: { items: [{ product_id: gone.product.id, variant: '250g', quantity: 1 }] },
+    })
+    expect(revive.status()).toBe(409)
+    expect((await revive.json()).reason).toBe('cancelled')
+    // A second empty cart is refused too — cancelled means cancelled.
+    expect((await ctx.put(canonicalPath(gone.orderToken), { data: { items: [] } })).status()).toBe(409)
+  })
+
+  test('WRITE GATES survive the extraction — the PAID FREEZE: 409 on a non-empty edit, but items:[] still cancels', async () => {
+    await refreshAdminToken()
+    const { cycle, product, created, orderToken } = await orderScenario('gatepaid')
+
+    expect((await admin(`/api/guest-orders/${created.order.id}/paid`, { method: 'patch', data: { paid: true } })).status()).toBe(200)
+
+    // What is owed may not be quietly rewritten once the money arrived.
+    const frozen = await ctx.put(canonicalPath(orderToken), {
+      data: { items: [{ product_id: product.id, variant: '1kg', quantity: 3 }] },
+    })
+    expect(frozen.status(), 'a paid sub-order is frozen against ITEM changes').toBe(409)
+    expect((await frozen.json()).reason).toBe('paid')
+    // Nothing was written.
+    const after = await (await ctx.get(canonicalPath(orderToken))).json()
+    expect(after.order.total).toBe(10)
+    expect(after.items.length).toBe(1)
+    // The page must not offer what the server refuses (the GSO-T6 finer flag).
+    expect(after.editable).toBe(true)
+    expect(after.items_editable, 'items_editable = editable && !paid').toBe(false)
+
+    // Deliberately NARROW: the whole thing may still be called off — a cancel
+    // leaves the refund-queue trace, which is what the guard actually protects.
+    const cancelled = await ctx.put(canonicalPath(orderToken), { data: { items: [] } })
+    expect(cancelled.status(), 'a paid order may still be CANCELLED').toBe(200)
+    expect((await cancelled.json()).order.status).toBe('cancelled')
+    expect((await (await ctx.get(canonicalPath(orderToken))).json()).order.paid, 'paid is untouched — the refund trace').toBe(1)
+    void cycle
+  })
+
+  test('WRITE GATES survive the extraction — only a LITERAL items:[] may cancel; every malformed body is a NON-DESTRUCTIVE 400', async () => {
+    await refreshAdminToken()
+    const { product, orderToken } = await orderScenario('gatecancelintent')
+
+    // ⚠ Cancelling is irreversible, so it needs an EXPRESSED intent. Before this
+    // guard existed, `PUT {}` returned 200 and destroyed the sub-order.
+    const malformed = [
+      ['{} (no items key)', {}],
+      ['items: null', { items: null }],
+      ['items: "" (non-array)', { items: '' }],
+      ['items: {} (non-array)', { items: {} }],
+      ['quantity: true (nothing prices)', { items: [{ product_id: product.id, variant: '250g', quantity: true }] }],
+      ['unknown variant (nothing prices)', { items: [{ product_id: product.id, variant: 'zzz', quantity: 1 }] }],
+    ]
+    for (const [label, data] of malformed) {
+      const res = await ctx.put(canonicalPath(orderToken), { data })
+      expect(res.status(), label).toBe(400)
+      expect((await res.json()).field, label).toBe('items')
+      // NON-destructive: the order is still alive and unchanged after every one.
+      const still = await (await ctx.get(canonicalPath(orderToken))).json()
+      expect(still.order.status, label).toBe('submitted')
+      expect(still.order.total, label).toBe(10)
+    }
+
+    // A bodyless PUT too (a proxy stripping the body must not cancel an order).
+    const bodyless = await ctx.put(canonicalPath(orderToken))
+    expect(bodyless.status(), 'no body at all').toBe(400)
+    expect((await (await ctx.get(canonicalPath(orderToken))).json()).order.status).toBe('submitted')
+
+    // The literal empty list DOES cancel — and keeps the item rows (the status
+    // predicate is the release mechanism, GSO-T4/T5).
+    const res = await ctx.put(canonicalPath(orderToken), { data: { items: [] } })
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.order.status).toBe('cancelled')
+    expect(body.order.total).toBe(0)
+    expect(body.items.length, 'the record of what was called off survives').toBe(1)
+  })
+
+  test('a canonical PUT applies the same bounds and snapshot pricing as the pair PUT', async () => {
+    await refreshAdminToken()
+    const { cycle, product, orderToken } = await orderScenario('bounds')
+    const second = await addProduct(cycle.id, { name: `GR bounds second ${uniq}`, purpose: 'Filter', price_250g: 20 })
+
+    // Re-priced from the DB snapshot, replace-in-full.
+    const ok = await ctx.put(canonicalPath(orderToken), {
+      data: {
+        items: [
+          { product_id: product.id, variant: '1kg', quantity: 2 },
+          { product_id: second.id, variant: '250g', quantity: 1 },
+        ],
+      },
+    })
+    expect(ok.status()).toBe(200)
+    expect((await ok.json()).order.total, '2 × 30 + 20').toBe(80)
+
+    // Bounds: > 100 lines, and > 100 per line.
+    const tooMany = await ctx.put(canonicalPath(orderToken), {
+      data: { items: Array.from({ length: 101 }, () => ({ product_id: product.id, variant: '250g', quantity: 1 })) },
+    })
+    expect(tooMany.status()).toBe(400)
+    expect((await tooMany.json()).field).toBe('items')
+
+    const tooBig = await ctx.put(canonicalPath(orderToken), {
+      data: { items: [{ product_id: product.id, variant: '250g', quantity: 101 }] },
+    })
+    expect(tooBig.status()).toBe(400)
+
+    // Untouched by either refusal.
+    expect((await (await ctx.get(canonicalPath(orderToken))).json()).order.total).toBe(80)
+  })
+
+  test('the invite-request CTA works on both URL forms and keeps its exact gating', async () => {
+    await refreshAdminToken()
+
+    // 201 through the CANONICAL form, bare acknowledgement body.
+    const a = await orderScenario('inviteok')
+    const created = await ctx.post(`${canonicalPath(a.orderToken)}/invite-request`, {
+      data: { name: 'Kolega Jeden', phone: uniquePhone() },
+    })
+    expect(created.status()).toBe(201)
+    expect(await created.json()).toEqual({ success: true })
+
+    // A LOCKED cycle still 201s (that is exactly when a guest asks for an account)
+    // — the read-side resolver, with only the 410 re-applied.
+    const b = await orderScenario('invitelocked')
+    await setCycleStatus(b.cycle.id, 'locked')
+    const locked = await ctx.post(`${canonicalPath(b.orderToken)}/invite-request`, {
+      data: { name: 'Kolega Dva', phone: uniquePhone() },
+    })
+    expect(locked.status(), 'a lock must not withdraw lead capture').toBe(201)
+
+    // A CANCELLED sub-order still 201s (still a lead).
+    const c = await orderScenario('invitecancelled')
+    expect((await ctx.put(canonicalPath(c.orderToken), { data: { items: [] } })).status()).toBe(200)
+    const afterCancel = await ctx.post(`${canonicalPath(c.orderToken)}/invite-request`, {
+      data: { name: 'Kolega Tri', phone: uniquePhone() },
+    })
+    expect(afterCancel.status()).toBe(201)
+
+    // A DEAD link/host DOES withdraw it — the lead would be credited to a host who
+    // can no longer log in.
+    const d = await orderScenario('invitedead')
+    expect((await ctx.patch(`/api/guest-links/${d.link.id}`, { headers: d.host.auth, data: { active: false } })).status()).toBe(200)
+    const dead = await ctx.post(`${canonicalPath(d.orderToken)}/invite-request`, {
+      data: { name: 'Kolega Styri', phone: uniquePhone() },
+    })
+    expect(dead.status()).toBe(410)
+    expect((await dead.json()).reason).toBe('inactive')
+
+    // …and the LEGACY pair form, with a retired link half, reaches the same handler.
+    const e = await orderScenario('invitelegacy')
+    const regen = await ctx.post(`/api/guest-links/cycle/${e.cycle.id}`, { headers: e.host.auth })
+    expect(regen.status()).toBe(200)
+    const legacy = await ctx.post(`${pairPath(e.link.token, e.orderToken)}/invite-request`, {
+      data: { name: 'Kolega Pat', phone: uniquePhone() },
+    })
+    expect(legacy.status(), 'the retired link half is carriage, not authorization').toBe(201)
+  })
+
+  test('the retired link half does not become a back door: it grants nothing the canonical form does not', async () => {
+    await refreshAdminToken()
+    const a = await orderScenario('nobackdoora')
+    const b = await orderScenario('nobackdoorb')
+
+    // A FOREIGN host's link half carrying a real order token resolves to THAT
+    // order — the link half is ignored, so it neither helps nor hurts (D2: the
+    // order token is a full standalone credential of identical entropy).
+    const crossed = await ctx.get(pairPath(b.link.token, a.orderToken))
+    expect(crossed.status()).toBe(200)
+    expect((await crossed.json()).order.id, 'resolution follows the ORDER token').toBe(a.created.order.id)
+
+    // ⚠ But a foreign link half must not smuggle in foreign PRODUCTS: pricing is
+    // still scoped to the ORDER's own cycle.
+    const smuggle = await ctx.put(pairPath(b.link.token, a.orderToken), {
+      data: { items: [{ product_id: b.product.id, variant: '250g', quantity: 1 }] },
+    })
+    expect(smuggle.status(), 'nothing prices ⇒ non-destructive 400, never a cancel').toBe(400)
+    const still = await (await ctx.get(canonicalPath(a.orderToken))).json()
+    expect(still.order.status).toBe('submitted')
+    expect(still.order.total).toBe(10)
+
+    // And b's own order is untouched by any of it.
+    expect((await (await ctx.get(canonicalPath(b.orderToken))).json()).order.total).toBe(10)
   })
 })

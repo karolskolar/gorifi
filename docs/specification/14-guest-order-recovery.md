@@ -572,6 +572,24 @@ inverts; `:885`'s `status_path` regex retargets `/g/${link.token}/o/…` →
 **6. `guest-payment-modal.spec.js`:** `:671`'s copy-row regex retargets to the
 canonical form; `:684`'s `toHaveURL(shown)` then passes as-is (both sides canonical).
 
+**RATIFIED ADDITION (GR-T1, orchestrator — this list was INCOMPLETE):**
+`guest-lead-capture.spec.js:310` belongs in this supersession map. It pinned "a foreign
+link token does not resolve the order" ⇒ 404 for the **invite-request** route, which
+§UC-GR-002 makes structurally impossible (all three pair routes delegate to the
+order-token resolver). The retarget is therefore FORCED, not a choice, and it is a
+SHARPENING rather than a weakening: the uniform-404 no-oracle property is re-pinned on
+the genuine misses (unknown ORDER token under three different link halves, one message
+asserted via `new Set(...).size === 1`), and the property the old 404 was a blunt proxy
+for — "a foreign link half must not file a lead against the wrong host" — is now
+asserted DIRECTLY (`invited_by_friend_id` is the ORDER's host and explicitly not the
+other host's, because `handleInviteRequest` reads the link the order hangs off, never
+the URL's).
+
+⚠ Also resolved here: §UC-GR-001's "invite-request keeps its 404/410/409/400 gating
+EXACTLY" is in tension with §UC-GR-002, under which the 404 SET necessarily shrinks.
+§UC-GR-002 wins (newer, and it is the incident-driven rule); "exactly" should be read as
+"the 410/409/400 gating, and 404 for a genuine miss".
+
 **7. `guest-invite-dead.spec.js`:** `:648`'s stored `status_url` equality retargets to
 the canonical form. The many direct `page.goto` pair URLs across this file and
 `guest-lead-capture.spec.js`/`guest-admin-view.spec.js` stay VALID (UC-GR-002 keeps

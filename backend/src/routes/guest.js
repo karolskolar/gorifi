@@ -159,14 +159,22 @@ function firstName(name) {
   return String(name || '').trim().split(/\s+/)[0] || '';
 }
 
+const LINK_SELECT = `
+  SELECT gl.id, gl.token, gl.active, gl.cycle_id, gl.host_friend_id,
+         f.name AS host_name, f.active AS host_active
+  FROM guest_order_links gl
+  JOIN friends f ON f.id = gl.host_friend_id
+`;
+
 function findLink(token) {
-  return db.prepare(`
-    SELECT gl.id, gl.token, gl.active, gl.cycle_id, gl.host_friend_id,
-           f.name AS host_name, f.active AS host_active
-    FROM guest_order_links gl
-    JOIN friends f ON f.id = gl.host_friend_id
-    WHERE gl.token = ?
-  `).get(String(token || ''));
+  return db.prepare(`${LINK_SELECT} WHERE gl.token = ?`).get(String(token || ''));
+}
+
+// The link a sub-order hangs off, reached from `guest_orders.link_id` — the row
+// always exists (FK), whatever the link's CURRENT token is. This is what makes
+// `order_token` resolvable without the link token (14 §UC-GR-001).
+function findLinkById(linkId) {
+  return db.prepare(`${LINK_SELECT} WHERE gl.id = ?`).get(linkId);
 }
 
 function findCycle(cycleId) {
@@ -321,31 +329,60 @@ function replaceItems(guestOrderId, lines) {
   return Math.round(total * 100) / 100;
 }
 
-// Resolve the (link token, order token) PAIR to a sub-order — WITHOUT any of the
-// open/active gating `resolveLink` applies.
+// Resolve a sub-order from its `order_token` ALONE — WITHOUT any of the
+// open/active gating `resolveLink` applies (14 §UC-GR-001).
 //
 // That asymmetry is the point of §UC-GSO-004: the product listing is 410 once the
 // cycle closes or the host deactivates the link, but the guest must still be able
 // to open their own status URL and see what they ordered, what it costs and the
 // payment reference. Read stays open; the write half re-applies the gates.
 //
-// The order is looked up by `order_token AND link_id`, so a real order token under
-// somebody else's link token does not resolve — the pair is the credential, not
-// either half. Both misses answer the same 404 with the same message, so the
-// endpoint is not an oracle for "this order token exists somewhere".
-function resolveGuestOrder(token, orderToken) {
+// ⚠ WHY THE LINK TOKEN IS NOT PART OF THE CREDENTIAL ANY MORE (module 14, D1/D2 —
+// this SUPERSEDES GSO-T4's "an orderToken only resolves under its own link
+// :token"). The pair-strict form resolved `order_token AND link_id` where the
+// `link_id` came from the URL's CURRENT link token, so a host regenerating their
+// share link permanently 404'd every status URL their colleagues already held —
+// the Martina Tomašová incident: she had paid, and her order sat in the DB
+// unreachable by her, the host and the admin alike. The share link and the
+// per-order URL are two credentials with DIFFERENT LIFETIMES: regeneration must
+// keep revoking the former (see `resolveLink`, untouched — a retired link still
+// lists nothing and takes no new sub-orders) without killing the latter.
+//
+// Nothing is weakened by the change: `order_token` comes from the same
+// `generateGuestToken()` as the link token (14 chars of `CODE_ALPHABET`, SEC-S2),
+// so it is a full standalone credential of identical entropy. The no-oracle
+// property is preserved verbatim — every miss, including the degenerate
+// missing-link/missing-cycle cases, answers the SAME 404 with the SAME message,
+// so the endpoint never reveals that an order token exists somewhere.
+function resolveGuestOrderByOrderToken(orderToken) {
   const notFound = { status: 404, error: 'Táto objednávka neexistuje' };
-  const link = findLink(token);
-  if (!link) return notFound;
   const order = db.prepare(`
     SELECT id, link_id, order_token, guest_name, guest_phone, guest_email, status, total,
            paid, paid_at, delivered, delivered_at, created_at
-    FROM guest_orders WHERE order_token = ? AND link_id = ?
-  `).get(String(orderToken || ''), link.id);
+    FROM guest_orders WHERE order_token = ?
+  `).get(String(orderToken || ''));
   if (!order) return notFound;
+  const link = findLinkById(order.link_id);
+  if (!link) return notFound;
   const cycle = findCycle(link.cycle_id);
   if (!cycle) return notFound;
   return { link, cycle, order };
+}
+
+// The LEGACY pair form (`/:token/orders/:orderToken`, 14 §UC-GR-002). Every URL
+// already sitting in a colleague's messages or in `localStorage.gorifi_guest_orders`
+// keeps working FOREVER, so the `:token` half is resolved by nothing and authorizes
+// nothing — it is URL carriage. Resolution goes through the same
+// `resolveGuestOrderByOrderToken` as the canonical form, and the same shared
+// handlers run afterwards.
+function resolveLegacyPairForm(req) {
+  const resolved = resolveGuestOrderByOrderToken(req.params.orderToken);
+  // ⚠ Log the stale half by `guest_orders.id` ONLY. A token in a log line is a
+  // credential in logs — neither half may ever appear here.
+  if (!resolved.error && String(req.params.token || '') !== String(resolved.link.token || '')) {
+    console.log(`Guest status URL carried a stale link half (guest_order ${resolved.order.id})`);
+  }
+  return resolved;
 }
 
 // GSO-T10 (§Lead Capture): the value stored in `invitations.source` for a lead that
@@ -439,6 +476,46 @@ function statusPayload(link, cycle, order) {
 
   return payload;
 }
+
+// ---------------------------------------------------------------------------
+// The CANONICAL guest order URL (14 §UC-GR-001): `order_token` alone, independent
+// of the share link's current token. Public by design — the URL token IS the
+// credential, exactly as on the pair form; ⚠ these routes must NEVER join
+// `ADMIN_ENDPOINTS` in e2e/tests/api-security.spec.js.
+//
+// ⚠ REGISTERED BEFORE `GET /:token` / `POST /:token/orders` ON PURPOSE. Express
+// matches in registration order, and putting these last would invite the listing
+// route to swallow them. (No collision is actually possible — `generateGuestToken()`
+// emits 14 chars of the uppercase `CODE_ALPHABET`, which can never equal the
+// literal segment `o` — but the ordering is the guarantee, not the alphabet.)
+//
+// All three delegate to the SAME shared handlers the legacy pair routes use
+// (defined below), over a resolved `{ link, cycle, order }`. One copy of the
+// paid-freeze guard, one copy of the literal-`items: []`-only cancel rule: two
+// copies is how one of them stops enforcing it.
+router.get('/o/:orderToken', guestReadLimiter, (req, res) => {
+  const resolved = resolveGuestOrderByOrderToken(req.params.orderToken);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  handleStatusRead(res, resolved);
+});
+
+router.put('/o/:orderToken', guestWriteLimiter, (req, res) => {
+  const resolved = resolveGuestOrderByOrderToken(req.params.orderToken);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  handleStatusEdit(req, res, resolved);
+});
+
+router.post('/o/:orderToken/invite-request', guestWriteLimiter, (req, res) => {
+  const resolved = resolveGuestOrderByOrderToken(req.params.orderToken);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  handleInviteRequest(req, res, resolved);
+});
 
 // GET /guest/:token — everything the public order page needs.
 // No payment details here: Decision 1 gives the guest the IBAN, but only once
@@ -558,23 +635,23 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
   });
 });
 
-// GET /guest/:token/orders/:orderToken — the guest's personal status page
-// (§UC-GSO-004). Items, total, the paid/delivered flags, the cycle status and the
-// payment info needed to re-open the payment modal.
+// ---------------------------------------------------------------------------
+// The three SHARED handlers (14 §UC-GR-001). Each takes an already-resolved
+// `{ link, cycle, order }` and is reached by BOTH URL forms — the canonical
+// `/o/:orderToken` above and the legacy `/:token/orders/:orderToken` pair below.
+// Nothing in them reads a link token, so the two forms cannot drift.
+
+// The guest's personal status page (§UC-GSO-004). Items, total, the paid/delivered
+// flags, the cycle status and the payment info needed to re-open the payment modal.
 //
 // Deliberately NOT gated on the cycle being open or the link being active: this
 // is the guest's only record of what they ordered and what they owe. See
-// resolveGuestOrder for why that differs from the product listing.
-router.get('/:token/orders/:orderToken', guestReadLimiter, (req, res) => {
-  const resolved = resolveGuestOrder(req.params.token, req.params.orderToken);
-  if (resolved.error) {
-    return res.status(resolved.status).json({ error: resolved.error });
-  }
-  const { link, cycle, order } = resolved;
+// resolveGuestOrderByOrderToken for why that differs from the product listing.
+function handleStatusRead(res, { link, cycle, order }) {
   res.json(statusPayload(link, cycle, order));
-});
+}
 
-// PUT /guest/:token/orders/:orderToken — edit the sub-order's items while the
+// Edit the sub-order's items while the
 // cycle is open (§UC-GSO-004). Replace-in-full: the body carries the whole cart.
 //
 // Items only. Identity (name/phone/email) is FROZEN at submit time — it is the
@@ -584,18 +661,12 @@ router.get('/:token/orders/:orderToken', guestReadLimiter, (req, res) => {
 // (host, GSO-T5), `status`, `total` and `order_token` are all server-owned too.
 //
 // Status codes:
-//   404 — the (link token, order token) pair does not resolve
+//   404 — the order token does not resolve (applied by the callers, before this)
 //   410 — the link or the host is deactivated: same closed door the submit sees
 //   409 — the cycle is not open (edits end at the lock), or the sub-order is
 //         already cancelled
 //   400 — bounds or stock limits
-router.put('/:token/orders/:orderToken', guestWriteLimiter, (req, res) => {
-  const resolved = resolveGuestOrder(req.params.token, req.params.orderToken);
-  if (resolved.error) {
-    return res.status(resolved.status).json({ error: resolved.error });
-  }
-  const { link, cycle, order } = resolved;
-
+function handleStatusEdit(req, res, { link, cycle, order }) {
   // A dead link or a deactivated host closes writes exactly as it closes the
   // submit — the host is the person who hands the goods over. Reading stays open.
   if (!link.active || !link.host_active) {
@@ -763,9 +834,9 @@ router.put('/:token/orders/:orderToken', guestWriteLimiter, (req, res) => {
   }
 
   res.json(statusPayload(link, cycle, loadOrder(order.id)));
-});
+}
 
-// POST /guest/:token/orders/:orderToken/invite-request — "Chcete si nabudúce
+// "Chcete si nabudúce
 // objednať sami?" (§UC-GSO-015, §Lead Capture). Creates a row in the EXISTING
 // `invitations` table so the lead lands in the queue the admin already works,
 // attributed to the host and tagged with its source.
@@ -779,14 +850,16 @@ router.put('/:token/orders/:orderToken', guestWriteLimiter, (req, res) => {
 // so the code never has to leave the server. Everything else here IS the register
 // route's logic: same table, same pending-phone rule, same 409.
 //
-// WHY THE (link, order) TOKEN PAIR and not just :token: the link token is shared
-// with a whole office, the pair is the individual guest's. Requiring the pair means
-// only somebody who actually placed a sub-order can create a lead, and it lets the
-// contact details be prefilled from that sub-order.
+// WHY THE ORDER TOKEN and not just the link token: the link token is shared with a
+// whole office, the ORDER token is the individual guest's. Requiring it means only
+// somebody who actually placed a sub-order can create a lead, and it lets the
+// contact details be prefilled from that sub-order. (Module 14 dropped the link
+// half from the credential; the order half — the one that carries this property —
+// is unchanged.)
 //
-// GATING — deliberately the READ half's asymmetry (resolveGuestOrder, 404-only),
-// not the write half's:
-//   404 — the (link token, order token) pair does not resolve
+// GATING — deliberately the READ half's asymmetry
+// (resolveGuestOrderByOrderToken, 404-only), not the write half's:
+//   404 — the order token does not resolve (applied by the callers, before this)
 //   410 — the link or the host is deactivated: the invitation would be credited to
 //         a host who can no longer log in, and every other write on this surface
 //         treats that as a closed door
@@ -798,13 +871,7 @@ router.put('/:token/orders/:orderToken', guestWriteLimiter, (req, res) => {
 // Nothing but name/phone/email is read from the body. `status`, `source`,
 // `invited_by_friend_id`, `invite_code`, `admin_note` and `processed_at` are all
 // server-owned — this is an unauthenticated write into an admin-facing queue.
-router.post('/:token/orders/:orderToken/invite-request', guestWriteLimiter, (req, res) => {
-  const resolved = resolveGuestOrder(req.params.token, req.params.orderToken);
-  if (resolved.error) {
-    return res.status(resolved.status).json({ error: resolved.error });
-  }
-  const { link } = resolved;
-
+function handleInviteRequest(req, res, { link }) {
   if (!link.active || !link.host_active) {
     return res.status(410).json({
       error: 'Tento odkaz už nie je aktívny. Požiadajte kolegu o nový.',
@@ -858,6 +925,38 @@ router.post('/:token/orders/:orderToken/invite-request', guestWriteLimiter, (req
   // A bare acknowledgement: this is an anonymous write, so the response carries no
   // ids, no host details and nothing about the invitations queue.
   res.status(201).json({ success: true });
+}
+
+// ---------------------------------------------------------------------------
+// The LEGACY PAIR FORM (14 §UC-GR-002) — `/g/:token/o/:orderToken`'s API half,
+// kept working FOREVER. Every one of these URLs already sits in a colleague's
+// messages and in `localStorage.gorifi_guest_orders`; nobody migrates them, so a
+// strict pair would leave every pre-regeneration URL 404 forever — the incident
+// unfixed. The `:token` half is therefore ignored for resolution AND
+// authorization, and each route runs the very same shared handler as its
+// canonical twin above.
+router.get('/:token/orders/:orderToken', guestReadLimiter, (req, res) => {
+  const resolved = resolveLegacyPairForm(req);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  handleStatusRead(res, resolved);
+});
+
+router.put('/:token/orders/:orderToken', guestWriteLimiter, (req, res) => {
+  const resolved = resolveLegacyPairForm(req);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  handleStatusEdit(req, res, resolved);
+});
+
+router.post('/:token/orders/:orderToken/invite-request', guestWriteLimiter, (req, res) => {
+  const resolved = resolveLegacyPairForm(req);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  handleInviteRequest(req, res, resolved);
 });
 
 export default router;

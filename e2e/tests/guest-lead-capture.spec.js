@@ -307,32 +307,57 @@ test.describe('Lead capture API — POST /api/guest/:token/orders/:orderToken/in
     expect(await invitationsFor(good), 'no lead created by an invalid request').toHaveLength(0)
   })
 
-  test('an unknown link token, a foreign link token and an unknown order token all 404 with the same message', async () => {
+  // ⚠ RETARGETED by 14 §UC-GR-002 (GR-T1), e2e-immutability case (a), and ⚠ NOT
+  // in §UC-GR-010's supersession list — a SPEC GAP, reported with the row rather
+  // than papered over. It is FORCED: §UC-GR-002 mandates that all three pair
+  // routes delegate to the same shared handlers resolved by `order_token` alone,
+  // so a cross-link invite-request cannot go on 404ing. The protected property is
+  // NOT weakened — it is sharpened. The old 404 was a blunt proxy for "a foreign
+  // link half must not let somebody file a lead against the wrong host"; that is
+  // now asserted DIRECTLY (the lead is attributed to the ORDER's host, because
+  // `handleInviteRequest` reads the link the order hangs off, never the URL's),
+  // and the no-oracle property stays pinned on the two genuine misses below.
+  test('an unknown ORDER token 404s with the same message under any link half; a foreign/unknown link half resolves the ORDER and credits ITS host', async () => {
     const mine = await scenario('resolve')
     const other = await scenario('resolveother')
 
-    const unknownLink = await askForAccount('THISLINKDOESNOTEXIST', mine.order.order_token, {
-      name: 'Nikto', phone: uniquePhone(),
-    })
-    expect(unknownLink.status()).toBe(404)
-    const unknownLinkBody = await unknownLink.json()
+    // The ORDER half is the credential, so the misses are exactly the requests
+    // carrying an unknown order token — and they all answer the SAME message
+    // whatever the link half, which is the no-oracle property (D2).
+    const misses = []
+    for (const [label, half] of [
+      ['own link half', mine.link.token],
+      ['unknown link half', 'THISLINKDOESNOTEXIST'],
+      ['foreign link half', other.link.token],
+    ]) {
+      const res = await askForAccount(half, 'THISORDERDOESNOTEXIST', { name: 'Nikto', phone: uniquePhone() })
+      expect(res.status(), label).toBe(404)
+      misses.push((await res.json()).error)
+    }
+    expect(new Set(misses).size, 'one uniform message — never an oracle').toBe(1)
 
-    const unknownOrder = await askForAccount(mine.link.token, 'THISORDERDOESNOTEXIST', {
-      name: 'Nikto', phone: uniquePhone(),
+    // An UNKNOWN link half with a valid order token, on the other hand, resolves:
+    // that asymmetry IS the recovery (14 §UC-GR-002).
+    const unknownHalfPhone = uniquePhone()
+    const unknownHalf = await askForAccount('THISLINKDOESNOTEXIST', mine.order.order_token, {
+      name: 'Zachraneny', phone: unknownHalfPhone,
     })
-    expect(unknownOrder.status()).toBe(404)
+    expect(unknownHalf.status(), 'a dead link half must not withdraw lead capture').toBe(201)
+    expect((await oneInvitationFor(unknownHalfPhone)).invited_by_friend_id).toBe(mine.host.id)
 
-    // A REAL order token under somebody else's link token: the pair is the
-    // credential, not either half — and the message must not become an oracle for
-    // "this order token exists somewhere".
+    // A REAL order token under somebody else's link half: the link half is URL
+    // carriage, so it resolves — and the lead is credited to the host the ORDER
+    // belongs to, never to the host whose link happened to be in the URL. That
+    // attribution is the property worth protecting here.
     const crossPhone = uniquePhone()
     const crossed = await askForAccount(other.link.token, mine.order.order_token, {
       name: 'Cudzi', phone: crossPhone,
     })
-    expect(crossed.status(), 'a foreign link token does not resolve the order').toBe(404)
-    expect((await crossed.json()).error).toBe(unknownLinkBody.error)
+    expect(crossed.status(), 'resolution follows the ORDER token').toBe(201)
 
-    expect(await invitationsFor(crossPhone), 'no lead created for a cross-link attempt').toHaveLength(0)
+    const lead = await oneInvitationFor(crossPhone)
+    expect(lead.invited_by_friend_id, 'credited to the ORDER\'s host').toBe(mine.host.id)
+    expect(lead.invited_by_friend_id, 'never to the URL\'s link-half host').not.toBe(other.host.id)
   })
 
   test('a deactivated link and a deactivated host both 410 — the lead would be credited to a closed door', async () => {
