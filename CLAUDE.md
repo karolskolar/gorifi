@@ -715,6 +715,15 @@ script checking only for `✘` lines reads as a clean run. A GA-T10 mutation pro
 failures must also assert a non-zero test count, or a wrong cwd, a bad `-g` filter and a
 typo'd path all look identical to success.
 
+⚠ **And the failure GLYPH is REPORTER-DEPENDENT — never grep for it alone** (measured on
+this repo's Playwright 1.61, GR-T4): **`list`** (the config default,
+`e2e/playwright.config.js:18`) emits `✓` / `✘` / `-`; **`line`** emits **no glyphs at
+all** — progress as `[k/n]`, failures as `1) [chromium] › …`; **`dot`** emits `·` / `F`
+/ `°` and no `✘`. A `grep -c "✘"` therefore returns **0 on a run with real failures**
+under `line` or `dot`. The reporter-independent check is the summary: assert there is no
+`N failed` line **and** that an `N passed` with N > 0 exists. Same class as the rule
+above — a green-looking wrapper that measured nothing.
+
 ### ⚠⚠ GA-T8 — `await` in a handler BREAKS the `instances: 1` atomicity assumption (2026-08-17)
 
 The standing concurrency note says non-transactional check-then-write is safe because

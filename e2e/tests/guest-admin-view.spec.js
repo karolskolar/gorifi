@@ -251,11 +251,19 @@ async function cycleRow(cycleId) {
   return row
 }
 
+// ⚠ The balance lives at `detail.friend.balance`, NOT at the top level: the route
+// answers `{ friend: sanitizeFriend(friend), transactions, orders }` (friends.js) and
+// `sanitizeFriend` does not hoist it. Reading `detail.balance` yielded `undefined`,
+// so every `expect(after.balance).toBe(before.balance)` below compared undefined to
+// undefined and COULD NOT FAIL — on the one assertion whose whole job is proving a
+// real friend's balance did not move. Found by the GR-T4 review; fixed here rather
+// than only in the file that inherited it.
 async function friendTransactions(friendId) {
   const res = await admin(`/api/friends/${friendId}/detail`)
   expect(res.status(), 'friend detail').toBe(200)
   const detail = await res.json()
-  return { balance: detail.balance, count: (detail.transactions || []).length }
+  expect(detail.friend, 'the detail payload nests the friend').toBeTruthy()
+  return { balance: detail.friend.balance, count: (detail.transactions || []).length }
 }
 
 async function guestStatus(linkToken, orderToken) {

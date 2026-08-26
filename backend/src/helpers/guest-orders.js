@@ -161,6 +161,42 @@ export function cycleSubOrdersByHost(cycleId) {
   return byHost;
 }
 
+// THE soft cancel. Returns the number of rows changed (0 = it was already
+// cancelled), so a caller can distinguish a real transition from a converged no-op.
+//
+// ⚠ ONE HOME, and it has THREE doors, all of which must behave identically:
+//   - the guest's own empty-cart PUT      (routes/guest.js)
+//   - the host's DELETE                   (routes/guest-orders.js, §UC-GSO-008)
+//   - the admin's cancel                  (routes/guest-orders.js, 14 §UC-GR-005)
+// They were three hand-written copies of the same two-column UPDATE, and the third
+// had ALREADY DRIFTED: the guest door omitted the `<> 'cancelled'` predicate. That
+// is exactly the failure this repo's "two copies is how one of them stops enforcing
+// it" rule predicts, so the statement lives here now and nowhere else.
+//
+// What it does NOT own — deliberately, because it differs per door: the gates
+// (cycle-open, terminal-cancelled, the host's `paid` refusal and D4's deliberate
+// ABSENCE of that refusal for the admin), the error strings, and the enclosing
+// transaction. Each caller keeps its own; this is only the write.
+//
+// SOFT: `status = 'cancelled'`, `total = 0`, and the `guest_order_items` rows are
+// KEPT. The status predicate IS the release mechanism (helpers/stock.js's
+// `COALESCE(status,'submitted') <> 'cancelled'`, and the filter every aggregate
+// applies), so deleting the rows would release nothing extra while destroying the
+// refund amount (`total` is 0 by then, so it is recomputed from these rows) and the
+// record of what was ordered and then called off.
+//
+// `paid` / `paid_at` / `delivered` / `delivered_at` are untouched by construction:
+// only two columns are ever named here.
+//
+// The WHERE predicate makes the write itself idempotent, so two doors racing (a
+// guest emptying their cart while the admin cancels) cannot double-apply.
+export function softCancelGuestOrder(id) {
+  return db.prepare(`
+    UPDATE guest_orders SET status = 'cancelled', total = 0
+    WHERE id = ? AND COALESCE(status, 'submitted') <> 'cancelled'
+  `).run(id).changes;
+}
+
 // A sub-order together with everything needed to authorize a host action on it:
 // the owning host (via the link — `guest_orders` itself has no host column) and
 // the cycle whose lock decides whether removal is still allowed.

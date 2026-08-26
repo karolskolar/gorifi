@@ -3,7 +3,7 @@ import db, { generateGuestToken } from '../db/schema.js';
 import { guestReadLimiter, guestWriteLimiter } from '../middleware/rate-limit.js';
 import { gramsByProductFromItems, stockViolations, cycleAvailability } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup, VARIANT_PRICE_COLUMNS } from '../helpers/pricing.js';
-import { guestOrderStatus, guestPaymentReference } from '../helpers/guest-orders.js';
+import { guestOrderStatus, guestPaymentReference, softCancelGuestOrder } from '../helpers/guest-orders.js';
 import { bindValue } from '../helpers/bind-value.js';
 
 const router = Router();
@@ -806,8 +806,17 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
     // Deleting would therefore buy nothing beyond belt-and-braces, at the price of
     // permanently destroying the host's and the admin's record of what was ordered
     // and then called off — on an endpoint nobody has to authenticate to.
+    //
+    // ⚠ ONE shared write with the host's DELETE and the admin's cancel
+    // (`softCancelGuestOrder`, helpers/guest-orders.js). This door's hand-written
+    // copy had already drifted — it omitted the `<> 'cancelled'` guard the other two
+    // carry. That is a NO-OP here, because the terminal-cancelled 409 above returns
+    // before this line can ever run on a cancelled row (pinned by
+    // guest-status.spec.js's "cancelled is TERMINAL — a PUT cannot revive it"), so
+    // adopting the shared statement changes no behaviour on this route — it removes
+    // the divergence rather than fixing a live bug.
     if (cancelling) {
-      db.prepare("UPDATE guest_orders SET total = 0, status = 'cancelled' WHERE id = ?").run(order.id);
+      softCancelGuestOrder(order.id);
     } else {
       const total = replaceItems(order.id, lines);
       db.prepare("UPDATE guest_orders SET total = ?, status = 'submitted' WHERE id = ?").run(total, order.id);

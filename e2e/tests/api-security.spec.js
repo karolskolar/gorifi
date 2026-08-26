@@ -27,6 +27,11 @@ const ADMIN_ENDPOINTS = [
   // half is gated by friend identity instead — see guest-host-view.spec.js).
   { method: 'patch', path: '/api/guest-orders/1/paid', data: { paid: true } },
   { method: 'get', path: '/api/guest-orders/cycle/1/unpaid' },
+  // 14 §UC-GR-005 / §UC-GR-010 item 1 (GR-T4): the admin soft-cancel of a guest
+  // sub-order — the working target for the escalation the host's DELETE names. It
+  // has NO paid blockade (D4), so it is strictly more powerful than the host route
+  // on the same prefix and must never be reachable without an admin token.
+  { method: 'post', path: '/api/guest-orders/1/cancel' },
   // 14 §UC-GR-004 / §UC-GR-010 item 1 (GR-T3): the admin half of the now-MIXED
   // /api/guest-links router — READ every host's share link for a cycle, and CREATE
   // one for a friend who has not shared yet. ⚠ The three HOST routes on the same

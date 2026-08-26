@@ -9,6 +9,7 @@ import {
   guestPaymentReference,
   linkTotals,
   loadSubOrder,
+  softCancelGuestOrder,
 } from '../helpers/guest-orders.js';
 
 const router = Router();
@@ -19,8 +20,9 @@ const router = Router();
 //   HOST-only  (friend Bearer identity, §UC-GSO-007/008)
 //     PATCH  /:id/delivered
 //     DELETE /:id
-//   ADMIN-only (`requireAdmin`, §UC-GSO-009/010)
+//   ADMIN-only (`requireAdmin`, §UC-GSO-009/010, 14 §UC-GR-005)
 //     PATCH  /:id/paid
+//     POST   /:id/cancel
 //     GET    /cycle/:cycleId/unpaid
 // Wrapping the mount in either guard would be wrong in both directions — an admin
 // route cannot live under a host guard, and vice versa. Every route added here
@@ -184,23 +186,27 @@ router.delete('/:id', (req, res) => {
   }
 
   const apply = db.transaction(() => {
-    // Re-read inside the transaction: the admin may have locked the cycle — or
-    // matched an incoming payment and marked this sub-order paid — while the
-    // request was being validated.
+    // Re-read inside the transaction: the cycle may have been locked, or an
+    // incoming payment matched and this sub-order marked paid, since the checks
+    // above.
+    //
+    // ⚠ Under TODAY's runtime this layer is REDUNDANT, and that is not a reason to
+    // delete it. `deploy/ecosystem.config.cjs` sets `instances: 1` and this handler
+    // is fully synchronous (better-sqlite3), so nothing can interleave between the
+    // pre-checks and this transaction — the pre-checks alone are sufficient right
+    // now, which is why no test can tell the two layers apart. It is the layer that
+    // survives PM2 CLUSTER MODE, and the day this handler gains an `await` between
+    // a check and its write (the GA-T8 rule: that second clause is what the
+    // "synchronous ⇒ atomic" assumption actually rests on).
     const cycle = db.prepare('SELECT status FROM order_cycles WHERE id = ?').get(row.cycle_id);
     if (cycle?.status !== 'open') return { conflict: 'closed' };
     const current = db.prepare('SELECT paid FROM guest_orders WHERE id = ?').get(row.id);
     if (!current) return { conflict: 'gone' };
     if (current.paid) return { conflict: 'paid' };
-    // The predicate makes the write itself idempotent, so a concurrent cancel
-    // (the guest emptying their own cart at the same moment) cannot double-apply.
-    // `delivered`/`paid` are left exactly as they are: this records that the
-    // sub-order was called off, it does not rewrite what had already happened.
-    const result = db.prepare(`
-      UPDATE guest_orders SET status = 'cancelled', total = 0
-      WHERE id = ? AND COALESCE(status, 'submitted') <> 'cancelled'
-    `).run(row.id);
-    return { changed: result.changes };
+    // ONE shared write (helpers/guest-orders.js): `delivered`/`paid` are left
+    // exactly as they are — this records that the sub-order was called off, it does
+    // not rewrite what had already happened.
+    return { changed: softCancelGuestOrder(row.id) };
   });
 
   const applied = apply();
@@ -278,6 +284,118 @@ router.patch('/:id/paid', requireAdmin, (req, res) => {
   res.json(mutationPayload(row));
 });
 
+// POST /guest-orders/:id/cancel — the ADMIN calls off a guest sub-order
+// (14 §UC-GR-005). ADMIN-only. No body.
+//
+// ⚠ WHY THIS EXISTS. The host's DELETE above refuses a PAID sub-order with
+// `reason:'paid'` and tells the host to "vyriešte so správcom" — but until this
+// route the admin had no cancel of their own, so the escalation pointed at a DEAD
+// END. That is the Martina Tomašová incident's second half: she had paid, changed
+// her mind, and neither she (the guest paid-freeze 409s a non-empty edit, and the
+// URL she held had been severed by a link regeneration), nor the host (the 409
+// above), nor the admin could call the order off. The host's guard is UNCHANGED —
+// it was always meant to route the decision here, not to prevent it.
+//
+// ⚠ NO PAID BLOCKADE (Decision D4), and that is the whole point. A paid sub-order
+// cancels cleanly and `paid = 1 AND status = 'cancelled'` then lands in the EXISTING
+// refund queue of the unpaid overview below — the INTENDED destination, not a side
+// effect: it is the only screen in the app that shows money received for an order
+// that no longer exists, with the amount recomputed from the kept item rows (the
+// stored `total` is 0 by then). The admin refunds out of band and clears `paid`,
+// which takes the row off the queue. Mirroring the host's paid-409 here would
+// recreate exactly the dead end this route exists to remove.
+//
+// ⚠ NO `transactions` ROW, EVER — the same rule as the `paid` toggle above, for the
+// same reason (Decision 1 / the GSO-T6 lesson). Guests have no `friend_id` and no
+// balance; the only friend anywhere near this row is the HOST, whose real balance a
+// copied friend-handler INSERT would move for money that never went through it.
+// Nothing below writes anywhere but `guest_orders`.
+//
+// SOFT cancel, exactly as the host's DELETE and the guest's own empty-cart path:
+// `status = 'cancelled'`, `total = 0`, and the `guest_order_items` rows KEPT. The
+// status predicate IS the release mechanism (helpers/stock.js's
+// `COALESCE(status,'submitted') <> 'cancelled'`, and the filter every aggregate
+// applies), so deleting the rows would release nothing extra and would destroy both
+// the refund amount and the record of what was ordered and then called off — which
+// is precisely what the host and admin views keep showing afterwards.
+//
+// `paid` / `paid_at` / `delivered` / `delivered_at` are UNTOUCHED: this records that
+// the order was called off, it does not rewrite what had already happened.
+//
+// Status codes:
+//   404 — no such sub-order
+//   409 — the cycle is no longer open (Decision D5: after the lock the coffee is
+//         already bought from the roastery and distribution has begun, so cancelling
+//         releases nothing real; the money question is handled by `paid` + the refund
+//         queue, both of which work post-lock without falsifying the order record)
+//   200 — cancelled, or already cancelled (idempotent, the GSO-T5 convergence rule)
+router.post('/:id/cancel', requireAdmin, (req, res) => {
+  const row = findSubOrderWithLink(req.params.id);
+  if (!row) {
+    return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
+  }
+
+  // Already cancelled ⇒ 200 no-op, whoever got there first (the guest's own
+  // `items: []`, the host's DELETE, or a double click on this one). `cancelled` is
+  // terminal, so the requested end state is simply the current one.
+  if (guestOrderStatus(row) === 'cancelled') {
+    return res.json({ ...mutationPayload(row), already_cancelled: true });
+  }
+
+  if (row.cycle_status !== 'open') {
+    return res.status(409).json({
+      error: 'Cyklus je už uzavretý, objednávku kolegu už nie je možné zrušiť.',
+      reason: 'closed',
+    });
+  }
+
+  const apply = db.transaction(() => {
+    // Re-read the cycle inside the transaction, mirroring the host's DELETE above.
+    //
+    // ⚠ Under TODAY's runtime this is REDUNDANT with the pre-check, and deleting it
+    // on that basis would be a mistake. `instances: 1` plus a fully synchronous
+    // handler (better-sqlite3) means no request can interleave, so the pre-check
+    // alone already guarantees a locked cycle writes nothing — which is precisely
+    // why no e2e can distinguish the two layers (proved by mutation: removing
+    // EITHER one leaves the 409-closed test green; removing BOTH reddens it). This
+    // is the layer that survives PM2 CLUSTER MODE, and the day this handler gains an
+    // `await` between a check and its write — the GA-T8 rule, whose whole point is
+    // that "synchronous" is the load-bearing half of the atomicity assumption.
+    //
+    // ⚠ Deliberately NO `paid` re-check here — unlike the host's DELETE, where a
+    // payment landing mid-request is a reason to stop. D4: paid is not a blockade
+    // for the admin in either the before or the during case.
+    const cycle = db.prepare('SELECT status FROM order_cycles WHERE id = ?').get(row.cycle_id);
+    if (cycle?.status !== 'open') return { conflict: 'closed' };
+    const current = db.prepare('SELECT id FROM guest_orders WHERE id = ?').get(row.id);
+    if (!current) return { conflict: 'gone' };
+    // ONE shared write (helpers/guest-orders.js). Only two columns are ever named
+    // there, so no request body can reach `paid`, `delivered`, `link_id` or the
+    // guest's identity from here.
+    return { changed: softCancelGuestOrder(row.id) };
+  });
+
+  const applied = apply();
+  if (applied.conflict === 'gone') {
+    return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
+  }
+  if (applied.conflict === 'closed') {
+    return res.status(409).json({
+      error: 'Cyklus bol práve uzavretý, objednávku kolegu už nie je možné zrušiť.',
+      reason: 'closed',
+    });
+  }
+
+  // `changed === 0` means the predicate found the row already cancelled — somebody
+  // else got there between the check above and the write. Converge on the same
+  // answer a second click gets, rather than claiming a transition that did not
+  // happen here.
+  res.json({
+    ...mutationPayload(row),
+    ...(applied.changed ? {} : { already_cancelled: true }),
+  });
+});
+
 // GET /guest-orders/cycle/:cycleId/unpaid — the admin's money overview for a cycle
 // (§UC-GSO-010): who has not paid yet, how much, under which reference, through
 // which host, and how to reach them. ADMIN-only.
@@ -289,9 +407,10 @@ router.patch('/:id/paid', requireAdmin, (req, res) => {
 //   `refunds` — `paid = 1 AND status = 'cancelled'`: money received for an order
 //               that no longer exists, so it has to go back. GSO-T5's DELETE guard
 //               stops a HOST creating this state, but a guest can still empty their
-//               own cart after paying, and the admin may cancel after refunding —
-//               and no other screen in the app shows it at all. Clearing `paid`
-//               (above) takes a row off this queue.
+//               own cart after paying — and since 14 §UC-GR-005 the ADMIN's own
+//               cancel above lands here BY DESIGN (D4), which is now the main way
+//               rows arrive. No other screen in the app shows this state at all.
+//               Clearing `paid` (above) takes a row off this queue.
 //
 // The `reference` is built by the SHARED formatter, so it is byte-identical to the
 // string the guest was shown on their confirmation and status pages — matching a

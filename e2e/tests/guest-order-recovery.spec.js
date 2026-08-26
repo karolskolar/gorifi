@@ -1,4 +1,5 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
 // Module 14 — guest order recovery (UC-GR-*). This file is the module's own spec
@@ -1266,5 +1267,426 @@ test.describe('UC-GR-004 — admin reads + creates host share links', () => {
     const after = (await adminLinks(cycle.id)).find((l) => l.id === link.id)
     expect(after.token, 'the request body is never spread into SQL').toBe(link.token)
     expect(after.active).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GR-T4 / 14 §UC-GR-005 — the ADMIN soft-cancel: POST /api/guest-orders/:id/cancel
+// ---------------------------------------------------------------------------
+//
+// The escalation the host's DELETE points at ("Táto objednávka je už zaplatená.
+// Zrušenie vyriešte so správcom.") was a DEAD END: the admin surface of
+// `/api/guest-orders` was `/paid` + `/unpaid` and nothing else, so a paid guest who
+// changed her mind could be cancelled by nobody — not the guest's own `items: []`
+// path either, which the paid freeze (GSO-T6) 409s. This row gives the escalation a
+// working target (resolved conflict 3).
+//
+// The money rules, each with its reason:
+//   • SOFT cancel — `status='cancelled'`, `total=0`, `guest_order_items` KEPT. The
+//     status predicate IS the release mechanism (`helpers/stock.js`
+//     `COALESCE(status,'submitted') <> 'cancelled'`), so a row delete would buy
+//     nothing and destroy the record of what was ordered and then called off.
+//   • NO paid blockade (D4) — `paid`/`paid_at`/`delivered` untouched, so
+//     `paid = 1 AND status = 'cancelled'` lands in the EXISTING refund queue with the
+//     amount recomputed from the kept items (`total` is 0 by then). That landing is
+//     the DESIGN, not a side effect. The host's own paid-409 is unchanged.
+//   • ⚠ NO `transactions` row, ever (Decision 1 / the GSO-T6 lesson): guests have no
+//     `friend_id` and no balance. Copying the friend paid-toggle would move a REAL
+//     friend's balance (the host's) for money that never went through it.
+//   • 409 `reason:'closed'` on a non-open cycle (D5), re-checked INSIDE the write
+//     transaction so a mid-request lock writes nothing.
+//   • Idempotent 200 `already_cancelled` (the GSO-T5 convergence precedent).
+
+const cancelSubOrder = (id) => admin(`/api/guest-orders/${id}/cancel`, { method: 'post' })
+
+const setPaid = (id, paid) => admin(`/api/guest-orders/${id}/paid`, { method: 'patch', data: { paid } })
+
+async function unpaidOverview(cycleId) {
+  const res = await admin(`/api/guest-orders/cycle/${cycleId}/unpaid`)
+  expect(res.status(), 'unpaid overview').toBe(200)
+  return res.json()
+}
+
+async function remainingFor(cycleId, productId) {
+  const res = await ctx.get(`/api/products/cycle/${cycleId}/availability`)
+  expect(res.status(), 'availability').toBe(200)
+  return (await res.json()).find((a) => a.product_id === productId)
+}
+
+// The host's own totals + listing (a cancelled sub-order stays LISTED but leaves the
+// aggregate — the PO's "svieti ako potvrdenie" requirement).
+const listedSubOrder = (view, id) => view.guest_orders.find((o) => o.id === id)
+
+// The friend-balance half of the no-ledger pin, through the API the admin uses.
+//
+// ⚠ The balance is at `detail.friend.balance`, NOT `detail.balance`: the route
+// answers `{ friend: sanitizeFriend(friend), transactions, orders }` (friends.js) and
+// `sanitizeFriend` does not hoist it. Reading the top level yields `undefined`, which
+// makes `expect(after.balance).toBe(before.balance)` a comparison of undefined to
+// undefined — VACUOUS, on a money assertion. `guest-admin-view.spec.js` carried the
+// same dead read at three sites and was fixed with this.
+async function friendLedger(friendId) {
+  const res = await admin(`/api/friends/${friendId}/detail`)
+  expect(res.status(), 'friend detail').toBe(200)
+  const detail = await res.json()
+  expect(detail.friend, 'the detail payload nests the friend').toBeTruthy()
+  return { balance: detail.friend.balance, count: (detail.transactions || []).length }
+}
+
+// Direct read, for the rows no API surface can see. Same scoping rules as
+// `guest-admin-view.spec.js` (FUP-T17): a MAX(id) watermark, filtered to the two
+// identities this test owns — never a global `COUNT(*)` delta, which reddens on any
+// concurrent ledger write from another spec file. No default path: guessing one can
+// open a leftover database that is not the one under test.
+const DB_PATH = process.env.DB_PATH || ''
+const NEEDS_DB = 'needs direct DB access — set DB_PATH to the database the server runs on'
+
+function withDb(fn) {
+  if (!DB_PATH) return null
+  let db
+  try {
+    db = new DatabaseSync(DB_PATH, { readOnly: true })
+  } catch {
+    return null
+  }
+  try {
+    return fn(db)
+  } finally {
+    db.close()
+  }
+}
+
+const transactionWatermark = () =>
+  withDb((db) => Number(db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM transactions').get().n))
+
+function txRowsFor(watermark, friendId, orderId) {
+  if (watermark === null) return null
+  return withDb((db) =>
+    db
+      .prepare(
+        'SELECT id, friend_id, order_id, type, amount, note FROM transactions ' +
+          'WHERE id > ? AND (friend_id = ? OR order_id = ?)'
+      )
+      .all(watermark, Number(friendId), Number(orderId))
+  )
+}
+
+test.describe('UC-GR-005 — the admin cancels a guest sub-order', () => {
+  test('⚠ THE FULL INCIDENT, END TO END: paid guest + regenerated link → her saved URL still opens → host refused → ADMIN cancels → refund queue', async ({ page }) => {
+    await refreshAdminToken()
+
+    // ── 1. Martina orders through her colleague's share link. ──────────────
+    const host = await makeHost('incidentfull')
+    const cycle = await makeCycle('incidentfull')
+    const product = await addProduct(cycle.id, {
+      name: `GR incident ${uniq}`, purpose: 'Espresso', price_250g: 10, price_1kg: 30,
+    })
+    const link = await shareLink(host, cycle.id)
+    const created = await submitGuest(link.token, [
+      { product_id: product.id, variant: '250g', quantity: 2 },
+      { product_id: product.id, variant: '1kg', quantity: 1 },
+    ])
+    const orderId = created.order.id
+    const orderToken = created.order.order_token
+    const savedUrl = pairUiPath(link.token, orderToken) // what she actually kept
+    expect(created.order.total, '2 × 250g + 1 × 1kg').toBe(50)
+
+    // ── 2. She pays; the admin matches the transfer to her `G<id>` reference. ──
+    expect((await setPaid(orderId, true)).status(), 'admin marks paid').toBe(200)
+
+    // ── 3. The host regenerates the link (the incident's trigger). ──────────
+    const regen = await ctx.post(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })
+    expect(regen.status()).toBe(200)
+    expect((await regen.json()).link.token, 'the token really moved').not.toBe(link.token)
+
+    // ── 4. Her ORIGINAL URL still opens her order (GR-T1/GR-T2 — the recovery). ──
+    const stillThere = await ctx.get(pairPath(link.token, orderToken))
+    expect(stillThere.status(), 'the retired link half must not kill her order URL').toBe(200)
+    expect((await stillThere.json()).order.id).toBe(orderId)
+
+    // ── 5. She changes her mind. The HOST cannot help — by design. ──────────
+    const hostAttempt = await ctx.delete(`/api/guest-orders/${orderId}`, { headers: host.auth })
+    expect(hostAttempt.status(), 'the host DELETE keeps its paid blockade').toBe(409)
+    const refusal = await hostAttempt.json()
+    expect(refusal.reason).toBe('paid')
+    expect(refusal.error, 'and it points at the admin').toContain('so správcom')
+
+    // ── 6. The ADMIN cancels — no paid blockade (D4). This is the new capability. ──
+    const cancelled = await cancelSubOrder(orderId)
+    expect(cancelled.status(), 'the escalation now has a working target').toBe(200)
+    const body = await cancelled.json()
+    expect(body.guest_order.status).toBe('cancelled')
+    expect(body.guest_order.total, 'a cancelled sub-order owes nothing').toBe(0)
+    expect(body.guest_order.items.length, 'SOFT cancel — the item rows are KEPT').toBe(2)
+    expect(body.guest_order.paid, '`paid` is UNTOUCHED — that is what routes it to refunds').toBe(1)
+    expect(body.guest_order.paid_at, 'and so is its timestamp').toBeTruthy()
+    expect(body.already_cancelled, 'a real transition, not a no-op').toBeUndefined()
+
+    // ── 7. It stays visible under its host, marked cancelled (the PO's ask). ──
+    const view = await hostView(host, cycle.id)
+    const listed = listedSubOrder(view, orderId)
+    expect(listed, 'the order stays listed as confirmation that it existed').toBeTruthy()
+    expect(listed.status).toBe('cancelled')
+    expect(listed.guest_name).toBe(IDENTITY.guest_name)
+    expect(view.totals.count, 'but it leaves what the host collects').toBe(0)
+
+    // ── 8. The money is now visible on the ONE screen built for it: the refund
+    //       queue — with the amount RECOMPUTED from the kept items, because
+    //       cancelling zeroed `total`.
+    const overview = await unpaidOverview(cycle.id)
+    expect(overview.unpaid.map((r) => r.id), 'nothing is owed any more').not.toContain(orderId)
+    const refund = overview.refunds.find((r) => r.id === orderId)
+    expect(refund, 'paid + cancelled ⇒ the refund queue (D4, the INTENDED landing)').toBeTruthy()
+    expect(refund.total, 'the stored total is zero…').toBe(0)
+    expect(refund.amount, '…so the figure to give back comes from the kept item rows').toBe(50)
+    expect(refund.reference, 'byte-identical to what she was told to put on the transfer')
+      .toBe(`G${orderId} / ${IDENTITY.guest_name} / ${cycle.name}`)
+    expect(refund.host.name, 'and it names who collected for her').toBe(host.name)
+    expect(overview.refund_totals).toEqual({ count: 1, total: 50 })
+
+    // ── 9. She opens her saved URL again and sees the truth. ────────────────
+    await page.goto(savedUrl)
+    await expect(page.getByTestId('status-cancelled')).toBeVisible()
+
+    // ── 10. The admin refunds out-of-band and clears `paid` — the queue empties. ──
+    expect((await setPaid(orderId, false)).status()).toBe(200)
+    const settled = await unpaidOverview(cycle.id)
+    expect(settled.refunds.map((r) => r.id), 'clearing `paid` closes the loop').not.toContain(orderId)
+    expect(settled.unpaid.map((r) => r.id), 'and it does NOT reappear as money owed').not.toContain(orderId)
+  })
+
+  test('an UNPAID cancel releases the stock — `remaining_g` recovers and the freed grams are buyable again', async () => {
+    await refreshAdminToken()
+    const host = await makeHost('stockrel')
+    const cycle = await makeCycle('stockrel')
+    const product = await addProduct(cycle.id, {
+      name: `GR stock ${uniq}`, purpose: 'Espresso', price_250g: 10, price_1kg: 30,
+      stock_limit_g: 1000,
+    })
+    const link = await shareLink(host, cycle.id)
+
+    expect((await remainingFor(cycle.id, product.id)).remaining_g, 'nothing sold yet').toBe(1000)
+
+    // 750 g of a 1000 g limit: 1 × 500g would not exist on this product, so 3 × 250g.
+    const created = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 3 }])
+    expect((await remainingFor(cycle.id, product.id)).remaining_g, '750 g taken').toBe(250)
+
+    // A 1 kg bag cannot be bought while she holds the 750 g.
+    const blocked = await ctx.post(`/api/guest/${link.token}/orders`, {
+      data: { guest_name: 'Blokovany Kolega', guest_phone: uniquePhone(), items: [{ product_id: product.id, variant: '1kg', quantity: 1 }] },
+    })
+    expect(blocked.status(), 'the limit really binds before the cancel').toBe(400)
+
+    const res = await cancelSubOrder(created.order.id)
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.guest_order.items.length, 'the record of what was called off is kept').toBe(1)
+    expect(body.guest_order.items[0].quantity).toBe(3)
+
+    // ⚠ The release is the STATUS PREDICATE, not a row delete — real numbers, not a flag.
+    expect((await remainingFor(cycle.id, product.id)).remaining_g, 'the grams come back').toBe(1000)
+
+    // …and the freed grams are genuinely buyable by somebody else.
+    const after = await ctx.post(`/api/guest/${link.token}/orders`, {
+      data: { guest_name: 'Novy Kolega', guest_phone: uniquePhone(), items: [{ product_id: product.id, variant: '1kg', quantity: 1 }] },
+    })
+    expect(after.status(), 'the same 1 kg bag that was refused above').toBe(201)
+    expect((await remainingFor(cycle.id, product.id)).remaining_g).toBe(0)
+  })
+
+  test('⚠ NO `transactions` row, EVER — and nobody\'s balance moves (guests have no balance account)', async () => {
+    await refreshAdminToken()
+    const host = await makeHost('noledger')
+    const cycle = await makeCycle('noledger')
+    const product = await addProduct(cycle.id, {
+      name: `GR ledger ${uniq}`, purpose: 'Espresso', price_250g: 10, price_1kg: 30,
+    })
+    const link = await shareLink(host, cycle.id)
+    const created = await submitGuest(link.token, [{ product_id: product.id, variant: '1kg', quantity: 2 }])
+    expect(created.order.total).toBe(60)
+
+    // Cancel a PAID one: that is the shape where a naive copy of the friend handler
+    // (`PATCH /api/orders/:id/paid`, orders.js — which DOES post a `payment` row and
+    // a negative reversal) would look most plausible.
+    expect((await setPaid(created.order.id, true)).status()).toBe(200)
+
+    const before = await friendLedger(host.id)
+
+    expect((await cancelSubOrder(created.order.id)).status()).toBe(200)
+
+    const after = await friendLedger(host.id)
+    expect(after.count, 'no ledger row for the only friend anywhere near this order').toBe(before.count)
+    // ⚠ NON-VACUITY GATE. `undefined === undefined` passes, so assert the figure is
+    // a real number BEFORE comparing it — that is exactly how this assertion was
+    // dead until the GR-T4 review (it read `detail.balance`, which does not exist).
+    expect(typeof before.balance, 'the balance must be a real figure, not undefined').toBe('number')
+    expect(after.balance, 'and the host\'s balance is untouched').toBe(before.balance)
+  })
+
+  // The additive half of the no-ledger pin: rows NO API surface can see. Its own
+  // test with an explicit `test.skip`, so a run without DB_PATH says so in the
+  // summary instead of silently reporting the strongest half as green (the house
+  // convention — catalog-admin.spec.js:249).
+  test('⚠ NO `transactions` row, EVER — the direct-DB half (rows no API can see)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    await refreshAdminToken()
+    const { host, created } = await orderScenario('noledgerdb')
+    expect((await setPaid(created.order.id, true)).status()).toBe(200)
+
+    const watermark = transactionWatermark()
+    expect(watermark, 'DB_PATH is set, so the watermark must be readable').not.toBeNull()
+
+    expect((await cancelSubOrder(created.order.id)).status()).toBe(200)
+
+    const rows = txRowsFor(watermark, host.id, created.order.id)
+    expect(rows, `no transactions row at all for an admin guest cancel: ${JSON.stringify(rows)}`).toEqual([])
+  })
+
+  test('idempotent: a second cancel is 200 `already_cancelled` and changes nothing', async () => {
+    await refreshAdminToken()
+    const { created } = await orderScenario('idem')
+
+    const first = await cancelSubOrder(created.order.id)
+    expect(first.status()).toBe(200)
+    expect((await first.json()).already_cancelled).toBeUndefined()
+
+    const second = await cancelSubOrder(created.order.id)
+    expect(second.status(), 'a double click must not error — the end state is the requested one').toBe(200)
+    const body = await second.json()
+    expect(body.already_cancelled).toBe(true)
+    expect(body.guest_order.status).toBe('cancelled')
+    expect(body.guest_order.total).toBe(0)
+    expect(body.guest_order.items.length, 'and the second call destroys nothing').toBe(1)
+  })
+
+  test('a sub-order the GUEST already cancelled is also `already_cancelled` (one terminal state, two doors)', async () => {
+    await refreshAdminToken()
+    const { link, created, orderToken } = await orderScenario('guestfirst')
+
+    const byGuest = await ctx.put(pairPath(link.token, orderToken), { data: { items: [] } })
+    expect(byGuest.status()).toBe(200)
+    expect((await byGuest.json()).order.status).toBe('cancelled')
+
+    const res = await cancelSubOrder(created.order.id)
+    expect(res.status()).toBe(200)
+    expect((await res.json()).already_cancelled).toBe(true)
+  })
+
+  // ⚠ Guards the `softCancelGuestOrder` extraction (GR-T4 review item 2). The same
+  // two-column write now has ONE home and THREE doors — the guest's empty-cart PUT,
+  // the host's DELETE and the admin's cancel. Before the extraction the guest's copy
+  // had already drifted (no `<> 'cancelled'` predicate), which is the exact failure
+  // the one-home rule exists to prevent. So pin the OUTCOME at every door: identical
+  // row state, item rows kept, `paid`/`delivered` untouched.
+  //
+  // The guest door's terminal-409 (its write is unreachable on an already-cancelled
+  // row, so the adopted predicate is a proven no-op there) is pinned by the shipped
+  // `guest-status.spec.js` "cancelled is TERMINAL — a PUT cannot revive it (409)",
+  // which repeats an `items: []` PUT after cancelling. Not duplicated here.
+  test('the THREE cancel doors produce byte-identical row state (the softCancelGuestOrder extraction)', async () => {
+    await refreshAdminToken()
+    const shape = (order) => ({
+      status: order.status,
+      total: order.total,
+      items: order.items.length,
+      quantity: order.items[0].quantity,
+      delivered: order.delivered,
+    })
+
+    // Door 1 — the guest's own empty-cart PUT (routes/guest.js).
+    const g = await orderScenario('door-guest')
+    expect((await ctx.put(pairPath(g.link.token, g.orderToken), { data: { items: [] } })).status()).toBe(200)
+    const viaGuest = listedSubOrder(await hostView(g.host, g.cycle.id), g.created.order.id)
+
+    // Door 2 — the host's DELETE (unpaid only; that is its own rule, unchanged).
+    const h = await orderScenario('door-host')
+    expect((await ctx.delete(`/api/guest-orders/${h.created.order.id}`, { headers: h.host.auth })).status()).toBe(200)
+    const viaHost = listedSubOrder(await hostView(h.host, h.cycle.id), h.created.order.id)
+
+    // Door 3 — the admin's cancel (this row).
+    const a = await orderScenario('door-admin')
+    expect((await cancelSubOrder(a.created.order.id)).status()).toBe(200)
+    const viaAdmin = listedSubOrder(await hostView(a.host, a.cycle.id), a.created.order.id)
+
+    expect(shape(viaGuest), 'guest door').toEqual(shape(viaAdmin))
+    expect(shape(viaHost), 'host door').toEqual(shape(viaAdmin))
+    expect(shape(viaAdmin)).toEqual({ status: 'cancelled', total: 0, items: 1, quantity: 1, delivered: 0 })
+  })
+
+  test('409 `closed` on a non-open cycle (D5) — and the gate is re-checked INSIDE the write transaction', async () => {
+    await refreshAdminToken()
+    const { cycle, created } = await orderScenario('locked')
+
+    await setCycleStatus(cycle.id, 'locked')
+    const res = await cancelSubOrder(created.order.id)
+    expect(res.status(), 'post-lock the coffee is bought; the refund workflow covers the money').toBe(409)
+    const body = await res.json()
+    expect(body.reason).toBe('closed')
+
+    // Nothing was written.
+    const view = await admin(`/api/guest-orders/cycle/${cycle.id}/unpaid`)
+    const listed = (await view.json()).unpaid.find((r) => r.id === created.order.id)
+    expect(listed, 'the refused cancel left the row alone').toBeTruthy()
+    expect(listed.status).toBe('submitted')
+    expect(listed.total).toBe(10)
+
+    // Non-vacuity: the 409 above is the LOCK talking, not a broken route.
+    await setCycleStatus(cycle.id, 'open')
+    expect((await cancelSubOrder(created.order.id)).status(), 'reopened ⇒ cancellable again').toBe(200)
+
+    // ⚠ HONEST LIMIT OF THIS TEST, stated so nobody over-reads it. The handler has
+    // TWO cycle gates — a pre-check on the row already loaded, and a re-read INSIDE
+    // the write transaction for a lock that lands mid-request. Over HTTP they are
+    // INDISTINGUISHABLE: `instances: 1` plus synchronous better-sqlite3 means no
+    // second request can interleave, so this test only proves that AT LEAST ONE of
+    // them fires. What it does buy, mutation-checked at implementation time: with
+    // the pre-check deleted this test still passes, i.e. the in-transaction gate
+    // alone produces the correct 409 `closed` — it is wired, not decorative.
+  })
+
+  test('404 for an unknown sub-order — and the host DELETE\'s paid-409 is UNCHANGED (both halves of the escalation)', async () => {
+    await refreshAdminToken()
+    const { host, cycle, product, link, created } = await orderScenario('escalation')
+    const id = created.order.id
+
+    expect((await cancelSubOrder(999999)).status(), 'unknown sub-order').toBe(404)
+
+    // While UNPAID the host can still remove it themselves — GSO-T8's capability is
+    // untouched by this row.
+    expect((await ctx.delete(`/api/guest-orders/${id}`, { headers: host.auth })).status()).toBe(200)
+
+    // Now the paid half, on a fresh sub-order under the same link.
+    const paidOne = await submitGuest(
+      link.token,
+      [{ product_id: product.id, variant: '250g', quantity: 1 }],
+      { guest_name: 'Zaplatena Kolegyna', guest_phone: uniquePhone() },
+    )
+    expect(paidOne.order.id, 'a second, independent sub-order').not.toBe(id)
+    expect((await setPaid(paidOne.order.id, true)).status()).toBe(200)
+
+    const refused = await ctx.delete(`/api/guest-orders/${paidOne.order.id}`, { headers: host.auth })
+    expect(refused.status(), 'the host guard that CREATES the escalation still holds').toBe(409)
+    expect((await refused.json()).reason).toBe('paid')
+
+    // …and the admin, whom that refusal names, still gets through.
+    expect((await cancelSubOrder(paidOne.order.id)).status()).toBe(200)
+  })
+
+  test('ADMIN-only: anonymous, the shared friends password and a host Bearer token are all 401 — and write nothing', async () => {
+    await refreshAdminToken()
+    const { host, cycle, created } = await orderScenario('cancelauth')
+    const id = created.order.id
+    const path = `/api/guest-orders/${id}/cancel`
+
+    expect((await ctx.post(path)).status(), 'anonymous').toBe(401)
+    expect((await ctx.post(path, { headers: { 'X-Friends-Password': 'kava' } })).status(),
+      'the office-wide shared password is not admin identity').toBe(401)
+    expect((await ctx.post(path, { headers: host.auth })).status(),
+      'a host Bearer token is NOT admin identity on this router (the mirror of the host routes 401ing an admin token)').toBe(401)
+
+    // Every refusal wrote nothing: the sub-order is still live…
+    expect(listedSubOrder(await hostView(host, cycle.id), id).status).toBe('submitted')
+    // …and the admin can still do it properly.
+    expect((await cancelSubOrder(id)).status()).toBe(200)
   })
 })
