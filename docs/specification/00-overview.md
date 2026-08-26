@@ -121,7 +121,7 @@ changes; the "no backend change" rule scopes 02–06 only. Canonical source:
 - **Sub-order** — a guest's order under a host's link (`guest_orders`); `cancelled` is terminal.
 - **vbox** — variant box on a product card (size + price + stepper); selected state gets ink border + magenta offset shadow.
 - **cartbar** — sticky cart footer with deadline, total, actions, and cart lines behind `<details>`.
-- **Status URL / pair token** — `/g/:token/o/:orderToken`-style guest credential, persisted per link-token in `localStorage`.
+- **Status URL** — the guest's own order page. Canonical form `/g/o/:orderToken`; **`order_token` ALONE is the credential** (module 14, UC-GR-001/002 — same entropy as a link token). The legacy pair form `/g/:token/o/:orderToken` keeps working forever, but its `:token` half is URL carriage only: it neither resolves nor authorizes, and the page re-canonicalises the address bar after a successful load. Still persisted per LINK-token in `localStorage` (`gorifi_guest_orders`) — that shape is deliberately unchanged. ⚠ Do not reintroduce the "pair is the credential" model: it is what stranded a paid guest when her host regenerated the share link.
 - **`paid` / `delivered`** — admin's flag / host's flag respectively; each writable in exactly one place; guests see both read-only.
 - **Catalog product** — a row in `coffee_products`: one real-world coffee, existing once across all cycles (module 12).
 - **Snapshot link** — `products.source_coffee_product_id`: ties a cycle's immutable product snapshot to its catalog product.

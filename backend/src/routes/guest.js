@@ -630,8 +630,13 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
       iban: settings.iban,
       revolut_username: settings.revolut_username,
     },
-    // The guest's personal status/edit page.
-    status_path: `/g/${link.token}/o/${order.order_token}`,
+    // The guest's personal status/edit page, in the CANONICAL form (14 §UC-GR-003).
+    // ⚠ The link token is deliberately NOT in here: binding the status URL to a share
+    // token is exactly what stranded the incident's guest when her host regenerated.
+    // `GuestOrder.vue` consumes this path verbatim (copy row, localStorage
+    // `status_url`, the "Zobraziť stav objednávky" push), so the whole confirmation
+    // screen follows this line and composes no URL of its own.
+    status_path: `/g/o/${order.order_token}`,
   });
 });
 

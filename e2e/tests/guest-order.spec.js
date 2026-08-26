@@ -882,7 +882,13 @@ test.describe('Guest ordering UI (/g/:token)', () => {
     // 06 §UC-GX-011 item 3: the status URL is a `NeoCopyRow`, not an `<input>` —
     // the value is the row's text.
     const statusUrl = (await page.getByTestId('guest-status-url').locator('.val').textContent()).trim()
-    expect(statusUrl).toMatch(new RegExp(`/g/${link.token}/o/[A-Z2-9]{12,}$`))
+    // ⚠ RETARGETED by 14 §UC-GR-003 (UC-GR-010 item 5): `status_path` is the
+    // CANONICAL `/g/o/:orderToken` now — the link half is gone from every URL the app
+    // hands out, because binding a status URL to a share token is what stranded the
+    // incident's guest. The property is unchanged: the row shows a real status URL
+    // carrying a server-generated order token.
+    expect(statusUrl).toMatch(/\/g\/o\/[A-Z2-9]{12,}$/)
+    expect(statusUrl, 'no link token in a newly emitted status URL').not.toContain(link.token)
 
     // ...and the same URL is kept in localStorage so the guest can find it again.
     const stored = await page.evaluate(() => localStorage.getItem('gorifi_guest_orders'))

@@ -108,6 +108,22 @@ async function request(endpoint, options = {}) {
 // previous admin session must not change what a guest sees or can do.
 // The HTTP status is attached to the thrown error because the guest page has to
 // tell 404 (no such link) from 410 (closed) from 409 (locked while shopping).
+// ONE HOME for the guest sub-order endpoint (14 §UC-GR-001/003). Three call sites
+// (status GET, edit PUT, invite-request POST) reach the same order two ways, so the
+// choice is made here rather than three times:
+//
+//   canonical  `/guest/o/:orderToken`                — no link token exists
+//   legacy     `/guest/:token/orders/:orderToken`    — a pair URL the guest followed
+//
+// Both resolve by `order_token` alone server-side (the `:token` half is URL carriage
+// only), so the legacy branch exists purely so a page loaded from a pair URL keeps
+// speaking the URL form it was opened with until D7's `router.replace` lands.
+// ⚠ A falsy `token` is the NORMAL case on `/g/o/:orderToken` — the route has no such
+// param — not a bug to guard against with a throw.
+const guestOrderPath = (token, orderToken) => (token
+  ? `/guest/${encodeURIComponent(token)}/orders/${encodeURIComponent(orderToken)}`
+  : `/guest/o/${encodeURIComponent(orderToken)}`)
+
 async function guestRequest(endpoint, options = {}) {
   const config = {
     headers: { 'Content-Type': 'application/json' },
@@ -451,12 +467,11 @@ export const api = {
     method: 'POST',
     body: data
   }),
-  // The guest's personal status/edit URL. The PAIR of tokens is the credential, so
-  // both are path segments and neither is ever sent as a header.
-  getGuestOrderStatus: (token, orderToken) =>
-    guestRequest(`/guest/${encodeURIComponent(token)}/orders/${encodeURIComponent(orderToken)}`),
+  // The guest's personal status/edit URL. `order_token` alone is the credential
+  // (14 §UC-GR-001/002, D2): it is a path segment and is never sent as a header.
+  getGuestOrderStatus: (token, orderToken) => guestRequest(guestOrderPath(token, orderToken)),
   updateGuestOrder: (token, orderToken, data) =>
-    guestRequest(`/guest/${encodeURIComponent(token)}/orders/${encodeURIComponent(orderToken)}`, {
+    guestRequest(guestOrderPath(token, orderToken), {
       method: 'PUT',
       body: data
     }),
@@ -465,7 +480,7 @@ export const api = {
   // the host is derived from the link server-side, so no referral code is published
   // into the guest payload. A 409 means this phone already has a pending request.
   requestGuestAccount: (token, orderToken, data) =>
-    guestRequest(`/guest/${encodeURIComponent(token)}/orders/${encodeURIComponent(orderToken)}/invite-request`, {
+    guestRequest(`${guestOrderPath(token, orderToken)}/invite-request`, {
       method: 'POST',
       body: data
     }),

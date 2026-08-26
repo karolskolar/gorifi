@@ -765,3 +765,243 @@ test.describe('UC-GR-001/002 — order_token alone is the credential', () => {
     expect((await (await ctx.get(canonicalPath(b.orderToken))).json()).order.total).toBe(10)
   })
 })
+
+// ---------------------------------------------------------------------------
+// GR-T2 — 14 §UC-GR-002 (the SPA/page half) + §UC-GR-003 + D7
+//
+// GR-T1 made the API resolve a guest order by `order_token` alone. This row is the
+// half the guest actually sees:
+//
+//   1. a NEW SPA route `/g/o/:orderToken` — three segments, so it can collide with
+//      neither `/g/:token` (two) nor `/g/:token/o/:orderToken` (four). Asserted by
+//      NAVIGATION below, never by reading router.js;
+//   2. D7 — the legacy pair PAGE re-canonicalises the address bar with
+//      `router.replace` after a SUCCESSFUL load, and ⚠ NEVER on a 404: the dead card
+//      (06 §UC-GX-010) is diagnostic, so it must keep the URL the guest actually
+//      followed on screen;
+//   3. `status_path` (the submit response) becomes the canonical form, which carries
+//      the whole confirmation screen with it — GuestOrder.vue consumes it verbatim;
+//   4. `localStorage.gorifi_guest_orders` KEEPS ITS PAIR-KEYED SHAPE FOREVER (a
+//      deliberate non-migration — the pair form working forever is what makes it
+//      safe). On the canonical route there is no link token to key an entry on, so
+//      `refreshStoredEntry` must UPDATE-BY-SCAN and must NEVER CREATE.
+//
+// Fixtures stay per test (the GSO-T8 worker-restart lesson).
+
+const canonicalUiPath = (orderToken) => `/g/o/${orderToken}`
+const pairUiPath = (linkToken, orderToken) => `/g/${linkToken}/o/${orderToken}`
+
+const STORAGE_KEY = 'gorifi_guest_orders'
+const readStore = (page) => page.evaluate((k) => {
+  const raw = localStorage.getItem(k)
+  return raw === null ? null : JSON.parse(raw)
+}, STORAGE_KEY)
+
+test.describe('UC-GR-002/003 + D7 — the guest surface uses the canonical URL', () => {
+  test('§UC-GR-003: the submit response hands out the CANONICAL status_path — no link token in it', async () => {
+    await refreshAdminToken()
+    const { link, created, orderToken } = await orderScenario('statuspath')
+
+    expect(created.status_path, 'the canonical form (14 §UC-GR-003)').toMatch(/^\/g\/o\/[A-Z2-9]{12,}$/)
+    expect(created.status_path).toBe(canonicalUiPath(orderToken))
+    // ⚠ The counter-pin: the link half is not merely moved, it is GONE. A path that
+    // still carried it would keep propagating the legacy form from every new order.
+    expect(created.status_path).not.toContain(link.token)
+  })
+
+  test('THE INCIDENT, UI HALF: after a regeneration the guest opens her SAVED pair URL and sees her order (D7 then canonicalises the address bar)', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, link, created, orderToken } = await orderScenario('uiincident')
+
+    // The host regenerates — the exact production state that stranded her.
+    const regen = await ctx.post(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })
+    expect(regen.status()).toBe(200)
+    expect((await regen.json()).link.token, 'the link half of her URL is now retired').not.toBe(link.token)
+
+    // She opens the URL from her messages. Before this module: the g-dead card.
+    await page.goto(pairUiPath(link.token, orderToken))
+    await expect(page.getByTestId('guest-status')).toBeVisible()
+    await expect(page.getByTestId('guest-status-unavailable')).toHaveCount(0)
+    await expect(page.getByTestId('status-total')).toContainText('10.00')
+    await expect(page.getByTestId('open-payment'), 'she can still see what she owes').toBeVisible()
+
+    // D7: the address bar is rewritten to the canonical form, so anything she
+    // re-copies from it is canonical — and the retired link half is gone from it.
+    await expect(page).toHaveURL(new RegExp(`${canonicalUiPath(orderToken)}$`))
+    expect(new URL(page.url()).pathname).not.toContain(link.token)
+
+    // And the page is fully live at the canonical URL, not merely rendered: she can
+    // still act on the order she thought she had lost.
+    await page.getByTestId('start-edit').click()
+    const card = page.getByTestId(`product-${(await hostView(host, cycle.id)).guest_orders[0].items[0].product_id}`)
+    await card.getByTestId('inc-1kg').click()
+    await page.getByTestId('save-edit').click()
+    await expect(page.getByTestId('status-total')).toContainText('40.00')
+    expect((await (await ctx.get(canonicalPath(orderToken))).json()).order.total, 'the edit really persisted').toBe(40)
+    expect(created.order.total).toBe(10)
+  })
+
+  test('⚠ D7 NEVER fires on a 404: the dead card keeps the URL the guest actually followed', async ({ page }) => {
+    await refreshAdminToken()
+    const { link } = await orderScenario('d7dead')
+
+    // (a) the legacy pair form with a dead order half — the URL must stay EXACTLY as
+    // followed. Rewriting it under a failure hides what the guest clicked, which is
+    // the one thing the diagnostic card exists to show.
+    const deadPair = pairUiPath(link.token, 'THISORDERDOESNOTEXIST')
+    await page.goto(deadPair)
+    await expect(page.getByTestId('guest-status-unavailable')).toBeVisible()
+    await expect(page.getByTestId('guest-status')).toHaveCount(0)
+    expect(new URL(page.url()).pathname, 'no router.replace on a failure (D7)').toBe(deadPair)
+
+    // (b) the canonical form with a dead token — same card, URL equally untouched.
+    const deadCanonical = canonicalUiPath('THISORDERDOESNOTEXIST')
+    await page.goto(deadCanonical)
+    await expect(page.getByTestId('guest-status-unavailable')).toBeVisible()
+    expect(new URL(page.url()).pathname).toBe(deadCanonical)
+  })
+
+  test('route table (by NAVIGATION, not by reading router.js): /g/o/:orderToken collides with neither /g/:token nor the pair form', async ({ page }) => {
+    await refreshAdminToken()
+    const { link, orderToken } = await orderScenario('routes')
+
+    // 3 segments — the new canonical status page.
+    await page.goto(canonicalUiPath(orderToken))
+    await expect(page.getByTestId('guest-status')).toBeVisible()
+
+    // 2 segments — still the ORDERING page. ⚠ If `/g/o/:x` had been written as a
+    // greedy `/g/:token` variant, or registered after a catch-all, one of these two
+    // would silently serve the other's component.
+    await page.goto(`/g/${link.token}`)
+    await expect(page.getByTestId('open-checkout'), 'the ORDERING page, cart bar and all').toBeVisible()
+    await expect(page.getByTestId('guest-status')).toHaveCount(0)
+
+    // 4 segments — the legacy pair page still resolves (UC-GR-002: forever), and D7
+    // hands it over to the canonical URL.
+    await page.goto(pairUiPath(link.token, orderToken))
+    await expect(page.getByTestId('guest-status')).toBeVisible()
+    await expect(page).toHaveURL(new RegExp(`${canonicalUiPath(orderToken)}$`))
+
+    // The literal segment `o` can never be a token: `generateGuestToken()` emits 14
+    // chars of the uppercase `CODE_ALPHABET`. `/g/o` alone is therefore a 2-segment
+    // ordering URL for a token that cannot exist — it must NOT render a status page.
+    await page.goto('/g/o')
+    await expect(page.getByTestId('guest-status')).toHaveCount(0)
+  })
+
+  test('§UC-GR-003 localStorage: a pre-existing PAIR-KEYED entry is UPDATED BY SCAN on the canonical route — one entry in, one entry out', async ({ page }) => {
+    await refreshAdminToken()
+    const { link, created, orderToken } = await orderScenario('lsscan')
+    const origin = new URL(process.env.BASE_URL || 'http://localhost:3997').origin
+
+    // The shape GSO-T3 wrote and this module deliberately does NOT migrate: keyed by
+    // LINK token, with `order_token` inside. Seeded with the OLD pair `status_url`,
+    // as a real returning guest's device would hold it.
+    await page.addInitScript(({ k, token, entry }) => {
+      localStorage.setItem(k, JSON.stringify({ [token]: entry }))
+    }, {
+      k: STORAGE_KEY,
+      token: link.token,
+      entry: {
+        order_id: created.order.id,
+        order_token: orderToken,
+        status_url: `${origin}/g/${link.token}/o/${orderToken}`,
+        guest_name: IDENTITY.guest_name,
+        cycle_name: 'stale name',
+        total: 10,
+        saved_at: '2020-01-01T00:00:00.000Z',
+      },
+    })
+
+    // She arrives on the canonical route — where there is NO link token at all.
+    await page.goto(canonicalUiPath(orderToken))
+    await expect(page.getByTestId('guest-status')).toBeVisible()
+
+    const store = await readStore(page)
+    // ⚠ THE COUNT, not just presence: a second entry keyed on something else would
+    // leave the first stale forever and the "your order" card would show two.
+    expect(Object.keys(store), 'exactly one entry, still keyed by the LINK token').toEqual([link.token])
+    const entry = store[link.token]
+    expect(entry.order_token).toBe(orderToken)
+    expect(entry.order_id).toBe(created.order.id)
+    // Refreshed in place — including the canonical `status_url` (§UC-GR-003).
+    expect(entry.status_url).toBe(`${origin}${canonicalUiPath(orderToken)}`)
+    expect(entry.cycle_name, 'stale fields are refreshed, not preserved').not.toBe('stale name')
+    expect(entry.status).toBe('submitted')
+    expect(entry.saved_at).not.toBe('2020-01-01T00:00:00.000Z')
+  })
+
+  test('⚠ §UC-GR-003 localStorage: the canonical route NEVER CREATES an entry (only a real submit does)', async ({ page }) => {
+    await refreshAdminToken()
+    const { orderToken } = await orderScenario('lsnocreate')
+    const other = await orderScenario('lsother')
+
+    // (a) an empty device: the order renders, and nothing is written. There is no
+    // link token on this route to key an entry on, so inventing one would fabricate
+    // a "your order" card under a key that means nothing.
+    await page.goto(canonicalUiPath(orderToken))
+    await expect(page.getByTestId('guest-status')).toBeVisible()
+    expect(await readStore(page), 'no entry conjured out of the canonical route').toBeNull()
+
+    // (b) a device holding ANOTHER link's order: the count must not grow, and the
+    // foreign entry must not be touched.
+    const foreign = {
+      order_id: other.created.order.id,
+      order_token: other.orderToken,
+      status_url: `x/${other.link.token}`,
+      guest_name: IDENTITY.guest_name,
+      cycle_name: 'other cycle',
+      total: 10,
+      saved_at: '2020-01-01T00:00:00.000Z',
+    }
+    await page.addInitScript(({ k, token, entry }) => {
+      localStorage.setItem(k, JSON.stringify({ [token]: entry }))
+    }, { k: STORAGE_KEY, token: other.link.token, entry: foreign })
+
+    await page.goto(canonicalUiPath(orderToken))
+    await expect(page.getByTestId('guest-status')).toBeVisible()
+    const store = await readStore(page)
+    expect(Object.keys(store), 'still exactly one entry — the foreign one').toEqual([other.link.token])
+    expect(store[other.link.token]).toEqual(foreign)
+  })
+
+  test('the canonical route is a FULL surface with no link token available: edit, cancel and the lead-capture CTA all work', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, product, orderToken } = await orderScenario('canonui')
+
+    await page.goto(canonicalUiPath(orderToken))
+    await expect(page.getByTestId('guest-status')).toBeVisible()
+
+    // Edit — the PUT must go to the tokenless endpoint (api.js composes it).
+    await page.getByTestId('start-edit').click()
+    await page.getByTestId(`product-${product.id}`).getByTestId('inc-250g').click()
+    await page.getByTestId('save-edit').click()
+    await expect(page.getByTestId('status-total')).toContainText('20.00')
+
+    // Lead capture — GSO-T10's endpoint through the canonical form. The lead is
+    // credited to the ORDER's host, which is the only host this route can know.
+    const phone = uniquePhone()
+    await page.getByTestId('invite-cta-open').click()
+    await page.getByTestId('invite-name').fill('Martina Tomasova')
+    await page.getByTestId('invite-phone').fill(phone)
+    await page.getByTestId('invite-submit').click()
+    await expect(page.getByTestId('invite-done')).toBeVisible()
+    const pending = await (await admin('/api/invitations?status=pending')).json()
+    const lead = pending.find((i) => i.phone === phone)
+    expect(lead, 'the lead reached the queue').toBeTruthy()
+    expect(lead.invited_by_friend_id).toBe(host.id)
+    expect(lead.source).toBe('guest_order')
+
+    // Cancel — terminal, and reachable with only an order token in the URL.
+    await page.getByTestId('start-edit').click()
+    await page.getByTestId('cancel-order').click()
+    await page.getByTestId('confirm-cancel-order').click()
+    await expect(page.getByTestId('status-cancelled')).toBeVisible()
+    expect((await (await ctx.get(canonicalPath(orderToken))).json()).order.status).toBe('cancelled')
+
+    // The host's own screen agrees (one row, cancelled) — nothing was orphaned.
+    const view = await hostView(host, cycle.id)
+    expect(view.guest_orders).toHaveLength(1)
+    expect(view.guest_orders[0].status).toBe('cancelled')
+  })
+})
