@@ -344,6 +344,30 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## Log
 
+- 2026-08-26 · fix · (this commit) · **REGRESSION FIX: the per-cycle stock limit had no editor.**
+  PM asked "we used to be able to cap Robo's Filter Special per cycle — do we still have it?" — the
+  backend never stopped enforcing `products.stock_limit_g` (`helpers/stock.js` gates every order, the
+  friend card renders "Zostáva X z Y kg") and the cycle table still SHOWED the amber "max 1 kg" badge,
+  but its only editor lived in the manual product dialog, which the 2026-08-23 change made bakery-only.
+  Picker-created snapshots also start at NULL, so a coffee cycle had no way to set one. Fixed where the
+  value belongs — the limit is CYCLE-scoped (how much of THIS cycle's supply may be ordered), so it is
+  an inline editor in the cycle's product table, not a catalog field; writes via the existing
+  `PATCH /api/products/:id` (which already accepted `stock_limit_g`); empty clears it (NULL = unlimited);
+  per-row pending/error state (the GSO-T5 rule, never one shared flag). ⚠ Native `<input>` on purpose:
+  the shadcn `Input` speaks `modelValue`/`update:modelValue`, so `:value`/`@input` do not bind through it
+  (cost one debugging round). 2 new pins (set → badge + availability endpoint carries the limit → clear
+  → NULL, and junk refused in-row with zero writes). catalog-admin 98/98.
+  ⚠⚠ **HOST WARNING — this dev VM silently corrupted two dependency files during this session:**
+  `lzma1/lib/lzma.js` (`,`→`-` AND `encoder`→`efcoder`, verified against a fresh registry tarball) and
+  `playwright-core/lib/coreBundle.js` (`return`→`seturn`). Single-byte flips, mtimes untouched, 8 GB RAM
+  free and load 0.2 — NOT resource pressure. They presented as "vite build fails" and "Playwright exits
+  139 with no output", i.e. exactly like the flakiness CLAUDE.md already blames on the small host — so
+  **treat repeated SIGSEGV/exit-139 as a possible corrupted file, not just flakiness**: `node --check`
+  the failing package file, compare against `npm pack`, and `npm ci` to restore. Integrity verified
+  after the fact: `git fsck --full` clean, prod `backend/src` byte-identical to git (same combined md5),
+  all 46 deployed prod JS assets parse, prod + staging SQLite `PRAGMA integrity_check` = ok, fresh
+  backup taken. Hardware check on the Proxmox host (SMART + memtest) is recommended and OUTSIDE the repo.
+
 - 2026-08-23 · PC-T13 follow-up · (this commit) · **split declarable AT CREATION.** PM feedback from
   staging: he opened "Nový produkt", looked for the split declaration and found none — the section was
   `v-if="!createMode"`, so the flow was save-then-reopen. Wrong shape for the real use case (the split
