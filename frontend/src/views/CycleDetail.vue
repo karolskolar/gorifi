@@ -365,6 +365,52 @@ function cancelEditingCycleName() {
   cycleNameEdit.value = ''
 }
 
+// ── Stock limit per cycle product (PM 2026-08-26) ──────────────────────────
+// ⚠ REGRESSION FIX: `products.stock_limit_g` has always been enforced
+// (helpers/stock.js gates every order, the friend card shows "Zostáva X z Y kg"),
+// but its only editor was the manual product dialog — which the 2026-08-23 change
+// made bakery-only, so a coffee cycle had NO way to set a limit. The limit is
+// CYCLE-scoped (how much of THIS cycle's supply may be ordered), so it belongs
+// here on the snapshot, not on the global catalog product.
+// Pending is tracked PER ROW (the GSO-T5 rule): a superseded save must still
+// revert and surface its own error, never share one flag.
+const limitDraft = ref({})
+const limitPending = ref({})
+const limitError = ref({})
+
+function limitValue(product) {
+  const d = limitDraft.value[product.id]
+  return d === undefined ? (product.stock_limit_g ?? '') : d
+}
+
+function onLimitInput(productId, value) {
+  limitDraft.value = { ...limitDraft.value, [productId]: value }
+}
+
+async function saveLimit(product) {
+  const raw = limitValue(product)
+  const trimmed = String(raw).trim()
+  // Empty clears the limit (NULL = unlimited) — the same meaning the column has.
+  const grams = trimmed === '' ? null : Number(trimmed)
+  if (grams !== null && (!Number.isFinite(grams) || grams < 0)) {
+    limitError.value = { ...limitError.value, [product.id]: 'Zadajte počet gramov' }
+    return
+  }
+  limitPending.value = { ...limitPending.value, [product.id]: true }
+  limitError.value = { ...limitError.value, [product.id]: '' }
+  try {
+    await api.updateProduct(product.id, { stock_limit_g: grams === null ? null : Math.round(grams) })
+    product.stock_limit_g = grams === null ? null : Math.round(grams)
+    const { [product.id]: _drop, ...rest } = limitDraft.value
+    limitDraft.value = rest
+  } catch (e) {
+    limitError.value = { ...limitError.value, [product.id]: e.message }
+  } finally {
+    const { [product.id]: _p, ...restP } = limitPending.value
+    limitPending.value = restP
+  }
+}
+
 // ── Friend-facing price check (PM 2026-08-23) ───────────────────────────────
 // The snapshot price is the base; a friend pays base × markup_ratio. The formula
 // is byte-identical to the ONE the friend page and the order endpoint use
@@ -1046,7 +1092,7 @@ function getStatusVariant(status) {
                     <TableHead class="text-right">20ks×5g</TableHead>
                     <TableHead class="text-right">8ks×12g</TableHead>
                   </template>
-                  <TableHead class="text-right">{{ isBakery ? 'Akcie' : 'Zdroj' }}</TableHead>
+                  <TableHead class="text-right">{{ isBakery ? 'Akcie' : 'Zdroj / limit zásob' }}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1175,9 +1221,41 @@ function getStatusVariant(status) {
                       </div>
                     </TableCell>
                   </template>
-                  <TableCell v-if="!isBakery" class="text-right text-xs text-muted-foreground" data-testid="product-origin">
-                    <span v-if="product.source_coffee_product_id">z katalógu</span>
-                    <span v-else title="Nie je napojený na katalóg — pridaný manuálne alebo pred migráciou">mimo katalógu</span>
+                  <TableCell v-if="!isBakery" class="text-right text-xs" data-testid="product-origin">
+                    <div class="text-muted-foreground mb-1">
+                      <span v-if="product.source_coffee_product_id">z katalógu</span>
+                      <span v-else title="Nie je napojený na katalóg — pridaný manuálne alebo pred migráciou">mimo katalógu</span>
+                    </div>
+                    <!-- Limit zásob pre TENTO cyklus (PM 2026-08-26) -->
+                    <div class="flex items-center justify-end gap-1">
+                      <!-- Native input on purpose: the shadcn Input speaks
+                           modelValue/update:modelValue, so :value/@input do not
+                           bind through it. -->
+                      <input
+                        type="number"
+                        min="0"
+                        step="50"
+                        class="h-7 w-24 rounded-md border border-input bg-background px-2 text-xs text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                        placeholder="bez limitu"
+                        :value="limitValue(product)"
+                        :disabled="limitPending[product.id]"
+                        :data-testid="`stock-limit-input-${product.id}`"
+                        @input="onLimitInput(product.id, $event.target.value)"
+                        @keydown.enter.prevent="saveLimit(product)"
+                      />
+                      <span class="text-muted-foreground">g</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        class="h-7 px-2"
+                        :disabled="limitPending[product.id]"
+                        :data-testid="`stock-limit-save-${product.id}`"
+                        @click="saveLimit(product)"
+                      >{{ limitPending[product.id] ? '…' : 'Uložiť' }}</Button>
+                    </div>
+                    <div v-if="limitError[product.id]" class="text-destructive mt-0.5" :data-testid="`stock-limit-error-${product.id}`">
+                      {{ limitError[product.id] }}
+                    </div>
                   </TableCell>
                   <TableCell v-else class="text-right">
                     <Button variant="ghost" size="sm" @click="openProductModal(product)">Upraviť</Button>

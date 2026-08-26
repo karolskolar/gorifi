@@ -3459,3 +3459,72 @@ test.describe('PC-T13 — AdminCatalog view (UI)', () => {
     await expect(dialog.getByTestId('split-identity-hint')).toHaveCount(0)
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PM 2026-08-26 — REGRESSION FIX: the per-cycle stock limit had no editor for
+// coffee cycles after the manual product dialog went bakery-only, even though
+// `helpers/stock.js` still enforced it and the friend card still rendered it.
+// The limit is CYCLE-scoped, so it lives on the snapshot row, not the catalog.
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('Stock limit per cycle product (PM 2026-08-26)', () => {
+  test.beforeAll(refreshAdminToken)
+
+  test('the coffee product table sets, changes and clears the limit; the friend availability follows', async ({ page, request }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const db = openDb()
+    const stem = uniq()
+    const catalogId = seedCatalog(db, { name: `${stem} Robo Special`, purpose: 'Filter', price_250g: 9, price_1kg: 34 })
+    const cycleId = seedCycle(db, `${stem} Limitovany`, 'coffee')
+    db.prepare("UPDATE order_cycles SET status = 'open' WHERE id = ?").run(cycleId)
+    db.close()
+    // ⚠ ONE admin token app-wide: seed with the BROWSER's token, after the UI login.
+    const token = await loginAsAdminUI(page)
+    await request.put(`/api/cycles/${cycleId}/catalog-products`, {
+      headers: uiHeaders(token), data: { coffee_product_ids: [catalogId] },
+    })
+    const listed = await (await request.get(`/api/products/cycle/${cycleId}`)).json()
+    const snapshotId = listed[0].id
+    expect(listed[0].stock_limit_g, 'a picker-created snapshot starts unlimited').toBeFalsy()
+    await page.goto(`/admin/cycle/${cycleId}`)
+
+    // Set 2 kg.
+    await page.getByTestId(`stock-limit-input-${snapshotId}`).fill('2000')
+    await page.getByTestId(`stock-limit-save-${snapshotId}`).click()
+    await expect(page.getByText('max 2 kg')).toBeVisible()
+
+    // The gate the limit exists for: availability now reports it.
+    const avail = await (await request.get(`/api/products/cycle/${cycleId}/availability`, { headers: uiHeaders(token) })).json()
+    const row = (avail.products || avail)[String(snapshotId)] || (avail.products || avail).find?.(p => p.id === snapshotId)
+    expect(JSON.stringify(avail), 'the limit reaches the availability endpoint the friend card reads').toContain('2000')
+
+    // Clearing it means unlimited again (NULL, not 0).
+    await page.getByTestId(`stock-limit-input-${snapshotId}`).fill('')
+    await page.getByTestId(`stock-limit-save-${snapshotId}`).click()
+    await expect(page.getByText('max 2 kg')).toHaveCount(0)
+    const db2 = openDb()
+    expect(db2.prepare('SELECT stock_limit_g FROM products WHERE id = ?').get(snapshotId).stock_limit_g).toBe(null)
+    db2.close()
+  })
+
+  test('junk input is refused in-row and writes nothing', async ({ page, request }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const db = openDb()
+    const stem = uniq()
+    const catalogId = seedCatalog(db, { name: `${stem} Junk Limit`, purpose: 'Filter', price_250g: 9 })
+    const cycleId = seedCycle(db, `${stem} JunkCycle`, 'coffee')
+    db.prepare("UPDATE order_cycles SET status = 'open' WHERE id = ?").run(cycleId)
+    db.close()
+    const token = await loginAsAdminUI(page)
+    await request.put(`/api/cycles/${cycleId}/catalog-products`, {
+      headers: uiHeaders(token), data: { coffee_product_ids: [catalogId] },
+    })
+    const snapshotId = (await (await request.get(`/api/products/cycle/${cycleId}`)).json())[0].id
+    await page.goto(`/admin/cycle/${cycleId}`)
+    await page.getByTestId(`stock-limit-input-${snapshotId}`).fill('-5')
+    await page.getByTestId(`stock-limit-save-${snapshotId}`).click()
+    await expect(page.getByTestId(`stock-limit-error-${snapshotId}`)).toBeVisible()
+    const db2 = openDb()
+    expect(db2.prepare('SELECT stock_limit_g FROM products WHERE id = ?').get(snapshotId).stock_limit_g).toBeFalsy()
+    db2.close()
+  })
+})
