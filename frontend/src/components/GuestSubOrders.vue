@@ -18,7 +18,7 @@
 // The money rule (§UC-GSO-006): the guest total shown here is CONTEXT. The
 // colleagues pay the admin directly, so the host's own payable total (the cart
 // footer) stays own-items-only and is not touched by anything in this component.
-import { ref, computed, watch, watchEffect } from 'vue'
+import { ref, computed, watch, watchEffect, onBeforeUnmount } from 'vue'
 import api from '../api'
 import { colleaguesLabel } from '@/lib/plural'
 import { variantText } from '@/lib/guest-cart'
@@ -265,6 +265,72 @@ async function toggleDelivered(subOrder) {
   }
 }
 
+// ─── UC-GR-007: resending a colleague their own order link ───────────────────
+//
+// The incident this exists for: a guest's status URL died when the host
+// regenerated their share link, and the host — who could see her name, her phone,
+// her items and her total — had no way to send it back, because `order_token` was
+// hidden from this payload. 14 §UC-GR-006 publishes it; this is its UI half.
+//
+// ⚠ THE URL IS COMPOSED HERE, AT CLICK TIME, AND NEVER RENDERED. The token stays in
+// JS state: no `title`, no `href`, no `data-` attribute carries it, and the button's
+// hook is the sub-order ID. `share-dialog.spec.js` pins that a guest's order token
+// never appears in this page's HTML — a rendered token is a credential in every
+// screenshot and every DevTools tab. (The same reason `NeoCopyRow` is NOT reused
+// here: it prints its value.)
+//
+// ⚠ CANONICAL FORM ONLY — `/g/o/<order_token>`, never the legacy pair
+// `/g/<link>/o/<order_token>` (UC-GR-003). The pair form is carriage for URLs
+// already in people's messages; newly emitting one would hand out a URL carrying the
+// very link half a regeneration retires.
+//
+// No per-row pending state and no server call: the clipboard write is local, so this
+// button is never disabled by another row's mutation. The flip window is per row,
+// keyed by id — copying colleague A must not flash "Skopírované!" on colleague B.
+const copiedId = ref(null)
+let copyTimer = null
+
+function statusUrlFor(subOrder) {
+  return `${window.location.origin}/g/o/${subOrder.order_token}`
+}
+
+function copyStatusUrl(subOrder) {
+  if (!subOrder.order_token) {
+    // Defensive: a payload without the column would otherwise copy the literal
+    // "/g/o/undefined" — a plausible-looking dead URL, which is the exact failure
+    // this affordance exists to prevent. Say so instead.
+    error.value = 'Odkaz na objednávku kolegu sa nepodarilo zostaviť.'
+    return
+  }
+  // The same try/catch semantics as NeoCopyRow (02 §UC-DS-011): `navigator.clipboard`
+  // is undefined on a non-secure origin and `writeText` rejects when the document is
+  // not focused, and in both cases the UI must neither strand at "Kopírovať odkaz"
+  // while the value did reach the clipboard, nor lie loudly when it did not. The
+  // call is not awaited, so the flip is not delayed behind a permission prompt.
+  try {
+    const written = navigator.clipboard?.writeText(statusUrlFor(subOrder))
+    if (written && typeof written.catch === 'function') written.catch(() => {})
+  } catch (e) {
+    // Clipboard API missing or blocked outright — fall through to the flip.
+  }
+
+  // Restart, don't stack: green for 2 s after the LAST click, on the row clicked.
+  if (copyTimer) clearTimeout(copyTimer)
+  copiedId.value = subOrder.id
+  copyTimer = setTimeout(() => {
+    copiedId.value = null
+    copyTimer = null
+  }, 2000)
+}
+
+// The pending timer holds a closure over this instance; the host switching cycles
+// (or leaving the page) inside the 2 s window would otherwise fire it into a
+// destroyed component.
+onBeforeUnmount(() => {
+  if (copyTimer) clearTimeout(copyTimer)
+  copyTimer = null
+})
+
 async function removeSubOrder(subOrder) {
   const id = subOrder.id
   const isNewest = beginRowRequest(id)
@@ -429,17 +495,29 @@ async function removeSubOrder(subOrder) {
         style="margin-top:10px"
       />
 
-      <!-- Cancelled foot: the called-off amount, struck through, and nothing else
-           — no hand-over tick (there is nothing to hand over) and no "Odstrániť"
-           (`cancelled` is terminal, GSO-T4). -->
+      <!-- Cancelled foot: the called-off amount, struck through — no hand-over tick
+           (there is nothing to hand over) and no "Odstrániť" (`cancelled` is
+           terminal, GSO-T4).
+           ⚠ The resend button IS here, deliberately unlike the other two controls
+           (UC-GR-007): a cancelled sub-order's URL still renders the colleague's
+           terminal record — the read side is 404-only — and "why does it say
+           cancelled?" is exactly the question a colleague asks after a cancellation. -->
       <div v-if="isCancelled(subOrder)" class="foot">
         <span class="sub" style="text-decoration:line-through">{{ formatPrice(cancelledTotal(subOrder)) }}</span>
+        <button
+          type="button"
+          class="btn ghost sm"
+          :class="{ ok: copiedId === subOrder.id }"
+          title="Odkaz na stav objednávky pre kolegu"
+          :data-testid="`guest-copy-url-${subOrder.id}`"
+          @click="copyStatusUrl(subOrder)"
+        >{{ copiedId === subOrder.id ? 'Skopírované!' : 'Kopírovať odkaz' }}</button>
       </div>
 
       <div v-else class="foot">
         <span class="total">{{ formatPrice(subOrder.total) }}</span>
 
-        <div style="display:flex;align-items:center;gap:14px">
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
           <!-- The hand-over tick — the ONLY writer of `delivered` in the system
                (Decision 2 / GSO-T5). `ok` because green is this system's
                done/money-good colour; `big` because it is a 32px thumb target in
@@ -483,6 +561,20 @@ async function removeSubOrder(subOrder) {
             />
             <span @click="toggleDelivered(subOrder)">Odovzdané</span>
           </label>
+
+          <!-- UC-GR-007 — resend. ⚠ NOT gated on `cycleLocked`, unlike "Odstrániť"
+               below: resending a lost link is PRECISELY a post-lock activity (the
+               colleague asks where their coffee is, after the cycle closed). It is a
+               button, not a badge, so the "exactly ONE badge" rule scoped to
+               `sub-order-badges` is untouched. -->
+          <button
+            type="button"
+            class="btn ghost sm"
+            :class="{ ok: copiedId === subOrder.id }"
+            title="Odkaz na stav objednávky pre kolegu"
+            :data-testid="`guest-copy-url-${subOrder.id}`"
+            @click="copyStatusUrl(subOrder)"
+          >{{ copiedId === subOrder.id ? 'Skopírované!' : 'Kopírovať odkaz' }}</button>
 
           <!-- Stays visible on a PAID row on purpose (§UC-KG-005): hiding it would
                hide the escalation path silently. The server's 409 refusal is the

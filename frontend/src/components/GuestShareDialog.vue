@@ -37,9 +37,13 @@ const confirmRegenerate = ref(false)
 // (resolved conflict 3; pinned `toHaveCount(0)` in guest-link.spec.js).
 const canNativeShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function'
 
-// ⚠ The host sees the LINK token only. A guest's `order_token` (their private
-// edit URL) is never exposed to the host anywhere in this module — the payload
-// this dialog reads does not carry it (GSO-T2 hard invariant).
+// ⚠ This dialog renders the LINK token only. The payload it reads DOES now carry
+// each sub-order's `order_token` (14 §UC-GR-006, GR-T5 — the GSO-T2 exclusion was
+// deliberately reversed so a host can re-send a colleague their own order link):
+// this component keeps only `data.link` and must never render one.
+// `share-dialog.spec.js:611` asserts no token reaches the rendered HTML — that pin
+// is what stands between the reversal and a token in the DOM, so do not weaken it,
+// and do not start reading `guest_orders` here.
 const guestUrl = computed(() =>
   link.value ? `${window.location.origin}/g/${link.value.token}` : ''
 )

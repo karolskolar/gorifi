@@ -498,8 +498,14 @@ test.describe('GET /api/guest-orders/cycle/:cycleId/unpaid — the money overvie
     // The aggregate is what the admin is still owed by guests in this cycle.
     expect(overview.totals).toEqual({ count: 2, total: 25 + 37.5 })
 
-    // The order_token is the guest's private credential and never leaks here.
-    expect(JSON.stringify(overview)).not.toContain(first.order.order_token)
+    // ⚠ INVERTED by 14 §UC-GR-006 (GR-T5): this receivables screen is where the
+    // admin chases a guest whose status URL died, so it is the surface that needs
+    // the token most — UC-GR-006 names it explicitly. Sharpened: asserted equal to
+    // the token the guest holds, not merely present.
+    expect(rowA.order_token, 'the admin can resend the URL from the screen that shows the debt')
+      .toBe(first.order.order_token)
+    expect(overview.unpaid.find((r) => r.id === second.order.id).order_token)
+      .toBe(second.order.order_token)
 
     // Paying the rest empties the list.
     expect((await setPaid(first.order.id, true)).status()).toBe(200)
@@ -629,8 +635,12 @@ test.describe('GET /api/orders/cycle/:cycleId — sub-orders nested under their 
 
     // The host's OWN total is untouched by their guests' money (§UC-GSO-006).
     expect(hostRow.total, 'own items only: 1 × 250g at 10').toBe(10)
-    // And the guest's private status token still never reaches an admin surface.
-    expect(JSON.stringify(orders)).not.toContain(created.order.order_token)
+    // ⚠ INVERTED by 14 §UC-GR-006 (GR-T5): `order_token` joins the shared
+    // `GUEST_ORDER_FIELDS` (D6 — one list, so a column cannot land on the host
+    // surface and be missing from the admin's), which puts it on this nested payload
+    // too. Sharpened to an equality against the token the guest actually holds.
+    expect(sub.order_token, 'the admin sees the same resend URL the host does')
+      .toBe(created.order.order_token)
   })
 
   test('a host with guest sub-orders but no own order is still visible', async () => {

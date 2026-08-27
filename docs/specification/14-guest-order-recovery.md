@@ -420,6 +420,16 @@ copies the full canonical URL `` `${origin}/g/o/${subOrder.order_token}` ``.
   **"Odkaz na stav objednávky pre kolegu"** (draft, PO sign-off — §OPEN).
 - Per-row pending is NOT needed (clipboard is local, no server call); the button is
   never disabled by another row's mutation.
+- ⚠ **PROMOTED HERE from §UC-GR-010 item 8 after the GR-T5 review (finding 2), because
+  a constraint that lives only in a test obligation does not reach the person writing
+  the NEXT view: a token may NEVER be written into the DOM** — not into `title`, not
+  `href`, not a `data-*` attribute, not any bound value. It is composed in JS at click
+  time and handed to the clipboard; the row's hook is the **sub-order id**. This is
+  also why `NeoCopyRow` cannot be reused: it renders its `value` into `.val` AND into
+  `title`. Publication (UC-GR-006) made the token reachable by the host and the admin;
+  it did not make it renderable, and the distinction is the whole safety margin. Any
+  view that gains a resend affordance must add its own whole-document
+  `outerHTML` assertion — see §UC-GR-008.
 
 **Acceptance criteria:** clicking copies the canonical URL (clipboard asserted, the
 share-dialog.spec.js clipboard-permission idiom); the button renders on a cancelled
@@ -438,6 +448,16 @@ tokens** (01-architecture scope rule).
 **non-blocking** (failure must not stop the tab rendering — the `loadGuestUnpaid`
 precedent at CycleDetail.vue:342) and with a **`loadSeq` guard** (repo convention).
 Links join to rows client-side by `host_friend_id`.
+
+⚠ **ADDED after the GR-T5 review (finding 2) — THE ADMIN DOM IS UNPINNED, and this row
+must close that itself.** `order_token` is published to the admin payload from UC-GR-006
+on, and the DOM constraint (§UC-GR-007: a token may NEVER be written into `title`,
+`href`, a `data-*` attribute or any bound value — compose it in JS at click time, hook
+the row by sub-order id) is currently asserted only on the HOST colleagues page and in
+the share dialog. **No shipped assertion inspects the admin CycleDetail DOM.** So an
+`<a :href=...order_token...>` or a `:title` here would satisfy every rule as written and
+pass the whole suite. This row therefore owes its own whole-document `outerHTML` pin on
+the orders tab, in the same shape as `share-dialog.spec.js:611`.
 
 ⚠ **ADDED after GR-T3 (review finding 2) — two shipped contracts this UI must not
 assume away:**
@@ -921,6 +941,10 @@ because the PO made the property itself a requirement):
   spec strings**: `STANDING_COPY` / `REGEN_GUIDANCE` at the top of that spec file
   (hoisted for exactly this reason) and the literals in the SFC. Every later row's
   drafted copy will be pinned in the same file — assume the same two-place edit.
+  ⚠ GR-T5's copy is pinned the same way now: `COPY_LABEL` / `COPIED_LABEL` /
+  `COPY_TITLE` in `guest-order-recovery.spec.js` plus the literals in
+  `GuestSubOrders.vue`. They shipped as inline literals and were hoisted during the
+  review — the precedent only helps if every row actually follows it.
 - `OPEN:` (raised by the GR-T7 review, finding 3 — a COPY question, needs a PO
   answer because the fix is a spec amendment, not an implementation choice) on a
   **deactivated** link both UC-GR-009 lines still render, so "Ten istý odkaz platí

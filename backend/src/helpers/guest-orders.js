@@ -10,14 +10,40 @@ import db from '../db/schema.js';
 // duplicated. GSO-T6's admin surfaces (nested sub-orders, unpaid overview) reuse
 // them too.
 //
-// `order_token` is deliberately absent from every column list here: it is the
-// guest's private status/edit URL and neither the host nor the admin ever needs
-// it (GSO-T2 rule). Only routes/guest.js — where the token IS the credential —
-// selects it.
+// ⚠ `order_token` IS in the column list, and that is a CONSCIOUS REVERSAL of the
+// GSO-T2 rule that used to be stated here ("deliberately absent from every column
+// list … neither the host nor the admin ever needs it"). 14 §UC-GR-006 reverses it,
+// for a reason the incident supplied: a guest lost her status URL when the host
+// regenerated their share link, and nobody — not the host who invited her, not the
+// admin holding her money — could send it back to her, because the one column that
+// answers "what is her link?" was hidden from every surface with a person in front
+// of it. Publishing it is precisely the recovery capability (the host's "Kopírovať
+// odkaz", the admin's resend on the orders tab and the receivables screen).
+//
+// The reversal is bounded, and this is the half of the GSO-T2 rule that SURVIVES:
+// **routes/guest.js remains the ONLY place `order_token` is a CREDENTIAL.** No other
+// route may authenticate by it — publishing a column to an already-authenticated
+// host/admin surface is not the same as accepting it as identity, and nothing here
+// changes who may call these loaders.
+//
+// Every consumer of the loaders below is host- or admin-authenticated:
+// guest-links GET/POST/PATCH (requireHost + ownership), the guest-orders mutations
+// (host) and its unpaid overview (requireAdmin), and `cycleSubOrders(ByHost)` →
+// the admin orders tab (routes/orders.js) and the admin distribution sheet
+// (routes/cycles.js). A public payload never passes through here — routes/guest.js
+// composes the guest's own `statusPayload` itself.
+//
+// ⚠ It goes in the ONE SHARED LIST (Decision D6), never a per-surface pick: that is
+// the whole point of the list, and per-surface picks are how a column ends up
+// published on one screen and missing from the next.
+//
+// ⚠ Published ≠ RENDERED. The token must not reach the DOM (share-dialog.spec.js
+// pins that the share dialog's HTML never contains one): UI composes
+// `${origin}/g/o/${order_token}` in JS at click time, never into an attribute.
 
 const GUEST_ORDER_FIELDS = [
   'id', 'link_id', 'guest_name', 'guest_phone', 'guest_email', 'status', 'total',
-  'paid', 'paid_at', 'delivered', 'delivered_at', 'created_at',
+  'paid', 'paid_at', 'delivered', 'delivered_at', 'created_at', 'order_token',
 ];
 
 const GUEST_ORDER_COLUMNS = GUEST_ORDER_FIELDS.join(', ');

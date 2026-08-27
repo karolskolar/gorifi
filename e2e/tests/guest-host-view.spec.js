@@ -211,11 +211,21 @@ test.describe('Host sub-order view — enriched payload (UC-GSO-006)', () => {
     // Guest totals are the host's context figure, aggregated separately.
     expect(view.totals).toEqual({ count: 2, total: 35 + 37.5 })
 
-    // The guest's private status/edit URL stays unexposed (GSO-T2 rule).
-    const serialised = JSON.stringify(view)
-    expect(serialised).not.toContain(first.order.order_token)
-    expect(serialised).not.toContain(second.order.order_token)
-    expect(serialised).not.toContain('order_token')
+    // ⚠ INVERTED by 14 §UC-GR-006 (GR-T5), and it is a deliberate reversal of the
+    // GSO-T2 rule this used to pin. The incident: a guest lost her status URL to a
+    // link regeneration and the host — who invited her and sees her name, her phone,
+    // her items and her total — had no way to send it back. The token is now
+    // PUBLISHED to the host, per sub-order, so "Kopírovať odkaz" has something to
+    // copy. Sharpened rather than merely deleted: presence alone would pass on a
+    // wrong/blank value, so each row is asserted equal to the token its guest holds.
+    const rowAToken = view.guest_orders.find((o) => o.id === first.order.id).order_token
+    const rowBToken = view.guest_orders.find((o) => o.id === second.order.id).order_token
+    expect(rowAToken, 'the host can resend THIS colleague\'s link').toBe(first.order.order_token)
+    expect(rowBToken).toBe(second.order.order_token)
+    expect(rowAToken, 'still a per-guest secret, not one shared value').not.toBe(rowBToken)
+    // The surviving half of the GSO-T2 rule: publishing the column did not make it a
+    // credential anywhere else — routes/guest.js is still the only place it authenticates.
+    expect(rowAToken, 'an order token is not a link token').not.toBe(link.token)
   })
 
   test('a cancelled sub-order still renders, but is out of the host totals', async () => {

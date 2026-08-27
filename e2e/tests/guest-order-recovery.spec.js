@@ -33,6 +33,14 @@ const STANDING_COPY =
 const REGEN_GUIDANCE =
   'Nový odkaz vygenerujte len vtedy, ak sa pôvodný dostal k nesprávnym ľuďom — kolegom potom treba poslať nový.'
 
+
+// GR-T5 / 14 §UC-GR-007 — the host's per-sub-order copy control. DRAFT copy pending
+// PO sign-off (§OPEN), hoisted for the same reason as the two lines above: the
+// sign-off edit is then a known TWO-PLACE change (these constants + the SFC
+// literals), not a grep for quoted Slovak across the suite.
+const COPY_LABEL = 'Kopírovať odkaz'
+const COPIED_LABEL = 'Skopírované!'
+const COPY_TITLE = 'Odkaz na stav objednávky pre kolegu'
 let ctx
 let adminToken
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
@@ -1688,5 +1696,277 @@ test.describe('UC-GR-005 — the admin cancels a guest sub-order', () => {
     expect(listedSubOrder(await hostView(host, cycle.id), id).status).toBe('submitted')
     // …and the admin can still do it properly.
     expect((await cancelSubOrder(id)).status()).toBe(200)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// UC-GR-006 / UC-GR-007 (GR-T5) — `order_token` published to the host and the
+// admin, and the host's per-sub-order "resend the colleague's link" button.
+//
+// ⚠ THIS IS A CONSCIOUS REVERSAL of the GSO-T2 exclusion rule ("`order_token` is
+// deliberately absent from every column list in helpers/guest-orders.js … neither
+// the host nor the admin ever needs it"). The incident is the reason it is wrong:
+// a guest lost her status URL to a link regeneration and NOBODY — not the host who
+// invited her, not the admin who held her money — could send it back to her,
+// because the one column that would have answered the question was hidden from
+// every surface that had a person sitting in front of it.
+//
+// What SURVIVES the reversal, and is re-pinned below: `routes/guest.js` remains the
+// ONLY place `order_token` authenticates anything. Publishing a column is not the
+// same as accepting it as a credential, and no route outside guest.js does.
+//
+// D6 — ONE LIST. The column joins the shared `GUEST_ORDER_FIELDS`, never a
+// per-surface pick, so it cannot land on the host view and be missing from the
+// admin's. The "every surface" test below is what makes that structural rather
+// than aspirational: a single-surface implementation reddens it.
+//
+// ⚠ The counter-invariant, and it is NOT weakened by any of this: the token must
+// stay OUT OF THE DOM. `share-dialog.spec.js:602` pins that the rendered page never
+// contains a guest's order token; the copy button therefore carries the sub-order
+// ID in its testid and composes the URL in JS at click time — never a `title`, a
+// `href` or a `data-` attribute holding the token.
+
+// The host's colleagues panel (entry point A of module 05's tab split), without
+// opening the share dialog.
+async function gotoColleagues(page, host, cycle, { width = 390 } = {}) {
+  await page.setViewportSize({ width, height: 900 })
+  await signInAsHost(page, host)
+  await gotoCycle(page, cycle)
+  await page.getByTestId('main-tab-guests').click()
+  await expect(page.getByTestId('guest-sub-orders')).toBeVisible()
+}
+
+const copyBtn = (page, id) => page.getByTestId(`guest-copy-url-${id}`)
+
+test.describe('UC-GR-006/007 — order_token reaches the host and the admin, and the host can resend it', () => {
+  test('the HOST payload carries every sub-order\'s order_token — byte-equal to the one the guest was given', async () => {
+    await refreshAdminToken()
+    const { host, cycle, product, link, created } = await orderScenario('pubhost')
+    const second = await submitGuest(
+      link.token,
+      [{ product_id: product.id, variant: '1kg', quantity: 1 }],
+      { guest_name: 'Kolega Druhy', guest_phone: uniquePhone() }
+    )
+
+    const view = await hostView(host, cycle.id)
+    const rowA = listedSubOrder(view, created.order.id)
+    const rowB = listedSubOrder(view, second.order.id)
+
+    // The whole point: the host can now answer "send me my link again".
+    expect(rowA.order_token, 'the host sees the colleague\'s own status token').toBe(created.order.order_token)
+    expect(rowB.order_token).toBe(second.order.order_token)
+    // …and they are per-guest secrets, not one shared value.
+    expect(rowA.order_token).not.toBe(rowB.order_token)
+    expect(rowA.order_token, 'still NOT the link token — publishing it changed nothing about what it is')
+      .not.toBe(link.token)
+  })
+
+  test('D6 — the ONE LIST puts it on EVERY host/admin surface: host view, admin orders tab, distribution, refund/unpaid overview, and mutation responses', async () => {
+    await refreshAdminToken()
+    const { host, cycle, product, link, created } = await orderScenario('pubD6')
+    const token = created.order.order_token
+    const id = created.order.id
+
+    // 1 — the host's "Objednávky kolegov" (guest-links GET → loadSubOrders).
+    expect(listedSubOrder(await hostView(host, cycle.id), id).order_token).toBe(token)
+
+    // 2 — a host MUTATION response (loadSubOrder), so a row patched in place on
+    //     screen does not silently lose the column the copy button reads.
+    const delivered = await ctx.patch(`/api/guest-orders/${id}/delivered`, {
+      headers: host.auth, data: { delivered: true },
+    })
+    expect(delivered.status()).toBe(200)
+    expect((await delivered.json()).guest_order.order_token, 'the mutation payload keeps it too').toBe(token)
+
+    // 3 — the admin orders tab (cycleSubOrdersByHost via routes/orders.js).
+    const ordersRes = await admin(`/api/orders/cycle/${cycle.id}`)
+    expect(ordersRes.status()).toBe(200)
+    const orders = await ordersRes.json()
+    const hostRow = orders.find((o) => o.friend_id === host.id)
+    expect(hostRow.guest_orders.find((g) => g.id === id).order_token).toBe(token)
+
+    // 4 — the admin distribution sheet (cycleSubOrdersByHost via routes/cycles.js).
+    //     The picking screen is where an admin is standing next to the bags with a
+    //     colleague asking where their order went.
+    const distRes = await admin(`/api/cycles/${cycle.id}/distribution`)
+    expect(distRes.status()).toBe(200)
+    const party = (await distRes.json()).distribution.find((p) => p.id === host.id)
+    expect(party.guest_orders.find((g) => g.id === id).order_token).toBe(token)
+
+    // 5 — the admin receivables/refund overview (its own hand-picked mapping, which
+    //     UC-GR-006 requires to be extended alongside the shared list). This is the
+    //     screen where the admin is chasing a payment from a guest whose URL died.
+    const row = (await unpaidOverview(cycle.id)).unpaid.find((r) => r.id === id)
+    expect(row.order_token, 'the receivables screen needs it most').toBe(token)
+
+    // The link listing is NOT a sub-order surface — `order_token` is not link data.
+    expect(JSON.stringify(await adminLinks(cycle.id))).not.toContain(token)
+    expect(link.token).toBeTruthy()
+  })
+
+  test('the published token WORKS: pasted into an anonymous browser it opens that exact order', async ({ browser }) => {
+    await refreshAdminToken()
+    const { host, cycle, created } = await orderScenario('pubworks')
+
+    // The host reads it off their own payload — the only route they have to it.
+    const token = listedSubOrder(await hostView(host, cycle.id), created.order.id).order_token
+
+    // API half: no credential but the token itself.
+    const anon = await ctx.get(canonicalPath(token))
+    expect(anon.status(), 'a published token that does not resolve is worse than none').toBe(200)
+    expect((await anon.json()).order.id).toBe(created.order.id)
+
+    // UI half, in a context that has never seen the host's session.
+    const fresh = await browser.newContext()
+    const guestPage = await fresh.newPage()
+    await guestPage.goto(canonicalUiPath(token))
+    await expect(guestPage.getByTestId('guest-status')).toBeVisible()
+    await expect(guestPage.getByTestId('guest-status-unavailable')).toHaveCount(0)
+    await expect(guestPage.getByTestId('status-total')).toContainText('10.00')
+    await fresh.close()
+  })
+
+  test('the publication is SCOPED: every surface carrying it is host- or admin-authenticated, and nothing public leaks it', async () => {
+    await refreshAdminToken()
+    const { host, cycle, link, created } = await orderScenario('pubscope')
+    const token = created.order.order_token
+    const stranger = await makeHost('pubstranger')
+
+    // Anonymous on each of the four carrying surfaces.
+    for (const path of [
+      `/api/guest-links/cycle/${cycle.id}`,
+      `/api/orders/cycle/${cycle.id}`,
+      `/api/cycles/${cycle.id}/distribution`,
+      `/api/guest-orders/cycle/${cycle.id}/unpaid`,
+    ]) {
+      const res = await ctx.get(path)
+      expect(res.status(), `anonymous must not reach ${path}`).toBe(401)
+      expect(await res.text()).not.toContain(token)
+    }
+
+    // A DIFFERENT host is not "a host" — guest-links is keyed on the caller's own
+    // identity, so the stranger sees their own (absent) link, never this token.
+    const other = await ctx.get(`/api/guest-links/cycle/${cycle.id}`, { headers: stranger.auth })
+    expect(other.status()).toBe(200)
+    expect(await other.text(), 'one host cannot read another host\'s guests').not.toContain(token)
+
+    // The PUBLIC guest ordering listing (the one surface anonymous callers do get)
+    // publishes products, never sub-orders.
+    const listing = await ctx.get(`/api/guest/${link.token}`)
+    expect(listing.status()).toBe(200)
+    expect(await listing.text()).not.toContain(token)
+
+    // ⚠ The credential half of the GSO-T2 rule SURVIVES: publishing the column did
+    // not make any other route accept it as authentication.
+    expect((await ctx.get(`/api/guest/${token}`)).status(),
+      'an order token is not a LINK token — routes/guest.js stays the only place it authenticates')
+      .toBe(404)
+    expect((await ctx.post(`/api/guest-orders/${created.order.id}/cancel`, {
+      headers: { 'X-Admin-Token': token },
+    })).status(), 'and it is certainly not an admin token').toBe(401)
+  })
+
+  test('UC-GR-007: "Kopírovať odkaz" puts the CANONICAL url on the clipboard, flips for 2 s — and the copied string RESOLVES', async ({ page, context, browser }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await refreshAdminToken()
+    const { host, cycle, link, created } = await orderScenario('copyurl')
+    const id = created.order.id
+
+    await gotoColleagues(page, host, cycle)
+
+    const btn = copyBtn(page, id)
+    await expect(btn).toBeVisible()
+    await expect(btn).toHaveText(COPY_LABEL)
+    await expect(btn).toHaveAttribute('title', COPY_TITLE)
+
+    await btn.click()
+    await expect(btn).toHaveText(COPIED_LABEL)
+
+    const origin = await page.evaluate(() => window.location.origin)
+    const copied = await page.evaluate(() => navigator.clipboard.readText())
+    // Canonical only — the pair form is legacy carriage and is never newly emitted
+    // (UC-GR-003). A link token in this string is exactly what the incident broke.
+    expect(copied).toBe(`${origin}${canonicalUiPath(created.order.order_token)}`)
+    expect(copied, 'no link half — that is the half the regeneration killed').not.toContain(link.token)
+
+    await expect(btn).toHaveText(COPY_LABEL, { timeout: 5000 })
+
+    // ⚠ The failure this test exists to prevent is a plausible-looking DEAD url, so
+    // the copied string is actually followed — in a context with no host session.
+    const fresh = await browser.newContext()
+    const guestPage = await fresh.newPage()
+    await guestPage.goto(copied)
+    await expect(guestPage.getByTestId('guest-status')).toBeVisible()
+    await expect(guestPage.getByTestId('status-total')).toContainText('10.00')
+    await fresh.close()
+  })
+
+  test('the button is on EVERY row — a CANCELLED colleague and a LOCKED cycle both keep it, unlike "Odstrániť"', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, product, link, created } = await orderScenario('copyevery')
+    const gone = await submitGuest(
+      link.token,
+      [{ product_id: product.id, variant: '250g', quantity: 2 }],
+      { guest_name: 'Kolega Zruseny', guest_phone: uniquePhone() }
+    )
+    // Cancelled through the guest's own door, so the row is genuinely terminal.
+    expect((await ctx.put(canonicalPath(gone.order.order_token), { data: { items: [] } })).status()).toBe(200)
+
+    await gotoColleagues(page, host, cycle)
+
+    // Live row: both controls.
+    await expect(copyBtn(page, created.order.id)).toBeVisible()
+    await expect(page.getByTestId(`guest-remove-${created.order.id}`)).toBeVisible()
+
+    // Cancelled row: the copy stays (the terminal record is still reachable and the
+    // colleague may still ask for it), "Odstrániť" is gone (cancelled is terminal).
+    await expect(copyBtn(page, gone.order.id)).toBeVisible()
+    await expect(page.getByTestId(`guest-remove-${gone.order.id}`)).toHaveCount(0)
+
+    // Locked cycle: resending is PRECISELY a post-lock activity.
+    // ⚠ Re-entered through the portal, never `page.reload()`: a hard load of
+    // /cycle/:id races FriendOrder's session restore and bounces to `/`.
+    await setCycleStatus(cycle.id, 'locked')
+    await gotoColleagues(page, host, cycle)
+    await expect(copyBtn(page, created.order.id), 'the resend survives the lock').toBeVisible()
+    await expect(copyBtn(page, gone.order.id)).toBeVisible()
+    await expect(page.getByTestId(`guest-remove-${created.order.id}`), 'removal does not').toHaveCount(0)
+  })
+
+  test('⚠ the token stays OUT OF THE DOM, and the card still shows exactly ONE badge', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, product, link, created } = await orderScenario('copydom')
+    const second = await submitGuest(
+      link.token,
+      [{ product_id: product.id, variant: '250g', quantity: 1 }],
+      { guest_name: 'Kolega Tretí', guest_phone: uniquePhone() }
+    )
+
+    await gotoColleagues(page, host, cycle)
+    await expect(copyBtn(page, created.order.id)).toBeVisible()
+
+    // The same property `share-dialog.spec.js:602` pins for the dialog, now that the
+    // payload behind this screen genuinely carries the token: it may live in JS
+    // state, never in rendered markup (attributes included — the button's hook is
+    // the sub-order ID).
+    const html = await page.evaluate(() => document.documentElement.outerHTML)
+    expect(html, 'a rendered token is a credential in a screenshot').not.toContain(created.order.order_token)
+    expect(html).not.toContain(second.order.order_token)
+    expect(await copyBtn(page, created.order.id).evaluate((el) => el.outerHTML))
+      .not.toContain(created.order.order_token)
+
+    // 05 §UC-KG-003's "exactly ONE badge" rule is untouched: the new control is a
+    // BUTTON in the foot, not a badge (UC-GR-007). Asserted per row, scoped to the
+    // `sub-order-badges` hook that rule lives on.
+    const badgeRows = page.getByTestId('sub-order-badges')
+    await expect(badgeRows).toHaveCount(2)
+    for (let i = 0; i < 2; i++) {
+      await expect(badgeRows.nth(i).locator('.badge')).toHaveCount(1)
+    }
+    // …and exactly one copy control per row, nowhere near the badge row.
+    for (const sub of [created, second]) {
+      await expect(copyBtn(page, sub.order.id)).toHaveCount(1)
+      await expect(badgeRows.locator(`[data-testid="guest-copy-url-${sub.order.id}"]`)).toHaveCount(0)
+    }
   })
 })

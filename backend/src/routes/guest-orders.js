@@ -431,8 +431,13 @@ router.get('/cycle/:cycleId/unpaid', requireAdmin, (req, res) => {
     (row.items || []).reduce((acc, item) => acc + (item.price || 0) * (item.quantity || 0), 0) * 100
   ) / 100;
 
-  // `order_token` is not in these rows (the shared column list omits it): it is the
-  // guest's private edit credential, and the admin has no use for it.
+  // ⚠ `order_token` IS carried here, and the mapping below is HAND-PICKED — so it
+  // does not inherit the shared column list and had to be extended by name
+  // (14 §UC-GR-006 says so explicitly). The comment that used to sit here claimed
+  // "the admin has no use for it"; the incident disproved it. This is the
+  // receivables/refund screen — the one place the admin is actively chasing a guest
+  // about money — so it is where a guest who lost their status URL most needs it
+  // resent. Everything else in this mapping stays as it was.
   const rows = cycleSubOrders(cycle.id).map((row) => {
     const status = guestOrderStatus(row);
     return {
@@ -447,6 +452,9 @@ router.get('/cycle/:cycleId/unpaid', requireAdmin, (req, res) => {
       delivered: row.delivered,
       created_at: row.created_at,
       reference: guestPaymentReference(row, cycle.name),
+      // The guest's canonical status URL is `/g/o/<this>` (14 §UC-GR-003) — the
+      // admin composes it client-side; the token is never a URL in the payload.
+      order_token: row.order_token,
       host: { id: row.host_friend_id, name: row.host_name, active: row.host_active },
     };
   });

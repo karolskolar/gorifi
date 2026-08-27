@@ -58,9 +58,18 @@ function uniqueToken() {
 // same row shape, so the loaders are shared rather than duplicated.
 //
 // The GSO-T2 response shape is EXTENDED, never reshaped: `{ link, guest_orders,
-// totals }` still holds, `guest_orders[i].items` is new. `order_token` remains
-// unexposed — it is the guest's private status/edit URL and the host never needs
-// it.
+// totals }` still holds, `guest_orders[i].items` is new.
+//
+// ⚠ `order_token` IS exposed here from module 14 on (14 §UC-GR-006, GR-T5) — a
+// CONSCIOUS REVERSAL of GSO-T2's exclusion, and `GET /cycle/:cycleId` below is the
+// primary publishing surface. The host needs it to re-send a colleague the link to
+// their own order: hiding it is precisely why nobody could help the guest whose
+// status URL died with a link regeneration. The surviving half of the old rule is
+// the one that matters: **routes/guest.js remains the ONLY place `order_token`
+// authenticates anything.** Published is not the same as rendered — no view may put
+// a token into an attribute (`title`/`href`/`data-*`); it is composed in JS at click
+// time. The LINK listing (`GET /cycle/:cycleId/all`, UC-GR-004) deliberately carries
+// no token: it is link data, and the tokens ride the sub-order rows.
 
 function getCycle(cycleId) {
   return db.prepare('SELECT id FROM order_cycles WHERE id = ?').get(cycleId);
