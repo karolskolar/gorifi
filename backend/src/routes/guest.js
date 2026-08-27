@@ -2,7 +2,7 @@ import { Router } from 'express';
 import db, { generateGuestToken } from '../db/schema.js';
 import { guestReadLimiter, guestWriteLimiter } from '../middleware/rate-limit.js';
 import { gramsByProductFromItems, stockViolations, cycleAvailability } from '../helpers/stock.js';
-import { basePriceForVariant, applyMarkup, VARIANT_PRICE_COLUMNS } from '../helpers/pricing.js';
+import { basePriceForVariant, applyMarkup, VARIANT_PRICE_COLUMNS, roundMoney } from '../helpers/pricing.js';
 import { guestOrderStatus, guestPaymentReference, softCancelGuestOrder } from '../helpers/guest-orders.js';
 import { bindValue } from '../helpers/bind-value.js';
 // 14 §UC-GR-011 — the guest order-confirmation mail. Module 08's seam, consumed
@@ -331,7 +331,7 @@ function replaceItems(guestOrderId, lines) {
     insertItem.run(guestOrderId, line.product_id, line.variant, line.quantity, line.price);
     total += line.price * line.quantity;
   }
-  return Math.round(total * 100) / 100;
+  return roundMoney(total);
 }
 
 // Resolve a sub-order from its `order_token` ALONE — WITHOUT any of the

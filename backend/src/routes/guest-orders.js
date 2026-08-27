@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { requireHost } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
+import { roundMoney } from '../helpers/pricing.js';
 import {
   cycleSubOrders,
   findSubOrderWithLink,
@@ -427,9 +428,9 @@ router.get('/cycle/:cycleId/unpaid', requireAdmin, (req, res) => {
   // so a refund row's stored total says 0 — the money to give back is recoverable
   // only by recomputing price × quantity from those kept items. (That is exactly
   // why T4 and T5 keep them.) For a live sub-order the two are the same.
-  const itemsAmount = (row) => Math.round(
-    (row.items || []).reduce((acc, item) => acc + (item.price || 0) * (item.quantity || 0), 0) * 100
-  ) / 100;
+  const itemsAmount = (row) => roundMoney(
+    (row.items || []).reduce((acc, item) => acc + (item.price || 0) * (item.quantity || 0), 0)
+  );
 
   // ⚠ `order_token` IS carried here, and the mapping below is HAND-PICKED — so it
   // does not inherit the shared column list and had to be extended by name
@@ -461,7 +462,7 @@ router.get('/cycle/:cycleId/unpaid', requireAdmin, (req, res) => {
 
   const sum = (list) => ({
     count: list.length,
-    total: Math.round(list.reduce((acc, row) => acc + (row.amount || 0), 0) * 100) / 100,
+    total: roundMoney(list.reduce((acc, row) => acc + (row.amount || 0), 0)),
   });
 
   const unpaid = rows.filter((row) => row.status !== 'cancelled' && !row.paid);

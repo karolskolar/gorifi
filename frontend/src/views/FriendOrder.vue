@@ -20,6 +20,7 @@ import ProductImageModal from '@/components/ProductImageModal.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { snapTab } from '@/lib/snap-tab'
 import { itemsLabel } from '@/lib/plural'
+import { roundMoney } from '@/lib/money'
 import CartLineList from '@/components/CartLineList.vue'
 import CatScrollArrow from '@/components/CatScrollArrow.vue'
 import PaymentModal from '@/components/PaymentModal.vue'
@@ -319,7 +320,24 @@ const cartTotal = computed(() => {
   return cartItems.value.reduce((sum, item) => sum + item.total, 0)
 })
 
-// Total including delivery fee (for payment)
+// Total including delivery fee (for payment).
+//
+// ⚠ THIS SUM IS DELIBERATELY *NOT* ROUNDED HERE, and that is a decision, not an
+// oversight — `roundMoney` is applied at each of the two places the value leaves the
+// app for a bank (`generateSuccessQr` below, and `PaymentModal.generateQr`).
+//
+// Two reasons. (1) LAYERING: this is an ADDITION performed in the browser and it can
+// drift even when the server's columns are perfectly clean — `cartTotal` is the
+// client's OWN sum over the cart lines, so 15.00 + 11.19 is 26.189999999999998 and
+// 33.56 + 4.20 is 37.760000000000005 no matter what `orders.total` holds. The rule
+// belongs at the boundary the noise escapes through, which is the payload, not this
+// intermediate. (2) TESTABILITY: rounding here as well would make BOTH encode-site
+// rounds unreachable dead code — no test could ever tell whether either still
+// existed. As it stands each one is individually mutation-proved by
+// `money-rounding.spec.js`. Do not "tidy" the round up into this computed.
+//
+// Every DISPLAY of this value goes through `.toFixed(2)`, so it is unaffected either
+// way — which is exactly why a real user's banking app was the first to see the bug.
 const paymentTotal = computed(() => {
   const deliveryFee = order.value?.delivery_fee || 0
   return cartTotal.value + deliveryFee
@@ -870,7 +888,13 @@ async function generateSuccessQr() {
       invoiceId: '',
       payments: [{
         type: PaymentOptions.PaymentOrder,
-        amount: paymentTotal.value,
+        // ⚠ Rounded HERE, and this is the only place it happens — `paymentTotal` is
+        // deliberately RAW (see its own comment at :325, and do not "tidy" that), so
+        // this is the last line before money leaves the app for a bank.
+        // `bysquare` serialises the number verbatim (no formatting of any kind), so
+        // this is the single place where float noise becomes `Nesprávna suma` in
+        // someone's banking app. Belt and braces on a payment payload is cheap.
+        amount: roundMoney(paymentTotal.value),
         currencyCode: CurrencyCode.EUR,
         paymentDueDate: dateStr,
         variableSymbol: '',

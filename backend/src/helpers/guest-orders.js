@@ -1,4 +1,5 @@
 import db from '../db/schema.js';
+import { roundMoney } from './pricing.js';
 
 // Guest sub-order reads, shared by every surface that shows them.
 //
@@ -119,7 +120,7 @@ function subOrderTotals(orders) {
   const total = live.reduce((sum, order) => sum + (order.total || 0), 0);
   return {
     count: live.length,
-    total: Math.round(total * 100) / 100,
+    total: roundMoney(total),
   };
 }
 

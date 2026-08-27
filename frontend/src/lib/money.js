@@ -32,3 +32,37 @@ export function fmtEur(value) {
   const n = Number(value)
   return `${(Number.isFinite(n) ? n : 0).toFixed(2)} EUR`
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE ONE HOME FOR THE 2-DECIMAL MONEY RULE ON THE CLIENT (PO: "Všetky sumy by
+// mali byť zaokrúhlené na 2 desatinné miesta"). The server has its own —
+// `backend/src/helpers/pricing.js roundMoney()` — and it is NOT enough on its own.
+//
+// ⚠ WHY A CLIENT COPY IS NECESSARY, NOT DUPLICATION. Money is re-derived here after
+// it leaves the database: `FriendOrder.paymentTotal` is `cartTotal + delivery_fee`,
+// where `cartTotal` is the browser's own sum over the cart lines. So the last
+// arithmetic before the Pay-by-Square encode happens in the browser, and:
+//
+//     15.00 + 11.19                      →  26.189999999999998
+//     9.04 + 13.33 + 11.19 + 3.50        →  37.059999999999995
+//
+// A real user's banking app refused her QR with `Nesprávna suma:
+// 26.189999999999998` while the same screen read `26.19 EUR`, because `fmtEur` /
+// `toFixed(2)` above hides the noise and `bysquare` does not — it serialises the
+// number verbatim (measured). Formatting is not rounding.
+//
+// ⚠ THIS IS FOR VALUES, NEVER FOR DISPLAY. Every visible amount already goes
+// through `fmtEur` / `toFixed(2)` and must keep rendering byte-identically — do not
+// reach for this to "tidy up" a template. Use it where a number is handed to
+// something that does not format: a payment payload, a QR, an API body.
+//
+// ⚠ NON-NUMBERS PASS THROUGH UNCHANGED — same contract as the server helper, and for
+// the same reason. `PaymentModal` is fed an `amount` prop that may legitimately be
+// absent while the order loads, and it has a shipped `'-'` guard for exactly that
+// state (§UC-GX-005). Coercing here would turn `null` into a `0` amount in a QR
+// payload — a payment request for nothing, which is strictly worse than the
+// pre-existing behaviour of encoding the missing value as-is.
+export function roundMoney(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return value
+  return Math.round(value * 100) / 100
+}
