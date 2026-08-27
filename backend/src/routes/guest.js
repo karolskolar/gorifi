@@ -5,6 +5,11 @@ import { gramsByProductFromItems, stockViolations, cycleAvailability } from '../
 import { basePriceForVariant, applyMarkup, VARIANT_PRICE_COLUMNS } from '../helpers/pricing.js';
 import { guestOrderStatus, guestPaymentReference, softCancelGuestOrder } from '../helpers/guest-orders.js';
 import { bindValue } from '../helpers/bind-value.js';
+// 14 §UC-GR-011 — the guest order-confirmation mail. Module 08's seam, consumed
+// through the seam exactly: no layer change, no new block type, no new dependency.
+import { renderEmail } from '../helpers/email-templates.js';
+import { sendMail } from '../helpers/mailer.js';
+import { resolveLoginUrl } from '../helpers/credentials-message.js';
 
 const router = Router();
 
@@ -549,6 +554,182 @@ router.get('/:token', guestReadLimiter, (req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// THE CONFIRMATION MAIL (14 §UC-GR-011)
+//
+// The THIRD consumer of module 08's `renderEmail` / `sendMail` seam. The
+// implementation template is `deliverMagicLink()` (magic-link.js:175) verbatim in
+// STRUCTURE: one `deliver…` helper, an outer try/catch around the render, and a
+// FLOATING promise whose result vocabulary is consumed in `.then` and logged
+// token-free, with a `.catch` backstop.
+//
+// ⚠ TWO HARD RULES, stated separately because each has its own failure mode
+// (§UC-GR-011 rule 2 / Decision D11):
+//
+//  (a) A mail failure — or an unconfigured Mailgun, which is the normal dev,
+//      staging and e2e state (`skipped:'not_configured'`) — must NEVER fail the
+//      201. Nothing below is ever blocked on; the mailer's own rule 3 guarantees
+//      `sendMail` never throws, and a `renderEmail` throw is caught here.
+//
+//  (b) ⚠ THE GA-T8 HAZARD CLASS, and the reason this comment is long. The
+//      submit's stock check sits OUTSIDE the insert transaction (see the note at
+//      that call site), which is safe ONLY while the handler cannot yield —
+//      `instances: 1` in deploy/ecosystem.config.cjs plus fully synchronous
+//      handlers. So: THIS WHOLE FILE MUST CONTAIN ZERO OCCURRENCES OF THE TWO ES
+//      CONCURRENCY KEYWORDS.
+//      ⚠ THAT IS A GATED RULE, NOT A COMMENT: the UC-GR-011 describe in
+//      e2e/tests/guest-order-recovery.spec.js reads this file off disk and
+//      asserts zero word-boundary matches. It is the ONLY check that covers the
+//      case the rule exists for — a yield inserted between the stock check and
+//      the insert transaction, which reopens overselling on the app's only
+//      unauthenticated write and which NO behavioural test in this repo can see.
+//      A blocking send would both fail the 201 on mail trouble and reopen the
+//      check-then-write race. The send fires strictly AFTER the insert
+//      transaction has committed AND after the response has gone out.
+
+const ORDER_CONFIRMATION_SUBJECT = 'Potvrdenie objednávky – Podpultovka';
+
+// ⚠ DRAFT copy, PO sign-off pending (14 §OPEN). Mirrored as constants at the top of
+// the UC-GR-011 describe in e2e/tests/guest-order-recovery.spec.js, so sign-off is a
+// known TWO-PLACE edit rather than a grep for quoted Slovak across the suite.
+// Vy-form, no participle addressing the reader. The save-the-link line is the
+// confirmation screen's own signed copy (plain hyphen), recast declaratively — one
+// voice for one fact across mail and screen.
+const MAIL_INTRO = 'Dobrý deň, vaša objednávka bola prijatá.';
+const MAIL_ORDER_HEADING = 'Objednávka:';
+const MAIL_TOTAL_LABEL = 'Spolu';
+const MAIL_PAYMENT_HEADING = 'Platba:';
+const MAIL_REFERENCE_LABEL = 'Referencia';
+const MAIL_IBAN_LABEL = 'IBAN';
+const MAIL_REVOLUT_LABEL = 'Revolut';
+const MAIL_AMOUNT_LABEL = 'Suma';
+const MAIL_SAVE_LINK = 'Stav objednávky uvidíte na tomto odkaze - uložte si ho:';
+
+function eur(value) {
+  return Number(value || 0).toFixed(2);
+}
+
+// The human size of one ordered line, mirroring the frontend's `variantText`
+// (lib/guest-cart.js): a bakery line carries its own snapshot `variant_label`, a
+// coffee line is named by its variant. Presentation only — nothing prices or weighs
+// by this string.
+function variantLabelFor(item) {
+  if (item.variant_label) return item.variant_label;
+  if (item.variant === 'unit') return 'ks';
+  if (item.variant === '20pc5g') return '20 ks × 5g';
+  if (item.variant === '8pc12g') return '8 ks × 12g';
+  return item.variant;
+}
+
+function deliverOrderConfirmation(req, { order, items, payment }) {
+  try {
+    // ⚠ Server-derived origin (rule 4), the magic-link precedent: guest routes have
+    // no session and this mail goes to a third party, so an attacker-chosen Origin
+    // must never mint its domain and the URL is never taken from the request body.
+    // 08 §UC-EM-004's `PUBLIC_BASE_URL` pin therefore covers it automatically.
+    // ⚠ The CANONICAL form ONLY — the pair form is never newly emitted (UC-GR-003).
+    const url = `${resolveLoginUrl(req)}/g/o/${order.order_token}`;
+
+    // One ordered line, split so that `qty` + ' ' + `rest` is the plain-text line AND
+    // the html kv row states the same thing in the same words. The quantity is the kv
+    // LABEL because that cell is uppercase + nowrap and must stay short — product
+    // names are unbounded admin text. `€` on item lines, `EUR` on totals, exactly as
+    // on the friend/guest screens (the CartLineList rule).
+    const itemLines = items.map((item) => ({
+      qty: `${item.quantity}×`,
+      rest: `${item.product_name} (${variantLabelFor(item)}) — ${eur(item.price * item.quantity)} €`,
+    }));
+
+    // ⚠ `payment.reference` comes from the SHARED `guestPaymentReference()` via the
+    // 201 payload — one formatter, so the guest's mail and the admin's unpaid
+    // overview can never disagree about what to look for on the bank statement
+    // (the GSO-T6 rule). Never rebuilt here.
+    const paymentRows = [{ label: MAIL_REFERENCE_LABEL, value: payment.reference }];
+    // IBAN and/or Revolut, as configured. ⚠ The Revolut USERNAME, never a
+    // revolut.me URL: a second host in the html would break 08 §UC-EM-005 item 3's
+    // no-remote/one-origin pin, and the mail is not a payment button.
+    if (payment.iban) paymentRows.push({ label: MAIL_IBAN_LABEL, value: payment.iban });
+    if (payment.revolut_username) paymentRows.push({ label: MAIL_REVOLUT_LABEL, value: payment.revolut_username });
+    paymentRows.push({ label: MAIL_AMOUNT_LABEL, value: `${eur(order.total)} EUR` });
+
+    // The plain part carries ALL of the same content including the bare URL — the
+    // deliverability baseline (the mailer drops `html` without `text`).
+    const text = [
+      MAIL_INTRO,
+      '',
+      MAIL_ORDER_HEADING,
+      ...itemLines.map((line) => `${line.qty} ${line.rest}`),
+      `${MAIL_TOTAL_LABEL}: ${eur(order.total)} EUR`,
+      '',
+      MAIL_PAYMENT_HEADING,
+      ...paymentRows.map((row) => `${row.label}: ${row.value}`),
+      '',
+      MAIL_SAVE_LINK,
+      url,
+    ].join('\n');
+
+    // ⚠ The guest's NAME is deliberately unused in both parts (the magic-link
+    // precedent: one fewer escaping surface, and the mail then works for every
+    // register) — `renderEmail` escapes every interpolated value anyway.
+    const { html } = renderEmail({
+      text,
+      blocks: [
+        { type: 'paragraph', text: MAIL_INTRO },
+        { type: 'paragraph', text: MAIL_ORDER_HEADING },
+        {
+          type: 'kv',
+          rows: [
+            ...itemLines.map((line) => ({ label: line.qty, value: line.rest })),
+            { label: MAIL_TOTAL_LABEL, value: `${eur(order.total)} EUR` },
+          ],
+        },
+        { type: 'paragraph', text: MAIL_PAYMENT_HEADING },
+        { type: 'kv', rows: paymentRows },
+        // The note introduces the button + the plain URL line the renderer prints
+        // under it, which is why it sits above rather than below.
+        { type: 'small', text: MAIL_SAVE_LINK },
+        // URL-as-label default kept: an invented button label would be new unsigned
+        // Slovak copy (the 08 §UC-EM-003 OPEN).
+        { type: 'button', url },
+      ],
+    });
+
+    // ⚠ A FLOATING promise (rule 2 / D11) — see (a) and (b) above. The result
+    // vocabulary (sent / skipped:'no_recipient'|'not_configured' / error:*) is
+    // CONSUMED HERE and never surfaced: the 201 has already gone out.
+    // `not_configured` is the normal local-dev and e2e state; `invalid_recipient` is
+    // what the mailer's own loose `EMAIL_SHAPE` gate answers for a typo'd checkout
+    // address, without a network call — this route adds no shape check of its own.
+    sendMail({ to: order.guest_email, subject: ORDER_CONFIRMATION_SUBJECT, text, html })
+      .then((result) => {
+        if (!result || result.sent) return;
+        // ⚠ DELIBERATE DIVERGENCE FROM `deliverMagicLink`, and the reason is
+        // FREQUENCY. `not_configured` is not a failure: it is the documented state
+        // of dev, staging, the e2e gate, and production itself until the operator
+        // enables mail (14 §Deploy continuity). The magic-link precedent logs it at
+        // error level because a recovery request is rare; a guest submit is two
+        // orders of magnitude more common, so the same line would fill the log with
+        // errors describing a known-normal configuration. Level, not silence — a
+        // real transport failure (`error:*`) stays an error.
+        const line =
+          `[guest-order] confirmation mail not sent for G${order.id}: ${result.error || result.skipped || 'unknown'}`;
+        // Terse and token-free: the order token, the URL and the address never
+        // reach the log. `G<id>` is the same identifier every admin screen shows.
+        if (result.skipped === 'not_configured') console.log(line);
+        else console.error(line);
+      })
+      .catch((e) => {
+        // Unreachable per the mailer's rule 3; kept so a future regression there
+        // cannot become an unhandled rejection.
+        console.error(`[guest-order] confirmation mail send threw for G${order.id}: ${e?.message || 'unknown error'}`);
+      });
+  } catch (e) {
+    // A `renderEmail` throw (08 §UC-EM-002's one acceptable failure mode) degrades to
+    // "no mail", logged as a message only.
+    console.error(`[guest-order] could not build the confirmation mail for G${order.id}: ${e?.message || 'unknown error'}`);
+  }
+}
+
 // POST /guest/:token/orders — submit a guest sub-order.
 router.post('/:token/orders', guestWriteLimiter, (req, res) => {
   // A submit into a closed cycle is the lock race → 409 (not 410).
@@ -618,18 +799,20 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
 
   const order = loadOrder(created.guestOrderId);
   const settings = paymentSettings();
+  const items = loadItems(order.id);
+  // Decision 1: the guest pays the admin directly. `G<id>` disambiguates
+  // duplicate first names when the admin matches incoming payments.
+  const payment = {
+    amount: order.total,
+    reference: guestPaymentReference(order, cycle.name),
+    iban: settings.iban,
+    revolut_username: settings.revolut_username,
+  };
 
   res.status(201).json({
     order,
-    items: loadItems(order.id),
-    // Decision 1: the guest pays the admin directly. `G<id>` disambiguates
-    // duplicate first names when the admin matches incoming payments.
-    payment: {
-      amount: order.total,
-      reference: guestPaymentReference(order, cycle.name),
-      iban: settings.iban,
-      revolut_username: settings.revolut_username,
-    },
+    items,
+    payment,
     // The guest's personal status/edit page, in the CANONICAL form (14 §UC-GR-003).
     // ⚠ The link token is deliberately NOT in here: binding the status URL to a share
     // token is exactly what stranded the incident's guest when her host regenerated.
@@ -638,6 +821,22 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
     // screen follows this line and composes no URL of its own.
     status_path: `/g/o/${order.order_token}`,
   });
+
+  // 14 §UC-GR-011 — the confirmation mail. ⚠ FIRED HERE AND ONLY HERE: after the
+  // insert transaction has committed (the order row exists) and after the response
+  // has gone out, so nothing about the 201 can depend on it (rule 2 / D11).
+  //
+  // ⚠ SEND-ON-CREATE ONLY (Decision D10). The edit and the `items: []` cancel below
+  // deliberately have NO counterpart — edit/cancel notification mails are a NAMED
+  // follow-up in 14 §Accepted risks, never to be "completed" by adding one here.
+  //
+  // Gated on the address being present: the field is optional at checkout, and an
+  // omitted optional field is not a failure — no build, no log. Everything past
+  // this point is the mailer's own plausibility gate (§UC-GR-011 rule 3); nothing
+  // here validates the address, and the stored value is never mutated.
+  if (order.guest_email) {
+    deliverOrderConfirmation(req, { order, items, payment });
+  }
 });
 
 // ---------------------------------------------------------------------------

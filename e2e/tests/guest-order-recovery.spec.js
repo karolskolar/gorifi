@@ -1,6 +1,18 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { DatabaseSync } from 'node:sqlite'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+// GR-T8 / §UC-GR-011 — the mail describe at the bottom of this file. The SHARED
+// harness (08 §UC-EM-005 item 1's extraction), never a fork.
+import {
+  CAN_SPAWN_BACKEND,
+  FAKE_MAILGUN_KEY,
+  STUB_MAILGUN_DOMAIN,
+  withMailHarness,
+  multipartFields,
+} from '../mailgun-harness.js'
 
 // Module 14 — guest order recovery (UC-GR-*). This file is the module's own spec
 // file; later GR rows extend it (UC-GR-010 item 9 enumerates the obligations).
@@ -2510,5 +2522,408 @@ test.describe('UC-GR-008 — the admin orders tab: share links, resend, cancel',
 
     adminToken = token
     expect(listedSubOrder(await hostView(host, cycle.id), id).status).toBe('submitted')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// UC-GR-011 — the guest order-confirmation mail (GR-T8)
+//
+// The module's LAST row and its THIRD consumer of module 08's mail seam. Verified
+// against the SHARED Mailgun stub (`e2e/mailgun-harness.js` — the EM-T2 extraction;
+// reuse, never fork), exactly as UC-GR-010 item 10 prescribes: a throwaway backend
+// whose `MAILGUN_BASE_URL` points at a 127.0.0.1 stub, the ambient MAILGUN_* env
+// blanked FIRST so an operator's real key can never be inherited.
+//
+// ⚠ The rest of this file runs against the gate server with NO `MAILGUN_*` env at
+// all (the mailer's rule 1 no-op), which is what makes every zero-request assertion
+// below meaningful rather than incidental.
+//
+// ⚠ THE RISK THIS DESCRIBE EXISTS FOR IS NOT THE COPY — it is D11. The submit
+// handler's stock check sits OUTSIDE the insert transaction and is safe only while
+// the handler is fully synchronous under `instances: 1` (the GA-T8 lesson). The
+// "a stub 500 still 201s" test is the mutation target: making the send blocking
+// reddens it.
+
+const MAIL_SUBJECT = 'Potvrdenie objednávky – Podpultovka'
+// ⚠ DRAFT copy pending PO sign-off (14 §OPEN), hoisted for the GR-T7/T5/T6 reason:
+// sign-off is then a known TWO-PLACE edit (these constants + `routes/guest.js`),
+// never a grep for quoted Slovak across the suite.
+const MAIL_INTRO = 'Dobrý deň, vaša objednávka bola prijatá.'
+const MAIL_ORDER_HEADING = 'Objednávka:'
+const MAIL_PAYMENT_HEADING = 'Platba:'
+const MAIL_TOTAL_LABEL = 'Spolu'
+const MAIL_REFERENCE_LABEL = 'Referencia'
+const MAIL_IBAN_LABEL = 'IBAN'
+// ⚠ The eighth string. It was the ONE draft label not mirrored here at first, and no
+// test configured `payment_revolut_username` — so the two-place sign-off guarantee
+// held for seven strings out of eight and that kv row was rendered but never
+// asserted. Both halves fixed: the constant below and `setRevolut()` in the body test.
+const MAIL_REVOLUT_LABEL = 'Revolut'
+const MAIL_AMOUNT_LABEL = 'Suma'
+// Reuses the confirmation screen's own signed line, recast declaratively — one voice
+// for one fact across mail and screen (plain hyphen, as on the screen).
+const MAIL_SAVE_LINK = 'Stav objednávky uvidíte na tomto odkaze - uložte si ho:'
+
+const MAIL_ENV = { MAILGUN_API_KEY: FAKE_MAILGUN_KEY, MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN }
+const NEEDS_SOURCE = 'needs the backend source beside e2e/ (skipped against a deployment)'
+// The mailed link is followed in a real browser; that needs the built SPA the harness
+// backend would serve. Absent ⇒ the backend answers 503 with the build command.
+const SPA_INDEX = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../backend/public/index.html')
+const HAS_SPA = fs.existsSync(SPA_INDEX)
+// Read off disk (the `self-hosted-fonts.spec.js` / `catalog-import.spec.js` precedent)
+// for the D11 source-level gate below.
+const GUEST_ROUTE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../backend/src/routes/guest.js')
+
+// The A/B pair for 08 §UC-EM-004, applied to a GUEST URL: an origin the deployment
+// really is served from (so `resolveLoginUrl`'s Origin branch WOULD honour it) and a
+// different pinned base URL that must beat it. Without an allowlisted Origin the
+// negative is vacuous — `index.js`'s CORS callback 500s a foreign Origin before any
+// route runs, so the resolver would never be reached.
+const ALLOWED_ORIGIN = 'https://allowed-gr8.test'
+const PINNED_BASE_URL = 'https://pinned-gr8.test'
+
+const GUEST_EMAIL = () => `gr8.${uniq}.${Math.floor(Math.random() * 1e6)}@example.test`
+const IBAN = 'SK9911110000001234567890'
+
+async function waitForStubCalls(stub, count, label) {
+  await expect.poll(() => stub.requests.length, { message: label, timeout: 10_000 }).toBe(count)
+}
+
+// ⚠ Nothing may fire AFTER the expected count either. Gives a background send a beat
+// to prove it stayed quiet — the "no mail on this path" half of D10.
+async function expectNoFurtherCalls(stub, count, label) {
+  await new Promise((r) => setTimeout(r, 1500))
+  expect(stub.requests.length, label || 'no extra outbound sends settled late').toBe(count)
+}
+
+// ⚠ The shared harness hands back its OWN request context + admin token; this wrapper
+// swaps the module-level `ctx`/`adminToken` for the duration so every fixture builder
+// at the top of this file targets the harness server instead of the gate server. The
+// invitation-approval.spec.js pattern verbatim — safe because `fullyParallel: false`.
+async function withHarness(mailEnv, fn) {
+  const savedCtx = ctx
+  const savedToken = adminToken
+  try {
+    await withMailHarness(mailEnv, async (harness) => {
+      ctx = harness.ctx
+      adminToken = harness.adminToken
+      await fn(harness)
+    })
+  } finally {
+    ctx = savedCtx
+    adminToken = savedToken
+  }
+}
+
+const setIban = (iban) => admin('/api/admin/settings', { method: 'put', data: { paymentIban: iban } })
+const setRevolut = (username) =>
+  admin('/api/admin/settings', { method: 'put', data: { paymentRevolutUsername: username } })
+const REVOLUT_USERNAME = 'podpultovka'
+
+// ⚠ THE POSITIVE CONTROL for every zero-send assertion. A test that proves "no mail
+// was sent" is worthless until it has proved, IN THE SAME HARNESS INSTANCE, that a
+// mail CAN be sent: a broken `MAILGUN_*` env on this particular throwaway backend
+// would otherwise satisfy the negative just as well as the rule under test does.
+// (Test 1 proves the env works, but in a DIFFERENT process.)
+async function proveTheHarnessCanSend(stub, { linkToken, productId }, expectedBefore) {
+  expect(stub.requests.length, 'the control starts from the asserted zero').toBe(expectedBefore)
+  const res = await ctx.post(`/api/guest/${linkToken}/orders`, {
+    data: {
+      guest_name: 'Kontrolna Vzorka', guest_phone: uniquePhone(), guest_email: GUEST_EMAIL(),
+      items: [{ product_id: productId, variant: '250g', quantity: 1 }],
+    },
+  })
+  expect(res.status(), 'the control submit').toBe(201)
+  await waitForStubCalls(stub, expectedBefore + 1, 'a VALID address on THIS SAME server does send (0 → 1)')
+}
+
+test.describe('UC-GR-011 — the guest order-confirmation mail', () => {
+  // ⚠⚠ THE ONLY GATE ON D11's ACTUAL RISK, and it is a SOURCE-level one because the
+  // risk is not observable at runtime.
+  //
+  // The elapsed-time assertion further down covers exactly ONE mutation: a yield
+  // between the send and `res.json()`. It does NOT cover a yield placed AFTER the
+  // response (harmless to the 201, still forbidden), and — the case the rule exists
+  // for — it CANNOT cover a yield inserted between the stock check and the insert
+  // transaction. That window is where `instances: 1` + a fully synchronous handler is
+  // the whole of the overselling defence on the app's only unauthenticated write
+  // (the GA-T8 lesson: `instances: 1` was never the load-bearing half on its own —
+  // "and the handlers are fully synchronous" was). A request that yields there lets a
+  // second one pass the same stock check and both insert; nothing in this suite can
+  // reproduce it, and production would just quietly sell coffee it does not have.
+  //
+  // So the rule is enforced where it is legible: zero concurrency keywords in the
+  // file, full stop. Cheap, total, and it fails on the LINE that introduces the
+  // hazard rather than three months later on a stock report.
+  test('⚠ D11 — routes/guest.js contains ZERO concurrency keywords (the source-level gate the runtime cannot provide)', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    const source = fs.readFileSync(GUEST_ROUTE, 'utf8')
+    const found = [...source.matchAll(/\b(async|await)\b/g)].map((m) => {
+      const line = source.slice(0, m.index).split('\n').length
+      return `${m[1]} at guest.js:${line}`
+    })
+    expect(
+      found,
+      'routes/guest.js must stay fully synchronous (14 §UC-GR-011 rule 2 / D11).\n' +
+        'The submit handler checks stock OUTSIDE the insert transaction; that is safe ONLY because\n' +
+        'nothing can interleave — `instances: 1` AND a handler that cannot yield. A single keyword\n' +
+        'here reopens overselling on the app\'s only unauthenticated write, and NO behavioural test\n' +
+        'in this repo can detect it. If you need a network call in this file, fire it as a floating\n' +
+        'promise AFTER the response, the way `deliverOrderConfirmation` does.'
+    ).toEqual([])
+  })
+
+  test('submit WITH an e-mail: ONE send whose text + html carry the items, the total, the shared payment reference and the canonical /g/o/ URL built from PUBLIC_BASE_URL', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withHarness({ ...MAIL_ENV, PUBLIC_BASE_URL: PINNED_BASE_URL, CORS_ORIGIN: ALLOWED_ORIGIN }, async ({ stub }) => {
+      expect((await setIban(IBAN)).status(), 'set the payment IBAN').toBe(200)
+      // ⚠ Configured so the Revolut kv row is actually RENDERED and therefore
+      // actually asserted below. It also makes the "only one origin in the html"
+      // assertion non-trivial: a `revolut.me/<user>` link is exactly what the
+      // implementation rejects, and with the username unset it could never appear.
+      expect((await setRevolut(REVOLUT_USERNAME)).status(), 'set the Revolut username').toBe(200)
+
+      const host = await makeHost('mailbody')
+      const cycle = await makeCycle('mailbody')
+      const product = await addProduct(cycle.id, {
+        name: `GR mailbody ${uniq}`, purpose: 'Espresso', price_250g: 7.6, price_1kg: 25,
+      })
+      const link = await shareLink(host, cycle.id)
+
+      const email = GUEST_EMAIL()
+      const identity = { guest_name: 'Martina Tomasova', guest_phone: uniquePhone(), guest_email: email }
+      const res = await ctx.post(`/api/guest/${link.token}/orders`, {
+        headers: { Origin: ALLOWED_ORIGIN },
+        data: { ...identity, items: [{ product_id: product.id, variant: '250g', quantity: 2 }] },
+      })
+      expect(res.status(), 'the submit still 201s').toBe(201)
+      const created = await res.json()
+      const orderToken = created.order.order_token
+      const url = `${PINNED_BASE_URL}/g/o/${orderToken}`
+
+      await waitForStubCalls(stub, 1, 'exactly one outbound send')
+      await expectNoFurtherCalls(stub, 1)
+      const fields = multipartFields(stub.requests[0])
+
+      expect(fields.to, 'addressed to the e-mail given at checkout').toBe(email)
+      expect(fields.subject).toBe(MAIL_SUBJECT)
+      expect(fields['o:tracking-clicks'], 'tracking stays disabled per message').toBe('no')
+      expect(fields['o:tracking-opens']).toBe('no')
+
+      // ── the plain part: the deliverability baseline carries EVERYTHING ──
+      expect(fields.text).toContain(MAIL_INTRO)
+      expect(fields.text).toContain(MAIL_ORDER_HEADING)
+      // The item line: quantity × name (variant) — line amount, `€` on lines.
+      expect(fields.text, 'the item line, priced from the frozen snapshot').toContain(
+        `2× GR mailbody ${uniq} (250g) — 15.20 €`
+      )
+      expect(fields.text, 'the total, EUR on totals').toContain(`${MAIL_TOTAL_LABEL}: 15.20 EUR`)
+      expect(fields.text).toContain(MAIL_PAYMENT_HEADING)
+      // ⚠ The SHARED formatter — the guest's mail and the admin's unpaid overview can
+      // never disagree about the reference (the GSO-T6 one-formatter rule).
+      expect(created.payment.reference).toBe(`G${created.order.id} / ${identity.guest_name} / ${cycle.name}`)
+      expect(fields.text, 'the reference the 201 carries, byte-identical').toContain(
+        `${MAIL_REFERENCE_LABEL}: ${created.payment.reference}`
+      )
+      expect(fields.text).toContain(`${MAIL_IBAN_LABEL}: ${IBAN}`)
+      expect(fields.text).toContain(`${MAIL_REVOLUT_LABEL}: ${REVOLUT_USERNAME}`)
+      expect(fields.text, 'the Revolut USERNAME, never a revolut.me link').not.toContain('revolut.me')
+      expect(fields.text).toContain(`${MAIL_AMOUNT_LABEL}: 15.20 EUR`)
+      expect(fields.text).toContain(MAIL_SAVE_LINK)
+      expect(fields.text, 'the bare canonical URL in the plain part').toContain(url)
+
+      // ⚠ The mailed token IS the 201's `status_path` token, and the CANONICAL form
+      // only — never the pair form (UC-GR-003's "never newly emitted" rule).
+      expect(created.status_path).toBe(`/g/o/${orderToken}`)
+      expect(fields.text, 'no pair-form URL is ever minted').not.toContain(`/g/${link.token}/o/`)
+      expect(fields.html).not.toContain(`/g/${link.token}/o/`)
+      // The pin beat a genuinely allowlisted request Origin.
+      expect(fields.text).not.toContain(ALLOWED_ORIGIN)
+
+      // ── the html part ──
+      expect(fields.html, 'renderEmail produced the branded shell').toContain('<!DOCTYPE html>')
+      expect(fields.html, 'the branded text wordmark').toContain('POD<span')
+      expect(fields.html, 'the button href is the canonical URL').toContain(`href="${url}"`)
+      expect(fields.html).toContain(created.payment.reference)
+      expect(fields.html).toContain(IBAN)
+      expect(fields.html, 'the Revolut row reaches the html part too').toContain(REVOLUT_USERNAME)
+      expect(fields.html).toContain('15.20')
+      // 08 §UC-EM-005 item 3 — no remote assets, no CDN, no second host anywhere.
+      // ⚠ Non-trivial precisely because a Revolut username IS configured above: the
+      // obvious "helpful" change is a `revolut.me/<user>` payment link, and that is
+      // the assertion that would stop it.
+      const hosts = new Set([...fields.html.matchAll(/https?:\/\/[^"'\s<>)]+/g)].map((m) => new URL(m[0]).origin))
+      expect([...hosts], 'the only origin in the mail is the pinned one').toEqual([PINNED_BASE_URL])
+    })
+  })
+
+  test('the mailed link REALLY OPENS the order — a confirmation mail with a dead link is the failure this row exists to prevent', async ({ browser }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.skip(!HAS_SPA, 'needs the built SPA at backend/public (npm run build in frontend/)')
+    // No PUBLIC_BASE_URL override here: `startBackend` pins it to the harness server's
+    // own origin, so the mailed URL is followable.
+    await withHarness(MAIL_ENV, async ({ stub, backend }) => {
+      const host = await makeHost('maillive')
+      const cycle = await makeCycle('maillive')
+      const product = await addProduct(cycle.id, {
+        name: `GR maillive ${uniq}`, purpose: 'Espresso', price_250g: 9,
+      })
+      const link = await shareLink(host, cycle.id)
+      const email = GUEST_EMAIL()
+      const created = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }], {
+        guest_name: 'Zuzana Malikova', guest_phone: uniquePhone(), guest_email: email,
+      })
+
+      await waitForStubCalls(stub, 1, 'one outbound send')
+      const text = multipartFields(stub.requests[0]).text
+      // Extracted FROM THE MAIL BODY, never composed by the test.
+      const match = text.match(/https?:\/\/[^\s]*\/g\/o\/[A-Z0-9]+/)
+      expect(match, 'the plain part carries a followable canonical URL').toBeTruthy()
+      const mailedUrl = match[0]
+      expect(mailedUrl, 'the mailed origin is the harness server').toBe(`${backend.baseUrl}/g/o/${created.order.order_token}`)
+
+      // A FRESH context: no localStorage, no session — exactly what a guest opening
+      // the mail on another device has.
+      const context = await browser.newContext({ baseURL: backend.baseUrl })
+      try {
+        const page = await context.newPage()
+        await page.goto(mailedUrl)
+        // The ORDER, not merely a page: the ordered line and the amount owed.
+        // (Scoped to `status-item` — the cycle heading carries the same name.)
+        const line = page.getByTestId('status-item')
+        await expect(line, 'the ordered line renders').toBeVisible({ timeout: 15_000 })
+        await expect(line).toContainText(`GR maillive ${uniq}`)
+        await expect(line).toContainText('9.00')
+        // …and it is THIS guest's order, not a generic page: the status screen shows
+        // the total owed. (The payment reference itself lives behind PaymentModal.)
+        await expect(page.getByText('9.00 EUR').first()).toBeVisible()
+      } finally {
+        await context.close()
+      }
+    })
+  })
+
+  test('submit WITHOUT an e-mail: ZERO sends, and the 201 payload shape is unchanged', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withHarness(MAIL_ENV, async ({ stub }) => {
+      const host = await makeHost('nomail')
+      const cycle = await makeCycle('nomail')
+      const product = await addProduct(cycle.id, { name: `GR nomail ${uniq}`, purpose: 'Espresso', price_250g: 11 })
+      const link = await shareLink(host, cycle.id)
+
+      const created = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }], {
+        guest_name: 'Bez Mailu', guest_phone: uniquePhone(),
+      })
+      expect(created.order.guest_email, 'an omitted optional field stays null').toBe(null)
+      expect(created.status_path).toBe(`/g/o/${created.order.order_token}`)
+      expect(created.payment.reference).toContain(`G${created.order.id} / `)
+
+      await expectNoFurtherCalls(stub, 0, 'no e-mail given ⇒ no send, no build, no log')
+      // …and the zero above is the RULE, not a broken harness.
+      await proveTheHarnessCanSend(stub, { linkToken: link.token, productId: product.id }, 0)
+    })
+  })
+
+  test('⚠ D11 fire-and-forget: an UNHAPPY AND SLOW Mailgun neither fails nor delays the 201, and the sub-order exists', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withHarness(MAIL_ENV, async ({ stub }) => {
+      // ⚠ THE MUTATION TARGET FOR D11, and the SLOW half is the load-bearing one.
+      // A 500 alone proves nothing: the mailer never throws, so a blocking send
+      // would still answer 201 — just later. The instrument is therefore the CLOCK
+      // (the magic-link §UC-ML-003 rule-2 technique): the stub records the request
+      // immediately and delays only its REPLY, so a handler that waits on the send
+      // is measurably slower. Mutation-verified — making the send blocking takes the
+      // 201 from ~200 ms to the full delay and reddens the elapsed assertion below.
+      // The same blocking send would also reopen the GA-T8 check-then-write hazard on
+      // the out-of-transaction stock check, which NO test in this repo can see.
+      const REPLY_DELAY_MS = 4000
+      stub.setReply({ status: 500, body: { message: 'Mailgun is unhappy' } })
+      stub.setReplyDelay(REPLY_DELAY_MS)
+      expect((await setIban(IBAN)).status()).toBe(200)
+
+      const host = await makeHost('mail500')
+      const cycle = await makeCycle('mail500')
+      const product = await addProduct(cycle.id, { name: `GR mail500 ${uniq}`, purpose: 'Espresso', price_250g: 12.5 })
+      const link = await shareLink(host, cycle.id)
+
+      const startedAt = Date.now()
+      const res = await ctx.post(`/api/guest/${link.token}/orders`, {
+        data: {
+          guest_name: 'Ivana Kovacova', guest_phone: uniquePhone(), guest_email: GUEST_EMAIL(),
+          items: [{ product_id: product.id, variant: '250g', quantity: 1 }],
+        },
+      })
+      const elapsed = Date.now() - startedAt
+      expect(res.status(), 'the 201 survives an unhappy Mailgun').toBe(201)
+      // ⚠ THE ASSERTION THE MUTATION REDDENS. Half the delay is a wide margin on a
+      // loaded box while still being unreachable by a handler that waits on the send.
+      expect(elapsed, `the 201 did not wait on the send (${elapsed} ms of a ${REPLY_DELAY_MS} ms reply delay)`)
+        .toBeLessThan(REPLY_DELAY_MS / 2)
+      const created = await res.json()
+      // The FULL payment payload, not a degraded one.
+      expect(created.payment.amount).toBe(12.5)
+      expect(created.payment.iban).toBe(IBAN)
+      expect(created.payment.reference).toContain(`G${created.order.id} / Ivana Kovacova / `)
+
+      await waitForStubCalls(stub, 1, 'the send was attempted')
+
+      // The order really is there, readable through the canonical URL.
+      const status = await ctx.get(`/api/guest/o/${created.order.order_token}`)
+      expect(status.status(), 'the sub-order exists and resolves').toBe(200)
+      expect((await status.json()).items.length).toBe(1)
+    })
+  })
+
+  test('⚠ D10 send-on-CREATE only: an edit and an items:[] cancel fire NO further send', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withHarness(MAIL_ENV, async ({ stub }) => {
+      const host = await makeHost('d10')
+      const cycle = await makeCycle('d10')
+      const product = await addProduct(cycle.id, {
+        name: `GR d10 ${uniq}`, purpose: 'Espresso', price_250g: 8, price_1kg: 24,
+      })
+      const link = await shareLink(host, cycle.id)
+      const created = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }], {
+        guest_name: 'Petra Novakova', guest_phone: uniquePhone(), guest_email: GUEST_EMAIL(),
+      })
+
+      await waitForStubCalls(stub, 1, 'the CREATE mails, once')
+      const canonical = `/api/guest/o/${created.order.order_token}`
+
+      // (1) an EDIT
+      const edited = await ctx.put(canonical, {
+        data: { items: [{ product_id: product.id, variant: '1kg', quantity: 1 }] },
+      })
+      expect(edited.status(), 'the edit succeeds').toBe(200)
+      await expectNoFurtherCalls(stub, 1, 'an edit sends nothing (D10)')
+
+      // (2) a CANCEL — the literal `items: []`, the only input that may cancel
+      const cancelled = await ctx.put(canonical, { data: { items: [] } })
+      expect(cancelled.status(), 'the cancel succeeds').toBe(200)
+      expect((await cancelled.json()).order.status).toBe('cancelled')
+      await expectNoFurtherCalls(stub, 1, 'a cancel sends nothing (D10) — the named follow-up stays unimplemented')
+    })
+  })
+
+  test('an implausible address is refused by the mailer WITHOUT a network call, and the 201 is untouched', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withHarness(MAIL_ENV, async ({ stub }) => {
+      const host = await makeHost('badmail')
+      const cycle = await makeCycle('badmail')
+      const product = await addProduct(cycle.id, { name: `GR badmail ${uniq}`, purpose: 'Espresso', price_250g: 6 })
+      const link = await shareLink(host, cycle.id)
+
+      // `validateIdentity` deliberately has NO shape check and this row adds none —
+      // the mailer's own loose `EMAIL_SHAPE` gate answers `invalid_recipient`.
+      const created = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }], {
+        guest_name: 'Nespravna Adresa', guest_phone: uniquePhone(), guest_email: 'not-an-address',
+      })
+      expect(created.order.guest_email, 'the stored value is never mutated by the send').toBe('not-an-address')
+
+      await expectNoFurtherCalls(stub, 0, 'EMAIL_SHAPE refuses before any network call')
+      // …and the zero above is the GATE, not a broken harness: the same server, the
+      // same link, the same product — only the address differs.
+      await proveTheHarnessCanSend(stub, { linkToken: link.token, productId: product.id }, 0)
+    })
   })
 })
