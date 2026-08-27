@@ -5,8 +5,8 @@ import NeoIcon from '@/components/neo/NeoIcon.vue'
 
 // Lead capture (§UC-GSO-015, §Lead Capture; restyled by 06 §UC-GX-009) — ONE
 // component for BOTH guest screens: the confirmation on `/g/:token` and the status
-// page on `/g/:token/o/:orderToken`. Same seam rule as GuestProductGrid: extend
-// this, never fork it.
+// page on `/g/o/:orderToken` (and its legacy pair form). Same seam rule as
+// GuestProductGrid: extend this, never fork it.
 //
 // ⚠ THE RESTYLE INVERTS THE SHIPPED VISUAL PRIORITY, deliberately. The shipped card
 // was "deliberately LOW-KEY" — a dashed muted box with a text-style link — on the
@@ -18,8 +18,9 @@ import NeoIcon from '@/components/neo/NeoIcon.vue'
 // pay button and (on g-confirm) the status-URL row.
 //
 // ⚠ BEHAVIOUR IS GSO-T10'S AND UNCHANGED BY THIS ROW. The CTA writes through
-// `POST /api/guest/:token/orders/:orderToken/invite-request` (no auth headers — the
-// token PAIR in the URL is the whole credential) and creates an `invitations` row
+// `POST /api/guest/o/:orderToken/invite-request` — or its legacy pair form when the
+// page was opened from one (no auth headers; `order_token` in the URL is the whole
+// credential, 14 §UC-GR-001) — and creates an `invitations` row
 // credited to the HOST. Client validation strings, the 409 handling and the
 // prefill-at-open-time rule below are all byte-identical to the shipped ones.
 //
@@ -36,7 +37,12 @@ import NeoIcon from '@/components/neo/NeoIcon.vue'
 // sanctioned e2e edit this row spends.
 
 const props = defineProps({
-  token: { type: String, required: true },
+  // ⚠ OPTIONAL since 14 §UC-GR-003: on the canonical status route `/g/o/:orderToken`
+  // there IS no link token, and `api.requestGuestAccount` picks the tokenless
+  // endpoint form from exactly this being empty. `required: true` here produced a
+  // Vue warning on every canonical load and implied a credential the route does not
+  // carry. The `orderToken` is the credential (D2).
+  token: { type: String, default: '' },
   orderToken: { type: String, required: true },
   name: { type: String, default: '' },
   phone: { type: String, default: '' },

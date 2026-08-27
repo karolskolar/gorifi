@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, watch, watchEffect } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
 import GuestBrandHeader from '@/components/GuestBrandHeader.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
@@ -20,10 +20,22 @@ import {
   variantText
 } from '@/lib/guest-cart'
 
-// The guest's personal status page — route `/g/:token/o/:orderToken`
-// (§UC-GSO-004, restyled by 06 §UC-GX-006/007/008). No account and no password:
-// the PAIR of tokens in the URL is the whole credential, so this page carries no
-// auth headers at all (api.guestRequest).
+// The guest's personal status page, served at TWO routes (14 §UC-GR-002/003):
+//
+//   canonical  `/g/o/:orderToken`             — the only form the app hands out now
+//   legacy     `/g/:token/o/:orderToken`      — kept working FOREVER; the `:token`
+//              half is ignored for resolution AND authorization, i.e. URL carriage
+//
+// (§UC-GSO-004, restyled by 06 §UC-GX-006/007/008.) No account and no password:
+// `order_token` in the URL is the whole credential (D2 — same generator and entropy
+// as the link token), so this page carries no auth headers at all
+// (api.guestRequest).
+//
+// ⚠ D7: on the LEGACY route, a SUCCESSFUL load `router.replace`s to the canonical
+// URL, so the address bar — and anything the guest re-copies out of it — converges on
+// the form that survives a link regeneration. NEVER on a 404: the dead card
+// (06 §UC-GX-010) is diagnostic, and rewriting the URL under a failure would hide
+// what the guest actually clicked.
 //
 // ============================ RD-GX-3 (06 §UC-GX-006..008) ============================
 // ⚠ THE `.app` ROOT IS THE POINT OF THIS ROW, not a detail of it. Every theme rule
@@ -71,8 +83,13 @@ import {
 // once `paid` is set.
 
 const route = useRoute()
+const router = useRouter()
+// ⚠ `token` is UNDEFINED on the canonical route — that is the normal case, not an
+// error state. It is passed to `api` (which picks the endpoint form) and to the
+// invite CTA, and it is read by nothing that decides what the guest may do.
 const token = computed(() => route.params.token)
 const orderToken = computed(() => route.params.orderToken)
+const canonicalPath = computed(() => `/g/o/${orderToken.value}`)
 
 const GUEST_STORAGE_KEY = 'gorifi_guest_orders'
 
@@ -164,9 +181,13 @@ watchEffect(() => {
 })
 
 onMounted(load)
-// The route params are the identity of what is on screen, so a navigation between
-// two status URLs must reload rather than keep the previous sub-order.
-watch([token, orderToken], () => {
+// ⚠ WATCHED ON `orderToken` ALONE, and that is the module's whole point expressed as
+// a watcher (14 §UC-GR-002): the order token IS the identity of what is on screen —
+// the payload depends on nothing else, and the link half resolves nothing. Watching
+// `[token, orderToken]` would additionally fire on D7's own `router.replace` (which
+// moves `token` from the legacy value to `undefined`), throwing away the load that
+// had just succeeded and issuing a redundant GET for the same order.
+watch(orderToken, () => {
   editing.value = false
   load()
 })
@@ -179,6 +200,7 @@ async function load() {
     const data = await api.getGuestOrderStatus(token.value, orderToken.value)
     if (seq !== loadSeq) return
     applyStatus(data)
+    canonicalise()
   } catch (e) {
     if (seq !== loadSeq) return
     // 404 is the only failure the guest can act on: a mistyped or truncated URL.
@@ -210,21 +232,52 @@ function applyStatus(data) {
   refreshStoredEntry()
 }
 
-// GSO-T3 wrote this entry on the confirmation screen, keyed by link token; keep it
-// current so the "your order" card a returning guest sees is not stale.
+// D7 — re-canonicalise the address bar. Called ONLY from the success path of
+// `load()`: a 404 must leave the URL exactly as the guest followed it, because the
+// dead card is the diagnostic and the URL is the evidence on it.
+//
+// `replace`, not `push`: the legacy URL is not a place the guest should be able to
+// go Back to inside this page. And the watcher above deliberately does not see this
+// (it watches `orderToken`, which does not move), so no reload follows.
+function canonicalise() {
+  if (!token.value) return
+  router.replace(canonicalPath.value)
+}
+
+// GSO-T3 wrote this entry on the confirmation screen, keyed by LINK token. That
+// pair-keyed SHAPE IS KEPT FOREVER (14 §UC-GR-003, a deliberate non-migration — the
+// legacy URL form working forever is what makes it safe), so this only ever refreshes
+// the fields inside an entry, never re-keys one.
+//
+// ⚠ TWO MODES, because the canonical route has no link token to key on:
+//   - legacy route  — address the entry by the link token, as GSO-T3 did;
+//   - canonical     — UPDATE BY SCAN: find whichever entry carries this
+//                     `order_token`, and if there is none, DO NOTHING. Creating one
+//                     is impossible to do honestly (there is no key that means
+//                     anything) and would fabricate a "your order" card; only a real
+//                     submit creates entries.
 function refreshStoredEntry() {
   try {
     const raw = localStorage.getItem(GUEST_STORAGE_KEY)
     const parsed = raw ? JSON.parse(raw) : {}
     const store = parsed && typeof parsed === 'object' ? parsed : {}
-    const existing = store[token.value]
-    // Only touch OUR entry — a device may hold sub-orders for several links, and a
-    // newer sub-order on this link must not be overwritten by an older one.
-    if (existing && existing.order_token !== orderToken.value) return
-    store[token.value] = {
+
+    let key = token.value
+    if (!key) {
+      key = Object.keys(store).find((k) => store[k] && store[k].order_token === orderToken.value)
+      if (!key) return
+    } else if (store[key] && store[key].order_token !== orderToken.value) {
+      // Only touch OUR entry — a device may hold sub-orders for several links, and a
+      // newer sub-order on this link must not be overwritten by an older one.
+      return
+    }
+
+    store[key] = {
       order_id: order.value?.id,
       order_token: orderToken.value,
-      status_url: `${window.location.origin}/g/${token.value}/o/${orderToken.value}`,
+      // The CANONICAL form on both routes (§UC-GR-003): what the guest re-opens from
+      // their device must be the URL that survives a link regeneration.
+      status_url: `${window.location.origin}${canonicalPath.value}`,
       guest_name: order.value?.guest_name,
       cycle_name: cycle.value?.name || '',
       total: order.value?.total,

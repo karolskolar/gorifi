@@ -291,7 +291,7 @@ test.describe('PATCH /api/guest-order-items/:id/packed — the per-bag checkbox 
   })
 
   test('the guest payload carries what a bag label needs (product, variant, roast, per-guest grouping)', async () => {
-    const { host, cycle } = await scenario('shape', {
+    const { host, cycle, subOrders } = await scenario('shape', {
       own: [1],
       guests: [
         { name: `Anna ${uniq}`, items: [1] },
@@ -309,8 +309,19 @@ test.describe('PATCH /api/guest-order-items/:id/packed — the per-bag checkbox 
     for (const field of ['id', 'product_name', 'variant', 'quantity', 'packed', 'purpose', 'roast_type']) {
       expect(item, `guest item must carry ${field}`).toHaveProperty(field)
     }
-    // The guest's private status URL is never published to an admin surface (GSO-T2).
-    expect(party.guest_orders[0].order_token).toBeUndefined()
+    // ⚠ INVERTED by 14 §UC-GR-006 (GR-T5). NOT in the spec's supersession map — it
+    // follows STRUCTURALLY from D6: this payload's guest rows come from the shared
+    // `cycleSubOrdersByHost()`, and D6 puts `order_token` on the one shared column
+    // list precisely so it cannot be published on some host/admin surfaces and not
+    // others. `/api/cycles/:id/distribution` is `requireAdmin`, so this is the
+    // intended audience — and the picking sheet is exactly where an admin stands
+    // next to the bags with a colleague asking where their order went.
+    for (const created of subOrders) {
+      expect(
+        party.guest_orders.find((g) => g.id === created.id).order_token,
+        'the admin can resend from the picking sheet'
+      ).toBe(created.order_token)
+    }
   })
 
   test('a cancelled sub-order is not a bag: it is absent from the distribution payload', async () => {

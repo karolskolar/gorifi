@@ -10,14 +10,40 @@ import db from '../db/schema.js';
 // duplicated. GSO-T6's admin surfaces (nested sub-orders, unpaid overview) reuse
 // them too.
 //
-// `order_token` is deliberately absent from every column list here: it is the
-// guest's private status/edit URL and neither the host nor the admin ever needs
-// it (GSO-T2 rule). Only routes/guest.js — where the token IS the credential —
-// selects it.
+// ⚠ `order_token` IS in the column list, and that is a CONSCIOUS REVERSAL of the
+// GSO-T2 rule that used to be stated here ("deliberately absent from every column
+// list … neither the host nor the admin ever needs it"). 14 §UC-GR-006 reverses it,
+// for a reason the incident supplied: a guest lost her status URL when the host
+// regenerated their share link, and nobody — not the host who invited her, not the
+// admin holding her money — could send it back to her, because the one column that
+// answers "what is her link?" was hidden from every surface with a person in front
+// of it. Publishing it is precisely the recovery capability (the host's "Kopírovať
+// odkaz", the admin's resend on the orders tab and the receivables screen).
+//
+// The reversal is bounded, and this is the half of the GSO-T2 rule that SURVIVES:
+// **routes/guest.js remains the ONLY place `order_token` is a CREDENTIAL.** No other
+// route may authenticate by it — publishing a column to an already-authenticated
+// host/admin surface is not the same as accepting it as identity, and nothing here
+// changes who may call these loaders.
+//
+// Every consumer of the loaders below is host- or admin-authenticated:
+// guest-links GET/POST/PATCH (requireHost + ownership), the guest-orders mutations
+// (host) and its unpaid overview (requireAdmin), and `cycleSubOrders(ByHost)` →
+// the admin orders tab (routes/orders.js) and the admin distribution sheet
+// (routes/cycles.js). A public payload never passes through here — routes/guest.js
+// composes the guest's own `statusPayload` itself.
+//
+// ⚠ It goes in the ONE SHARED LIST (Decision D6), never a per-surface pick: that is
+// the whole point of the list, and per-surface picks are how a column ends up
+// published on one screen and missing from the next.
+//
+// ⚠ Published ≠ RENDERED. The token must not reach the DOM (share-dialog.spec.js
+// pins that the share dialog's HTML never contains one): UI composes
+// `${origin}/g/o/${order_token}` in JS at click time, never into an attribute.
 
 const GUEST_ORDER_FIELDS = [
   'id', 'link_id', 'guest_name', 'guest_phone', 'guest_email', 'status', 'total',
-  'paid', 'paid_at', 'delivered', 'delivered_at', 'created_at',
+  'paid', 'paid_at', 'delivered', 'delivered_at', 'created_at', 'order_token',
 ];
 
 const GUEST_ORDER_COLUMNS = GUEST_ORDER_FIELDS.join(', ');
@@ -159,6 +185,42 @@ export function cycleSubOrdersByHost(cycleId) {
     byHost.get(row.host_friend_id).push(row);
   }
   return byHost;
+}
+
+// THE soft cancel. Returns the number of rows changed (0 = it was already
+// cancelled), so a caller can distinguish a real transition from a converged no-op.
+//
+// ⚠ ONE HOME, and it has THREE doors, all of which must behave identically:
+//   - the guest's own empty-cart PUT      (routes/guest.js)
+//   - the host's DELETE                   (routes/guest-orders.js, §UC-GSO-008)
+//   - the admin's cancel                  (routes/guest-orders.js, 14 §UC-GR-005)
+// They were three hand-written copies of the same two-column UPDATE, and the third
+// had ALREADY DRIFTED: the guest door omitted the `<> 'cancelled'` predicate. That
+// is exactly the failure this repo's "two copies is how one of them stops enforcing
+// it" rule predicts, so the statement lives here now and nowhere else.
+//
+// What it does NOT own — deliberately, because it differs per door: the gates
+// (cycle-open, terminal-cancelled, the host's `paid` refusal and D4's deliberate
+// ABSENCE of that refusal for the admin), the error strings, and the enclosing
+// transaction. Each caller keeps its own; this is only the write.
+//
+// SOFT: `status = 'cancelled'`, `total = 0`, and the `guest_order_items` rows are
+// KEPT. The status predicate IS the release mechanism (helpers/stock.js's
+// `COALESCE(status,'submitted') <> 'cancelled'`, and the filter every aggregate
+// applies), so deleting the rows would release nothing extra while destroying the
+// refund amount (`total` is 0 by then, so it is recomputed from these rows) and the
+// record of what was ordered and then called off.
+//
+// `paid` / `paid_at` / `delivered` / `delivered_at` are untouched by construction:
+// only two columns are ever named here.
+//
+// The WHERE predicate makes the write itself idempotent, so two doors racing (a
+// guest emptying their cart while the admin cancels) cannot double-apply.
+export function softCancelGuestOrder(id) {
+  return db.prepare(`
+    UPDATE guest_orders SET status = 'cancelled', total = 0
+    WHERE id = ? AND COALESCE(status, 'submitted') <> 'cancelled'
+  `).run(id).changes;
 }
 
 // A sub-order together with everything needed to authorize a host action on it:

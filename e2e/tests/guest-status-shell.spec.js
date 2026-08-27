@@ -148,10 +148,25 @@ async function scenario(label, { markup = 1.25, productData } = {}) {
 // Wire-level record of every write this page makes. The cancel invariant is about
 // what LEAVES the browser, so it is asserted on the request body, not on an
 // after-the-fact read of the row.
-function recordWrites(page, linkToken) {
+// ⚠ RETARGETED by 14 §UC-GR-002/003 + D7 (GR-T2) — a FORCED edit, not a choice.
+// This filter matched only the LEGACY pair URL `/api/guest/:token/orders/:orderToken`.
+// The status page now re-canonicalises its own address bar after a successful load
+// (D7), so every write it issues afterwards goes to `/api/guest/o/:orderToken` and the
+// old filter recorded NOTHING. Measured, not guessed: the three
+// `toEqual([{ items: [] }])` assertions (:570, :588, :607 — the three cancel-confirm
+// entry points) REDDEN, while the three `toEqual([])` ones (:517, :560, :564) pass
+// VACUOUSLY. ⚠ That second half is the dangerous one and it is why this edit exists:
+// a filter that stops matching does not fail, it stops proving. Do not re-narrow it.
+//
+// Keyed on the ORDER TOKEN instead, which is the sub-order's identity under this
+// module (D2) and is present in BOTH URL forms. That is a sharpening: the property
+// under test ("nothing is PUT until the guest confirms, and then exactly one literal
+// `items: []`") never had anything to do with which URL form the page speaks, and the
+// filter can no longer go blind when it changes.
+function recordWrites(page, orderToken) {
   const writes = []
   page.on('request', (r) => {
-    if (r.method() === 'PUT' && r.url().includes(`/api/guest/${linkToken}/orders/`)) {
+    if (r.method() === 'PUT' && r.url().includes('/api/guest/') && r.url().includes(orderToken)) {
       writes.push(r.postData())
     }
   })
@@ -492,7 +507,7 @@ test.describe('RD-GX-3 · edit mode (§UC-GX-007)', () => {
   test('Späť discards silently and leaves the persisted order untouched', async ({ page }) => {
     const { product, link } = await scenario('abort')
     const created = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }])
-    const writes = recordWrites(page, link.token)
+    const writes = recordWrites(page, created.order.order_token)
 
     await page.setViewportSize(PHONE)
     await page.goto(`/g/${link.token}/o/${created.order.order_token}`)
@@ -533,7 +548,7 @@ test.describe('RD-GX-3 · the cancel confirm (§UC-GX-008)', () => {
   test('entry point 1 of 3: emptying the cart FUNNELS into the confirm instead of saving', async ({ page }) => {
     const { product, link } = await scenario('funnel')
     const created = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }])
-    const writes = recordWrites(page, link.token)
+    const writes = recordWrites(page, created.order.order_token)
 
     await page.setViewportSize(PHONE)
     await page.goto(`/g/${link.token}/o/${created.order.order_token}`)
@@ -561,7 +576,7 @@ test.describe('RD-GX-3 · the cancel confirm (§UC-GX-008)', () => {
   test('entry point 2 of 3: the ghost cancel under the cartbar actions', async ({ page }) => {
     const { product, link } = await scenario('ghostedit')
     const created = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 2 }])
-    const writes = recordWrites(page, link.token)
+    const writes = recordWrites(page, created.order.order_token)
 
     await page.setViewportSize(PHONE)
     await page.goto(`/g/${link.token}/o/${created.order.order_token}`)
@@ -581,7 +596,7 @@ test.describe('RD-GX-3 · the cancel confirm (§UC-GX-008)', () => {
     const { product, link } = await scenario('ghostpaid')
     const created = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }])
     expect((await setPaid(created.order.id, true)).status()).toBe(200)
-    const writes = recordWrites(page, link.token)
+    const writes = recordWrites(page, created.order.order_token)
 
     await page.setViewportSize(PHONE)
     await page.goto(`/g/${link.token}/o/${created.order.order_token}`)

@@ -25,8 +25,12 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 //      own "Zdieľať odkaz" to that set and convert their `toBeHidden()` into a
 //      strict-mode violation. The `v-if="open"` that prevents it is pinned below.
 //   4. The `loadSeq` reset under that `open`-driven mount, the native-share
-//      conditional (and the frozen share-sheet payload), 320px, and the GSO-T2
-//      invariant that a guest's `order_token` never reaches a host surface.
+//      conditional (and the frozen share-sheet payload), 320px, and the invariant
+//      that a guest's `order_token` never reaches the rendered DOM of this dialog.
+//      ⚠ That last one was originally the GSO-T2 "never reaches a HOST SURFACE"
+//      rule; 14 §UC-GR-006 (GR-T5) reversed the PAYLOAD half on purpose (the host
+//      must be able to resend a colleague's lost link). The DOM half survives
+//      untouched and is now the load-bearing one: this dialog prints the LINK url.
 //
 // NOTE ON RATE LIMITS: the guest submits below sit behind `guestWriteLimiter`. Run
 // the full suite with a generous budget — see e2e/README.md.
@@ -581,7 +585,7 @@ test.describe('UC-KG-007 — mount seam and invariants', () => {
     await expect(dialog.locator('.copyrow')).toHaveCount(0)
   })
 
-  test('a guest\'s order_token reaches neither the host payload nor the DOM', async ({ page }) => {
+  test('a guest\'s order_token is published to the host payload (UC-GR-006) but never rendered into the DOM', async ({ page }) => {
     await refreshAdminToken()
     const host = await makeHost('token')
     const cycle = await makeCycle('token')
@@ -591,8 +595,13 @@ test.describe('UC-KG-007 — mount seam and invariants', () => {
     expect(sub.order.order_token, 'the guest DOES get one').toBeTruthy()
 
     const view = await hostView(host, cycle.id)
-    expect(JSON.stringify(view)).not.toContain(sub.order.order_token)
-    expect(JSON.stringify(view)).not.toContain('order_token')
+    // ⚠ INVERTED by 14 §UC-GR-006 (GR-T5): the PAYLOAD now carries it, deliberately
+    // — the host has to be able to resend a colleague's lost status URL. The DOM
+    // assertion below is the half that STAYS, and it is what this test is really
+    // for: the dialog prints the LINK url and must never print a guest's order
+    // token, no matter what the payload behind the screen contains.
+    expect(view.guest_orders[0].order_token, 'the payload publishes it (UC-GR-006)')
+      .toBe(sub.order.order_token)
 
     const dialog = await openFromOrderPage(page, host, cycle)
     await expect(dialog.locator('.copyrow')).toHaveCount(1)

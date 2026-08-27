@@ -3,8 +3,13 @@ import db, { generateGuestToken } from '../db/schema.js';
 import { guestReadLimiter, guestWriteLimiter } from '../middleware/rate-limit.js';
 import { gramsByProductFromItems, stockViolations, cycleAvailability } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup, VARIANT_PRICE_COLUMNS } from '../helpers/pricing.js';
-import { guestOrderStatus, guestPaymentReference } from '../helpers/guest-orders.js';
+import { guestOrderStatus, guestPaymentReference, softCancelGuestOrder } from '../helpers/guest-orders.js';
 import { bindValue } from '../helpers/bind-value.js';
+// 14 §UC-GR-011 — the guest order-confirmation mail. Module 08's seam, consumed
+// through the seam exactly: no layer change, no new block type, no new dependency.
+import { renderEmail } from '../helpers/email-templates.js';
+import { sendMail } from '../helpers/mailer.js';
+import { resolveLoginUrl } from '../helpers/credentials-message.js';
 
 const router = Router();
 
@@ -159,14 +164,22 @@ function firstName(name) {
   return String(name || '').trim().split(/\s+/)[0] || '';
 }
 
+const LINK_SELECT = `
+  SELECT gl.id, gl.token, gl.active, gl.cycle_id, gl.host_friend_id,
+         f.name AS host_name, f.active AS host_active
+  FROM guest_order_links gl
+  JOIN friends f ON f.id = gl.host_friend_id
+`;
+
 function findLink(token) {
-  return db.prepare(`
-    SELECT gl.id, gl.token, gl.active, gl.cycle_id, gl.host_friend_id,
-           f.name AS host_name, f.active AS host_active
-    FROM guest_order_links gl
-    JOIN friends f ON f.id = gl.host_friend_id
-    WHERE gl.token = ?
-  `).get(String(token || ''));
+  return db.prepare(`${LINK_SELECT} WHERE gl.token = ?`).get(String(token || ''));
+}
+
+// The link a sub-order hangs off, reached from `guest_orders.link_id` — the row
+// always exists (FK), whatever the link's CURRENT token is. This is what makes
+// `order_token` resolvable without the link token (14 §UC-GR-001).
+function findLinkById(linkId) {
+  return db.prepare(`${LINK_SELECT} WHERE gl.id = ?`).get(linkId);
 }
 
 function findCycle(cycleId) {
@@ -321,31 +334,60 @@ function replaceItems(guestOrderId, lines) {
   return Math.round(total * 100) / 100;
 }
 
-// Resolve the (link token, order token) PAIR to a sub-order — WITHOUT any of the
-// open/active gating `resolveLink` applies.
+// Resolve a sub-order from its `order_token` ALONE — WITHOUT any of the
+// open/active gating `resolveLink` applies (14 §UC-GR-001).
 //
 // That asymmetry is the point of §UC-GSO-004: the product listing is 410 once the
 // cycle closes or the host deactivates the link, but the guest must still be able
 // to open their own status URL and see what they ordered, what it costs and the
 // payment reference. Read stays open; the write half re-applies the gates.
 //
-// The order is looked up by `order_token AND link_id`, so a real order token under
-// somebody else's link token does not resolve — the pair is the credential, not
-// either half. Both misses answer the same 404 with the same message, so the
-// endpoint is not an oracle for "this order token exists somewhere".
-function resolveGuestOrder(token, orderToken) {
+// ⚠ WHY THE LINK TOKEN IS NOT PART OF THE CREDENTIAL ANY MORE (module 14, D1/D2 —
+// this SUPERSEDES GSO-T4's "an orderToken only resolves under its own link
+// :token"). The pair-strict form resolved `order_token AND link_id` where the
+// `link_id` came from the URL's CURRENT link token, so a host regenerating their
+// share link permanently 404'd every status URL their colleagues already held —
+// the Martina Tomašová incident: she had paid, and her order sat in the DB
+// unreachable by her, the host and the admin alike. The share link and the
+// per-order URL are two credentials with DIFFERENT LIFETIMES: regeneration must
+// keep revoking the former (see `resolveLink`, untouched — a retired link still
+// lists nothing and takes no new sub-orders) without killing the latter.
+//
+// Nothing is weakened by the change: `order_token` comes from the same
+// `generateGuestToken()` as the link token (14 chars of `CODE_ALPHABET`, SEC-S2),
+// so it is a full standalone credential of identical entropy. The no-oracle
+// property is preserved verbatim — every miss, including the degenerate
+// missing-link/missing-cycle cases, answers the SAME 404 with the SAME message,
+// so the endpoint never reveals that an order token exists somewhere.
+function resolveGuestOrderByOrderToken(orderToken) {
   const notFound = { status: 404, error: 'Táto objednávka neexistuje' };
-  const link = findLink(token);
-  if (!link) return notFound;
   const order = db.prepare(`
     SELECT id, link_id, order_token, guest_name, guest_phone, guest_email, status, total,
            paid, paid_at, delivered, delivered_at, created_at
-    FROM guest_orders WHERE order_token = ? AND link_id = ?
-  `).get(String(orderToken || ''), link.id);
+    FROM guest_orders WHERE order_token = ?
+  `).get(String(orderToken || ''));
   if (!order) return notFound;
+  const link = findLinkById(order.link_id);
+  if (!link) return notFound;
   const cycle = findCycle(link.cycle_id);
   if (!cycle) return notFound;
   return { link, cycle, order };
+}
+
+// The LEGACY pair form (`/:token/orders/:orderToken`, 14 §UC-GR-002). Every URL
+// already sitting in a colleague's messages or in `localStorage.gorifi_guest_orders`
+// keeps working FOREVER, so the `:token` half is resolved by nothing and authorizes
+// nothing — it is URL carriage. Resolution goes through the same
+// `resolveGuestOrderByOrderToken` as the canonical form, and the same shared
+// handlers run afterwards.
+function resolveLegacyPairForm(req) {
+  const resolved = resolveGuestOrderByOrderToken(req.params.orderToken);
+  // ⚠ Log the stale half by `guest_orders.id` ONLY. A token in a log line is a
+  // credential in logs — neither half may ever appear here.
+  if (!resolved.error && String(req.params.token || '') !== String(resolved.link.token || '')) {
+    console.log(`Guest status URL carried a stale link half (guest_order ${resolved.order.id})`);
+  }
+  return resolved;
 }
 
 // GSO-T10 (§Lead Capture): the value stored in `invitations.source` for a lead that
@@ -440,6 +482,46 @@ function statusPayload(link, cycle, order) {
   return payload;
 }
 
+// ---------------------------------------------------------------------------
+// The CANONICAL guest order URL (14 §UC-GR-001): `order_token` alone, independent
+// of the share link's current token. Public by design — the URL token IS the
+// credential, exactly as on the pair form; ⚠ these routes must NEVER join
+// `ADMIN_ENDPOINTS` in e2e/tests/api-security.spec.js.
+//
+// ⚠ REGISTERED BEFORE `GET /:token` / `POST /:token/orders` ON PURPOSE. Express
+// matches in registration order, and putting these last would invite the listing
+// route to swallow them. (No collision is actually possible — `generateGuestToken()`
+// emits 14 chars of the uppercase `CODE_ALPHABET`, which can never equal the
+// literal segment `o` — but the ordering is the guarantee, not the alphabet.)
+//
+// All three delegate to the SAME shared handlers the legacy pair routes use
+// (defined below), over a resolved `{ link, cycle, order }`. One copy of the
+// paid-freeze guard, one copy of the literal-`items: []`-only cancel rule: two
+// copies is how one of them stops enforcing it.
+router.get('/o/:orderToken', guestReadLimiter, (req, res) => {
+  const resolved = resolveGuestOrderByOrderToken(req.params.orderToken);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  handleStatusRead(res, resolved);
+});
+
+router.put('/o/:orderToken', guestWriteLimiter, (req, res) => {
+  const resolved = resolveGuestOrderByOrderToken(req.params.orderToken);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  handleStatusEdit(req, res, resolved);
+});
+
+router.post('/o/:orderToken/invite-request', guestWriteLimiter, (req, res) => {
+  const resolved = resolveGuestOrderByOrderToken(req.params.orderToken);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  handleInviteRequest(req, res, resolved);
+});
+
 // GET /guest/:token — everything the public order page needs.
 // No payment details here: Decision 1 gives the guest the IBAN, but only once
 // they have a sub-order to pay for (see the submit response). An anonymous
@@ -471,6 +553,182 @@ router.get('/:token', guestReadLimiter, (req, res) => {
     availability: cycleAvailability(cycle.id),
   });
 });
+
+// ---------------------------------------------------------------------------
+// THE CONFIRMATION MAIL (14 §UC-GR-011)
+//
+// The THIRD consumer of module 08's `renderEmail` / `sendMail` seam. The
+// implementation template is `deliverMagicLink()` (magic-link.js:175) verbatim in
+// STRUCTURE: one `deliver…` helper, an outer try/catch around the render, and a
+// FLOATING promise whose result vocabulary is consumed in `.then` and logged
+// token-free, with a `.catch` backstop.
+//
+// ⚠ TWO HARD RULES, stated separately because each has its own failure mode
+// (§UC-GR-011 rule 2 / Decision D11):
+//
+//  (a) A mail failure — or an unconfigured Mailgun, which is the normal dev,
+//      staging and e2e state (`skipped:'not_configured'`) — must NEVER fail the
+//      201. Nothing below is ever blocked on; the mailer's own rule 3 guarantees
+//      `sendMail` never throws, and a `renderEmail` throw is caught here.
+//
+//  (b) ⚠ THE GA-T8 HAZARD CLASS, and the reason this comment is long. The
+//      submit's stock check sits OUTSIDE the insert transaction (see the note at
+//      that call site), which is safe ONLY while the handler cannot yield —
+//      `instances: 1` in deploy/ecosystem.config.cjs plus fully synchronous
+//      handlers. So: THIS WHOLE FILE MUST CONTAIN ZERO OCCURRENCES OF THE TWO ES
+//      CONCURRENCY KEYWORDS.
+//      ⚠ THAT IS A GATED RULE, NOT A COMMENT: the UC-GR-011 describe in
+//      e2e/tests/guest-order-recovery.spec.js reads this file off disk and
+//      asserts zero word-boundary matches. It is the ONLY check that covers the
+//      case the rule exists for — a yield inserted between the stock check and
+//      the insert transaction, which reopens overselling on the app's only
+//      unauthenticated write and which NO behavioural test in this repo can see.
+//      A blocking send would both fail the 201 on mail trouble and reopen the
+//      check-then-write race. The send fires strictly AFTER the insert
+//      transaction has committed AND after the response has gone out.
+
+const ORDER_CONFIRMATION_SUBJECT = 'Potvrdenie objednávky – Podpultovka';
+
+// ⚠ DRAFT copy, PO sign-off pending (14 §OPEN). Mirrored as constants at the top of
+// the UC-GR-011 describe in e2e/tests/guest-order-recovery.spec.js, so sign-off is a
+// known TWO-PLACE edit rather than a grep for quoted Slovak across the suite.
+// Vy-form, no participle addressing the reader. The save-the-link line is the
+// confirmation screen's own signed copy (plain hyphen), recast declaratively — one
+// voice for one fact across mail and screen.
+const MAIL_INTRO = 'Dobrý deň, vaša objednávka bola prijatá.';
+const MAIL_ORDER_HEADING = 'Objednávka:';
+const MAIL_TOTAL_LABEL = 'Spolu';
+const MAIL_PAYMENT_HEADING = 'Platba:';
+const MAIL_REFERENCE_LABEL = 'Referencia';
+const MAIL_IBAN_LABEL = 'IBAN';
+const MAIL_REVOLUT_LABEL = 'Revolut';
+const MAIL_AMOUNT_LABEL = 'Suma';
+const MAIL_SAVE_LINK = 'Stav objednávky uvidíte na tomto odkaze - uložte si ho:';
+
+function eur(value) {
+  return Number(value || 0).toFixed(2);
+}
+
+// The human size of one ordered line, mirroring the frontend's `variantText`
+// (lib/guest-cart.js): a bakery line carries its own snapshot `variant_label`, a
+// coffee line is named by its variant. Presentation only — nothing prices or weighs
+// by this string.
+function variantLabelFor(item) {
+  if (item.variant_label) return item.variant_label;
+  if (item.variant === 'unit') return 'ks';
+  if (item.variant === '20pc5g') return '20 ks × 5g';
+  if (item.variant === '8pc12g') return '8 ks × 12g';
+  return item.variant;
+}
+
+function deliverOrderConfirmation(req, { order, items, payment }) {
+  try {
+    // ⚠ Server-derived origin (rule 4), the magic-link precedent: guest routes have
+    // no session and this mail goes to a third party, so an attacker-chosen Origin
+    // must never mint its domain and the URL is never taken from the request body.
+    // 08 §UC-EM-004's `PUBLIC_BASE_URL` pin therefore covers it automatically.
+    // ⚠ The CANONICAL form ONLY — the pair form is never newly emitted (UC-GR-003).
+    const url = `${resolveLoginUrl(req)}/g/o/${order.order_token}`;
+
+    // One ordered line, split so that `qty` + ' ' + `rest` is the plain-text line AND
+    // the html kv row states the same thing in the same words. The quantity is the kv
+    // LABEL because that cell is uppercase + nowrap and must stay short — product
+    // names are unbounded admin text. `€` on item lines, `EUR` on totals, exactly as
+    // on the friend/guest screens (the CartLineList rule).
+    const itemLines = items.map((item) => ({
+      qty: `${item.quantity}×`,
+      rest: `${item.product_name} (${variantLabelFor(item)}) — ${eur(item.price * item.quantity)} €`,
+    }));
+
+    // ⚠ `payment.reference` comes from the SHARED `guestPaymentReference()` via the
+    // 201 payload — one formatter, so the guest's mail and the admin's unpaid
+    // overview can never disagree about what to look for on the bank statement
+    // (the GSO-T6 rule). Never rebuilt here.
+    const paymentRows = [{ label: MAIL_REFERENCE_LABEL, value: payment.reference }];
+    // IBAN and/or Revolut, as configured. ⚠ The Revolut USERNAME, never a
+    // revolut.me URL: a second host in the html would break 08 §UC-EM-005 item 3's
+    // no-remote/one-origin pin, and the mail is not a payment button.
+    if (payment.iban) paymentRows.push({ label: MAIL_IBAN_LABEL, value: payment.iban });
+    if (payment.revolut_username) paymentRows.push({ label: MAIL_REVOLUT_LABEL, value: payment.revolut_username });
+    paymentRows.push({ label: MAIL_AMOUNT_LABEL, value: `${eur(order.total)} EUR` });
+
+    // The plain part carries ALL of the same content including the bare URL — the
+    // deliverability baseline (the mailer drops `html` without `text`).
+    const text = [
+      MAIL_INTRO,
+      '',
+      MAIL_ORDER_HEADING,
+      ...itemLines.map((line) => `${line.qty} ${line.rest}`),
+      `${MAIL_TOTAL_LABEL}: ${eur(order.total)} EUR`,
+      '',
+      MAIL_PAYMENT_HEADING,
+      ...paymentRows.map((row) => `${row.label}: ${row.value}`),
+      '',
+      MAIL_SAVE_LINK,
+      url,
+    ].join('\n');
+
+    // ⚠ The guest's NAME is deliberately unused in both parts (the magic-link
+    // precedent: one fewer escaping surface, and the mail then works for every
+    // register) — `renderEmail` escapes every interpolated value anyway.
+    const { html } = renderEmail({
+      text,
+      blocks: [
+        { type: 'paragraph', text: MAIL_INTRO },
+        { type: 'paragraph', text: MAIL_ORDER_HEADING },
+        {
+          type: 'kv',
+          rows: [
+            ...itemLines.map((line) => ({ label: line.qty, value: line.rest })),
+            { label: MAIL_TOTAL_LABEL, value: `${eur(order.total)} EUR` },
+          ],
+        },
+        { type: 'paragraph', text: MAIL_PAYMENT_HEADING },
+        { type: 'kv', rows: paymentRows },
+        // The note introduces the button + the plain URL line the renderer prints
+        // under it, which is why it sits above rather than below.
+        { type: 'small', text: MAIL_SAVE_LINK },
+        // URL-as-label default kept: an invented button label would be new unsigned
+        // Slovak copy (the 08 §UC-EM-003 OPEN).
+        { type: 'button', url },
+      ],
+    });
+
+    // ⚠ A FLOATING promise (rule 2 / D11) — see (a) and (b) above. The result
+    // vocabulary (sent / skipped:'no_recipient'|'not_configured' / error:*) is
+    // CONSUMED HERE and never surfaced: the 201 has already gone out.
+    // `not_configured` is the normal local-dev and e2e state; `invalid_recipient` is
+    // what the mailer's own loose `EMAIL_SHAPE` gate answers for a typo'd checkout
+    // address, without a network call — this route adds no shape check of its own.
+    sendMail({ to: order.guest_email, subject: ORDER_CONFIRMATION_SUBJECT, text, html })
+      .then((result) => {
+        if (!result || result.sent) return;
+        // ⚠ DELIBERATE DIVERGENCE FROM `deliverMagicLink`, and the reason is
+        // FREQUENCY. `not_configured` is not a failure: it is the documented state
+        // of dev, staging, the e2e gate, and production itself until the operator
+        // enables mail (14 §Deploy continuity). The magic-link precedent logs it at
+        // error level because a recovery request is rare; a guest submit is two
+        // orders of magnitude more common, so the same line would fill the log with
+        // errors describing a known-normal configuration. Level, not silence — a
+        // real transport failure (`error:*`) stays an error.
+        const line =
+          `[guest-order] confirmation mail not sent for G${order.id}: ${result.error || result.skipped || 'unknown'}`;
+        // Terse and token-free: the order token, the URL and the address never
+        // reach the log. `G<id>` is the same identifier every admin screen shows.
+        if (result.skipped === 'not_configured') console.log(line);
+        else console.error(line);
+      })
+      .catch((e) => {
+        // Unreachable per the mailer's rule 3; kept so a future regression there
+        // cannot become an unhandled rejection.
+        console.error(`[guest-order] confirmation mail send threw for G${order.id}: ${e?.message || 'unknown error'}`);
+      });
+  } catch (e) {
+    // A `renderEmail` throw (08 §UC-EM-002's one acceptable failure mode) degrades to
+    // "no mail", logged as a message only.
+    console.error(`[guest-order] could not build the confirmation mail for G${order.id}: ${e?.message || 'unknown error'}`);
+  }
+}
 
 // POST /guest/:token/orders — submit a guest sub-order.
 router.post('/:token/orders', guestWriteLimiter, (req, res) => {
@@ -541,40 +799,63 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
 
   const order = loadOrder(created.guestOrderId);
   const settings = paymentSettings();
+  const items = loadItems(order.id);
+  // Decision 1: the guest pays the admin directly. `G<id>` disambiguates
+  // duplicate first names when the admin matches incoming payments.
+  const payment = {
+    amount: order.total,
+    reference: guestPaymentReference(order, cycle.name),
+    iban: settings.iban,
+    revolut_username: settings.revolut_username,
+  };
 
   res.status(201).json({
     order,
-    items: loadItems(order.id),
-    // Decision 1: the guest pays the admin directly. `G<id>` disambiguates
-    // duplicate first names when the admin matches incoming payments.
-    payment: {
-      amount: order.total,
-      reference: guestPaymentReference(order, cycle.name),
-      iban: settings.iban,
-      revolut_username: settings.revolut_username,
-    },
-    // The guest's personal status/edit page.
-    status_path: `/g/${link.token}/o/${order.order_token}`,
+    items,
+    payment,
+    // The guest's personal status/edit page, in the CANONICAL form (14 §UC-GR-003).
+    // ⚠ The link token is deliberately NOT in here: binding the status URL to a share
+    // token is exactly what stranded the incident's guest when her host regenerated.
+    // `GuestOrder.vue` consumes this path verbatim (copy row, localStorage
+    // `status_url`, the "Zobraziť stav objednávky" push), so the whole confirmation
+    // screen follows this line and composes no URL of its own.
+    status_path: `/g/o/${order.order_token}`,
   });
+
+  // 14 §UC-GR-011 — the confirmation mail. ⚠ FIRED HERE AND ONLY HERE: after the
+  // insert transaction has committed (the order row exists) and after the response
+  // has gone out, so nothing about the 201 can depend on it (rule 2 / D11).
+  //
+  // ⚠ SEND-ON-CREATE ONLY (Decision D10). The edit and the `items: []` cancel below
+  // deliberately have NO counterpart — edit/cancel notification mails are a NAMED
+  // follow-up in 14 §Accepted risks, never to be "completed" by adding one here.
+  //
+  // Gated on the address being present: the field is optional at checkout, and an
+  // omitted optional field is not a failure — no build, no log. Everything past
+  // this point is the mailer's own plausibility gate (§UC-GR-011 rule 3); nothing
+  // here validates the address, and the stored value is never mutated.
+  if (order.guest_email) {
+    deliverOrderConfirmation(req, { order, items, payment });
+  }
 });
 
-// GET /guest/:token/orders/:orderToken — the guest's personal status page
-// (§UC-GSO-004). Items, total, the paid/delivered flags, the cycle status and the
-// payment info needed to re-open the payment modal.
+// ---------------------------------------------------------------------------
+// The three SHARED handlers (14 §UC-GR-001). Each takes an already-resolved
+// `{ link, cycle, order }` and is reached by BOTH URL forms — the canonical
+// `/o/:orderToken` above and the legacy `/:token/orders/:orderToken` pair below.
+// Nothing in them reads a link token, so the two forms cannot drift.
+
+// The guest's personal status page (§UC-GSO-004). Items, total, the paid/delivered
+// flags, the cycle status and the payment info needed to re-open the payment modal.
 //
 // Deliberately NOT gated on the cycle being open or the link being active: this
 // is the guest's only record of what they ordered and what they owe. See
-// resolveGuestOrder for why that differs from the product listing.
-router.get('/:token/orders/:orderToken', guestReadLimiter, (req, res) => {
-  const resolved = resolveGuestOrder(req.params.token, req.params.orderToken);
-  if (resolved.error) {
-    return res.status(resolved.status).json({ error: resolved.error });
-  }
-  const { link, cycle, order } = resolved;
+// resolveGuestOrderByOrderToken for why that differs from the product listing.
+function handleStatusRead(res, { link, cycle, order }) {
   res.json(statusPayload(link, cycle, order));
-});
+}
 
-// PUT /guest/:token/orders/:orderToken — edit the sub-order's items while the
+// Edit the sub-order's items while the
 // cycle is open (§UC-GSO-004). Replace-in-full: the body carries the whole cart.
 //
 // Items only. Identity (name/phone/email) is FROZEN at submit time — it is the
@@ -584,18 +865,12 @@ router.get('/:token/orders/:orderToken', guestReadLimiter, (req, res) => {
 // (host, GSO-T5), `status`, `total` and `order_token` are all server-owned too.
 //
 // Status codes:
-//   404 — the (link token, order token) pair does not resolve
+//   404 — the order token does not resolve (applied by the callers, before this)
 //   410 — the link or the host is deactivated: same closed door the submit sees
 //   409 — the cycle is not open (edits end at the lock), or the sub-order is
 //         already cancelled
 //   400 — bounds or stock limits
-router.put('/:token/orders/:orderToken', guestWriteLimiter, (req, res) => {
-  const resolved = resolveGuestOrder(req.params.token, req.params.orderToken);
-  if (resolved.error) {
-    return res.status(resolved.status).json({ error: resolved.error });
-  }
-  const { link, cycle, order } = resolved;
-
+function handleStatusEdit(req, res, { link, cycle, order }) {
   // A dead link or a deactivated host closes writes exactly as it closes the
   // submit — the host is the person who hands the goods over. Reading stays open.
   if (!link.active || !link.host_active) {
@@ -730,8 +1005,17 @@ router.put('/:token/orders/:orderToken', guestWriteLimiter, (req, res) => {
     // Deleting would therefore buy nothing beyond belt-and-braces, at the price of
     // permanently destroying the host's and the admin's record of what was ordered
     // and then called off — on an endpoint nobody has to authenticate to.
+    //
+    // ⚠ ONE shared write with the host's DELETE and the admin's cancel
+    // (`softCancelGuestOrder`, helpers/guest-orders.js). This door's hand-written
+    // copy had already drifted — it omitted the `<> 'cancelled'` guard the other two
+    // carry. That is a NO-OP here, because the terminal-cancelled 409 above returns
+    // before this line can ever run on a cancelled row (pinned by
+    // guest-status.spec.js's "cancelled is TERMINAL — a PUT cannot revive it"), so
+    // adopting the shared statement changes no behaviour on this route — it removes
+    // the divergence rather than fixing a live bug.
     if (cancelling) {
-      db.prepare("UPDATE guest_orders SET total = 0, status = 'cancelled' WHERE id = ?").run(order.id);
+      softCancelGuestOrder(order.id);
     } else {
       const total = replaceItems(order.id, lines);
       db.prepare("UPDATE guest_orders SET total = ?, status = 'submitted' WHERE id = ?").run(total, order.id);
@@ -763,9 +1047,9 @@ router.put('/:token/orders/:orderToken', guestWriteLimiter, (req, res) => {
   }
 
   res.json(statusPayload(link, cycle, loadOrder(order.id)));
-});
+}
 
-// POST /guest/:token/orders/:orderToken/invite-request — "Chcete si nabudúce
+// "Chcete si nabudúce
 // objednať sami?" (§UC-GSO-015, §Lead Capture). Creates a row in the EXISTING
 // `invitations` table so the lead lands in the queue the admin already works,
 // attributed to the host and tagged with its source.
@@ -779,14 +1063,16 @@ router.put('/:token/orders/:orderToken', guestWriteLimiter, (req, res) => {
 // so the code never has to leave the server. Everything else here IS the register
 // route's logic: same table, same pending-phone rule, same 409.
 //
-// WHY THE (link, order) TOKEN PAIR and not just :token: the link token is shared
-// with a whole office, the pair is the individual guest's. Requiring the pair means
-// only somebody who actually placed a sub-order can create a lead, and it lets the
-// contact details be prefilled from that sub-order.
+// WHY THE ORDER TOKEN and not just the link token: the link token is shared with a
+// whole office, the ORDER token is the individual guest's. Requiring it means only
+// somebody who actually placed a sub-order can create a lead, and it lets the
+// contact details be prefilled from that sub-order. (Module 14 dropped the link
+// half from the credential; the order half — the one that carries this property —
+// is unchanged.)
 //
-// GATING — deliberately the READ half's asymmetry (resolveGuestOrder, 404-only),
-// not the write half's:
-//   404 — the (link token, order token) pair does not resolve
+// GATING — deliberately the READ half's asymmetry
+// (resolveGuestOrderByOrderToken, 404-only), not the write half's:
+//   404 — the order token does not resolve (applied by the callers, before this)
 //   410 — the link or the host is deactivated: the invitation would be credited to
 //         a host who can no longer log in, and every other write on this surface
 //         treats that as a closed door
@@ -798,13 +1084,7 @@ router.put('/:token/orders/:orderToken', guestWriteLimiter, (req, res) => {
 // Nothing but name/phone/email is read from the body. `status`, `source`,
 // `invited_by_friend_id`, `invite_code`, `admin_note` and `processed_at` are all
 // server-owned — this is an unauthenticated write into an admin-facing queue.
-router.post('/:token/orders/:orderToken/invite-request', guestWriteLimiter, (req, res) => {
-  const resolved = resolveGuestOrder(req.params.token, req.params.orderToken);
-  if (resolved.error) {
-    return res.status(resolved.status).json({ error: resolved.error });
-  }
-  const { link } = resolved;
-
+function handleInviteRequest(req, res, { link }) {
   if (!link.active || !link.host_active) {
     return res.status(410).json({
       error: 'Tento odkaz už nie je aktívny. Požiadajte kolegu o nový.',
@@ -858,6 +1138,38 @@ router.post('/:token/orders/:orderToken/invite-request', guestWriteLimiter, (req
   // A bare acknowledgement: this is an anonymous write, so the response carries no
   // ids, no host details and nothing about the invitations queue.
   res.status(201).json({ success: true });
+}
+
+// ---------------------------------------------------------------------------
+// The LEGACY PAIR FORM (14 §UC-GR-002) — `/g/:token/o/:orderToken`'s API half,
+// kept working FOREVER. Every one of these URLs already sits in a colleague's
+// messages and in `localStorage.gorifi_guest_orders`; nobody migrates them, so a
+// strict pair would leave every pre-regeneration URL 404 forever — the incident
+// unfixed. The `:token` half is therefore ignored for resolution AND
+// authorization, and each route runs the very same shared handler as its
+// canonical twin above.
+router.get('/:token/orders/:orderToken', guestReadLimiter, (req, res) => {
+  const resolved = resolveLegacyPairForm(req);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  handleStatusRead(res, resolved);
+});
+
+router.put('/:token/orders/:orderToken', guestWriteLimiter, (req, res) => {
+  const resolved = resolveLegacyPairForm(req);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  handleStatusEdit(req, res, resolved);
+});
+
+router.post('/:token/orders/:orderToken/invite-request', guestWriteLimiter, (req, res) => {
+  const resolved = resolveLegacyPairForm(req);
+  if (resolved.error) {
+    return res.status(resolved.status).json({ error: resolved.error });
+  }
+  handleInviteRequest(req, res, resolved);
 });
 
 export default router;

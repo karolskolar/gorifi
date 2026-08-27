@@ -1,14 +1,20 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
-// GSO-T4: the guest's personal status/edit URL — `GET/PUT
-// /api/guest/:token/orders/:orderToken` (§UC-GSO-004) — plus the page at
-// `/g/:token/o/:orderToken`.
+// GSO-T4: the guest's personal status/edit URL. This file exercises the LEGACY
+// PAIR form — `GET/PUT /api/guest/:token/orders/:orderToken` (§UC-GSO-004) and the
+// page at `/g/:token/o/:orderToken` — which 14 §UC-GR-002 keeps working FOREVER.
+// The CANONICAL form (`/api/guest/o/:orderToken`, 14 §UC-GR-001) runs the very same
+// shared handlers and is covered in `guest-order-recovery.spec.js`; both forms are
+// asserted here to answer identically wherever the distinction matters.
 //
-// Everything here is anonymous: `ctx` carries no auth headers. The PAIR of tokens
-// in the URL is the whole credential, so the two most important properties are
-// (a) an order token only resolves under ITS OWN link token, and (b) the write
-// half re-applies every bound and gate that the submit in GSO-T3 applies.
+// Everything here is anonymous: the URL token IS the credential and `ctx` carries
+// no auth headers. ⚠ Since module 14 that credential is `order_token` ALONE — the
+// `:token` half of the pair form is URL carriage, ignored for resolution and
+// authorization (D1/D2; GSO-T4's "only under its own link token" is superseded).
+// So the two most important properties are (a) an order token resolves to its own
+// order under ANY link half while an unknown one answers a uniform 404, and (b) the
+// write half re-applies every bound and gate that the submit in GSO-T3 applies.
 //
 // The three lifecycle decisions this spec pins down:
 //   - `cancelled` is TERMINAL (the state diagram has no cancelled → submitted
@@ -200,36 +206,60 @@ test.describe('Guest status URL — GET (UC-GSO-004)', () => {
     expect(JSON.stringify(body.host)).not.toContain(host.username)
   })
 
-  test('a valid order token does NOT resolve under a different link token', async () => {
+  // ⚠ SUPERSEDED AND REWRITTEN by 14 §UC-GR-002 / resolved conflict 2 (GR-T1),
+  // e2e-immutability case (a). This test used to pin "the PAIR, not either token
+  // alone, is the credential" — the exact property that stranded the incident's
+  // guest: her URL's link half died with her host's regeneration while her order
+  // lived on, so a strict pair 404'd her forever. The link half is now URL
+  // carriage: resolution and authorization go through `order_token` ALONE (same
+  // generator, same 14 chars of `CODE_ALPHABET` entropy, so nothing is weakened),
+  // and the no-oracle property is RESTATED below rather than lost.
+  test('a valid order token resolves under ANY link half — the order token alone is the credential (14 §UC-GR-002)', async () => {
     const a = await scenario('crossa')
     const b = await scenario('crossb')
 
     const orderA = await submitGuest(a.link.token, [{ product_id: a.product.id, variant: '250g', quantity: 1 }])
+    const ownBody = await (await getStatus(a.link.token, orderA.order.order_token)).json()
 
-    // Its own link: fine.
-    expect((await getStatus(a.link.token, orderA.order.order_token)).status()).toBe(200)
+    // Its own link half, a FOREIGN host's link half, and a garbage one all resolve
+    // to the same order with the same payload.
+    for (const [label, half] of [
+      ['own link half', a.link.token],
+      ['a foreign host\'s link half', b.link.token],
+      ['a garbage link half', 'THISLINKDOESNOTEXIST'],
+    ]) {
+      const res = await getStatus(half, orderA.order.order_token)
+      expect(res.status(), label).toBe(200)
+      const body = await res.json()
+      expect(body.order.id, label).toBe(orderA.order.id)
+      expect(JSON.stringify(body), label).toBe(JSON.stringify(ownBody))
+    }
 
-    // Another host's link, a real order token: must not resolve, and must not
-    // leak that the order token exists.
-    const crossed = await getStatus(b.link.token, orderA.order.order_token)
-    expect(crossed.status(), 'the pair, not either token alone, is the credential').toBe(404)
-    expect(JSON.stringify(await crossed.json())).not.toContain(orderA.order.guest_name)
-
-    // The write half is scoped the same way.
+    // The write half resolves exactly the same way — one shared handler, so it
+    // cannot diverge — and it still edits the ORDER's own cycle.
     const crossedPut = await putStatus(b.link.token, orderA.order.order_token, {
+      items: [{ product_id: a.product.id, variant: '1kg', quantity: 1 }],
+    })
+    expect(crossedPut.status(), 'resolution follows the ORDER token on writes too').toBe(200)
+    expect((await crossedPut.json()).order.total).toBe(30)
+
+    // ⚠ But a foreign link half smuggles in NO foreign products: pricing stays
+    // scoped to the order's own cycle, so nothing prices ⇒ non-destructive 400.
+    const smuggle = await putStatus(b.link.token, orderA.order.order_token, {
       items: [{ product_id: b.product.id, variant: '250g', quantity: 5 }],
     })
-    expect(crossedPut.status(), 'no cross-link edits').toBe(404)
+    expect(smuggle.status(), 'a foreign link half grants nothing extra').toBe(400)
 
-    // ...and order A is untouched.
+    // ...and order A still holds exactly what the successful edit left.
     const still = await (await getStatus(a.link.token, orderA.order.order_token)).json()
     expect(still.items.length).toBe(1)
-    expect(still.order.total).toBe(10)
+    expect(still.order.total).toBe(30)
+    expect(still.order.status).toBe('submitted')
   })
 
   test('404 for an unknown order token, an unknown link token, and a blank pair', async () => {
     const { link, product } = await scenario('unknown')
-    await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+    const created = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }])
 
     expect((await getStatus(link.token, 'THISORDERDOESNOTEXIST')).status()).toBe(404)
     expect((await getStatus('THISLINKDOESNOTEXIST', 'THISORDERDOESNOTEXIST')).status()).toBe(404)
@@ -237,6 +267,15 @@ test.describe('Guest status URL — GET (UC-GSO-004)', () => {
     const res = await getStatus(link.token, 'ZZZZZZZZZZZZZZ')
     expect(res.status()).toBe(404)
     expect((await res.json()).error, 'a Slovak explanation, not an empty body').toBeTruthy()
+
+    // THE INVERSE PIN (14 §UC-GR-010 item 2, added by GR-T1): the ORDER half is
+    // what decides. An unknown link half with a VALID order token is a 200 — that
+    // asymmetry with the four 404s above is precisely the recovery this module
+    // exists for, and it is what keeps the uniform 404 an honest no-oracle
+    // statement about the order token rather than about the pair.
+    const inverse = await getStatus('THISLINKDOESNOTEXIST', created.order.order_token)
+    expect(inverse.status(), 'unknown link half + valid order token ⇒ 200').toBe(200)
+    expect((await inverse.json()).order.id).toBe(created.order.id)
   })
 })
 

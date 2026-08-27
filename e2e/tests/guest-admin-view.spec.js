@@ -251,11 +251,19 @@ async function cycleRow(cycleId) {
   return row
 }
 
+// ⚠ The balance lives at `detail.friend.balance`, NOT at the top level: the route
+// answers `{ friend: sanitizeFriend(friend), transactions, orders }` (friends.js) and
+// `sanitizeFriend` does not hoist it. Reading `detail.balance` yielded `undefined`,
+// so every `expect(after.balance).toBe(before.balance)` below compared undefined to
+// undefined and COULD NOT FAIL — on the one assertion whose whole job is proving a
+// real friend's balance did not move. Found by the GR-T4 review; fixed here rather
+// than only in the file that inherited it.
 async function friendTransactions(friendId) {
   const res = await admin(`/api/friends/${friendId}/detail`)
   expect(res.status(), 'friend detail').toBe(200)
   const detail = await res.json()
-  return { balance: detail.balance, count: (detail.transactions || []).length }
+  expect(detail.friend, 'the detail payload nests the friend').toBeTruthy()
+  return { balance: detail.friend.balance, count: (detail.transactions || []).length }
 }
 
 async function guestStatus(linkToken, orderToken) {
@@ -490,8 +498,14 @@ test.describe('GET /api/guest-orders/cycle/:cycleId/unpaid — the money overvie
     // The aggregate is what the admin is still owed by guests in this cycle.
     expect(overview.totals).toEqual({ count: 2, total: 25 + 37.5 })
 
-    // The order_token is the guest's private credential and never leaks here.
-    expect(JSON.stringify(overview)).not.toContain(first.order.order_token)
+    // ⚠ INVERTED by 14 §UC-GR-006 (GR-T5): this receivables screen is where the
+    // admin chases a guest whose status URL died, so it is the surface that needs
+    // the token most — UC-GR-006 names it explicitly. Sharpened: asserted equal to
+    // the token the guest holds, not merely present.
+    expect(rowA.order_token, 'the admin can resend the URL from the screen that shows the debt')
+      .toBe(first.order.order_token)
+    expect(overview.unpaid.find((r) => r.id === second.order.id).order_token)
+      .toBe(second.order.order_token)
 
     // Paying the rest empties the list.
     expect((await setPaid(first.order.id, true)).status()).toBe(200)
@@ -621,8 +635,12 @@ test.describe('GET /api/orders/cycle/:cycleId — sub-orders nested under their 
 
     // The host's OWN total is untouched by their guests' money (§UC-GSO-006).
     expect(hostRow.total, 'own items only: 1 × 250g at 10').toBe(10)
-    // And the guest's private status token still never reaches an admin surface.
-    expect(JSON.stringify(orders)).not.toContain(created.order.order_token)
+    // ⚠ INVERTED by 14 §UC-GR-006 (GR-T5): `order_token` joins the shared
+    // `GUEST_ORDER_FIELDS` (D6 — one list, so a column cannot land on the host
+    // surface and be missing from the admin's), which puts it on this nested payload
+    // too. Sharpened to an equality against the token the guest actually holds.
+    expect(sub.order_token, 'the admin sees the same resend URL the host does')
+      .toBe(created.order.order_token)
   })
 
   test('a host with guest sub-orders but no own order is still visible', async () => {
@@ -798,6 +816,12 @@ test.describe('GSO-T5\'s paid-cancel guard, now through the real API', () => {
 
 // ---- UI: the admin cycle detail, orders tab ----------------------------------
 
+// ⚠ Fixture names are interpolated into the anchored `RegExp`s the GR-T6 retargets
+// below use. Escaping is a no-op for today's names (alphanumerics and spaces) and is
+// written down for the one that will not be: a `(`, `+`, `?` or `.` would otherwise
+// make the anchor a syntax error, or silently loosen an assertion that still passes.
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 async function loginAsAdminUI(page) {
   await page.goto('/admin')
   await page.locator('#password').fill(ADMIN_PASSWORD)
@@ -835,7 +859,14 @@ test.describe('Admin cycle detail UI — nested sub-orders (UC-GSO-009..010)', (
     await page.getByRole('tab', { name: 'Objednávky' }).click()
 
     // The host's own order row is there, and both sub-orders hang off it.
-    await expect(page.getByRole('cell', { name: ui.host.name, exact: true })).toBeVisible()
+    // ⚠ RETARGETED (14 §UC-GR-008, GR-T6 — case (a) of the e2e-immutability rule).
+    // `exact: true` no longer holds because the name cell now also carries the
+    // host's SHARE-LINK control ("Hosťovský odkaz" / "Vytvoriť hosťovský odkaz"),
+    // which is where the admin forwards a lost ordering link from. The protected
+    // property — the host's own row is rendered, named — is unchanged and is now
+    // pinned as "a cell that STARTS with the host's name", which still cannot be
+    // satisfied by a guest row (those read "Hosť • pozval …" first).
+    await expect(page.getByRole('cell', { name: new RegExp(`^${escapeRe(ui.host.name)}`) })).toBeVisible()
     const rowA = page.locator(`[data-testid="guest-suborder-${ui.guestA.id}"]`)
     const rowB = page.locator(`[data-testid="guest-suborder-${ui.guestB.id}"]`)
     await expect(rowA).toBeVisible()
@@ -851,11 +882,19 @@ test.describe('Admin cycle detail UI — nested sub-orders (UC-GSO-009..010)', (
     await expect(rowB.getByTestId(`guest-delivered-state-${ui.guestB.id}`)).toContainText('Odovzdané')
     await expect(rowA.getByTestId(`guest-delivered-state-${ui.guestA.id}`)).toContainText('Neodovzdané')
     await expect(rowA.locator('input[type="checkbox"]'), 'no delivered control on the admin side').toHaveCount(0)
-    // Exactly two controls: the expand chevron (view-only) and the paid toggle
-    // (the admin's one flag). `delivered` stays a rendered state, never a control.
-    await expect(rowA.locator('button')).toHaveCount(2)
+    // ⚠ RETARGETED (14 §UC-GR-008, GR-T6 — case (a)). The row gained the two
+    // controls that UC mandates: the guest's resend link and the admin's cancel.
+    // A blanket count was only ever a proxy for the property this test is really
+    // about — `delivered` is a rendered STATE and never a control — so the controls
+    // are now ENUMERATED, which pins that property harder than a number: a
+    // `delivered` checkbox appearing here would break the list, not just the count.
+    await expect(rowA.locator('button')).toHaveCount(4)
     await expect(rowA.getByTestId(`guest-expand-${ui.guestA.id}`)).toBeVisible()
     await expect(rowA.getByTestId(`guest-paid-toggle-${ui.guestA.id}`)).toBeVisible()
+    await expect(rowA.getByTestId(`guest-order-link-${ui.guestA.id}`)).toBeVisible()
+    await expect(rowA.getByTestId(`guest-cancel-${ui.guestA.id}`)).toBeVisible()
+    await expect(rowA.locator(`[data-testid^="guest-delivered-"]:is(button)`),
+      'delivered is still not a control').toHaveCount(0)
 
     // The paid toggle persists across a reload (it is server state, not a ref).
     const paidToggle = rowA.getByTestId(`guest-paid-toggle-${ui.guestA.id}`)
@@ -981,7 +1020,9 @@ test.describe('Admin cycle detail UI — the guest card must not break the order
 
     // Friend view (default): the host's own row, no violet guest rows.
     await expect(page.getByRole('columnheader', { name: 'Priateľ' })).toBeVisible()
-    await expect(page.getByRole('cell', { name: host.name, exact: true })).toBeVisible()
+    // ⚠ RETARGETED with :856 above, same reason (14 §UC-GR-008, GR-T6, case (a)):
+    // the name cell now also carries the host's share-link control.
+    await expect(page.getByRole('cell', { name: new RegExp(`^${escapeRe(host.name)}`) })).toBeVisible()
     await expect(page.locator('[data-testid^="guest-suborder-"]')).toHaveCount(0)
 
     // Product view renders too — the toggle and the table are not casualties of a
@@ -1017,5 +1058,234 @@ test.describe('Admin cycle detail UI — the guest card must not break the order
     await page.getByRole('button', { name: 'Podľa priateľa' }).click()
     await expect(page.getByRole('columnheader', { name: 'Priateľ' })).toBeVisible()
     await expect(page.locator(`[data-testid="guest-suborder-${guest.id}"]`)).toBeVisible()
+  })
+})
+
+// The orders tab's "Podľa produktu" sheet had to grow the guest half, and the bug
+// it fixes was reported from production: `helpers/stock.js` counts guest bags
+// against `products.stock_limit_g`, so the friend-facing "Zostáva 0.75 kg z 1.25 kg"
+// bar had already subtracted bags this table never listed — 1 ks here against
+// 0.5 kg claimed, which reads as a broken counter rather than a missing half.
+// The Sumár tab's sheet (GET /api/cycles/:id/summary) merges the two SERVER-side
+// for the same reason (§UC-GSO-013); this is the client-side twin of that rule, so
+// it is asserted in the browser — no payload changed, only the grouping did.
+//
+// ⚠ The numbers are EXACT, never "went up": guests merged into their own line
+// instead of the friend's, or counted twice, both survive a "greater than".
+test.describe('Admin cycle detail UI — "Podľa produktu" counts guest bags (UC-GSO-013)', () => {
+  let pv
+  let draftPv
+
+  test.beforeAll(async () => {
+    // Earlier blocks in this file log in through the UI form, which replaces the one
+    // live admin session — so re-log-in via the API before building fixtures.
+    await refreshAdminToken()
+
+    // markup 1 so every figure below is exact arithmetic on the list price: the
+    // guest's marked-up unit price is what `guest_order_items.price` froze, and a
+    // ratio would put rounding between the assertion and the rule under test.
+    const built = await scenario('prodview', { markup: 1 })
+    await submitOwnOrder(built.host, built.cycle.id, [{ product_id: built.product.id, variant: '250g', quantity: 1 }])
+    const guest = await submitGuest(built.link.token, [{ product_id: built.product.id, variant: '250g', quantity: 2 }], {
+      guest_name: 'Hosto Kolega', guest_phone: '0904 111 222',
+    })
+    // A CANCELLED sub-order on a DIFFERENT variant. Cancelling keeps the item rows
+    // (GSO-T4), so the status predicate is the whole mechanism — if it is missing,
+    // a 1kg line appears out of nowhere on the sheet the admin orders with.
+    const cancelled = await submitGuest(built.link.token, [{ product_id: built.product.id, variant: '1kg', quantity: 1 }], {
+      guest_name: 'Zruseny Kolega', guest_phone: '0904 999 888',
+    })
+    expect((await ctx.delete(`/api/guest-orders/${cancelled.order.id}`, { headers: built.host.auth })).status(),
+      'host cancels the third sub-order').toBe(200)
+    pv = { ...built, guest: guest.order, cancelled: cancelled.order }
+
+    // A SEPARATE cycle for the draft case, so the exact figures above stay exact.
+    // The host saves a cart and never submits: `PUT /api/orders/...` get-or-creates
+    // the row with the schema default status 'draft' (orders.js) — no bug needed,
+    // and the FUP-T15 half-write left such rows behind on real databases too.
+    const dr = await scenario('draftpv', { markup: 1 })
+    const cart = await ctx.put(`/api/orders/cycle/${dr.cycle.id}/friend/${dr.host.id}`, {
+      headers: dr.host.auth,
+      data: { items: [{ product_id: dr.product.id, variant: '250g', quantity: 5 }] },
+    })
+    expect(cart.status(), 'cart saved but NOT submitted').toBe(200)
+    expect((await cart.json()).order.status, 'the row really is a draft').toBe('draft')
+    const drGuest = await submitGuest(dr.link.token, [{ product_id: dr.product.id, variant: '250g', quantity: 2 }], {
+      guest_name: 'Draft Hosto', guest_phone: '0905 111 222',
+    })
+    draftPv = { ...dr, guest: drGuest.order }
+  })
+
+  test('one line per product+variant, friend and guest bags merged, cancelled excluded', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${pv.cycle.id}`)
+    await page.getByRole('tab', { name: 'Objednávky' }).click()
+    await page.getByRole('button', { name: 'Podľa produktu' }).click()
+
+    // ONE line for the 250g variant — the guest's two bags merged into the friend's
+    // line, not listed beside it. Cells: chevron, product, Ks, Suma.
+    const line = page.getByRole('row').filter({ hasText: pv.product.name }).filter({ hasText: '250g' })
+    await expect(line, 'a guest 250g of X is not a separate product').toHaveCount(1)
+    await expect(line.getByRole('cell').nth(2), '1 own bag + 2 guest bags').toHaveText('3')
+    await expect(line.getByRole('cell').nth(3)).toHaveText('30.00 EUR')
+
+    // The cancelled sub-order's variant must not appear at all.
+    await expect(page.getByRole('row').filter({ hasText: '1kg' }),
+      'a cancelled bag is off the sheet, item rows or not').toHaveCount(0)
+
+    // The footer agrees with the lines above it — Ks and Suma are both the merged
+    // figure. Suma used to come from `orders.total` (friends only), which would
+    // have left the two halves of this one row disagreeing.
+    const footer = page.getByRole('row').filter({ hasText: 'Celkom' })
+    await expect(footer.getByRole('cell').nth(2)).toHaveText('3')
+    await expect(footer.getByRole('cell').nth(3)).toHaveText('30.00 EUR')
+  })
+
+  test('expanding a line names the guest as a guest, with the host who invited them', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${pv.cycle.id}`)
+    await page.getByRole('tab', { name: 'Objednávky' }).click()
+    await page.getByRole('button', { name: 'Podľa produktu' }).click()
+
+    const line = page.getByRole('row').filter({ hasText: pv.product.name }).filter({ hasText: '250g' })
+    await expect(page.getByRole('cell', { name: /Hosto Kolega/ }), 'collapsed by default').toHaveCount(0)
+    await line.click()
+
+    // The guest is FIRST (2 bags against the host's 1 — buyers sort by quantity)
+    // and is marked as a guest with their host. Without the marker a guest would be
+    // indistinguishable from a friend on a screen where only friends have a balance.
+    const guestCell = page.getByRole('cell', { name: /Hosto Kolega/ })
+    await expect(guestCell).toBeVisible()
+    await expect(guestCell).toContainText('hosť')
+    await expect(guestCell).toContainText(`pozval ${pv.host.name.split(' ')[0]}`)
+
+    // …and the host's own bag is still its own row, unmarked.
+    const hostCell = page.getByRole('cell', { name: pv.host.name, exact: true })
+    await expect(hostCell).toBeVisible()
+    await expect(hostCell, 'the friend row carries no guest marker').not.toContainText('hosť')
+
+    await expect(page.getByRole('cell', { name: /Zruseny Kolega/ }),
+      'the cancelled guest has no line to expand into').toHaveCount(0)
+  })
+
+  test('the friend view is untouched — the host still owes their OWN bag only', async ({ page }) => {
+    // Decision 4's other half. The product sheet is a cycle-LEVEL quantity
+    // aggregate, so a guest legitimately shows up in it; the per-FRIEND view must
+    // not move at all. The guest IS listed there too, but only NESTED under their
+    // host as a sub-order (GSO-T6) — never as a party row with a balance — and the
+    // host's payable total stays own-items-only, because guests pay the admin
+    // directly (Decision 1).
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${pv.cycle.id}`)
+    await page.getByRole('tab', { name: 'Objednávky' }).click()
+
+    const friendRow = page.getByRole('row').filter({ hasText: pv.host.name }).first()
+    await expect(friendRow).toBeVisible()
+    // ONE 250g bag and 10.00 EUR — not the 30.00 EUR the product sheet totals.
+    await expect(friendRow, "the guest's two bags are not on the host's bill").toContainText('10.00 EUR')
+    await expect(friendRow).not.toContainText('30.00 EUR')
+
+    // The guest's name appears ONLY inside their nested sub-order row.
+    const guestCells = page.getByRole('cell').filter({ hasText: /Hosto Kolega/ })
+    await expect(guestCells).toHaveCount(1)
+    await expect(page.locator(`[data-testid="guest-suborder-${pv.guest.id}"]`)).toContainText('Hosto Kolega')
+  })
+
+  // The other half of the same divergence. A DRAFT reserves no stock
+  // (`helpers/stock.js` counts `o.status = 'submitted'`) and is not on the Sumár
+  // sheet either, so counting it here made this table report MORE than the
+  // friend-facing bar had subtracted — the mirror image of the missing guest half.
+  // The host's guest bags must survive that filter: they are bought regardless of
+  // what their host did with their own cart.
+  test('a DRAFT cart is off the sheet, while its host\'s guest bags stay on it', async ({ page }) => {
+    // The server's own sheet first — the number this table has to agree with. Read
+    // BEFORE this test's own UI login, and after a re-login, because the tests above
+    // already replaced the one live admin session with theirs.
+    await refreshAdminToken()
+    const summary = await admin(`/api/cycles/${draftPv.cycle.id}/summary`)
+    expect(summary.status(), 'summary').toBe(200)
+    const sheetLine = (await summary.json()).items.find(
+      (i) => i.product_id === draftPv.product.id && i.variant === '250g'
+    )
+    expect(sheetLine.total_quantity, 'server sheet: the 2 guest bags, not the 5 drafted ones').toBe(2)
+
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${draftPv.cycle.id}`)
+    await page.getByRole('tab', { name: 'Objednávky' }).click()
+    await page.getByRole('button', { name: 'Podľa produktu' }).click()
+
+    const line = page.getByRole('row').filter({ hasText: draftPv.product.name }).filter({ hasText: '250g' })
+    await expect(line.getByRole('cell').nth(2), 'the 5 drafted bags are nobody\'s order yet').toHaveText('2')
+    await expect(line.getByRole('cell').nth(3)).toHaveText('20.00 EUR')
+
+    // The buyer list is the guest alone — the drafting host is not on it.
+    await line.click()
+    await expect(page.getByRole('cell', { name: /Draft Hosto/ })).toBeVisible()
+    await expect(page.getByRole('cell', { name: draftPv.host.name, exact: true })).toHaveCount(0)
+
+    // …and the draft is EXCLUDED FROM THE SHEET, not from the screen: the friend
+    // …and it is off the FRIEND view's figures too (product decision 2026-08-26: an
+    // unsubmitted cart contributes to nothing in this tab). The row is still listed,
+    // because the admin has to be able to see that a cart exists — but as a status,
+    // not as numbers.
+    await page.getByRole('button', { name: 'Podľa priateľa' }).click()
+    const hostRow = page.getByRole('row').filter({ hasText: draftPv.host.name }).first()
+    await expect(hostRow).toBeVisible()
+    await expect(hostRow, 'the draft is a state, not a figure').toContainText('Rozpracovane')
+    await expect(hostRow, 'its 50 EUR of cart is nowhere on the row').not.toContainText('50.00 EUR')
+    // `formatPrice(0)` renders '-', which is exactly what a not-ordered row shows.
+    await expect(hostRow.getByRole('cell').nth(2)).toHaveText('-')
+
+    // The footer counts the guest bags and nothing else: 2 × 10.00.
+    const footer = page.getByRole('row').filter({ hasText: 'Celkom' })
+    await expect(footer.getByRole('cell').nth(2), 'the drafted 50 EUR is not in the total').toHaveText('-')
+  })
+
+  // The money bug this fixture also exposes: marking paid INSERTs a `payment`
+  // transaction for `order.total` and moves the friend's real balance, so on a draft
+  // it turned an unsubmitted cart's value into a payment record — sitting in the
+  // ledger while every submitted-only aggregate stayed blind to it.
+  test('a DRAFT cannot be marked paid — no ledger row, no balance move, no control offered', async ({ page }) => {
+    await refreshAdminToken()
+    const draftOrder = (await adminOrders(draftPv.cycle.id)).find((o) => o.friend_id === draftPv.host.id)
+    expect(draftOrder.status, 'the fixture is a draft').toBe('draft')
+
+    const before = await friendTransactions(draftPv.host.id)
+    const watermark = transactionWatermark()
+
+    const res = await admin(`/api/orders/${draftOrder.id}/paid`, { method: 'patch', data: { paid: true } })
+    expect(res.status(), 'refused, the same way PATCH /:id/packed refuses one').toBe(400)
+    expect((await res.json()).error).toMatch(/odoslané objednávky/i)
+
+    // Re-read from the DB, not from the refusal: the flag and the ledger must both
+    // be untouched.
+    const after = await friendTransactions(draftPv.host.id)
+    expect(after.count, 'no payment transaction was written').toBe(before.count)
+    expect(after.balance, 'the balance did not move').toBe(before.balance)
+    const reread = (await adminOrders(draftPv.cycle.id)).find((o) => o.id === draftOrder.id)
+    expect(reread.paid, 'paid stayed 0').toBeFalsy()
+    const rows = txRowsFor(watermark, draftPv.host.id, draftOrder.id)
+    if (rows !== null) expect(rows, 'nothing in the ledger names this order').toEqual([])
+
+    // Non-vacuity: the route still works on a real order.
+    const submitted = (await adminOrders(pv.cycle.id)).find((o) => o.friend_id === pv.host.id)
+    expect(submitted.status).toBe('submitted')
+    expect((await admin(`/api/orders/${submitted.id}/paid`, { method: 'patch', data: { paid: true } })).status(),
+      'a submitted order is still payable').toBe(200)
+    expect((await admin(`/api/orders/${submitted.id}/paid`, { method: 'patch', data: { paid: false } })).status()).toBe(200)
+
+    // And the admin is not offered a control that can only fail.
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${draftPv.cycle.id}`)
+    await page.getByRole('tab', { name: 'Objednávky' }).click()
+    const hostRow = page.getByRole('row').filter({ hasText: draftPv.host.name }).first()
+    // ⚠ RETARGETED (14 §UC-GR-008, GR-T6 — case (a)). The share-link control renders
+    // on every LISTED row, drafts included: a friend with an unsubmitted cart is
+    // still a perfectly good host to forward an ordering link to, and that is
+    // orthogonal to what this test protects. The property is restated exactly —
+    // no paid checkbox and no expand chevron on a draft — by excluding only the
+    // control this row added, rather than counting all buttons.
+    await expect(hostRow.locator('button:not([data-testid^="host-guest-link"])'),
+      'no paid checkbox, no expand chevron').toHaveCount(0)
   })
 })

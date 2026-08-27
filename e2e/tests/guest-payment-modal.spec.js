@@ -668,7 +668,11 @@ test.describe('RD-GX-2 · g-confirm (§UC-GX-004)', () => {
     const row = col.getByTestId('guest-status-url')
     await expect(row).toHaveClass(/\bcopyrow\b/)
     const shown = (await row.locator('.val').textContent()).trim()
-    expect(shown).toMatch(new RegExp(`/g/${link.token}/o/[A-Z2-9]{12,}$`))
+    // ⚠ RETARGETED by 14 §UC-GR-003 (UC-GR-010 item 6): the canonical form
+    // `/g/o/:orderToken`. `toHaveURL(shown)` below then passes unchanged — both sides
+    // are canonical, because the button pushes `status_path` verbatim.
+    expect(shown).toMatch(/\/g\/o\/[A-Z2-9]{12,}$/)
+    expect(shown, 'no link token in a newly emitted status URL').not.toContain(link.token)
     // ⚠ 2026-08-12: the label absorbed the help line's first sentence and the
     // `.field-help` paragraph under the copy row is GONE (the screen was too
     // crowded). The absence is asserted, not just the new copy — otherwise a revert

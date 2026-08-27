@@ -1,9 +1,40 @@
 import { Router } from 'express';
 import db, { generateGuestToken } from '../db/schema.js';
 import { requireHost } from '../middleware/friend-auth.js';
+import { requireAdmin } from '../middleware/admin-auth.js';
 import { loadSubOrders } from '../helpers/guest-orders.js';
 
 const router = Router();
+
+// The host's guest share links.
+//
+// ⚠ MIXED-AUTH ROUTER — mounted BARE in index.js and gated PER ROUTE (the
+// routes/guest-orders.js:17-27 idiom):
+//   HOST-only  (friend Bearer identity, §UC-GSO-005)
+//     POST   /cycle/:cycleId                  create-or-regenerate own link
+//     GET    /cycle/:cycleId                  own link + own sub-orders
+//     PATCH  /:id                             deactivate / reactivate own link
+//   ADMIN-only (`requireAdmin`, 14 §UC-GR-004)
+//     GET    /cycle/:cycleId/all              every host's link for the cycle
+//     POST   /cycle/:cycleId/host/:friendId   create-if-missing for one host
+// Wrapping the mount in either guard would be wrong in both directions — an admin
+// route cannot live under a host guard, and vice versa. Every route added here
+// MUST state its own guard on its first lines.
+//
+// ⚠⚠ EXPLICIT NON-CAPABILITY (14 §UC-GR-004 / Decision D3 — PO decision): the
+// admin has **READ + CREATE only**. There is NO admin regenerate, NO admin
+// deactivate and NO admin reactivate, and **no admin route on this prefix may ever
+// write `token` or `active`**. Revocation stays host-only (PATCH /:id, requireHost
+// + ownership). The reasons are the production incident itself:
+//   - an admin REGENERATE silently severs every colleague already holding the URL
+//     — that is exactly what stranded the incident's guest;
+//   - an admin REACTIVATE would republish a link the host deliberately revoked
+//     after a leak, and only the host knows who holds it.
+// The create route below therefore returns an existing row completely UNTOUCHED
+// (token byte-identical, `active` unwritten, including when it is 0). Its
+// idempotency is machine-pinned in e2e/tests/guest-order-recovery.spec.js
+// ("the no-regenerate proof"), which is what a future "just refresh the token
+// while we're here" refactor will trip over.
 
 const LINK_COLUMNS = 'id, token, host_friend_id, cycle_id, active, created_at';
 
@@ -27,9 +58,18 @@ function uniqueToken() {
 // same row shape, so the loaders are shared rather than duplicated.
 //
 // The GSO-T2 response shape is EXTENDED, never reshaped: `{ link, guest_orders,
-// totals }` still holds, `guest_orders[i].items` is new. `order_token` remains
-// unexposed — it is the guest's private status/edit URL and the host never needs
-// it.
+// totals }` still holds, `guest_orders[i].items` is new.
+//
+// ⚠ `order_token` IS exposed here from module 14 on (14 §UC-GR-006, GR-T5) — a
+// CONSCIOUS REVERSAL of GSO-T2's exclusion, and `GET /cycle/:cycleId` below is the
+// primary publishing surface. The host needs it to re-send a colleague the link to
+// their own order: hiding it is precisely why nobody could help the guest whose
+// status URL died with a link regeneration. The surviving half of the old rule is
+// the one that matters: **routes/guest.js remains the ONLY place `order_token`
+// authenticates anything.** Published is not the same as rendered — no view may put
+// a token into an attribute (`title`/`href`/`data-*`); it is composed in JS at click
+// time. The LINK listing (`GET /cycle/:cycleId/all`, UC-GR-004) deliberately carries
+// no token: it is link data, and the tokens ride the sub-order rows.
 
 function getCycle(cycleId) {
   return db.prepare('SELECT id FROM order_cycles WHERE id = ?').get(cycleId);
@@ -101,6 +141,84 @@ router.patch('/:id', (req, res) => {
 
   const updated = getLink(link.id);
   res.json({ link: updated, ...loadSubOrders(updated.id) });
+});
+
+// ---------------------------------------------------------------------------
+// ADMIN half (14 §UC-GR-004). `requireAdmin` on each route's own line — see the
+// MIXED-AUTH note at the top of this file, and the D3 non-capability it records.
+
+// The same LINK_COLUMNS, qualified for the JOIN below. One column list, so a
+// future addition cannot land on one surface and not the other.
+const LINK_COLUMNS_L = LINK_COLUMNS.split(', ').map((c) => `l.${c}`).join(', ');
+
+// GET /guest-links/cycle/:cycleId/all — ADMIN. Every host's share link for this
+// cycle, so the admin can forward one on the host's behalf (PO requirement 1).
+//
+// Deliberately a SEPARATE endpoint rather than a fold into the orders-tab payload
+// (routes/orders.js `GET /cycle/:cycleId`): that payload is built over friend
+// orders with a LEFT JOIN, and a second join for link data is the row-multiplying
+// class the GSO-T6/T8 notes warn about. Link data keeps its one home here and the
+// frontend joins the two payloads by `host_friend_id` (§UC-GR-008).
+//
+// `order_token` is NOT link data and does not appear here — it rides the sub-order
+// rows (§UC-GR-006, GR-T5).
+router.get('/cycle/:cycleId/all', requireAdmin, (req, res) => {
+  const cycle = getCycle(req.params.cycleId);
+  if (!cycle) return res.status(404).json({ error: 'Cyklus nebol nájdený' });
+
+  // `host_active` is joined in because a link under a deactivated host 410s for
+  // every guest (routes/guest.js resolveLink) — the admin must see that the URL is
+  // dead even though the link row itself still says active = 1.
+  const links = db.prepare(`
+    SELECT ${LINK_COLUMNS_L}, f.name AS host_name, f.active AS host_active
+    FROM guest_order_links l
+    JOIN friends f ON f.id = l.host_friend_id
+    WHERE l.cycle_id = ?
+    ORDER BY f.name COLLATE NOCASE, l.id
+  `).all(cycle.id);
+
+  res.json({ links });
+});
+
+// POST /guest-links/cycle/:cycleId/host/:friendId — ADMIN, CREATE-IF-MISSING.
+//
+// ⚠ This route NEVER regenerates and NEVER writes `active` (D3). An existing row
+// is returned exactly as stored — including an inactive one, so the admin sees the
+// state the host chose rather than silently getting it republished. Only the
+// INSERT branch writes anything, and it names its columns literally, so nothing
+// smuggled into the request body can land.
+//
+// No cycle-status gate, mirroring the host's own POST above (existence only): a
+// link for a non-open cycle is inert anyway, since `resolveLink` 410s it.
+router.post('/cycle/:cycleId/host/:friendId', requireAdmin, (req, res) => {
+  const cycle = getCycle(req.params.cycleId);
+  if (!cycle) return res.status(404).json({ error: 'Cyklus nebol nájdený' });
+
+  const friend = db.prepare('SELECT id, active FROM friends WHERE id = ?').get(req.params.friendId);
+  if (!friend) return res.status(404).json({ error: 'Priateľ nebol nájdený' });
+
+  // A deactivated host's link 410s for every guest, so creating one would hand the
+  // admin a dead URL as if it had worked.
+  if (!friend.active) {
+    return res.status(409).json({
+      error: 'Priateľ je deaktivovaný — odkaz pre hostí by nefungoval. Najprv ho aktivujte.',
+      reason: 'inactive_host',
+    });
+  }
+
+  const existing = db.prepare(
+    `SELECT ${LINK_COLUMNS} FROM guest_order_links WHERE host_friend_id = ? AND cycle_id = ?`
+  ).get(friend.id, cycle.id);
+
+  if (existing) {
+    return res.json({ link: existing, created: false });
+  }
+
+  const result = db.prepare(
+    'INSERT INTO guest_order_links (token, host_friend_id, cycle_id, active) VALUES (?, ?, ?, 1)'
+  ).run(uniqueToken(), friend.id, cycle.id);
+
+  res.status(201).json({ link: getLink(result.lastInsertRowid), created: true });
 });
 
 export default router;

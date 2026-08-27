@@ -275,15 +275,19 @@ test.describe('Guest submit — success (UC-GSO-002/003)', () => {
     expect(body.payment.iban).toBe(settings.paymentIban)
     expect(body.payment.revolut_username).toBe(settings.paymentRevolutUsername)
 
-    // Persisted where the host can see it — and the guest's private token is NOT
-    // in the host payload.
+    // Persisted where the host can see it — including, since 14 §UC-GR-006 (GR-T5),
+    // the guest's own status token.
     const hostView = await (await ctx.get(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })).json()
     expect(hostView.guest_orders.length).toBe(1)
     expect(hostView.guest_orders[0].id).toBe(body.order.id)
     expect(hostView.guest_orders[0].total).toBe(62.5)
     expect(hostView.guest_orders[0].guest_phone).toBe(IDENTITY.guest_phone)
     expect(hostView.totals).toEqual({ count: 1, total: 62.5 })
-    expect(JSON.stringify(hostView), 'order_token stays private to the guest').not.toContain(body.order.order_token)
+    // ⚠ INVERTED by 14 §UC-GR-006: the GSO-T2 "never expose it" rule is reversed so
+    // the host can resend a colleague's lost link (the incident). Sharpened to an
+    // equality — the whole value of publishing it is that it is the RIGHT token.
+    expect(hostView.guest_orders[0].order_token, 'the host\'s resend affordance reads this')
+      .toBe(body.order.order_token)
 
     // A second guest on the same link is fine — no cap (Decision 6).
     const second = await ctx.post(`/api/guest/${link.token}/orders`, {
@@ -882,7 +886,13 @@ test.describe('Guest ordering UI (/g/:token)', () => {
     // 06 §UC-GX-011 item 3: the status URL is a `NeoCopyRow`, not an `<input>` —
     // the value is the row's text.
     const statusUrl = (await page.getByTestId('guest-status-url').locator('.val').textContent()).trim()
-    expect(statusUrl).toMatch(new RegExp(`/g/${link.token}/o/[A-Z2-9]{12,}$`))
+    // ⚠ RETARGETED by 14 §UC-GR-003 (UC-GR-010 item 5): `status_path` is the
+    // CANONICAL `/g/o/:orderToken` now — the link half is gone from every URL the app
+    // hands out, because binding a status URL to a share token is what stranded the
+    // incident's guest. The property is unchanged: the row shows a real status URL
+    // carrying a server-generated order token.
+    expect(statusUrl).toMatch(/\/g\/o\/[A-Z2-9]{12,}$/)
+    expect(statusUrl, 'no link token in a newly emitted status URL').not.toContain(link.token)
 
     // ...and the same URL is kept in localStorage so the guest can find it again.
     const stored = await page.evaluate(() => localStorage.getItem('gorifi_guest_orders'))

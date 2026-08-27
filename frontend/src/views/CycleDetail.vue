@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watchEffect } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -144,42 +144,113 @@ function toggleExpandProduct(key) {
 // themselves (§Edge Cases: "host has no own order at lock time") — otherwise the
 // guest sub-orders nested under them, and the money owed for them, would be
 // invisible on this screen. Such a row contributes 0 to every total below.
-const submittedOrders = computed(() => orders.value.filter(
+const listedOrders = computed(() => orders.value.filter(
   o => o.status === 'submitted' || o.status === 'draft' || (o.guest_orders && o.guest_orders.length > 0)
 ))
 
-// Group by product: { productKey: { product_name, purpose, variant, total_quantity, total_price, friends: [{ friend_name, quantity, price }] } }
+// ⚠ THE ONE PREDICATE FOR EVERY FIGURE IN THIS TAB (product decision, 2026-08-26).
+// A `draft` is a cart the friend saved and never submitted — reachable in normal
+// use, because `doSubmitOrder()` PUTs the cart (which get-or-creates the row as
+// 'draft', orders.js) and only then submits, so any failed submit leaves one behind.
+// It is LISTED, so the admin can see a cart exists (the "Rozpracované" badge), but it
+// contributes to NOTHING on this screen — same as a friend who never ordered. What
+// people have in their carts gets its own view later; it is never mixed into the
+// figures for what was ordered.
+//
+// This is the same predicate as `helpers/stock.js` (`o.status = 'submitted'`), the
+// Sumár sheet (`cycles.js`) and "Podľa produktu" above. All four now agree.
+function isOrdered(order) {
+  return order.status === 'submitted'
+}
+
+// The heading count: parties who actually ordered something — a submitted own order,
+// or live guest bags (a host with no own order is still a party, §Edge Cases). A
+// draft-only row is listed but not counted, because it is not an order.
+const orderedPartiesCount = computed(() => listedOrders.value.filter(
+  (o) => isOrdered(o) || (o.guest_orders || []).some((sub) => !isGuestCancelled(sub))
+).length)
+
+// Group by product: { productKey: { product_name, purpose, variant, total_quantity, total_price, buyers: [{ name, is_guest, host_name, quantity, price }] } }
+//
+// ⚠ THE GUEST HALF IS NOT OPTIONAL, and leaving it out was a real reported bug.
+// `helpers/stock.js` counts guest bags against `products.stock_limit_g`, so while
+// this sheet listed friend items only it showed FEWER kilos than the friend-facing
+// "Zostáva … z …" bar had already subtracted — 1 ks here against 0.5 kg claimed,
+// which reads as a broken counter rather than a missing half. The Sumár tab's
+// ordering sheet (GET /api/cycles/:id/summary) merges the two server-side for the
+// same reason (§UC-GSO-013, Decision 4: cycle-LEVEL quantities include guests);
+// this view is the client-side twin of that rule and must stay in step with it.
+//
+// Merged into the SAME `product_id|variant` line as the friend items, exactly as
+// the server-side sheet does — a guest's 250 g of X is not a separate product.
+// Decision 4's other half still holds: this is a quantity aggregate, not a
+// per-friend one, so a guest appearing here inflates no count of friends
+// (`orderedPartiesCount`, the balances and the friend view are untouched).
 const ordersByProduct = computed(() => {
   const map = {}
-  for (const order of submittedOrders.value) {
-    if (!order.items) continue
-    for (const item of order.items) {
-      const key = `${item.product_id}-${item.variant}`
-      if (!map[key]) {
-        map[key] = {
-          key,
-          product_name: item.product_name,
-          variant_label: item.variant_label || null,
-          purpose: item.purpose,
-          variant: item.variant,
-          total_quantity: 0,
-          total_price: 0,
-          friends: []
-        }
+
+  function addLine(item, buyer) {
+    const key = `${item.product_id}-${item.variant}`
+    if (!map[key]) {
+      map[key] = {
+        key,
+        product_name: item.product_name,
+        variant_label: item.variant_label || null,
+        purpose: item.purpose,
+        variant: item.variant,
+        total_quantity: 0,
+        total_price: 0,
+        buyers: []
       }
-      map[key].total_quantity += item.quantity
-      map[key].total_price += item.price * item.quantity
-      map[key].friends.push({
-        friend_name: order.friend_name,
-        quantity: item.quantity,
-        price: item.price * item.quantity
-      })
+    }
+    map[key].total_quantity += item.quantity
+    map[key].total_price += item.price * item.quantity
+    map[key].buyers.push({
+      ...buyer,
+      quantity: item.quantity,
+      price: item.price * item.quantity
+    })
+  }
+
+  // ⚠ Iterates `orders` (every listed party), NOT `listedOrders`, and gates the
+  // two halves separately — they answer different questions:
+  //
+  //   friend items — ONLY `status === 'submitted'`, the same predicate
+  //     `helpers/stock.js` and the Sumár sheet (`cycles.js`, `o.status = 'submitted'`)
+  //     use. A DRAFT is a cart nobody has ordered: it reserves no stock, so counting
+  //     it here made this table report MORE than the friend-facing "Zostáva … kg" bar
+  //     had subtracted — the same divergence as the missing guest half, in the other
+  //     direction. Reachable without any bug: `PUT /api/orders/cycle/:id/friend/:id`
+  //     get-or-creates the row with the schema default 'draft' (orders.js), so any
+  //     client that saves a cart and never submits leaves one. `listedOrders` still
+  //     carries drafts on purpose — they are LISTED as a status, never as a figure
+  //     (see `isOrdered`).
+  //
+  //   guest bags — EVERY listed party's, whatever their own order status. A host with
+  //     guest bags and no own order at all (`status: 'none'`) is the §Edge Cases case
+  //     the API builds a synthetic row for, and their colleagues' bags still have to
+  //     be bought (the GSO-T7 rule: such a host IS packable).
+  for (const order of orders.value) {
+    if (order.status === 'submitted') {
+      for (const item of order.items || []) {
+        addLine(item, { name: order.friend_name, is_guest: false })
+      }
+    }
+    // Cancelled sub-orders are excluded — the same status predicate every backend
+    // guest aggregate applies (their item rows are KEPT on purpose, so the filter
+    // is the whole mechanism), via the shared nullable-status helper.
+    for (const sub of order.guest_orders || []) {
+      if (isGuestCancelled(sub)) continue
+      for (const item of sub.items || []) {
+        addLine(item, { name: sub.guest_name, is_guest: true, host_name: sub.host_name || order.friend_name })
+      }
     }
   }
-  // Sort friends within each product by quantity desc
+
+  // Sort buyers within each product by quantity desc
   const result = Object.values(map)
   for (const p of result) {
-    p.friends.sort((a, b) => b.quantity - a.quantity)
+    p.buyers.sort((a, b) => b.quantity - a.quantity)
   }
   // Sort products by purpose then name
   result.sort((a, b) => {
@@ -192,16 +263,35 @@ const ordersByProduct = computed(() => {
   return result
 })
 
-const orderTotals = computed(() => ({
-  count_150g: submittedOrders.value.reduce((sum, o) => sum + (o.count_150g || 0), 0),
-  count_200g: submittedOrders.value.reduce((sum, o) => sum + (o.count_200g || 0), 0),
-  count_250g: submittedOrders.value.reduce((sum, o) => sum + (o.count_250g || 0), 0),
-  count_500g: submittedOrders.value.reduce((sum, o) => sum + (o.count_500g || 0), 0),
-  count_1kg: submittedOrders.value.reduce((sum, o) => sum + (o.count_1kg || 0), 0),
-  count_20pc5g: submittedOrders.value.reduce((sum, o) => sum + (o.count_20pc5g || 0), 0),
-  count_8pc12g: submittedOrders.value.reduce((sum, o) => sum + (o.count_8pc12g || 0), 0),
-  count_unit: submittedOrders.value.reduce((sum, o) => sum + (o.count_unit || 0), 0),
-  total: submittedOrders.value.reduce((sum, o) => sum + (o.total || 0), 0)
+// The "Podľa priateľa" footer AND which variant columns are shown. Built from the
+// ORDERED rows only — a draft cart contributed both money and pieces here, which made
+// this footer disagree with "Podľa produktu", the Sumár sheet and the stock counter
+// all at once.
+const orderTotals = computed(() => {
+  const ordered = listedOrders.value.filter(isOrdered)
+  return {
+    count_150g: ordered.reduce((sum, o) => sum + (o.count_150g || 0), 0),
+    count_200g: ordered.reduce((sum, o) => sum + (o.count_200g || 0), 0),
+    count_250g: ordered.reduce((sum, o) => sum + (o.count_250g || 0), 0),
+    count_500g: ordered.reduce((sum, o) => sum + (o.count_500g || 0), 0),
+    count_1kg: ordered.reduce((sum, o) => sum + (o.count_1kg || 0), 0),
+    count_20pc5g: ordered.reduce((sum, o) => sum + (o.count_20pc5g || 0), 0),
+    count_8pc12g: ordered.reduce((sum, o) => sum + (o.count_8pc12g || 0), 0),
+    count_unit: ordered.reduce((sum, o) => sum + (o.count_unit || 0), 0),
+    total: ordered.reduce((sum, o) => sum + (o.total || 0), 0)
+  }
+})
+
+// The "Podľa produktu" footer, derived from the lines the table actually renders.
+// ⚠ It CANNOT reuse `orderTotals.total` any more: that sums `orders.total`, i.e.
+// friends only, so once the guest bags joined the lines above the Ks column would
+// have counted them and the Suma column would not — the two halves of one footer
+// row disagreeing. Guests pay the admin directly (Decision 1), so this figure is
+// "what this cycle is worth", not "what the friends owe"; the friend view's own
+// footer still uses `orderTotals` and is unchanged.
+const productViewTotals = computed(() => ({
+  quantity: ordersByProduct.value.reduce((sum, p) => sum + p.total_quantity, 0),
+  total: ordersByProduct.value.reduce((sum, p) => sum + p.total_price, 0)
 }))
 
 const COFFEE_VARIANT_COLUMNS = [
@@ -252,6 +342,10 @@ async function loadAll() {
     // Non-blocking: the orders tab still renders (with the nested sub-orders that
     // came with `ordersData`) if only the money overview fails.
     await loadGuestUnpaid()
+    // Same contract, same reason (§UC-GR-008): a failed link listing must not stop
+    // the orders tab rendering. Both helpers swallow their own errors into an inline
+    // message, so neither can reject and land in the catch below.
+    await loadGuestLinks()
   } catch (e) {
     error.value = e.message
   } finally {
@@ -331,6 +425,225 @@ async function toggleGuestPaid(subOrder) {
     guestPaidPending.value = pending
   }
 }
+
+// ── Module 14 §UC-GR-008 — links, resend, cancel on the orders tab ────────────
+//
+// The incident this closes: a guest's status URL died when her host regenerated
+// their share link, and neither the host who invited her nor the admin who held
+// her money could send it back. GR-T3/T4/T5 shipped the endpoints and published
+// the column; this is the admin UI half.
+//
+// ⚠ NO TOKEN EVER REACHES THE DOM — not a `title`, not an `href`, not a `data-`
+// attribute, not any bound value. Both URLs are composed in JS at click time and
+// handed to the clipboard; the controls' hook is the row id. Publication
+// (UC-GR-006) made the token READABLE by the admin; it did not make it
+// RENDERABLE, and that distinction is the whole safety margin — a rendered token
+// is a credential in every screenshot and every screen-share.
+//
+// ⚠ THE LINK LISTING IS ITS OWN REQUEST, joined to the order rows CLIENT-SIDE by
+// `host_friend_id` (§UC-GR-004, decided there). The orders payload is built over a
+// LEFT JOIN on `orders`; a second join for link data is the row-multiplying class
+// the GSO-T6/T8 notes warn about, and it corrupts `orders_count` silently.
+
+const guestLinks = ref([])
+const guestLinksError = ref('')
+// Per FRIEND row, so two rows can be created concurrently and a slow one never
+// blocks or overwrites another (the `rowSeq` convention, GSO-T5).
+const guestLinkPending = ref({})
+const guestLinkErrors = ref({})
+const guestLinkRowSeq = new Map()
+
+// SEQUENCE GUARD (the repo's `loadSeq` convention), kept deliberately even though
+// the race is NOT REACHABLE TODAY — stated plainly so nobody argues from a scenario
+// that does not exist: this view has no watcher on `cycleId` and `loadAll()` runs
+// only in `onMounted`, so exactly one listing request is ever in flight. It becomes
+// load-bearing the moment either changes (a `cycleId` watcher, or a refetch hung off
+// a mutation the way `toggleGuestPaid` refetches `loadGuestUnpaid`), and the failure
+// it then prevents is the admin forwarding one cycle's ordering link as another's.
+let guestLinksSeq = 0
+
+async function loadGuestLinks() {
+  const seq = ++guestLinksSeq
+  try {
+    const data = await api.getGuestLinksForCycle(cycleId.value)
+    if (seq !== guestLinksSeq) return
+    guestLinks.value = data.links || []
+    guestLinksError.value = ''
+  } catch (e) {
+    if (seq !== guestLinksSeq) return
+    // Reported, never swallowed: "this friend has no share link" and "the listing
+    // failed" look identical on screen, and the first would make the admin create
+    // a link that already exists.
+    guestLinksError.value = e.message
+  }
+}
+
+const guestLinkByHost = computed(() => {
+  const map = new Map()
+  for (const link of guestLinks.value) map.set(link.host_friend_id, link)
+  return map
+})
+
+function hostLink(order) {
+  return guestLinkByHost.value.get(order.friend_id) || null
+}
+
+// A link under a deactivated host 410s for every guest even while `active = 1`
+// (routes/guest.js `resolveLink`), so the marker has to answer BOTH halves —
+// otherwise the admin forwards a URL that is dead for a reason the row never said.
+function isHostLinkDead(link) {
+  return !link || !link.active || !link.host_active
+}
+
+async function createHostLink(order) {
+  const friendId = order.friend_id
+  if (!friendId || guestLinkPending.value[friendId]) return
+  const seq = (guestLinkRowSeq.get(friendId) || 0) + 1
+  guestLinkRowSeq.set(friendId, seq)
+  guestLinkPending.value = { ...guestLinkPending.value, [friendId]: true }
+  setRowMessage(guestLinkErrors, friendId, '')
+  try {
+    const data = await api.createGuestLinkForHost(cycleId.value, friendId)
+    if (guestLinkRowSeq.get(friendId) !== seq) return
+    // ⚠ `{ link, created }` — NOT the host POST's `{ link, regenerated, … }`. The
+    // two shapes differ on purpose; nothing here may assume symmetry.
+    if (!data.link) return
+    guestLinks.value = [
+      ...guestLinks.value.filter((l) => l.host_friend_id !== friendId),
+      { ...data.link, host_name: order.friend_name, host_active: 1 },
+    ]
+  } catch (e) {
+    if (guestLinkRowSeq.get(friendId) !== seq) return
+    // ⚠ The 409 `inactive_host` path: the gate runs BEFORE the existing-link
+    // lookup, so the body carries no `link` and this route is not a way to read a
+    // deactivated host's token. Say why, on this row, and invent nothing.
+    setRowMessage(guestLinkErrors, friendId, e.message)
+  } finally {
+    clearRowFlag(guestLinkPending, friendId)
+  }
+}
+
+// Two independent copy flips (a friend row's ORDERING link, a sub-order row's
+// per-guest STATUS link) — separate refs, so copying a share link never flashes
+// "Skopírované!" on somebody's order row.
+const copiedHostLinkId = ref(null)
+const copiedSubOrderId = ref(null)
+let copiedHostLinkTimer = null
+let copiedSubOrderTimer = null
+
+// The same try/catch semantics as the host-side control (02 §UC-DS-011):
+// `navigator.clipboard` is undefined on a non-secure origin and `writeText` rejects
+// when the document is not focused. In both cases the flip still happens — the UI
+// must not strand at "Kopírovať" while the value did reach the clipboard.
+function writeClipboard(text) {
+  try {
+    const written = navigator.clipboard?.writeText(text)
+    if (written && typeof written.catch === 'function') written.catch(() => {})
+  } catch (e) {
+    // Clipboard API missing or blocked outright.
+  }
+}
+
+function copyHostLink(order) {
+  const link = hostLink(order)
+  if (!link) return
+  // The ORDERING url — what the admin forwards to a friend who lost theirs. A
+  // different thing from the per-guest status URL below, and never confused with it.
+  writeClipboard(`${window.location.origin}/g/${link.token}`)
+  if (copiedHostLinkTimer) clearTimeout(copiedHostLinkTimer)
+  copiedHostLinkId.value = order.friend_id
+  copiedHostLinkTimer = setTimeout(() => {
+    copiedHostLinkId.value = null
+    copiedHostLinkTimer = null
+  }, 2000)
+}
+
+function copySubOrderLink(subOrder) {
+  if (!subOrder.order_token) {
+    // Defensive: without the column this would copy a literal "/g/o/undefined" — a
+    // plausible-looking dead URL, which is the exact failure this affordance exists
+    // to prevent. Say so instead of handing one out.
+    setRowMessage(guestRowErrors, subOrder.id, 'Odkaz na objednávku hosťa sa nepodarilo zostaviť.')
+    return
+  }
+  // ⚠ CANONICAL FORM ONLY (`/g/o/:orderToken`, UC-GR-003). The legacy pair form
+  // carries the very link half a regeneration retires — emitting a new one would
+  // hand out a URL with the incident's failure already built in.
+  writeClipboard(`${window.location.origin}/g/o/${subOrder.order_token}`)
+  if (copiedSubOrderTimer) clearTimeout(copiedSubOrderTimer)
+  copiedSubOrderId.value = subOrder.id
+  copiedSubOrderTimer = setTimeout(() => {
+    copiedSubOrderId.value = null
+    copiedSubOrderTimer = null
+  }, 2000)
+}
+
+// Cancelling a colleague's order is destructive and, since `cancelled` is terminal
+// (GSO-T4), irreversible — so it asks first, per row.
+const guestCancelConfirmId = ref(null)
+const guestCancelPending = ref({})
+// ONE error slot per sub-order row, shared by both of its controls — a failure
+// belongs next to the row that produced it, never in a page-level banner that says
+// nothing about which of twenty rows failed.
+const guestRowErrors = ref({})
+const guestCancelRowSeq = new Map()
+
+function setRowMessage(bag, id, message) {
+  const next = { ...bag.value }
+  if (message) next[id] = message
+  else delete next[id]
+  bag.value = next
+}
+
+function clearRowFlag(bag, id) {
+  const next = { ...bag.value }
+  delete next[id]
+  bag.value = next
+}
+
+async function cancelGuestOrder(subOrder) {
+  const id = subOrder.id
+  if (guestCancelPending.value[id]) return
+  // ⚠ PER-ROW sequencing, not one shared counter. This is a money screen: with a
+  // shared counter a request overtaken by another row's would discard its own
+  // result, and the row would sit there claiming a live order the server has
+  // already cancelled (or an error the admin never sees).
+  const seq = (guestCancelRowSeq.get(id) || 0) + 1
+  guestCancelRowSeq.set(id, seq)
+  guestCancelPending.value = { ...guestCancelPending.value, [id]: true }
+  setRowMessage(guestRowErrors, id, '')
+  try {
+    const data = await api.cancelGuestOrderAdmin(id)
+    if (guestCancelRowSeq.get(id) !== seq) return
+    // Patched in place from the response — no full reload, so the admin does not
+    // lose their scroll position and every other row's state (the GSO-T1 rule).
+    if (data.guest_order) {
+      subOrder.status = data.guest_order.status
+      subOrder.total = data.guest_order.total
+    }
+    // Only close OUR confirm: another row's may legitimately be open by now.
+    if (guestCancelConfirmId.value === id) guestCancelConfirmId.value = null
+    // Cancelling a PAID sub-order moves it into the refund queue (D4), so the money
+    // overview has to follow.
+    await loadGuestUnpaid()
+  } catch (e) {
+    if (guestCancelRowSeq.get(id) !== seq) return
+    // A refused cancel is ALWAYS reported and NEVER shown as done — 409 `closed`
+    // when the cycle locked between load and click. The confirm box stays open on
+    // purpose (the GuestSubOrders precedent): the admin sees the refusal next to
+    // the thing they asked for, and dismisses it themselves.
+    setRowMessage(guestRowErrors, id, e.message)
+  } finally {
+    clearRowFlag(guestCancelPending, id)
+  }
+}
+
+onBeforeUnmount(() => {
+  if (copiedHostLinkTimer) clearTimeout(copiedHostLinkTimer)
+  if (copiedSubOrderTimer) clearTimeout(copiedSubOrderTimer)
+  copiedHostLinkTimer = null
+  copiedSubOrderTimer = null
+})
 
 // Cycle actions
 async function toggleLock() {
@@ -1273,8 +1586,8 @@ function getStatusVariant(status) {
         <!-- Orders Tab -->
         <TabsContent value="orders">
           <div class="flex items-center justify-between mb-4">
-            <h2 class="text-lg font-semibold">Objednávky ({{ submittedOrders.length }})</h2>
-            <div v-if="submittedOrders.length > 0" class="flex gap-1 bg-muted rounded-lg p-1">
+            <h2 class="text-lg font-semibold">Objednávky ({{ orderedPartiesCount }})</h2>
+            <div v-if="listedOrders.length > 0" class="flex gap-1 bg-muted rounded-lg p-1">
               <button
                 @click="ordersView = 'friend'"
                 :class="['px-3 py-1 text-sm rounded-md transition-colors', ordersView === 'friend' ? 'bg-background shadow font-medium' : 'text-muted-foreground hover:text-foreground']"
@@ -1289,6 +1602,27 @@ function getStatusVariant(status) {
               </button>
             </div>
           </div>
+
+          <!-- ⚠ THE LINK LISTING FAILING IS INVISIBLE WITHOUT THIS (§UC-GR-008).
+               `guestLinks` stays `[]`, so EVERY friend row falls into the `v-else`
+               and offers "Vytvoriť hosťovský odkaz" — the admin reads that as "nobody
+               has ever shared". For a DEACTIVATED host who does have a link it is
+               worse: the create then answers 409 `inactive_host`, so their existing
+               token stays invisible and unforwardable, which is precisely the state
+               module 14 exists to make recoverable. The listing is the complete
+               source of tokens; when it is missing, say so.
+               ⚠ A SIBLING ABOVE the chain, same rule as the card below. -->
+          <Alert
+            v-if="guestLinksError"
+            variant="destructive"
+            class="mb-4"
+            data-testid="guest-links-error"
+          >
+            <AlertDescription class="text-sm">
+              Hosťovské odkazy sa nepodarilo načítať: {{ guestLinksError }}. Odkazy, ktoré už
+              existujú, sa teraz nezobrazujú — obnovte stránku.
+            </AlertDescription>
+          </Alert>
 
           <!-- Guest money overview (§UC-GSO-010). Guests pay the admin directly, so
                this is the receivables list: the payment reference is what matches an
@@ -1427,13 +1761,23 @@ function getStatusVariant(status) {
                     <TableCell class="text-center font-medium">{{ product.total_quantity }}</TableCell>
                     <TableCell class="text-right">{{ formatPrice(product.total_price) }}</TableCell>
                   </TableRow>
-                  <!-- Expanded friends list -->
+                  <!-- Expanded buyer list: friends and guests, the guests marked
+                       violet with their host — the same treatment the nested
+                       sub-orders get in the friend view, so a bag reads the same
+                       wherever it is shown. Without the marker a guest would be
+                       indistinguishable from a friend on a screen where only
+                       friends carry a balance. -->
                   <template v-if="expandedProducts.has(product.key)">
-                    <TableRow v-for="(f, i) in product.friends" :key="`${product.key}-${i}`" class="bg-muted/30">
+                    <TableRow v-for="(b, i) in product.buyers" :key="`${product.key}-${i}`" class="bg-muted/30">
                       <TableCell></TableCell>
-                      <TableCell class="text-sm text-muted-foreground">{{ f.friend_name }}</TableCell>
-                      <TableCell class="text-center text-sm text-muted-foreground">{{ f.quantity }}</TableCell>
-                      <TableCell class="text-right text-sm text-muted-foreground">{{ formatPrice(f.price) }}</TableCell>
+                      <TableCell class="text-sm text-muted-foreground">
+                        {{ b.name }}
+                        <span v-if="b.is_guest" class="text-xs text-violet-600">
+                          — hosť<template v-if="b.host_name">, pozval {{ firstName(b.host_name) }}</template>
+                        </span>
+                      </TableCell>
+                      <TableCell class="text-center text-sm text-muted-foreground">{{ b.quantity }}</TableCell>
+                      <TableCell class="text-right text-sm text-muted-foreground">{{ formatPrice(b.price) }}</TableCell>
                     </TableRow>
                   </template>
                 </template>
@@ -1442,8 +1786,8 @@ function getStatusVariant(status) {
                 <TableRow class="font-semibold bg-muted">
                   <TableCell></TableCell>
                   <TableCell>Celkom</TableCell>
-                  <TableCell class="text-center">{{ ordersByProduct.reduce((s, p) => s + p.total_quantity, 0) }}</TableCell>
-                  <TableCell class="text-right">{{ formatPrice(orderTotals.total) }}</TableCell>
+                  <TableCell class="text-center">{{ productViewTotals.quantity }}</TableCell>
+                  <TableCell class="text-right">{{ formatPrice(productViewTotals.total) }}</TableCell>
                 </TableRow>
               </tfoot>
             </Table>
@@ -1473,11 +1817,13 @@ function getStatusVariant(status) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                <template v-for="order in submittedOrders" :key="order.id || order.friend_id">
+                <template v-for="order in listedOrders" :key="order.id || order.friend_id">
                   <TableRow>
                     <TableCell class="p-2">
+                      <!-- Only an ORDERED row has items to expand. A draft's cart
+                           lines are not shown here at all (see `isOrdered`). -->
                       <button
-                        v-if="order.status !== 'none'"
+                        v-if="isOrdered(order)"
                         @click="toggleExpand(order.id)"
                         class="w-8 h-8 flex items-center justify-center rounded hover:bg-muted transition-colors"
                       >
@@ -1492,10 +1838,52 @@ function getStatusVariant(status) {
                         </svg>
                       </button>
                     </TableCell>
-                    <TableCell class="font-medium">{{ order.friend_name }}</TableCell>
+                    <TableCell class="font-medium">
+                      {{ order.friend_name }}
+                      <!-- §UC-GR-008 — the host's SHARE link, so the admin can forward
+                           it to a friend who lost theirs (PO requirement 1). It sits
+                           under the name rather than in a column of its own: a new
+                           column would move every `colspan` on this tab, including the
+                           nested guest rows' and the footer's.
+                           ⚠ The token is composed in JS at click time — nothing here
+                           binds it into markup. -->
+                      <div class="mt-1 flex flex-wrap items-center gap-2 font-normal">
+                        <template v-if="hostLink(order)">
+                          <button
+                            type="button"
+                            class="text-xs text-primary underline underline-offset-2 hover:no-underline"
+                            :data-testid="`host-guest-link-${order.friend_id}`"
+                            @click="copyHostLink(order)"
+                          >{{ copiedHostLinkId === order.friend_id ? 'Skopírované!' : 'Hosťovský odkaz' }}</button>
+                          <!-- ⚠ MARKED, not silently offered as if it worked: a revoked
+                               link (or one under a deactivated host) 410s for every
+                               guest. D3 keeps reactivation host-only — the person who
+                               distributed the URL is the only one who knows who holds
+                               it — so this row states the fact and offers no control. -->
+                          <span
+                            v-if="isHostLinkDead(hostLink(order))"
+                            class="text-xs text-muted-foreground"
+                            :data-testid="`host-guest-link-inactive-${order.friend_id}`"
+                          >neaktívny</span>
+                        </template>
+                        <button
+                          v-else
+                          type="button"
+                          class="text-xs text-primary underline underline-offset-2 hover:no-underline disabled:opacity-50 disabled:no-underline"
+                          :disabled="!!guestLinkPending[order.friend_id]"
+                          :data-testid="`host-guest-link-create-${order.friend_id}`"
+                          @click="createHostLink(order)"
+                        >{{ guestLinkPending[order.friend_id] ? 'Vytváram...' : 'Vytvoriť hosťovský odkaz' }}</button>
+                        <span
+                          v-if="guestLinkErrors[order.friend_id]"
+                          class="text-xs text-destructive"
+                          :data-testid="`host-guest-link-error-${order.friend_id}`"
+                        >{{ guestLinkErrors[order.friend_id] }}</span>
+                      </div>
+                    </TableCell>
                     <TableCell class="text-right">
-                      {{ formatPrice((order.total || 0) + (order.delivery_fee || 0)) }}
-                      <div v-if="order.delivery_fee" class="text-xs text-muted-foreground">
+                      {{ formatPrice(isOrdered(order) ? (order.total || 0) + (order.delivery_fee || 0) : 0) }}
+                      <div v-if="isOrdered(order) && order.delivery_fee" class="text-xs text-muted-foreground">
                         ({{ formatPrice(order.total) }} + {{ formatPrice(order.delivery_fee) }} doručenie)
                       </div>
                     </TableCell>
@@ -1503,14 +1891,14 @@ function getStatusVariant(status) {
                       <BalanceBadge :balance="order.friend_balance || 0" />
                     </TableCell>
                     <template v-if="isBakery">
-                      <TableCell class="text-center">{{ order.count_unit || 0 }}</TableCell>
+                      <TableCell class="text-center">{{ isOrdered(order) ? (order.count_unit || 0) : 0 }}</TableCell>
                     </template>
                     <template v-else>
                       <TableCell
                         v-for="col in visibleVariantColumns"
                         :key="col.label"
                         class="text-center"
-                      >{{ order[col.countField] || 0 }}</TableCell>
+                      >{{ isOrdered(order) ? (order[col.countField] || 0) : 0 }}</TableCell>
                     </template>
                     <TableCell>
                       <div class="flex flex-wrap gap-1">
@@ -1544,8 +1932,14 @@ function getStatusVariant(status) {
                       </div>
                     </TableCell>
                     <TableCell class="text-center">
+                      <!-- ⚠ ORDERED rows only. `PATCH /api/orders/:id/paid` posts a
+                           `transactions` row for `order.total`, so offering this on a
+                           DRAFT turned an unsubmitted cart's value into a real payment
+                           against the friend's balance. The route refuses it now
+                           (400, mirroring `PATCH /:id/packed`); this stops the admin
+                           being offered a control that can only fail. -->
                       <button
-                        v-if="order.status !== 'none'"
+                        v-if="isOrdered(order)"
                         @click="togglePaid(order)"
                         :class="['w-6 h-6 rounded border-2 flex items-center justify-center mx-auto', order.paid ? 'bg-green-500 border-green-500 text-white' : 'border-border']"
                       >
@@ -1557,7 +1951,7 @@ function getStatusVariant(status) {
                     </TableCell>
                   </TableRow>
                   <!-- Expanded items row -->
-                  <TableRow v-if="order.status !== 'none' && expandedOrders.has(order.id)">
+                  <TableRow v-if="isOrdered(order) && expandedOrders.has(order.id)">
                     <TableCell :colspan="6 + (isBakery ? 1 : visibleVariantColumns.length)" class="bg-muted/50 p-4">
                       <div v-if="order.items && order.items.length > 0" class="space-y-1">
                         <div v-for="item in order.items" :key="`${item.product_id}-${item.variant}`" class="flex justify-between py-1 text-sm">
@@ -1632,6 +2026,75 @@ function getStatusVariant(status) {
                             {{ guestItemCountLabel(sub) }}
                           </div>
                           <div v-else class="mt-0.5 text-xs text-muted-foreground">Žiadne položky</div>
+
+                          <!-- §UC-GR-008 — resend + cancel, D9's minimal placement:
+                               these live on the nested sub-order rows ONLY. The refund
+                               card carries `order_token` too, but no PO ask names that
+                               surface and two affordances for one action drift apart. -->
+                          <div class="mt-1 flex flex-wrap items-center gap-3">
+                            <!-- ⚠ On EVERY row, cancelled included and after the lock:
+                                 resending is precisely a post-lock / lost-URL activity,
+                                 and a cancelled order's URL still renders the guest's
+                                 terminal record (the read resolver is 404-only). -->
+                            <button
+                              type="button"
+                              class="text-xs text-primary underline underline-offset-2 hover:no-underline"
+                              :data-testid="`guest-order-link-${sub.id}`"
+                              @click="copySubOrderLink(sub)"
+                            >{{ copiedSubOrderId === sub.id ? 'Skopírované!' : 'Odkaz na objednávku' }}</button>
+                            <!-- Unlike the host's DELETE this has NO paid blockade (D4):
+                                 the host's 409 exists to force the escalation TO the
+                                 admin, so blocking the admin too would recreate the
+                                 dead end the incident ran into. -->
+                            <button
+                              v-if="!isGuestCancelled(sub) && guestCancelConfirmId !== sub.id"
+                              type="button"
+                              class="text-xs text-destructive underline underline-offset-2 hover:no-underline"
+                              :data-testid="`guest-cancel-${sub.id}`"
+                              @click="guestCancelConfirmId = sub.id"
+                            >Zrušiť</button>
+                          </div>
+
+                          <div
+                            v-if="guestCancelConfirmId === sub.id"
+                            class="mt-1 rounded border border-destructive/40 bg-destructive/5 p-2 text-xs"
+                            :data-testid="`guest-cancel-confirm-${sub.id}`"
+                          >
+                            <!-- ⚠ The paid warning NAMES the refund queue, so the admin
+                                 cancels a paid order knowingly: the money does not
+                                 vanish, it moves to "Na vrátenie" below. -->
+                            <p v-if="sub.paid" class="font-medium">
+                              Objednávka je zaplatená — po zrušení sa zobrazí medzi platbami na vrátenie.
+                            </p>
+                            <p :class="sub.paid ? 'mt-0.5' : ''">
+                              Objednávka hosťa sa zruší. Hosť ju uvidí ako zrušenú a už si ju nebude môcť upraviť.
+                            </p>
+                            <div class="mt-1.5 flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                class="rounded bg-destructive px-2 py-1 text-xs font-medium text-destructive-foreground disabled:opacity-50"
+                                :disabled="!!guestCancelPending[sub.id]"
+                                :data-testid="`guest-cancel-yes-${sub.id}`"
+                                @click="cancelGuestOrder(sub)"
+                              >{{ guestCancelPending[sub.id] ? 'Ruším...' : 'Áno, zrušiť' }}</button>
+                              <button
+                                type="button"
+                                class="rounded border px-2 py-1 text-xs disabled:opacity-50"
+                                :disabled="!!guestCancelPending[sub.id]"
+                                :data-testid="`guest-cancel-no-${sub.id}`"
+                                @click="guestCancelConfirmId = null"
+                              >Nie</button>
+                            </div>
+                          </div>
+
+                          <!-- A refused cancel lands HERE, on the row that asked for it
+                               — never as a page-level banner, which on a table of
+                               twenty rows says nothing about which one failed. -->
+                          <div
+                            v-if="guestRowErrors[sub.id]"
+                            class="mt-1 text-xs text-destructive"
+                            :data-testid="`guest-row-error-${sub.id}`"
+                          >{{ guestRowErrors[sub.id] }}</div>
                         </div>
                       </div>
                     </TableCell>

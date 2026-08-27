@@ -251,7 +251,8 @@ function rememberStatusUrl(result, statusUrl) {
 
 // §UC-GX-004 item 6 — a NEW affordance from the prototype: pure navigation to the
 // personal status page, no API call. `status_path` comes straight off the submit
-// response (`/g/:token/o/:orderToken`), so this never composes a URL itself.
+// response — the canonical `/g/o/:orderToken` since 14 §UC-GR-003 — so this never
+// composes a URL itself and the form of it is the server's to change.
 //
 // The two copy controls this screen used to own are gone: `NeoCopyRow`
 // (02 §UC-DS-011) owns the clipboard write, its own 2 s "Skopírované!" window and

@@ -645,7 +645,10 @@ test.describe('RD-GX-4 · closeout invariants (§UC-GX-011)', () => {
     expect(stored.cycle_name).toBe(cycle.name)
     expect(stored.guest_name).toBe('Pamät Kolegova')
     expect(stored.total).toBe(12.5) // 10 × 1.25 markup, frozen server-side
-    expect(stored.status_url).toBe(`${new URL(page.url()).origin}/g/${link.token}/o/${stored.order_token}`)
+    // ⚠ RETARGETED by 14 §UC-GR-003 (UC-GR-010 item 7): the stored URL is the
+    // CANONICAL form. The ENTRY stays keyed by the link token — that shape is a
+    // deliberate non-migration — so only the value inside it moves.
+    expect(stored.status_url).toBe(`${new URL(page.url()).origin}/g/o/${stored.order_token}`)
     expect(typeof stored.order_id).toBe('number')
     expect(Date.parse(stored.saved_at)).not.toBeNaN()
 

@@ -19,12 +19,30 @@ const routes = [
     name: 'guest-order',
     component: () => import('./views/GuestOrder.vue')
   },
-  // The guest's personal status/edit page. Public for the same reason, with the
-  // PAIR of tokens as the credential — the order token only resolves under its own
-  // link token (§UC-GSO-004).
+  // The guest's personal status/edit page — CANONICAL form (14 §UC-GR-003). Public
+  // for the same reason as `/g/:token`: the URL token is the whole credential, and
+  // `order_token` alone is now a full one (14 §UC-GR-001, D2 — same generator and
+  // entropy as the link token, SEC-S2).
+  //
+  // ⚠ No collision is possible with either neighbour, and it is asserted by
+  // NAVIGATION in `guest-order-recovery.spec.js` rather than by reading this file:
+  // `/g/:token` is 2 segments, this is 3, the legacy pair is 4. The literal segment
+  // `o` can never be a token — `generateGuestToken()` emits 14 chars of the uppercase
+  // `CODE_ALPHABET`.
+  {
+    path: '/g/o/:orderToken',
+    name: 'guest-order-status',
+    component: () => import('./views/GuestOrderStatus.vue')
+  },
+  // The LEGACY pair form. Kept registered FOREVER (14 §UC-GR-002): the URL sits in
+  // the guests' messages and in `localStorage.gorifi_guest_orders`, and nobody
+  // migrates either. The `:token` half is URL carriage only — the view reads just
+  // `orderToken`, and after a successful load it `router.replace`s to the canonical
+  // route (D7) so anything re-copied from the address bar converges. ⚠ Never on a
+  // 404: the dead card is diagnostic and must keep the URL the guest followed.
   {
     path: '/g/:token/o/:orderToken',
-    name: 'guest-order-status',
+    name: 'guest-order-status-legacy',
     component: () => import('./views/GuestOrderStatus.vue')
   },
   {
