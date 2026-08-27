@@ -1970,3 +1970,545 @@ test.describe('UC-GR-006/007 — order_token reaches the host and the admin, and
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// UC-GR-008 (GR-T6) — the ADMIN orders tab gains the three capabilities whose
+// endpoints already shipped: see/create a host's share link (GR-T3), resend a
+// guest their own order link (GR-T5 published the column), and cancel a guest
+// sub-order (GR-T4).
+//
+// ⚠ THE CONSTRAINT THAT DOES NOT SHOW UP IN A GREEN SUITE. `order_token` reaches
+// this payload from UC-GR-006 on, and until this row NO shipped assertion looked
+// at the admin CycleDetail DOM — so an `<a :href="…order_token…">` or a `:title`
+// here would satisfy every written rule and pass the whole suite. §UC-GR-008
+// therefore makes this row owe its own whole-document `outerHTML` pin, in the
+// shape of `share-dialog.spec.js:611`. It is the test below marked ⚠ DOM PIN.
+//
+// ⚠ DRAFT COPY, PO sign-off pending (§OPEN). Hoisted into constants for the
+// documented reason: the sign-off edit is then a known TWO-PLACE change (these
+// constants + the literals in `CycleDetail.vue`), never a grep for quoted Slovak.
+const ADMIN_LINK_LABEL = 'Hosťovský odkaz'
+const ADMIN_LINK_CREATE = 'Vytvoriť hosťovský odkaz'
+const ADMIN_LINK_INACTIVE = 'neaktívny'
+const ADMIN_ORDER_LINK_LABEL = 'Odkaz na objednávku'
+const ADMIN_CANCEL_LABEL = 'Zrušiť'
+const ADMIN_CANCEL_CONFIRM =
+  'Objednávka hosťa sa zruší. Hosť ju uvidí ako zrušenú a už si ju nebude môcť upraviť.'
+const ADMIN_CANCEL_CONFIRM_PAID =
+  'Objednávka je zaplatená — po zrušení sa zobrazí medzi platbami na vrátenie.'
+const ADMIN_CANCEL_YES = 'Áno, zrušiť'
+const ADMIN_CANCEL_NO = 'Nie'
+
+// ⚠ ONE admin session app-wide (`INSERT OR REPLACE … 'admin_token'`), so a UI login
+// INVALIDATES a token an API fixture captured earlier. Every test here therefore
+// builds its fixtures FIRST and then adopts the browser's token for anything it
+// asks the API afterwards. (The documented trap, guest-admin-view.spec.js:820.)
+async function adoptUiAdmin(page) {
+  await page.goto('/admin')
+  await page.locator('#password').fill(ADMIN_PASSWORD)
+  await page.getByRole('button', { name: /Prihlásiť sa/ }).click()
+  await expect(page).toHaveURL(/\/admin\/dashboard/)
+  const token = await page.evaluate(() => localStorage.getItem('adminToken'))
+  expect(token, 'the UI login stored an admin token').toBeTruthy()
+  adminToken = token
+  return token
+}
+
+async function gotoOrdersTab(page, cycle) {
+  await page.goto(`/admin/cycle/${cycle.id}`)
+  await page.getByRole('tab', { name: 'Objednávky' }).click()
+}
+
+// The host's own submitted order — what puts a friend row on this tab at all.
+// ⚠ `listedOrders` (CycleDetail.vue) filters to submitted/draft/has-guests, so a
+// friend who has neither ordered nor hosted is NOT rendered here. See the report:
+// §UC-GR-008's "a friend who has neither ordered nor shared is reachable here"
+// describes the API payload, not this view.
+async function submitOwnOrder(host, cycleId, items) {
+  const put = await ctx.put(`/api/orders/cycle/${cycleId}/friend/${host.id}`, {
+    headers: host.auth, data: { items },
+  })
+  expect(put.status(), 'own cart').toBe(200)
+  const submit = await ctx.post(`/api/orders/cycle/${cycleId}/friend/${host.id}/submit`, {
+    headers: host.auth, data: {},
+  })
+  expect(submit.status(), 'own submit').toBe(200)
+  return submit.json()
+}
+
+// ⚠ Fixture names are interpolated into `RegExp`s below. `makeHost` happens to emit
+// alphanumerics and spaces today, so escaping is currently a no-op — which is exactly
+// why it has to be written down: a future label containing `(`, `+`, `?` or `.` would
+// otherwise turn one of these anchors into a syntax error or, worse, a silently
+// looser match that still passes.
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const hostLinkBtn = (page, friendId) => page.getByTestId(`host-guest-link-${friendId}`)
+const hostLinkCreateBtn = (page, friendId) => page.getByTestId(`host-guest-link-create-${friendId}`)
+const subOrderLinkBtn = (page, id) => page.getByTestId(`guest-order-link-${id}`)
+const subOrderCancelBtn = (page, id) => page.getByTestId(`guest-cancel-${id}`)
+
+// The THEME's class names (friends-theme.css / components/neo). The admin is
+// shadcn-only — 01-architecture's design-system SCOPE rule — and the two skins
+// share a page only by mistake.
+const NEO_CLASSES = [
+  'app', 'btn', 'badge', 'card', 'cartbar', 'cat-tabs', 'confirmbox', 'field-help',
+  'field-lbl', 'foot', 'hl', 'inp', 'modal-layer', 'mono', 'pnotes', 'pspec',
+  'stepper', 'sub', 'suborder', 'tabbadge', 'tabgroup', 'vbox',
+]
+
+test.describe('UC-GR-008 — the admin orders tab: share links, resend, cancel', () => {
+  test('a host row carries a copyable SHARE link — the ordering URL, composed in JS, and it works', async ({ page, context, browser }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await refreshAdminToken()
+    const { host, cycle, link } = await orderScenario('adminlink')
+
+    await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+
+    const btn = hostLinkBtn(page, host.id)
+    await expect(btn).toBeVisible()
+    await expect(btn).toHaveText(ADMIN_LINK_LABEL)
+    // The link EXISTS, so no create affordance is offered on this row.
+    await expect(hostLinkCreateBtn(page, host.id)).toHaveCount(0)
+
+    await btn.click()
+    await expect(btn).toHaveText(COPIED_LABEL)
+
+    const origin = await page.evaluate(() => window.location.origin)
+    const copied = await page.evaluate(() => navigator.clipboard.readText())
+    // ⚠ The ORDERING url (`/g/:linkToken`) — this is what the admin forwards to a
+    // friend who lost it, and it is a different thing from the per-guest status URL
+    // on the sub-order rows below.
+    expect(copied).toBe(`${origin}/g/${link.token}`)
+
+    await expect(btn).toHaveText(ADMIN_LINK_LABEL, { timeout: 5000 })
+
+    // A plausible-looking dead URL is the exact failure this whole module exists
+    // for, so the copied string is FOLLOWED, in a context with no admin session.
+    const fresh = await browser.newContext()
+    const guestPage = await fresh.newPage()
+    await guestPage.goto(copied)
+    await expect(guestPage.getByTestId('cartbar')).toBeVisible()
+    await expect(guestPage.getByTestId('guest-unavailable')).toHaveCount(0)
+    await fresh.close()
+  })
+
+  test('a linkless friend row CREATES one in place — no reload — and the host\'s own dialog then returns the same token', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await refreshAdminToken()
+    const host = await makeHost('mklink')
+    const cycle = await makeCycle('mklink')
+    const product = await addProduct(cycle.id, {
+      name: `GR mklink ${uniq}`, purpose: 'Espresso', price_250g: 10,
+    })
+    // No share link at all — the friend is on this tab because they ORDERED.
+    await submitOwnOrder(host, cycle.id, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+    expect((await hostView(host, cycle.id)).link, 'precondition: no link yet').toBeFalsy()
+
+    const token = await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+
+    await expect(hostLinkBtn(page, host.id)).toHaveCount(0)
+    const create = hostLinkCreateBtn(page, host.id)
+    await expect(create).toBeVisible()
+    await expect(create).toHaveText(ADMIN_LINK_CREATE)
+
+    await create.click()
+
+    // In place: the copy control replaces the create button with no navigation.
+    const btn = hostLinkBtn(page, host.id)
+    await expect(btn).toBeVisible()
+    await expect(create).toHaveCount(0)
+
+    await btn.click()
+    const origin = await page.evaluate(() => window.location.origin)
+    const copied = await page.evaluate(() => navigator.clipboard.readText())
+
+    // The row is not just claiming a link — the HOST's own dialog payload has it,
+    // and it is byte-identical to what the admin just copied.
+    adminToken = token
+    const hostsOwn = (await hostView(host, cycle.id)).link
+    expect(hostsOwn, 'the create actually persisted').toBeTruthy()
+    expect(copied).toBe(`${origin}/g/${hostsOwn.token}`)
+    expect(hostsOwn.active).toBe(1)
+  })
+
+  test('a REVOKED link is MARKED revoked, not offered as if it worked — and the admin cannot regenerate or reactivate it (D3)', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, link } = await orderScenario('revoked')
+
+    // Only the host can revoke — and only the host can undo it.
+    expect((await ctx.patch(`/api/guest-links/${link.id}`, {
+      headers: host.auth, data: { active: false },
+    })).status()).toBe(200)
+
+    const token = await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+
+    await expect(hostLinkBtn(page, host.id), 'the link is still forwardable — as a KNOWN-dead one').toBeVisible()
+    const marker = page.getByTestId(`host-guest-link-inactive-${host.id}`)
+    await expect(marker).toBeVisible()
+    await expect(marker).toHaveText(ADMIN_LINK_INACTIVE)
+
+    // ⚠ D3: no admin control writes `token` or `active`. The row offers neither a
+    // regenerate nor a reactivate, and nothing on it flipped the stored state.
+    await expect(hostLinkCreateBtn(page, host.id)).toHaveCount(0)
+    adminToken = token
+    const stored = (await adminLinks(cycle.id)).find((l) => l.host_friend_id === host.id)
+    expect(stored.token, 'never regenerated').toBe(link.token)
+    expect(stored.active, 'never reactivated').toBe(0)
+  })
+
+  test('a DEACTIVATED host: the create button renders the 409 `inactive_host` refusal and no link appears', async ({ page }) => {
+    await refreshAdminToken()
+    const host = await makeHost('deadhost')
+    const cycle = await makeCycle('deadhost')
+    const product = await addProduct(cycle.id, {
+      name: `GR deadhost ${uniq}`, purpose: 'Espresso', price_250g: 10,
+    })
+    await submitOwnOrder(host, cycle.id, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+    expect((await admin(`/api/friends/${host.id}`, { method: 'patch', data: { active: false } })).status()).toBe(200)
+
+    const token = await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+
+    const create = hostLinkCreateBtn(page, host.id)
+    await expect(create).toBeVisible()
+    await create.click()
+
+    // ⚠ The `inactive_host` gate runs BEFORE the existing-link lookup, so this route
+    // is NOT a token-retrieval path — the 409 body carries no `link`. The UI must
+    // show the refusal rather than a link control that would hand out a dead URL.
+    const err = page.getByTestId(`host-guest-link-error-${host.id}`)
+    await expect(err).toBeVisible()
+    await expect(err).toContainText('deaktivovaný')
+    await expect(hostLinkBtn(page, host.id), 'no link is invented from a refusal').toHaveCount(0)
+
+    adminToken = token
+    expect((await adminLinks(cycle.id)).filter((l) => l.host_friend_id === host.id)).toEqual([])
+  })
+
+  test('a sub-order row RESENDS the guest\'s own status URL — canonical form, and it opens their order', async ({ page, context, browser }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await refreshAdminToken()
+    const { cycle, link, created } = await orderScenario('resend')
+    const id = created.order.id
+
+    await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+
+    const btn = subOrderLinkBtn(page, id)
+    await expect(btn).toBeVisible()
+    await expect(btn).toHaveText(ADMIN_ORDER_LINK_LABEL)
+
+    await btn.click()
+    await expect(btn).toHaveText(COPIED_LABEL)
+
+    const origin = await page.evaluate(() => window.location.origin)
+    const copied = await page.evaluate(() => navigator.clipboard.readText())
+    expect(copied).toBe(`${origin}${canonicalUiPath(created.order.order_token)}`)
+    expect(copied, 'never the legacy pair form — that is the half a regeneration kills')
+      .not.toContain(link.token)
+
+    await expect(btn).toHaveText(ADMIN_ORDER_LINK_LABEL, { timeout: 5000 })
+
+    // Followed for real, from a context that has never seen an admin session.
+    const fresh = await browser.newContext()
+    const guestPage = await fresh.newPage()
+    await guestPage.goto(copied)
+    await expect(guestPage.getByTestId('guest-status')).toBeVisible()
+    await expect(guestPage.getByTestId('status-total')).toContainText('10.00')
+    await fresh.close()
+  })
+
+  test('D9 — the resend affordance is on the nested sub-order rows ONLY, not on the refund card', async ({ page }) => {
+    await refreshAdminToken()
+    const { cycle, created } = await orderScenario('d9')
+    const id = created.order.id
+    expect((await setPaid(id, true)).status()).toBe(200)
+    expect((await cancelSubOrder(id)).status()).toBe(200)
+
+    await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+
+    // Paid + cancelled ⇒ the refund queue, which carries `order_token` in its
+    // payload (UC-GR-006) but deliberately renders no resend control: no PO ask
+    // names that surface, and two affordances for one action drift apart.
+    const refundRow = page.getByTestId(`guest-refund-row-${id}`)
+    await expect(refundRow).toBeVisible()
+    await expect(refundRow.locator('[data-testid^="guest-order-link-"]')).toHaveCount(0)
+    // …while the sub-order row keeps it, cancelled or not.
+    await expect(subOrderLinkBtn(page, id)).toHaveCount(1)
+
+    // ⚠ THE DOM PIN'S BLIND SPOT, closed here. The whole-document assertion lives in
+    // the test below, whose fixture has no paid+cancelled row — so the refund card is
+    // simply not in the markup it inspects. `guest-orders.js` puts `order_token` on
+    // refund rows too, and D9 names this card as THE widening candidate, so the day
+    // somebody adds the affordance here they must add it without rendering the token.
+    // This test is the only one that renders the card, so the pin belongs here.
+    const html = await page.evaluate(() => document.documentElement.outerHTML)
+    expect(html, 'the refund card carries order_token in its payload — never in its markup')
+      .not.toContain(created.order.order_token)
+    expect(await refundRow.evaluate((el) => el.outerHTML)).not.toContain(created.order.order_token)
+  })
+
+  test('cancelling an UNPAID sub-order asks first, flips the row to "Zrušené" IN PLACE — and the row STAYS listed', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, created } = await orderScenario('cancelui')
+    const id = created.order.id
+
+    const token = await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+
+    const row = page.getByTestId(`guest-suborder-${id}`)
+    await expect(row).toContainText('10.00 EUR')
+    await expect(row).not.toContainText('Zrušené')
+
+    // Destructive, so it asks — and the unpaid copy says exactly what happens.
+    // ⚠ Every control here is LOCATED by testid but its LABEL is asserted, because a
+    // hoisted constant that nothing pins is not a sign-off contract — it is a comment
+    // that rots at the first rename. These three are the whole visible vocabulary of
+    // the cancel flow.
+    await expect(subOrderCancelBtn(page, id)).toHaveText(ADMIN_CANCEL_LABEL)
+    await subOrderCancelBtn(page, id).click()
+    const confirm = page.getByTestId(`guest-cancel-confirm-${id}`)
+    await expect(confirm).toBeVisible()
+    await expect(confirm).toContainText(ADMIN_CANCEL_CONFIRM)
+    await expect(confirm, 'nothing about refunds on an UNPAID order')
+      .not.toContainText(ADMIN_CANCEL_CONFIRM_PAID)
+    await expect(page.getByTestId(`guest-cancel-yes-${id}`)).toHaveText(ADMIN_CANCEL_YES)
+    await expect(page.getByTestId(`guest-cancel-no-${id}`)).toHaveText(ADMIN_CANCEL_NO)
+
+    // "Nie" backs out and writes nothing.
+    await page.getByTestId(`guest-cancel-no-${id}`).click()
+    await expect(confirm).toHaveCount(0)
+    adminToken = token
+    expect(listedSubOrder(await hostView(host, cycle.id), id).status).toBe('submitted')
+
+    await subOrderCancelBtn(page, id).click()
+    await page.getByTestId(`guest-cancel-yes-${id}`).click()
+
+    // In place — no navigation, no reload — and the row is STILL THERE. That is a
+    // PO requirement, not an accident: the record that the order existed, who
+    // created it, and that it was called off.
+    await expect(row).toBeVisible()
+    await expect(row).toContainText('Zrušené')
+    // `formatPrice(0)` is '-' in this view (pre-existing), so the proof that the
+    // total was zeroed is that the amount is GONE, not that it reads 0.00.
+    await expect(row, 'the amount was zeroed by the soft cancel').not.toContainText('10.00 EUR')
+    await expect(subOrderCancelBtn(page, id), 'cancelled is terminal').toHaveCount(0)
+    await expect(subOrderLinkBtn(page, id), 'but the guest can still be sent their record').toBeVisible()
+
+    expect(listedSubOrder(await hostView(host, cycle.id), id).status).toBe('cancelled')
+
+    // And it survives a reload — it is server state, not a ref.
+    await gotoOrdersTab(page, cycle)
+    await expect(page.getByTestId(`guest-suborder-${id}`)).toContainText('Zrušené')
+  })
+
+  test('cancelling a PAID sub-order names the REFUND QUEUE in the confirm, and the refund card then lists it', async ({ page }) => {
+    await refreshAdminToken()
+    const { cycle, created } = await orderScenario('cancelpaid')
+    const id = created.order.id
+    expect((await setPaid(id, true)).status()).toBe(200)
+
+    const token = await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+
+    await expect(page.getByTestId(`guest-refund-row-${id}`), 'not a refund yet').toHaveCount(0)
+
+    await subOrderCancelBtn(page, id).click()
+    const confirm = page.getByTestId(`guest-cancel-confirm-${id}`)
+    // ⚠ The admin cancels a PAID order KNOWINGLY: the money does not vanish, it
+    // moves to the refund queue, and the confirm says so before the click.
+    await expect(confirm).toContainText(ADMIN_CANCEL_CONFIRM_PAID)
+    await expect(confirm).toContainText(ADMIN_CANCEL_CONFIRM)
+
+    await page.getByTestId(`guest-cancel-yes-${id}`).click()
+    await expect(page.getByTestId(`guest-suborder-${id}`)).toContainText('Zrušené')
+
+    // The whole point of D4: paid + cancelled lands in the EXISTING refund queue,
+    // with the amount recomputed from the kept item rows (cancelling zeroed `total`).
+    const refundRow = page.getByTestId(`guest-refund-row-${id}`)
+    await expect(refundRow).toBeVisible()
+    await expect(refundRow).toContainText(IDENTITY.guest_name)
+    await expect(refundRow).toContainText('10.00')
+
+    adminToken = token
+    const refunds = (await unpaidOverview(cycle.id)).refunds
+    expect(refunds.find((r) => r.id === id).amount).toBe(10)
+  })
+
+  test('⚠ DOM PIN — no guest order token is anywhere in the admin orders tab\'s markup', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, product, link, created } = await orderScenario('admindom')
+    const second = await submitGuest(
+      link.token,
+      [{ product_id: product.id, variant: '1kg', quantity: 1 }],
+      { guest_name: 'Kolegyna Druha', guest_phone: uniquePhone() },
+    )
+
+    // Precondition — non-vacuity. The payload behind this screen genuinely carries
+    // both tokens (UC-GR-006); without this the assertions below could pass because
+    // nothing rendered at all.
+    const orders = await (await admin(`/api/orders/cycle/${cycle.id}`)).json()
+    const hostRow = orders.find((o) => o.friend_id === host.id)
+    expect(hostRow.guest_orders.map((g) => g.order_token).sort())
+      .toEqual([created.order.order_token, second.order.order_token].sort())
+
+    await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+    await expect(subOrderLinkBtn(page, created.order.id)).toBeVisible()
+    await expect(subOrderLinkBtn(page, second.order.id)).toBeVisible()
+    // Expanded too — the fold is where an `<a :href>` would most naturally be put.
+    await page.getByTestId(`guest-expand-${created.order.id}`).click()
+    await expect(page.getByTestId(`guest-suborder-items-${created.order.id}`)).toBeVisible()
+
+    // ⚠ The pin §UC-GR-008 makes this row owe, in the shape of
+    // `share-dialog.spec.js:611`. A rendered token is a credential in every
+    // screenshot, every DevTools tab and every "share your screen" call — and until
+    // this assertion existed, an `<a :href="…">` here passed the ENTIRE suite.
+    const html = await page.evaluate(() => document.documentElement.outerHTML)
+    expect(html, 'the guest\'s private order credential must not be in the markup')
+      .not.toContain(created.order.order_token)
+    expect(html).not.toContain(second.order.order_token)
+
+    // Attributes included: the controls' hook is the sub-order ID, and the URL is
+    // composed in JS at click time.
+    for (const sub of [created, second]) {
+      expect(await subOrderLinkBtn(page, sub.order.id).evaluate((el) => el.outerHTML))
+        .not.toContain(sub.order.order_token)
+    }
+
+    // Implementation-chosen, not mandated by §UC-GR-008, and stated as such so a
+    // future "print the link so the admin can read it" decision knows it is
+    // retargeting a choice rather than breaking an invariant: the SHARE link token
+    // is composed in JS here too.
+    expect(html, 'the share link is composed at click time as well').not.toContain(link.token)
+    expect(await hostLinkBtn(page, host.id).evaluate((el) => el.outerHTML)).not.toContain(link.token)
+  })
+
+  test('a FAILED link listing is stated, not silently rendered as "nobody has ever shared"', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, link } = await orderScenario('linkserr')
+
+    await adoptUiAdmin(page)
+    // ⚠ THE FAILURE MODE THIS EXISTS FOR. `guestLinks` stays `[]` on an error, so
+    // every friend row falls through to the create branch — and a row offering
+    // "Vytvoriť hosťovský odkaz" is indistinguishable from a friend who genuinely
+    // never shared. The admin then concludes nobody has, on the one screen this
+    // whole module was written to make link state recoverable from.
+    await page.route(`**/api/guest-links/cycle/${cycle.id}/all`, (route) => route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'Chyba servera' }),
+    }))
+
+    await gotoOrdersTab(page, cycle)
+
+    const banner = page.getByTestId('guest-links-error')
+    await expect(banner).toBeVisible()
+    await expect(banner).toContainText('Hosťovské odkazy sa nepodarilo načítať')
+
+    // The rest of the tab is UNHARMED — the listing is non-blocking (the
+    // `loadGuestUnpaid` precedent), so the orders themselves still render.
+    await expect(page.getByRole('columnheader', { name: 'Priateľ' })).toBeVisible()
+    await expect(page.getByRole('cell', { name: new RegExp(`^${escapeRe(host.name)}`) })).toBeVisible()
+
+    // And the row genuinely IS in the ambiguous state the banner explains — this is
+    // what makes the banner load-bearing rather than decorative.
+    await expect(hostLinkBtn(page, host.id), 'the real link is not rendered').toHaveCount(0)
+    await expect(hostLinkCreateBtn(page, host.id), 'so the row looks like a linkless one').toBeVisible()
+    expect(link.token, '…while a link demonstrably exists').toBeTruthy()
+  })
+
+  test('admin skin: the orders tab renders shadcn only — ZERO neo/theme classes, no `.app` scope', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle } = await orderScenario('skin')
+
+    await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+    await expect(hostLinkBtn(page, host.id)).toBeVisible()
+
+    // 01-architecture's design-system SCOPE rule: the friends theme is scoped to the
+    // friend/guest surfaces and the admin stays on shadcn. The two skins share a page
+    // only by mistake — and `.app > *` silently neutralises Tailwind positioning
+    // utilities on a direct child, which is how that mistake usually surfaces.
+    const found = await page.evaluate((classes) => classes.filter(
+      (c) => document.querySelectorAll(`.${c}`).length > 0
+    ), NEO_CLASSES)
+    expect(found, 'theme classes on an admin screen').toEqual([])
+  })
+
+  test('⚠ per-row sequencing: two cancels resolving OUT OF ORDER both land, and neither row lies about the server', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, product, link, created } = await orderScenario('outoforder')
+    const slow = created.order.id
+    const fast = (await submitGuest(
+      link.token,
+      [{ product_id: product.id, variant: '1kg', quantity: 1 }],
+      { guest_name: 'Kolegyna Rychla', guest_phone: uniquePhone() },
+    )).order.id
+
+    const token = await adoptUiAdmin(page)
+
+    // The FIRST-clicked row's response is held back so the SECOND one resolves
+    // first. A shared sequence counter (rather than per-row `rowSeq`) discards the
+    // superseded response, and the first row then sits on screen claiming a live
+    // order the server has already cancelled — on a money screen, a wrong answer.
+    // A shared PENDING lock fails differently and just as loudly: the second row's
+    // button would be disabled and the click below would time out.
+    await page.route(`**/api/guest-orders/${slow}/cancel`, async (route) => {
+      await new Promise((r) => setTimeout(r, 2000))
+      await route.continue()
+    })
+
+    await gotoOrdersTab(page, cycle)
+
+    await subOrderCancelBtn(page, slow).click()
+    await page.getByTestId(`guest-cancel-yes-${slow}`).click()
+    await subOrderCancelBtn(page, fast).click()
+    await page.getByTestId(`guest-cancel-yes-${fast}`).click()
+
+    await expect(page.getByTestId(`guest-suborder-${fast}`)).toContainText('Zrušené')
+    await expect(page.getByTestId(`guest-suborder-${slow}`)).toContainText('Zrušené', { timeout: 10000 })
+
+    // Both rows agree with the server, which is the only claim that matters.
+    adminToken = token
+    const view = await hostView(host, cycle.id)
+    expect(listedSubOrder(view, slow).status).toBe('cancelled')
+    expect(listedSubOrder(view, fast).status).toBe('cancelled')
+  })
+
+  test('a REFUSED cancel never leaves the row claiming a cancellation — the error is surfaced on THAT row', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, created } = await orderScenario('refused')
+    const id = created.order.id
+
+    const token = await adoptUiAdmin(page)
+    // The real refusal this hits in production is a cycle locked between the page
+    // load and the click (409 `closed`, D5) — reproduced here as the server answer
+    // it produces, without a race the suite cannot schedule.
+    await page.route(`**/api/guest-orders/${id}/cancel`, (route) => route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'Cyklus je už uzavretý, objednávku kolegu už nie je možné zrušiť.', reason: 'closed' }),
+    }))
+
+    await gotoOrdersTab(page, cycle)
+    await subOrderCancelBtn(page, id).click()
+    await page.getByTestId(`guest-cancel-yes-${id}`).click()
+
+    const err = page.getByTestId(`guest-row-error-${id}`)
+    await expect(err).toBeVisible()
+    await expect(err).toContainText('uzavretý')
+
+    const row = page.getByTestId(`guest-suborder-${id}`)
+    await expect(row, 'a refused cancel must not be shown as done').not.toContainText('Zrušené')
+    await expect(row).toContainText('10.00 EUR')
+
+    adminToken = token
+    expect(listedSubOrder(await hostView(host, cycle.id), id).status).toBe('submitted')
+  })
+})

@@ -816,6 +816,12 @@ test.describe('GSO-T5\'s paid-cancel guard, now through the real API', () => {
 
 // ---- UI: the admin cycle detail, orders tab ----------------------------------
 
+// ⚠ Fixture names are interpolated into the anchored `RegExp`s the GR-T6 retargets
+// below use. Escaping is a no-op for today's names (alphanumerics and spaces) and is
+// written down for the one that will not be: a `(`, `+`, `?` or `.` would otherwise
+// make the anchor a syntax error, or silently loosen an assertion that still passes.
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 async function loginAsAdminUI(page) {
   await page.goto('/admin')
   await page.locator('#password').fill(ADMIN_PASSWORD)
@@ -853,7 +859,14 @@ test.describe('Admin cycle detail UI — nested sub-orders (UC-GSO-009..010)', (
     await page.getByRole('tab', { name: 'Objednávky' }).click()
 
     // The host's own order row is there, and both sub-orders hang off it.
-    await expect(page.getByRole('cell', { name: ui.host.name, exact: true })).toBeVisible()
+    // ⚠ RETARGETED (14 §UC-GR-008, GR-T6 — case (a) of the e2e-immutability rule).
+    // `exact: true` no longer holds because the name cell now also carries the
+    // host's SHARE-LINK control ("Hosťovský odkaz" / "Vytvoriť hosťovský odkaz"),
+    // which is where the admin forwards a lost ordering link from. The protected
+    // property — the host's own row is rendered, named — is unchanged and is now
+    // pinned as "a cell that STARTS with the host's name", which still cannot be
+    // satisfied by a guest row (those read "Hosť • pozval …" first).
+    await expect(page.getByRole('cell', { name: new RegExp(`^${escapeRe(ui.host.name)}`) })).toBeVisible()
     const rowA = page.locator(`[data-testid="guest-suborder-${ui.guestA.id}"]`)
     const rowB = page.locator(`[data-testid="guest-suborder-${ui.guestB.id}"]`)
     await expect(rowA).toBeVisible()
@@ -869,11 +882,19 @@ test.describe('Admin cycle detail UI — nested sub-orders (UC-GSO-009..010)', (
     await expect(rowB.getByTestId(`guest-delivered-state-${ui.guestB.id}`)).toContainText('Odovzdané')
     await expect(rowA.getByTestId(`guest-delivered-state-${ui.guestA.id}`)).toContainText('Neodovzdané')
     await expect(rowA.locator('input[type="checkbox"]'), 'no delivered control on the admin side').toHaveCount(0)
-    // Exactly two controls: the expand chevron (view-only) and the paid toggle
-    // (the admin's one flag). `delivered` stays a rendered state, never a control.
-    await expect(rowA.locator('button')).toHaveCount(2)
+    // ⚠ RETARGETED (14 §UC-GR-008, GR-T6 — case (a)). The row gained the two
+    // controls that UC mandates: the guest's resend link and the admin's cancel.
+    // A blanket count was only ever a proxy for the property this test is really
+    // about — `delivered` is a rendered STATE and never a control — so the controls
+    // are now ENUMERATED, which pins that property harder than a number: a
+    // `delivered` checkbox appearing here would break the list, not just the count.
+    await expect(rowA.locator('button')).toHaveCount(4)
     await expect(rowA.getByTestId(`guest-expand-${ui.guestA.id}`)).toBeVisible()
     await expect(rowA.getByTestId(`guest-paid-toggle-${ui.guestA.id}`)).toBeVisible()
+    await expect(rowA.getByTestId(`guest-order-link-${ui.guestA.id}`)).toBeVisible()
+    await expect(rowA.getByTestId(`guest-cancel-${ui.guestA.id}`)).toBeVisible()
+    await expect(rowA.locator(`[data-testid^="guest-delivered-"]:is(button)`),
+      'delivered is still not a control').toHaveCount(0)
 
     // The paid toggle persists across a reload (it is server state, not a ref).
     const paidToggle = rowA.getByTestId(`guest-paid-toggle-${ui.guestA.id}`)
@@ -999,7 +1020,9 @@ test.describe('Admin cycle detail UI — the guest card must not break the order
 
     // Friend view (default): the host's own row, no violet guest rows.
     await expect(page.getByRole('columnheader', { name: 'Priateľ' })).toBeVisible()
-    await expect(page.getByRole('cell', { name: host.name, exact: true })).toBeVisible()
+    // ⚠ RETARGETED with :856 above, same reason (14 §UC-GR-008, GR-T6, case (a)):
+    // the name cell now also carries the host's share-link control.
+    await expect(page.getByRole('cell', { name: new RegExp(`^${escapeRe(host.name)}`) })).toBeVisible()
     await expect(page.locator('[data-testid^="guest-suborder-"]')).toHaveCount(0)
 
     // Product view renders too — the toggle and the table are not casualties of a
@@ -1256,6 +1279,13 @@ test.describe('Admin cycle detail UI — "Podľa produktu" counts guest bags (UC
     await page.goto(`/admin/cycle/${draftPv.cycle.id}`)
     await page.getByRole('tab', { name: 'Objednávky' }).click()
     const hostRow = page.getByRole('row').filter({ hasText: draftPv.host.name }).first()
-    await expect(hostRow.locator('button'), 'no paid checkbox, no expand chevron').toHaveCount(0)
+    // ⚠ RETARGETED (14 §UC-GR-008, GR-T6 — case (a)). The share-link control renders
+    // on every LISTED row, drafts included: a friend with an unsubmitted cart is
+    // still a perfectly good host to forward an ordering link to, and that is
+    // orthogonal to what this test protects. The property is restated exactly —
+    // no paid checkbox and no expand chevron on a draft — by excluding only the
+    // control this row added, rather than counting all buttons.
+    await expect(hostRow.locator('button:not([data-testid^="host-guest-link"])'),
+      'no paid checkbox, no expand chevron').toHaveCount(0)
   })
 })

@@ -510,6 +510,30 @@ export const api = {
   // — plus the refund queue (paid but cancelled).
   getGuestUnpaid: (cycleId) => adminRequest(`/guest-orders/cycle/${cycleId}/unpaid`),
 
+  // Guest share links, ADMIN side (14 §UC-GR-004). The `/guest-links` router is
+  // MIXED-auth: the three host routes above ride the friend Bearer token, these two
+  // ride X-Admin-Token. Read + create ONLY — D3 keeps regenerate and
+  // deactivate/reactivate host-only, so there is deliberately no admin method for
+  // either, and adding one would violate that UC.
+  //
+  // ⚠ THE TWO POSTs ON THIS PREFIX ANSWER DIFFERENT SHAPES. This one returns
+  // `{ link, created }`; the HOST's own `createGuestLink` above returns
+  // `{ link, regenerated, guest_orders, totals }`. That asymmetry is why this is its
+  // own method rather than a parameter on the existing one — a client written
+  // against "the POST on /guest-links" would read `regenerated` off a body that
+  // never has it. A 409 `inactive_host` carries NO `link`: the gate runs before the
+  // existing-link lookup, so this route is not a token-retrieval path for a
+  // deactivated host — `getGuestLinksForCycle` is the complete source of tokens.
+  getGuestLinksForCycle: (cycleId) => adminRequest(`/guest-links/cycle/${cycleId}/all`),
+  createGuestLinkForHost: (cycleId, friendId) =>
+    adminRequest(`/guest-links/cycle/${cycleId}/host/${friendId}`, { method: 'POST' }),
+
+  // The admin's own cancel of a guest sub-order (14 §UC-GR-005) — the capability the
+  // host's DELETE points at when it refuses a PAID one. NOT the same route: this one
+  // has no paid blockade, and a paid + cancelled sub-order lands in the refund queue
+  // above on purpose (D4). Soft cancel server-side; the item rows are kept.
+  cancelGuestOrderAdmin: (id) => adminRequest(`/guest-orders/${id}/cancel`, { method: 'POST' }),
+
   // Coffee product catalog (admin) — module 12. The whole /coffee-products
   // mount is requireAdmin server-side; all calls ride X-Admin-Token.
   getCatalogProducts: (params = {}) => {

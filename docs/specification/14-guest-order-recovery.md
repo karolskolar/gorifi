@@ -484,9 +484,20 @@ assume away:**
   admin deactivate/reactivate/regenerate control exists (UC-GR-004 non-capability).
 - No link: button **"Vytvoriť hosťovský odkaz"** → `POST
   /guest-links/cycle/:id/host/:friendId`, updating the row in place (per-row pending,
-  the `rowSeq` convention — two rows may be created concurrently). The orders payload
-  lists EVERY active friend (placeholder rows `status: 'none'`, orders.js:612-635),
-  so a friend who has neither ordered nor shared is reachable here.
+  the `rowSeq` convention — two rows may be created concurrently).
+  ⚠ **CORRECTED after the GR-T6 review (finding 4): the sentence that stood here was
+  FALSE — it confused the PAYLOAD with the VIEW.** The orders payload does list every
+  active friend (placeholder rows `status: 'none'`, orders.js:612-635), but
+  `CycleDetail.vue:147`'s `listedOrders` renders only `submitted | draft | has-guests`.
+  So the create affordance reaches a friend who has ordered, has an unsubmitted cart,
+  or already hosts guests — **not** a friend with no activity at all. GR-T6 deliberately
+  did NOT widen the filter: listing every active friend on the orders tab is a product
+  change, and it would move `guest-admin-view.spec.js`'s row counts as a side effect.
+  ⚠ **The residual is real and belongs to §Accepted risks:** a host who has a link, has
+  not ordered themselves, and whose colleagues have not ordered *yet* is absent from
+  this tab — which is exactly the "lost the link before anyone used it" case. Today the
+  admin's answer there is to ask the host to reopen their own share dialog. Widening
+  (or a separate "all friends" affordance) is a PO decision, not a defect in this row.
 
 **Per nested sub-order row — resend + cancel:**
 
