@@ -1289,3 +1289,82 @@ test.describe('Admin cycle detail UI — "Podľa produktu" counts guest bags (UC
       'no paid checkbox, no expand chevron').toHaveCount(0)
   })
 })
+
+// ⚠ THE PO ASKED "how can the dashboard say 1458.16 when this tab says 753.73?" and
+// went looking for a counting bug. There was none: friends 753.73 + guests 704.43 is
+// exactly the dashboard's whole-cycle figure (measured on production). The screen was
+// showing two different questions under one word — "Celkom".
+//
+// Guests pay the ADMIN directly (Decision 1), so their money has never belonged in the
+// friend footer, which is the friends' BALANCE column. The fix is labelling plus the
+// missing half, and the assertion that matters is the LAST one here: the two halves of
+// the friend view must add up to the product view's whole-cycle total. That is the
+// property the PO could not see, and a label change alone cannot satisfy it.
+test.describe('Orders tab — the two totals say WHICH total they are (2026-08-30)', () => {
+  let ui
+
+  test.beforeAll(async () => {
+    await refreshAdminToken()
+    const built = await scenario('totals', { markup: 1 })
+    // Friend half: 1 × 250g @ 10 = 10.00
+    await submitOwnOrder(built.host, built.cycle.id, [{ product_id: built.product.id, variant: '250g', quantity: 1 }])
+    // Guest half: 2 × 250g @ 10 = 20.00, plus a CANCELLED 1kg that must count for neither.
+    const guest = await submitGuest(built.link.token, [{ product_id: built.product.id, variant: '250g', quantity: 2 }], {
+      guest_name: 'Sucet Hosto', guest_phone: '0906 111 222',
+    })
+    const cancelled = await submitGuest(built.link.token, [{ product_id: built.product.id, variant: '1kg', quantity: 1 }], {
+      guest_name: 'Zruseny Sucet', guest_phone: '0906 999 888',
+    })
+    expect((await ctx.delete(`/api/guest-orders/${cancelled.order.id}`, { headers: built.host.auth })).status()).toBe(200)
+    ui = { ...built, guest: guest.order }
+  })
+
+  test('the friend footer is labelled "(priatelia)" and the guests are a row of their own', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${ui.cycle.id}`)
+    await page.getByRole('tab', { name: 'Objednávky' }).click()
+
+    const friendFooter = page.getByRole('row').filter({ hasText: 'Celkom (priatelia)' })
+    await expect(friendFooter).toHaveCount(1)
+    await expect(friendFooter.getByRole('cell').nth(2), 'friends only — the balance column').toHaveText('10.00 EUR')
+
+    // The other half, beside it rather than hidden in a card that disappears once
+    // everyone has paid.
+    await expect(page.getByTestId('guest-orders-total'), 'the cancelled 1kg counts for neither half').toHaveText('20.00 EUR')
+    await expect(page.getByRole('row').filter({ hasText: 'Objednávky hostí' }))
+      .toContainText('platia priamo správcovi')
+  })
+
+  test('⚠ the two halves ADD UP to the product view\'s whole-cycle total — the PO\'s question, pinned', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${ui.cycle.id}`)
+    await page.getByRole('tab', { name: 'Objednávky' }).click()
+
+    const friends = await page.getByRole('row').filter({ hasText: 'Celkom (priatelia)' })
+      .getByRole('cell').nth(2).innerText()
+    const guests = await page.getByTestId('guest-orders-total').innerText()
+
+    await page.getByRole('button', { name: 'Podľa produktu' }).click()
+    const whole = page.getByRole('row').filter({ hasText: 'Celkom (vrátane hostí)' })
+    await expect(whole, 'this footer includes guests, so it says so').toHaveCount(1)
+    const wholeText = await whole.getByRole('cell').nth(3).innerText()
+
+    const eur = (s) => Number(s.replace(/[^\d.]/g, ''))
+    expect(eur(friends) + eur(guests), 'friends + guests must be the whole cycle')
+      .toBeCloseTo(eur(wholeText), 2)
+    expect(eur(wholeText)).toBe(30)
+  })
+
+  test('a cycle with NO colleagues shows no guest row at all — not a permanent 0.00', async ({ page }) => {
+    await refreshAdminToken()
+    const solo = await scenario('nogsts', { markup: 1 })
+    await submitOwnOrder(solo.host, solo.cycle.id, [{ product_id: solo.product.id, variant: '250g', quantity: 1 }])
+
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${solo.cycle.id}`)
+    await page.getByRole('tab', { name: 'Objednávky' }).click()
+
+    await expect(page.getByRole('row').filter({ hasText: 'Celkom (priatelia)' })).toHaveCount(1)
+    await expect(page.getByTestId('guest-orders-total')).toHaveCount(0)
+  })
+})
