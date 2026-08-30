@@ -3,6 +3,7 @@ import db from '../db/schema.js';
 import { validateFriendAuth } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { bindValue } from '../helpers/bind-value.js';
+import { roundMoney } from '../helpers/pricing.js';
 
 const router = Router();
 
@@ -70,9 +71,15 @@ router.post('/generate', requireAdmin, (req, res) => {
       continue;
     }
 
-    const orderTotal = order.total;
-    const retailTotal = Math.round((orderTotal / (1 - applied_discount / 100)) * 100) / 100;
-    const voucherAmount = Math.round((retailTotal * (supplier_discount - applied_discount) / 100) * 100) / 100;
+    // Every figure stored on a voucher goes through the one home for the 2-decimal
+    // money rule. `order.total` is rounded on write from the money-rounding fix on,
+    // but a voucher may be cut from a cycle whose orders PREDATE it, so the source
+    // value is rounded here too — otherwise the drift is laundered into
+    // `retail_total`, into `voucher_amount`, and finally into the friend's balance
+    // when they accept it.
+    const orderTotal = roundMoney(order.total);
+    const retailTotal = roundMoney(orderTotal / (1 - applied_discount / 100));
+    const voucherAmount = roundMoney(retailTotal * (supplier_discount - applied_discount) / 100);
 
     const result = db.prepare(`
       INSERT INTO vouchers (friend_id, source_cycle_id, supplier_discount, applied_discount, order_total, retail_total, voucher_amount)
@@ -223,7 +230,7 @@ router.post('/:id/resolve', (req, res) => {
     const txResult = db.prepare(`
       INSERT INTO transactions (friend_id, type, amount, note)
       VALUES (?, 'adjustment', ?, ?)
-    `).run(friendIdValue, voucher.voucher_amount, note);
+    `).run(friendIdValue, roundMoney(voucher.voucher_amount), note);
 
     const transactionId = txResult.lastInsertRowid;
 

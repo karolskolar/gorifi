@@ -5,6 +5,7 @@ import { requireAdmin } from '../middleware/admin-auth.js';
 import { cycleSubOrdersByHost, guestOrderStatus } from '../helpers/guest-orders.js';
 import { guestCycleItems } from '../helpers/guest-aggregation.js';
 import { bindValue } from '../helpers/bind-value.js';
+import { roundMoney } from '../helpers/pricing.js';
 
 const router = Router();
 
@@ -125,7 +126,7 @@ router.get('/', requireAdmin, (req, res) => {
       .map(r => ({
         name: r.name,
         total_kg: Math.round(r.total_kg * 10) / 10,
-        total_value: Math.round(r.total_value * 100) / 100,
+        total_value: roundMoney(r.total_value),
       }))
       .sort((a, b) => {
         if (a.name === defaultName) return -1;
@@ -369,7 +370,10 @@ router.patch('/:id', requireAdmin, (req, res) => {
   }
   if (parcel_fee !== undefined) {
     updates.push('parcel_fee = ?');
-    values.push(parcel_fee || 0);
+    // Rounded at the write: `orders.delivery_fee` is COPIED from this column on every
+    // parcel submit, and the client's `paymentTotal` adds it to the order total before
+    // the Pay-by-Square encode — so noise here reaches a bank, not just a screen.
+    values.push(roundMoney(parcel_fee || 0));
   }
 
   if (updates.length > 0) {

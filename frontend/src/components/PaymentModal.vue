@@ -53,6 +53,7 @@ import { encode, PaymentOptions, CurrencyCode, Version } from 'bysquare'
 import QRCode from 'qrcode'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
+import { roundMoney } from '@/lib/money'
 
 const props = defineProps({
   open: Boolean,
@@ -86,7 +87,13 @@ async function generateQr() {
       invoiceId: '',
       payments: [{
         type: PaymentOptions.PaymentOrder,
-        amount: props.amount,
+        // ⚠ ROUNDED HERE, not left to the caller. `bysquare` serialises the amount
+        // verbatim, so float noise reaches the bank as `Nesprávna suma` — and this
+        // component is reused by three screens (guest checkout, guest status, the
+        // friend order page), each computing `amount` its own way. The rule belongs at
+        // the payload, where it holds for all of them. Display is untouched:
+        // `formatPrice` below still does the `toFixed(2)`.
+        amount: roundMoney(props.amount),
         currencyCode: CurrencyCode.EUR,
         paymentDueDate: dateStr,
         variableSymbol: '',

@@ -4,7 +4,7 @@ import { validateFriendAuth, getAuthMode } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { packOrder, unpackOrder, packingItemStats } from '../helpers/packing.js';
 import { gramsByProductFromItems, stockViolations } from '../helpers/stock.js';
-import { basePriceForVariant, applyMarkup } from '../helpers/pricing.js';
+import { basePriceForVariant, applyMarkup, roundMoney } from '../helpers/pricing.js';
 import { cycleSubOrdersByHost } from '../helpers/guest-orders.js';
 import { bindValue } from '../helpers/bind-value.js';
 
@@ -231,12 +231,23 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
     // Update order total
     // If cart is now empty, delete the order entirely (order was canceled)
     // Otherwise preserve existing status
+    // ⚠ THE PRODUCTION MONEY BUG. `applyMarkup` rounds each `price`, but this loop
+    // ACCUMULATES them, and `15.00 + 11.19` is `26.189999999999998` in IEEE-754. The
+    // raw sum used to be stored here, every screen hid it behind `toFixed(2)`, and
+    // the friend's banking app refused the Pay-by-Square QR with
+    // `Nesprávna suma: 26.189999999999998`. Rounded once, at the write.
+    //
+    // ⚠ THE ZERO TEST STAYS ON THE RAW SUM. `total === 0` means "the cart is empty",
+    // and this branch DELETES the order — rounding first would make a sub-cent total
+    // (unreachable today, but one price change away) destroy a real order instead of
+    // storing it. Rounding belongs on the value being written, not on the guard.
     if (total === 0) {
       db.prepare('DELETE FROM orders WHERE id = ?').run(order.id);
       return { total: 0, deleted: true };
     } else {
-      db.prepare('UPDATE orders SET total = ? WHERE id = ?').run(total, order.id);
-      return { total, deleted: false };
+      const storedTotal = roundMoney(total);
+      db.prepare('UPDATE orders SET total = ? WHERE id = ?').run(storedTotal, order.id);
+      return { total: storedTotal, deleted: false };
     }
   });
 
@@ -336,13 +347,17 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
     if (typeof packeta_address !== 'string' || !packeta_address.trim()) {
       return res.status(400).json({ error: 'Adresa výdajného miesta je povinná' });
     }
-    // Submit with parcel delivery — clear pickup fields
+    // Submit with parcel delivery — clear pickup fields.
+    //
+    // `delivery_fee` is a money column of its own, and `paymentTotal` on the client
+    // is `total + delivery_fee` — so an unrounded cycle fee would seed the drift into
+    // the QR of every parcel order in the cycle even with a correct total.
     db.prepare(`
       UPDATE orders SET status = 'submitted', submitted_at = CURRENT_TIMESTAMP,
         delivery_fee = ?, packeta_address = ?,
         pickup_location_id = NULL, pickup_location_note = NULL
       WHERE id = ?
-    `).run(cycle.parcel_fee || 0, packeta_address.trim(), order.id);
+    `).run(roundMoney(cycle.parcel_fee || 0), packeta_address.trim(), order.id);
   } else {
     // Standard pickup — clear parcel fields
     //
@@ -420,6 +435,13 @@ router.patch('/:id/paid', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Len odoslané objednávky môžu byť označené ako zaplatené' });
   }
 
+  // ⚠ `roundMoney` on BOTH legs, even though `orders.total` is written rounded from
+  // this release on: rows created BEFORE the fix still hold unrounded totals, and
+  // this toggle is how one of them enters the friend's real balance. Rounding at the
+  // ledger boundary is what stops a legacy row leaving 1e-14 on a balance forever.
+  // (The reversal negates the ROUNDED value, so the pair still cancels exactly.)
+  const paymentAmount = roundMoney(order.total);
+
   // Use transaction to ensure consistency
   const togglePaid = db.transaction(() => {
     if (paid && !order.paid) {
@@ -427,13 +449,13 @@ router.patch('/:id/paid', requireAdmin, (req, res) => {
       db.prepare(`
         INSERT INTO transactions (friend_id, order_id, type, amount, note)
         VALUES (?, ?, 'payment', ?, ?)
-      `).run(order.friend_id, order.id, order.total, order.cycle_name);
+      `).run(order.friend_id, order.id, paymentAmount, order.cycle_name);
     } else if (!paid && order.paid) {
       // Marking as unpaid - create reversal transaction (negative payment)
       db.prepare(`
         INSERT INTO transactions (friend_id, order_id, type, amount, note)
         VALUES (?, ?, 'payment', ?, ?)
-      `).run(order.friend_id, order.id, -order.total, `${order.cycle_name} - storno`);
+      `).run(order.friend_id, order.id, -paymentAmount, `${order.cycle_name} - storno`);
     }
 
     db.prepare('UPDATE orders SET paid = ? WHERE id = ?').run(paid ? 1 : 0, req.params.id);

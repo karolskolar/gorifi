@@ -1,4 +1,5 @@
 import db from '../db/schema.js';
+import { roundMoney } from './pricing.js';
 
 // Shared "Zabalené" (packed) balance logic for friend orders.
 //
@@ -11,12 +12,22 @@ import db from '../db/schema.js';
 // drifts. Keeping the SQL in one place guarantees that.
 //
 // Both helpers assume they run inside a db.transaction().
+//
+// ⚠ BOTH AMOUNTS GO THROUGH `roundMoney`. These two helpers post `order.total`
+// straight into the ledger, so before the money-rounding fix they INHERITED the
+// unrounded order total into the friend's balance — an order stored as
+// 26.189999999999998 charged 26.189999999999998, and the balance could never come
+// back to a true zero against the 26.19 the friend was actually asked to pay. Rows
+// written before that fix still hold unrounded totals, so this stays here
+// permanently, not just as belt-and-braces on a now-clean column.
+//
+// The reversal negates the ROUNDED charge, so pack→unpack still nets exactly 0.
 
 export function packOrder(order) {
   db.prepare(`
     INSERT INTO transactions (friend_id, order_id, type, amount, note)
     VALUES (?, ?, 'charge', ?, NULL)
-  `).run(order.friend_id, order.id, -order.total);
+  `).run(order.friend_id, order.id, -roundMoney(order.total));
 
   db.prepare('UPDATE orders SET packed = 1, packed_at = CURRENT_TIMESTAMP WHERE id = ?').run(order.id);
 }
@@ -25,7 +36,7 @@ export function unpackOrder(order) {
   db.prepare(`
     INSERT INTO transactions (friend_id, order_id, type, amount, note)
     VALUES (?, ?, 'charge', ?, 'Stornované')
-  `).run(order.friend_id, order.id, order.total);
+  `).run(order.friend_id, order.id, roundMoney(order.total));
 
   db.prepare('UPDATE orders SET packed = 0, packed_at = NULL WHERE id = ?').run(order.id);
 }

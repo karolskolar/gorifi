@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { bindValue } from '../helpers/bind-value.js';
+import { roundMoney } from '../helpers/pricing.js';
 import { requireFriendOwner } from '../middleware/friend-auth.js';
 
 const router = Router();
@@ -126,10 +127,15 @@ router.post('/payment', requireAdmin, (req, res) => {
     }
   }
 
+  // ⚠ ROUNDED AT THE WRITE (the money-rounding fix, `helpers/pricing.js roundMoney`).
+  // The amount the admin records is the amount the friend was ASKED for, and that
+  // figure is now always 2-decimal — but the admin UI computes it (and an integration
+  // may post an arithmetic result), so a value carrying float noise must not become a
+  // permanent ledger row that no balance can ever settle against.
   const result = db.prepare(`
     INSERT INTO transactions (friend_id, order_id, type, amount, note, created_at)
     VALUES (?, ?, 'payment', ?, ?, ?)
-  `).run(friendIdValue, orderIdValue || null, amount, truncatedNote, createdAt);
+  `).run(friendIdValue, orderIdValue || null, roundMoney(amount), truncatedNote, createdAt);
 
   const transaction = db.prepare('SELECT * FROM transactions WHERE id = ?').get(result.lastInsertRowid);
 
@@ -184,10 +190,11 @@ router.post('/adjustment', requireAdmin, (req, res) => {
   // Note max 160 chars
   const truncatedNote = note.trim().substring(0, 160);
 
+  // Rounded at the write — same rule as the payment route above.
   const result = db.prepare(`
     INSERT INTO transactions (friend_id, order_id, type, amount, note)
     VALUES (?, ?, 'adjustment', ?, ?)
-  `).run(friendIdValue, orderIdValue || null, amount, truncatedNote);
+  `).run(friendIdValue, orderIdValue || null, roundMoney(amount), truncatedNote);
 
   const transaction = db.prepare('SELECT * FROM transactions WHERE id = ?').get(result.lastInsertRowid);
 
@@ -235,7 +242,9 @@ router.patch('/:id', requireAdmin, (req, res) => {
       return res.status(400).json({ error: 'Suma platby musí byť kladné číslo' });
     }
     updates.push('amount = ?');
-    values.push(amount);
+    // Rounded at the write. ⚠ The GUARD above stays on the RAW value: `amount <= 0`
+    // is this route's contract and rounding first would let 0.001 through as 0.
+    values.push(roundMoney(amount));
   }
 
   // ⚠ FUP-T12 — the optional-free-text shape on an UPDATE: a non-string is treated as

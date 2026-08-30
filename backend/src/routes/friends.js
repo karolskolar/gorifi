@@ -6,6 +6,7 @@ import { requireAdmin } from '../middleware/admin-auth.js';
 import { authLimiter } from '../middleware/rate-limit.js';
 import { getPlaceholderCycleId } from '../helpers/friend-create.js';
 import { bindValue } from '../helpers/bind-value.js';
+import { roundMoney } from '../helpers/pricing.js';
 // 10 §UC-GA-002. Imported here (rather than only where tokens are verified) so the
 // module's ONE boot line prints at server start — it is the only audit signal that the
 // `GOOGLE_AUTH_TEST_MODE` seam is off in production.
@@ -662,7 +663,11 @@ router.get('/cycles', (req, res) => {
 
       if (order) {
         hasOrder = true;
-        orderTotal = (order.total || 0) + (order.delivery_fee || 0);
+        // ⚠ A SUM OF TWO MONEY COLUMNS, so it can drift even when both are clean:
+        // 33.56 + 4.20 is 37.760000000000005. This is the "Objednané · X" figure on
+        // the portal cycle card — displayed via `toFixed(2)`, so the drift is
+        // invisible here, which is precisely how the QR bug survived to production.
+        orderTotal = roundMoney((order.total || 0) + (order.delivery_fee || 0));
         orderStatus = order.status;
 
         // Calculate kilos for this friend's order only
