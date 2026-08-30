@@ -289,6 +289,31 @@ const orderTotals = computed(() => {
 // row disagreeing. Guests pay the admin directly (Decision 1), so this figure is
 // "what this cycle is worth", not "what the friends owe"; the friend view's own
 // footer still uses `orderTotals` and is unchanged.
+// What the colleagues' sub-orders come to, across every host in the cycle.
+//
+// ⚠ THIS EXISTS BECAUSE THE PO ASKED "how can the dashboard say 1458.16 when this tab
+// says 753.73?" — and the honest answer is that they were two different questions with
+// one label. Measured on production: friends 753.73 + guests 704.43 = 1458.16, which is
+// exactly the dashboard's roastery breakdown. Nothing was miscounted; the screen simply
+// never said which half it was showing. So the friend footer now says "(priatelia)",
+// this figure sits beside it, and the product footer — which has included guests since
+// GR-T6 — says so out loud.
+//
+// Guests pay the ADMIN directly (Decision 1), which is why their money was never in the
+// friend footer: that column is the friends' balance. Cancelled sub-orders are excluded
+// by the same status predicate every other guest aggregate uses, and the sum is taken
+// from the payload already on screen — no new request, no backend change.
+const guestOrdersTotal = computed(() => {
+  let total = 0
+  for (const order of orders.value) {
+    for (const sub of order.guest_orders || []) {
+      if (isGuestCancelled(sub)) continue
+      total += sub.total || 0
+    }
+  }
+  return Math.round(total * 100) / 100
+})
+
 const productViewTotals = computed(() => ({
   quantity: ordersByProduct.value.reduce((sum, p) => sum + p.total_quantity, 0),
   total: ordersByProduct.value.reduce((sum, p) => sum + p.total_price, 0)
@@ -1783,9 +1808,12 @@ function getStatusVariant(status) {
                 </template>
               </TableBody>
               <tfoot>
+                <!-- ⚠ This footer DOES include the guests (GR-T6), so it says so —
+                     otherwise the two tabs of one screen carry the same word for two
+                     different figures, which is the confusion this row exists to end. -->
                 <TableRow class="font-semibold bg-muted">
                   <TableCell></TableCell>
-                  <TableCell>Celkom</TableCell>
+                  <TableCell>Celkom (vrátane hostí)</TableCell>
                   <TableCell class="text-center">{{ productViewTotals.quantity }}</TableCell>
                   <TableCell class="text-right">{{ formatPrice(productViewTotals.total) }}</TableCell>
                 </TableRow>
@@ -2179,9 +2207,14 @@ function getStatusVariant(status) {
                 </template>
               </TableBody>
               <tfoot>
+                <!-- ⚠ "(priatelia)" is not decoration — see `guestOrdersTotal`. This
+                     column is the friends' balance, so it has never included the
+                     guests' money, and an unqualified "Celkom" here against the
+                     dashboard's whole-cycle figure is what sent the PO looking for a
+                     bug that did not exist. -->
                 <TableRow class="font-semibold bg-muted">
                   <TableCell></TableCell>
-                  <TableCell>Celkom</TableCell>
+                  <TableCell>Celkom (priatelia)</TableCell>
                   <TableCell class="text-right">{{ formatPrice(orderTotals.total) }}</TableCell>
                   <TableCell></TableCell>
                   <template v-if="isBakery">
@@ -2196,6 +2229,25 @@ function getStatusVariant(status) {
                   </template>
                   <TableCell></TableCell>
                   <TableCell></TableCell>
+                </TableRow>
+
+                <!-- The other half, right beside the first one. Rendered only when the
+                     cycle actually has colleagues' orders — on a cycle without them
+                     there is no second half and a permanent "0.00" would be noise.
+                     ⚠ Deliberately NOT under the "Nezaplatené objednávky hostí" card:
+                     that card lists the UNPAID ones and disappears entirely once
+                     everyone has paid, which is exactly when this figure would vanish
+                     while the friends' half stayed on screen. -->
+                <TableRow v-if="guestOrdersTotal > 0" class="bg-muted text-muted-foreground">
+                  <TableCell></TableCell>
+                  <TableCell class="font-normal">
+                    Objednávky hostí
+                    <span class="block text-xs">platia priamo správcovi, nie cez zostatok priateľa</span>
+                  </TableCell>
+                  <TableCell class="text-right font-semibold" data-testid="guest-orders-total">
+                    {{ formatPrice(guestOrdersTotal) }}
+                  </TableCell>
+                  <TableCell :colspan="3 + (isBakery ? 1 : visibleVariantColumns.length)"></TableCell>
                 </TableRow>
               </tfoot>
             </Table>
