@@ -3354,3 +3354,406 @@ test.describe('UC-GR-012 — regeneration is blocked while colleagues have live 
     expect((await ctx.get(canonicalPath(orderToken))).status()).toBe(200)
   })
 })
+
+// ---------------------------------------------------------------------------
+// "Hosťovské odkazy (všetci priatelia)" — the fold under the orders table
+// (PO decision 2026-08-31, closing the residual §UC-GR-008 recorded).
+//
+// THE GAP, WITH PRODUCTION NUMBERS. `listedOrders` (CycleDetail.vue) renders only
+// friends who ordered, have a draft, or host guests — 33 of 76 active friends on the
+// live September cycle. For the other 43 the admin could neither SEE nor CREATE a
+// share link, which is exactly the "lost the link before anyone used it" case: a host
+// who shared, ordered nothing himself, and whose colleagues have not ordered YET is
+// invisible on the one screen that exists to make links reachable. One such friend on
+// production already HAS a link the admin cannot see.
+//
+// ⚠ THE FIX IS A FOLD, NOT A WIDER TABLE (PO): 76 rows of which 43 are empty would
+// wreck the sheet the admin packs and orders from, and it would move
+// `guest-admin-view.spec.js`'s row counts as a side effect.
+//
+// ⚠ NO NEW ENDPOINT AND NO NEW REQUEST. `GET /api/orders/cycle/:cycleId` already
+// returns one row per ACTIVE friend (placeholder rows `status:'none'`), and the link
+// listing is already fetched for the table. The fold joins the two payloads that were
+// already on screen — asserted below by counting the requests the tab issues.
+//
+// ⚠ DRAFT COPY, PO sign-off pending — hoisted for the file's standing reason: the
+// sign-off edit is then a known TWO-PLACE change (these constants + the literals in
+// `CycleDetail.vue`), never a grep for quoted Slovak.
+const FOLD_TITLE = 'Hosťovské odkazy (všetci priatelia)'
+const FOLD_INTRO =
+  'Tu je každý aktívny priateľ - aj ten, ktorý si sám nič neobjednal. Odkaz mu môžete vytvoriť alebo skopírovať a poslať, aby cez neho objednávali jeho kolegovia.'
+const FOLD_SEARCH_LABEL = 'Hľadať priateľa'
+const FOLD_NO_MATCH = 'Žiadny priateľ nevyhovuje hľadaniu.'
+
+const foldCard = (page) => page.getByTestId('all-friends-guest-links')
+const foldToggle = (page) => page.getByTestId('all-friends-guest-links-toggle')
+const foldBody = (page) => page.getByTestId('all-friends-guest-links-body')
+const foldStats = (page) => page.getByTestId('all-friends-guest-links-stats')
+const foldSearch = (page) => page.getByTestId('all-friends-guest-links-search')
+const foldRow = (page, friendId) => page.getByTestId(`all-friends-row-${friendId}`)
+// ⚠ ITS OWN TESTID NAMESPACE. One friend can be rendered on BOTH surfaces at once
+// (the table row and the fold), and `GuestLinkRowControls.vue` is one component with a
+// `testidPrefix` prop — the shipped `host-guest-link*` ids stay on the table, so every
+// pin in the describes above is untouched and Playwright's strict mode stays happy.
+const foldLinkBtn = (page, friendId) => page.getByTestId(`all-friends-link-${friendId}`)
+const foldCreateBtn = (page, friendId) => page.getByTestId(`all-friends-link-create-${friendId}`)
+const foldRegenBtn = (page, friendId) => page.getByTestId(`all-friends-link-regen-${friendId}`)
+const foldInactive = (page, friendId) => page.getByTestId(`all-friends-link-inactive-${friendId}`)
+const foldError = (page, friendId) => page.getByTestId(`all-friends-link-error-${friendId}`)
+
+// A friend with NO login and NO activity — the 43. `makeHost` does the whole
+// credential dance because the guest-link routes need a host Bearer session; nothing
+// here does, so this stays cheap (and 20 of them are created for the scale check).
+let plainSeq = 0
+async function makePlainFriend(label) {
+  const name = `Priatel ${label} ${uniq}${++plainSeq}`
+  const res = await admin('/api/friends', { method: 'post', data: { name } })
+  expect(res.status(), 'plain friend create').toBe(201)
+  return { ...(await res.json()), name }
+}
+
+async function openFold(page, cycle) {
+  await gotoOrdersTab(page, cycle)
+  await expect(foldToggle(page)).toBeVisible()
+  await foldToggle(page).click()
+  await expect(foldBody(page)).toBeVisible()
+}
+
+test.describe('the "všetci priatelia" fold — a share link for the 43 the orders table never showed', () => {
+  test('⚠ THE GAP ITSELF: a friend who has NOT ordered and hosts nobody is ABSENT from the orders table, PRESENT in the fold — and the admin creates and copies their link there', async ({ page, context, browser }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await refreshAdminToken()
+    const cycle = await makeCycle('foldgap')
+    const product = await addProduct(cycle.id, {
+      name: `GR foldgap ${uniq}`, purpose: 'Espresso', price_250g: 10,
+    })
+    // Someone has to be on the table, or "absent from the table" is vacuous — the
+    // table would simply not be rendered.
+    const activeHost = await makeHost('foldgapon')
+    await submitOwnOrder(activeHost, cycle.id, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+    // …and THE FRIEND THIS ROW EXISTS FOR: no order, no draft, no guests, no link.
+    const quiet = await makePlainFriend('gap')
+
+    const token = await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+
+    // The precondition, stated as an assertion: the orders table does not know them.
+    await expect(page.getByRole('cell', { name: new RegExp(`^${escapeRe(quiet.name)}`) }),
+      'the quiet friend is not a row of the orders table').toHaveCount(0)
+    await expect(hostLinkCreateBtn(page, quiet.id),
+      'so the table offers them no create affordance either — the whole gap').toHaveCount(0)
+    // While the friend who ordered IS there, on both surfaces.
+    await expect(page.getByRole('cell', { name: new RegExp(`^${escapeRe(activeHost.name)}`) })).toBeVisible()
+
+    await foldToggle(page).click()
+    await expect(foldBody(page)).toBeVisible()
+    await expect(foldRow(page, quiet.id), 'the fold DOES list them').toBeVisible()
+    await expect(foldRow(page, quiet.id)).toContainText(quiet.name)
+
+    // And the admin can act: create, in place, no reload.
+    const create = foldCreateBtn(page, quiet.id)
+    await expect(create).toBeVisible()
+    await expect(create).toHaveText(ADMIN_LINK_CREATE)
+    await create.click()
+
+    const copy = foldLinkBtn(page, quiet.id)
+    await expect(copy).toBeVisible()
+    await expect(copy).toHaveText(ADMIN_LINK_LABEL)
+    await expect(create, 'replaced in place').toHaveCount(0)
+
+    await copy.click()
+    await expect(copy).toHaveText(COPIED_LABEL)
+    const origin = await page.evaluate(() => window.location.origin)
+    const copied = await page.evaluate(() => navigator.clipboard.readText())
+
+    adminToken = token
+    const stored = (await adminLinks(cycle.id)).find((l) => l.host_friend_id === quiet.id)
+    expect(stored, 'the create actually persisted').toBeTruthy()
+    expect(stored.active).toBe(1)
+    expect(copied, 'the ORDERING url — what the admin forwards').toBe(`${origin}/g/${stored.token}`)
+
+    // ⚠ A plausible-looking dead URL is the failure this whole module exists for, so
+    // the copied string is FOLLOWED, from a context that has never held a session.
+    const fresh = await browser.newContext()
+    const guestPage = await fresh.newPage()
+    await guestPage.goto(copied)
+    await expect(guestPage.getByTestId('cartbar')).toBeVisible()
+    await expect(guestPage.getByTestId('guest-unavailable')).toHaveCount(0)
+    await fresh.close()
+  })
+
+  test('⚠ THE REAL PRODUCTION CASE: a friend who ALREADY has a link but is not on the orders table shows the EXISTING link, not a "create" button', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await refreshAdminToken()
+    const cycle = await makeCycle('foldexist')
+    const product = await addProduct(cycle.id, {
+      name: `GR foldexist ${uniq}`, purpose: 'Espresso', price_250g: 10,
+    })
+    const activeHost = await makeHost('foldexiston')
+    await submitOwnOrder(activeHost, cycle.id, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+
+    // Shared, then nothing happened: no colleague ordered, the host ordered nothing
+    // themselves. Before the fold this link existed and was unreachable.
+    const shared = await makePlainFriend('exist')
+    const createRes = await adminCreateLink(cycle.id, shared.id)
+    expect(createRes.status(), 'fixture link').toBe(201)
+    const link = (await createRes.json()).link
+
+    const token = await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+    await expect(page.getByRole('cell', { name: new RegExp(`^${escapeRe(shared.name)}`) }),
+      'still absent from the table — having a link does not list you').toHaveCount(0)
+
+    await foldToggle(page).click()
+    await expect(foldBody(page)).toBeVisible()
+
+    await expect(foldLinkBtn(page, shared.id), 'the existing link is offered').toBeVisible()
+    await expect(foldCreateBtn(page, shared.id),
+      '⚠ never a create button — that would read as "this friend never shared"').toHaveCount(0)
+    await expect(foldInactive(page, shared.id), 'a live link carries no revoked marker').toHaveCount(0)
+
+    await foldLinkBtn(page, shared.id).click()
+    const origin = await page.evaluate(() => window.location.origin)
+    expect(await page.evaluate(() => navigator.clipboard.readText()))
+      .toBe(`${origin}/g/${link.token}`)
+
+    adminToken = token
+    expect((await adminLinks(cycle.id)).find((l) => l.host_friend_id === shared.id).token,
+      'reading and copying rotate nothing').toBe(link.token)
+  })
+
+  test('the fold is COLLAPSED BY DEFAULT, and the orders table renders IDENTICALLY whether it is open or closed (the v-if chain trap)', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, created } = await orderScenario('foldchain')
+
+    await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+
+    // Collapsed: the card and its toggle are there, the body is not in the DOM.
+    await expect(foldCard(page)).toBeVisible()
+    await expect(foldToggle(page)).toContainText(FOLD_TITLE)
+    await expect(foldBody(page), '⚠ collapsed by default — it is a lookup tool, not part of the packing sheet').toHaveCount(0)
+    await expect(foldToggle(page)).toHaveAttribute('aria-expanded', 'false')
+    // …and nothing inside it is reachable while it is closed.
+    await expect(foldSearch(page)).toHaveCount(0)
+    await expect(foldRow(page, host.id)).toHaveCount(0)
+
+    // ⚠ THE CHAIN TRAP. An independent `v-if` placed BETWEEN the links of the orders
+    // tab's v-if / v-else-if / v-else chain silently stops BOTH order tables
+    // rendering. The fold is a sibling BELOW the chain — proved by comparing the
+    // table's own markup across the toggle, not merely by "the table is visible".
+    const table = page.locator('table').filter({ has: page.getByRole('columnheader', { name: 'Priateľ' }) })
+    await expect(table).toHaveCount(1)
+    await expect(page.getByText('Zatiaľ žiadne objednávky'),
+      'the chain picked exactly one link').toHaveCount(0)
+    await expect(page.getByTestId(`guest-suborder-${created.order.id}`)).toBeVisible()
+    const before = await table.evaluate((el) => el.outerHTML)
+
+    await foldToggle(page).click()
+    await expect(foldBody(page)).toBeVisible()
+    await expect(foldToggle(page)).toHaveAttribute('aria-expanded', 'true')
+    await expect(foldBody(page)).toContainText(FOLD_INTRO)
+
+    await expect(table, 'the chain still resolves to its friend-view link').toHaveCount(1)
+    await expect(page.getByText('Zatiaľ žiadne objednávky')).toHaveCount(0)
+    await expect(page.getByTestId(`guest-suborder-${created.order.id}`)).toBeVisible()
+    expect(await table.evaluate((el) => el.outerHTML),
+      'the orders table is byte-identical with the fold open').toBe(before)
+
+    // The other view of the chain is unharmed too.
+    await page.getByRole('button', { name: 'Podľa produktu' }).click()
+    await expect(page.getByRole('columnheader', { name: 'Produkt' })).toBeVisible()
+    await expect(foldBody(page), 'and the fold survives the view switch').toBeVisible()
+
+    // It closes again.
+    await foldToggle(page).click()
+    await expect(foldBody(page)).toHaveCount(0)
+  })
+
+  test('⚠ DOM PIN — the EXPANDED fold puts no share token and no order token in the markup', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, link, created } = await orderScenario('folddom')
+
+    // Non-vacuity, both halves: the host is a fold row WITH a link control (so link
+    // data really reached it), and their order token really is in the payload behind
+    // the screen.
+    const orders = await (await admin(`/api/orders/cycle/${cycle.id}`)).json()
+    expect(orders.find((o) => o.friend_id === host.id).guest_orders.map((g) => g.order_token))
+      .toEqual([created.order.order_token])
+
+    await adoptUiAdmin(page)
+    await openFold(page, cycle)
+    await expect(foldRow(page, host.id)).toBeVisible()
+    await expect(foldLinkBtn(page, host.id)).toBeVisible()
+    // One friend, BOTH surfaces, no testid collision — the whole reason the fold has
+    // its own namespace.
+    await expect(hostLinkBtn(page, host.id)).toBeVisible()
+
+    const html = await page.evaluate(() => document.documentElement.outerHTML)
+    expect(html, 'the share token is composed in JS at click time, never rendered')
+      .not.toContain(link.token)
+    expect(html, "and the guest's private order credential is not in the markup either")
+      .not.toContain(created.order.order_token)
+
+    // Attributes included — `title`, `href`, `data-*`, any bound value.
+    const foldHtml = await foldCard(page).evaluate((el) => el.outerHTML)
+    expect(foldHtml).not.toContain(link.token)
+    expect(foldHtml).not.toContain(created.order.order_token)
+    // The fold renders NO guest data at all, which is why it has no token to leak.
+    expect(foldHtml, 'no guest sub-order is rendered in the fold')
+      .not.toContain(`guest-suborder-${created.order.id}`)
+  })
+
+  test('the fold marks a REVOKED link revoked, and the admin regenerate works from it without ever reactivating', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, link, orderToken } = await orderScenario('foldrevoked')
+
+    // Only the host can revoke — and only the host can undo it (D3's surviving half).
+    expect((await ctx.patch(`/api/guest-links/${link.id}`, {
+      headers: host.auth, data: { active: false },
+    })).status()).toBe(200)
+
+    const token = await adoptUiAdmin(page)
+    await openFold(page, cycle)
+
+    await expect(foldLinkBtn(page, host.id), 'still forwardable — as a KNOWN-dead one').toBeVisible()
+    await expect(foldInactive(page, host.id)).toHaveText(ADMIN_LINK_INACTIVE)
+    await expect(page.getByRole('button', { name: /aktivovať/i }),
+      'reactivation is host-only — the admin has no such control, here either').toHaveCount(0)
+    // The header count says so without expanding anything.
+    await expect(foldStats(page)).toContainText('neaktívnych: 1')
+
+    await foldRegenBtn(page, host.id).click()
+    const confirm = page.getByTestId(`all-friends-link-regen-confirm-${host.id}`)
+    await expect(confirm).toContainText('Starý odkaz prestane prijímať nové objednávky.')
+    await expect(confirm).toContainText('Už vytvorené objednávky kolegov zostanú funkčné.')
+    await page.getByTestId(`all-friends-link-regen-yes-${host.id}`).click()
+    await expect(page.getByTestId(`all-friends-link-regen-confirm-${host.id}`)).toHaveCount(0)
+
+    adminToken = token
+    const stored = (await adminLinks(cycle.id)).find((l) => l.host_friend_id === host.id)
+    expect(stored.token, 'the token rotated').not.toBe(link.token)
+    expect(stored.id, 'in place — same row, so the sub-orders survive').toBe(link.id)
+    expect(stored.active, '⚠ STILL revoked — regenerating is not reactivating').toBe(0)
+    await expect(foldInactive(page, host.id), 'and the fold row still says so').toBeVisible()
+    // The promise the confirm copy makes.
+    expect((await ctx.get(canonicalPath(orderToken))).status()).toBe(200)
+  })
+
+  test('a friend DEACTIVATED between page load and click: the row renders the 409 `inactive_host` refusal and invents no link', async ({ page }) => {
+    await refreshAdminToken()
+    const cycle = await makeCycle('folddead')
+    const quiet = await makePlainFriend('dead')
+
+    const token = await adoptUiAdmin(page)
+    await openFold(page, cycle)
+    await expect(foldCreateBtn(page, quiet.id)).toBeVisible()
+
+    // ⚠ THE ONLY WAY THIS PATH IS REACHABLE FROM THE FOLD, and it is a real race, not
+    // a stub: the fold lists ACTIVE friends only (`orders.js` selects `f.active = 1`),
+    // so a deactivated friend is simply absent from it. What can happen is a
+    // deactivation landing after the tab was rendered.
+    adminToken = token
+    expect((await admin(`/api/friends/${quiet.id}`, { method: 'patch', data: { active: false } })).status()).toBe(200)
+
+    await foldCreateBtn(page, quiet.id).click()
+
+    // The gate runs BEFORE the existing-link lookup, so the 409 body carries NO
+    // `link` — the refusal is rendered as such and nothing is invented from it.
+    const err = foldError(page, quiet.id)
+    await expect(err).toBeVisible()
+    await expect(err).toContainText('deaktivovaný')
+    await expect(foldLinkBtn(page, quiet.id)).toHaveCount(0)
+    expect((await adminLinks(cycle.id)).filter((l) => l.host_friend_id === quiet.id)).toEqual([])
+  })
+
+  test('admin skin: the fold renders shadcn only — ZERO neo/theme classes, no `.app` scope', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle } = await orderScenario('foldskin')
+
+    await adoptUiAdmin(page)
+    await openFold(page, cycle)
+    await expect(foldLinkBtn(page, host.id)).toBeVisible()
+    await expect(foldSearch(page)).toBeVisible()
+
+    const found = await page.evaluate((classes) => classes.filter(
+      (c) => document.querySelectorAll(`.${c}`).length > 0
+    ), NEO_CLASSES)
+    expect(found, 'theme classes on an admin screen').toEqual([])
+  })
+
+  test('⚠ AT PRODUCTION SCALE (76 active friends): every friend is listed, the search box is what makes that usable, and the tab issues NO extra request', async ({ page }) => {
+    await refreshAdminToken()
+    const cycle = await makeCycle('foldscale')
+    const product = await addProduct(cycle.id, {
+      name: `GR foldscale ${uniq}`, purpose: 'Espresso', price_250g: 10,
+    })
+    const activeHost = await makeHost('foldscaleon')
+    await submitOwnOrder(activeHost, cycle.id, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+
+    // 20 quiet friends, which with the rest of the run's pool puts this fold in the
+    // same order of magnitude as production's 76.
+    const bulk = []
+    for (let i = 0; i < 20; i++) bulk.push(await makePlainFriend(`scale${i}`))
+    const needle = bulk[7]
+
+    const token = await adoptUiAdmin(page)
+
+    // ⚠ NO NEW REQUEST — the whole design constraint, asserted rather than argued.
+    // The fold is built from the orders payload and the link listing the tab already
+    // fetches; expanding it must add nothing.
+    const calls = []
+    page.on('request', (r) => {
+      const url = new URL(r.url())
+      if (url.pathname.startsWith('/api/')) calls.push(`${r.method()} ${url.pathname}`)
+    })
+
+    await gotoOrdersTab(page, cycle)
+    await expect(page.getByRole('columnheader', { name: 'Priateľ' })).toBeVisible()
+    // ⚠ The two non-blocking loads (links, guest money) resolve AFTER the table
+    // renders, so a snapshot taken any earlier would count them against the toggle.
+    await page.waitForLoadState('networkidle')
+    const beforeExpand = calls.length
+    await foldToggle(page).click()
+    await expect(foldBody(page)).toBeVisible()
+    await expect(foldRow(page, needle.id)).toBeVisible()
+    expect(calls.slice(beforeExpand), 'expanding the fold fires no request').toEqual([])
+
+    const rows = page.locator('[data-testid^="all-friends-row-"]')
+    const total = await rows.count()
+    expect(total, 'every active friend is listed, not just the ones who ordered')
+      .toBeGreaterThanOrEqual(21)
+    // The orders table, meanwhile, is still the short sheet the admin packs from.
+    const tableRows = await page.locator('table')
+      .filter({ has: page.getByRole('columnheader', { name: 'Priateľ' }) })
+      .locator('tbody tr').count()
+    expect(tableRows, 'the table was NOT widened').toBeLessThan(total)
+
+    await page.screenshot({ path: 'test-results/all-friends-fold-scale.png', fullPage: true })
+
+    // The search box: the only thing that makes a list this long a lookup tool.
+    await expect(foldSearch(page)).toHaveAttribute('aria-label', FOLD_SEARCH_LABEL)
+    await foldSearch(page).fill(needle.name)
+    await expect(rows).toHaveCount(1)
+    await expect(foldRow(page, needle.id)).toBeVisible()
+    await expect(foldCreateBtn(page, needle.id), 'and it is actionable from the filtered list').toBeVisible()
+
+    // Diacritic- and case-insensitive, because an admin types "skolar" for "Školár".
+    await foldSearch(page).fill(needle.name.toUpperCase())
+    await expect(rows).toHaveCount(1)
+
+    await foldSearch(page).fill('zzz-nikto-taky')
+    await expect(rows).toHaveCount(0)
+    await expect(page.getByTestId('all-friends-guest-links-empty')).toHaveText(FOLD_NO_MATCH)
+
+    await foldSearch(page).fill('')
+    await expect(rows).toHaveCount(total)
+
+    // Housekeeping: friends are GLOBAL, so 20 fixtures would otherwise ride along in
+    // every later cycle's payload.
+    adminToken = token
+    for (const f of bulk) {
+      await admin(`/api/friends/${f.id}`, { method: 'patch', data: { active: false } })
+    }
+  })
+})

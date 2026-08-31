@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watchEffect } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import BalanceBadge from '@/components/BalanceBadge.vue'
+import GuestLinkRowControls from '@/components/GuestLinkRowControls.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -594,6 +595,78 @@ async function regenerateHostLink(order) {
     clearRowFlag(guestLinkRegenPending, friendId)
   }
 }
+
+// ── "Hosťovské odkazy (všetci priatelia)" — the fold under the orders table ────
+//
+// THE GAP IT CLOSES (PO-approved, 2026-08-31). `listedOrders` above renders only
+// friends who ordered, have a draft, or host guests. On the live September cycle that
+// is 33 of 76 active friends — so for 43 friends the admin could neither SEE nor
+// CREATE a share link, which is precisely the "lost the link before anyone used it"
+// case §UC-GR-008 recorded as an accepted residual: a host who shared, ordered
+// nothing himself, and whose colleagues have not ordered YET is invisible on the one
+// screen that exists to make links reachable. One such friend on production already
+// HAS a link the admin cannot see.
+//
+// ⚠ IT IS A FOLD, NOT A WIDER TABLE. Widening `listedOrders` was rejected by the PO:
+// 76 rows of which 43 are empty would wreck the sheet the admin packs and orders
+// from, and it would move `guest-admin-view.spec.js`'s row counts as a side effect.
+//
+// ⚠ NO NEW ENDPOINT AND NO NEW REQUEST. `GET /api/orders/cycle/:cycleId` already
+// returns ONE ROW PER ACTIVE FRIEND (placeholder rows `status:'none'`,
+// orders.js:634-660), and `guestLinks` already holds every link of the cycle. The
+// fold is built from the two payloads that are already on screen — the same
+// client-side join by `host_friend_id`, the same `guestLinkByHost` map.
+//
+// ⚠ IT RENDERS NO GUEST DATA AT ALL — no sub-orders, no `order_token`, no share
+// token (§UC-GR-007's promoted DOM rule; pinned by a whole-document `outerHTML`
+// assertion over the EXPANDED fold).
+const allFriendsLinksOpen = ref(false)
+const allFriendsLinksQuery = ref('')
+
+// Diacritic-insensitive, because at 76 rows the admin types "Skolar" for "Školár"
+// and a case-only match would answer "nobody by that name".
+const foldNormalize = (s) => String(s || '')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+
+// Every ACTIVE friend, name-sorted. The payload lists ordered friends first and
+// placeholders after, so the sort is what makes a 76-row list scannable.
+// (`orders` carries exactly one row per active friend — real order or placeholder —
+// so no de-duplication is needed; a deactivated friend is absent from the payload
+// entirely, and so from this fold.)
+const allFriendsRows = computed(() => orders.value
+  .filter((o) => o.friend_id)
+  .slice()
+  .sort((a, b) => String(a.friend_name || '').localeCompare(String(b.friend_name || ''), 'sk')))
+
+const allFriendsFiltered = computed(() => {
+  const q = foldNormalize(allFriendsLinksQuery.value).trim()
+  if (!q) return allFriendsRows.value
+  return allFriendsRows.value.filter((o) => foldNormalize(o.friend_name).includes(q))
+})
+
+// Header counts — the answer to "who is still missing a link" without expanding.
+const allFriendsLinkStats = computed(() => {
+  let withLink = 0
+  let dead = 0
+  for (const o of allFriendsRows.value) {
+    const link = guestLinkByHost.value.get(o.friend_id)
+    if (!link) continue
+    withLink++
+    if (isHostLinkDead(link)) dead++
+  }
+  return { total: allFriendsRows.value.length, withLink, dead }
+})
+
+// ⚠ The fold's own state must not survive a cycle change. The view has no `cycleId`
+// watcher today (`loadAll()` runs only in `onMounted`, see the `loadGuestLinks`
+// note), so a future in-SPA cycle→cycle navigation would keep the fold open with a
+// stale search term against another cycle's links. Reset only the LOCAL UI state —
+// deliberately no refetch here, since adding one would change this view's shipped
+// load behaviour.
+watch(() => cycleId.value, () => {
+  allFriendsLinksOpen.value = false
+  allFriendsLinksQuery.value = ''
+})
 
 // Two independent copy flips (a friend row's ORDERING link, a sub-order row's
 // per-guest STATUS link) — separate refs, so copying a share link never flashes
@@ -1922,84 +1995,27 @@ function getStatusVariant(status) {
                            nested guest rows' and the footer's.
                            ⚠ The token is composed in JS at click time — nothing here
                            binds it into markup. -->
-                      <div class="mt-1 flex flex-wrap items-center gap-2 font-normal">
-                        <template v-if="hostLink(order)">
-                          <button
-                            type="button"
-                            class="text-xs text-primary underline underline-offset-2 hover:no-underline"
-                            :data-testid="`host-guest-link-${order.friend_id}`"
-                            @click="copyHostLink(order)"
-                          >{{ copiedHostLinkId === order.friend_id ? 'Skopírované!' : 'Hosťovský odkaz' }}</button>
-                          <!-- ⚠ MARKED, not silently offered as if it worked: a revoked
-                               link (or one under a deactivated host) 410s for every
-                               guest. D3 keeps reactivation host-only — the person who
-                               distributed the URL is the only one who knows who holds
-                               it — so this row states the fact and offers no control. -->
-                          <span
-                            v-if="isHostLinkDead(hostLink(order))"
-                            class="text-xs text-muted-foreground"
-                            :data-testid="`host-guest-link-inactive-${order.friend_id}`"
-                          >neaktívny</span>
-                          <!-- ⚠ THE ADMIN REGENERATE (D3 as AMENDED — PO decision,
-                               2026-08-31). The host's own regenerate refuses while
-                               colleagues have live orders on the link and their dialog
-                               says "kontaktujte správcu"; this is that target. It
-                               rotates the token only — there is still no admin
-                               deactivate/reactivate, so a revoked link stays revoked
-                               and this control can never republish a leaked URL. -->
-                          <button
-                            v-if="guestLinkRegenConfirmId !== order.friend_id"
-                            type="button"
-                            class="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-50 disabled:no-underline"
-                            :disabled="!!guestLinkRegenPending[order.friend_id]"
-                            :data-testid="`host-guest-link-regen-${order.friend_id}`"
-                            @click="guestLinkRegenConfirmId = order.friend_id"
-                          >{{ guestLinkRegenPending[order.friend_id] ? 'Generujem...' : 'Nový odkaz' }}</button>
-                          <!-- Inline confirm, because the consequence is not
-                               reversible and is easy to get wrong in both directions.
-                               ⚠ Both sentences are FACTUAL and must not be softened or
-                               swapped: the server UPDATEs `token` on the existing row
-                               (never DELETE+INSERT, which would cascade the sub-orders
-                               away), and every order already placed resolves by
-                               `order_token` alone (§UC-GR-001/002) — which is precisely
-                               what made amending D3 safe.
-                               Copy is DRAFT pending PO sign-off (14 §OPEN); mirrored as
-                               constants in `guest-order-recovery.spec.js`. -->
-                          <span
-                            v-else
-                            class="text-xs inline-flex flex-wrap items-center gap-1.5"
-                            :data-testid="`host-guest-link-regen-confirm-${order.friend_id}`"
-                          >
-                            <span class="text-muted-foreground">Starý odkaz prestane prijímať nové objednávky. Už vytvorené objednávky kolegov zostanú funkčné.</span>
-                            <button
-                              type="button"
-                              class="text-destructive underline underline-offset-2 hover:no-underline disabled:opacity-50"
-                              :disabled="!!guestLinkRegenPending[order.friend_id]"
-                              :data-testid="`host-guest-link-regen-yes-${order.friend_id}`"
-                              @click="regenerateHostLink(order)"
-                            >Áno, vygenerovať</button>
-                            <button
-                              type="button"
-                              class="text-muted-foreground underline underline-offset-2 hover:no-underline"
-                              :data-testid="`host-guest-link-regen-no-${order.friend_id}`"
-                              @click="guestLinkRegenConfirmId = null"
-                            >Nie</button>
-                          </span>
-                        </template>
-                        <button
-                          v-else
-                          type="button"
-                          class="text-xs text-primary underline underline-offset-2 hover:no-underline disabled:opacity-50 disabled:no-underline"
-                          :disabled="!!guestLinkPending[order.friend_id]"
-                          :data-testid="`host-guest-link-create-${order.friend_id}`"
-                          @click="createHostLink(order)"
-                        >{{ guestLinkPending[order.friend_id] ? 'Vytváram...' : 'Vytvoriť hosťovský odkaz' }}</button>
-                        <span
-                          v-if="guestLinkErrors[order.friend_id]"
-                          class="text-xs text-destructive"
-                          :data-testid="`host-guest-link-error-${order.friend_id}`"
-                        >{{ guestLinkErrors[order.friend_id] }}</span>
-                      </div>
+                      <!-- ⚠ ONE HOME for this cluster (`GuestLinkRowControls.vue`) —
+                           the SAME component the "všetci priatelia" fold below the
+                           table renders, with its own testid namespace. Extracted
+                           when the fold was added: two copies of a money-adjacent
+                           control drift, and the shipped `host-guest-link*` testids
+                           and copy are what this surface is pinned on. -->
+                      <GuestLinkRowControls
+                        class="mt-1"
+                        :friend-id="order.friend_id"
+                        :link="hostLink(order)"
+                        :copied="copiedHostLinkId === order.friend_id"
+                        :create-pending="!!guestLinkPending[order.friend_id]"
+                        :regen-pending="!!guestLinkRegenPending[order.friend_id]"
+                        :confirm-open="guestLinkRegenConfirmId === order.friend_id"
+                        :error="guestLinkErrors[order.friend_id] || ''"
+                        @copy="copyHostLink(order)"
+                        @create="createHostLink(order)"
+                        @regenerate="regenerateHostLink(order)"
+                        @open-confirm="guestLinkRegenConfirmId = order.friend_id"
+                        @close-confirm="guestLinkRegenConfirmId = null"
+                      />
                     </TableCell>
                     <TableCell class="text-right">
                       {{ formatPrice(isOrdered(order) ? (order.total || 0) + (order.delivery_fee || 0) : 0) }}
@@ -2343,6 +2359,118 @@ function getStatusVariant(status) {
                 </TableRow>
               </tfoot>
             </Table>
+          </Card>
+
+          <!-- ══ Hosťovské odkazy (všetci priatelia) ═════════════════════════════
+               PO decision 2026-08-31 — the residual §UC-GR-008 recorded ("a host who
+               has a link, has not ordered themselves, and whose colleagues have not
+               ordered yet is absent from this tab") closed as a FOLD, not by widening
+               the table above: on the live September cycle 43 of 76 active friends
+               have no activity, and 43 empty rows would wreck the sheet the admin
+               packs and orders from.
+
+               ⚠ A SIBLING **BELOW** the v-if / v-else-if / v-else chain of the two
+               order tables — never between its links. An independent `v-if` slipped
+               into that chain breaks it and BOTH tables silently stop rendering; see
+               the same warning at the `guest-unpaid-overview` card above, which is a
+               sibling ABOVE for exactly this reason.
+
+               ⚠ Collapsed by default: this is a lookup tool ("forward X their link"),
+               not part of the packing sheet, and 76 rows expanded on load would push
+               the tables off screen.
+
+               ⚠ No guest data is rendered here at all — no sub-orders, no
+               `order_token`, no share token. Both URLs are composed in JS at click
+               time (§UC-GR-007's promoted rule). -->
+          <Card class="mt-4" data-testid="all-friends-guest-links">
+            <CardContent class="p-4">
+              <button
+                type="button"
+                class="w-full flex items-start gap-2 text-left"
+                :aria-expanded="allFriendsLinksOpen ? 'true' : 'false'"
+                data-testid="all-friends-guest-links-toggle"
+                @click="allFriendsLinksOpen = !allFriendsLinksOpen"
+              >
+                <svg
+                  class="w-4 h-4 mt-0.5 shrink-0 transition-transform text-muted-foreground"
+                  :class="{ 'rotate-90': allFriendsLinksOpen }"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                </svg>
+                <span class="min-w-0">
+                  <span class="block text-sm font-medium">Hosťovské odkazy (všetci priatelia)</span>
+                  <span class="block text-xs text-muted-foreground" data-testid="all-friends-guest-links-stats">
+                    Odkaz má {{ allFriendsLinkStats.withLink }} z {{ allFriendsLinkStats.total }} priateľov<template v-if="allFriendsLinkStats.dead > 0">, z toho neaktívnych: {{ allFriendsLinkStats.dead }}</template>
+                  </span>
+                </span>
+              </button>
+
+              <div v-if="allFriendsLinksOpen" class="mt-3" data-testid="all-friends-guest-links-body">
+                <p class="text-xs text-muted-foreground mb-3 max-w-3xl">
+                  Tu je každý aktívny priateľ - aj ten, ktorý si sám nič neobjednal. Odkaz mu môžete
+                  vytvoriť alebo skopírovať a poslať, aby cez neho objednávali jeho kolegovia.
+                </p>
+
+                <!-- ⚠ A SEARCH BOX IS NOT A NICETY AT THIS SCALE. The admin's task is
+                     "friend X lost their link"; scrolling 76 name rows to find one is
+                     the wall this fold would otherwise be. -->
+                <Input
+                  v-model="allFriendsLinksQuery"
+                  type="search"
+                  class="mb-3 max-w-xs"
+                  aria-label="Hľadať priateľa"
+                  placeholder="Hľadať priateľa"
+                  data-testid="all-friends-guest-links-search"
+                />
+
+                <div v-if="allFriendsRows.length === 0" class="text-sm text-muted-foreground">
+                  Žiadni aktívni priatelia.
+                </div>
+                <div
+                  v-else-if="allFriendsFiltered.length === 0"
+                  class="text-sm text-muted-foreground"
+                  data-testid="all-friends-guest-links-empty"
+                >
+                  Žiadny priateľ nevyhovuje hľadaniu.
+                </div>
+                <!-- ⚠ WIDTH-CAPPED ON PURPOSE. Full-width rows put the name and its
+                     action ~1200px apart on a desktop admin screen, so scanning 76 of
+                     them means crossing the viewport once per row. -->
+                <div v-else class="divide-y max-w-3xl">
+                  <div
+                    v-for="row in allFriendsFiltered"
+                    :key="`allf-${row.friend_id}`"
+                    class="flex flex-wrap items-center justify-between gap-2 py-2"
+                    :data-testid="`all-friends-row-${row.friend_id}`"
+                  >
+                    <span class="text-sm font-medium min-w-0 break-words">{{ row.friend_name }}</span>
+                    <!-- ⚠ THE SAME COMPONENT as the table row above, with its own
+                         testid namespace so one friend can be rendered on both
+                         surfaces at once. All mutation state is shared per friend
+                         (per-row `rowSeq` + pending), so a create started here shows
+                         as pending in the table row too. -->
+                    <GuestLinkRowControls
+                      :friend-id="row.friend_id"
+                      :link="hostLink(row)"
+                      testid-prefix="all-friends-link"
+                      :copied="copiedHostLinkId === row.friend_id"
+                      :create-pending="!!guestLinkPending[row.friend_id]"
+                      :regen-pending="!!guestLinkRegenPending[row.friend_id]"
+                      :confirm-open="guestLinkRegenConfirmId === row.friend_id"
+                      :error="guestLinkErrors[row.friend_id] || ''"
+                      @copy="copyHostLink(row)"
+                      @create="createHostLink(row)"
+                      @regenerate="regenerateHostLink(row)"
+                      @open-confirm="guestLinkRegenConfirmId = row.friend_id"
+                      @close-confirm="guestLinkRegenConfirmId = null"
+                    />
+                  </div>
+                </div>
+              </div>
+            </CardContent>
           </Card>
         </TabsContent>
 
