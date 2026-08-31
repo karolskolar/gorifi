@@ -33,14 +33,20 @@ const ADMIN_ENDPOINTS = [
   // on the same prefix and must never be reachable without an admin token.
   { method: 'post', path: '/api/guest-orders/1/cancel' },
   // 14 §UC-GR-004 / §UC-GR-010 item 1 (GR-T3): the admin half of the now-MIXED
-  // /api/guest-links router — READ every host's share link for a cycle, and CREATE
-  // one for a friend who has not shared yet. ⚠ The three HOST routes on the same
-  // prefix stay in `FRIEND_IDENTITY_ENDPOINTS` below — the two sweeps must not be
-  // merged, because the mount is BARE and each route carries its own guard.
-  // ⚠ D3: there is deliberately NO admin regenerate/deactivate/reactivate route to
-  // add here — revocation stays host-only.
+  // /api/guest-links router — READ every host's share link for a cycle, CREATE one
+  // for a friend who has not shared yet, and REGENERATE an existing one. ⚠ The three
+  // HOST routes on the same prefix stay in `FRIEND_IDENTITY_ENDPOINTS` below — the
+  // two sweeps must not be merged, because the mount is BARE and each route carries
+  // its own guard.
+  // ⚠ D3 AMENDED (PO decision, 2026-08-31): the admin regenerate below is new, and it
+  // exists because the HOST's own regenerate now refuses while live colleague orders
+  // exist (409 `reason:'has_orders'`) and the share dialog escalates to the admin.
+  // The surviving half of D3 still holds: there is deliberately NO admin
+  // deactivate/reactivate route to add here — `active` is host-only, and the
+  // regenerate route writes `token` only.
   { method: 'get', path: '/api/guest-links/cycle/1/all' },
   { method: 'post', path: '/api/guest-links/cycle/1/host/1' },
+  { method: 'post', path: '/api/guest-links/cycle/1/host/1/regenerate' },
   // 07 §UC-IA-008 item 1: the approval endpoint MINTS A LOGIN for a new friend, and
   // it lives on the MIXED /api/invitations mount (GET /code/:code and POST /register
   // are public), so its guard is per-route rather than on the mount. Anonymous must

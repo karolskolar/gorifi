@@ -2,7 +2,7 @@ import { Router } from 'express';
 import db, { generateGuestToken } from '../db/schema.js';
 import { requireHost } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
-import { loadSubOrders } from '../helpers/guest-orders.js';
+import { loadSubOrders, linkTotals } from '../helpers/guest-orders.js';
 
 const router = Router();
 
@@ -15,26 +15,49 @@ const router = Router();
 //     GET    /cycle/:cycleId                  own link + own sub-orders
 //     PATCH  /:id                             deactivate / reactivate own link
 //   ADMIN-only (`requireAdmin`, 14 §UC-GR-004)
-//     GET    /cycle/:cycleId/all              every host's link for the cycle
-//     POST   /cycle/:cycleId/host/:friendId   create-if-missing for one host
+//     GET    /cycle/:cycleId/all                        every host's link
+//     POST   /cycle/:cycleId/host/:friendId             create-if-missing
+//     POST   /cycle/:cycleId/host/:friendId/regenerate  rotate the token in place
 // Wrapping the mount in either guard would be wrong in both directions — an admin
 // route cannot live under a host guard, and vice versa. Every route added here
 // MUST state its own guard on its first lines.
 //
-// ⚠⚠ EXPLICIT NON-CAPABILITY (14 §UC-GR-004 / Decision D3 — PO decision): the
-// admin has **READ + CREATE only**. There is NO admin regenerate, NO admin
-// deactivate and NO admin reactivate, and **no admin route on this prefix may ever
-// write `token` or `active`**. Revocation stays host-only (PATCH /:id, requireHost
-// + ownership). The reasons are the production incident itself:
-//   - an admin REGENERATE silently severs every colleague already holding the URL
-//     — that is exactly what stranded the incident's guest;
-//   - an admin REACTIVATE would republish a link the host deliberately revoked
-//     after a leak, and only the host knows who holds it.
-// The create route below therefore returns an existing row completely UNTOUCHED
-// (token byte-identical, `active` unwritten, including when it is 0). Its
-// idempotency is machine-pinned in e2e/tests/guest-order-recovery.spec.js
-// ("the no-regenerate proof"), which is what a future "just refresh the token
-// while we're here" refactor will trip over.
+// ⚠⚠ DECISION D3 IS **AMENDED** (PO decision, 2026-08-31). The admin CAN now
+// regenerate a host's link. The admin still CANNOT deactivate or reactivate one.
+//
+// D3 originally made admin link powers READ + CREATE only, for two reasons.
+//
+// THE FIRST REASON IS SPENT. It read: "an admin REGENERATE silently severs every
+// colleague already holding the URL — that is exactly what stranded the incident's
+// guest." That was true while a guest's status URL resolved by the (link, order)
+// **pair**: rotating the link half killed her order URL, which is the production
+// incident this whole module exists for. Since GR-T1/GR-T2 a guest's order resolves
+// by `order_token` ALONE (§UC-GR-001/002, D1/D2), so NO regeneration — the host's
+// or the admin's — can strand an already-created order any more. What regeneration
+// still does is stop NEW orders through the old URL (`resolveLink` 404s it), which
+// is a deliberate revocation act rather than collateral damage.
+//
+// THE SECOND REASON STANDS, UNAMENDED: an admin REACTIVATE would republish a link
+// the host deliberately revoked after a leak, and only the host knows who holds it.
+// So `active` remains HOST-ONLY — **no admin route on this prefix may ever write
+// `active`**, the regenerate route below included. It rotates `token` and nothing
+// else, so a revoked link stays revoked through an admin regeneration.
+//
+// WHY THE ADMIN NEEDS IT AT ALL: the host's own POST below now REFUSES to
+// regenerate while live sub-orders exist (409 `reason:'has_orders'` — a host must
+// not be able to invalidate an ordering link colleagues are already using), and the
+// share dialog tells the host to contact the admin. That escalation target has to
+// exist, or the copy points at a dead end — which is precisely the GSO-T5 mistake
+// module 14 was written to remove ("escalate to the admin" with no admin route, and
+// a paying guest nobody could help).
+//
+// UNCHANGED by the amendment: the admin CREATE route returns an existing row
+// completely UNTOUCHED (token byte-identical, `active` unwritten, including when it
+// is 0). Its idempotency is machine-pinned in
+// e2e/tests/guest-order-recovery.spec.js ("the no-regenerate proof"), which is what
+// a future "just refresh the token while we're here" refactor will trip over.
+// Regeneration is a SEPARATE, EXPLICIT route — the create route still never rotates
+// a token, because "create" silently rotating one is how the incident happened.
 
 const LINK_COLUMNS = 'id, token, host_friend_id, cycle_id, active, created_at';
 
@@ -89,6 +112,35 @@ router.post('/cycle/:cycleId', (req, res) => {
   ).get(host.friendId, cycle.id);
 
   if (existing) {
+    // ⚠ THE REGENERATION GATE (PO decision, 2026-08-31). A host may not invalidate
+    // an ordering link their colleagues are ALREADY using: once a live sub-order
+    // hangs off this link, "Vygenerovať nový odkaz" would stop every colleague who
+    // has not ordered yet from reaching the offer, and the host's own reading of
+    // that button ("share with one more colleague") is what caused the incident.
+    // Refused with 409 `reason:'has_orders'`; the host is pointed at the admin, who
+    // has an EXPLICIT regenerate route below — the escalation target exists.
+    //
+    // ⚠ SCOPED TO THE REGENERATION BRANCH ONLY, and structurally so: the create
+    // path is the `if (existing)` else-branch, and with no link row there is nothing
+    // for a sub-order to hang off. Creation therefore cannot be affected by this
+    // gate — asserted in the spec rather than left as an argument.
+    //
+    // ⚠ The live count is `linkTotals().count` — the SHIPPED aggregate, whose count
+    // already excludes cancelled sub-orders via `guestOrderStatus()`. Two things
+    // follow, both deliberate. A CANCELLED sub-order does NOT block: it owes
+    // nothing, holds no stock and is nobody's pending hand-over, so the host is free
+    // to rotate the token again. And the status predicate is NOT re-inlined here —
+    // this repo already watched a hand-written copy of it drop the `<> 'cancelled'`
+    // half (the guest cancel door, before `softCancelGuestOrder` centralised it).
+    const liveOrders = linkTotals(existing.id).count;
+    if (liveOrders > 0) {
+      return res.status(409).json({
+        error: 'Nový odkaz nie je možné vygenerovať, kým cez tento odkaz existujú objednávky. Ak potrebujete nový odkaz, kontaktujte správcu.',
+        reason: 'has_orders',
+        live_orders: liveOrders,
+      });
+    }
+
     // Regenerate IN PLACE. The row id is what guest_orders.link_id points at and
     // those FKs cascade on delete, so a DELETE + INSERT would take every
     // existing sub-order with it — the token is swapped instead. A previously
@@ -201,7 +253,7 @@ router.post('/cycle/:cycleId/host/:friendId', requireAdmin, (req, res) => {
   // admin a dead URL as if it had worked.
   if (!friend.active) {
     return res.status(409).json({
-      error: 'Priateľ je deaktivovaný — odkaz pre hostí by nefungoval. Najprv ho aktivujte.',
+      error: 'Priateľ je deaktivovaný - odkaz pre hostí by nefungoval. Najprv ho aktivujte.',
       reason: 'inactive_host',
     });
   }
@@ -219,6 +271,57 @@ router.post('/cycle/:cycleId/host/:friendId', requireAdmin, (req, res) => {
   ).run(uniqueToken(), friend.id, cycle.id);
 
   res.status(201).json({ link: getLink(result.lastInsertRowid), created: true });
+});
+
+// POST /guest-links/cycle/:cycleId/host/:friendId/regenerate — ADMIN.
+//
+// The escalation target for the host's `has_orders` 409 (D3 as amended — see the
+// header block for why the reason D3 forbade this is now spent). Without this route
+// the dialog's "kontaktujte správcu" points at a dead end.
+//
+// ⚠⚠ ROTATES `token` IN PLACE ON THE EXISTING ROW. **Never DELETE + INSERT.**
+// `guest_orders.link_id` is an FK that CASCADES ON DELETE, so re-inserting the row
+// would take every sub-order under it with it — silently destroying the very orders
+// the host-side gate exists to protect, and turning a recovery tool into a worse
+// version of the original incident. The UPDATE names one column, once.
+//
+// ⚠ `active` IS NOT WRITTEN — the one asymmetry with the host's own regenerate,
+// which does set `active = 1` (a host re-sharing means to republish). The surviving
+// half of D3 keeps reactivation host-only: only the host knows who holds a leaked
+// URL. So a revoked link stays revoked through an admin regeneration, and this route
+// can never be used as a back-door reactivate.
+//
+// ⚠ NO `has_orders` gate here — being exempt from it is this route's entire purpose.
+//
+// ⚠ NO `inactive_host` gate either, and that IS a deliberate divergence from the
+// create route directly above rather than an oversight. The create gate exists
+// because handing the admin a fresh URL that 410s for every guest would look like it
+// worked. Regeneration's effect is twofold — it retires the OLD token as well as
+// minting a new one — and the retirement half works regardless of the host's
+// `active` flag. Refusing it would block the admin from killing a leaked URL
+// belonging to a deactivated host, which is a case where revocation matters most.
+router.post('/cycle/:cycleId/host/:friendId/regenerate', requireAdmin, (req, res) => {
+  const cycle = getCycle(req.params.cycleId);
+  if (!cycle) return res.status(404).json({ error: 'Cyklus nebol nájdený' });
+
+  const friend = db.prepare('SELECT id FROM friends WHERE id = ?').get(req.params.friendId);
+  if (!friend) return res.status(404).json({ error: 'Priateľ nebol nájdený' });
+
+  const existing = db.prepare(
+    'SELECT id FROM guest_order_links WHERE host_friend_id = ? AND cycle_id = ?'
+  ).get(friend.id, cycle.id);
+
+  // Nothing to rotate. Deliberately NOT a create-if-missing: that capability is the
+  // sibling route above, and one route doing both is exactly how "regenerate" ends
+  // up silently minting links nobody asked for.
+  if (!existing) {
+    return res.status(404).json({ error: 'Odkaz pre hostí neexistuje', reason: 'no_link' });
+  }
+
+  db.prepare('UPDATE guest_order_links SET token = ? WHERE id = ?')
+    .run(uniqueToken(), existing.id);
+
+  res.json({ link: getLink(existing.id), regenerated: true });
 });
 
 export default router;

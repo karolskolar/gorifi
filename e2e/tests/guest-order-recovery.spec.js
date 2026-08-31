@@ -41,9 +41,9 @@ import {
 // Run with the raised budget — see e2e/README.md.
 
 const STANDING_COPY =
-  'Ten istý odkaz platí pre všetkých kolegov — každý si cez neho vytvorí vlastnú objednávku. Pre ďalšieho kolegu nevytvárajte nový odkaz.'
+  'Ten istý odkaz platí pre všetkých kolegov - každý si cez neho vytvorí vlastnú objednávku. Pre ďalšieho kolegu nevytvárajte nový odkaz.'
 const REGEN_GUIDANCE =
-  'Nový odkaz vygenerujte len vtedy, ak sa pôvodný dostal k nesprávnym ľuďom — kolegom potom treba poslať nový.'
+  'Nový odkaz vygenerujte len vtedy, ak sa pôvodný dostal k nesprávnym ľuďom - kolegom potom treba poslať nový.'
 
 
 // GR-T5 / 14 §UC-GR-007 — the host's per-sub-order copy control. DRAFT copy pending
@@ -111,6 +111,25 @@ async function makeCycle(label) {
 async function shareLink(host, cycleId) {
   const res = await ctx.post(`/api/guest-links/cycle/${cycleId}`, { headers: host.auth })
   expect([200, 201]).toContain(res.status())
+  return (await res.json()).link
+}
+
+// ⚠ ROTATE A LINK TOKEN AFTER COLLEAGUES HAVE ORDERED — and it MUST go through the
+// ADMIN route (D3 as AMENDED, PO decision 2026-08-31).
+//
+// Most fixtures in this file need a RETIRED link half, because that is the incident
+// this module exists for. Until 2026-08-31 they produced one with the HOST's own
+// `POST /api/guest-links/cycle/:id`. That call now answers **409 `reason:'has_orders'`**
+// whenever a live sub-order hangs off the link — which is true of every one of those
+// fixtures — so four of them were FORCED to move here. The retarget is a sharpening,
+// not a workaround: it is exactly the escalation a real host now performs (their
+// dialog says "kontaktujte správcu"), so these fixtures reproduce the CURRENT
+// production path to a retired token rather than one the app refuses.
+//
+// The admin route rotates `token` on the existing row and never writes `active`.
+async function adminRegenerate(cycleId, friendId, label = 'admin regenerate') {
+  const res = await admin(`/api/guest-links/cycle/${cycleId}/host/${friendId}/regenerate`, { method: 'post' })
+  expect(res.status(), label).toBe(200)
   return (await res.json()).link
 }
 
@@ -330,10 +349,21 @@ test.describe('UC-GR-009 — share dialog standing copy', () => {
     await dialog.getByRole('button', { name: 'Deaktivovať odkaz' }).click()
     await expect(dialog.locator('.banner.warn')).toBeVisible()
 
-    // The URL stays on screen while deactivated, so the "one link for everyone"
-    // statement stays true and must stay visible with it.
-    await expect(dialog.getByTestId('share-standing-copy')).toHaveText(STANDING_COPY)
+    // ⚠ RETARGETED by a PO decision (2026-08-31, §OPEN option (b)). This test used to
+    // assert the opposite — that "one link for everyone" stays visible while the link
+    // is deactivated, on the reasoning that the URL is still on screen. The PO read the
+    // shipped screen and disagreed, correctly: two rows above, the banner says
+    // "Odkaz je deaktivovaný - kolegovia si cez neho nemôžu objednať", so a line
+    // claiming the link "platí pre všetkých kolegov" contradicts it in that one state.
+    // The guidance STAYS — when regeneration is the right move is exactly what a host
+    // looking at a revoked link needs to read.
+    await expect(dialog.getByTestId('share-standing-copy'),
+      'it contradicts the deactivated banner two rows above').toHaveCount(0)
     await expect(dialog.getByTestId('regen-guidance')).toHaveText(REGEN_GUIDANCE)
+
+    // …and it comes back on reactivation, so this is a state rule, not a deletion.
+    await dialog.getByRole('button', { name: 'Znova aktivovať' }).click()
+    await expect(dialog.getByTestId('share-standing-copy')).toHaveText(STANDING_COPY)
   })
 
   // ⚠ THE ADDITIVITY GUARD. `share-dialog.spec.js` must pass UNMODIFIED
@@ -453,10 +483,13 @@ test.describe('UC-GR-001/002 — order_token alone is the credential', () => {
     await refreshAdminToken()
     const { host, cycle, link, created, orderToken } = await orderScenario('incident')
 
-    // The host regenerates (UPDATE on the same row — guest-links.js:51-59).
-    const regen = await ctx.post(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })
-    expect(regen.status()).toBe(200)
-    const fresh = (await regen.json()).link
+    // ⚠ RETARGETED (PO decision, 2026-08-31): the regeneration is performed by the
+    // ADMIN. The HOST's own POST now 409s `has_orders` here — a live sub-order exists
+    // by the line above — so the old host call could no longer produce the retired
+    // token this test is about. The property under test is unchanged (a rotated token
+    // must not kill an existing order URL); only the actor moved, to the one the
+    // dialog now escalates to. UPDATE in place on the same row, never DELETE+INSERT.
+    const fresh = await adminRegenerate(cycle.id, host.id, 'admin rotates the token')
     expect(fresh.id, 'regeneration keeps the ROW').toBe(link.id)
     expect(fresh.token, 'only the token moves').not.toBe(link.token)
 
@@ -752,8 +785,10 @@ test.describe('UC-GR-001/002 — order_token alone is the credential', () => {
 
     // …and the LEGACY pair form, with a retired link half, reaches the same handler.
     const e = await orderScenario('invitelegacy')
-    const regen = await ctx.post(`/api/guest-links/cycle/${e.cycle.id}`, { headers: e.host.auth })
-    expect(regen.status()).toBe(200)
+    // ⚠ RETARGETED (PO decision, 2026-08-31) — admin actor, host's POST now 409s
+    // `has_orders`. Incidental setup: this only needs a retired link HALF to prove it
+    // is carriage rather than authorization, so which actor retired it is immaterial.
+    await adminRegenerate(e.cycle.id, e.host.id, 'retire the link half')
     const legacy = await ctx.post(`${pairPath(e.link.token, e.orderToken)}/invite-request`, {
       data: { name: 'Kolega Pat', phone: uniquePhone() },
     })
@@ -834,10 +869,13 @@ test.describe('UC-GR-002/003 + D7 — the guest surface uses the canonical URL',
     await refreshAdminToken()
     const { host, cycle, link, created, orderToken } = await orderScenario('uiincident')
 
-    // The host regenerates — the exact production state that stranded her.
-    const regen = await ctx.post(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })
-    expect(regen.status()).toBe(200)
-    expect((await regen.json()).link.token, 'the link half of her URL is now retired').not.toBe(link.token)
+    // The link is regenerated — the exact production state that stranded her.
+    // ⚠ RETARGETED (PO decision, 2026-08-31) to the ADMIN actor: the host's own POST
+    // now 409s `has_orders` because her order already exists. This is the CURRENT
+    // production path to a retired token, so the reproduction is more faithful, not
+    // less.
+    const rotated = await adminRegenerate(cycle.id, host.id)
+    expect(rotated.token, 'the link half of her URL is now retired').not.toBe(link.token)
 
     // She opens the URL from her messages. Before this module: the g-dead card.
     await page.goto(pairUiPath(link.token, orderToken))
@@ -1032,16 +1070,30 @@ test.describe('UC-GR-002/003 + D7 — the guest surface uses the canonical URL',
 //
 // PO requirement 1: the admin must be able to read every host's guest link for a
 // cycle (to forward it when a colleague loses it) and to CREATE one for a friend
-// who has not shared yet. D3 fixes the ceiling: READ + CREATE only. There is no
-// admin regenerate, no deactivate and no reactivate — revocation stays host-only,
-// because an admin regenerate silently severs every colleague already holding the
-// URL (that is literally the incident) and an admin reactivate would republish a
-// link the host deliberately revoked after a leak.
+// who has not shared yet.
 //
-// ⚠ The idempotency test below (`token asserted UNCHANGED`) IS the machine proof of
-// the non-capability: the only way an admin route on this router can rotate a token
-// is through this POST, so a future "improvement" that makes create-if-missing
-// regenerate reddens by name here.
+// ⚠⚠ D3's CEILING WAS AMENDED (PO decision, 2026-08-31): READ + CREATE + REGENERATE.
+// The admin still has NO deactivate and NO reactivate.
+//
+// D3 forbade an admin regenerate because it "silently severs every colleague already
+// holding the URL — that is literally the incident". THAT REASON IS SPENT: since
+// GR-T1/GR-T2 a guest's order resolves by `order_token` alone (§UC-GR-001/002), so no
+// regeneration by anyone can strand an existing order. What regeneration still does is
+// retire the ORDERING url, which is a deliberate act. The other half of D3 stands
+// unamended — an admin reactivate would republish a link the host revoked after a
+// leak, and only the host knows who holds it — so `active` remains host-only and the
+// regenerate route writes `token` only.
+//
+// It exists because the HOST's own regenerate now REFUSES while live sub-orders exist
+// (409 `reason:'has_orders'`, the PO's rule — see the UC-GR-012 describe at the foot
+// of this file) and the share dialog tells the host to contact the admin. Without the
+// admin route that copy would point at a dead end, which is the GSO-T5 mistake this
+// module was written to remove.
+//
+// ⚠ The idempotency test below (`token asserted UNCHANGED`) IS STILL the machine proof
+// that CREATE never rotates: regeneration is a separate, explicitly-named route, so a
+// future "improvement" that makes create-if-missing rotate a token still reddens by
+// name here. That pin did not weaken with the amendment — it got a sibling.
 
 async function adminLinks(cycleId) {
   const res = await admin(`/api/guest-links/cycle/${cycleId}/all`)
@@ -1258,19 +1310,23 @@ test.describe('UC-GR-004 — admin reads + creates host share links', () => {
     expect((await ctx.get(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })).status()).toBe(200)
   })
 
-  test('the admin has NO regenerate / deactivate / reactivate on guest links (D3 non-capability)', async () => {
+  test('the admin has NO deactivate / reactivate on guest links (the surviving half of D3)', async () => {
     await refreshAdminToken()
     const cycle = await makeCycle('linkncap')
     const host = await makeHost('linkncap')
     const link = await shareLink(host, cycle.id)
 
-    // No admin route on this prefix may write `token` or `active`. The plausible
-    // shapes a future row might reach for all stay unauthorized-or-absent.
+    // ⚠ RETARGETED (PO decision, 2026-08-31). `POST /cycle/:id/host/:id/regenerate`
+    // used to sit in this list; it is now a real capability, pinned positively below
+    // and in the UC-GR-012 describe. Everything else here is UNCHANGED and still
+    // forbidden: **no admin route on this prefix may write `active`**, and the
+    // `/:id/regenerate` shape is deliberately still absent — the capability hangs off
+    // the (cycle, host) pair, not off a bare link id, so a caller cannot reach a link
+    // whose cycle it never named.
     const attempts = [
       { method: 'patch', path: `/api/guest-links/${link.id}`, data: { active: 0 } },
       { method: 'patch', path: `/api/guest-links/cycle/${cycle.id}/host/${host.id}`, data: { active: 0 } },
       { method: 'post', path: `/api/guest-links/${link.id}/regenerate` },
-      { method: 'post', path: `/api/guest-links/cycle/${cycle.id}/host/${host.id}/regenerate` },
       { method: 'delete', path: `/api/guest-links/${link.id}` },
     ]
     for (const a of attempts) {
@@ -1279,14 +1335,30 @@ test.describe('UC-GR-004 — admin reads + creates host share links', () => {
         .toContain(status)
     }
 
-    // A body smuggled into the create route changes nothing either.
+    // The regenerate that DOES exist rotates the token and leaves `active` alone —
+    // which is what keeps it from being a back-door reactivate. Proved on a REVOKED
+    // link, the only state where the difference is observable.
+    expect((await ctx.patch(`/api/guest-links/${link.id}`, {
+      headers: host.auth, data: { active: false },
+    })).status(), 'the host revokes').toBe(200)
+
+    const rotated = await adminRegenerate(cycle.id, host.id)
+    expect(rotated.token, 'the token rotated').not.toBe(link.token)
+    expect(rotated.id, 'same row — the sub-order FKs stay valid').toBe(link.id)
+    expect(rotated.active, '⚠ a revoked link STAYS revoked through an admin regeneration').toBe(0)
+
+    // A body smuggled into the create route changes nothing either. ⚠ The expected
+    // values are now the POST-ROTATION state (rotated token, still revoked), because
+    // the block above deliberately moved both — and that makes this assertion say
+    // MORE than it used to: the create route neither rotates a token nor reactivates a
+    // revoked link, which is the half of D3 the amendment left standing.
     const smuggle = await admin(`/api/guest-links/cycle/${cycle.id}/host/${host.id}`, {
-      method: 'post', data: { active: 0, token: 'SMUGGLEDTOKEN' },
+      method: 'post', data: { active: 1, token: 'SMUGGLEDTOKEN' },
     })
     expect(smuggle.status()).toBe(200)
     const after = (await adminLinks(cycle.id)).find((l) => l.id === link.id)
-    expect(after.token, 'the request body is never spread into SQL').toBe(link.token)
-    expect(after.active).toBe(1)
+    expect(after.token, 'the request body is never spread into SQL').toBe(rotated.token)
+    expect(after.active, 'create never reactivates what the host revoked').toBe(0)
   })
 })
 
@@ -1414,10 +1486,18 @@ test.describe('UC-GR-005 — the admin cancels a guest sub-order', () => {
     // ── 2. She pays; the admin matches the transfer to her `G<id>` reference. ──
     expect((await setPaid(orderId, true)).status(), 'admin marks paid').toBe(200)
 
-    // ── 3. The host regenerates the link (the incident's trigger). ──────────
-    const regen = await ctx.post(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })
-    expect(regen.status()).toBe(200)
-    expect((await regen.json()).link.token, 'the token really moved').not.toBe(link.token)
+    // ── 3. The link is regenerated (the incident's trigger). ────────────────
+    // ⚠ RETARGETED and STRENGTHENED (PO decision, 2026-08-31). The host can no longer
+    // do this at all: with a live sub-order on the link their own POST answers 409
+    // `has_orders`, which is asserted here rather than merely assumed, because it is
+    // the step that used to strand the guest. The admin — the escalation target the
+    // dialog names — performs the rotation instead.
+    const hostTries = await ctx.post(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })
+    expect(hostTries.status(), 'the host may not invalidate a link colleagues are using').toBe(409)
+    expect((await hostTries.json()).reason).toBe('has_orders')
+
+    const rotated = await adminRegenerate(cycle.id, host.id)
+    expect(rotated.token, 'the token really moved').not.toBe(link.token)
 
     // ── 4. Her ORIGINAL URL still opens her order (GR-T1/GR-T2 — the recovery). ──
     const stillThere = await ctx.get(pairPath(link.token, orderToken))
@@ -2007,7 +2087,7 @@ const ADMIN_CANCEL_LABEL = 'Zrušiť'
 const ADMIN_CANCEL_CONFIRM =
   'Objednávka hosťa sa zruší. Hosť ju uvidí ako zrušenú a už si ju nebude môcť upraviť.'
 const ADMIN_CANCEL_CONFIRM_PAID =
-  'Objednávka je zaplatená — po zrušení sa zobrazí medzi platbami na vrátenie.'
+  'Objednávka je zaplatená - po zrušení sa zobrazí medzi platbami na vrátenie.'
 const ADMIN_CANCEL_YES = 'Áno, zrušiť'
 const ADMIN_CANCEL_NO = 'Nie'
 
@@ -2057,6 +2137,9 @@ const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 const hostLinkBtn = (page, friendId) => page.getByTestId(`host-guest-link-${friendId}`)
 const hostLinkCreateBtn = (page, friendId) => page.getByTestId(`host-guest-link-create-${friendId}`)
+// The admin regenerate (D3 as amended, 2026-08-31) — the escalation target for the
+// host's `has_orders` 409, with an inline confirm stating the consequence.
+const hostLinkRegenBtn = (page, friendId) => page.getByTestId(`host-guest-link-regen-${friendId}`)
 const subOrderLinkBtn = (page, id) => page.getByTestId(`guest-order-link-${id}`)
 const subOrderCancelBtn = (page, id) => page.getByTestId(`guest-cancel-${id}`)
 
@@ -2146,7 +2229,7 @@ test.describe('UC-GR-008 — the admin orders tab: share links, resend, cancel',
     expect(hostsOwn.active).toBe(1)
   })
 
-  test('a REVOKED link is MARKED revoked, not offered as if it worked — and the admin cannot regenerate or reactivate it (D3)', async ({ page }) => {
+  test('a REVOKED link is MARKED revoked, not offered as if it worked — and the admin cannot REACTIVATE it, even by regenerating (the surviving half of D3)', async ({ page }) => {
     await refreshAdminToken()
     const { host, cycle, link } = await orderScenario('revoked')
 
@@ -2163,13 +2246,31 @@ test.describe('UC-GR-008 — the admin orders tab: share links, resend, cancel',
     await expect(marker).toBeVisible()
     await expect(marker).toHaveText(ADMIN_LINK_INACTIVE)
 
-    // ⚠ D3: no admin control writes `token` or `active`. The row offers neither a
-    // regenerate nor a reactivate, and nothing on it flipped the stored state.
+    // ⚠ RETARGETED (PO decision, 2026-08-31). The row DOES now offer a regenerate —
+    // it is the escalation target for the host's `has_orders` 409 — so the old blanket
+    // "no admin control writes `token` or `active`" is retargeted onto the half that
+    // survives: no admin control writes **`active`**. Merely rendering the page still
+    // flips nothing, and there is still no reactivate affordance.
     await expect(hostLinkCreateBtn(page, host.id)).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /aktivovať/i }),
+      'reactivation is host-only — the admin has no such control').toHaveCount(0)
     adminToken = token
-    const stored = (await adminLinks(cycle.id)).find((l) => l.host_friend_id === host.id)
-    expect(stored.token, 'never regenerated').toBe(link.token)
+    let stored = (await adminLinks(cycle.id)).find((l) => l.host_friend_id === host.id)
+    expect(stored.token, 'rendering the page rotates nothing').toBe(link.token)
     expect(stored.active, 'never reactivated').toBe(0)
+
+    // ⚠ AND THE POINT: the admin USES the new regenerate on this revoked row, and it
+    // is still not a reactivate. The token moves; `active` does not. Driven through
+    // the UI, because a control that quietly republished a leaked link would be a
+    // security regression the API-level test above cannot see.
+    await hostLinkRegenBtn(page, host.id).click()
+    await page.getByTestId(`host-guest-link-regen-yes-${host.id}`).click()
+    await expect(hostLinkRegenBtn(page, host.id)).toBeEnabled()
+
+    stored = (await adminLinks(cycle.id)).find((l) => l.host_friend_id === host.id)
+    expect(stored.token, 'the admin regenerate rotated the token').not.toBe(link.token)
+    expect(stored.active, '⚠ STILL revoked — regenerating is not reactivating').toBe(0)
+    await expect(marker, 'and the row still says so').toBeVisible()
   })
 
   test('a DEACTIVATED host: the create button renders the 409 `inactive_host` refusal and no link appears', async ({ page }) => {
@@ -2544,7 +2645,7 @@ test.describe('UC-GR-008 — the admin orders tab: share links, resend, cancel',
 // "a stub 500 still 201s" test is the mutation target: making the send blocking
 // reddens it.
 
-const MAIL_SUBJECT = 'Potvrdenie objednávky – Podpultovka'
+const MAIL_SUBJECT = 'Potvrdenie objednávky - Podpultovka'
 // ⚠ DRAFT copy pending PO sign-off (14 §OPEN), hoisted for the GR-T7/T5/T6 reason:
 // sign-off is then a known TWO-PLACE edit (these constants + `routes/guest.js`),
 // never a grep for quoted Slovak across the suite.
@@ -2713,9 +2814,9 @@ test.describe('UC-GR-011 — the guest order-confirmation mail', () => {
       // ── the plain part: the deliverability baseline carries EVERYTHING ──
       expect(fields.text).toContain(MAIL_INTRO)
       expect(fields.text).toContain(MAIL_ORDER_HEADING)
-      // The item line: quantity × name (variant) — line amount, `€` on lines.
+      // The item line: quantity × name (variant) - line amount, `€` on lines.
       expect(fields.text, 'the item line, priced from the frozen snapshot').toContain(
-        `2× GR mailbody ${uniq} (250g) — 15.20 €`
+        `2× GR mailbody ${uniq} (250g) - 15.20 €`
       )
       expect(fields.text, 'the total, EUR on totals').toContain(`${MAIL_TOTAL_LABEL}: 15.20 EUR`)
       expect(fields.text).toContain(MAIL_PAYMENT_HEADING)
@@ -2925,5 +3026,331 @@ test.describe('UC-GR-011 — the guest order-confirmation mail', () => {
       // same link, the same product — only the address differs.
       await proveTheHarnessCanSend(stub, { linkToken: link.token, productId: product.id }, 0)
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// UC-GR-012 / D3 AMENDED — a host may not regenerate a link colleagues are already
+// ordering through; the ADMIN is the escalation target.
+//
+// PO instruction, verbatim (2026-08-31): "ak už hosť objednal, priateľ by nemal byť
+// schopný vygenerovať odkaz, ktorý vytvorenú objednávku zruší. V dialogu by mal mat
+// napisane, ze novy odkaz nie je možné vygenerovať, kým existujú vytvorené
+// objednávky. Ak chce aj tak nový odkaz vygenerovať, musí kontaktovať admina."
+//
+// ⚠ WHY THIS IS MORE THAN A UI RULE. "Contact the admin" only means something if the
+// admin can actually do it, and under D3 as originally written the admin could NOT
+// regenerate — so the copy would have pointed at a dead end. That is precisely the
+// GSO-T5 failure pattern this whole module exists to remove ("escalate to the admin"
+// with no admin route, and a paying guest nobody could help). So the row ships both
+// halves, and the tests below run the escalation end to end rather than testing each
+// half in isolation.
+//
+// ⚠ WHAT MAKES THE AMENDMENT SAFE, and the one property everything here rests on: a
+// guest's order URL resolves by `order_token` ALONE (§UC-GR-001/002, GR-T1/GR-T2), so
+// NO regeneration by anyone can strand an already-created order. D3's stated reason
+// for forbidding an admin regenerate — "it silently severs every colleague already
+// holding the URL" — was true only while the (link, order) PAIR was the credential.
+// It is spent. What regeneration still does is retire the ORDERING url, which is
+// exactly the deliberate act the PO wants gated.
+//
+// The surviving half of D3 is asserted too: the admin regenerate writes `token` and
+// never `active`, so it can never republish a link the host revoked after a leak.
+
+// DRAFT copy pending PO sign-off (14 §OPEN), hoisted for the standing reason: the
+// sign-off edit is then a known TWO-PLACE change (this constant + the SFC literal),
+// never a grep for quoted Slovak across the suite.
+//
+// ⚠ The declension is restated here INDEPENDENTLY of `lib/plural.js`'s
+// `ordersAccusativeLabel` rather than imported — a spec that imports the helper it is
+// checking would pass through any change to it. 1 objednávku / 2-4 objednávky /
+// 5+ objednávok, the ACCUSATIVE, because the sentence puts it after "máte".
+const regenBlockedOrders = (n) => (
+  n === 1 ? '1 objednávku' : (n >= 2 && n <= 4 ? `${n} objednávky` : `${n} objednávok`)
+)
+const REGEN_BLOCKED = (n) =>
+  `Cez tento odkaz už máte ${regenBlockedOrders(n)} od kolegov, preto nový odkaz nie je možné vygenerovať. Ak ho potrebujete, kontaktujte správcu.`
+
+// The host's own create-or-regenerate POST, unasserted — the tests below check its
+// status themselves, which `shareLink()` cannot do (it asserts 200/201).
+const hostRegenerate = (host, cycleId) =>
+  ctx.post(`/api/guest-links/cycle/${cycleId}`, { headers: host.auth })
+
+test.describe('UC-GR-012 — regeneration is blocked while colleagues have live orders', () => {
+  test('THE RULE: the host is refused with 409 `has_orders`, and the refusal is NON-DESTRUCTIVE', async () => {
+    await refreshAdminToken()
+    const { host, cycle, link } = await orderScenario('regenblock')
+
+    const refused = await hostRegenerate(host, cycle.id)
+    expect(refused.status(), 'a colleague has ordered — the host may not invalidate the link').toBe(409)
+    const body = await refused.json()
+    expect(body.reason).toBe('has_orders')
+    expect(body.live_orders, 'the count the dialog renders comes from the same predicate').toBe(1)
+    // Slovak, vy-form, and it names the escalation target — otherwise the host is
+    // refused with nowhere to go.
+    expect(body.error).toContain('kontaktujte správcu')
+
+    // ⚠ THE REFUSAL WROTE NOTHING. A 409 that had already rotated the token would be
+    // the worst of both worlds: the colleagues' link dead AND the host told it failed.
+    const after = (await hostView(host, cycle.id)).link
+    expect(after.token, 'the token did not move').toBe(link.token)
+    expect(after.id).toBe(link.id)
+    expect(after.active, '`active` untouched too').toBe(1)
+  })
+
+  test('CREATION is untouched by the gate — a first-time share still 201s', async () => {
+    await refreshAdminToken()
+    const host = await makeHost('regencreate')
+    const cycle = await makeCycle('regencreate')
+
+    // ⚠ The gate lives in the `if (existing)` branch, so the create path cannot be
+    // reached by it — with no link row there is nothing for a sub-order to hang off.
+    // Asserted rather than argued, because a future refactor that hoists the count
+    // above the branch would break first-time sharing for everyone.
+    const created = await hostRegenerate(host, cycle.id)
+    expect(created.status(), 'a host with no link can always create one').toBe(201)
+    const payload = await created.json()
+    expect(payload.regenerated).toBe(false)
+    expect(payload.link.token).toBeTruthy()
+    expect(payload.totals.count, 'a brand-new link has no sub-orders by construction').toBe(0)
+
+    // And an EMPTY existing link still regenerates freely — the gate is about live
+    // orders, not about the link having been shared before.
+    const again = await hostRegenerate(host, cycle.id)
+    expect(again.status()).toBe(200)
+    const rotated = await again.json()
+    expect(rotated.regenerated).toBe(true)
+    expect(rotated.link.id, 'same row').toBe(payload.link.id)
+    expect(rotated.link.token).not.toBe(payload.link.token)
+  })
+
+  test('a CANCELLED sub-order does NOT block — the status predicate doing its job', async () => {
+    await refreshAdminToken()
+    const { host, cycle, link, created } = await orderScenario('regencancelled')
+
+    // Blocked while it is live…
+    expect((await hostRegenerate(host, cycle.id)).status()).toBe(409)
+
+    // …and free again once it is called off. A cancelled sub-order owes nothing, holds
+    // no stock and is nobody's pending hand-over, so there is nothing left to protect.
+    expect((await cancelSubOrder(created.order.id)).status(), 'admin cancels').toBe(200)
+
+    const allowed = await hostRegenerate(host, cycle.id)
+    expect(allowed.status(), 'a cancelled order must not keep the link frozen forever').toBe(200)
+    const fresh = (await allowed.json()).link
+    expect(fresh.id, 'still the same row').toBe(link.id)
+    expect(fresh.token).not.toBe(link.token)
+
+    // ⚠ And the cancelled row is STILL THERE (GSO-T4: cancelling keeps the item rows).
+    // The gate reads a status predicate, never a row count — if it ever regresses to
+    // `COUNT(*)`, this stays green while the test above goes red, which is why both
+    // halves are asserted in one test.
+    const view = await hostView(host, cycle.id)
+    expect(view.guest_orders.map((o) => o.id), 'the record of what was called off survives').toContain(created.order.id)
+    expect(view.totals.count, 'but it counts for nothing').toBe(0)
+  })
+
+  test('the ADMIN regenerate is EXEMPT, rotates IN PLACE, and every live sub-order survives it', async () => {
+    await refreshAdminToken()
+    const { host, cycle, product, link } = await orderScenario('regenadmin')
+    const second = await submitGuest(link.token, [
+      { product_id: product.id, variant: '1kg', quantity: 1 },
+    ], { guest_name: 'Kolega Druhy', guest_phone: uniquePhone() })
+
+    const before = await hostView(host, cycle.id)
+    expect(before.totals.count, 'two live colleagues').toBe(2)
+    expect((await hostRegenerate(host, cycle.id)).status(), 'the host is still refused').toBe(409)
+
+    // The escalation target. No `has_orders` gate — being exempt is its whole purpose.
+    const fresh = await adminRegenerate(cycle.id, host.id)
+    expect(fresh.id, '⚠ UPDATE IN PLACE. `guest_orders.link_id` CASCADES ON DELETE, so a DELETE+INSERT here would wipe every sub-order').toBe(link.id)
+    expect(fresh.token).not.toBe(link.token)
+
+    // ⚠ THE CASCADE PROOF, stated in terms a DELETE+INSERT could not fake: the same
+    // sub-order IDS, with their items and totals intact, still hanging off the link.
+    const after = await hostView(host, cycle.id)
+    expect(after.link.id).toBe(link.id)
+    expect(after.totals.count, 'nothing was cascaded away').toBe(2)
+    expect(after.guest_orders.map((o) => o.id).sort()).toEqual(before.guest_orders.map((o) => o.id).sort())
+    for (const row of before.guest_orders) {
+      const kept = after.guest_orders.find((o) => o.id === row.id)
+      expect(kept.status).toBe('submitted')
+      expect(kept.total).toBe(row.total)
+      expect(kept.items.length, 'the item rows survived too').toBe(row.items.length)
+    }
+  })
+
+  test('⚠ THE PO RULE END TO END: guest orders → host refused → admin regenerates → her URL still opens, the old link takes no new orders', async () => {
+    await refreshAdminToken()
+    const { host, cycle, product, link, created, orderToken } = await orderScenario('regene2e')
+
+    // ── 1. The host tries to regenerate and is refused, with the reason. ────
+    const refused = await hostRegenerate(host, cycle.id)
+    expect(refused.status()).toBe(409)
+    expect((await refused.json()).reason).toBe('has_orders')
+
+    // ── 2. The admin — whom the dialog names — performs it instead. ─────────
+    const fresh = await adminRegenerate(cycle.id, host.id)
+    expect(fresh.token).not.toBe(link.token)
+
+    // ── 3. THE PROPERTY THAT MAKES ALL OF THIS SAFE: her existing order URL still
+    //       resolves, under the retired link half AND canonically. This is the whole
+    //       basis for amending D3 — without it, an admin regenerate would recreate
+    //       the incident instead of resolving it.
+    for (const [label, path] of [
+      ['her SAVED pair URL, retired link half', pairPath(link.token, orderToken)],
+      ['the new pair form', pairPath(fresh.token, orderToken)],
+      ['the canonical form', canonicalPath(orderToken)],
+    ]) {
+      const res = await ctx.get(path)
+      expect(res.status(), `${label} must still resolve`).toBe(200)
+      expect((await res.json()).order.id).toBe(created.order.id)
+    }
+
+    // ── 4. …and the OLD share link is genuinely retired for NEW business, which is
+    //       the entire point of regenerating. Both public doors, not just the listing.
+    const listing = await ctx.get(`/api/guest/${link.token}`)
+    expect(listing.status(), 'the old ordering link no longer lists the offer').toBe(404)
+    const newOrder = await ctx.post(`/api/guest/${link.token}/orders`, {
+      data: { guest_name: 'Neskory Kolega', guest_phone: uniquePhone(), items: [{ product_id: product.id, variant: '250g', quantity: 1 }] },
+    })
+    expect(newOrder.status(), '⚠ and nobody NEW can order through it').toBe(404)
+
+    // ── 5. The new link works, so the host is not left without a share URL. ─
+    const viaNew = await ctx.get(`/api/guest/${fresh.token}`)
+    expect(viaNew.status()).toBe(200)
+  })
+
+  test('the admin regenerate 404s where there is nothing to rotate, and never creates one', async () => {
+    await refreshAdminToken()
+    const host = await makeHost('regen404')
+    const cycle = await makeCycle('regen404')
+
+    const noLink = await admin(`/api/guest-links/cycle/${cycle.id}/host/${host.id}/regenerate`, { method: 'post' })
+    expect(noLink.status(), 'no link for this (cycle, host)').toBe(404)
+    expect((await noLink.json()).reason).toBe('no_link')
+
+    // ⚠ AND IT DID NOT SILENTLY MINT ONE. "Regenerate" doubling as create-if-missing
+    // is how a rotation ends up handing out links nobody asked for; that capability is
+    // the sibling route and stays there.
+    expect((await hostView(host, cycle.id)).link, 'no link was created as a side effect').toBeFalsy()
+
+    expect((await admin(`/api/guest-links/cycle/999999/host/${host.id}/regenerate`, { method: 'post' })).status()).toBe(404)
+    expect((await admin(`/api/guest-links/cycle/${cycle.id}/host/999999/regenerate`, { method: 'post' })).status()).toBe(404)
+  })
+
+  test('THE DIALOG: the regenerate affordance is REPLACED by the explanation, and deactivation stays', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle } = await orderScenario('regendialog')
+
+    const dialog = await openFromOrderPage(page, host, cycle)
+
+    // ⚠ REPLACED, not disabled. A disabled button reads as "you may do this, later",
+    // and the host has nothing to wait for — the answer is to contact the admin.
+    await expect(dialog.getByRole('button', { name: 'Vygenerovať nový odkaz' })).toHaveCount(0)
+    await expect(dialog.locator('.confirmbox')).toHaveCount(0)
+
+    const blocked = dialog.getByTestId('regen-blocked')
+    await expect(blocked).toHaveText(REGEN_BLOCKED(1))
+    // `div.field-help` for the §UC-GR-009 placement reason: `p.sub` is pinned as a
+    // SINGLE element in an immutable spec, and `.field-help` is A10-covered.
+    expect(await blocked.evaluate((el) => el.tagName.toLowerCase())).toBe('div')
+    await expect(blocked).toHaveClass(/field-help/)
+
+    // The "regenerate only on a leak" guidance yields to it — otherwise the dialog
+    // would be telling the host to do something this very state forbids.
+    await expect(dialog.getByTestId('regen-guidance')).toHaveCount(0)
+
+    // ⚠ DEACTIVATION IS STILL OFFERED, and that is deliberate: revoking a leaked link
+    // is exactly what a host with live orders still needs, and it strands nobody —
+    // every existing order resolves by `order_token`.
+    await expect(dialog.getByRole('button', { name: 'Deaktivovať odkaz' })).toBeVisible()
+    // The URL stays copyable: the colleagues who have NOT ordered yet still need it.
+    await expect(dialog.getByTestId('guest-link-url')).toBeVisible()
+
+    // No horizontal overflow at 320px — the copy is long and this is the narrowest
+    // supported width (the standing mobile invariant).
+    await page.setViewportSize({ width: 320, height: 900 })
+    await expect(blocked).toBeVisible()
+    const box = await overflow(page)
+    expect(box.scrollW, `320px: no sideways scroll (${box.scrollW} vs ${box.clientW})`).toBeLessThanOrEqual(box.clientW)
+  })
+
+  test('THE DIALOG: the count declines, and the affordance RETURNS once the only order is cancelled', async ({ page }) => {
+    await refreshAdminToken()
+    const { host, cycle, product, link, created } = await orderScenario('regendialog2')
+    await submitGuest(link.token, [{ product_id: product.id, variant: '1kg', quantity: 1 }],
+      { guest_name: 'Kolega Dva', guest_phone: uniquePhone() })
+    const third = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }],
+      { guest_name: 'Kolega Tri', guest_phone: uniquePhone() })
+
+    let dialog = await openFromOrderPage(page, host, cycle)
+    // 3 → the 2-4 branch ("3 objednávky"), a different form from the 1 case above.
+    await expect(dialog.getByTestId('regen-blocked')).toHaveText(REGEN_BLOCKED(3))
+
+    // Cancel two of the three: still blocked, and the number must FOLLOW.
+    expect((await cancelSubOrder(created.order.id)).status()).toBe(200)
+    expect((await cancelSubOrder(third.order.id)).status()).toBe(200)
+
+    await page.reload()
+    dialog = await openFromOrderPage(page, host, cycle)
+    await expect(dialog.getByTestId('regen-blocked'), 'the count tracks LIVE orders, not rows').toHaveText(REGEN_BLOCKED(1))
+
+    // Cancel the last one — the affordance comes back. This is a STATE rule, not a
+    // one-way latch: a host whose colleagues all called off can share afresh.
+    const remaining = (await hostView(host, cycle.id)).guest_orders
+      .find((o) => (o.status || 'submitted') !== 'cancelled')
+    expect((await cancelSubOrder(remaining.id)).status()).toBe(200)
+
+    dialog = await openFromOrderPage(page, host, cycle)
+    await expect(dialog.getByTestId('regen-blocked')).toHaveCount(0)
+    await expect(dialog.getByTestId('regen-guidance'), 'the standing guidance comes back with it').toBeVisible()
+    const trigger = dialog.getByRole('button', { name: 'Vygenerovať nový odkaz' })
+    await expect(trigger).toBeVisible()
+
+    // …and it really works from here, rather than merely being rendered.
+    await trigger.click()
+    await dialog.getByRole('button', { name: 'Áno, vygenerovať' }).click()
+    await expect(dialog.getByTestId('guest-link-url')).not.toHaveText(new RegExp(`/g/${link.token}$`))
+    expect((await hostView(host, cycle.id)).link.token).not.toBe(link.token)
+  })
+
+  test('THE ADMIN UI: the orders tab regenerates a host\'s link, with the consequence stated', async ({ page }) => {
+    await refreshAdminToken()
+    // The host lands on this tab via `listedOrders`' has-guests branch — no own order
+    // needed (the `orderScenario` guest sub-order is what lists them).
+    const { host, cycle, link, orderToken } = await orderScenario('regenadminui')
+
+    const token = await adoptUiAdmin(page)
+    await gotoOrdersTab(page, cycle)
+
+    // The inline confirm states BOTH halves, because the admin has to know that the
+    // colleagues' existing orders are not what they are breaking.
+    await hostLinkRegenBtn(page, host.id).click()
+    const confirm = page.getByTestId(`host-guest-link-regen-confirm-${host.id}`)
+    await expect(confirm).toContainText('Starý odkaz prestane prijímať nové objednávky.')
+    await expect(confirm).toContainText('Už vytvorené objednávky kolegov zostanú funkčné.')
+
+    // "Nie" backs out with nothing written.
+    await page.getByTestId(`host-guest-link-regen-no-${host.id}`).click()
+    await expect(confirm).toHaveCount(0)
+    adminToken = token
+    expect((await adminLinks(cycle.id)).find((l) => l.host_friend_id === host.id).token,
+      'backing out rotates nothing').toBe(link.token)
+
+    // And through.
+    await hostLinkRegenBtn(page, host.id).click()
+    await page.getByTestId(`host-guest-link-regen-yes-${host.id}`).click()
+    await expect(page.getByTestId(`host-guest-link-regen-confirm-${host.id}`),
+      'success closes the confirm').toHaveCount(0)
+
+    adminToken = token
+    const stored = (await adminLinks(cycle.id)).find((l) => l.host_friend_id === host.id)
+    expect(stored.token, 'the token rotated').not.toBe(link.token)
+    expect(stored.id, 'in place — same row').toBe(link.id)
+    expect(stored.active, 'and `active` was never written').toBe(1)
+
+    // The guest's order still resolves — the promise the confirm copy makes.
+    expect((await ctx.get(canonicalPath(orderToken))).status()).toBe(200)
   })
 })

@@ -511,10 +511,14 @@ export const api = {
   getGuestUnpaid: (cycleId) => adminRequest(`/guest-orders/cycle/${cycleId}/unpaid`),
 
   // Guest share links, ADMIN side (14 §UC-GR-004). The `/guest-links` router is
-  // MIXED-auth: the three host routes above ride the friend Bearer token, these two
-  // ride X-Admin-Token. Read + create ONLY — D3 keeps regenerate and
-  // deactivate/reactivate host-only, so there is deliberately no admin method for
-  // either, and adding one would violate that UC.
+  // MIXED-auth: the three host routes above ride the friend Bearer token, these
+  // ride X-Admin-Token.
+  //
+  // ⚠ Read + create + REGENERATE. D3 was AMENDED (PO decision, 2026-08-31): the
+  // admin regenerate exists because the HOST's own regenerate now refuses while live
+  // sub-orders exist (409 `reason:'has_orders'`) and the dialog escalates to the
+  // admin. Deactivate/reactivate are STILL host-only and there is deliberately no
+  // admin method for either — `active` is never written by an admin route.
   //
   // ⚠ THE TWO POSTs ON THIS PREFIX ANSWER DIFFERENT SHAPES. This one returns
   // `{ link, created }`; the HOST's own `createGuestLink` above returns
@@ -527,6 +531,12 @@ export const api = {
   getGuestLinksForCycle: (cycleId) => adminRequest(`/guest-links/cycle/${cycleId}/all`),
   createGuestLinkForHost: (cycleId, friendId) =>
     adminRequest(`/guest-links/cycle/${cycleId}/host/${friendId}`, { method: 'POST' }),
+  // Rotates the token on the EXISTING row — the old `/g/:token` stops taking new
+  // orders, and every guest order already placed keeps working (they resolve by
+  // `order_token` alone, §UC-GR-001/002). Answers `{ link, regenerated: true }` and
+  // never writes `active`, so a revoked link stays revoked.
+  regenerateGuestLinkForHost: (cycleId, friendId) =>
+    adminRequest(`/guest-links/cycle/${cycleId}/host/${friendId}/regenerate`, { method: 'POST' }),
 
   // The admin's own cancel of a guest sub-order (14 §UC-GR-005) — the capability the
   // host's DELETE points at when it refuses a PAID one. NOT the same route: this one

@@ -548,6 +548,53 @@ async function createHostLink(order) {
   }
 }
 
+// ⚠ THE ADMIN REGENERATE (D3 as AMENDED — PO decision, 2026-08-31). The HOST's own
+// regenerate now refuses while live colleague orders exist (409
+// `reason:'has_orders'`) and their dialog says "kontaktujte správcu", so this control
+// is that escalation target. Without it the host-side copy points at a dead end —
+// the GSO-T5 mistake module 14 exists to remove.
+//
+// What it does and does not do, because the confirm copy below promises both:
+//   · the OLD `/g/:token` stops taking NEW orders (`resolveLink` 404s it);
+//   · every colleague order ALREADY placed keeps working — they resolve by
+//     `order_token` alone (§UC-GR-001/002), which is what made amending D3 safe;
+//   · `active` is NOT touched server-side, so a revoked link stays revoked. This is
+//     not a back-door reactivate, and there is still no admin deactivate/reactivate.
+//
+// Per-row `rowSeq` + pending, the GSO-T5 convention — two rows may be regenerated
+// concurrently and a superseded response must not land.
+const guestLinkRegenConfirmId = ref(null)
+const guestLinkRegenPending = ref({})
+const guestLinkRegenRowSeq = new Map()
+
+async function regenerateHostLink(order) {
+  const friendId = order.friend_id
+  if (!friendId || guestLinkRegenPending.value[friendId]) return
+  const seq = (guestLinkRegenRowSeq.get(friendId) || 0) + 1
+  guestLinkRegenRowSeq.set(friendId, seq)
+  guestLinkRegenPending.value = { ...guestLinkRegenPending.value, [friendId]: true }
+  setRowMessage(guestLinkErrors, friendId, '')
+  try {
+    const data = await api.regenerateGuestLinkForHost(cycleId.value, friendId)
+    if (guestLinkRegenRowSeq.get(friendId) !== seq) return
+    if (!data.link) return
+    // Patched in place, preserving the joined columns the regenerate response does
+    // not carry (`host_name` / `host_active` come from the LISTING's JOIN). Merging
+    // over the existing row rather than rebuilding it is what keeps the "neaktívny"
+    // marker truthful after a rotation — the server left `active` alone, so the row
+    // must too.
+    guestLinks.value = guestLinks.value.map((l) => (
+      l.host_friend_id === friendId ? { ...l, ...data.link } : l
+    ))
+    guestLinkRegenConfirmId.value = null
+  } catch (e) {
+    if (guestLinkRegenRowSeq.get(friendId) !== seq) return
+    setRowMessage(guestLinkErrors, friendId, e.message)
+  } finally {
+    clearRowFlag(guestLinkRegenPending, friendId)
+  }
+}
+
 // Two independent copy flips (a friend row's ORDERING link, a sub-order row's
 // per-guest STATUS link) — separate refs, so copying a share link never flashes
 // "Skopírované!" on somebody's order row.
@@ -1893,6 +1940,51 @@ function getStatusVariant(status) {
                             class="text-xs text-muted-foreground"
                             :data-testid="`host-guest-link-inactive-${order.friend_id}`"
                           >neaktívny</span>
+                          <!-- ⚠ THE ADMIN REGENERATE (D3 as AMENDED — PO decision,
+                               2026-08-31). The host's own regenerate refuses while
+                               colleagues have live orders on the link and their dialog
+                               says "kontaktujte správcu"; this is that target. It
+                               rotates the token only — there is still no admin
+                               deactivate/reactivate, so a revoked link stays revoked
+                               and this control can never republish a leaked URL. -->
+                          <button
+                            v-if="guestLinkRegenConfirmId !== order.friend_id"
+                            type="button"
+                            class="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-50 disabled:no-underline"
+                            :disabled="!!guestLinkRegenPending[order.friend_id]"
+                            :data-testid="`host-guest-link-regen-${order.friend_id}`"
+                            @click="guestLinkRegenConfirmId = order.friend_id"
+                          >{{ guestLinkRegenPending[order.friend_id] ? 'Generujem...' : 'Nový odkaz' }}</button>
+                          <!-- Inline confirm, because the consequence is not
+                               reversible and is easy to get wrong in both directions.
+                               ⚠ Both sentences are FACTUAL and must not be softened or
+                               swapped: the server UPDATEs `token` on the existing row
+                               (never DELETE+INSERT, which would cascade the sub-orders
+                               away), and every order already placed resolves by
+                               `order_token` alone (§UC-GR-001/002) — which is precisely
+                               what made amending D3 safe.
+                               Copy is DRAFT pending PO sign-off (14 §OPEN); mirrored as
+                               constants in `guest-order-recovery.spec.js`. -->
+                          <span
+                            v-else
+                            class="text-xs inline-flex flex-wrap items-center gap-1.5"
+                            :data-testid="`host-guest-link-regen-confirm-${order.friend_id}`"
+                          >
+                            <span class="text-muted-foreground">Starý odkaz prestane prijímať nové objednávky. Už vytvorené objednávky kolegov zostanú funkčné.</span>
+                            <button
+                              type="button"
+                              class="text-destructive underline underline-offset-2 hover:no-underline disabled:opacity-50"
+                              :disabled="!!guestLinkRegenPending[order.friend_id]"
+                              :data-testid="`host-guest-link-regen-yes-${order.friend_id}`"
+                              @click="regenerateHostLink(order)"
+                            >Áno, vygenerovať</button>
+                            <button
+                              type="button"
+                              class="text-muted-foreground underline underline-offset-2 hover:no-underline"
+                              :data-testid="`host-guest-link-regen-no-${order.friend_id}`"
+                              @click="guestLinkRegenConfirmId = null"
+                            >Nie</button>
+                          </span>
                         </template>
                         <button
                           v-else
@@ -2092,7 +2184,7 @@ function getStatusVariant(status) {
                                  cancels a paid order knowingly: the money does not
                                  vanish, it moves to "Na vrátenie" below. -->
                             <p v-if="sub.paid" class="font-medium">
-                              Objednávka je zaplatená — po zrušení sa zobrazí medzi platbami na vrátenie.
+                              Objednávka je zaplatená - po zrušení sa zobrazí medzi platbami na vrátenie.
                             </p>
                             <p :class="sub.paid ? 'mt-0.5' : ''">
                               Objednávka hosťa sa zruší. Hosť ju uvidí ako zrušenú a už si ju nebude môcť upraviť.

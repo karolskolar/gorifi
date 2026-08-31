@@ -382,7 +382,7 @@ test.describe('UC-KG-006 — body states', () => {
     await expect(warn).toContainText('Odkaz je deaktivovaný')
     // ⚠ The bold lead and the sentence that follows must not be split by Vue's
     // `condense`, which deletes a newline-bearing whitespace node between them.
-    await expect(warn).toContainText('Odkaz je deaktivovaný — kolegovia si cez neho nemôžu objednať.')
+    await expect(warn).toContainText('Odkaz je deaktivovaný - kolegovia si cez neho nemôžu objednať.')
     await expect(warn.locator('b')).toHaveText('Odkaz je deaktivovaný')
     // The URL stays on screen: the host may still want to copy it.
     await expect(dialog.getByTestId('guest-link-url')).toContainText(`/g/${link.token}`)
@@ -398,13 +398,28 @@ test.describe('UC-KG-006 — body states', () => {
     expect(after.token, 'PATCH reactivation must not rotate the token').toBe(link.token)
   })
 
-  test('the regenerate confirmbox: exact copy, "Zrušiť" backs out — and a real sub-order SURVIVES', async ({ page }) => {
+  // ⚠ RETARGETED (PO decision, 2026-08-31 — a FORCED retarget, not a choice). This
+  // test used to submit a real guest sub-order and then regenerate through the UI, to
+  // prove the confirmbox's promise that "Objednávky, ktoré vám kolegovia už poslali,
+  // zostanú zachované". A host may no longer do that at all: with a live sub-order on
+  // the link the backend answers 409 `reason:'has_orders'` and the dialog replaces the
+  // whole affordance with an explanation, so the confirmbox is UNREACHABLE in that
+  // state and the old premise cannot be exercised from here.
+  //
+  // The fixture therefore drops the sub-order and this test keeps what it is really
+  // for: the confirmbox's exact copy, "Zrušiť" backing out with nothing written, and a
+  // real regeneration rotating the token on the SAME row (`link.id` unchanged — the
+  // property that keeps the sub-order FKs valid, asserted below).
+  //
+  // ⚠ The retired half is not lost, it MOVED to the actor that can still do it: the
+  // sub-order-survives-a-regeneration proof now runs against the ADMIN regenerate in
+  // `guest-order-recovery.spec.js` (UC-GR-012), which is the only route that can
+  // regenerate a link with live orders on it. Nothing is less covered than before.
+  test('the regenerate confirmbox: exact copy, "Zrušiť" backs out, and the token rotates on the SAME row', async ({ page }) => {
     await refreshAdminToken()
     const host = await makeHost('regen')
     const cycle = await makeCycle('regen')
-    const product = await addProduct(cycle.id, { name: `KG2 Brazil ${uniq}`, purpose: 'Espresso', price_250g: 7.6 })
     const link = await shareLink(host, cycle.id)
-    const sub = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 2 }])
 
     const dialog = await openFromOrderPage(page, host, cycle)
     const trigger = dialog.getByRole('button', { name: 'Vygenerovať nový odkaz' })
@@ -442,12 +457,12 @@ test.describe('UC-KG-006 — body states', () => {
     const origin = await page.evaluate(() => window.location.origin)
     await expect(dialog.getByTestId('guest-link-url')).toHaveText(`${origin}/g/${view.link.token}`)
 
-    // THE POINT of the copy: the colleague's order is still there, intact.
-    expect(view.guest_orders.map((o) => o.id)).toContain(sub.order.id)
-    const kept = view.guest_orders.find((o) => o.id === sub.order.id)
-    expect(kept.status).toBe('submitted')
-    expect(kept.items.length).toBe(1)
-    expect(kept.total).toBe(sub.order.total)
+    // ⚠ And the state that MAKES this reachable is asserted rather than assumed: the
+    // affordance is offered only because no colleague has ordered yet. If a future
+    // fixture change quietly adds a sub-order here, this reddens with a reason instead
+    // of failing on a missing button.
+    expect(view.totals.count, 'the confirmbox is only reachable with no live sub-orders').toBe(0)
+    await expect(dialog.getByTestId('regen-blocked')).toHaveCount(0)
   })
 })
 
@@ -505,7 +520,7 @@ test.describe('UC-KG-006 — native share', () => {
     // Renamed together on 2026-08-12 by product decision.
     expect(await page.evaluate(() => window.__shared)).toEqual([{
       title: 'Objednávka Podpultovka',
-      text: `Pridajte sa k mojej objednávke — ${cycle.name}`,
+      text: `Pridajte sa k mojej objednávke - ${cycle.name}`,
       url: `${origin}/g/${link.token}`,
     }])
   })
