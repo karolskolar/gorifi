@@ -34,16 +34,29 @@ test.describe('Order item packed — persistence & gating', () => {
     const friendId = (await friendsRes.json()).find((f) => f.name === FRIEND_NAME).id
 
     // Two products so the gate has more than one item to check off.
+    //
+    // ⚠ UNIQUE NAMES, AND THE STATUS IS ASSERTED — this `beforeAll` used to use fixed
+    // names and ignore the response, which made the whole file fail on ANY database it
+    // had already run against once. Module 12 added a `duplicate_in_cycle` guard, so the
+    // second run got 409, `prod1.id` was `undefined`, the cart priced nothing, `total 0`
+    // DELETED the order and the submit 404'd — four steps downstream of the real cause,
+    // with an error that pointed at the submit. Two independent mistakes: reusing a name
+    // in a cycle that now refuses duplicates, and not checking the create.
+    const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
     const p1 = await request.post('/api/products', {
       headers: admin,
-      data: { cycle_id: cycleId, name: 'GSO-T1 Coffee A', purpose: 'Espresso', price_250g: 10, price_1kg: 30 },
+      data: { cycle_id: cycleId, name: `GSO-T1 Coffee A ${uniq}`, purpose: 'Espresso', price_250g: 10, price_1kg: 30 },
     })
+    expect(p1.status(), 'product A create').toBe(201)
     const p2 = await request.post('/api/products', {
       headers: admin,
-      data: { cycle_id: cycleId, name: 'GSO-T1 Coffee B', purpose: 'Filter', price_250g: 12, price_1kg: 36 },
+      data: { cycle_id: cycleId, name: `GSO-T1 Coffee B ${uniq}`, purpose: 'Filter', price_250g: 12, price_1kg: 36 },
     })
+    expect(p2.status(), 'product B create').toBe(201)
     const prod1 = await p1.json()
     const prod2 = await p2.json()
+    expect(prod1.id, 'a create that answered 201 must carry an id').toBeTruthy()
+    expect(prod2.id).toBeTruthy()
 
     // Fill + submit the friend's order (legacy shared password).
     const fp = { 'X-Friends-Password': FRIENDS_PASSWORD }

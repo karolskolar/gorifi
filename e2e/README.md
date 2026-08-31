@@ -296,6 +296,42 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   confirmation needs them — a real environment's values are never overwritten.
 - `fixtures.js` — credentials/constants, overridable via env.
 
+## The database is an INPUT — copy the template, never reuse a working file
+
+⚠ **This is the first thing to get right, because getting it wrong produces plausible
+wrong results rather than errors.** Fixture accumulation degrades the suite: the same
+tree failed 2/15 in 3.7 min against a long-lived `/tmp` DB and passed **15/15 in 19 s**
+against a fresh one, and three separate wrong diagnoses were chased before the cause was
+found — including a commit bisection for a regression that did not exist. If something
+red looks suspicious, **reseed and re-measure before you believe it.**
+
+`./e2e/make-test-db.sh` builds a **template** from production, scrubbed on the server so
+unscrubbed data never leaves it, with a fail-closed check that refuses to download
+anything while a single row still carries production contact data or a credential.
+Result: 76 friends, 12 cycles, 226 orders, 20 guest sub-orders, 486 ledger rows — the
+shape that shows up bugs a 1-friend seed cannot (an unbounded list, an N+1, a fold that
+is fine with 3 rows and unusable with 76).
+
+**Names are KEPT** (PO decision, 2026-08-31 — the screens read like the real thing).
+Phones, e-mails and Packeta addresses are generated deterministically from the row id, so
+a friend keeps one number across rebuilds. ⚠ Every credential is regenerated, and that
+list is longer than it looks: `friends.invite_code`, `guest_order_links.token`,
+`guest_orders.order_token` (since GR-T1 the order token alone IS the credential),
+`login_tokens`, `onboarding_links`, `friend_sessions`, `password_hash`, `google_sub`, and
+the admin/friends password rows. Without that, a template in someone's `/tmp` is a set of
+working keys to podpultovka.biz.
+
+```bash
+./e2e/make-test-db.sh                      # once, or whenever you want fresher data
+cp e2e/fixtures/prod-template.sqlite /tmp/gorifi-run.sqlite   # ⚠ per RUN
+# …start the server on the COPY, then `node seed.mjs` to add the suite's own fixtures
+```
+
+⚠ `seed.mjs` is still required on top: the template has no `E2E Test Cycle`/`E2ETester`,
+and the password columns are bcrypt hashes SQL cannot produce, so the script deletes them
+and `seed.mjs` re-creates them from `fixtures.js`. Running the suite against the
+**template itself** reintroduces exactly the accumulation this replaces.
+
 ## Run against a local prod-like backend
 
 ```bash
