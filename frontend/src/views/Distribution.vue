@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import BalanceBadge from '@/components/BalanceBadge.vue'
+import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -35,11 +36,47 @@ async function loadData() {
     const data = await api.getCycleDistribution(cycleId)
     cycle.value = data.cycle
     distribution.value = data.distribution
+    // After the cycle is known: the listing is filtered by cycle type. Non-blocking
+    // and swallowed into its own inline message — the picking sheet must still render
+    // (and stay printable) when only the pickup dropdown fails to load.
+    await loadPickupLocations()
   } catch (e) {
     error.value = e.message
   } finally {
     loading.value = false
   }
+}
+
+// ── Pickup-location correction (PO decision, 2026-09-02) ─────────────────────
+//
+// The second call site of `PickupLocationPicker.vue` — this is where the bags are
+// actually packed, so it is where a wrong pickup point costs time. Same route, same
+// component, same no-money guarantee as the orders tab.
+const pickupLocations = ref([])
+const pickupLocationsError = ref('')
+
+async function loadPickupLocations() {
+  try {
+    pickupLocations.value = await api.getPickupLocations(cycle.value?.type === 'bakery' ? 'bakery' : 'coffee')
+    pickupLocationsError.value = ''
+  } catch (e) {
+    pickupLocationsError.value = e.message
+  }
+}
+
+// ⚠ A synthetic row (a host with guest bags but no `orders` row, §Edge Cases) has
+// `order_id: null` — there is no order to carry a pickup location, exactly as there is
+// no whole-order `packed` flag. Packeta rows are excluded for the money reason.
+function canEditPickup(friend) {
+  return friend.has_own_order !== false && !!friend.order_id && !friend.packeta_address
+}
+
+// Patched in place, not via `loadData()`: a full reload here would also re-collapse
+// every guest fold and lose the admin's place in a long picking list.
+function onPickupUpdated(friend, updated) {
+  friend.pickup_location_id = updated.pickup_location_id
+  friend.pickup_location_note = updated.pickup_location_note
+  friend.pickup_location_name = updated.pickup_location_name
 }
 
 // Set page title
@@ -233,6 +270,15 @@ function printDistribution() {
         <AlertDescription>{{ error }}</AlertDescription>
       </Alert>
 
+      <!-- An empty dropdown and a failed load look identical on screen; say which it
+           was rather than let the admin conclude no places are configured. -->
+      <Alert v-if="pickupLocationsError" variant="destructive" class="mb-4 print:hidden" data-testid="dist-pickup-locations-error">
+        <AlertDescription class="text-sm">
+          Miesta vyzdvihnutia sa nepodarilo načítať: {{ pickupLocationsError }}. Zmena miesta
+          teraz nie je možná — obnovte stránku.
+        </AlertDescription>
+      </Alert>
+
       <div v-if="loading" class="text-center py-12 text-muted-foreground">Načítavam...</div>
 
       <div v-else class="space-y-4">
@@ -265,10 +311,32 @@ function printDistribution() {
                   >
                     Bez vlastnej objednávky
                   </Badge>
+                  <!-- ⚠ EDITABLE HERE TOO (PO decision, 2026-09-02) — this is the
+                       screen the bags are packed from, so it is where a wrong pickup
+                       point costs time. Saves on pick; see the picker's own header.
+                       ⚠ AND IT IS `print:hidden` WITH THE BADGE KEPT FOR PRINT: a
+                       printed picking sheet must state the place as TEXT, not render a
+                       dropdown box (the same rule as the guest folds' `hidden
+                       print:flex`). -->
+                  <PickupLocationPicker
+                    v-if="canEditPickup(friend)"
+                    class="print:hidden"
+                    testid-prefix="dist-pickup"
+                    :order-id="friend.order_id"
+                    :locations="pickupLocations"
+                    :location-id="friend.pickup_location_id"
+                    :location-name="friend.pickup_location_name || ''"
+                    :note="friend.pickup_location_note || ''"
+                    @updated="onPickupUpdated(friend, $event)"
+                  />
                   <Badge
                     v-if="friend.pickup_location_name || friend.pickup_location_note"
                     variant="outline"
-                    class="border-blue-400 text-blue-600 bg-blue-50"
+                    :data-testid="`dist-pickup-badge-${friend.id}`"
+                    :class="[
+                      'border-blue-400 text-blue-600 bg-blue-50',
+                      canEditPickup(friend) ? 'hidden print:inline-flex' : '',
+                    ]"
                   >
                     {{ friend.pickup_location_name || friend.pickup_location_note }}
                   </Badge>

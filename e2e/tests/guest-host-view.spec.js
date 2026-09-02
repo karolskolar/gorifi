@@ -623,10 +623,17 @@ test.describe('Regenerated link (the case GSO-T4 left open — CLOSED by module 
     const { host, cycle, product, link } = await scenario('regen')
     const created = await submitGuest(link.token, [{ product_id: product.id, variant: '250g', quantity: 1 }])
 
-    const regen = await ctx.post(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })
-    expect(regen.status()).toBe(200)
+    // ⚠ RETARGETED (PO decision, 2026-08-31 — FORCED). The regeneration is performed
+    // by the ADMIN: the HOST's own POST now answers 409 `reason:'has_orders'` because
+    // the line above created a live sub-order, so this fixture could no longer produce
+    // the retired token the test is about. The property under test does not move — a
+    // rotated token must resolve the existing sub-order under BOTH halves — and the
+    // actor that performs it is now the one a real host is told to contact, so the
+    // scenario is the current production path rather than a refused one.
+    const regen = await admin(`/api/guest-links/cycle/${cycle.id}/host/${host.id}/regenerate`, { method: 'post' })
+    expect(regen.status(), 'the admin is the escalation target for `has_orders`').toBe(200)
     const fresh = (await regen.json()).link
-    expect(fresh.id).toBe(link.id)
+    expect(fresh.id, 'UPDATE in place — never DELETE+INSERT, which would cascade the sub-order away').toBe(link.id)
     expect(fresh.token).not.toBe(link.token)
 
     const underNew = await ctx.get(`/api/guest/${fresh.token}/orders/${created.order.order_token}`)

@@ -262,13 +262,26 @@ create-if-missing:
 - No cycle-status gate, mirroring the host's own POST (guest-links.js:40-68 checks
   only existence) — a link for a non-open cycle is inert anyway (`resolveLink` 410s).
 
-**Explicit NON-capability (PO decision, verbatim intent):** the admin has **no
-regenerate and no deactivate/reactivate** on guest links. Revocation stays host-only
-(`PATCH /guest-links/:id`, `requireHost` + ownership). Reason: the host is the one who
-distributed the URL and the only person who knows who holds it — an admin regenerate
-would silently sever colleagues mid-order, and an admin *reactivate* would republish a
-link the host deliberately revoked after a leak. Any future admin route on this router
-that writes `token` or `active` violates this UC.
+**Explicit NON-capability — ⚠ AMENDED 2026-08-31 (PO decision, D12; see UC-GR-012).**
+As originally written this paragraph said the admin has **no regenerate and no
+deactivate/reactivate**. The regenerate half is **withdrawn**; the rest stands:
+
+- **The admin CAN regenerate**, via `POST /guest-links/cycle/:cycleId/host/:friendId/regenerate`
+  (UC-GR-012). ⚠ **Why the original reasoning no longer applies:** it was that an admin
+  regenerate "would silently sever colleagues mid-order". That was true only while a
+  guest's status URL resolved by the **(link, order) pair** — rotating the link half
+  killed her order URL, which IS the incident. Since UC-GR-001/002 (D1/D2) an order
+  resolves by `order_token` **alone**, so no regeneration by anyone can strand an
+  existing order. What regeneration still does is retire the ORDERING url, which is
+  precisely the deliberate act D12 wants gated behind an escalation.
+- **Deactivate/reactivate remain host-only** (`PATCH /guest-links/:id`, `requireHost` +
+  ownership), for the half of the reasoning that is untouched: an admin *reactivate*
+  would republish a link the host deliberately revoked after a leak, and the host is
+  the only person who knows who holds it.
+- **The invariant that replaces the old blanket rule:** no admin route on this router
+  may write **`active`**. The regenerate route writes `token` and nothing else, so a
+  revoked link stays revoked through an admin regeneration — it can never be used as a
+  back-door reactivate. The admin CREATE route still writes neither.
 
 **`ADMIN_ENDPOINTS` additions (the standing CLAUDE.md rule — UC-GR-010 item 1):**
 `GET /api/guest-links/cycle/1/all` and `POST /api/guest-links/cycle/1/host/1`.
@@ -583,6 +596,7 @@ never weakens the protected property, and cites the mandating UC in a comment.
 
 - `GET /api/guest-links/cycle/1/all`
 - `POST /api/guest-links/cycle/1/host/1`
+- `POST /api/guest-links/cycle/1/host/1/regenerate` (added by UC-GR-012 / D12)
 - `POST /api/guest-orders/1/cancel`
 
 ⚠ The new `/api/guest/o/…` routes are PUBLIC by design and must NOT join the list
@@ -828,6 +842,101 @@ sends — on a default-env run.
 
 ---
 
+## UC-GR-012 Regeneration is blocked while colleagues have live orders (Friend/host + Admin)
+
+**Goal:** PO instruction, verbatim (2026-08-31): *"ak už hosť objednal, priateľ by nemal
+byť schopný vygenerovať odkaz, ktorý vytvorenú objednávku zruší. V dialogu by mal mat
+napisane, ze novy odkaz nie je možné vygenerovať, kým existujú vytvorené objednávky. Ak
+chce aj tak nový odkaz vygenerovať, musí kontaktovať admina."*
+
+A host must not be able to invalidate an ordering link their colleagues are already
+using. The dialog says so, and points at the admin — who therefore has to be able to do
+it. **Amends D3 (see D12).**
+
+**1. Host route — `POST /api/guest-links/cycle/:cycleId` (`requireHost`).**
+
+- When a link already exists AND at least one **non-cancelled** sub-order hangs off it:
+  **409 `{ error, reason: 'has_orders', live_orders: <n> }`**. The Slovak error is
+  vy-form and names the escalation target ("…kontaktujte správcu").
+- ⚠ **The gate lives inside the `if (existing)` branch, so the CREATE path is untouched
+  by construction** — with no link row there is nothing for a sub-order to hang off.
+  Asserted, not argued: a refactor that hoists the count above the branch would break
+  first-time sharing for every host.
+- ⚠ **The refusal writes nothing** — the token does not move and `active` is untouched.
+  A 409 that had already rotated would be the worst of both worlds.
+- ⚠ **The live count is `linkTotals(linkId).count`** — the SHIPPED aggregate, whose
+  count already excludes cancelled rows via `guestOrderStatus()`. The status predicate
+  is **not re-inlined** (this repo already watched a hand-written copy of it drop the
+  `<> 'cancelled'` half). Consequence, and it is intended: **a cancelled sub-order does
+  NOT block.** It owes nothing, holds no stock and is nobody's pending hand-over, so the
+  host may rotate again — the gate is a state rule, never a one-way latch.
+- The handler stays **synchronous** (no `async`/`await`) — the standing `instances: 1`
+  atomicity rule (the GA-T8 lesson).
+
+**2. Admin route — `POST /api/guest-links/cycle/:cycleId/host/:friendId/regenerate`
+(`requireAdmin`).** The escalation target, exempt from the `has_orders` gate.
+
+- 404 unknown cycle; 404 unknown friend; **404 `reason:'no_link'`** when there is no link
+  for that (cycle, host). ⚠ It is **not** create-if-missing — that is the sibling route,
+  and one route doing both is how "regenerate" ends up minting links nobody asked for.
+- ⚠ **`UPDATE guest_order_links SET token = ?` — IN PLACE, never DELETE + INSERT.**
+  `guest_orders.link_id` CASCADES ON DELETE, so a re-insert would destroy every
+  sub-order under the link. *Verified by mutation:* swapping the UPDATE for DELETE+INSERT
+  makes the guest's own order URL **404** and empties `guest_orders`/`guest_order_items`
+  for that link — i.e. it recreates the incident this module exists to fix.
+- ⚠ **`active` is NEVER written** — the one asymmetry with the host's own regenerate,
+  which does set `active = 1`. A revoked link stays revoked (D3's surviving half).
+- ⚠ **No `inactive_host` gate**, deliberately diverging from the sibling create route.
+  The create gate exists because handing the admin a URL that 410s for every guest looks
+  like it worked; regeneration additionally **retires the old token**, and that half
+  works regardless of the host's `active` flag — refusing it would block the admin from
+  killing a leaked URL belonging to a deactivated host, the case where revocation matters
+  most.
+- Response `{ link, regenerated: true }` — the lean shape of the sibling admin create,
+  **not** the host POST's `{ link, regenerated, guest_orders, totals }`.
+
+**3. Dialog — `GuestShareDialog.vue`.** In the blocked state the affordance is
+**REPLACED by the explanation**, not disabled: a disabled button reads as "you may do
+this, later", and the host has nothing to wait for.
+
+- `div.field-help` with `data-testid="regen-blocked"` (DRAFT copy, PO sign-off — §OPEN):
+  **"Cez tento odkaz už máte {N} od kolegov, preto nový odkaz nie je možné vygenerovať.
+  Ak ho potrebujete, kontaktujte správcu."** `{N}` is the **accusative** via
+  `lib/plural.js` `ordersAccusativeLabel` (1 objednávku / 2-4 objednávky / 5+ objednávok)
+  — the case is what lets one verb form ("máte") carry any count.
+- The `regen-guidance` line (UC-GR-009 line 2) **yields** in this state — telling the host
+  when regeneration is right, while forbidding it, is a contradiction on screen.
+- The "Vygenerovať nový odkaz" button and the `.confirmbox` are both absent. **Deactivation
+  stays available** (revoking a leaked link is exactly what a host with live orders still
+  needs, and it strands nobody), and the URL stays copyable for colleagues who have not
+  ordered yet.
+- ⚠ **No new request.** The count is read from `totals.count` on the payloads the
+  component already fetches (GET/POST/PATCH all answer `{ link, guest_orders, totals }`)
+  — and from `totals`, **never** from `guest_orders`, whose rows carry `order_token`
+  (the standing "no token in the rendered HTML" pin). Same predicate as the server's
+  gate, so screen and route can never disagree. The `loadSeq` guard and the
+  one-instance-reused-across-cycles rules are untouched; `liveOrders` is cleared with
+  `link` on close.
+
+**4. Admin UI — `CycleDetail.vue` orders tab.** A per-host **"Nový odkaz"** control beside
+the existing "Hosťovský odkaz" copy button, with an inline confirm stating the consequence
+(DRAFT copy — §OPEN): **"Starý odkaz prestane prijímať nové objednávky. Už vytvorené
+objednávky kolegov zostanú funkčné."** / **"Áno, vygenerovať"** / **"Nie"**. Per-row
+`rowSeq` + pending (the GSO-T5 convention); the row is patched in place, preserving the
+listing's joined `host_name`/`host_active`. Still **no** admin deactivate/reactivate
+control.
+
+**Acceptance criteria:** a host with one live sub-order gets 409 `has_orders` and their
+token is unmoved; a first-time share still 201s; cancelling the only sub-order lets the
+host regenerate again; the admin regenerate rotates in place with every sub-order and
+item intact; end to end — guest orders → host refused → admin regenerates → her order URL
+still resolves under the retired link half, the new one and the canonical form, while
+`/g/:oldToken` and `POST /g/:oldToken/orders` both 404; the dialog renders the exact copy
+with a declining count and restores the affordance when the last order is cancelled; a
+revoked link is still revoked after an admin regeneration.
+
+---
+
 ## Deploy continuity (module-level requirement — PO, 2026-08-26)
 
 The module MUST be deployable **mid-open-cycle** without breaking anything guests or
@@ -862,7 +971,8 @@ because the PO made the property itself a requirement):
 |---|---|---|
 | D1 | The legacy pair form resolves by `order_token`; the link half is ignored (logged as `guest_orders.id` only, never tokens). | Strict pair + rely on the new form only — fails the incident: nobody migrates URLs already in messages/localStorage. |
 | D2 | `order_token` alone is a full credential (same generator/entropy as the link token, SEC-S2); the no-oracle property is restated as "unknown order token ⇒ uniform 404". | Treating the pair as extra security — it was availability-fragile (the incident) and added no entropy. |
-| D3 | Admin link powers are READ + CREATE only; regenerate/deactivate/reactivate stay host-only. | Full admin control — an admin regenerate severs colleagues silently; a reactivate republishes a deliberately revoked (leaked) link. |
+| D3 | ~~Admin link powers are READ + CREATE only; regenerate/deactivate/reactivate stay host-only.~~ **AMENDED 2026-08-31 (PO) — see D12. Admin powers are READ + CREATE + REGENERATE; only deactivate/reactivate stay host-only.** | Full admin control — an admin regenerate severs colleagues silently; a reactivate republishes a deliberately revoked (leaked) link. ⚠ The first half of that reasoning is now SPENT (D12); the second half is what still holds. |
+| D12 | **A host may not regenerate their share link while live (non-cancelled) guest sub-orders exist under it — 409 `reason:'has_orders'`; the ADMIN can, via `POST /guest-links/cycle/:cycleId/host/:friendId/regenerate`.** (PO, 2026-08-31: *"ak už hosť objednal, priateľ by nemal byť schopný vygenerovať odkaz, ktorý vytvorenú objednávku zruší… musí kontaktovať admina."*) See UC-GR-012. | (a) A UI-only block — the host could still reach the endpoint, and "contact the admin" would name a capability the admin did not have (the GSO-T5 dead end this module exists to remove). (b) Blocking regeneration outright — a leaked link must stay revocable by *somebody*. (c) Keeping D3 intact and telling the host to deactivate instead — deactivation is a different act with a different result, and it does not give the host a working link to keep sharing. |
 | D4 | Admin cancel has NO paid blockade; paid+cancelled lands in the existing refund queue, intentionally. | Mirroring the host's paid-409 — that guard exists to force escalation TO the admin; blocking the admin too recreates the dead end. |
 | D5 | Admin cancel on a non-open cycle ⇒ 409 `reason:'closed'`, same as the host's DELETE (recommendation from the raw source, adopted). | Allowing post-lock cancel — the coffee is already bought; the refund workflow (`paid` + refund queue) covers the money without falsifying the order record. |
 | D6 | `order_token` joins the shared `GUEST_ORDER_FIELDS` list (one list, every host/admin surface) rather than per-surface picks. | Per-surface exposure — the one-list rule exists because per-surface picks drift. |
@@ -956,6 +1066,16 @@ because the PO made the property itself a requirement):
   `COPY_TITLE` in `guest-order-recovery.spec.js` plus the literals in
   `GuestSubOrders.vue`. They shipped as inline literals and were hoisted during the
   review — the precedent only helps if every row actually follows it.
+  ⚠ **UC-GR-012 / D12 adds three more strings to the same batch** (2026-08-31), all
+  hoisted the same way: the dialog's `regen-blocked` line (`REGEN_BLOCKED(n)` in
+  `guest-order-recovery.spec.js` + the `regenerateBlockedCopy` computed in
+  `GuestShareDialog.vue`, with the declension in `lib/plural.js`
+  `ordersAccusativeLabel`), the admin orders-tab regenerate confirm ("Starý odkaz
+  prestane prijímať nové objednávky. Už vytvorené objednávky kolegov zostanú funkčné." +
+  "Áno, vygenerovať" / "Nie" / the "Nový odkaz" trigger label), and the **server's** 409
+  `has_orders` message in `routes/guest-links.js` — ⚠ that last one is the only drafted
+  string in this module that lives in BACKEND code, so a sign-off grep confined to the
+  frontend would miss it.
 - `OPEN:` (raised by the GR-T7 review, finding 3 — a COPY question, needs a PO
   answer because the fix is a spec amendment, not an implementation choice) on a
   **deactivated** link both UC-GR-009 lines still render, so "Ten istý odkaz platí

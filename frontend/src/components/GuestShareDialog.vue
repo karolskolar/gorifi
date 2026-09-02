@@ -14,6 +14,7 @@
 // behaviour the bespoke `document.execCommand` branch used to provide.
 import { ref, computed, watch } from 'vue'
 import api from '../api'
+import { ordersAccusativeLabel } from '@/lib/plural'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
@@ -31,6 +32,35 @@ const saving = ref(false)
 const error = ref('')
 const link = ref(null) // { id, token, active, ... } or null when not shared yet
 const confirmRegenerate = ref(false)
+
+// How many LIVE (non-cancelled) colleague sub-orders hang off this link. Drives the
+// regeneration block below (PO decision, 2026-08-31).
+//
+// ⚠ READ FROM `totals.count`, NEVER FROM `guest_orders`. The payload does carry the
+// sub-order rows, and since GR-T5 each one carries its `order_token` — which is why
+// the standing rule two comments down says this component keeps only `data.link` and
+// must not start reading `guest_orders`. `totals` is an aggregate of two numbers and
+// carries no credential, so counting from it satisfies the PO's requirement without
+// touching that pin (`share-dialog.spec.js:611`: no token in the rendered HTML).
+//
+// ⚠ NO EXTRA REQUEST, by construction: every response this component already reads
+// — the GET, the POST and the PATCH — answers with `{ link, guest_orders, totals }`,
+// so the count is refreshed from whatever the last call returned.
+//
+// `totals.count` is the SERVER's live count (helpers/guest-orders.js `subOrderTotals`
+// filters on `guestOrderStatus() !== 'cancelled'`), which is the same predicate the
+// backend's 409 gate uses — so what the dialog says and what the route enforces can
+// never disagree.
+const liveOrders = ref(0)
+
+// The PO's rule: a host may not regenerate a link colleagues are already ordering
+// through. The backend refuses it with 409 `reason:'has_orders'`; the dialog does not
+// offer an action that is going to be refused, and says why instead.
+const regenerateBlocked = computed(() => liveOrders.value > 0)
+
+const regenerateBlockedCopy = computed(() =>
+  `Cez tento odkaz už máte ${ordersAccusativeLabel(liveOrders.value)} od kolegov, preto nový odkaz nie je možné vygenerovať. Ak ho potrebujete, kontaktujte správcu.`
+)
 
 // navigator.share exists on mobile browsers only — the copy row is the
 // fallback everywhere else, so the share BUTTON is absent rather than relabeled
@@ -74,6 +104,9 @@ watch(() => props.open, async (isOpen) => {
   error.value = ''
   confirmRegenerate.value = false
   link.value = null
+  // Cleared with `link` for the same reason: a reopen must never read the previous
+  // cycle's order count, which would block (or unblock) regeneration on the wrong row.
+  liveOrders.value = 0
   saving.value = false
   loading.value = false
   if (!isOpen || !props.cycleId) return
@@ -83,6 +116,7 @@ watch(() => props.open, async (isOpen) => {
     const data = await api.getGuestLink(props.cycleId)
     if (seq !== loadSeq) return
     link.value = data.link
+    liveOrders.value = data.totals?.count || 0
   } catch (e) {
     if (seq !== loadSeq) return
     error.value = e.message
@@ -101,6 +135,7 @@ async function saveLink() {
     const data = await api.createGuestLink(props.cycleId)
     if (seq !== loadSeq) return
     link.value = data.link
+    liveOrders.value = data.totals?.count || 0
     confirmRegenerate.value = false
   } catch (e) {
     if (seq !== loadSeq) return
@@ -121,6 +156,7 @@ async function toggleActive() {
     const data = await api.setGuestLinkActive(targetId, nextActive)
     if (seq !== loadSeq) return
     link.value = data.link
+    liveOrders.value = data.totals?.count || 0
   } catch (e) {
     if (seq !== loadSeq) return
     error.value = e.message
@@ -143,7 +179,7 @@ async function nativeShare() {
   try {
     await navigator.share({
       title: 'Objednávka Podpultovka',
-      text: `Pridajte sa k mojej objednávke — ${props.cycleName || 'objednávkový cyklus'}`,
+      text: `Pridajte sa k mojej objednávke - ${props.cycleName || 'objednávkový cyklus'}`,
       url: guestUrl.value
     })
   } catch (e) {
@@ -214,7 +250,7 @@ async function nativeShare() {
              host may want to copy it before reactivating. -->
         <div v-if="!link.active" class="banner warn slim">
           <span class="dot"></span>
-          <span><b>Odkaz je deaktivovaný</b> — kolegovia si cez neho nemôžu objednať.</span>
+          <span><b>Odkaz je deaktivovaný</b> - kolegovia si cez neho nemôžu objednať.</span>
         </div>
 
         <!-- `value-testid` is the approved UC-DS-011 extension: the testid sits
@@ -234,7 +270,7 @@ async function nativeShare() {
              is a strict-mode violation in an immutable spec. `.field-help` is
              A10-covered, so no line-height fix-up is needed and A10 does not
              widen. Copy is DRAFT pending PO sign-off (14 §OPEN). -->
-        <div class="field-help" data-testid="share-standing-copy">Ten istý odkaz platí pre všetkých kolegov — každý si cez neho vytvorí vlastnú objednávku. Pre ďalšieho kolegu nevytvárajte nový odkaz.</div>
+        <div v-if="link.active" class="field-help" data-testid="share-standing-copy">Ten istý odkaz platí pre všetkých kolegov - každý si cez neho vytvorí vlastnú objednávku. Pre ďalšieho kolegu nevytvárajte nový odkaz.</div>
 
         <!-- Native share sheet — rendered only where navigator.share exists. -->
         <button
@@ -253,7 +289,24 @@ async function nativeShare() {
              verbatim by `share-dialog.spec.js:417-418`. "dostal" refers to
              *odkaz* (a third-party noun), not the reader, so the vy-form register
              pin holds. Copy is DRAFT pending PO sign-off (14 §OPEN). -->
-        <div class="field-help" data-testid="regen-guidance">Nový odkaz vygenerujte len vtedy, ak sa pôvodný dostal k nesprávnym ľuďom — kolegom potom treba poslať nový.</div>
+        <div v-if="!regenerateBlocked" class="field-help" data-testid="regen-guidance">Nový odkaz vygenerujte len vtedy, ak sa pôvodný dostal k nesprávnym ľuďom - kolegom potom treba poslať nový.</div>
+
+        <!-- ⚠ THE REGENERATION BLOCK (PO decision, 2026-08-31). Once a colleague has
+             ordered through this link, regenerating it would stop everyone who has
+             NOT ordered yet from reaching the offer — so the affordance is REPLACED
+             by the reason, not merely disabled: a disabled button still reads as "you
+             may do this, later", and the host has nothing to wait for.
+             The guidance line above is swapped out with it, because "regenerate only
+             on a leak" would be telling the host to do something this state forbids.
+             Deactivation stays available — revoking a leaked link is exactly what a
+             host with live orders still needs, and it strands nobody (existing orders
+             resolve by `order_token`, §UC-GR-001/002).
+             ⚠ `div.field-help` for the §UC-GR-009 placement reason: `p.sub` is pinned
+             as a SINGLE element in an immutable spec, and `.field-help` is A10-covered
+             so no line-height fix-up is needed and A10 does not widen.
+             Copy is DRAFT pending PO sign-off (14 §OPEN) — mirrored as a constant in
+             `guest-order-recovery.spec.js`, so sign-off stays a two-place edit. -->
+        <div v-else class="field-help" data-testid="regen-blocked">{{ regenerateBlockedCopy }}</div>
 
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <!-- Deactivation is REVERSIBLE — the same button toggles back. -->
@@ -264,7 +317,7 @@ async function nativeShare() {
             @click="toggleActive"
           >{{ link.active ? 'Deaktivovať odkaz' : 'Znova aktivovať' }}</button>
           <button
-            v-if="!confirmRegenerate"
+            v-if="!confirmRegenerate && !regenerateBlocked"
             type="button"
             class="btn ghost sm"
             @click="confirmRegenerate = true"
@@ -275,7 +328,12 @@ async function nativeShare() {
              orders and MUST NOT be softened: the server UPDATEs the token on the
              existing row (never DELETE+INSERT), so every sub-order already
              hanging off `guest_orders.link_id` survives. -->
-        <div v-if="confirmRegenerate" class="confirmbox">
+        <!-- ⚠ `&& !regenerateBlocked` is not redundant with the button's own guard.
+             The count refreshes from the POST/PATCH responses, so a colleague's order
+             can land (via a deactivate/reactivate round-trip) while this box is
+             already open — and then the box would still offer a confirm the server
+             is going to 409. The box closes itself instead. -->
+        <div v-if="confirmRegenerate && !regenerateBlocked" class="confirmbox">
           <span><b>Starý odkaz prestane fungovať.</b> Objednávky, ktoré vám kolegovia už poslali, zostanú zachované.</span>
           <div class="row">
             <button

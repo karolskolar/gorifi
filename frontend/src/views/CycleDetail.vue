@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watchEffect } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -12,6 +12,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import BalanceBadge from '@/components/BalanceBadge.vue'
+import GuestLinkRowControls from '@/components/GuestLinkRowControls.vue'
+import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -364,6 +366,10 @@ async function loadAll() {
     planNote.value = cycleData.plan_note || ''
     parcelEnabled.value = !!cycleData.parcel_enabled
     parcelFee.value = cycleData.parcel_fee || 0
+    // Same non-blocking contract, and it has to run AFTER `cycle.value` is set: the
+    // listing is filtered by cycle type, exactly as the friend's own order form
+    // filters it (`for_coffee` / `for_bakery`).
+    await loadPickupLocations()
     // Non-blocking: the orders tab still renders (with the nested sub-orders that
     // came with `ordersData`) if only the money overview fails.
     await loadGuestUnpaid()
@@ -376,6 +382,45 @@ async function loadAll() {
   } finally {
     loading.value = false
   }
+}
+
+// ── Pickup-location correction (PO decision, 2026-09-02) ─────────────────────
+//
+// `orders.pickup_location_id` / `_note` used to be write-once, set by the friend at
+// submit time, so a wrong or since-changed place could not be fixed and the packing
+// sheet disagreed with reality. `PATCH /api/orders/:id/pickup` is the correction and
+// `PickupLocationPicker.vue` owns the control (and its own pending/rollback state).
+//
+// ⚠ The picker is offered on SUBMITTED, non-Packeta rows only — the route refuses the
+// rest, and a control that can only fail is worse than none (the `/:id/paid` lesson).
+const pickupLocations = ref([])
+const pickupLocationsError = ref('')
+
+async function loadPickupLocations() {
+  try {
+    pickupLocations.value = await api.getPickupLocations(isBakery.value ? 'bakery' : 'coffee')
+    pickupLocationsError.value = ''
+  } catch (e) {
+    // Reported inline: an empty listing and a failed load look identical on screen,
+    // and "no pickup locations are configured" is the wrong conclusion to draw from a
+    // network error — it would send the admin to Settings to re-create places that
+    // already exist.
+    pickupLocationsError.value = e.message
+  }
+}
+
+// A submitted order that is not going out by Packeta. Packeta rows keep their
+// read-only red badge: moving delivery method moves `delivery_fee`, i.e. money.
+function canEditPickup(order) {
+  return isOrdered(order) && !!order.id && !order.packeta_address
+}
+
+// Patched in place from the mutation response rather than reloading a 33-row table
+// (the GSO-T1 per-row pattern). `order` is the reactive row object itself.
+function onPickupUpdated(order, updated) {
+  order.pickup_location_id = updated.pickup_location_id
+  order.pickup_location_note = updated.pickup_location_note
+  order.pickup_location_name = updated.pickup_location_name
 }
 
 // Guest sub-orders, admin side (§UC-GSO-009..010) ----------------------------
@@ -547,6 +592,125 @@ async function createHostLink(order) {
     clearRowFlag(guestLinkPending, friendId)
   }
 }
+
+// ⚠ THE ADMIN REGENERATE (D3 as AMENDED — PO decision, 2026-08-31). The HOST's own
+// regenerate now refuses while live colleague orders exist (409
+// `reason:'has_orders'`) and their dialog says "kontaktujte správcu", so this control
+// is that escalation target. Without it the host-side copy points at a dead end —
+// the GSO-T5 mistake module 14 exists to remove.
+//
+// What it does and does not do, because the confirm copy below promises both:
+//   · the OLD `/g/:token` stops taking NEW orders (`resolveLink` 404s it);
+//   · every colleague order ALREADY placed keeps working — they resolve by
+//     `order_token` alone (§UC-GR-001/002), which is what made amending D3 safe;
+//   · `active` is NOT touched server-side, so a revoked link stays revoked. This is
+//     not a back-door reactivate, and there is still no admin deactivate/reactivate.
+//
+// Per-row `rowSeq` + pending, the GSO-T5 convention — two rows may be regenerated
+// concurrently and a superseded response must not land.
+const guestLinkRegenConfirmId = ref(null)
+const guestLinkRegenPending = ref({})
+const guestLinkRegenRowSeq = new Map()
+
+async function regenerateHostLink(order) {
+  const friendId = order.friend_id
+  if (!friendId || guestLinkRegenPending.value[friendId]) return
+  const seq = (guestLinkRegenRowSeq.get(friendId) || 0) + 1
+  guestLinkRegenRowSeq.set(friendId, seq)
+  guestLinkRegenPending.value = { ...guestLinkRegenPending.value, [friendId]: true }
+  setRowMessage(guestLinkErrors, friendId, '')
+  try {
+    const data = await api.regenerateGuestLinkForHost(cycleId.value, friendId)
+    if (guestLinkRegenRowSeq.get(friendId) !== seq) return
+    if (!data.link) return
+    // Patched in place, preserving the joined columns the regenerate response does
+    // not carry (`host_name` / `host_active` come from the LISTING's JOIN). Merging
+    // over the existing row rather than rebuilding it is what keeps the "neaktívny"
+    // marker truthful after a rotation — the server left `active` alone, so the row
+    // must too.
+    guestLinks.value = guestLinks.value.map((l) => (
+      l.host_friend_id === friendId ? { ...l, ...data.link } : l
+    ))
+    guestLinkRegenConfirmId.value = null
+  } catch (e) {
+    if (guestLinkRegenRowSeq.get(friendId) !== seq) return
+    setRowMessage(guestLinkErrors, friendId, e.message)
+  } finally {
+    clearRowFlag(guestLinkRegenPending, friendId)
+  }
+}
+
+// ── "Hosťovské odkazy (všetci priatelia)" — the fold under the orders table ────
+//
+// THE GAP IT CLOSES (PO-approved, 2026-08-31). `listedOrders` above renders only
+// friends who ordered, have a draft, or host guests. On the live September cycle that
+// is 33 of 76 active friends — so for 43 friends the admin could neither SEE nor
+// CREATE a share link, which is precisely the "lost the link before anyone used it"
+// case §UC-GR-008 recorded as an accepted residual: a host who shared, ordered
+// nothing himself, and whose colleagues have not ordered YET is invisible on the one
+// screen that exists to make links reachable. One such friend on production already
+// HAS a link the admin cannot see.
+//
+// ⚠ IT IS A FOLD, NOT A WIDER TABLE. Widening `listedOrders` was rejected by the PO:
+// 76 rows of which 43 are empty would wreck the sheet the admin packs and orders
+// from, and it would move `guest-admin-view.spec.js`'s row counts as a side effect.
+//
+// ⚠ NO NEW ENDPOINT AND NO NEW REQUEST. `GET /api/orders/cycle/:cycleId` already
+// returns ONE ROW PER ACTIVE FRIEND (placeholder rows `status:'none'`,
+// orders.js:634-660), and `guestLinks` already holds every link of the cycle. The
+// fold is built from the two payloads that are already on screen — the same
+// client-side join by `host_friend_id`, the same `guestLinkByHost` map.
+//
+// ⚠ IT RENDERS NO GUEST DATA AT ALL — no sub-orders, no `order_token`, no share
+// token (§UC-GR-007's promoted DOM rule; pinned by a whole-document `outerHTML`
+// assertion over the EXPANDED fold).
+const allFriendsLinksOpen = ref(false)
+const allFriendsLinksQuery = ref('')
+
+// Diacritic-insensitive, because at 76 rows the admin types "Skolar" for "Školár"
+// and a case-only match would answer "nobody by that name".
+const foldNormalize = (s) => String(s || '')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+
+// Every ACTIVE friend, name-sorted. The payload lists ordered friends first and
+// placeholders after, so the sort is what makes a 76-row list scannable.
+// (`orders` carries exactly one row per active friend — real order or placeholder —
+// so no de-duplication is needed; a deactivated friend is absent from the payload
+// entirely, and so from this fold.)
+const allFriendsRows = computed(() => orders.value
+  .filter((o) => o.friend_id)
+  .slice()
+  .sort((a, b) => String(a.friend_name || '').localeCompare(String(b.friend_name || ''), 'sk')))
+
+const allFriendsFiltered = computed(() => {
+  const q = foldNormalize(allFriendsLinksQuery.value).trim()
+  if (!q) return allFriendsRows.value
+  return allFriendsRows.value.filter((o) => foldNormalize(o.friend_name).includes(q))
+})
+
+// Header counts — the answer to "who is still missing a link" without expanding.
+const allFriendsLinkStats = computed(() => {
+  let withLink = 0
+  let dead = 0
+  for (const o of allFriendsRows.value) {
+    const link = guestLinkByHost.value.get(o.friend_id)
+    if (!link) continue
+    withLink++
+    if (isHostLinkDead(link)) dead++
+  }
+  return { total: allFriendsRows.value.length, withLink, dead }
+})
+
+// ⚠ The fold's own state must not survive a cycle change. The view has no `cycleId`
+// watcher today (`loadAll()` runs only in `onMounted`, see the `loadGuestLinks`
+// note), so a future in-SPA cycle→cycle navigation would keep the fold open with a
+// stale search term against another cycle's links. Reset only the LOCAL UI state —
+// deliberately no refetch here, since adding one would change this view's shipped
+// load behaviour.
+watch(() => cycleId.value, () => {
+  allFriendsLinksOpen.value = false
+  allFriendsLinksQuery.value = ''
+})
 
 // Two independent copy flips (a friend row's ORDERING link, a sub-order row's
 // per-guest STATUS link) — separate refs, so copying a share link never flashes
@@ -1649,6 +1813,23 @@ function getStatusVariant(status) {
             </AlertDescription>
           </Alert>
 
+          <!-- Same contract as the listing above: an empty pickup dropdown and a
+               failed load are indistinguishable on screen, and the wrong conclusion
+               ("no places are configured") sends the admin to Settings to re-create
+               places that already exist.
+               ⚠ A SIBLING ABOVE the v-if/v-else-if/v-else chain, same rule. -->
+          <Alert
+            v-if="pickupLocationsError"
+            variant="destructive"
+            class="mb-4"
+            data-testid="pickup-locations-error"
+          >
+            <AlertDescription class="text-sm">
+              Miesta vyzdvihnutia sa nepodarilo načítať: {{ pickupLocationsError }}. Zmena
+              miesta teraz nie je možná — obnovte stránku.
+            </AlertDescription>
+          </Alert>
+
           <!-- Guest money overview (§UC-GSO-010). Guests pay the admin directly, so
                this is the receivables list: the payment reference is what matches an
                incoming bank transfer to one sub-order.
@@ -1875,39 +2056,27 @@ function getStatusVariant(status) {
                            nested guest rows' and the footer's.
                            ⚠ The token is composed in JS at click time — nothing here
                            binds it into markup. -->
-                      <div class="mt-1 flex flex-wrap items-center gap-2 font-normal">
-                        <template v-if="hostLink(order)">
-                          <button
-                            type="button"
-                            class="text-xs text-primary underline underline-offset-2 hover:no-underline"
-                            :data-testid="`host-guest-link-${order.friend_id}`"
-                            @click="copyHostLink(order)"
-                          >{{ copiedHostLinkId === order.friend_id ? 'Skopírované!' : 'Hosťovský odkaz' }}</button>
-                          <!-- ⚠ MARKED, not silently offered as if it worked: a revoked
-                               link (or one under a deactivated host) 410s for every
-                               guest. D3 keeps reactivation host-only — the person who
-                               distributed the URL is the only one who knows who holds
-                               it — so this row states the fact and offers no control. -->
-                          <span
-                            v-if="isHostLinkDead(hostLink(order))"
-                            class="text-xs text-muted-foreground"
-                            :data-testid="`host-guest-link-inactive-${order.friend_id}`"
-                          >neaktívny</span>
-                        </template>
-                        <button
-                          v-else
-                          type="button"
-                          class="text-xs text-primary underline underline-offset-2 hover:no-underline disabled:opacity-50 disabled:no-underline"
-                          :disabled="!!guestLinkPending[order.friend_id]"
-                          :data-testid="`host-guest-link-create-${order.friend_id}`"
-                          @click="createHostLink(order)"
-                        >{{ guestLinkPending[order.friend_id] ? 'Vytváram...' : 'Vytvoriť hosťovský odkaz' }}</button>
-                        <span
-                          v-if="guestLinkErrors[order.friend_id]"
-                          class="text-xs text-destructive"
-                          :data-testid="`host-guest-link-error-${order.friend_id}`"
-                        >{{ guestLinkErrors[order.friend_id] }}</span>
-                      </div>
+                      <!-- ⚠ ONE HOME for this cluster (`GuestLinkRowControls.vue`) —
+                           the SAME component the "všetci priatelia" fold below the
+                           table renders, with its own testid namespace. Extracted
+                           when the fold was added: two copies of a money-adjacent
+                           control drift, and the shipped `host-guest-link*` testids
+                           and copy are what this surface is pinned on. -->
+                      <GuestLinkRowControls
+                        class="mt-1"
+                        :friend-id="order.friend_id"
+                        :link="hostLink(order)"
+                        :copied="copiedHostLinkId === order.friend_id"
+                        :create-pending="!!guestLinkPending[order.friend_id]"
+                        :regen-pending="!!guestLinkRegenPending[order.friend_id]"
+                        :confirm-open="guestLinkRegenConfirmId === order.friend_id"
+                        :error="guestLinkErrors[order.friend_id] || ''"
+                        @copy="copyHostLink(order)"
+                        @create="createHostLink(order)"
+                        @regenerate="regenerateHostLink(order)"
+                        @open-confirm="guestLinkRegenConfirmId = order.friend_id"
+                        @close-confirm="guestLinkRegenConfirmId = null"
+                      />
                     </TableCell>
                     <TableCell class="text-right">
                       {{ formatPrice(isOrdered(order) ? (order.total || 0) + (order.delivery_fee || 0) : 0) }}
@@ -1936,8 +2105,27 @@ function getStatusVariant(status) {
                         >
                           {{ order.status === 'submitted' ? 'Odoslane' : order.status === 'none' ? 'Neobjednane' : 'Rozpracovane' }}
                         </Badge>
+                        <!-- ⚠ THE PILL IS A `<select>` NOW, not a badge (PO decision,
+                             2026-09-02): friends pick the wrong pickup point and the
+                             point changes afterwards, so the admin needs to name the
+                             FINAL one before packing. Same colours as the badge it
+                             replaces — blue = a configured location, grey = the
+                             friend's "Iné" note — so the table reads as before at
+                             rest. Saves on pick; no modal, no Uložiť.
+                             A Packeta row falls through to the read-only red badge
+                             below: delivery METHOD is a money change (delivery_fee)
+                             and this control deliberately cannot make one. -->
+                        <PickupLocationPicker
+                          v-if="canEditPickup(order)"
+                          :order-id="order.id"
+                          :locations="pickupLocations"
+                          :location-id="order.pickup_location_id"
+                          :location-name="order.pickup_location_name || ''"
+                          :note="order.pickup_location_note || ''"
+                          @updated="onPickupUpdated(order, $event)"
+                        />
                         <Badge
-                          v-if="order.pickup_location_name"
+                          v-else-if="order.pickup_location_name"
                           variant="outline"
                           class="border-blue-400 text-blue-600 bg-blue-50"
                         >
@@ -2092,7 +2280,7 @@ function getStatusVariant(status) {
                                  cancels a paid order knowingly: the money does not
                                  vanish, it moves to "Na vrátenie" below. -->
                             <p v-if="sub.paid" class="font-medium">
-                              Objednávka je zaplatená — po zrušení sa zobrazí medzi platbami na vrátenie.
+                              Objednávka je zaplatená - po zrušení sa zobrazí medzi platbami na vrátenie.
                             </p>
                             <p :class="sub.paid ? 'mt-0.5' : ''">
                               Objednávka hosťa sa zruší. Hosť ju uvidí ako zrušenú a už si ju nebude môcť upraviť.
@@ -2251,6 +2439,118 @@ function getStatusVariant(status) {
                 </TableRow>
               </tfoot>
             </Table>
+          </Card>
+
+          <!-- ══ Hosťovské odkazy (všetci priatelia) ═════════════════════════════
+               PO decision 2026-08-31 — the residual §UC-GR-008 recorded ("a host who
+               has a link, has not ordered themselves, and whose colleagues have not
+               ordered yet is absent from this tab") closed as a FOLD, not by widening
+               the table above: on the live September cycle 43 of 76 active friends
+               have no activity, and 43 empty rows would wreck the sheet the admin
+               packs and orders from.
+
+               ⚠ A SIBLING **BELOW** the v-if / v-else-if / v-else chain of the two
+               order tables — never between its links. An independent `v-if` slipped
+               into that chain breaks it and BOTH tables silently stop rendering; see
+               the same warning at the `guest-unpaid-overview` card above, which is a
+               sibling ABOVE for exactly this reason.
+
+               ⚠ Collapsed by default: this is a lookup tool ("forward X their link"),
+               not part of the packing sheet, and 76 rows expanded on load would push
+               the tables off screen.
+
+               ⚠ No guest data is rendered here at all — no sub-orders, no
+               `order_token`, no share token. Both URLs are composed in JS at click
+               time (§UC-GR-007's promoted rule). -->
+          <Card class="mt-4" data-testid="all-friends-guest-links">
+            <CardContent class="p-4">
+              <button
+                type="button"
+                class="w-full flex items-start gap-2 text-left"
+                :aria-expanded="allFriendsLinksOpen ? 'true' : 'false'"
+                data-testid="all-friends-guest-links-toggle"
+                @click="allFriendsLinksOpen = !allFriendsLinksOpen"
+              >
+                <svg
+                  class="w-4 h-4 mt-0.5 shrink-0 transition-transform text-muted-foreground"
+                  :class="{ 'rotate-90': allFriendsLinksOpen }"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                </svg>
+                <span class="min-w-0">
+                  <span class="block text-sm font-medium">Hosťovské odkazy (všetci priatelia)</span>
+                  <span class="block text-xs text-muted-foreground" data-testid="all-friends-guest-links-stats">
+                    Odkaz má {{ allFriendsLinkStats.withLink }} z {{ allFriendsLinkStats.total }} priateľov<template v-if="allFriendsLinkStats.dead > 0">, z toho neaktívnych: {{ allFriendsLinkStats.dead }}</template>
+                  </span>
+                </span>
+              </button>
+
+              <div v-if="allFriendsLinksOpen" class="mt-3" data-testid="all-friends-guest-links-body">
+                <p class="text-xs text-muted-foreground mb-3 max-w-3xl">
+                  Tu je každý aktívny priateľ - aj ten, ktorý si sám nič neobjednal. Odkaz mu môžete
+                  vytvoriť alebo skopírovať a poslať, aby cez neho objednávali jeho kolegovia.
+                </p>
+
+                <!-- ⚠ A SEARCH BOX IS NOT A NICETY AT THIS SCALE. The admin's task is
+                     "friend X lost their link"; scrolling 76 name rows to find one is
+                     the wall this fold would otherwise be. -->
+                <Input
+                  v-model="allFriendsLinksQuery"
+                  type="search"
+                  class="mb-3 max-w-xs"
+                  aria-label="Hľadať priateľa"
+                  placeholder="Hľadať priateľa"
+                  data-testid="all-friends-guest-links-search"
+                />
+
+                <div v-if="allFriendsRows.length === 0" class="text-sm text-muted-foreground">
+                  Žiadni aktívni priatelia.
+                </div>
+                <div
+                  v-else-if="allFriendsFiltered.length === 0"
+                  class="text-sm text-muted-foreground"
+                  data-testid="all-friends-guest-links-empty"
+                >
+                  Žiadny priateľ nevyhovuje hľadaniu.
+                </div>
+                <!-- ⚠ WIDTH-CAPPED ON PURPOSE. Full-width rows put the name and its
+                     action ~1200px apart on a desktop admin screen, so scanning 76 of
+                     them means crossing the viewport once per row. -->
+                <div v-else class="divide-y max-w-3xl">
+                  <div
+                    v-for="row in allFriendsFiltered"
+                    :key="`allf-${row.friend_id}`"
+                    class="flex flex-wrap items-center justify-between gap-2 py-2"
+                    :data-testid="`all-friends-row-${row.friend_id}`"
+                  >
+                    <span class="text-sm font-medium min-w-0 break-words">{{ row.friend_name }}</span>
+                    <!-- ⚠ THE SAME COMPONENT as the table row above, with its own
+                         testid namespace so one friend can be rendered on both
+                         surfaces at once. All mutation state is shared per friend
+                         (per-row `rowSeq` + pending), so a create started here shows
+                         as pending in the table row too. -->
+                    <GuestLinkRowControls
+                      :friend-id="row.friend_id"
+                      :link="hostLink(row)"
+                      testid-prefix="all-friends-link"
+                      :copied="copiedHostLinkId === row.friend_id"
+                      :create-pending="!!guestLinkPending[row.friend_id]"
+                      :regen-pending="!!guestLinkRegenPending[row.friend_id]"
+                      :confirm-open="guestLinkRegenConfirmId === row.friend_id"
+                      :error="guestLinkErrors[row.friend_id] || ''"
+                      @copy="copyHostLink(row)"
+                      @create="createHostLink(row)"
+                      @regenerate="regenerateHostLink(row)"
+                      @open-confirm="guestLinkRegenConfirmId = row.friend_id"
+                      @close-confirm="guestLinkRegenConfirmId = null"
+                    />
+                  </div>
+                </div>
+              </div>
+            </CardContent>
           </Card>
         </TabsContent>
 

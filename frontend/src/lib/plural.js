@@ -14,6 +14,20 @@ export function colleaguesLabel(count) {
   return `${n} kolegov`
 }
 
+// 1 objednávku / 2-4 objednávky / 5+ objednávok — the ACCUSATIVE case, and the case
+// is the point. The one sentence that prints this puts it after "máte"
+// ("Cez tento odkaz už máte 2 objednávky od kolegov" — GuestShareDialog's
+// regeneration block), and the accusative is what lets that sentence carry ANY count
+// with a single verb form. The nominative would drag the verb into the declension
+// too ("existuje 1 / existujú 2 / existuje 5"), turning a three-branch rule into a
+// six-branch one — which is the mistake this module exists to prevent.
+export function ordersAccusativeLabel(count) {
+  const n = Number(count) || 0
+  if (n === 1) return '1 objednávku'
+  if (n >= 2 && n <= 4) return `${n} objednávky`
+  return `${n} objednávok`
+}
+
 // 1 položka / 2-4 položky / 5+ položiek — the cart-line count in the `.cartbar`
 // fold's own label. 0 takes the same form as 5+ ("0 položiek"), which is the
 // correct Slovak genitive plural and not a fallback.

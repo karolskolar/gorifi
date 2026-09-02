@@ -587,7 +587,7 @@ router.get('/:token', guestReadLimiter, (req, res) => {
 //      check-then-write race. The send fires strictly AFTER the insert
 //      transaction has committed AND after the response has gone out.
 
-const ORDER_CONFIRMATION_SUBJECT = 'Potvrdenie objednávky – Podpultovka';
+const ORDER_CONFIRMATION_SUBJECT = 'Potvrdenie objednávky - Podpultovka';
 
 // ⚠ DRAFT copy, PO sign-off pending (14 §OPEN). Mirrored as constants at the top of
 // the UC-GR-011 describe in e2e/tests/guest-order-recovery.spec.js, so sign-off is a
@@ -637,7 +637,7 @@ function deliverOrderConfirmation(req, { order, items, payment }) {
     // on the friend/guest screens (the CartLineList rule).
     const itemLines = items.map((item) => ({
       qty: `${item.quantity}×`,
-      rest: `${item.product_name} (${variantLabelFor(item)}) — ${eur(item.price * item.quantity)} €`,
+      rest: `${item.product_name} (${variantLabelFor(item)}) - ${eur(item.price * item.quantity)} €`,
     }));
 
     // ⚠ `payment.reference` comes from the SHARED `guestPaymentReference()` via the
