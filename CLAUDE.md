@@ -1454,3 +1454,91 @@ recorded phase-2 follow-up).
 - **A back-navigation test cannot use `page.goto` to reach the page** — backing out of a
   document-loaded entry is a real document navigation that a vue-router guard never
   sees, so the test passes for the wrong reason. Navigate in-SPA instead.
+
+### Admin can change an order's pickup point (PO decision, 2026-09-02)
+
+`orders.pickup_location_id` / `pickup_location_note` were **write-once** — set by the
+friend in `POST /orders/cycle/:cycleId/friend/:friendId/submit` and by nothing else — so
+a wrong or since-changed pickup point could not be fixed and the Distribúcia sheet
+disagreed with where the bags actually go. `PATCH /api/orders/:id/pickup` (`requireAdmin`)
+is the correction. Spec-less row, driven straight from the PO's request.
+
+- ⚠ **NO CYCLE-OPEN GATE, deliberately** — the correction is needed exactly when the
+  cycle is **locked**, because that is when the admin packs. Same basis as
+  `PATCH /:id/packed`'s missing gate. A test asserts the locked case *works*, so nobody
+  "fixes" it into a 409 later.
+- ⚠ **THE ROUTE TOUCHES NO MONEY, and that is the only reason it is safe on a locked,
+  part-paid cycle.** It names the two pickup columns and nothing else: no `delivery_fee`,
+  no `packeta_address`, no `total`, no `status`, no `paid`, and **no `transactions` row**
+  (the GSO-T6 lesson — a pickup correction is not a financial event, and a stray row
+  corrupts a real friend's balance). The body is never spread. Pinned by marking an order
+  **paid**, locking the cycle, moving the pickup, and asserting the ledger row count is
+  unmoved.
+- ⚠ **A PACKETA ORDER IS REFUSED (400), not "supported carefully"** (PO chose this).
+  Switching delivery method moves `delivery_fee`, i.e. what the friend owes; on an
+  already-paid order that silently desyncs their balance from what they paid, and on an
+  unpaid one it changes the amount after the QR was shown. Those rows keep their
+  read-only red badge and get **no picker**. Changing the delivery *method* stays a
+  separate, unbuilt decision.
+- ⚠ **EXPLICIT INTENT: exactly one of `pickup_location_id` / `pickup_location_note`.**
+  `{}`, both, or neither is a 400 that writes nothing — a route reading "no field" as
+  "clear the column" would wipe a real pickup on a malformed body and answer 200 (the
+  GSO-T4 `items: []` rule in its non-destructive form). Consequence, recorded: there is
+  deliberately **no way to clear a pickup back to empty** — the admin's job here is to
+  name the FINAL place. Every refusal test **reads the row back**; a status assertion
+  alone cannot see a write that happened anyway.
+- Also refused: a draft (400 — the column is written on submit, so there is nothing to
+  correct, mirroring `/:id/paid`), an unknown or **deactivated** location (400, the
+  submit route's own message), a note over **200 chars** (the module 11 bound, mirrored
+  as `maxlength`), and the FUP-T13 unbindable shapes — `{}` / `true` / `[id]` / `'abc'`
+  in the id field are 400s, never a 500 with a stack. ⚠ The **one-element array** is the
+  trap as always: `[3]` spreads to exactly the single bind slot the statement wants.
+
+**⚠ `components/PickupLocationPicker.vue` — THE PILL *IS* THE `<select>`.** One home,
+**two call sites in two different views**: `CycleDetail.vue`'s orders tab (the Status
+column, where the badge already lived) and `Distribution.vue`'s friend card (where the
+bags are actually packed).
+- The obvious build — badge, click to reveal a picker, pick, Uložiť — is three
+  interactions and hides the control behind a state the admin has to discover. A native
+  `<select>` styled as the shipped badge is **two** (open, pick), **saves on pick**, keeps
+  the table's colour coding at rest (**blue** = a configured location, **grey** = the
+  friend's "Iné" note, **dashed** = nothing set) and costs no portal in a 33-row table.
+  Native `<select>` with these exact Tailwind classes is the established admin-skin
+  pattern (`AdminCatalog.vue`).
+- ⚠ **This component owns its own mutation, diverging from `GuestLinkRowControls.vue` on
+  purpose.** That one keeps every pending flag in the parent because its two call sites
+  render the SAME friend in the SAME view. Here the call sites are separate views that
+  never coexist, so parent-owned state would mean the identical optimistic-patch/rollback
+  logic written twice. Parents only pass the current values and patch their own row from
+  the `updated` event (per-row patch, never a full reload — the GSO-T1 pattern; in
+  Distribution a reload would also re-collapse every guest fold).
+- ⚠ **`v-model` on the select, NEVER `:value`.** Vue's `v-model` for `<select>` re-applies
+  the selection *after* the `v-for` options are patched; a bound `:value` is set before
+  its options exist and silently falls back to the first option.
+- ⚠ **A soft-deleted location is prepended as its own option** (from the joined
+  `pickup_location_name`). `DELETE /api/pickup-locations/:id` **deactivates** rather than
+  deletes once an order references it, so such a place is not in the active listing — and
+  without this the pill would render some *other* location's label for that order.
+- ⚠ **A refused change snaps the pill back.** The packing sheet is read as fact; "it
+  looked like it saved" is how a bag goes to the wrong address.
+- ⚠ **In Distribution the picker is `print:hidden` and the badge is kept as
+  `hidden print:inline-flex`** — a printed picking sheet must state the place as TEXT, not
+  render a dropdown box (the guest folds' rule). ⚠ In that print test the badge must be
+  located by **testid** (`dist-pickup-badge-<friend.id>`), not by text: the select's own
+  hidden `<option>` carries the same string, so a `getByText` resolves to the very control
+  the test is proving is gone.
+- Both views load the location list **after** the cycle is known (it is filtered by cycle
+  type, `for_coffee` / `for_bakery`, exactly as the friend's order form filters it) and
+  swallow the failure into **its own inline Alert** — an empty dropdown and a failed load
+  look identical, and "no places are configured" would send the admin to Settings to
+  re-create places that already exist.
+
+New spec: `e2e/tests/order-pickup-edit.spec.js` (29 tests, API + UI on both surfaces).
+`api-security.spec.js`'s `ADMIN_ENDPOINTS` gained the route. Verified locally against the
+prod template: **149 passed** across `order-pickup-edit`, `api-security`,
+`guest-distribution`, `item-packed`, `guest-admin-view`, plus **77** across
+`money-rounding`, `share-dialog`, `guest-host-view`, `colleagues-panel` and **401** in an
+earlier batch with `guest-order-recovery` / `nonstring-body-shape`. ⚠ Two
+`catalog-admin.spec.js` UI tests (CSV import report, duplicates merge) failed on a DB copy
+that had already run that file once and **pass in 3.3 s on a fresh copy** — the documented
+accumulation trap, unrelated to this row.

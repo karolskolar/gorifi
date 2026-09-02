@@ -13,6 +13,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import BalanceBadge from '@/components/BalanceBadge.vue'
 import GuestLinkRowControls from '@/components/GuestLinkRowControls.vue'
+import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -365,6 +366,10 @@ async function loadAll() {
     planNote.value = cycleData.plan_note || ''
     parcelEnabled.value = !!cycleData.parcel_enabled
     parcelFee.value = cycleData.parcel_fee || 0
+    // Same non-blocking contract, and it has to run AFTER `cycle.value` is set: the
+    // listing is filtered by cycle type, exactly as the friend's own order form
+    // filters it (`for_coffee` / `for_bakery`).
+    await loadPickupLocations()
     // Non-blocking: the orders tab still renders (with the nested sub-orders that
     // came with `ordersData`) if only the money overview fails.
     await loadGuestUnpaid()
@@ -377,6 +382,45 @@ async function loadAll() {
   } finally {
     loading.value = false
   }
+}
+
+// ── Pickup-location correction (PO decision, 2026-09-02) ─────────────────────
+//
+// `orders.pickup_location_id` / `_note` used to be write-once, set by the friend at
+// submit time, so a wrong or since-changed place could not be fixed and the packing
+// sheet disagreed with reality. `PATCH /api/orders/:id/pickup` is the correction and
+// `PickupLocationPicker.vue` owns the control (and its own pending/rollback state).
+//
+// ⚠ The picker is offered on SUBMITTED, non-Packeta rows only — the route refuses the
+// rest, and a control that can only fail is worse than none (the `/:id/paid` lesson).
+const pickupLocations = ref([])
+const pickupLocationsError = ref('')
+
+async function loadPickupLocations() {
+  try {
+    pickupLocations.value = await api.getPickupLocations(isBakery.value ? 'bakery' : 'coffee')
+    pickupLocationsError.value = ''
+  } catch (e) {
+    // Reported inline: an empty listing and a failed load look identical on screen,
+    // and "no pickup locations are configured" is the wrong conclusion to draw from a
+    // network error — it would send the admin to Settings to re-create places that
+    // already exist.
+    pickupLocationsError.value = e.message
+  }
+}
+
+// A submitted order that is not going out by Packeta. Packeta rows keep their
+// read-only red badge: moving delivery method moves `delivery_fee`, i.e. money.
+function canEditPickup(order) {
+  return isOrdered(order) && !!order.id && !order.packeta_address
+}
+
+// Patched in place from the mutation response rather than reloading a 33-row table
+// (the GSO-T1 per-row pattern). `order` is the reactive row object itself.
+function onPickupUpdated(order, updated) {
+  order.pickup_location_id = updated.pickup_location_id
+  order.pickup_location_note = updated.pickup_location_note
+  order.pickup_location_name = updated.pickup_location_name
 }
 
 // Guest sub-orders, admin side (§UC-GSO-009..010) ----------------------------
@@ -1769,6 +1813,23 @@ function getStatusVariant(status) {
             </AlertDescription>
           </Alert>
 
+          <!-- Same contract as the listing above: an empty pickup dropdown and a
+               failed load are indistinguishable on screen, and the wrong conclusion
+               ("no places are configured") sends the admin to Settings to re-create
+               places that already exist.
+               ⚠ A SIBLING ABOVE the v-if/v-else-if/v-else chain, same rule. -->
+          <Alert
+            v-if="pickupLocationsError"
+            variant="destructive"
+            class="mb-4"
+            data-testid="pickup-locations-error"
+          >
+            <AlertDescription class="text-sm">
+              Miesta vyzdvihnutia sa nepodarilo načítať: {{ pickupLocationsError }}. Zmena
+              miesta teraz nie je možná — obnovte stránku.
+            </AlertDescription>
+          </Alert>
+
           <!-- Guest money overview (§UC-GSO-010). Guests pay the admin directly, so
                this is the receivables list: the payment reference is what matches an
                incoming bank transfer to one sub-order.
@@ -2044,8 +2105,27 @@ function getStatusVariant(status) {
                         >
                           {{ order.status === 'submitted' ? 'Odoslane' : order.status === 'none' ? 'Neobjednane' : 'Rozpracovane' }}
                         </Badge>
+                        <!-- ⚠ THE PILL IS A `<select>` NOW, not a badge (PO decision,
+                             2026-09-02): friends pick the wrong pickup point and the
+                             point changes afterwards, so the admin needs to name the
+                             FINAL one before packing. Same colours as the badge it
+                             replaces — blue = a configured location, grey = the
+                             friend's "Iné" note — so the table reads as before at
+                             rest. Saves on pick; no modal, no Uložiť.
+                             A Packeta row falls through to the read-only red badge
+                             below: delivery METHOD is a money change (delivery_fee)
+                             and this control deliberately cannot make one. -->
+                        <PickupLocationPicker
+                          v-if="canEditPickup(order)"
+                          :order-id="order.id"
+                          :locations="pickupLocations"
+                          :location-id="order.pickup_location_id"
+                          :location-name="order.pickup_location_name || ''"
+                          :note="order.pickup_location_note || ''"
+                          @updated="onPickupUpdated(order, $event)"
+                        />
                         <Badge
-                          v-if="order.pickup_location_name"
+                          v-else-if="order.pickup_location_name"
                           variant="outline"
                           class="border-blue-400 text-blue-600 bg-blue-50"
                         >

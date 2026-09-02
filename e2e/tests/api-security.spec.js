@@ -21,6 +21,10 @@ const ADMIN_ENDPOINTS = [
   { method: 'post', path: '/api/transactions/payment', data: { friend_id: 1, amount: 99999 } },
   { method: 'patch', path: '/api/orders/1/paid', data: { paid: true } },
   { method: 'patch', path: '/api/order-items/1/packed' },
+  // The admin's correction of a friend's pickup choice (PO decision, 2026-09-02). It
+  // writes `orders` columns with NO cycle-open gate — by design, since the correction
+  // is needed exactly when the cycle is locked — so anonymous must never reach it.
+  { method: 'patch', path: '/api/orders/1/pickup', data: { pickup_location_id: 1 } },
   // GSO-T7: the guest half of the per-item Distribution checkbox.
   { method: 'patch', path: '/api/guest-order-items/1/packed' },
   // GSO-T6: the admin half of the MIXED-auth /api/guest-orders router (the host

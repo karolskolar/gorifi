@@ -348,6 +348,11 @@ export const api = {
   getOrders: (cycleId) => request(`/orders/cycle/${cycleId}`),
   markPaid: (id, paid) => request(`/orders/${id}/paid`, { method: 'PATCH', body: { paid } }),
   togglePacked: (id) => request(`/orders/${id}/packed`, { method: 'PATCH' }),
+  // The admin's correction of a friend's pickup choice. EXACTLY ONE of
+  // `{ pickup_location_id }` / `{ pickup_location_note }` — the route refuses both and
+  // neither (400), and writes no money column, so it is safe on a locked, part-paid
+  // cycle. Returns the updated order row with `pickup_location_name` joined.
+  setOrderPickup: (id, data) => request(`/orders/${id}/pickup`, { method: 'PATCH', body: data }),
   toggleItemPacked: (itemId) => request(`/order-items/${itemId}/packed`, { method: 'PATCH' }),
   // GSO-T7: the same per-item Distribution checkbox for a guest bag. Separate
   // endpoint because the item lives in `guest_order_items`; the response carries the
