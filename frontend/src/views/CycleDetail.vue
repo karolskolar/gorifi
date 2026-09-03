@@ -384,15 +384,18 @@ async function loadAll() {
   }
 }
 
-// ── Pickup-location correction (PO decision, 2026-09-02) ─────────────────────
+// ── Pickup point correction (PO decisions, 2026-09-02 and 2026-09-03) ────────
 //
 // `orders.pickup_location_id` / `_note` used to be write-once, set by the friend at
 // submit time, so a wrong or since-changed place could not be fixed and the packing
-// sheet disagreed with reality. `PATCH /api/orders/:id/pickup` is the correction and
+// sheet disagreed with reality.
+// `PATCH /api/orders/cycle/:cycleId/friend/:friendId/pickup` is the correction and
 // `PickupLocationPicker.vue` owns the control (and its own pending/rollback state).
 //
-// ⚠ The picker is offered on SUBMITTED, non-Packeta rows only — the route refuses the
-// rest, and a control that can only fail is worse than none (the `/:id/paid` lesson).
+// ⚠ Keyed on (cycle, friend) rather than an order id, so it also reaches a party who
+// has NO `orders` row — a host whose only stake is a colleague's bags, which is the
+// case the PO reported. The server picks the store (`orders`, else the share link);
+// see `backend/src/helpers/pickup.js`.
 const pickupLocations = ref([])
 const pickupLocationsError = ref('')
 
@@ -409,18 +412,35 @@ async function loadPickupLocations() {
   }
 }
 
-// A submitted order that is not going out by Packeta. Packeta rows keep their
-// read-only red badge: moving delivery method moves `delivery_fee`, i.e. money.
+// ⚠ EVERY LISTED ROW (PO decision, 2026-09-03: "za každých okolností"). The previous
+// rule — submitted, non-Packeta, has an `orders` row — left three parties with no
+// control at all, and the one the PO reported is the one that matters most on the
+// picking sheet: a host who ordered nothing themselves while their unregistered
+// colleague did. They collect the bags, and the screen said nothing about where.
+//
+// There is no state left to exclude: the route is keyed on (cycle, friend) and picks
+// the store itself (`orders` if a row exists, else the share link), so a draft and a
+// no-own-order host are both addressable, and a Packeta order switches behind the
+// picker's own inline confirm. A row with neither store 404s — but such a party is not
+// in `listedOrders` in the first place, so the control is never offered for one.
 function canEditPickup(order) {
-  return isOrdered(order) && !!order.id && !order.packeta_address
+  return !!order.id || (order.guest_orders || []).length > 0
 }
 
 // Patched in place from the mutation response rather than reloading a 33-row table
 // (the GSO-T1 per-row pattern). `order` is the reactive row object itself.
+//
+// ⚠ `cleared_parcel` has to be mirrored too, or the row keeps rendering the parcel it
+// no longer has: the pill would still read red "Packeta" over the new location and the
+// Suma column would still show "(… + fee doručenie)" for a fee the server just zeroed.
 function onPickupUpdated(order, updated) {
   order.pickup_location_id = updated.pickup_location_id
   order.pickup_location_note = updated.pickup_location_note
   order.pickup_location_name = updated.pickup_location_name
+  if (updated.cleared_parcel) {
+    order.packeta_address = null
+    order.delivery_fee = 0
+  }
 }
 
 // Guest sub-orders, admin side (§UC-GSO-009..010) ----------------------------
@@ -2110,18 +2130,23 @@ function getStatusVariant(status) {
                              point changes afterwards, so the admin needs to name the
                              FINAL one before packing. Same colours as the badge it
                              replaces — blue = a configured location, grey = the
-                             friend's "Iné" note — so the table reads as before at
-                             rest. Saves on pick; no modal, no Uložiť.
-                             A Packeta row falls through to the read-only red badge
-                             below: delivery METHOD is a money change (delivery_fee)
-                             and this control deliberately cannot make one. -->
+                             friend's "Iné" note, red = still going by Packeta — so the
+                             table reads as before at rest. Saves on pick; no modal, no
+                             Uložiť. On EVERY listed row since 2026-09-03, including a
+                             host with no own order (their pickup lives on the share
+                             link), a draft, and a Packeta order — that last one behind
+                             the picker's inline confirm, because it clears the parcel
+                             fee. -->
                         <PickupLocationPicker
                           v-if="canEditPickup(order)"
-                          :order-id="order.id"
+                          :cycle-id="cycleId"
+                          :friend-id="order.friend_id"
                           :locations="pickupLocations"
                           :location-id="order.pickup_location_id"
                           :location-name="order.pickup_location_name || ''"
                           :note="order.pickup_location_note || ''"
+                          :packeta-address="order.packeta_address || ''"
+                          :delivery-fee="order.delivery_fee || 0"
                           @updated="onPickupUpdated(order, $event)"
                         />
                         <Badge
@@ -2138,8 +2163,11 @@ function getStatusVariant(status) {
                         >
                           {{ order.pickup_location_note }}
                         </Badge>
+                        <!-- Only when no picker is rendered: the pill itself reads
+                             "Packeta" in the same red for a parcel order, so both
+                             would be the same word twice. -->
                         <Badge
-                          v-if="order.packeta_address"
+                          v-if="order.packeta_address && !canEditPickup(order)"
                           variant="outline"
                           class="border-red-400 text-red-600 bg-red-50"
                         >

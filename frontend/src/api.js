@@ -348,11 +348,15 @@ export const api = {
   getOrders: (cycleId) => request(`/orders/cycle/${cycleId}`),
   markPaid: (id, paid) => request(`/orders/${id}/paid`, { method: 'PATCH', body: { paid } }),
   togglePacked: (id) => request(`/orders/${id}/packed`, { method: 'PATCH' }),
-  // The admin's correction of a friend's pickup choice. EXACTLY ONE of
-  // `{ pickup_location_id }` / `{ pickup_location_note }` — the route refuses both and
-  // neither (400), and writes no money column, so it is safe on a locked, part-paid
-  // cycle. Returns the updated order row with `pickup_location_name` joined.
-  setOrderPickup: (id, data) => request(`/orders/${id}/pickup`, { method: 'PATCH', body: data }),
+  // The admin's correction of a party's pickup point, keyed on (cycle, friend) rather
+  // than on an order id — a host whose only stake is a colleague's bags has NO order
+  // row and must still be addressable (PO decision, 2026-09-03). The server picks the
+  // store (`orders`, else the share link); EXACTLY ONE of `{ pickup_location_id }` /
+  // `{ pickup_location_note }` — both and neither are a 400. Returns the uniform
+  // `{ pickup_location_id, pickup_location_note, pickup_location_name, stored_on,
+  // cleared_parcel, parcel_fee_removed }`.
+  setPartyPickup: (cycleId, friendId, data) =>
+    request(`/orders/cycle/${cycleId}/friend/${friendId}/pickup`, { method: 'PATCH', body: data }),
   toggleItemPacked: (itemId) => request(`/order-items/${itemId}/packed`, { method: 'PATCH' }),
   // GSO-T7: the same per-item Distribution checkbox for a guest bag. Separate
   // endpoint because the item lives in `guest_order_items`; the response carries the

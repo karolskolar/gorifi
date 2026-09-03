@@ -6,6 +6,7 @@ import { cycleSubOrdersByHost, guestOrderStatus } from '../helpers/guest-orders.
 import { guestCycleItems } from '../helpers/guest-aggregation.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { roundMoney } from '../helpers/pricing.js';
+import { readPickup } from '../helpers/pickup.js';
 
 const router = Router();
 
@@ -601,9 +602,16 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
       total: 0,
       packed: 0,
       packed_at: null,
-      pickup_location_id: null,
-      pickup_location_note: null,
-      pickup_location_name: null,
+      // ⚠ THE EFFECTIVE PICKUP, not a hardcoded null (PO decision, 2026-09-03). This
+      // party collects their colleagues' bags, so the picking sheet has to say where
+      // — the reported bug was this row showing no pickup point at all.
+      //
+      // ⚠ Read through `helpers/pickup.js`, the SAME resolution the write uses. It
+      // matters here specifically: this branch is reached whenever there is no
+      // SUBMITTED order, which includes a host sitting on a DRAFT — and that draft IS
+      // an `orders` row, so its pickup is the one that counts. Hardcoding the link
+      // here would show a different place than the orders tab does for the same party.
+      ...readPickup(req.params.id, hostFriendId),
       delivery_fee: 0,
       packeta_address: null,
       balance: balance ? balance.balance : 0,

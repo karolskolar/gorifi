@@ -64,11 +64,14 @@ async function loadPickupLocations() {
   }
 }
 
-// ⚠ A synthetic row (a host with guest bags but no `orders` row, §Edge Cases) has
-// `order_id: null` — there is no order to carry a pickup location, exactly as there is
-// no whole-order `packed` flag. Packeta rows are excluded for the money reason.
-function canEditPickup(friend) {
-  return friend.has_own_order !== false && !!friend.order_id && !friend.packeta_address
+// ⚠ EVERY PARTY ON THE SHEET (PO decision, 2026-09-03: "za každých okolností"),
+// synthetic rows included. A host with guest bags but no `orders` row has
+// `order_id: null` — there is no order to carry a pickup, exactly as there is no
+// whole-order `packed` flag — but they ARE the party who collects, so the sheet has to
+// say where. Their pickup lives on the share link; the route is keyed on
+// (cycle, friend) and picks the store itself, so nothing here needs to know which.
+function canEditPickup() {
+  return true
 }
 
 // Patched in place, not via `loadData()`: a full reload here would also re-collapse
@@ -77,6 +80,12 @@ function onPickupUpdated(friend, updated) {
   friend.pickup_location_id = updated.pickup_location_id
   friend.pickup_location_note = updated.pickup_location_note
   friend.pickup_location_name = updated.pickup_location_name
+  // Same reason as the orders tab: otherwise the card keeps printing the 📦 address
+  // and the red badge for a parcel the server just cleared.
+  if (updated.cleared_parcel) {
+    friend.packeta_address = null
+    friend.delivery_fee = 0
+  }
 }
 
 // Set page title
@@ -322,28 +331,31 @@ function printDistribution() {
                     v-if="canEditPickup(friend)"
                     class="print:hidden"
                     testid-prefix="dist-pickup"
-                    :order-id="friend.order_id"
+                    :cycle-id="cycleId"
+                    :friend-id="friend.id"
                     :locations="pickupLocations"
                     :location-id="friend.pickup_location_id"
                     :location-name="friend.pickup_location_name || ''"
                     :note="friend.pickup_location_note || ''"
+                    :packeta-address="friend.packeta_address || ''"
+                    :delivery-fee="friend.delivery_fee || 0"
                     @updated="onPickupUpdated(friend, $event)"
                   />
                   <Badge
                     v-if="friend.pickup_location_name || friend.pickup_location_note"
                     variant="outline"
                     :data-testid="`dist-pickup-badge-${friend.id}`"
-                    :class="[
-                      'border-blue-400 text-blue-600 bg-blue-50',
-                      canEditPickup(friend) ? 'hidden print:inline-flex' : '',
-                    ]"
+                    class="border-blue-400 text-blue-600 bg-blue-50 hidden print:inline-flex"
                   >
                     {{ friend.pickup_location_name || friend.pickup_location_note }}
                   </Badge>
+                  <!-- Print-only for the same reason: on screen the pill itself reads
+                       red "Packeta", so both would be the same word twice — but the
+                       printed sheet has no pill and still has to say it. -->
                   <Badge
                     v-if="friend.packeta_address"
                     variant="outline"
-                    class="border-red-400 text-red-600 bg-red-50"
+                    class="border-red-400 text-red-600 bg-red-50 hidden print:inline-flex"
                   >
                     Packeta
                   </Badge>
