@@ -912,6 +912,15 @@ function initDb() {
 
   // One live share link per (host, cycle). Regeneration UPDATEs the token on
   // this row rather than replacing it, so the sub-orders below survive.
+  //
+  // ⚠ `pickup_location_id` / `pickup_location_note` are the PICKUP FALLBACK for a
+  // host who has NO `orders` row of their own (PO decision, 2026-09-03 — the
+  // reported case: "ak priateľ neobjedná kávu a iba jeho neregistrovaný kolega si
+  // objedná, nie je … zobrazenie pick up pointu"). Such a host is still the pickup
+  // party — they collect their colleagues' bags — but there was nowhere to record
+  // where. This row is the only per-(host, cycle) row that always exists in that
+  // state. `helpers/pickup.js` is the ONE home for choosing between the two stores;
+  // never read or write these columns anywhere else.
   db.run(`
     CREATE TABLE IF NOT EXISTS guest_order_links (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -919,12 +928,32 @@ function initDb() {
       host_friend_id INTEGER NOT NULL,
       cycle_id INTEGER NOT NULL,
       active INTEGER DEFAULT 1,
+      pickup_location_id INTEGER,
+      pickup_location_note TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(host_friend_id, cycle_id),
       FOREIGN KEY (host_friend_id) REFERENCES friends(id) ON DELETE CASCADE,
       FOREIGN KEY (cycle_id) REFERENCES order_cycles(id) ON DELETE CASCADE
     )
   `);
+
+  // ⚠ AND THE SAME TWO COLUMNS AS A MIGRATION, which is a DELIBERATE exception to
+  // the GSO-T2 rule above ("all three tables are created together so the guest
+  // features that build on them never have to touch migrations"). That rule stops a
+  // later task re-declaring a table or a column the CREATE already has. These two
+  // are genuinely NEW columns on a table that already exists in production and
+  // staging, where `CREATE TABLE IF NOT EXISTS` is a no-op — so without these
+  // blocks the feature would work only on a database created from scratch.
+  try {
+    db.run('ALTER TABLE guest_order_links ADD COLUMN pickup_location_id INTEGER');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.run('ALTER TABLE guest_order_links ADD COLUMN pickup_location_note TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
 
   // A colleague's sub-order. `link_id` carries both host and cycle.
   // `paid` is admin-only (host sees it read-only); `delivered` is host-only

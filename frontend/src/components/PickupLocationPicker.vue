@@ -1,11 +1,19 @@
 <script setup>
-// ⚠ ONE HOME for the admin's correction of an order's pickup location (PO decision,
-// 2026-09-02). TWO call sites, in two DIFFERENT views:
+// ⚠ ONE HOME for the admin's correction of a party's pickup point (PO decision,
+// 2026-09-02; widened to "za každých okolností" on 2026-09-03). TWO call sites, in two
+// DIFFERENT views:
 //
 //   1. `CycleDetail.vue`'s orders tab — the Status column, where the pickup badge
 //      already lived (the screen the request came from);
 //   2. `Distribution.vue`'s friend card — the screen where the bags are actually
 //      packed, which is where a wrong place costs real time.
+//
+// ⚠ KEYED ON (cycle, friend), NOT ON AN ORDER ID. The reported hole was a host who
+// ordered nothing themselves while their unregistered colleague did: they are the
+// pickup party — they collect the bags — but they have no `orders` row, so an
+// order-id control could not address them at all. The server decides which store the
+// write lands on (`helpers/pickup.js`); this component deliberately does not know and
+// must not start guessing, or the two surfaces drift apart again.
 //
 // ⚠ THE PILL *IS* THE `<select>`, and that is the whole point of the row. The obvious
 // build — badge, click to reveal a picker, pick, save — is three interactions per
@@ -19,21 +27,18 @@
 // deliberately. That one keeps every pending flag in the parent because its two call
 // sites render the SAME friend in the SAME view, so one friend must have one mutation
 // state. Here the call sites are separate views that never coexist, so parent-owned
-// state would mean the identical ~40 lines of optimistic-patch/rollback logic written
-// twice — the exact drift the "one home" rule exists to prevent. The parent's only job
-// is to hand over the current values and patch its own row from `updated`.
+// state would mean the identical optimistic-patch/rollback logic written twice — the
+// exact drift the "one home" rule exists to prevent. The parent's only job is to hand
+// over the current values and patch its own row from `updated`.
 //
 // ⚠ ADMIN SKIN ONLY — shadcn / Tailwind utilities, zero `neo/` classes, zero theme
 // tokens, no `.app` scope (01-architecture design-system scope rule).
-//
-// ⚠ A PACKETA ORDER MUST NOT REACH THIS COMPONENT. Switching delivery method moves
-// `delivery_fee`, i.e. money (see the route comment in `backend/src/routes/orders.js`);
-// both call sites keep rendering their read-only red badge for those rows instead.
 import { ref, computed, watch, nextTick } from 'vue'
 import api from '../api'
 
 const props = defineProps({
-  orderId: { type: [Number, String], required: true },
+  cycleId: { type: [Number, String], required: true },
+  friendId: { type: [Number, String], required: true },
   // Active locations, ALREADY filtered by cycle type by the parent (`for_coffee` /
   // `for_bakery`) — the same filtering the friend's own order form applies.
   locations: { type: Array, default: () => [] },
@@ -45,6 +50,10 @@ const props = defineProps({
   locationName: { type: String, default: '' },
   // The friend's free-text "Iné" answer, when they chose no configured location.
   note: { type: String, default: '' },
+  // ⚠ A PACKETA ORDER IS NOW SWITCHABLE (PO decision, 2026-09-03, reversing
+  // 2026-09-02's flat refusal), but not silently — see `parcelWarning`.
+  packetaAddress: { type: String, default: '' },
+  deliveryFee: { type: [Number, String], default: 0 },
   testidPrefix: { type: String, default: 'pickup' },
 })
 
@@ -61,8 +70,12 @@ const error = ref('')
 const noteMode = ref(false)
 const noteDraft = ref('')
 const noteInput = ref(null)
+// The Packeta switch waits here for a confirm; it holds the pending request body.
+const confirmValue = ref(null)
 
 const noteText = computed(() => String(props.note || '').trim())
+const isParcel = computed(() => !!String(props.packetaAddress || '').trim())
+const feeAmount = computed(() => Number(props.deliveryFee || 0))
 
 function currentValue() {
   if (props.locationId) return String(props.locationId)
@@ -89,6 +102,7 @@ const options = computed(() => {
 const currentLabel = computed(() => {
   if (props.locationId) return props.locationName || 'Neaktívne miesto'
   if (noteText.value) return noteText.value
+  if (isParcel.value) return 'Packeta'
   return 'Nezadané'
 })
 
@@ -96,19 +110,36 @@ const currentLabel = computed(() => {
 const tone = computed(() => {
   if (props.locationId) return 'border-blue-400 text-blue-600 bg-blue-50'
   if (noteText.value) return 'border-gray-400 text-gray-600 bg-gray-50'
+  if (isParcel.value) return 'border-red-400 text-red-600 bg-red-50'
   return 'border-dashed border-input text-muted-foreground bg-background'
 })
 
-const tid = (suffix) => `${props.testidPrefix}${suffix ? `-${suffix}` : ''}-${props.orderId}`
+const tid = (suffix) => `${props.testidPrefix}${suffix ? `-${suffix}` : ''}-${props.friendId}`
+
+// ⚠ THE ONE CASE THAT MAY NOT BE SILENT. Switching a parcel order to personal pickup
+// clears `packeta_address` and zeroes `delivery_fee` server-side. That is
+// LEDGER-neutral (both ledger legs post `order.total` alone — the fee has never
+// entered `transactions`), so no balance moves and no existing row is invalidated.
+// What it does change is what the friend was ASKED to pay, and they may already have
+// transferred it — so the confirm names the amount rather than leaving the admin to
+// discover a refund later.
+const parcelWarning = computed(() => {
+  if (!isParcel.value) return ''
+  const fee = feeAmount.value
+  return fee > 0
+    ? `Zruší sa doručenie Packetou a poplatok ${fee.toFixed(2)} EUR. Ak už priateľ zaplatil, poplatok mu vráťte.`
+    : 'Zruší sa doručenie Packetou.'
+})
 
 async function save(body) {
   if (pending.value) return
   pending.value = true
   error.value = ''
   try {
-    const updated = await api.setOrderPickup(props.orderId, body)
+    const updated = await api.setPartyPickup(props.cycleId, props.friendId, body)
     emit('updated', updated)
     noteMode.value = false
+    confirmValue.value = null
   } catch (e) {
     // A refused change must never leave the pill claiming the new place: the packing
     // sheet is read as fact, and "it looked like it saved" is how a bag goes to the
@@ -118,6 +149,17 @@ async function save(body) {
   } finally {
     pending.value = false
   }
+}
+
+/** Save, unless this is the parcel switch — that one asks first. */
+function commit(body) {
+  if (isParcel.value) {
+    confirmValue.value = body
+    noteMode.value = false
+    model.value = currentValue()
+    return
+  }
+  save(body)
 }
 
 function onChange(event) {
@@ -136,7 +178,7 @@ function onChange(event) {
     model.value = currentValue()
     return
   }
-  save({ pickup_location_id: Number(value) })
+  commit({ pickup_location_id: Number(value) })
 }
 
 function saveNote() {
@@ -145,11 +187,17 @@ function saveNote() {
     error.value = 'Poznámka je povinná'
     return
   }
-  save({ pickup_location_note: text })
+  commit({ pickup_location_note: text })
 }
 
 function cancelNote() {
   noteMode.value = false
+  error.value = ''
+  model.value = currentValue()
+}
+
+function cancelConfirm() {
+  confirmValue.value = null
   error.value = ''
   model.value = currentValue()
 }
@@ -197,8 +245,9 @@ function cancelNote() {
         @change="onChange"
       >
         <!-- Placeholder only: the route refuses clearing a pickup back to empty, so
-             this is never a selectable target. -->
-        <option v-if="!locationId && !noteText" value="" disabled>Nezadané</option>
+             this is never a selectable target. Same for a parcel order, whose current
+             state is "Packeta" and cannot be re-selected. -->
+        <option v-if="!locationId && !noteText" value="" disabled>{{ isParcel ? 'Packeta' : 'Nezadané' }}</option>
         <option v-if="!locationId && noteText" :value="NOTE_CURRENT">{{ noteText }}</option>
         <option v-for="opt in options" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
         <option :value="NOTE_NEW">Iné (poznámka)…</option>
@@ -211,6 +260,29 @@ function cancelNote() {
       >
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 9l-7 7-7-7" />
       </svg>
+    </span>
+    <!-- Inline confirm, ONLY for the parcel switch (the one case that moves a money
+         column) — the `GuestLinkRowControls.vue` precedent. Everything else saves on
+         the pick, which is the whole interaction budget of this control. -->
+    <span
+      v-if="confirmValue"
+      class="text-xs inline-flex flex-wrap items-center gap-1.5"
+      :data-testid="tid('parcel-confirm')"
+    >
+      <span class="text-muted-foreground">{{ parcelWarning }}</span>
+      <button
+        type="button"
+        class="text-destructive underline underline-offset-2 hover:no-underline disabled:opacity-50"
+        :disabled="pending"
+        :data-testid="tid('parcel-yes')"
+        @click="save(confirmValue)"
+      >{{ pending ? 'Ukladám...' : 'Áno, zmeniť' }}</button>
+      <button
+        type="button"
+        class="text-muted-foreground underline underline-offset-2 hover:no-underline"
+        :data-testid="tid('parcel-no')"
+        @click="cancelConfirm"
+      >Nie</button>
     </span>
     <span
       v-if="error"

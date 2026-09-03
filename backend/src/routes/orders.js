@@ -7,6 +7,7 @@ import { gramsByProductFromItems, stockViolations } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup, roundMoney } from '../helpers/pricing.js';
 import { cycleSubOrdersByHost } from '../helpers/guest-orders.js';
 import { bindValue } from '../helpers/bind-value.js';
+import { pickupTargetFor, activeLocation, applyPickup, readPickup, linkPickupsByHost } from '../helpers/pickup.js';
 
 const router = Router();
 
@@ -546,58 +547,63 @@ router.patch('/:id/packed', requireAdmin, (req, res) => {
   });
 });
 
-// Admin: correct an order's PICKUP LOCATION.
+// Admin: set a PARTY'S PICKUP POINT — under all circumstances.
 //
-// Why this exists: `pickup_location_id` / `pickup_location_note` are written EXACTLY
-// ONCE — by the friend, in `POST /cycle/:cycleId/friend/:friendId/submit` above — and
-// there was no way to change them afterwards. Friends pick the wrong place, and the
-// place genuinely changes after ordering, so the packing sheet (Distribúcia) ended up
-// disagreeing with where the bags actually go. This is the admin's correction.
+// Why this exists: `pickup_location_id` / `pickup_location_note` used to be written
+// EXACTLY ONCE, by the friend, in `POST /cycle/:cycleId/friend/:friendId/submit`
+// above. Friends pick the wrong place and the place genuinely changes afterwards, so
+// the packing sheet (Distribúcia) disagreed with where the bags actually go.
 //
-// ⚠ DELIBERATELY NO CYCLE-OPEN GATE. The correction is needed exactly when the cycle
-// is LOCKED — that is when the admin packs. `PATCH /:id/packed` has none either, and
-// for the same reason (the hand-over happens after the lock).
+// ⚠ KEYED ON (cycle, friend), NOT ON AN ORDER ID — this REPLACES the `PATCH
+// /orders/:id/pickup` shipped on 2026-09-02 (PO decision, 2026-09-03: "chcem, aby …
+// bolo adminovi umožnené za každých okolností zmeniť pickup point"). The reported hole
+// was a host who ordered nothing themselves while their unregistered colleague did:
+// they are still the pickup party — they collect the bags — but they have NO `orders`
+// row, so an order-id route could not even address them. Two more cases came with it:
+// a DRAFT own order (the old submitted-only gate refused it) and a PACKETA order (the
+// old route refused it outright).
 //
-// ⚠ THIS ROUTE TOUCHES NO MONEY, and that is the whole reason it is safe to expose on
-// a locked, part-paid cycle. It names TWO columns and nothing else: no `delivery_fee`,
-// no `packeta_address`, no `total`, no `status`, no `paid`, and NO `transactions` row
-// (the GSO-T6 lesson — a pickup correction is not a financial event). The body is
-// never spread; only the two literal columns are written.
+// ⚠ `helpers/pickup.js` CHOOSES THE STORE, and it must stay the only thing that does.
+// A party's pickup lives on their `orders` row when one exists (any status) and on
+// their `guest_order_links` row otherwise. That choice cannot be made per surface: the
+// orders tab lists a party with an order OR guest bags, while the Distribution sheet
+// synthesises its no-own-order rows from `status = 'submitted'` — so a host on a draft
+// is "has an own order" to one screen and not to the other, and a per-surface choice
+// would write to one store and read back the other.
 //
-// ⚠ WHICH IS ALSO WHY SWITCHING TO/FROM PACKETA IS REFUSED HERE rather than supported
-// (PO decision, 2026-09-02). The parcel fee IS a money column and `paymentTotal` is
-// `total + delivery_fee`, so moving it on an already-paid order would silently desync
-// the friend's balance from what they actually paid, and on an unpaid one would change
-// the amount after the QR was shown. A Packeta order therefore keeps its red badge and
-// offers no picker at all. Changing the delivery METHOD stays a separate decision.
-router.patch('/:id/pickup', requireAdmin, (req, res) => {
-  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+// ⚠ STILL NO CYCLE-OPEN GATE. The correction is needed exactly when the cycle is
+// LOCKED — that is when the admin packs. `PATCH /:id/packed` has none either.
+//
+// ⚠ STILL NO `transactions` ROW, and no `total`/`status`/`paid`/`packed` write. The
+// one money column this can now move is `delivery_fee`, and only on a Packeta order
+// being switched to personal pickup — see `applyPickup`, which records why that is
+// ledger-neutral (both ledger legs use `order.total` alone; the fee has never entered
+// `transactions`). The response reports the clearance so the UI can say what happened.
+router.patch('/cycle/:cycleId/friend/:friendId/pickup', requireAdmin, (req, res) => {
+  const { cycleId, friendId } = req.params;
 
-  if (!order) {
-    return res.status(404).json({ error: 'Objednávka neexistuje' });
+  const cycle = db.prepare('SELECT id FROM order_cycles WHERE id = ?').get(cycleId);
+  if (!cycle) {
+    return res.status(404).json({ error: 'Cyklus nebol najdeny' });
   }
 
-  // Mirrors `/:id/paid` and `/:id/packed`: a draft has no pickup location to correct
-  // (the column is written on submit), so the control is never offered for one and
-  // the route refuses it rather than inventing a pickup for an unsubmitted cart.
-  if (order.status !== 'submitted') {
-    return res.status(400).json({ error: 'Miesto vyzdvihnutia sa dá zmeniť len na odoslanej objednávke' });
-  }
-
-  if (order.packeta_address) {
-    return res.status(400).json({ error: 'Objednávka sa doručuje Packetou — miesto vyzdvihnutia sa tu nedá zmeniť' });
+  const target = pickupTargetFor(cycleId, friendId);
+  if (!target) {
+    // Nowhere to record a pickup: this friend neither ordered in this cycle nor ever
+    // shared a link for it. Such a party is not listed on the orders tab either, so
+    // the UI cannot reach this — it is the honest answer rather than a silent no-op.
+    return res.status(404).json({ error: 'Pre tohto priateľa nie je v tomto cykle čo upraviť' });
   }
 
   const { pickup_location_id, pickup_location_note } = req.body || {};
 
-  // EXPLICIT INTENT, exactly one of the two (the `items: []` rule from GSO-T4, in its
-  // non-destructive form). `{}`, a body with both, or a body with neither is a 400
-  // that writes nothing — a route that treats "no field" as "clear the column" would
-  // wipe a real pickup location on a malformed request and answer 200.
+  // EXPLICIT INTENT, exactly one of the two (the `items: []` rule from GSO-T4 in its
+  // non-destructive form). `{}`, both, or neither is a 400 that writes nothing — a
+  // route that treated "no field" as "clear the column" would wipe a real pickup on a
+  // malformed request and answer 200.
   //
-  // Consequence, recorded: there is deliberately NO way to clear the pickup back to
-  // empty. The admin's job here is to name the FINAL place, and an order with no
-  // pickup at all is not a state the packing sheet has any use for.
+  // Consequence, recorded: there is deliberately NO way to clear a pickup back to
+  // empty. The admin's job here is to name the FINAL place.
   const wantsLocation = pickup_location_id !== undefined && pickup_location_id !== null;
   const wantsNote = pickup_location_note !== undefined && pickup_location_note !== null;
 
@@ -608,25 +614,18 @@ router.patch('/:id/pickup', requireAdmin, (req, res) => {
     });
   }
 
+  let value;
   if (wantsLocation) {
-    // ⚠ FUP-T15 — the presence test above stays on the RAW value, so a
-    // present-but-unbindable id (`{}`, `true`, an array) still enters this lookup and
-    // is refused with this route's own 400. Mapping it to "absent" would fall through
-    // to the note branch instead.
-    const locationId = bindValue(pickup_location_id);
-    const location = locationId === undefined
-      ? null
-      : db.prepare('SELECT * FROM pickup_locations WHERE id = ? AND active = 1').get(locationId);
+    const location = activeLocation(pickup_location_id);
     if (!location) {
       return res.status(400).json({
         error: 'Vybrané miesto vyzdvihnutia neexistuje alebo nie je aktívne',
         field: 'pickup_location_id'
       });
     }
-    // `location.id`, not the bound value: the lookup already proved the row exists, and
-    // the row's own integer id can never land in the column as the text `'3'`.
-    db.prepare('UPDATE orders SET pickup_location_id = ?, pickup_location_note = NULL WHERE id = ?')
-      .run(location.id, order.id);
+    // The row's own integer id, never the bound request value: it can then not land
+    // in the column as the text `'3'`.
+    value = { locationId: location.id };
   } else {
     // The "Iné" case — free text, so it gets the module 11 treatment: a type gate
     // folded into the required rule, plus a server bound the frontend mirrors as
@@ -638,21 +637,20 @@ router.patch('/:id/pickup', requireAdmin, (req, res) => {
     if (note.length > 200) {
       return res.status(400).json({ error: 'Poznámka je príliš dlhá (max 200 znakov)', field: 'pickup_location_note' });
     }
-    db.prepare('UPDATE orders SET pickup_location_id = NULL, pickup_location_note = ? WHERE id = ?')
-      .run(note, order.id);
+    value = { note };
   }
 
-  // The joined name is what both call sites render, so it comes back on the mutation
-  // response and the row is patched in place — no full reload of a 33-row table.
-  const updated = db.prepare(`
-    SELECT o.*, f.name as friend_name, pl.name as pickup_location_name
-    FROM orders o
-    JOIN friends f ON f.id = o.friend_id
-    LEFT JOIN pickup_locations pl ON pl.id = o.pickup_location_id
-    WHERE o.id = ?
-  `).get(order.id);
+  const effects = applyPickup(target, value);
 
-  res.json(updated);
+  // The uniform shape both admin surfaces patch their row from — same three fields
+  // whichever store was written, plus what the switch had to clear.
+  res.json({
+    friend_id: Number(friendId),
+    cycle_id: Number(cycleId),
+    stored_on: target.kind,
+    ...readPickup(cycleId, friendId),
+    ...effects,
+  });
 });
 
 // Admin: Get all orders for a cycle (includes all active friends)
@@ -808,6 +806,22 @@ router.get('/cycle/:cycleId', requireAdmin, (req, res) => {
       count_unit: 0,
       guest_orders: subOrders
     });
+  }
+
+  // The pickup point of a party who has NO `orders` row (PO decision, 2026-09-03).
+  // Both placeholder loops above build such rows with `id: null` and no pickup at
+  // all, which is exactly the reported bug: a host whose only stake is their
+  // colleague's bags is the party who collects them, and the screen said nothing
+  // about where. Their pickup lives on the share link — `helpers/pickup.js` is the one
+  // place that decides that, and this fills the same three fields an `orders`-backed
+  // row already carries, so the frontend has ONE shape to render and one to patch.
+  const linkPickups = linkPickupsByHost(cycleId);
+  for (const order of orders) {
+    if (order.id) continue;
+    const pickup = linkPickups.get(order.friend_id);
+    order.pickup_location_id = pickup ? pickup.pickup_location_id : null;
+    order.pickup_location_note = pickup ? pickup.pickup_location_note : null;
+    order.pickup_location_name = pickup ? pickup.pickup_location_name : null;
   }
 
   // Sort: submitted first, then draft, then none (by name within each group)
