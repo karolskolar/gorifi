@@ -571,4 +571,160 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
   res.json({ cycle, distribution });
 });
 
+// Print-ready labels for the A4 8-up sheet (105 × 74.25 mm), admin.
+//
+// A sibling of /distribution rather than a flag on it: distribution answers "who
+// collects what, and is it packed yet" and is read on a phone while packing;
+// this answers "what goes on the sticker", and the two diverge on purpose —
+// labels carry CONTACT details distribution never shows, and carry NO MONEY at
+// all.
+//
+// ⚠ NO PRICES, EVER. Not `total`, not `price`, not `delivery_fee`. The sheet is
+// stuck onto bags that are handed to people in a group, so a neighbour reading
+// someone else's sticker must not learn what they paid. `labelItems()` below
+// builds each line field by field for exactly this reason — never by spreading
+// the row — so a column added to the item queries later cannot leak in silently.
+//
+// Three kinds, because the physical artefacts differ:
+//   pickup  — collected in person: name, phone, pickup point, items
+//   packeta — shipped: name, phone, e-mail, pickup-point address, NO items
+//             (it is an address label; the parcel's contents are not the courier's
+//             business, and the items would not fit beside a 2-line address)
+//   guest   — a colleague's bag handed over by their host (§UC-GSO-011): guest
+//             name, `via` host, guest phone, the HOST's pickup point, items
+const LABEL_ITEM_PURPOSE_RANK = { Espresso: 1, Filter: 2, Kapsule: 3 };
+
+// The same ordering the distribution item query uses, so a label and the screen
+// the admin packs from list a bag's contents in the SAME sequence. Reproduced in
+// JS (not SQL) because the guest items arrive already-loaded from
+// `cycleSubOrdersByHost()` and only the friend side is a query we control.
+function labelItemSort(a, b) {
+  const rank = (purpose) => LABEL_ITEM_PURPOSE_RANK[purpose] || 4;
+  return rank(a.purpose) - rank(b.purpose) || String(a.product_name).localeCompare(String(b.product_name));
+}
+
+// One label line. Field-by-field on purpose — see the NO PRICES note above.
+function labelItems(rows) {
+  return [...rows].sort(labelItemSort).map((row) => ({
+    quantity: row.quantity,
+    product_name: row.product_name,
+    purpose: row.purpose,
+    variant: row.variant,
+    variant_label: row.variant_label,
+  }));
+}
+
+// The pickup point as one printable string: a configured location, else the free
+// -text "Iné" note, else nothing. Same precedence Distribution.vue renders.
+function labelPlace(order) {
+  return order.pickup_location_name || order.pickup_location_note || null;
+}
+
+router.get('/:id/labels', requireAdmin, (req, res) => {
+  const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
+  if (!cycle) {
+    return res.status(404).json({ error: 'Cyklus nebol nájdený' });
+  }
+
+  // `f.phone` / `f.email` are what makes this endpoint different from
+  // /distribution — both nullable, and a blank line is never printed for a
+  // missing one (the frontend omits the row rather than reserving space).
+  const orders = db.prepare(`
+    SELECT o.id AS order_id, o.friend_id, o.packeta_address,
+           o.pickup_location_id, o.pickup_location_note, pl.name AS pickup_location_name,
+           f.name, f.phone, f.email
+    FROM orders o
+    JOIN friends f ON f.id = o.friend_id
+    LEFT JOIN pickup_locations pl ON pl.id = o.pickup_location_id
+    WHERE o.cycle_id = ? AND o.status = 'submitted'
+    ORDER BY f.name
+  `).all(req.params.id);
+
+  const itemsFor = db.prepare(`
+    SELECT oi.quantity, oi.variant, p.name AS product_name, p.purpose, p.variant_label
+    FROM order_items oi
+    JOIN products p ON p.id = oi.product_id
+    WHERE oi.order_id = ?
+  `);
+
+  // Cancelled sub-orders are dropped with the SAME predicate the packing gate and
+  // /distribution use (`guestOrderStatus()`, never a bare `<> 'cancelled'` — the
+  // column is nullable and three-valued logic would silently drop live bags).
+  // A called-off bag must not get a sticker.
+  const subOrdersByHost = cycleSubOrdersByHost(req.params.id);
+  const liveSubOrders = (hostFriendId) =>
+    (subOrdersByHost.get(hostFriendId) || []).filter((sub) => guestOrderStatus(sub) !== 'cancelled');
+
+  const guestLabelsFor = (host, place) =>
+    liveSubOrders(host.friend_id).map((sub) => ({
+      kind: 'guest',
+      name: sub.guest_name,
+      via: host.name,
+      phone: sub.guest_phone,
+      email: null,
+      place,
+      address: null,
+      items: labelItems(sub.items || []),
+    }));
+
+  // Two blocks, because the two are physically handled differently: the pickup
+  // labels are peeled off while packing, the Packeta ones travel to the drop-off
+  // together. A host's guest labels always sit IMMEDIATELY after their host, in
+  // whichever block the host lands, so a bundle stays a bundle on the sheet.
+  const pickupBlock = [];
+  const packetaBlock = [];
+
+  for (const order of orders) {
+    const place = labelPlace(order);
+    const isPacketa = Boolean(order.packeta_address);
+
+    const own = isPacketa
+      ? {
+          kind: 'packeta',
+          name: order.name,
+          via: null,
+          phone: order.phone || null,
+          email: order.email || null,
+          place: null,
+          address: order.packeta_address,
+          items: [],
+        }
+      : {
+          kind: 'pickup',
+          name: order.name,
+          via: null,
+          phone: order.phone || null,
+          email: null,
+          place,
+          address: null,
+          items: labelItems(itemsFor.all(order.order_id)),
+        };
+
+    // A Packeta host still hands their colleagues' bags over in person, so those
+    // guest labels carry the host's PICKUP point — which a Packeta order has none
+    // of, hence the null. Rare, and a blank beats an invented address.
+    (isPacketa ? packetaBlock : pickupBlock).push(own, ...guestLabelsFor(order, place));
+  }
+
+  // §Edge Cases, "host has no own order at lock time": the query above starts
+  // FROM orders and cannot see a host whose only stake is their colleagues' bags.
+  // They get no label of their own — there is no bag for them — but their guests
+  // still need theirs, so the sub-orders are synthesised in exactly as
+  // /distribution does it.
+  const listed = new Set(orders.map((order) => order.friend_id));
+  const orphanHosts = [];
+  for (const hostFriendId of subOrdersByHost.keys()) {
+    if (listed.has(hostFriendId)) continue;
+    const subOrders = liveSubOrders(hostFriendId);
+    if (subOrders.length === 0) continue;
+    orphanHosts.push({ friend_id: hostFriendId, name: subOrders[0].host_name });
+  }
+  orphanHosts.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  for (const host of orphanHosts) {
+    pickupBlock.push(...guestLabelsFor(host, null));
+  }
+
+  res.json({ cycle, labels: [...pickupBlock, ...packetaBlock] });
+});
+
 export default router;

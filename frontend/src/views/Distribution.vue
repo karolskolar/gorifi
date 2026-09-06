@@ -216,9 +216,14 @@ function printDistribution() {
           </Button>
           <h1 class="text-xl font-bold">Distribúcia - {{ cycle?.name || 'Načítavam...' }}</h1>
         </div>
-        <Button variant="secondary" @click="printDistribution">
-          Tlačiť
-        </Button>
+        <div class="flex items-center gap-2">
+          <Button variant="secondary" @click="router.push(`/admin/cycle/${cycleId}/labels`)">
+            Tlačiť štítky
+          </Button>
+          <Button variant="secondary" @click="printDistribution">
+            Tlačiť
+          </Button>
+        </div>
       </div>
     </header>
 

@@ -179,6 +179,9 @@ export const api = {
   deleteCycle: (id) => request(`/cycles/${id}`, { method: 'DELETE' }),
   getCycleSummary: (id, roastery) => request(`/cycles/${id}/summary${roastery ? `?roastery=${encodeURIComponent(roastery)}` : ''}`),
   getCycleDistribution: (id) => request(`/cycles/${id}/distribution`),
+  // Print-ready rows for the A4 8-up label sheet. A sibling of the distribution
+  // read, not a flag on it: this one carries contact details and NO money.
+  getCycleLabels: (id) => request(`/cycles/${id}/labels`),
 
   // Cycle public endpoints (for friend ordering - legacy)
   getCyclePublic: (id) => request(`/cycles/${id}/public`),
