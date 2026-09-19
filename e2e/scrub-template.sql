@@ -115,6 +115,15 @@ DELETE FROM onboarding_links;
 -- string nothing else reads. Absent in today's snapshot (the key only exists since
 -- FUP-T19, which landed 2026-09-19), which is exactly why it is listed: this list is
 -- for the snapshot that HAS it.
+-- ⚠ PL-T1 (2026-09-19): `payment_creditor_name` is the THIRD payment setting and is
+-- DELIBERATELY ABSENT FROM THIS LIST — not an oversight of the kind the two keys above
+-- were. It holds the account HOLDER'S NAME, which is not a credential (every bank
+-- transfer shows it to the payer, and `/api/admin/payment-settings` publishes it
+-- unauthenticated by design, 15 §UC-PL-002), and friends' real names are KEPT in this
+-- template by PO decision — scrubbing one name while 76 others stay would buy nothing.
+-- Consequences, both already true: `seed.mjs` 3b writes the fixture name ONLY when the
+-- key is empty, so a template rebuilt from a production that has it set keeps the real
+-- value; and no spec hardcodes the seeded name (`payment-links.spec.js` reads it back).
 DELETE FROM settings WHERE key IN ('admin_password', 'admin_token', 'friends_password',
                                    'admin_google_subs', 'admin_google_subs_corrupt',
                                    'payment_iban', 'payment_revolut_username');

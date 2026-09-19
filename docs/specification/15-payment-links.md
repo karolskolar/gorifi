@@ -166,10 +166,16 @@ concrete fixtures and by a direct check that no friend VS of the fixture starts 
   characters ⇒ 400 `{ error: 'Meno príjemcu môže mať najviac 70 znakov' }`** and NOTHING in
   the request is written (the bound check runs before any `INSERT OR REPLACE` in the
   handler). Written as `INSERT OR REPLACE INTO settings ('payment_creditor_name', ?)`; the
-  response echoes it like the others. OPEN: the 70 cap is the PayMe `CN` field limit as the
+  response echoes it like the others. ~~OPEN: the 70 cap is the PayMe `CN` field limit as the
   author recalls it — verify against the current PayMe specification (payme.sk) during the
-  first task; if the published cap differs, the server bound and the mirrored `maxlength`
-  follow the spec, together.
+  first task~~ → **PL-T1, 2026-09-19: attempted, NOT resolvable from the published sources.**
+  payme.sk/pre-vyvojarov names the parameters (`V`, `IBAN`, `AM`, `CC`, `DT`, `PI`, `MSG`,
+  `CN`) but states no length caps, and the SBA *Payment Link Standard* PDF is not
+  text-extractable (encoded fonts). **70 stands as the SEPA / ISO 20022 beneficiary-name
+  length (`Nm`)** that the Pay by Square payload already follows. If the published cap ever
+  differs, the server bound and the mirrored `maxlength` follow the spec, together — they
+  are ONE number with one home (`helpers/payment.js MAX_CREDITOR_NAME_LENGTH`, exported and
+  consumed by `routes/admin.js`; the UI mirrors it; `payment-links.spec.js` asserts both).
 - `GET /api/admin/payment-settings` (PUBLIC — already listed as public in
   `api-security.spec.js:131`; stays public, stays OUT of `ADMIN_ENDPOINTS`) adds
   `paymentCreditorName`. The creditor name is by definition public data (every bank transfer

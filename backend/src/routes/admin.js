@@ -6,6 +6,13 @@ import { authLimiter } from '../middleware/rate-limit.js';
 import { hashPassword as bcryptHash, comparePassword as bcryptCompare } from '../middleware/friend-auth.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { requireGoogleAuthConfigured, verifyGoogleIdToken } from '../helpers/google-auth.js';
+import {
+  paymentSettings,
+  MAX_CREDITOR_NAME_LENGTH,
+  SETTING_IBAN,
+  SETTING_REVOLUT,
+  SETTING_CREDITOR_NAME,
+} from '../helpers/payment.js';
 
 const router = Router();
 
@@ -499,26 +506,35 @@ router.post('/logout', (req, res) => {
 // Get admin settings (friends_password, etc.) — admin only (returns secrets)
 router.get('/settings', requireAdmin, (req, res) => {
   const friendsPassword = db.prepare("SELECT value FROM settings WHERE key = 'friends_password'").get();
-  const paymentIban = db.prepare("SELECT value FROM settings WHERE key = 'payment_iban'").get();
-  const paymentRevolutUsername = db.prepare("SELECT value FROM settings WHERE key = 'payment_revolut_username'").get();
+  // 15 §UC-PL-001: the payment keys are read through the ONE reader, never here.
+  const payment = paymentSettings();
   const authMode = db.prepare("SELECT value FROM settings WHERE key = 'auth_mode'").get();
 
   res.json({
     friendsPassword: friendsPassword?.value || '',
-    paymentIban: paymentIban?.value || '',
-    paymentRevolutUsername: paymentRevolutUsername?.value || '',
+    paymentIban: payment.iban,
+    paymentRevolutUsername: payment.revolut_username,
+    paymentCreditorName: payment.creditor_name,
     authMode: authMode?.value || 'legacy'
   });
 });
 
 // Public payment settings (no auth required)
+//
+// ⚠ DELIBERATELY UNGUARDED, and it must stay that way: every friend and guest payment
+// screen reads the IBAN / Revolut handle from here while authenticated as nobody, which
+// is why `api-security.spec.js` lists it among the PUBLIC endpoints and NOT in
+// `ADMIN_ENDPOINTS`. 15 §UC-PL-002 adds the creditor name to it on purpose — a bank
+// transfer shows the account holder's name to the payer by definition, so it is not a
+// disclosure. Nothing else from `/settings` (the shared password, the auth mode) may
+// ever join this payload.
 router.get('/payment-settings', (req, res) => {
-  const paymentIban = db.prepare("SELECT value FROM settings WHERE key = 'payment_iban'").get();
-  const paymentRevolutUsername = db.prepare("SELECT value FROM settings WHERE key = 'payment_revolut_username'").get();
+  const payment = paymentSettings();
 
   res.json({
-    paymentIban: paymentIban?.value || '',
-    paymentRevolutUsername: paymentRevolutUsername?.value || ''
+    paymentIban: payment.iban,
+    paymentRevolutUsername: payment.revolut_username,
+    paymentCreditorName: payment.creditor_name
   });
 });
 
@@ -536,15 +552,46 @@ router.put('/settings', requireAdmin, (req, res) => {
   const friendsPassword = bindValue(req.body.friendsPassword);
   const paymentIban = bindValue(req.body.paymentIban);
   const paymentRevolutUsername = bindValue(req.body.paymentRevolutUsername);
+  // 15 §UC-PL-002 — the creditor name, bound exactly like the two keys above, then
+  // trimmed. ⚠ `.trim()` ONLY on a string: `bindValue` also lets a finite NUMBER
+  // through (as it does for the IBAN), and calling a string method on one is the
+  // FUP-T12 class of 500 this route is already hardened against.
+  let paymentCreditorName = bindValue(req.body.paymentCreditorName);
+  if (typeof paymentCreditorName === 'string') paymentCreditorName = paymentCreditorName.trim();
+  // ⚠ LENGTH IS THE ONLY RULE HERE — deliberately, matching the IBAN and the Revolut
+  // handle beside it. There is NO control-character, newline or inner-whitespace policy,
+  // so PL-T3, which puts this value into the PayMe `CN=` QUERY PARAMETER and into the
+  // bysquare beneficiary name, owns the ENCODING: `encodeURIComponent` on the way into a
+  // link, never raw interpolation into a URL string. `&`, `#`, `%`, `+` and a newline in
+  // a person's name are all storable today and must stay harmless downstream.
+
+  // ⚠ THE BOUND IS CHECKED BEFORE ANY WRITE IN THIS HANDLER, so a refused creditor name
+  // leaves the WHOLE request unwritten — an admin who over-typed one field must not
+  // discover that the IBAN in the same form was saved and the name was not.
+  // `String()` is safe here: after `bindValue` the value is a string, a finite number,
+  // `null` or `undefined` — never an object with a hostile `toString`.
+  if (
+    paymentCreditorName !== undefined
+    && paymentCreditorName !== null
+    && String(paymentCreditorName).length > MAX_CREDITOR_NAME_LENGTH
+  ) {
+    return res.status(400).json({ error: `Meno príjemcu môže mať najviac ${MAX_CREDITOR_NAME_LENGTH} znakov` });
+  }
 
   if (friendsPassword !== undefined) {
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('friends_password', ?)").run(friendsPassword || '');
   }
   if (paymentIban !== undefined) {
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('payment_iban', ?)").run(paymentIban || '');
+    // ⚠ The key comes from `helpers/payment.js`, the same constant `paymentSettings()`
+    // reads with: a write key that drifted from the read key would store a setting
+    // nothing ever reads back, and only a full round-trip would notice.
+    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(SETTING_IBAN, paymentIban || '');
   }
   if (paymentRevolutUsername !== undefined) {
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('payment_revolut_username', ?)").run(paymentRevolutUsername || '');
+    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(SETTING_REVOLUT, paymentRevolutUsername || '');
+  }
+  if (paymentCreditorName !== undefined) {
+    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(SETTING_CREDITOR_NAME, paymentCreditorName || '');
   }
   if (req.body.authMode !== undefined) {
     const validModes = ['legacy', 'transition', 'modern'];
@@ -563,6 +610,7 @@ router.put('/settings', requireAdmin, (req, res) => {
     friendsPassword: friendsPassword || '',
     paymentIban: paymentIban || '',
     paymentRevolutUsername: paymentRevolutUsername || '',
+    paymentCreditorName: paymentCreditorName || '',
     authMode: currentAuthMode?.value || 'legacy'
   });
 });

@@ -66,6 +66,24 @@ async function main() {
     console.log('  settings: payment details already present, left untouched')
   }
 
+  // 3b(ii). The creditor name (15 §UC-PL-002) — the account holder's name the payer's
+  // bank shows. ⚠ GUARDED SEPARATELY, not folded into the check above: the IBAN and the
+  // Revolut handle are often already present (a real environment, or a template rebuilt
+  // before this key existed), and a single combined guard would then skip the creditor
+  // name forever — leaving every PayMe/QR-beneficiary test to pass VACUOUSLY on a blank
+  // setting. Same rule as above though: written ONLY when empty, so a real environment's
+  // value is never overwritten.
+  if (!payment.json?.paymentCreditorName) {
+    const setName = await api('/api/admin/settings', {
+      method: 'PUT', token,
+      body: { paymentCreditorName: 'Karol Skolar' },
+    })
+    if (setName.status !== 200) throw new Error(`creditor name update failed (${setName.status}) ${setName.text}`)
+    console.log('  settings: payment creditor name set')
+  } else {
+    console.log('  settings: payment creditor name already present, left untouched')
+  }
+
   // 4. Ensure a cycle exists
   const cycles = await api('/api/cycles', { token })
   let cycle = (cycles.json || []).find((c) => c.name === CYCLE_NAME)

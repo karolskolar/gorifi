@@ -392,7 +392,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## 13. Payment links (15) — Revolut amount link, PayMe.sk, variable symbol
 
-- [ ] PL-T1  `helpers/payment.js` (VS scheme: friend = order id, guest = `9`+id, balance = `8`+friend id; one `paymentSettings()` reader; `guestPaymentBlock()`) + admin setting `payment_creditor_name` (70-char bound, `maxlength`, AdminSettings „Meno príjemcu“, public `payment-settings`) + seed 3b — `15 §UC-PL-001,002` · model=heavy ⚠ no new admin route (settings GET/PUT already listed; `/api/admin/payment-settings` stays PUBLIC); VS derived, never stored; starts `payment-links.spec.js` (settings pins only). ⚠ Module-20 seam: `guestPaymentBlock().amount` is `order.total` until GP-T1 flips that ONE line to `total + delivery_fee` — leave the comment.
+- [x] PL-T1  `helpers/payment.js` (VS scheme: friend = order id, guest = `9`+id, balance = `8`+friend id; one `paymentSettings()` reader; `guestPaymentBlock()`) + admin setting `payment_creditor_name` (70-char bound, `maxlength`, AdminSettings „Meno príjemcu“, public `payment-settings`) + seed 3b — `15 §UC-PL-001,002` · model=heavy ⚠ no new admin route (settings GET/PUT already listed; `/api/admin/payment-settings` stays PUBLIC); VS derived, never stored; starts `payment-links.spec.js` (settings pins only). ⚠ Module-20 seam: `guestPaymentBlock().amount` is `order.total` until GP-T1 flips that ONE line to `total + delivery_fee` — leave the comment.
 - [ ] PL-T2  VS + `creditor_name` in every server payload (guest 201/status, friend order `payment:{variable_symbol}`, balance `payment` block „{Meno} / zostatok“, admin unpaid overview + orders tab, mail row „Variabilný symbol“) + CycleDetail „VS …“ on receivables card AND orders tab — `15 §UC-PL-003,008` · model=heavy ⚠ payloads only GROW; `amount/reference/iban/revolut_username` byte-identical; no revolut.me/payme.sk URL in mail (08 one-origin pin); balance „Zaplatiť“ UI is PL-T4.
 - [ ] PL-T3  `lib/payment-links.js` (`revolutLink` amount variant behind `REVOLUT_AMOUNT_LINK`, `paymeLink`, `payBySquarePayload` with `variableSymbol` + `beneficiary = creditorName || 'Gorifi'`) + PaymentModal additive props, amount-suffixed Revolut label, PayMe button (`pointer: coarse`, `v-if`), VS `NeoCopyRow`, guest confirmation/status wiring — `15 §UC-PL-004,005,006,007(guest)` · model=heavy ⚠ SANCTIONED edits ONLY in `guest-payment-modal.spec.js` (`independentQr` gains VS/beneficiary, `:366` href → amount variant, new `hasTouch` PayMe + VS-row tests); `money-rounding.spec.js` stays UNMODIFIED here (friend encode site is PL-T4's). D4 discipline: strike the „FROZEN props“ claim in 06 §UC-GX-005, the component header and the spec header. ⚠ PO verification, not a gate: Revolut `?amount=&currency=` on a phone (flag = one-line fallback), PayMe `CN` 70 / `MSG` 140 caps.
 - [ ] PL-T4  Friend surfaces: FriendOrder PaymentModal props + success modal re-pointed at the shared helper + NEW balance „Zaplatiť“ trigger (`data-testid="pay-balance"`, `balanceState==='neg'`) + PaymentModal mount on `FriendBalanceCard` + sanctioned `money-rounding.spec.js` `independentQr` edit (`variableSymbol: String(order.id)`, beneficiary stays `'Gorifi'`) + **module-15 closeout (full suite)** — `15 §UC-PL-007(friend, balance),009` · model=heavy ⚠ `FriendTransactionsModal.vue` UNTOUCHED (one-modal rule); `order-modals.spec.js` :877/:881 pass unmodified. ⚠ Module-18 seam: PI-T7 RELOCATES this trigger + mount into „Zostatok a platby“ and the landing debt banner — never a second PaymentModal for the balance. ⚠ Module-21 seam: messages reuse `helpers/payment.js` VS, never re-derive.
@@ -466,6 +466,57 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 
 ## Log
+
+- 2026-09-19 · PL-T1 · (this commit) · no PR (project convention) · **Module 15 opens: the ONE server home
+  for payment data.** New `helpers/payment.js` — the VS scheme (friend = `orders.id` plain, guest =
+  `9`+6 digits, balance = `8`+6 digits), `paymentSettings()` as the ONE reader, `guestPaymentBlock()`,
+  and `MAX_CREDITOR_NAME_LENGTH`. New admin setting `payment_creditor_name` (70, mirrored as `maxlength`,
+  „Meno príjemcu" in AdminSettings, published on the PUBLIC `payment-settings`), seed 3b, and
+  `payment-links.spec.js` (25 tests). **VS is DERIVED, never stored** — no column, no migration. No new
+  route; `/api/admin/payment-settings` stays PUBLIC and is NOT in `ADMIN_ENDPOINTS` (pinned: anonymous 200,
+  wrong token 200, `/settings` still 401). ⚠ **The collision guard is the heart of the row.** All three
+  exports funnel through one private `variableSymbolFor`, which refuses anything but an integer
+  `0 < id < 1_000_000` and returns `''`. Friend VS is then ≤6 digits and the prefixed ones are exactly 7,
+  so the spaces cannot overlap **by LENGTH, not merely by value** — the collision is unreachable, not
+  unlikely. Review verified it by BRUTE FORCE rather than by reading: re-implemented the schemes and swept
+  the whole legal domain — **2,999,997 distinct values, 0 collisions**, `1_000_000` empty on all three.
+  Refusing FRIEND ids at 1e6 (not 8e6) is deliberate and is what §UC-PL-001's acceptance criteria says.
+  ⚠ **Fail-closed:** an empty VS is a degraded payment; a wrong VS is money matched to the wrong person.
+  The refusal logs kind + `typeof` ONLY — never the id or the row — and the id always comes from a DB row,
+  never a request body, so it is not a remote log-flood vector (FUP-T3/T7). ⚠ **THE TWO-HELPERS QUESTION,
+  asked before coding and answered rather than dodged:** `guestPaymentReference()` STAYS in
+  `helpers/guest-orders.js`; `payment.js` IMPORTS it. Split by CONCEPT — `guest-orders.js` owns "how a
+  guest sub-order describes itself" (built from `guest_name`, 4 shipped spec pins, its 4 call sites already
+  import that module for the surrounding loaders), `payment.js` owns "what the payer is told to do".
+  Moving it buys a file name and costs 4 call sites + 4 spec headers + CLAUDE.md. The enforceable half is
+  MACHINE-CHECKED instead: a spec walks `backend/src` and fails if `padStart(6` appears outside the helper,
+  with non-vacuity gates (>20 files walked, and the legal home must contain it). ⚠ **Review added the
+  OTHER half:** the READER one-home was unpinned, so a later row could re-inline a raw settings read
+  unnoticed — now a second sweep pins `'payment_iban'` to `helpers/payment.js` alone. That required
+  exporting `SETTING_IBAN`/`SETTING_REVOLUT`/`SETTING_CREDITOR_NAME` and binding them in the three writes:
+  reads were centralised, **writes were not**, and a drifted write key stores a setting nothing reads back.
+  ⚠ **`guestPaymentBlock()` ships DEFINED BUT UNWIRED, deliberately** — wiring it adds fields to a public
+  payload, which is PL-T2's row and acceptance (§UC-PL-003 item 1). §UC-PL-001's table reads present-tense;
+  the backlog is the finer authority. Not dead code: the child probe asserts every field. Seam comments now
+  sit at BOTH hand-composed blocks in `routes/guest.js`, each naming the other. ⚠ **Seed 3b needed its OWN
+  guard** — the existing branch writes only when BOTH payment keys are empty, so folding the new key in
+  would have skipped it forever on any DB with an IBAN, making every later module-15 test vacuous. Writes
+  only when empty, so a real value survives. ⚠ **`payment_creditor_name` is deliberately NOT scrubbed**
+  (account holder's name, not a credential; the endpoint publishes it by design; names kept by PO decision)
+  — now recorded AT the `DELETE` in `scrub-template.sql`, because the previous commit added the two sibling
+  payment keys there and README points readers at that file. Consequence: no spec may hardcode the seeded
+  name; none does. ⚠ **FOR THE PO, at module closeout:** the public endpoint now pairs a real IBAN with a
+  real account-holder NAME, unauthenticated. Spec-mandated (§UC-PL-002 "public data by definition") and the
+  decision is closed, but the PAIRING is the new part and name+IBAN is direct-debit-mandate input. Cheap
+  mitigation if it ever matters: serve the name only from PL-T2's payment-bearing payloads, not the bare
+  settings endpoint. ⚠ **Recorded for PL-T3:** the name is validated for LENGTH ONLY — no control-character
+  or whitespace rule — and PL-T3 puts it in a `CN=` query parameter and a bysquare beneficiary field, so
+  `encodeURIComponent`, never raw interpolation. ⚠ **The 70 is the ISO 20022 `Nm` bound, NOT a verified
+  quote** — payme.sk publishes no caps and the SBA standard PDF is not text-extractable; spec OPEN struck
+  with the finding. One number, one home, so a correction is one edit. Review: 1 round → **approve**
+  (0 blocker, 0 major, 5 minor, all fixed). Gate: `node --check` clean; orchestrator's own runs
+  **431 passed / 12 skipped / 0 failed**, then **416 / 12 / 0** after the fixes, on per-run template copies
+  with a rebuilt frontend.
 
 - 2026-09-19 · GR-T9 · (this commit) · no PR (project convention) · **Fixture accumulation, finished — and a
   REAL DATA LEAK found in the artifact that was supposed to prevent it.** ⚠ **Most of this row had already

@@ -52,6 +52,7 @@ cd frontend && npm run dev     # :5173
 | Security/auth/CSP: self-hosted fonts, Google auth (GA-T3/T5/T8), invitation approve endpoint, module 07 | `docs/learnings/04-security-auth-csp.md` |
 | E2E harness traps (wrong cwd, reporter glyphs) | `docs/learnings/05-e2e-harness.md` |
 | Admin sets a party's pickup point (`helpers/pickup.js`, `PickupLocationPicker.vue`) | `docs/learnings/06-pickup-point.md` |
+| Payment links, variable symbol, `payment_creditor_name` (module 15) | `docs/learnings/07-payment-links.md` |
 
 Specs: `docs/specification/*.md`, `docs/superpowers/specs/*.md`. Spec text that cites "CLAUDE.md GSO-T3" /
 "CLAUDE.md 2026-08-07" etc. now resolves to these files (search by task id or date). When you finish a task,
@@ -101,7 +102,14 @@ append the full write-up to the matching learnings file and add at most one line
 - ONE HOME each — never re-inline: `helpers/stock.js` (stock UNION own+guest), `helpers/pricing.js` (variant→price;
   unknown variant is DROPPED, never fallback-priced; `unit` is priceable but zero-gram), `helpers/packing.js`
   (packed gate), `helpers/guest-aggregation.js` (guest UNION for aggregates), `rewards.js` (reward volume),
-  `helpers/pickup.js` (which row stores a party's pickup), `guestPaymentReference()`.
+  `helpers/pickup.js` (which row stores a party's pickup), `guestPaymentReference()` (stays in
+  `helpers/guest-orders.js`), `helpers/payment.js` (variable symbol — friend = order id, guest = `9`+6-digit
+  id, balance = `8`+6-digit id, DERIVED never stored; anything but an integer `0 < id < 1e6` — a float, a
+  numeric STRING, `0`, a negative, a missing argument — yields `''`, never a guessed VS; the ONE
+  `paymentSettings()` reader + the three `SETTING_*` key constants reads AND writes share;
+  `guestPaymentBlock()`, whose `amount` is the module-20 seam, is the one composer **from PL-T2** —
+  `routes/guest.js` still hand-composes both blocks until then, see the seam comments at both sites).
+  No `padStart(6` and no `payment_iban` literal outside it in `backend/src`.
 - `variantGrams()` stays own-property + type safe; stock compares `!(a + b <= limit)` so NaN fails closed.
 - Guest aggregates: CYCLE-level totals include guests; per-FRIEND aggregates never do. Merge the guest half in
   JS, never as a second `LEFT JOIN` on `orders` (row multiplication corrupts `orders_count`); cycle-level guest

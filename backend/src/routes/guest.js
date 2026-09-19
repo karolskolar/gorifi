@@ -5,6 +5,7 @@ import { gramsByProductFromItems, stockViolations, cycleAvailability } from '../
 import { basePriceForVariant, applyMarkup, VARIANT_PRICE_COLUMNS, roundMoney } from '../helpers/pricing.js';
 import { guestOrderStatus, guestPaymentReference, softCancelGuestOrder } from '../helpers/guest-orders.js';
 import { bindValue } from '../helpers/bind-value.js';
+import { paymentSettings } from '../helpers/payment.js';
 // 14 §UC-GR-011 — the guest order-confirmation mail. Module 08's seam, consumed
 // through the seam exactly: no layer change, no new block type, no new dependency.
 import { renderEmail } from '../helpers/email-templates.js';
@@ -219,11 +220,11 @@ function resolveLink(token, closedStatus) {
   return { link, cycle };
 }
 
-function paymentSettings() {
-  const iban = db.prepare("SELECT value FROM settings WHERE key = 'payment_iban'").get();
-  const revolut = db.prepare("SELECT value FROM settings WHERE key = 'payment_revolut_username'").get();
-  return { iban: iban?.value || '', revolut_username: revolut?.value || '' };
-}
+// ⚠ ONE HOME (15 §UC-PL-001). The private `paymentSettings()` that used to sit here —
+// two hand-written `SELECT value FROM settings` reads — is now imported from
+// `helpers/payment.js`, which also reads `payment_creditor_name`. The returned shape is
+// unchanged for this file's two callers (`iban`, `revolut_username`); the new
+// `creditor_name` reaches the guest payload with PL-T2, through `guestPaymentBlock()`.
 
 // The guest's personal status/edit token (GSO-T4 serves the page). Same generator
 // and unguessability requirement as the link token (SEC-S2), with a collision
@@ -438,6 +439,13 @@ function statusPayload(link, cycle, order) {
     // Decision 1: the guest pays the ADMIN directly, and the "Zaplatiť" button
     // re-opens the same PaymentModal until `paid` is set (by the admin, GSO-T6).
     // Same reference as the confirmation screen so one payment matches one order.
+    // ⚠ PL-T2 SEAM (15 §UC-PL-003 item 1): this hand-composed block — and its TWIN on
+    // the submit 201 below — is REPLACED by `guestPaymentBlock(order, cycle.name)` from
+    // `helpers/payment.js`, which PL-T1 already shipped. It is not called yet because
+    // doing so ADDS `variable_symbol` + `creditor_name` to a PUBLIC payload, which is
+    // PL-T2's row and its acceptance criteria. ⚠ Until that row lands, ANY edit here
+    // must be made in BOTH places: two guest surfaces showing different payment data
+    // for one sub-order is the bug the helper exists to make impossible.
     payment: {
       amount: order.total,
       reference: guestPaymentReference(order, cycle.name),
@@ -802,6 +810,9 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
   const items = loadItems(order.id);
   // Decision 1: the guest pays the admin directly. `G<id>` disambiguates
   // duplicate first names when the admin matches incoming payments.
+  // ⚠ PL-T2 SEAM — the TWIN of the `statusPayload` block above (see the note there):
+  // both become one `guestPaymentBlock(order, cycle.name)` call in PL-T2, and until
+  // then neither may drift from the other.
   const payment = {
     amount: order.total,
     reference: guestPaymentReference(order, cycle.name),
