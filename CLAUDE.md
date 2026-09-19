@@ -169,6 +169,10 @@ Full recipe and env in `e2e/README.md`. Checklist:
   limit.spec.js` then self-skip — the documented skips). Build `frontend` first; a missing `backend/public` answers 503.
 - Kill the old server BY THE PID OWNING THE PORT (`ss -lptnH 'sport = :3997'`), confirm the port is free, then
   start — `pkill -f` self-matches and a stale server measures deleted code. Background it with `setsid … </dev/null`.
+- The DB is an INPUT: copy `e2e/fixtures/prod-template.sqlite` to a fresh path PER RUN (`e2e/make-test-db.sh`
+  builds it; `e2e/scrub-local.mjs --verify` re-checks it), and start only AFTER the port is free — otherwise the
+  new server dies with `EADDRINUSE` in its own log, the OLD one keeps serving, and the only tell is `seed.mjs`
+  printing `exists` instead of `created` (GR-T9). Readiness-probe `/api/health`; `/api/cycles` is admin and 401s.
 - Pipe output to a FILE, not `| tail`. Check `echo "EXIT: $?"` of the test command itself.
 - Never run the full suite per task: targeted spec files per row, full suite at module milestones. Full run
   ~11 min; on this 4 GB/2-core box Chromium SIGSEGVs (exit 139) non-deterministically — confirm a suspicious

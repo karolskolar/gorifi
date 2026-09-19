@@ -29,9 +29,13 @@ test.describe('Order item packed — persistence & gating', () => {
 
     // Locate the seeded open cycle + friend.
     const cyclesRes = await request.get('/api/cycles', { headers: admin })
-    cycleId = (await cyclesRes.json()).find((c) => c.name === CYCLE_NAME).id
+    const cycle = (await cyclesRes.json()).find((c) => c.name === CYCLE_NAME)
+    expect(cycle, `the seeded cycle "${CYCLE_NAME}" must exist — run seed.mjs`).toBeTruthy()
+    cycleId = cycle.id
     const friendsRes = await request.get('/api/friends', { headers: admin })
-    const friendId = (await friendsRes.json()).find((f) => f.name === FRIEND_NAME).id
+    const seeded = (await friendsRes.json()).find((f) => f.name === FRIEND_NAME)
+    expect(seeded, `the seeded friend "${FRIEND_NAME}" must exist — run seed.mjs`).toBeTruthy()
+    const friendId = seeded.id
 
     // Two products so the gate has more than one item to check off.
     //
@@ -150,20 +154,39 @@ test.describe('Order item packed — UI (Distribution page)', () => {
     const admin = { 'X-Admin-Token': token }
 
     const cyclesRes = await request.get('/api/cycles', { headers: admin })
-    uiCycleId = (await cyclesRes.json()).find((c) => c.name === CYCLE_NAME).id
+    const uiCycle = (await cyclesRes.json()).find((c) => c.name === CYCLE_NAME)
+    expect(uiCycle, `the seeded cycle "${CYCLE_NAME}" must exist — run seed.mjs`).toBeTruthy()
+    uiCycleId = uiCycle.id
 
     const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
     uiFriendName = `GSO-T1 UI Pack ${uniq}`
-    const friend = await (await request.post('/api/friends', { headers: admin, data: { name: uiFriendName } })).json()
+    const friendRes = await request.post('/api/friends', { headers: admin, data: { name: uiFriendName } })
+    expect(friendRes.status(), 'UI friend create').toBe(201)
+    const friend = await friendRes.json()
+    expect(friend.id).toBeTruthy()
 
-    const p1 = await (await request.post('/api/products', {
+    // ⚠ GR-T9: UNIQUE NAMES AND AN ASSERTED CREATE — the same rule as the API
+    // `beforeAll` above, and the reason this comment exists twice. 97b29de fixed
+    // that one and left THIS one on fixed names with an unchecked response, so the
+    // file still failed on any database it had already run against: module 12's
+    // `duplicate_in_cycle` guard answered 409, `p1.id` was `undefined`, the cart
+    // priced nothing, `total 0` DELETED the order and the submit 404'd at the
+    // `expect` below — four steps downstream, pointing at the submit. Measured
+    // 2026-09-19: pass / fail / fail on three runs against one DB before this fix.
+    const p1res = await request.post('/api/products', {
       headers: admin,
-      data: { cycle_id: uiCycleId, name: 'GSO-T1 UI Coffee A', purpose: 'Espresso', price_250g: 10, price_1kg: 30 },
-    })).json()
-    const p2 = await (await request.post('/api/products', {
+      data: { cycle_id: uiCycleId, name: `GSO-T1 UI Coffee A ${uniq}`, purpose: 'Espresso', price_250g: 10, price_1kg: 30 },
+    })
+    expect(p1res.status(), 'UI product A create').toBe(201)
+    const p2res = await request.post('/api/products', {
       headers: admin,
-      data: { cycle_id: uiCycleId, name: 'GSO-T1 UI Coffee B', purpose: 'Filter', price_250g: 12, price_1kg: 36 },
-    })).json()
+      data: { cycle_id: uiCycleId, name: `GSO-T1 UI Coffee B ${uniq}`, purpose: 'Filter', price_250g: 12, price_1kg: 36 },
+    })
+    expect(p2res.status(), 'UI product B create').toBe(201)
+    const p1 = await p1res.json()
+    const p2 = await p2res.json()
+    expect(p1.id, 'a create that answered 201 must carry an id').toBeTruthy()
+    expect(p2.id).toBeTruthy()
 
     const fp = { 'X-Friends-Password': FRIENDS_PASSWORD }
     const put = await request.put(`/api/orders/cycle/${uiCycleId}/friend/${friend.id}`, {

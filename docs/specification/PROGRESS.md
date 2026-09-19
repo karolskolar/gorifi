@@ -367,7 +367,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] GR-T6  Admin UI in CycleDetail: guest-link copy / "Vytvoriť hosťovský odkaz" per friend row, resend URL + "Zrušiť" (inline confirm incl. paid/refund warning) per nested sub-order + `api.js` methods — 14 §UC-GR-008 ⚠ terminal row of the admin arc — needs GR-T3 (links), GR-T4 (cancel), GR-T5 (token in payload), GR-T2 (target page). D9: resend on nested sub-order rows ONLY (refund-card widening is a rejected-for-now alternative; the payload already carries the token, so it would be UI-only later). Admin skin: shadcn only, ZERO neo/theme classes in the CycleDetail diff (asserted). Conventions load-bearing: non-blocking fetch (loadGuestUnpaid precedent), `loadSeq` guard, per-row `rowSeq` pending on create AND cancel (money screen), client-side join by `host_friend_id` — never a backend fold (the GSO-T6/T8 JOIN-multiplication class). Cancelled row STAYS listed (now a pinned requirement — the PO's "svieti ako potvrdenie"). All admin labels DRAFT.
 - [x] GR-T8  Guest order-confirmation e-mail on submit: `deliverGuestConfirmation` (module-08 seam), fire-and-forget POST-COMMIT, canonical URL via `resolveLoginUrl`/`PUBLIC_BASE_URL` — 14 §UC-GR-011 · model=heavy ⚠ needs GR-T1+T2 (the mailed URL must resolve). Heavy despite small surface — the GA-T8 hazard class IS the design: the submit handler stays a plain synchronous `(req,res)` function (no `async`, no `await` anywhere — an awaited send both fails the 201 on mail trouble and reopens the out-of-transaction stock-check race); the send fires strictly after the insert transaction commits as a floating promise (deliverMagicLink template verbatim in structure, D11). Send ONLY when `guest_email` present (existing `validateIdentity` + the mailer's own `EMAIL_SHAPE` gate — no new validation invented); content = the 201's facts via `guestPaymentReference` (one formatter); send-on-CREATE only (D10 — edit/cancel mails are a NAMED follow-up, must not be "completed" here); no new rate-limit bucket (rides `guestWriteLimiter`; the deliberate contrast to the magic-link split is recorded). e2e on the shared `e2e/mailgun-harness.js` (reuse, never fork; self-skips without the spawn env): one send with reference/total/canonical URL in BOTH parts, zero sends without e-mail, 201 survives stub 500, no send on PUT/`items:[]`, `PUBLIC_BASE_URL` beats Origin. ⚠ Operator note: verify `PUBLIC_BASE_URL` on prod before enabling `MAILGUN_*`. Subject/body DRAFT.
 
-- [ ] GR-T9  **The shared e2e DB DEGRADES the suite as fixtures accumulate — measured, and it has already produced three wrong diagnoses** ⚠ Symptom: `share-dialog.spec.js` fails 2/15 and takes **3.7 minutes** against `/tmp/gorifi-e2e.sqlite` after a day of module-14 runs; the SAME tree against a **freshly seeded** DB passes **15/15 in 19 seconds**. Cause is fixture accumulation, not code and not a test race: every `makeCycle`/`makeHost` helper adds rows nothing ever removes, the friend portal renders ALL cycles, and once the page is slow enough the tests that live on short budgets fall over — `share-dialog.spec.js:260`'s 1500 ms `page.route` window, `:187`'s locator counts, and (sporadically) `guest-admin-view.spec.js:1111` and `guest-host-view.spec.js:774` at their 30 s timeouts. ⚠ **Three successive wrong readings are recorded because each was plausible and each cost time:** (1) GR-T2 — "a race that fails alone and passes in a batch" (one lucky green batch); (2) GR-T3 — "simply racy, timing is the variable" (right that it is not invocation shape, wrong about the cause); (3) GR-T5 — "pre-existing on the baseline" (true but uninformative — it is pre-existing on EVERY baseline, including ones where it passes). The orchestrator bisected `bc432b5` and `723f77e` looking for a regression that does not exist before the fresh-DB run settled it. Fix direction: make DB state a controlled input rather than an accumulating side effect — a per-run fresh `DB_PATH` in the documented recipe (cheapest, and `e2e/seed.mjs` already supports it), and/or fixture cleanup in the heavy helpers. Then re-check whether `share-dialog.spec.js:260`'s 1500 ms budget is still too tight on a slow machine and widen it if so. ⚠ This row is the ONE sanctioned edit to `share-dialog.spec.js` in module 14. ⚠ **Until it lands, a red `share-dialog` (or a 30 s timeout anywhere) means "reseed and re-measure", NOT "you broke something".** ⚠ **SECOND INSTANCE, found during GR-T6 and the same root cause:** `item-packed.spec.js` fails 2/3 on **any DB it has already run against once** — its `beforeAll` creates products by FIXED NAME in the seeded cycle and never asserts the create status, so module 12's `duplicate_in_cycle` guard now answers 409, `prod1.id` is `undefined`, the cart prices nothing, `total 0` deletes the order and the submit 404s. Passes 3/3 on a fresh DB. That one is a missing status assertion as much as it is DB state — fix both here: assert the create, and make DB state a controlled input.
+- [x] GR-T9  **The shared e2e DB DEGRADES the suite as fixtures accumulate — measured, and it has already produced three wrong diagnoses** ⚠ Symptom: `share-dialog.spec.js` fails 2/15 and takes **3.7 minutes** against `/tmp/gorifi-e2e.sqlite` after a day of module-14 runs; the SAME tree against a **freshly seeded** DB passes **15/15 in 19 seconds**. Cause is fixture accumulation, not code and not a test race: every `makeCycle`/`makeHost` helper adds rows nothing ever removes, the friend portal renders ALL cycles, and once the page is slow enough the tests that live on short budgets fall over — `share-dialog.spec.js:260`'s 1500 ms `page.route` window, `:187`'s locator counts, and (sporadically) `guest-admin-view.spec.js:1111` and `guest-host-view.spec.js:774` at their 30 s timeouts. ⚠ **Three successive wrong readings are recorded because each was plausible and each cost time:** (1) GR-T2 — "a race that fails alone and passes in a batch" (one lucky green batch); (2) GR-T3 — "simply racy, timing is the variable" (right that it is not invocation shape, wrong about the cause); (3) GR-T5 — "pre-existing on the baseline" (true but uninformative — it is pre-existing on EVERY baseline, including ones where it passes). The orchestrator bisected `bc432b5` and `723f77e` looking for a regression that does not exist before the fresh-DB run settled it. Fix direction: make DB state a controlled input rather than an accumulating side effect — a per-run fresh `DB_PATH` in the documented recipe (cheapest, and `e2e/seed.mjs` already supports it), and/or fixture cleanup in the heavy helpers. Then re-check whether `share-dialog.spec.js:260`'s 1500 ms budget is still too tight on a slow machine and widen it if so. ⚠ This row is the ONE sanctioned edit to `share-dialog.spec.js` in module 14. ⚠ **Until it lands, a red `share-dialog` (or a 30 s timeout anywhere) means "reseed and re-measure", NOT "you broke something".** ⚠ **SECOND INSTANCE, found during GR-T6 and the same root cause:** `item-packed.spec.js` fails 2/3 on **any DB it has already run against once** — its `beforeAll` creates products by FIXED NAME in the seeded cycle and never asserts the create status, so module 12's `duplicate_in_cycle` guard now answers 409, `prod1.id` is `undefined`, the cart prices nothing, `total 0` deletes the order and the submit 404s. Passes 3/3 on a fresh DB. That one is a missing status assertion as much as it is DB state — fix both here: assert the create, and make DB state a controlled input.
 
 ---
 
@@ -466,6 +466,65 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 
 ## Log
+
+- 2026-09-19 · GR-T9 · (this commit) · no PR (project convention) · **Fixture accumulation, finished — and a
+  REAL DATA LEAK found in the artifact that was supposed to prevent it.** ⚠ **Most of this row had already
+  landed in `97b29de`** (the prod-shaped template, `make-test-db.sh`, the "database is an INPUT" README
+  section) and the row did not know it — check before rebuilding. ⚠ Row cites `share-dialog.spec.js:260`;
+  it is `:275`, and it implies `item-packed` needed one site fixed. Both superseded by this entry.
+  · **What was genuinely left:** (1) the README's MAIN recipe still taught `DB_PATH=/tmp/gorifi-e2e.sqlite`
+  — one fixed reused path — thirty lines under the section saying to copy per run, i.e. the wrong half was
+  the one inside the code block, which is the half people copy. Rewritten as a numbered recipe (build → stop
+  by OWNING PID → confirm port free → copy template to a `mktemp -u` path → start → seed → run) with the env
+  it was missing. (2) **`item-packed.spec.js` was NOT fixed by `97b29de` — that commit fixed ONE OF TWO
+  identical sites.** The UI `beforeAll` seventy lines below still created products by FIXED NAME without
+  checking the response, so module 12's `duplicate_in_cycle` 409 left `p1.id` undefined → cart prices
+  nothing → `total 0` deletes the order → submit 404s, four steps from the cause. Orchestrator
+  mutation-verified: with the fix 3/3 three times on one DB; reverting ONLY that file, run 1 passes and run 2
+  fails — the exact reported signature. (3) The **1500 ms window at `share-dialog.spec.js:275` was LEFT
+  ALONE on measurement** — 7 runs, 15/15 every time, 15.7–16.4 s, no spread. This row was the ONE sanctioned
+  edit to that file in module 14 and it was NOT spent; the file is byte-identical. (4) Fixture teardown
+  REJECTED: 24 spec files define their own `makeCycle`/`makeHost` (no shared home), and teardown would have
+  to unwind the orders/guest-link/sub-order/ledger cascade the app owns. ⚠⚠ **THE LEAK — two rounds of it,
+  same species both times.** `make-test-db.sh`'s scrub enumerated columns; its "fail-closed" verification
+  enumerated FEWER. Round 1 (found by the implementer): `payment_iban` + `payment_revolut_username` — the
+  PO's real bank account, in every template built since 2026-08-31, masked because `seed.mjs` only fills
+  payment settings when BOTH are empty ("already present, left untouched"). Round 2 (found by REVIEW, in the
+  artifact rebuilt after that fix): **11 real personal Gmail addresses in `friends.google_email`** (third
+  parties, not the PO — `friends.email` WAS randomised, so these were the only real ones left), a real
+  `invitations.google_sub` + `google_email` (NOT inert — `invitations.js:572,653` copies the sub onto the
+  friend at approval and `:321,580` match on it), and **76 production `friends.access_token`** values that
+  `friends.js:18` itself calls "a live auth credential". ⚠ **Never committed** — `e2e/fixtures/` is
+  git-ignored — so the repo and remote were always clean. **Fixed STRUCTURALLY, not by adding four columns:**
+  the SQL moved out of the shell heredoc into `e2e/scrub-template.sql` + `e2e/verify-scrub.sql` (one copy,
+  piped over ssh, so the local re-scrub runs the SAME BYTES as the server), verification rewritten as **one
+  named check per column the scrub touches — 22, in the scrub's own order, offenders named on failure**, and
+  a new `e2e/scrub-local.mjs` (`--verify` read-only by default / `--scrub`) with a raw byte scan, since this
+  box has no `sqlite3`. `access_token` REGENERATED rather than argued safe. The README no longer enumerates
+  columns at all — it points at the two files and records both misses, with the rule: **a verification
+  narrower than the scrub does not weaken the claim, it LAUNDERS it.** ⚠ Orchestrator verified the artifact
+  independently (11 SQL checks + raw byte scan, all zero) **and proved the gate NON-VACUOUS**: injecting
+  `real.person@gmail.com` and a production-shaped token into a copy makes `--verify` name both and exit 1.
+  ⚠ **The readiness probe in the new recipe COULD NEVER SUCCEED** (review): it polled `/api/cycles`, which is
+  `requireAdmin` — measured 401, `curl -sf` exit 22 — so it was a blind `sleep 15` dressed as a health check,
+  in a recipe whose whole deliverable is that it was executed literally. Now `/api/health` (public,
+  `index.js:126`); the recipe runs ~14 s faster, which IS the sleep it was burning. ⚠ **The inode mechanism
+  the orchestrator asked for was WRONG for this recipe** and had been copied into CLAUDE.md: `mktemp -u`
+  means nothing is swapped under the server, and a plain `cp` TRUNCATES IN PLACE rather than unlinking. The
+  actionable half (free the port first; `EADDRINUSE` lands in the second server's log ONLY; the tell is
+  `seed.mjs` saying `exists`) is now primary in both copies, the deleted-inode state demoted to a sub-note
+  scoped to the fixed-path variant that actually causes it, and the round-1 learnings paragraph struck in
+  place with a pointer. ⚠ **Also closed, pre-existing:** a failed `.backup`/scrub left an **UNSCRUBBED**
+  production snapshot in the server's `/tmp` (`set -e` aborts before cleanup) — now a `trap … EXIT`, the
+  single home for that `rm`. ⚠ **The shell gate was fail-OPEN** — it ignored lines with the wrong field
+  count, so a malformed verification downloaded under a "verified" banner. Now every line must be
+  `name|integer` AND the line count must equal a **derived** check count; proved against eight synthetic
+  shapes. That fix exposed one more: under `set -e`, `cond && echo` is `cond || abort`, so a real leak found
+  alongside a matching count would have aborted before printing the offender. Review: 2 rounds → **approve**
+  (1 blocker + 2 major + 3 minor, all closed). Gate: 77 passed / 0 failed ×3 on per-run copies; `item-packed`
+  3/3 five consecutive times on ONE DB. ⚠⚠ **NO COMMIT CAN REACH THE OLD FILES:** `e2e/fixtures/` is
+  git-ignored, so **anyone holding a template built before 2026-09-19 must run
+  `node e2e/scrub-local.mjs --scrub <path>`** — those copies carry the 11 addresses and 76 tokens.
 
 - 2026-09-19 · GA-T11 · (this commit) · no PR (project convention) · **A friend with no password had no
   on-screen way to set one** — the change-password fold is gated on `hasCredentials`, so it is hidden

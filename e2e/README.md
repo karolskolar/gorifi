@@ -310,51 +310,140 @@ found — including a commit bisection for a regression that did not exist. If s
 red looks suspicious, **reseed and re-measure before you believe it.**
 
 `./e2e/make-test-db.sh` builds a **template** from production, scrubbed on the server so
-unscrubbed data never leaves it, with a fail-closed check that refuses to download
-anything while a single row still carries production contact data or a credential.
-Result: 76 friends, 12 cycles, 226 orders, 20 guest sub-orders, 486 ledger rows — the
-shape that shows up bugs a 1-friend seed cannot (an unbounded list, an N+1, a fold that
-is fine with 3 rows and unusable with 76).
+unscrubbed data never leaves it. Result: 76 friends, 12 cycles, 226 orders, 20 guest
+sub-orders, 486 ledger rows — the shape that shows up bugs a 1-friend seed cannot (an
+unbounded list, an N+1, a fold that is fine with 3 rows and unusable with 76).
 
 **Names are KEPT** (PO decision, 2026-08-31 — the screens read like the real thing).
-Phones, e-mails and Packeta addresses are generated deterministically from the row id, so
-a friend keeps one number across rebuilds. ⚠ Every credential is regenerated, and that
-list is longer than it looks: `friends.invite_code`, `guest_order_links.token`,
-`guest_orders.order_token` (since GR-T1 the order token alone IS the credential),
-`login_tokens`, `onboarding_links`, `friend_sessions`, `password_hash`, `google_sub`, and
-the admin/friends password rows. Without that, a template in someone's `/tmp` is a set of
-working keys to podpultovka.biz.
+Everything else identifying is regenerated deterministically from the row id, so a friend
+keeps one number across rebuilds.
+
+⚠ **Do not read the list of scrubbed columns from this paragraph — read it from
+`e2e/scrub-template.sql`, and read what is actually checked from
+`e2e/verify-scrub.sql`.** Those two files are the scrub; prose beside them is a fourth
+copy waiting to drift, and this section already carried one. The fail-closed check now
+covers **one line per column the scrub touches** and prints all 22, because twice it was
+narrower than the scrub, which was narrower than the schema:
+
+- **2026-08-31** — `payment_iban` / `payment_revolut_username` (the PO's real bank
+  account and Revolut handle) were neither scrubbed nor checked.
+- **2026-09-19, GR-T9 review** — `friends.access_token` (76 production values,
+  `routes/friends.js:18` calls it "a live auth credential"), `friends.google_email`
+  (**11 real third-party Gmail addresses**, sitting beside a `friends.email` that WAS
+  correctly randomised), and `invitations.google_sub` / `invitations.google_email` — and
+  the `google_sub` is not inert: `routes/invitations.js:572,653` copies it onto the
+  friend row at approval and `:321,580` matches on it, so the file shipped a live Google
+  identity. All four passed a check that confidently returned `0`.
+
+**A verification narrower than the scrub does not weaken the claim, it launders it.**
 
 ```bash
 ./e2e/make-test-db.sh                      # once, or whenever you want fresher data
-cp e2e/fixtures/prod-template.sqlite /tmp/gorifi-run.sqlite   # ⚠ per RUN
-# …start the server on the COPY, then `node seed.mjs` to add the suite's own fixtures
+
+# Check (or re-apply) the scrub on a template you already have — same SQL files,
+# no server and no sqlite3 CLI needed. Exits non-zero on any non-zero count.
+node e2e/scrub-local.mjs --verify          # SQL checks + a raw byte scan
+node e2e/scrub-local.mjs --scrub           # apply, then verify
 ```
+
+The byte scan is there because the SQL checks only see live rows: the scrub ends in
+`VACUUM`, and that is the only thing between a deleted row and someone running
+`strings` on the file. It reports e-mail addresses whose domain is not `example.test`
+and bcrypt prefixes, over the whole file including freed pages.
+
+Then **the recipe in the next section copies it per run** — that block is the one to
+follow, and its step order (stop the server → confirm the port is free → replace the
+DB → start → seed) is part of the fix, not housekeeping.
 
 ⚠ `seed.mjs` is still required on top: the template has no `E2E Test Cycle`/`E2ETester`,
 and the password columns are bcrypt hashes SQL cannot produce, so the script deletes them
 and `seed.mjs` re-creates them from `fixtures.js`. Running the suite against the
-**template itself** reintroduces exactly the accumulation this replaces.
+**template itself** reintroduces exactly the accumulation this replaces — and leaves a
+`prod-template.sqlite-wal`/`-shm` pair beside it as the evidence. Copy only the
+`.sqlite`; if that stray `-wal` is ever non-empty, rebuild the template rather than
+copying a file whose newest pages live in a WAL you are not copying.
+
+⚠ **The per-run copy is the whole fix; do NOT add teardown to the `makeCycle`/`makeHost`
+helpers** (considered and rejected, GR-T9, 2026-09-19). Two reasons, both checkable:
+**24 spec files define their own private `makeCycle` and/or `makeHost`** (21 and 16, with
+13 defining both), so teardown means 24 edits with 24 chances to diverge — the multi-copy failure this row is about; and a
+helper that deleted its cycle would have to unwind the same cascade the app owns
+(orders, guest links, sub-orders, ledger rows), which no helper does today. Measured:
+four back-to-back `share-dialog` runs against one already-used copy took 15.8 / 16.1 /
+16.4 s, all 15/15 — against the 3.7 min and 2 failures that started this row. The copy
+buys that isolation with no new code.
 
 ## Run against a local prod-like backend
 
-```bash
-# from repo root: build the frontend into backend/public, run backend on one port
-cd frontend && npm run build && rm -rf ../backend/public && cp -r dist ../backend/public && cd ..
-DB_PATH=/tmp/gorifi-e2e.sqlite PORT=3997 CORS_ORIGIN=http://localhost:3997 node backend/src/index.js &
+⚠ **The database in this recipe is a PER-RUN COPY, and the numbered order is
+load-bearing** — see the section above for why, and the "replace the DB, not under a
+running server" gotcha below for what happens when you do steps 2–4 in any other
+order. This block is verified end-to-end (GR-T9, 2026-09-19); run it as written.
 
+```bash
+# 1 — build the frontend into backend/public (git-ignored; a missing one answers 503)
+cd frontend && npm run build && rm -rf ../backend/public && cp -r dist ../backend/public && cd ..
+
+# 2 — STOP whatever holds the port, BY THE PID THAT OWNS IT, and confirm it is free.
+#     `pkill -f node` self-matches; `ss` names the one process that actually matters.
+PID=$(ss -lptnH 'sport = :3997' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+[ -n "$PID" ] && kill "$PID"
+# ⚠ `kill` returns before the process is gone — WAIT for the port, don't just look.
+for i in $(seq 1 10); do ss -lptnH 'sport = :3997' | grep -q . || break; sleep 1; done
+ss -lptnH 'sport = :3997'        # ⚠ must print NOTHING before you go on
+
+# 3 — a PER-RUN database. ONLY NOW, with nothing holding the old one open.
+RUN_DB=$(mktemp -u /tmp/gorifi-run-XXXXXX.sqlite)
+cp e2e/fixtures/prod-template.sqlite "$RUN_DB"   # no template? omit this line:
+                                                 # a nonexistent path is created and
+                                                 # seeded from scratch (1 friend, 1
+                                                 # cycle) — still per-run.
+
+# 4 — start the backend on that copy
+DB_PATH="$RUN_DB" PORT=3997 CORS_ORIGIN=http://localhost:3997 \
+  GOOGLE_CLIENT_ID=test-client GOOGLE_AUTH_TEST_MODE=1 \
+  RATE_LIMIT_AUTH_MAX=1000 RATE_LIMIT_ABUSE_MAX=2000 \
+  RATE_LIMIT_GUEST_READ_MAX=5000 RATE_LIMIT_GUEST_WRITE_MAX=5000 \
+  RATE_LIMIT_MAGIC_MAX=5000 \
+  setsid node backend/src/index.js > /tmp/gorifi-e2e-server.log 2>&1 </dev/null &
+# ⚠ /api/health, NOT /api/cycles — `cycles` is requireAdmin and answers 401, so
+#   `curl -sf` there NEVER succeeds and the wait degrades into a silent 15 s sleep.
+#   The trailing re-check is what makes a dead backend loud instead of a confusing
+#   seed failure ten seconds later.
+for i in $(seq 1 30); do curl -sf http://localhost:3997/api/health >/dev/null && break; sleep 1; done
+curl -sf http://localhost:3997/api/health >/dev/null \
+  || { echo "!! backend never came up — read /tmp/gorifi-e2e-server.log"; exit 1; }
+
+# 5 — the suite's own fixtures ON TOP of the template
 cd e2e
-npm install && npx playwright install --with-deps chromium
+npm install && npx playwright install --with-deps chromium   # first time only
 BASE_URL=http://localhost:3997 node seed.mjs
-# DB_PATH is optional: no spec requires it any more. When it points at the same
-# file the server was started with, guest-admin-view.spec.js adds one extra
-# assertion (a GLOBAL `transactions` row count around the guest paid toggle,
-# which also catches a row written with a NULL friend_id).
-DB_PATH=/tmp/gorifi-e2e.sqlite BASE_URL=http://localhost:3997 npm test
+# ⚠ It must say `cycle: created` / `friend: created`. `exists` means you are talking
+#   to a server that is NOT on your fresh copy — stop and read the gotcha below.
+
+# 6 — run. DB_PATH is optional: no spec requires it any more. When it points at the
+#     same file the server was started with, guest-admin-view.spec.js adds one extra
+#     assertion (a GLOBAL `transactions` row count around the guest paid toggle,
+#     which also catches a row written with a NULL friend_id).
+DB_PATH="$RUN_DB" BASE_URL=http://localhost:3997 npm test -- --workers=1
 ```
 
-Two gotchas in that recipe that look like app bugs when you skip them:
+Gotchas in that recipe that look like app bugs when you skip them:
 
+- ⚠ **Free the port BEFORE you start the new server — that is why step 2 comes before
+  step 4, and the failure is silent.** Leave the old backend running and the new one
+  dies instantly with `EADDRINUSE` **in its own log only**; the port stays owned by
+  the old process, so every request — `seed.mjs` included — lands on **its** database,
+  not the fresh copy you just made. Nothing errors. The run measures the wrong data.
+  **The tell is `seed.mjs` printing `cycle: exists` / `friend: exists` (and
+  `admin: already set up`) on what should be a fresh copy** — if you see that, stop.
+  Order: **stop by the owning PID → confirm the port is free → copy the DB → start →
+  seed.** Verified 2026-09-19 (GR-T9).
+  ⚠ Related, if you reuse a fixed DB path instead of `mktemp`: `rm` + `cp` over a file
+  a server still holds open leaves that process on the **deleted inode**
+  (`/proc/<pid>/fd/20 → …run.sqlite (deleted)`, measured) while your copy sits unused,
+  and a plain `cp` onto the path is worse — it truncates in place and corrupts an open
+  database. A fresh `mktemp -u` name per run, as in step 3, has neither problem.
 - **`CORS_ORIGIN=http://localhost:PORT` is required**, not optional. The built
   SPA uses `crossorigin` script tags, so serving it from `backend/public` on a
   bare `localhost:PORT` without that origin allow-listed makes the asset
@@ -498,13 +587,15 @@ guest traffic than a real office does — `guest-order.spec.js` alone makes ~35 
 — so a full run against the defaults can 429 in unrelated-looking places. Give every
 limiter a generous budget:
 
-```bash
-DB_PATH=/tmp/gorifi-e2e.sqlite PORT=3997 CORS_ORIGIN=http://localhost:3997 \
-  RATE_LIMIT_AUTH_MAX=1000 RATE_LIMIT_ABUSE_MAX=2000 \
-  RATE_LIMIT_GUEST_READ_MAX=5000 RATE_LIMIT_GUEST_WRITE_MAX=5000 \
-  RATE_LIMIT_MAGIC_MAX=5000 \
-  node backend/src/index.js &
-```
+⚠ **All five are already on the server-start line in step 4 of the recipe above, and
+there is deliberately NO second copy of that command here.** Two sections of this file
+disagreeing about how to start the backend is exactly what created GR-T9 — and a copy
+in this section would be worse than merely redundant: it would reference `$RUN_DB`,
+which is only defined by step 3, and it would omit the Google vars, `setsid`, the log
+redirect and the stdin redirect. Raise the limits there, in the one runnable block.
+
+⚠ With all five raised, `rate-limit*.spec.js` and `magic-link-rate-limit.spec.js`
+self-skip — those are the documented skips, not a hole.
 
 **`backend/public` is git-ignored build output** — the build step in the recipe
 above is mandatory, not a convenience. Production never uses it (nginx serves
