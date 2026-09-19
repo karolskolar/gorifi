@@ -287,17 +287,28 @@ test.describe('API — UC-FC-004 name required', () => {
     expect(row.phone).toBe('0900111222')
   })
 
-  test('module-03 pin: PATCH /:id/profile keeps its own "Prihlasovacie meno" message', async () => {
-    // 11 §UC-FC-004 explicitly leaves the friend-profile route's copy to module 03
-    // (it serves FriendPortalSession.vue's pinned label). Only the ADMIN route was
-    // relabelled — this pin fails if the relabel over-reaches.
+  test('PATCH /:id/profile refuses a blank name with the SAME message as the admin route', async () => {
+    // ⚠ FUP-T21 (e2e-immutability case (a), RETARGET not weaken). This test used to pin
+    // the OPPOSITE: that UC-FC-004's relabel must NOT reach `PATCH /:id/profile`, because
+    // that route served the friend portal's own label. FUP-T20 retired that label (the
+    // field is `Meno a priezvisko *`, the Packeta delivery name — `friends.name` never was
+    // a login), so the old copy named a field that no longer exists on screen, and FUP-T21
+    // relabelled the route. The real, current invariant — and what this now pins — is:
+    // a blank/whitespace `name` still 400s (behaviour unchanged, the row is untouched), and
+    // the message is the SAME STRING the admin route uses, because the relabel covers both.
     const friend = await makeFriendWithSession('m03pin')
+    const before = (await friendRow(friend.id)).name
+    expect(before, 'fixture name is non-blank, so the read-back below is not vacuous').toBeTruthy()
     const res = await ctx.patch(`/api/friends/${friend.id}/profile`, {
       headers: friend.auth,
       data: { name: '   ' },
     })
     expect(res.status()).toBe(400)
-    expect((await res.json()).error).toContain('Prihlasovacie meno je povinné')
+    // `toBe`, not `toContain`: the rule this pins is BYTE-IDENTITY with the admin
+    // route's string, so a superset message must red here too.
+    expect((await res.json()).error).toBe('Meno a priezvisko je povinné')
+    // Refusal tests read the row back (CLAUDE.md spec hygiene): the blank never landed.
+    expect((await friendRow(friend.id)).name).toBe(before)
   })
 })
 

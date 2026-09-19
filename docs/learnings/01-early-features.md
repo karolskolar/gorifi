@@ -151,3 +151,85 @@
 ⚠ **`friends.display_name` (the admin-only Poznámka) was being SENT to the friend's browser, and the fix is route-scoped on purpose (FUP-T20).** `GET /friends/:id/profile` does `SELECT *` and `sanitizeFriend` strips credentials only, so the note travelled to every friend portal; nothing rendered it, but it was one DevTools tab from visible. It is `delete`d **in that route**, never in `sanitizeFriend` — that function has **7 call sites, several admin**, and `AdminFriends.vue` reads `display_name` for its Poznámka column off exactly those, so a central strip would silence the leak and blank the admin's note. Rule: `sanitizeFriend` stays the one home for **credential** stripping (11 §UC-FC-005); **audience-scoped** fields belong to their route. Pinned by a raw-body `not.toMatch(/display_name/)` on the friend route **plus an admin counter-assertion** that `GET /api/friends` and `GET /api/friends/:id/detail` still carry the note value — a removal-only test passes while breaking the admin.
 
 
+
+⚠ **FUP-T21 — the LAST copy of the "login name" lie, and four stale artefacts (2026-09-19).** Direct continuation of
+FUP-T20: the shipped UI was right, the surrounding artefacts still described the retired one. **Nothing here is
+UI-visible** — the relabelled branch is unreachable from the modal (the client guard disables Uložiť on a blank name),
+so the honest bar was `node --check` + the three e2e files that own the strings and the modal.
+
+- **Backend, `PATCH /api/friends/:id/profile` (`routes/friends.js`):** the blank/non-string `name` 400 answered
+  `'Prihlasovacie meno je povinné'` — a message naming a label that FUP-T20 deleted. Relabelled to
+  **`'Meno a priezvisko je povinné'`**, **byte-identical to `POST /api/friends`**. ⚠ **TEXT ONLY — no `field: 'name'`
+  marker was added**, though both admin sites carry one. ⚠ **The first draft of this row gave a FALSE reason for that**
+  — it claimed the 400 shape "is pinned by `nonstring-body-shape.spec.js`". **It is not** (review round 2): that spec
+  pins the status and the `error` string (`toBe`) plus `expectNoInternals()`, which greps only for stack traces and
+  TypeError text — **nothing asserts the absence of a `field` key**. Mutation-proven: with `field:'name'` added to the
+  route the suite stayed **green, 0 failures**. The real reason is scope — this row was a copy relabel, and widening a
+  response contract nobody asked about needs its own row (and its own assertion, added at the same time). ⚠ **The
+  meta-lesson is the valuable half: a comment asserting "a test protects this" is load-bearing. RUN the mutation
+  before writing it** — an unverified safety claim is worse than none, because the next reader trusts it instead of
+  checking. Both copies (route comment + this bullet) now state the true reason. ⚠ **New standing rule, and the first draft of it got its own lesson.** `'Meno a priezvisko je povinné'` has
+  **THREE** homes in `routes/friends.js` — `POST /`, the admin `PATCH /:id` (with `field:'name'`) and the friend
+  `PATCH /:id/profile` (no marker). ⚠ Cited by CONTENT, not line number, per CLAUDE.md: the first draft cited
+  865/925/1040 and the comments this very entry describes had already shifted them to 868/931/1049. The first pass of this row wrote the rule as "re-word one, re-word
+  both" and the route comment said "the **two** server messages" — **under-enumerating by one, which is the exact
+  failure mode this row exists to close**, caught in review. The rule is now stated over **the STRING, not a route
+  list**: *grep the string, re-word every hit or none* (CLAUDE.md), with a cross-reference comment at all three sites.
+  A rule anchored to a string survives the next route; a rule anchored to a list of routes does not.
+- **Two comment blocks in `friends.js` were actively false** and were rewritten, not just the string: `POST /`'s
+  "the module-03 PATCH /:id/profile message below deliberately keeps the OLD copy" and the PATCH route's "UC-FC-004's
+  relabel deliberately did not reach it". A stale *justification* comment is worse than a stale string — the next
+  implementer reads it as a live constraint and routes around it, which is precisely how this drift survived two rows.
+- **Two e2e pins retargeted (immutability case (a), cited in-file).** `nonstring-body-shape.spec.js:56`'s
+  `PROFILE_NAME_REQUIRED` constant — the file's header promises these are copied VERBATIM from the handlers, so the
+  constant moves with the handler and the promise stays true; the shape matrix is untouched.
+  `friends-consolidation.spec.js`'s `module-03 pin: … keeps its own "Prihlasovacie meno" message` test **pinned the
+  exact opposite of the current invariant** (that the relabel must NOT reach this route) — renamed to
+  `PATCH /:id/profile refuses a blank name with the SAME message as the admin route` and rewritten to pin what is
+  actually true, with the behavioural half strengthened: it now reads the row back before and after and proves the
+  blank never landed (with a non-vacuity gate on the fixture name — `makeFriendWithSession` returns
+  `{id, username, token, auth}` and **no `name`**, so the obvious `expect(row.name).toBe(friend.name)` would have
+  compared against `undefined` and passed vacuously).
+- **Seven artefacts, not the three the backlog row listed** (four found by me, three more by the reviewer). (1) `03-friend-login-portal.md §UC-FL-009` still
+  specified the retired modal verbatim — the `Jedinečné ID + Užívateľské meno` table row, the `Prihlasovacie meno *`
+  label, the help text `Toto meno vidí správca a kolegovia.`, and the "ID and username are read-only by design" rule
+  (the uid half no longer has a referent). (2) `11-friends-consolidation.md`'s **one-file grep guard**, in **three**
+  places (§UC-FC-002 business rule, §UC-FC-003 acceptance, §Implementer gate) — all three now carry CLAUDE.md's
+  two-file form plus the qualifier that the rule is *"no view that edits `friends.name` may call it a login"*, not
+  *"the word is banned"*. (3) §UC-FC-004's `⚠ Do NOT touch PATCH /friends/:id/profile` bullet, struck with a pointer,
+  and its "the last backend string claiming this field is a login" parenthetical corrected (it was never the last —
+  this route kept the copy, and `invitations.js`'s `USERNAME_REQUIRED_MESSAGE` still uses it **legitimately, for a
+  real `username` field**). (4) ⚠ **Not in the row: module 11's own scope note** (lines 15-16) named the same
+  "pinned `Prihlasovacie meno` label" as an out-of-scope handoff — annotated. (5) ⚠ **Also not in the row's original
+  three: `18-portal-information-architecture.md`** quoted the server string in a business rule; module 18 governs the
+  unstarted PI-T* rows, so it would have handed the next implementer the dead string. The substantive rule (the view
+  does not echo the server string; the empty-name signal is the disabled button) is intact.
+- ⚠⚠ **MODULE 07 IS THE RULE'S HOME, AND THE FIRST PASS MISSED IT ENTIRELY** (reviewer finding, major).
+  `07-invitation-approval.md` §UC-IA-007 is where the grep guard ORIGINATES, and it carried **four** live claims
+  describing the retired UI: the scope note's *"`FriendPortalSession.vue`'s identical label — DO NOT touch it"*
+  (`:15-16`), resolved conflict #2's *"the same string in `FriendPortalSession.vue` is pinned and stays"* (`:55-59`),
+  §UC-IA-007's *"⚠ Do NOT touch `FriendPortalSession.vue`"* bullet (`:351-353`, structurally the **same bullet**
+  struck at `11-friends-consolidation.md` §UC-FC-004), and the **one-file** grep in its acceptance criteria (`:358`).
+  ⚠ This was not a dormant document: `FriendPortalSession.vue:1758` and `portal-profile-modal.spec.js:388`/`:414` all
+  point readers **at 07 §UC-IA-007** — so three live pointers landed on a page saying "one file, do not touch that
+  view", the precise narrowness the bug is attributed to, **left intact at its source**. All four fixed (struck with
+  pointers; the acceptance grep widened). **Lesson: when a row widens a rule, sweep the module that OWNS the rule
+  first, not only the modules that quote it** — and follow the pointers in code/tests back to their target.
+- **Two more the reviewer caught.** `e2e/README.md:236` still said the friend-portal label *"is correct there"* — the
+  exact sentence `admin-friends-labels.spec.js:26-33` records as having been WRONG and corrected by FUP-T20; the
+  correction landed in the spec file and the README copy was missed. ⚠ **My sweep grepped only the full message
+  string, which does not match that line** — widen sweep terms to the CONCEPT (`prihlasovac`, `Prihlasovacie meno`,
+  `is correct there`), not just the literal being changed. And `portal-profile-modal.spec.js:388`/`:414` said module
+  11 states the one-file form "and CLAUDE.md now names BOTH views" — true before this row, stale after it (comments
+  carry invariants here, so a comment that is stale *because of your own diff* is a real defect).
+- **`friends-consolidation.spec.js` tightened `toContain` → `toBe`** on the message: the test's title and the new rule
+  both promise BYTE-IDENTITY, so a superset message must red. `toContain` was inherited from the old pin.
+- ⚠ **The documentation-discipline lesson, restated.** Every superseded claim here was marked `~~struck~~` with a
+  pointer rather than deleted, because a reader diffing code against spec needs to see *that* it changed, not just
+  the new state. And the backlog row's own map was incomplete by two files — `grep` the tree, never trust the map.
+- **Final sweep.** `grep -rn "Prihlasovacie meno je povinné"` over `*.js`/`*.vue`/`*.md` leaves exactly:
+  `invitations.js:78` (`USERNAME_REQUIRED_MESSAGE` — a real username field, correctly untouched) and struck /
+  historical references in `docs/` + `PROGRESS.md`'s Log, which are records, not claims. ⚠ Sweep the CONCEPT too —
+  `grep -rni "prihlasovac"` over `e2e/` and `docs/` is what surfaces the copies that never quoted the message. The
+  two-file guard
+  `grep -i prihlasovac frontend/src/views/AdminFriends.vue frontend/src/views/FriendPortalSession.vue` stays empty.

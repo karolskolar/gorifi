@@ -232,9 +232,13 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   attributes** (the retired claim lived in a `placeholder=`, invisible to an
   innerText-only sweep), and `/admin/friends?create=1&name=X` opening the plain list
   with no modal. `Prihlásenie` (the credentials column) is deliberately kept and
-  asserted present. Scoped entirely to `/admin/friends`: the identical label in
-  `FriendPortalSession.vue` is correct there and belongs to
-  `tests/portal-profile-modal.spec.js`.
+  asserted present. Scoped to `/admin/friends`; the friend half of the SAME rule lives in
+  `tests/portal-profile-modal.spec.js`. ⚠ This entry used to say the identical label in
+  `FriendPortalSession.vue` "is correct there" — **it was not** (that field writes the same
+  `friends.name` column, and it shipped the lie to production; FUP-T20). The guard is
+  **two views**: `grep -i prihlasovac frontend/src/views/AdminFriends.vue
+  frontend/src/views/FriendPortalSession.vue` must stay empty — no view that edits
+  `friends.name` may call it a login.
 - `tests/self-hosted-fonts.spec.js` — RD-DS-6: the brand webfonts must be
   **self-hosted**, and the CSP hole that hid it. The Podpultovka restyle loaded
   Darker Grotesque / Figtree / Courier Prime from `fonts.googleapis.com`, which

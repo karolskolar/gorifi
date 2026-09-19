@@ -514,15 +514,26 @@ render flat 2px-border cards with mono totals; clicking a row opens the cycle.
 
 | Field | Markup / rules |
 |---|---|
-| Jedinečné ID + Užívateľské meno | one row `display:flex; gap:10px`, two read-only value boxes: each a `label.field-lbl` over `div.copyrow > div.val` containing `getCurrentFriendUid()` / `currentFriend.username` (no copy button — the `.copyrow .val` box is the prototype's read-only style). The username field renders **only when `currentFriend.username` exists** (repo behavior: legacy friends may have none; prototype demo always has one — behavior wins). |
-| Prihlasovacie meno * | `label.field-lbl` "Prihlasovacie meno *" + `input.inp` bound to `profileName`, `field-help` **"Toto meno vidí správca a kolegovia."** Required (trimmed non-empty) — enforced by the disabled save button as today. |
+| Užívateľské meno | one row `display:flex; gap:10px` holding **one** read-only value box: a `label.field-lbl` over `div.copyrow > div.val` containing `currentFriend.username` (no copy button — the `.copyrow .val` box is the prototype's read-only style; the `div` is not labelable, so the label carries the `id` and the box points back with `aria-labelledby`). Renders **only when `currentFriend.username` exists** (repo behavior: legacy friends may have none; prototype demo always has one — behavior wins). ~~a second read-only box to its left with `getCurrentFriendUid()` (`Jedinečné ID`)~~ **SUPERSEDED — REMOVED by FUP-T20** (product decision): `friends.uid` is an internal identifier with nothing a friend can read off it or act on. Presentation-only removal — the uid still rides in the stored session and in the admin's own ID column. The flex row is kept as-is (it is what preserves the content-sized `.copyrow` rendering). |
+| Meno a priezvisko * | `label.field-lbl` "Meno a priezvisko *" + `input.inp` bound to `profileName`, `field-help` **"Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia."** Required (trimmed non-empty) — enforced by the disabled save button as today. ~~label "Prihlasovacie meno *", `field-help` "Toto meno vidí správca a kolegovia."~~ **SUPERSEDED — RELABELLED by FUP-T20** (product-owner mapping confirmed 2026-08-17): this input writes **`friends.name`**, which is the **Meno a priezvisko** the friend supplies and which is **required for Packeta delivery** — it never was a login. The login is the read-only `username` box above; `friends.display_name` is an **admin-only** sidenote and never appears in the friend portal (and FUP-T20 also stopped `GET /friends/:id/profile` sending it). The old label was the same mislabel module 11 fixed in `AdminFriends.vue`, surviving here because 11 §UC-FC-002's grep guard named one file — see FUP-T21 for the two-file form. |
 | Adresa Packeta výdajného miesta | `label.field-lbl` + `input.inp` bound to `profilePacketaAddress`, placeholder **"napr. Z-BOX Hlavná 15, Bratislava"**, `field-help` **"Predvolená adresa pre doručenie Packetou (voliteľné)."** Saved as `null` when blank (existing `saveProfile`). |
 | Password-change fold | section separated by `border-top: 2px solid rgba(10,10,10,0.12); padding-top: 12px`. Rendered **only when `currentFriend.hasCredentials`** (repo behavior). Toggle: `button.btn.ghost.sm` (`color:var(--accent); font-weight:700; padding:0`) — label **"Zmeniť heslo"** closed / **"Skryť zmenu hesla"** open. Fold content (column `gap:12px; margin-top:12px`): three `field-lbl` + `input.inp type="password"` fields **"Aktuálne heslo"**, **"Nové heslo"**, **"Potvrdiť nové heslo"** (Enter in the last submits), then `button.btn.sm.dark` **"Zmeniť heslo"** (label "Mením heslo..." while saving; disabled until all three filled). |
+
+⚠ **OPEN — this field table and the `saveProfile()` payload below are INCOMPLETE, and
+FUP-T21 deliberately did not fold the gap in** (it is other rows' scope and their shipped
+behaviour was not verified here). The table predates **FC-T4**, which added the friend's
+own **Mobil** and **Email** fields to this modal, and **GA-T7**, which added the **Google
+link/unlink section**; neither appears above, and the payload below is still described as
+`{ name, packeta_address }` when `saveProfile()` also sends the contact fields it changed.
+Everything the table DOES describe was re-verified against `FriendPortalSession.vue` by
+FUP-T21 and is accurate. See `18-portal-information-architecture.md` §Profile modal for
+the current full composition, and 11 §UC-FC-009 / 10 §UC-GA-007 for the two additions.
 
 **Business rules:**
 
 - `saveProfile()` behavior unchanged: `PATCH /friends/:id/profile` with
-  `{ name, packeta_address }`; updates `currentFriend`, the legacy dropdown list entry,
+  `{ name, packeta_address }` (⚠ see the OPEN note above — FC-T4 added changed-only
+  `phone`/`email` to this payload); updates `currentFriend`, the legacy dropdown list entry,
   and the stored `friendName` in localStorage; closes on success; errors surface via
   the view's `error` (render inside the modal body as `.banner.danger.slim` so the user
   sees it in context).
@@ -533,9 +544,20 @@ render flat 2px-border cards with mono totals; clicking a row opens the cycle.
   above the password fields (prototype silent; 02 semantic grammar).
 - Inputs must have programmatic label association (`for`/`id`) — the theme's
   `label.field-lbl` is a real `<label>`; getByLabel-style queries must keep working.
-- ID and username are **read-only by design** (uid immutable; username changes are not
-  a friend-facing feature). The old helper texts ("Toto ID sa nedá zmeniť") are dropped
-  — prototype shows none for the read-only row.
+- `username` is **read-only by design** — re-confirmed by the product owner in FUP-T20:
+  the admin renames, and module 10's Google login likely removes the need entirely.
+  Changing it is not a friend-facing feature. No helper text under the read-only row
+  (the prototype shows none; the old "Toto ID sa nedá zmeniť" is dropped).
+  ~~ID and username are read-only by design (uid immutable; …)~~ — the **uid half no
+  longer applies**: FUP-T20 removed the `Jedinečné ID` box from this modal entirely, so
+  there is nothing left to describe as read-only. The uid itself is unchanged.
+- ⚠ **The server's blank-name refusal on `PATCH /friends/:id/profile` answers
+  `'Meno a priezvisko je povinné'`** — byte-identical to `POST /api/friends`. FUP-T21
+  carried 11 §UC-FC-004's relabel to this route once FUP-T20 retired the label the old
+  copy named. ~~`'Prihlasovacie meno je povinné'`, deliberately left as module 03's own
+  copy~~ — superseded, see 11 §UC-FC-004 and FUP-T21. The branch is unreachable from
+  this modal (the disabled save button is the client-side gate); it is pinned by
+  `friends-consolidation.spec.js` and `nonstring-body-shape.spec.js`.
 
 **Acceptance criteria:** modal matches the prototype (side-by-side with the live
 prototype's profile modal — no numbered screenshot exists; the prototype shell is the

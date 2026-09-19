@@ -12,8 +12,13 @@
 > Out of scope (handoffs): **SMTP email delivery** of credentials — recorded phase-2
 > follow-up, the dialog's copy button is the whole delivery mechanism in this phase;
 > **digit-normalised phone dedupe at approval** — accepted risk (see §Accepted risks);
-> **`FriendPortalSession.vue`'s identical "Prihlasovacie meno" label** — pinned ~10× by
-> `portal-profile-modal.spec.js`, DO NOT touch it (module 03 §UC-FL-009 owns that modal);
+> ~~**`FriendPortalSession.vue`'s identical "Prihlasovacie meno" label** — pinned ~10× by
+> `portal-profile-modal.spec.js`, DO NOT touch it (module 03 §UC-FL-009 owns that modal);~~
+> ⚠ **SUPERSEDED by FUP-T20/FUP-T21 — this hand-off was the bug.** That label sat on the
+> field writing the SAME `friends.name` column this module relabelled, so "out of scope,
+> do not touch" shipped the identical lie to production. FUP-T20 relabelled it
+> **`Meno a priezvisko *`** and FUP-T21 carried the relabel to the route's message. Module
+> 03 §UC-FL-009 still owns that modal — but §UC-IA-007's rule now BINDS it (see below);
 > **the forced-change gate itself** — already shipped and e2e-covered (module 03
 > §UC-FL-012 + `modern-login.spec.js` §"Forced password change"); this module only SETS
 > `must_change_password = 1`.
@@ -52,11 +57,17 @@
    is **deleted** (UC-IA-007), `guest-lead-capture.spec.js:538-565` — which pins the old
    navigation — is retargeted (UC-IA-008), and the CLAUDE.md 2026-07-07 note becomes
    partially stale (the "Vytvoriť → query params" half).
-2. **"Prihlasovacie meno" in AdminFriends is a misnomer and is relabelled; the same
-   string in `FriendPortalSession.vue` is pinned and stays.** The label promises a login
-   but writes `friends.name` (a display label). Resolution: relabel only the admin
-   surface (UC-IA-007); the friend-portal profile modal's label is protected by
-   ~10 assertions in `portal-profile-modal.spec.js` and belongs to module 03.
+2. **"Prihlasovacie meno" in AdminFriends is a misnomer and is relabelled.** The label
+   promises a login but writes `friends.name` (a display label). Resolution: relabel the
+   admin surface (UC-IA-007).
+   ~~the same string in `FriendPortalSession.vue` is pinned and stays … relabel ONLY the
+   admin surface; the friend-portal modal's label is protected by ~10 assertions in
+   `portal-profile-modal.spec.js` and belongs to module 03.~~ ⚠ **SUPERSEDED by
+   FUP-T20/FUP-T21, and this half of the resolution was WRONG on the facts.** The friend
+   modal's field binds `profileName` → writes the SAME `friends.name` column, so it was
+   the identical misnomer, not a legitimate twin; the e2e assertions pinned the lie rather
+   than protecting a truth (they were retargeted, case (a), by FUP-T20). Both views now
+   read **"Meno a priezvisko"**, and the rule below is stated over BOTH.
 3. **`generateTempPassword()` wraps `randomCode(12)`, never `generateGuestToken()`.**
    SEC-S2 says one RNG home; `generateGuestToken()` is that same RNG but is a
    guest-token *concept* (14 chars, exported for guest links). The temp password gets
@@ -348,15 +359,32 @@ prefill path is deleted.
   `route.query.create === '1'` branch incl. the `router.replace` cleanup) — its only
   caller was retired in UC-IA-006 (resolved conflict #1). Cite by content, not line
   number (the plan's 53-63 has drifted; the block currently sits ~293-303).
-- ⚠ **Do NOT touch `FriendPortalSession.vue`** — its "Prihlasovacie meno" label is
+- ~~⚠ **Do NOT touch `FriendPortalSession.vue`** — its "Prihlasovacie meno" label is
   pinned ~10× by `portal-profile-modal.spec.js` and belongs to module 03 (resolved
-  conflict #2).
+  conflict #2).~~ ⚠⚠ **SUPERSEDED by FUP-T20/FUP-T21 — this bullet is the reason the bug
+  reached production.** It reads as scope hygiene but its premise was false: that label
+  was on the same `friends.name` column, so "belongs to module 03" quarantined the bug
+  instead of the file. Both views now say **"Meno a priezvisko"**, and this rule is stated
+  over **every view that edits `friends.name`**, not over the view the bug was found in.
+  (The structurally identical bullet at `11-friends-consolidation.md` §UC-FC-004 — about
+  the `PATCH /friends/:id/profile` message — was struck by FUP-T21 for the same reason.)
 - The per-friend username/password menu actions and their endpoints are unchanged —
   they remain the manual credentials path for pre-existing friends.
 
-**Acceptance criteria:** the friends table header and the modal label read "Meno";
-grep for "prihlasovac" in `AdminFriends.vue` returns nothing; `/admin/friends?create=1&name=X`
-opens the plain list with no modal; `portal-profile-modal.spec.js` passes unmodified.
+**Acceptance criteria:** the friends table header and the modal label read "Meno"
+(later "Meno a priezvisko" — 11 §UC-FC-001); ⚠ **`grep -i prihlasovac
+frontend/src/views/AdminFriends.vue frontend/src/views/FriendPortalSession.vue` returns
+nothing — TWO files** (widened by FUP-T20, carried here by FUP-T21; this is the rule's
+ORIGIN, and the one-file form is what let the identical mislabel ship in the friend
+portal). The rule is **"no view that edits `friends.name` may call it a login"**, not "the
+word is banned" — `AdminInvitations.vue` / `InviteRegister.vue` legitimately carry the
+substring for the real `friends.username`, and the admin table's `Prihlásenie` column
+header reports real credential state. ~~grep for "prihlasovac" in `AdminFriends.vue`
+returns nothing~~ (one-file form, superseded); `/admin/friends?create=1&name=X`
+opens the plain list with no modal; ~~`portal-profile-modal.spec.js` passes unmodified~~
+(⚠ true for IA-T5's own gate only — **FUP-T20 retargeted that file**, case (a), when it
+relabelled the friend modal; it is no longer an untouchable file, it is the file that owns
+the friend half of this rule).
 
 ---
 
@@ -396,7 +424,10 @@ rule (module 03 §UC-FL-013 amendment): this module *mandates* the behaviour/str
 changes that invalidate those assertions. Each edit re-points the assertion at the
 mandated structure and protects the same property — never weakens it — and cites the
 mandating UC in a code comment. All other pre-existing specs (notably
-`portal-profile-modal.spec.js`) must pass **unchanged**.
+~~`portal-profile-modal.spec.js`~~) must pass **unchanged** (⚠ true for IA-T5's own gate
+only — **FUP-T20 retargeted `portal-profile-modal.spec.js`**, case (a), when it relabelled
+the friend modal; it is no longer an untouchable file, it is the file that owns the friend
+half of §UC-IA-007's rule. Same annotation as the acceptance criterion above).
 
 **Procedure:**
 

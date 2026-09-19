@@ -12,8 +12,10 @@
 > drops, no destructive migration.** The admin app stays on the current shadcn skin — no
 > Podpultovka re-skin (01-architecture §Design system scope rule).
 > Out of scope (handoffs): **friend-side profile editing** — the "Upraviť profil" modal
-> (`FriendPortalSession.vue`, module 03 §UC-FL-009) including its pinned "Prihlasovacie
-> meno" label and the `PATCH /friends/:id/profile` backend message that serves it;
+> (`FriendPortalSession.vue`, module 03 §UC-FL-009) including its ~~pinned "Prihlasovacie
+> meno" label~~ name label and the `PATCH /friends/:id/profile` backend message that serves
+> it (⚠ both SUPERSEDED: FUP-T20 relabelled that field to **"Meno a priezvisko *"** and
+> FUP-T21 relabelled the route's message to match this module's — see §UC-FC-004);
 > **friend-side Google link/unlink and the `google_*` schema** — module 10 (UC-GA);
 > **magic-link recovery itself** — module 09 (UC-ML; this module only makes a missing
 > `email` VISIBLE, since it blocks that recovery path); **the invitation → friend approval
@@ -150,10 +152,18 @@ after `sanitizeFriend`; no backend change for this half, resolved conflict #3):
 
 - The header relabel "Meno" → "Meno a priezvisko" carries the manual data-cleanup pass
   (resolved conflict #5): the surface is the cleanup tool, there is no migration.
-- No string anywhere in `AdminFriends.vue` may claim the name field is used for login —
-  the standing 07 §UC-IA-007 rule; testable as `grep -i prihlasovac
-  frontend/src/views/AdminFriends.vue` returning nothing (the "Prihlásenie" header does
-  not match that pattern and is the one legitimate login-related string).
+- ⚠ **The guard is TWO FILES, not one** (widened by FUP-T20, carried here by FUP-T21).
+  The rule is **"no view that edits `friends.name` may call it a login"** — not "the word
+  is banned". Testable as `grep -i prihlasovac frontend/src/views/AdminFriends.vue
+  frontend/src/views/FriendPortalSession.vue` returning nothing (the standing 07
+  §UC-IA-007 rule; CLAUDE.md carries the same form). The "Prihlásenie" header does not
+  match that pattern and is the one legitimate login-related string in the admin view.
+  ~~`grep -i prihlasovac frontend/src/views/AdminFriends.vue` (one file)~~ **SUPERSEDED —
+  and the one-file form is exactly what let the bug survive:** `FriendPortalSession.vue`
+  carried the identical mislabel on the identical column and shipped to production, because
+  the guard named the view the bug was found in rather than every view that edits the
+  column. `AdminInvitations.vue` / `InviteRegister.vue` legitimately contain the substring —
+  they label the real `friends.username`.
 - Admin skin: shadcn Table/Badge as shipped; no `neo/` classes, no theme tokens.
 
 **Acceptance criteria:** the header row reads "Meno a priezvisko", "Kontakt", "Google";
@@ -216,8 +226,11 @@ labelled, bounded, with hints that tell the truth.
 
 **Acceptance criteria:** the modal shows exactly 4 writable fields labelled per the
 table; each input's `maxlength` matches the server bound; edit mode shows the read-only
-Prihlásenie line; `grep -i prihlasovac frontend/src/views/AdminFriends.vue` returns
-nothing; the reset-password placeholder reads "Minimálne 8 znakov".
+Prihlásenie line; `grep -i prihlasovac frontend/src/views/AdminFriends.vue
+frontend/src/views/FriendPortalSession.vue` returns nothing (⚠ TWO files — FUP-T20/T21;
+the rule is "no view that edits `friends.name` may call it a login", so
+`AdminInvitations.vue` / `InviteRegister.vue`, which label the real `username`, are out
+of scope); the reset-password placeholder reads "Minimálne 8 znakov".
 
 ---
 
@@ -241,8 +254,11 @@ bounds the UI mirrors — the UC-IA-003 hardening pattern applied to `friends.js
 - **Errors:** 400 with a Slovak message + a `field` marker (the guest.js contract), e.g.
   `{ error: 'Meno a priezvisko je povinné', field: 'name' }`.
 - **`name` required, both routes:** `POST` without a non-empty trimmed `name` ⇒ 400
-  (message relabelled from the current `'Prihlasovacie meno je povinné'` — the last
-  backend string claiming this field is a login on the ADMIN path). `PATCH` with
+  (message relabelled from the then-current `'Prihlasovacie meno je povinné'` — at the
+  time, the last such backend string on the ADMIN path. ⚠ It was **not** the last one in
+  the app: `PATCH /friends/:id/profile` kept the old copy until **FUP-T21** relabelled it
+  too, and `invitations.js`'s `USERNAME_REQUIRED_MESSAGE` still uses it legitimately, for
+  a **real username** field). `PATCH` with
   `name` present but empty after trim ⇒ **400** (today it silently writes `''`,
   blanking the display name of every list the friend appears in). `name` absent from a
   PATCH body ⇒ untouched, as today.
@@ -250,9 +266,16 @@ bounds the UI mirrors — the UC-IA-003 hardening pattern applied to `friends.js
   (confirmed: format leniency is deliberate — the field is admin-entered contact data,
   not a deliverability guarantee; module 08/09 surface real bounces operationally).
   Phone gets NO format validation — length only.
-- ⚠ **Do NOT touch `PATCH /friends/:id/profile`** (line ~552's
+- ~~⚠ **Do NOT touch `PATCH /friends/:id/profile`** (line ~552's
   `'Prihlasovacie meno je povinné'` message): it serves `FriendPortalSession.vue`'s
-  pinned label and belongs to module 03. Only the admin route's message is relabelled.
+  pinned label and belongs to module 03. Only the admin route's message is relabelled.~~
+  **SUPERSEDED by FUP-T21.** The premise died with FUP-T20: the friend portal's label is
+  now `Meno a priezvisko *` (the Packeta delivery name), so the old copy named a field
+  that no longer exists on screen. FUP-T21 relabelled that route to the **byte-identical**
+  `'Meno a priezvisko je povinné'` — text only, the 400 shape is unchanged (no `field`
+  marker) — and retargeted both pins (`friends-consolidation.spec.js`,
+  `nonstring-body-shape.spec.js`). The two messages must stay identical: re-word one,
+  re-word both.
 - Everything else preserved verbatim: `requireAdmin`, uid/invite-code collision loops,
   `getPlaceholderCycleId()`, `access_token = nanoid(12)`, session invalidation on
   deactivate, the 201/200 `sanitizeFriend` responses.
@@ -408,9 +431,13 @@ exists (01-architecture §Testing) — the bar is Playwright e2e + `node --check
    - **Fixtures per test, not a shared `beforeAll`** (the GSO-T8 worker-restart lesson);
      any UI admin login must adopt the browser's token if mixed with API `admin()` calls
      (there is exactly ONE admin token app-wide — the IA harness trap).
-5. **Implementer gate (not e2e):** `grep -i prihlasovac frontend/src/views/AdminFriends.vue`
-   returns nothing — run it after every copy change in this file, including the new hints
-   (UC-FC-003 chose its wording specifically to pass it).
+5. **Implementer gate (not e2e):** `grep -i prihlasovac frontend/src/views/AdminFriends.vue
+   frontend/src/views/FriendPortalSession.vue` returns nothing — ⚠ **TWO files** (widened by
+   FUP-T20, carried here by FUP-T21; the one-file form is what let the identical mislabel
+   ship in the friend portal). Run it after every copy change in either file, including the
+   new hints (UC-FC-003 chose its wording specifically to pass it). The rule is "no view that
+   edits `friends.name` may call it a login" — `AdminInvitations.vue` / `InviteRegister.vue`
+   legitimately carry the substring for the real `friends.username`.
 6. UC-FC-006's task adds unlink API + UI tests per its acceptance criteria, gated on
    module 10's schema task having landed.
 

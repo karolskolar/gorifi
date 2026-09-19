@@ -857,8 +857,14 @@ router.post('/', requireAdmin, (req, res) => {
 
   if (!name) {
     // Relabelled from 'Prihlasovacie meno je povinné' (11 §UC-FC-004) — `name` is a
-    // display label and never was a login (07 §UC-IA-007 history). The module-03
-    // PATCH /:id/profile message below deliberately keeps the OLD copy.
+    // display label and never was a login (07 §UC-IA-007 history).
+    // ⚠ FUP-T21: the module-03 PATCH /:id/profile message below used to keep the OLD
+    // copy on purpose; it no longer does (FUP-T20 relabelled the FRIEND portal field too).
+    // ⚠ 'Meno a priezvisko je povinné' is ONE STRING WITH THREE HOMES IN THIS FILE:
+    // here (POST /), the admin PATCH /:id, and the friend PATCH /:id/profile. They are
+    // byte-identical by rule. GREP THE STRING before re-wording — change every hit or
+    // none. (The two admin sites also carry `field: 'name'`; the friend route
+    // deliberately does not — see the note there.)
     return res.status(400).json({ error: 'Meno a priezvisko je povinné', field: 'name' });
   }
 
@@ -918,6 +924,9 @@ router.patch('/:id', requireAdmin, (req, res) => {
   // `name` present but blank after trim used to silently write '' — blanking the
   // display name in every list the friend appears in (11 §UC-FC-004). Absent stays
   // "untouched", as before.
+  // ⚠ SECOND of the THREE homes of 'Meno a priezvisko je povinné' (POST / above, PATCH /:id/profile
+  // below). Byte-identical by rule — grep the string, re-word every hit or none (FUP-T21,
+  // whose first pass named only two of the three and had to be corrected in review).
   if (name !== undefined && !name) {
     return res.status(400).json({ error: 'Meno a priezvisko je povinné', field: 'name' });
   }
@@ -1020,15 +1029,35 @@ router.patch('/:id/profile', (req, res) => {
     return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
   }
 
-  // Module 03's own name rule — this message is pinned (friends-consolidation
-  // "module-03 pin"); UC-FC-004's relabel deliberately did not reach it.
+  // Module 03's own name rule. ⚠ FUP-T21 — UC-FC-004's relabel HAS NOW REACHED THIS
+  // ROUTE: it was held back only because the friend portal still labelled the field
+  // "the login name", and FUP-T20 retired that label (the field is `Meno a priezvisko *`,
+  // the PACKETA DELIVERY name — `friends.name` never was a login; the login is the
+  // read-only `username`). The old copy therefore named a field that no longer exists
+  // on any screen. ⚠ The message is byte-identical to the OTHER TWO homes of this string
+  // in this file — `POST /` and the admin `PATCH /:id` — deliberately. Grep the string,
+  // re-word every hit or none.
+  // ⚠ TEXT ONLY — no `field` marker was added here, though the two admin sites have one.
+  // ⚠ AND THE REASON IS NOT "a test pins the shape": VERIFIED (FUP-T21 review round 2) —
+  // `nonstring-body-shape.spec.js` pins the STATUS and the `error` STRING (`toBe`) plus
+  // `expectNoInternals()`, which only greps for stack traces and TypeError text. NOTHING
+  // asserts the ABSENCE of a `field` key, so adding one here would red no test. Proven by
+  // mutation: with `field:'name'` added, the suite stayed green. The real reason is
+  // scope — FUP-T21 was a copy relabel, and widening a response contract nobody asked
+  // about is a separate, deliberate decision that needs its own row. If you add it, add
+  // the assertion that pins it at the same time.
+  //
+  // ⚠ META-LESSON, recorded because this comment itself got it wrong first: a comment
+  // asserting "a test protects this" is a load-bearing claim. RUN the mutation before
+  // writing it — an unverified safety claim is worse than none, because the next reader
+  // trusts it instead of checking.
   //
   // ⚠ FUP-T12: the type guard is FOLDED INTO the existing rule, exactly as ML-T6 /
   // FUP-T10 / FUP-T11 folded theirs into a length rule — same status, same message,
   // no new branch. `!name.trim()` threw on every non-string AND on an explicit
   // `null` (`null !== undefined` is true), so `{name: null}` was a 500 too.
   if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
-    return res.status(400).json({ error: 'Prihlasovacie meno je povinné' });
+    return res.status(400).json({ error: 'Meno a priezvisko je povinné' });
   }
 
   // UC-FC-009: phone/email self-edit with UC-FC-004's exact bounds/type guards

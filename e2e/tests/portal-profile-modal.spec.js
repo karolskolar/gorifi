@@ -385,11 +385,13 @@ test.describe('Profile modal — structure on NeoModal (UC-FL-009)', () => {
  * FUP-T20 — the guard that let this bug survive, now MACHINE-CHECKED on the
  * friend surface too.
  *
- * 07 §UC-IA-007 / 11 §UC-FC-002 state the rule as `grep -i prihlasovac
+ * 07 §UC-IA-007 / 11 §UC-FC-002 USED TO state the rule as `grep -i prihlasovac
  * frontend/src/views/AdminFriends.vue` returning nothing. That grep named ONE
  * file, and the identical label lived in `FriendPortalSession.vue` on a field
  * that writes the same `friends.name` column — so the admin half was fixed by
  * module 11 while the friend half shipped the same lie to staging.
+ * ⚠ FUP-T21 widened BOTH specs (and 07's two "do not touch that view" bullets) to
+ * the two-file form, so they no longer disagree with CLAUDE.md or with this file.
  *
  * The sweep is the `admin-friends-labels.spec.js` idiom (text AND the attributes
  * that render as copy), pointed at the friend portal with the profile modal open.
@@ -412,8 +414,8 @@ function collectCopy() {
 test.describe('⚠ FUP-T20 — no copy on the friend surface claims the name is a login', () => {
   /**
    * The guard AS IT IS WRITTEN, executed. §UC-FC-002 / 07 §UC-IA-007 state it as a
-   * grep over source, and CLAUDE.md now names BOTH views — so this test runs that
-   * grep instead of trusting someone to. It is the half the DOM sweep below cannot
+   * grep over source, and since FUP-T21 they name BOTH views, as CLAUDE.md does — so
+   * this test runs that grep instead of trusting someone to. It is the half the DOM sweep below cannot
    * cover: a string in a dialog state no test happens to open is invisible to the
    * browser and plainly visible here.
    *

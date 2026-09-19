@@ -53,7 +53,12 @@ const ONB_EMAIL_INVALID = 'Neplatný email'
 const ONB_USERNAME_REQUIRED = 'Uzivatelske meno je povinne'
 const LINK_NOTE_REQUIRED = 'Popis je povinný'
 const LINK_NOTE_EMPTY = 'Popis nemôže byť prázdny'
-const PROFILE_NAME_REQUIRED = 'Prihlasovacie meno je povinné'
+// ⚠ FUP-T21 (e2e-immutability case (a), RETARGET not weaken): this route's message was
+// relabelled to match `POST /api/friends` byte for byte, because FUP-T20 retired the
+// portal label the old copy named. Still copied VERBATIM from the handler
+// (`backend/src/routes/friends.js`, PATCH /:id/profile) — the shape matrix below is
+// unchanged and still proves every non-string 400s rather than 500s.
+const PROFILE_NAME_REQUIRED = 'Meno a priezvisko je povinné'
 const PARCEL_ADDRESS_REQUIRED = 'Adresa výdajného miesta je povinná'
 const PICKUP_NAME_REQUIRED = 'Názov je povinný'
 const ROASTERY_NAME_REQUIRED = 'Názov pražiarne je povinný'
@@ -558,7 +563,7 @@ test.describe('FUP-T12 — PATCH /api/friends/:id/profile with non-string text',
       })
       expect(res.status(), `${label(name)} is a client mistake`).toBe(400)
       const body = await res.json()
-      expect(body.error, 'module 03\'s pinned message, unchanged').toBe(PROFILE_NAME_REQUIRED)
+      expect(body.error, 'the route\'s blank-name message, verbatim (FUP-T21 relabel)').toBe(PROFILE_NAME_REQUIRED)
       expectNoInternals(body)
     })
   }

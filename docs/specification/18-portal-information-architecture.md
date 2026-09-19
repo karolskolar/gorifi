@@ -805,10 +805,12 @@ requirement: `getByTestId('profile-uid')` count 0, the text „Jedinečné ID“
   additions: `phone` present and blank (`''`/`null`) ⇒ **400 `{ error: 'Zadajte mobilné
   číslo', field: 'phone' }`** (this route only; the admin PATCH may still clear a phone);
   the shipped contact gate (401 when identity is unresolved, friends.js:1015) stays; the
-  pinned name message `'Prihlasovacie meno je povinné'` is a **server** string
-  (friends-consolidation „module-03 pin“) and is not rendered from the view — the view's
-  own client message for an empty name stays the disabled button; ⚠ do not echo that
-  server string into `FriendPortalSession.vue`.
+  blank-name message `'Meno a priezvisko je povinné'` is a **server** string (⚠ FUP-T21
+  relabelled it from `'Prihlasovacie meno je povinné'` — the old copy named the label
+  FUP-T20 retired; it is now byte-identical to `POST /api/friends`, so re-wording one means
+  re-wording both) and is **not rendered from the view** — the view's own client signal for
+  an empty name stays the disabled button; ⚠ do not echo that server string into
+  `FriendPortalSession.vue`.
 - A friend whose stored `phone` is empty can open the modal and see „Mobil *“ empty;
   Uložiť is disabled until they fill it. `OPEN:` auto-open the profile modal on login for
   friends without a phone — default **no**.

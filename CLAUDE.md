@@ -130,6 +130,8 @@ append the full write-up to the matching learnings file and add at most one line
 - **No view that edits `friends.name` may call it a login.** `grep -i prihlasovac frontend/src/views/AdminFriends.vue
   frontend/src/views/FriendPortalSession.vue` must stay empty; `friends.name` is the Packeta delivery name.
   (`AdminInvitations.vue` / `InviteRegister.vue` legitimately label the real `username`.)
+  Same rule server-side: `'Meno a priezvisko je povinné'` is ONE string with THREE homes in `routes/friends.js`
+  (`POST /`, admin `PATCH /:id`, friend `PATCH /:id/profile`) — grep the string, re-word every hit or none (FUP-T21).
 - Never `maximum-scale=1` / `user-scalable=no`; iOS zoom is handled by A12 (16px inputs under `pointer: coarse`).
 - Text: `min-w-0` is not `overflow-wrap` (set `overflow-wrap:anywhere` on the container); `€` on item lines,
   `EUR` on totals; kg display `Math.round(g/10)/100` with trailing zeros stripped; ordinary space before `€`.
