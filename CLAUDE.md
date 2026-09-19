@@ -107,9 +107,17 @@ append the full write-up to the matching learnings file and add at most one line
   id, balance = `8`+6-digit id, DERIVED never stored; anything but an integer `0 < id < 1e6` — a float, a
   numeric STRING, `0`, a negative, a missing argument — yields `''`, never a guessed VS; the ONE
   `paymentSettings()` reader + the three `SETTING_*` key constants reads AND writes share;
-  `guestPaymentBlock()`, whose `amount` is the module-20 seam, is the one composer **from PL-T2** —
-  `routes/guest.js` still hand-composes both blocks until then, see the seam comments at both sites).
-  No `padStart(6` and no `payment_iban` literal outside it in `backend/src`.
+  `guestPaymentBlock()`, whose `amount` is the module-20 seam, is THE composer of the guest `payment`
+  block — `routes/guest.js` composes none of its own (status payload, submit 201 and the confirmation
+  mail all quote that one object) — and `balancePaymentBlock()` likewise owns the balance one, sign flip
+  and rounding included). No `padStart(6` and no `payment_iban` literal outside it in `backend/src`.
+- VS payloads GROW, never move: guest block 6 keys — `amount`, `reference`, `iban` AND
+  `revolut_username` all stay byte-identical (name every one; a rule stated narrower than what it
+  protects reads as licence to move the rest) — friend order
+  `payment:{variable_symbol}` only (no IBAN — `money-rounding` mocks `payment-settings`) and `null` with no
+  order, balance `payment.amount = max(0, -balance)`. Admin rows carry `variable_symbol`, `null` on a
+  placeholder; `CycleDetail` renders it only behind `isOrdered` (a DRAFT is not a debt). Mail carries the VS
+  as TEXT — no `revolut.me`/`payme.sk` URL ever (08 one-origin pin).
 - `variantGrams()` stays own-property + type safe; stock compares `!(a + b <= limit)` so NaN fails closed.
 - Guest aggregates: CYCLE-level totals include guests; per-FRIEND aggregates never do. Merge the guest half in
   JS, never as a second `LEFT JOIN` on `orders` (row multiplication corrupts `orders_count`); cycle-level guest

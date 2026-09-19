@@ -6,34 +6,45 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
-// PL-T1 — module 15 §UC-PL-001 (the ONE server home for a variable symbol) and
-// §UC-PL-002 (the admin setting `payment_creditor_name`).
+// Module 15 — payment links. Started by PL-T1, grown by PL-T2, and still to be grown by
+// PL-T3/T4 (the client link composition and the friend surfaces).
 //
-// This file is STARTED here and GROWN by PL-T2/T3/T4 (payload VS, the client link
-// composition, the friend surfaces). At this stage it pins two things only: the
-// derivation rules of `backend/src/helpers/payment.js`, and the new setting.
+// What it pins TODAY, in file order:
+//   1. §UC-PL-001 — the derivation rules of `backend/src/helpers/payment.js`: the three
+//      VS schemes, the range guard that makes them provably disjoint, the two composers
+//      (`guestPaymentBlock()`, `balancePaymentBlock()`) and the one-home source sweeps.
+//   2. §UC-PL-002 — the `payment_creditor_name` setting, API and AdminSettings UI.
+//   3. §UC-PL-003 (PL-T2) — every payload a payer is handed: the guest 201 and both
+//      status URL forms, the friend order GET/PUT/submit, the balance, the admin unpaid
+//      overview and the admin orders tab.
+//   4. §UC-PL-008 (PL-T2) — „VS …" on the admin's receivables card and orders tab, plus
+//      the admin-invariance gate on `CycleDetail.vue`.
+// The guest confirmation mail's VS row (§UC-PL-003 item 2) is pinned where the mail
+// harness already lives: `guest-order-recovery.spec.js`'s UC-GR-011 describe.
 //
-// ⚠ WHY THE VS RULES ARE TESTED THROUGH A CHILD PROCESS AND NOT THROUGH A PAYLOAD.
-// The VS is DERIVED, never stored (decision D1), and PL-T1 deliberately does not put
-// it into any response yet — PL-T2 owns that. The rules are nevertheless money rules,
-// and the one that matters most (a friend id and a guest id must NEVER map onto the
-// same number) is invisible from any single payload: it is a statement about three
-// functions at once. So the helper is imported in a throwaway `node` process against a
-// throwaway DB file — the `google-auth-verifier.spec.js` / `catalog-foundation.spec.js`
-// idiom — and every derivation is read off the real module, not re-implemented here.
+// ⚠ WHY THE VS RULES ARE ALSO TESTED THROUGH A CHILD PROCESS AND NOT ONLY THROUGH THE
+// PAYLOADS. The rule that matters most — a friend id and a guest id must NEVER map onto
+// the same number — is invisible from any single payload: it is a statement about three
+// functions at once, over ids no fixture can conjure (1,000,000; a float; `NaN`). So the
+// helper is ALSO imported in a throwaway `node` process against a throwaway DB file — the
+// `google-auth-verifier.spec.js` / `catalog-foundation.spec.js` idiom — and every
+// derivation is read off the real module, not re-implemented here. The payload tests in
+// section 3 are the other half: they prove the routes actually call it.
 //
 // ⚠ THE GATE IS THE BACKEND SOURCE, NOT `payment.js` ITSELF. "The helper is missing"
 // must be a RED run, not a silent skip (the vacuity trap the `DB_PATH` self-skips have).
 //
-// ⚠ Ordering inside the file: the API block reads the SEEDED creditor name before it
-// mutates anything, and the UI block runs LAST because a UI admin login invalidates the
-// single app-wide admin session (the `admin-friends-labels.spec.js` note), so the API
-// context's token would go dead under it. The restore step re-logs-in for that reason.
+// ⚠ Ordering inside the file: the first API block reads the SEEDED creditor name before
+// anything mutates it, and every UI block runs after the API ones because a UI admin login
+// invalidates the single app-wide admin session (the `admin-friends-labels.spec.js` note),
+// so an API context's token goes dead under it. `pl2Fixtures()` re-logs-in for exactly that
+// reason, and so does the file's `afterAll` restore.
 
 const E2E_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const BACKEND_ENTRY = path.resolve(E2E_DIR, '../backend/src/index.js')
 const HELPER_ENTRY = path.resolve(E2E_DIR, '../backend/src/helpers/payment.js')
 const BACKEND_SRC = path.resolve(E2E_DIR, '../backend/src')
+const CYCLE_DETAIL_VIEW = path.resolve(E2E_DIR, '../frontend/src/views/CycleDetail.vue')
 const CAN_IMPORT_HELPER = fs.existsSync(BACKEND_ENTRY)
 const NEEDS_SOURCE = 'needs the backend source beside e2e/ (skipped against a deployment)'
 
@@ -84,8 +95,14 @@ async function runHelper() {
     "}",
     "const settings = mod.paymentSettings()",
     "const block = mod.guestPaymentBlock({ id: 5, total: 12.5, guest_name: 'Jana Hostka' }, 'Cyklus 7')",
+    "const balanceBlocks = {",
+    "  debt: mod.balancePaymentBlock({ id: 7, name: 'Karol Skolar', balance: -26.19 }),",
+    "  settled: mod.balancePaymentBlock({ id: 7, name: 'Karol Skolar', balance: 0 }),",
+    "  credit: mod.balancePaymentBlock({ id: 7, name: 'Karol Skolar', balance: 4.5 }),",
+    "  drift: mod.balancePaymentBlock({ id: 7, name: 'Karol Skolar', balance: -26.189999999999998 }),",
+    "}",
     "const maxCreditorNameLength = mod.MAX_CREDITOR_NAME_LENGTH",
-    "process.stdout.write('\\nPAYMENT_RESULT:' + JSON.stringify({ vs, settings, block, maxCreditorNameLength }) + '\\n')",
+    "process.stdout.write('\\nPAYMENT_RESULT:' + JSON.stringify({ vs, settings, block, balanceBlocks, maxCreditorNameLength }) + '\\n')",
   ].join('\n')
 
   // ⚠ A throwaway DB PATH, never the gate server's file: importing the helper boots
@@ -280,6 +297,23 @@ test.describe('PL-T1 §UC-PL-001 — the one home for a variable symbol', () => 
       revolut_username: '',
       creditor_name: '',
     })
+  })
+
+  // ⚠ The SIGN FLIP and the rounding live in the helper, so no screen can quote one debt
+  // with the other sign — and `26.189999999999998` (a real incident: a banking app refused
+  // the QR) leaves as `26.19`. The route only passes the row it already has.
+  test('balancePaymentBlock() asks for what is OWED, rounded, and nothing when settled', () => {
+    expect(helperProbe.balanceBlocks.debt).toEqual({
+      amount: 26.19,
+      reference: 'Karol Skolar / zostatok',
+      variable_symbol: '8000007',
+      iban: '',
+      revolut_username: '',
+      creditor_name: '',
+    })
+    expect(helperProbe.balanceBlocks.settled.amount, 'settled owes nothing').toBe(0)
+    expect(helperProbe.balanceBlocks.credit.amount, 'in credit owes nothing either').toBe(0)
+    expect(helperProbe.balanceBlocks.drift.amount, 'float drift never reaches a QR').toBe(26.19)
   })
 
   // The reviewer's check from §UC-PL-001, machine-checked: no route, view or template
@@ -515,5 +549,524 @@ test.describe('PL-T1 §UC-PL-002 — AdminSettings „Meno príjemcu“', () => 
 
     await page.reload()
     await expect(page.locator('#paymentCreditorName')).toHaveValue(name)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4. PL-T2 §UC-PL-003 — every payload a payer is handed carries the VS
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠ THE ASSERTION THIS SECTION EXISTS FOR IS THE *NEGATIVE* ONE. PL-T2 replaces two
+// hand-written guest `payment` blocks with one `guestPaymentBlock()` call, and a
+// refactor is exactly where a silent change hides: an `amount` that started rounding,
+// a `reference` that lost its `G` prefix, an `iban` that became `null` instead of `''`.
+// So every block is asserted with a FULL `toEqual` object literal (a removed field and
+// an unannounced added one both fail) plus an ordered `Object.keys` pin (the two guest
+// surfaces must be the same function, key order included), and the four pre-existing
+// fields are pinned to values this test itself chose: the amount from the ordered
+// lines, the reference from the documented `G<id> / <name> / <cycle>` format, the IBAN
+// and the Revolut handle from the settings written in `beforeAll`.
+//
+// ⚠ These describes run AFTER the UI block above, which mints a browser admin session
+// and kills this context's token (ONE admin token app-wide). `pl2Fixtures()` therefore
+// re-logs-in before it builds anything, and is memoised so the four describes below
+// share one scenario.
+
+const PL2_IBAN = 'SK3112000000198742637541'
+const PL2_REVOLUT = `pl2handle${uniq}`.slice(0, 20)
+const PL2_CREDITOR = `Podpultovka PL2 ${uniq}`.slice(0, MAX_CREDITOR_NAME)
+const PL2_BALANCE_DEBT = -26.19
+
+const guestVs = (id) => `9${String(id).padStart(6, '0')}`
+const balanceVs = (friendId) => `8${String(friendId).padStart(6, '0')}`
+
+let pl2Seq = 0
+let pl2Promise = null
+
+async function adminReq(path, opts = {}) {
+  return ctx[opts.method || 'get'](path, {
+    headers: admin(),
+    ...(opts.data ? { data: opts.data } : {}),
+  })
+}
+
+/** A friend with a real per-friend Bearer session (the guest-status.spec.js idiom). */
+async function makeFriend(label) {
+  const suffix = `_${uniq}${++pl2Seq}`
+  const username = `pl2_${String(label).toLowerCase().replace(/[^a-z0-9]/g, '')}`.slice(0, 30 - suffix.length) + suffix
+  expect(username.length, 'username must fit validateUsername').toBeLessThanOrEqual(30)
+  const name = `Platca ${label} ${uniq}`
+  const created = await adminReq('/api/friends', { method: 'post', data: { name } })
+  expect(created.status(), 'friend create').toBe(201)
+  const friend = await created.json()
+
+  expect((await adminReq(`/api/friends/${friend.id}/admin-username`, { method: 'put', data: { username } })).status()).toBe(200)
+  expect((await adminReq(`/api/friends/${friend.id}/reset-password`, { method: 'put', data: { password: 'initPass1' } })).status()).toBe(200)
+
+  const login = await ctx.post('/api/friends/auth', { data: { username, password: 'initPass1' } })
+  expect(login.status(), 'friend login').toBe(200)
+  const body = await login.json()
+  const chg = await ctx.put(`/api/friends/${friend.id}/change-password`, {
+    headers: { Authorization: `Bearer ${body.token}` },
+    data: { currentPassword: 'initPass1', newPassword: 'ownPass1' },
+  })
+  expect(chg.status(), 'forced change').toBe(200)
+  const token = (await chg.json()).token || body.token
+  return { id: friend.id, name, username, auth: { Authorization: `Bearer ${token}` } }
+}
+
+async function makePl2Cycle(label) {
+  const name = `E2E PL2 ${label} ${uniq}`
+  const res = await adminReq('/api/cycles', { method: 'post', data: { name, type: 'coffee', status: 'open' } })
+  expect(res.status(), 'cycle create').toBe(201)
+  const cycle = await res.json()
+  // Markup pinned to 1 so the ordered lines ARE the money the payload must carry.
+  expect((await adminReq(`/api/cycles/${cycle.id}`, { method: 'patch', data: { markup_ratio: 1 } })).status()).toBe(200)
+  return { ...cycle, name }
+}
+
+async function addPl2Product(cycleId, data) {
+  const res = await adminReq('/api/products', { method: 'post', data: { cycle_id: cycleId, ...data } })
+  expect(res.status(), 'product create').toBe(201)
+  return res.json()
+}
+
+async function shareLinkFor(friend, cycleId) {
+  const res = await ctx.post(`/api/guest-links/cycle/${cycleId}`, { headers: friend.auth })
+  expect([200, 201]).toContain(res.status())
+  return (await res.json()).link
+}
+
+async function submitGuest(linkToken, identity, items) {
+  const res = await ctx.post(`/api/guest/${linkToken}/orders`, { data: { ...identity, items } })
+  expect(res.status(), `guest submit for ${identity.guest_name}`).toBe(201)
+  return res.json()
+}
+
+/** ONE scenario for the whole of PL-T2: a host, a cycle, a friend order, three guests. */
+function pl2Fixtures() {
+  if (pl2Promise) return pl2Promise
+  pl2Promise = (async () => {
+    await loginApi()
+    expect(
+      (await putSettings({
+        paymentIban: PL2_IBAN,
+        paymentRevolutUsername: PL2_REVOLUT,
+        paymentCreditorName: PL2_CREDITOR,
+      })).status(),
+      'the payment settings the payloads must echo',
+    ).toBe(200)
+
+    const host = await makeFriend('host')
+    const bystander = await makeFriend('bezobj')
+    // ⚠ A host who ordered NOTHING but whose colleague did: the ONLY placeholder row
+    // (`id: null`) the orders tab actually renders — `listedOrders` drops a friend with
+    // neither an order nor guest bags, so the `variable_symbol: null` case is only
+    // visible on screen through this one.
+    const ghostHost = await makeFriend('hostbezobj')
+    // A saved cart that was never submitted: it HAS an `orders.id` (so the payload
+    // carries a VS) while owing nothing — the row the tab renders as „-“ throughout.
+    const draftFriend = await makeFriend('rozpracovany')
+    const cycle = await makePl2Cycle('main')
+    const product = await addPl2Product(cycle.id, {
+      name: `PL2 kava ${uniq}`, purpose: 'Espresso', price_250g: 10, price_1kg: 30,
+    })
+    const link = await shareLinkFor(host, cycle.id)
+    const ghostLink = await shareLinkFor(ghostHost, cycle.id)
+
+    // The host's own submitted order — the friend-order payload and the admin row.
+    const cart = await ctx.put(`/api/orders/cycle/${cycle.id}/friend/${host.id}`, {
+      headers: host.auth,
+      data: { items: [{ product_id: product.id, variant: '250g', quantity: 2 }] },
+    })
+    expect(cart.status(), 'the host fills a cart').toBe(200)
+    const submitted = await ctx.post(`/api/orders/cycle/${cycle.id}/friend/${host.id}/submit`, {
+      headers: host.auth, data: {},
+    })
+    expect(submitted.status(), 'the host submits').toBe(200)
+    const friendOrder = (await submitted.json()).order
+
+    // Guest 1 stays unpaid → the receivables card. Guest 2 is paid then cancelled by
+    // the admin → the refund queue. Both carry a VS from the same helper.
+    const unpaidGuest = await submitGuest(link.token, {
+      guest_name: 'Jana Nezaplatena', guest_phone: '0902 333 444',
+    }, [{ product_id: product.id, variant: '250g', quantity: 2 }])
+    const refundGuest = await submitGuest(link.token, {
+      guest_name: 'Marek Vratka', guest_phone: '0903 555 666',
+    }, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+
+    expect((await adminReq(`/api/guest-orders/${refundGuest.order.id}/paid`, {
+      method: 'patch', data: { paid: true },
+    })).status(), 'admin marks the second guest paid').toBe(200)
+    expect((await adminReq(`/api/guest-orders/${refundGuest.order.id}/cancel`, {
+      method: 'post', data: {},
+    })).status(), 'admin cancels it into the refund queue').toBe(200)
+
+    const draftCart = await ctx.put(`/api/orders/cycle/${cycle.id}/friend/${draftFriend.id}`, {
+      headers: draftFriend.auth,
+      data: { items: [{ product_id: product.id, variant: '250g', quantity: 1 }] },
+    })
+    expect(draftCart.status(), 'the draft cart').toBe(200)
+    const draftOrder = (await draftCart.json()).order
+
+    const ghostGuest = await submitGuest(ghostLink.token, {
+      guest_name: 'Zuzana Kolegova', guest_phone: '0904 777 888',
+    }, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+
+    return {
+      host, bystander, ghostHost, draftFriend, cycle, product, link,
+      friendOrder, draftOrder, unpaidGuest, refundGuest, ghostGuest,
+    }
+  })()
+  return pl2Promise
+}
+
+test.describe('PL-T2 §UC-PL-003 item 1 — the guest payment block has ONE composer', () => {
+  let fx = null
+  test.beforeAll(async () => { fx = await pl2Fixtures() })
+
+  test('the 201 grows the VS and the creditor name — and nothing it already carried moved', async () => {
+    const created = fx.unpaidGuest
+    // ⚠ BYTE-IDENTICAL PIN of the four shipped fields, by value and by key order.
+    expect(created.payment).toEqual({
+      amount: 20,
+      reference: `G${created.order.id} / Jana Nezaplatena / ${fx.cycle.name}`,
+      variable_symbol: guestVs(created.order.id),
+      iban: PL2_IBAN,
+      revolut_username: PL2_REVOLUT,
+      creditor_name: PL2_CREDITOR,
+    })
+    expect(Object.keys(created.payment), 'the block grew, in place, by exactly two keys').toEqual([
+      'amount', 'reference', 'variable_symbol', 'iban', 'revolut_username', 'creditor_name',
+    ])
+    // `amount` is still `order.total` (the module-20 seam has NOT moved).
+    expect(created.payment.amount).toBe(created.order.total)
+  })
+
+  test('both status URL forms answer the SAME block as the 201, byte for byte', async () => {
+    const created = fx.unpaidGuest
+    const canonical = await ctx.get(`/api/guest/o/${created.order.order_token}`)
+    expect(canonical.status(), 'the canonical status form').toBe(200)
+    const pair = await ctx.get(`/api/guest/${fx.link.token}/orders/${created.order.order_token}`)
+    expect(pair.status(), 'the legacy pair form').toBe(200)
+
+    const fromCanonical = (await canonical.json()).payment
+    const fromPair = (await pair.json()).payment
+    // ⚠ JSON.stringify, not toEqual: ONE composer means the same keys in the same
+    // ORDER on all three surfaces. Two hand-written blocks could pass `toEqual`.
+    expect(JSON.stringify(fromCanonical), 'status payload vs the 201').toBe(JSON.stringify(created.payment))
+    expect(JSON.stringify(fromPair), 'the pair form vs the canonical one').toBe(JSON.stringify(fromCanonical))
+  })
+
+  test('the PUBLIC listing still carries no payment data at all (06 §UC-GX-004)', async () => {
+    const res = await ctx.get(`/api/guest/${fx.link.token}`)
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    // Non-vacuity: this really is the ordering payload.
+    expect(Array.isArray(body.products), 'the listing carries the catalogue').toBe(true)
+    expect(body.products.length).toBeGreaterThan(0)
+    expect(body).not.toHaveProperty('payment')
+    expect(JSON.stringify(body), 'no IBAN reaches the anonymous listing').not.toContain(PL2_IBAN)
+    expect(JSON.stringify(body), 'no VS either').not.toContain(guestVs(fx.unpaidGuest.order.id))
+  })
+
+  test('a blank creditor name is an empty STRING on the block, never null or absent', async () => {
+    await setCreditorName('')
+    try {
+      const res = await ctx.get(`/api/guest/o/${fx.unpaidGuest.order.order_token}`)
+      expect(res.status()).toBe(200)
+      const payment = (await res.json()).payment
+      expect(payment.creditor_name, 'blank means no PayMe button, not a null in a template').toBe('')
+      expect(payment.iban, 'the other settings are untouched by a blank name').toBe(PL2_IBAN)
+      expect(payment.variable_symbol).toBe(guestVs(fx.unpaidGuest.order.id))
+    } finally {
+      await setCreditorName(PL2_CREDITOR)
+    }
+  })
+})
+
+test.describe('PL-T2 §UC-PL-003 item 3 — the friend order payload', () => {
+  let fx = null
+  test.beforeAll(async () => { fx = await pl2Fixtures() })
+
+  test('GET/submit carry `payment: { variable_symbol }` — the bare order id, and nothing else', async () => {
+    const res = await ctx.get(`/api/orders/cycle/${fx.cycle.id}/friend/${fx.host.id}`, { headers: fx.host.auth })
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.order.id, 'non-vacuity: there IS an order on this surface').toBe(fx.friendOrder.id)
+    expect(body.payment).toEqual({ variable_symbol: String(fx.friendOrder.id) })
+    // ⚠ DELIBERATE (§UC-PL-003 item 3): no IBAN here. `FriendOrder.vue` keeps its
+    // `api.getPaymentSettings()` read, which is what `money-rounding.spec.js` mocks.
+    expect(Object.keys(body.payment)).toEqual(['variable_symbol'])
+    expect(JSON.stringify(body), 'the friend order payload carries no bank details').not.toContain(PL2_IBAN)
+    // Derived, never a column on the order row.
+    expect(body.order).not.toHaveProperty('variable_symbol')
+    expect(body.order).not.toHaveProperty('payment')
+  })
+
+  test('the PUT and the submit answer the same VS as the GET', async () => {
+    const put = await ctx.put(`/api/orders/cycle/${fx.cycle.id}/friend/${fx.host.id}`, {
+      headers: fx.host.auth,
+      data: { items: [{ product_id: fx.product.id, variant: '250g', quantity: 2 }] },
+    })
+    expect(put.status()).toBe(200)
+    expect((await put.json()).payment).toEqual({ variable_symbol: String(fx.friendOrder.id) })
+
+    const submit = await ctx.post(`/api/orders/cycle/${fx.cycle.id}/friend/${fx.host.id}/submit`, {
+      headers: fx.host.auth, data: {},
+    })
+    expect(submit.status()).toBe(200)
+    expect((await submit.json()).payment).toEqual({ variable_symbol: String(fx.friendOrder.id) })
+  })
+
+  test('no order means `payment: null` — on the GET and on the PUT that deletes one', async () => {
+    const empty = await ctx.get(`/api/orders/cycle/${fx.cycle.id}/friend/${fx.bystander.id}`, {
+      headers: fx.bystander.auth,
+    })
+    expect(empty.status()).toBe(200)
+    const emptyBody = await empty.json()
+    expect(emptyBody.order, 'non-vacuity: this friend really has no order').toBeNull()
+    expect(emptyBody.payment).toBeNull()
+
+    // A cart created and then emptied: the PUT's `deleted` branch.
+    const created = await ctx.put(`/api/orders/cycle/${fx.cycle.id}/friend/${fx.bystander.id}`, {
+      headers: fx.bystander.auth,
+      data: { items: [{ product_id: fx.product.id, variant: '250g', quantity: 1 }] },
+    })
+    expect(created.status()).toBe(200)
+    const createdBody = await created.json()
+    expect(createdBody.order, 'non-vacuity: the draft exists before it is emptied').not.toBeNull()
+    expect(createdBody.payment.variable_symbol).toBe(String(createdBody.order.id))
+
+    const deleted = await ctx.put(`/api/orders/cycle/${fx.cycle.id}/friend/${fx.bystander.id}`, {
+      headers: fx.bystander.auth, data: { items: [] },
+    })
+    expect(deleted.status()).toBe(200)
+    const deletedBody = await deleted.json()
+    expect(deletedBody.order).toBeNull()
+    expect(deletedBody.payment, 'the deleted branch says null, never an empty string VS').toBeNull()
+  })
+})
+
+test.describe('PL-T2 §UC-PL-003 item 4 — the balance payment block', () => {
+  let fx = null
+  let debtor = null
+  test.beforeAll(async () => {
+    fx = await pl2Fixtures()
+    debtor = await makeFriend('dlznik')
+    const adj = await adminReq('/api/transactions/adjustment', {
+      method: 'post',
+      data: { friend_id: debtor.id, amount: PL2_BALANCE_DEBT, note: 'PL2 fixture' },
+    })
+    expect(adj.status(), 'the fixture debt').toBe(201)
+    expect((await adj.json()).balance).toBeCloseTo(PL2_BALANCE_DEBT, 2)
+  })
+
+  test('a friend in debt is handed the whole block, with the balance VS and „{Meno} / zostatok“', async () => {
+    const res = await ctx.get(`/api/friends/${debtor.id}/balance`, { headers: debtor.auth })
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    // Nothing the shipped payload carried may be lost.
+    expect(body.balance).toBeCloseTo(PL2_BALANCE_DEBT, 2)
+    expect(Array.isArray(body.transactions), 'the transaction list is still there').toBe(true)
+    expect(body.payment).toEqual({
+      amount: 26.19,
+      reference: `${debtor.name} / zostatok`,
+      variable_symbol: balanceVs(debtor.id),
+      iban: PL2_IBAN,
+      revolut_username: PL2_REVOLUT,
+      creditor_name: PL2_CREDITOR,
+    })
+  })
+
+  test('a settled friend and a friend in credit are asked for nothing', async () => {
+    const settled = await makeFriend('vyrovnany')
+    const res = await ctx.get(`/api/friends/${settled.id}/balance`, { headers: settled.auth })
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.balance).toBe(0)
+    expect(body.payment.amount, 'a settled friend owes nothing').toBe(0)
+    expect(body.payment.variable_symbol, 'the VS is still theirs').toBe(balanceVs(settled.id))
+
+    expect((await adminReq('/api/transactions/adjustment', {
+      method: 'post', data: { friend_id: settled.id, amount: 5, note: 'PL2 kredit' },
+    })).status()).toBe(201)
+    const credit = await ctx.get(`/api/friends/${settled.id}/balance`, { headers: settled.auth })
+    const creditBody = await credit.json()
+    expect(creditBody.balance).toBeCloseTo(5, 2)
+    expect(creditBody.payment.amount, 'a friend in credit is never asked for money').toBe(0)
+  })
+
+  test('reading the block writes NO ledger row (the module-15 rule) and the boundary is unchanged', async () => {
+    const before = await adminReq(`/api/friends/${debtor.id}/detail`)
+    expect(before.status()).toBe(200)
+    const countBefore = (await before.json()).transactions.length
+
+    for (let i = 0; i < 3; i++) {
+      expect((await ctx.get(`/api/friends/${debtor.id}/balance`, { headers: debtor.auth })).status()).toBe(200)
+    }
+
+    const after = await adminReq(`/api/friends/${debtor.id}/detail`)
+    const afterBody = await after.json()
+    expect(afterBody.transactions.length, 'no transaction row was written by a READ').toBe(countBefore)
+    expect(countBefore, 'non-vacuity: the fixture debt row is actually counted').toBeGreaterThan(0)
+
+    // SEC-A1: publishing the IBAN on this route did not loosen its ownership guard.
+    const foreign = await ctx.get(`/api/friends/${debtor.id}/balance`, { headers: fx.host.auth })
+    expect(foreign.status(), 'another friend may not read this balance').toBe(403)
+    expect(JSON.stringify(await foreign.json()), 'and learns no payment data').not.toContain(PL2_IBAN)
+
+    const anonymous = await playwrightRequest.newContext({ baseURL: BASE_URL })
+    try {
+      const res = await anonymous.get(`/api/friends/${debtor.id}/balance`)
+      expect(res.status(), 'anonymous stays out').toBe(401)
+    } finally {
+      await anonymous.dispose()
+    }
+  })
+})
+
+test.describe('PL-T2 §UC-PL-003 items 5+6 — the admin money surfaces', () => {
+  let fx = null
+  test.beforeAll(async () => { fx = await pl2Fixtures() })
+
+  test('the unpaid overview and the refund queue carry the guest’s own VS', async () => {
+    const res = await adminReq(`/api/guest-orders/cycle/${fx.cycle.id}/unpaid`)
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+
+    const unpaidRow = body.unpaid.find((row) => row.id === fx.unpaidGuest.order.id)
+    expect(unpaidRow, 'non-vacuity: the unpaid guest is on the receivables list').toBeTruthy()
+    // ⚠ THE CROSS-SURFACE PIN: the admin chasing the money and the guest paying it
+    // read the SAME symbol, because they read the same helper.
+    expect(unpaidRow.variable_symbol).toBe(fx.unpaidGuest.payment.variable_symbol)
+    expect(unpaidRow.reference, 'the reference is untouched beside it').toBe(fx.unpaidGuest.payment.reference)
+
+    const refundRow = body.refunds.find((row) => row.id === fx.refundGuest.order.id)
+    expect(refundRow, 'non-vacuity: the cancelled paid order is on the refund queue').toBeTruthy()
+    expect(refundRow.variable_symbol).toBe(fx.refundGuest.payment.variable_symbol)
+    expect(refundRow.variable_symbol).toBe(guestVs(fx.refundGuest.order.id))
+  })
+
+  test('the orders tab carries a VS on friend rows and guest rows, and null on placeholders', async () => {
+    const res = await adminReq(`/api/orders/cycle/${fx.cycle.id}`)
+    expect(res.status()).toBe(200)
+    const rows = await res.json()
+
+    const hostRow = rows.find((row) => row.friend_id === fx.host.id)
+    expect(hostRow, 'non-vacuity: the host row is listed').toBeTruthy()
+    expect(hostRow.variable_symbol, 'a friend order pays under its own id').toBe(String(fx.friendOrder.id))
+
+    const guestRow = (hostRow.guest_orders || []).find((sub) => sub.id === fx.unpaidGuest.order.id)
+    expect(guestRow, 'non-vacuity: the sub-order is nested under its host').toBeTruthy()
+    expect(guestRow.variable_symbol).toBe(fx.unpaidGuest.payment.variable_symbol)
+
+    const placeholder = rows.find((row) => row.friend_id === fx.bystander.id)
+    expect(placeholder, 'non-vacuity: a friend without an order is still listed').toBeTruthy()
+    expect(placeholder.status, 'and really is a placeholder').toBe('none')
+    expect(placeholder.id).toBeNull()
+    expect(placeholder.variable_symbol, 'nothing to pay, so nothing to quote').toBeNull()
+
+    // A DRAFT has an order id, so the payload carries its symbol — what the SCREEN
+    // does with it is the view's decision (pinned in the UI block below).
+    const draftRow = rows.find((row) => row.friend_id === fx.draftFriend.id)
+    expect(draftRow, 'non-vacuity: the draft row is listed').toBeTruthy()
+    expect(draftRow.status).toBe('draft')
+    expect(draftRow.variable_symbol).toBe(String(fx.draftOrder.id))
+
+    // The three schemes never meet on one screen.
+    expect(hostRow.variable_symbol).not.toBe(guestRow.variable_symbol)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. PL-T2 §UC-PL-008 — the admin SEES it (CycleDetail, runs LAST: the browser
+//    login retires this file's API token)
+// ═══════════════════════════════════════════════════════════════════════════
+
+test.describe('PL-T2 §UC-PL-008 — „VS …“ on the receivables card and the orders tab', () => {
+  let fx = null
+  test.beforeAll(async () => { fx = await pl2Fixtures() })
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/admin')
+    await page.locator('#password').fill(ADMIN_PASSWORD)
+    await page.getByRole('button', { name: /Prihlásiť sa/ }).click()
+    await expect(page).toHaveURL(/\/admin\/dashboard/)
+    await page.goto(`/admin/cycle/${fx.cycle.id}`)
+    await page.getByRole('tab', { name: 'Objednávky' }).click()
+  })
+
+  test('the receivables card prefixes the reference line with the VS', async ({ page }) => {
+    const overview = page.getByTestId('guest-unpaid-overview')
+    await expect(overview).toBeVisible()
+
+    const unpaidRow = page.getByTestId(`guest-unpaid-row-${fx.unpaidGuest.order.id}`)
+    await expect(unpaidRow, 'non-vacuity: the row under test is rendered').toBeVisible()
+    await expect(unpaidRow.locator('.font-mono')).toHaveText(
+      `VS ${fx.unpaidGuest.payment.variable_symbol} · ${fx.unpaidGuest.payment.reference}`
+    )
+
+    const refundRow = page.getByTestId(`guest-refund-row-${fx.refundGuest.order.id}`)
+    await expect(refundRow).toBeVisible()
+    await expect(refundRow.locator('.font-mono')).toHaveText(
+      `VS ${fx.refundGuest.payment.variable_symbol} · ${fx.refundGuest.payment.reference}`
+    )
+  })
+
+  test('the orders tab shows the VS on the friend row and on the nested guest row', async ({ page }) => {
+    await expect(page.getByTestId(`order-vs-${fx.friendOrder.id}`)).toHaveText(`VS ${fx.friendOrder.id}`)
+    const guestRow = page.getByTestId(`guest-suborder-${fx.unpaidGuest.order.id}`)
+    await expect(guestRow).toBeVisible()
+    await expect(guestRow.getByTestId(`guest-vs-${fx.unpaidGuest.order.id}`)).toHaveText(
+      `VS ${fx.unpaidGuest.payment.variable_symbol}`
+    )
+  })
+
+  // ⚠ The placeholder that is actually RENDERED: a host with no own order whose
+  // colleague ordered through their link. They owe nothing themselves, so there is no
+  // symbol to quote — while their guest's row right below carries one, which is what
+  // makes this assertion non-vacuous.
+  test('a placeholder row quotes nothing — it has nothing to pay', async ({ page }) => {
+    const row = page.locator('tr').filter({ hasText: fx.ghostHost.name })
+    await expect(row.first(), 'non-vacuity: the host without an own order is on the tab').toBeVisible()
+    await expect(row.locator('[data-testid^="order-vs-"]'), 'no VS on a placeholder').toHaveCount(0)
+    await expect(row.first()).not.toContainText('VS ')
+    await expect(
+      page.getByTestId(`guest-vs-${fx.ghostGuest.order.id}`),
+      'while their colleague, who DOES owe money, is quoted one',
+    ).toHaveText(`VS ${fx.ghostGuest.payment.variable_symbol}`)
+  })
+
+  // ⚠ A DRAFT IS NOT A DEBT. It has an `orders.id`, so the payload carries a symbol —
+  // but this tab shows a draft „-“ for every figure (`isOrdered`, the one predicate),
+  // and a VS on such a row would invite the admin to chase a payment nobody was asked
+  // for. `guest-admin-view.spec.js:1237` pins that money cell as exactly „-“.
+  test('a DRAFT cart quotes nothing either — the tab\u2019s one predicate decides', async ({ page }) => {
+    const row = page.locator('tr').filter({ hasText: fx.draftFriend.name })
+    await expect(row.first(), 'non-vacuity: the draft row is rendered').toBeVisible()
+    await expect(row.first()).toContainText('Rozpracovane')
+    await expect(row.locator(`[data-testid="order-vs-${fx.draftOrder.id}"]`)).toHaveCount(0)
+    await expect(row.first()).not.toContainText('VS ')
+  })
+
+  // ⚠ ADMIN INVARIANCE (§UC-PL-008 AC). The friends theme is `:where(.app,.modal-layer)`;
+  // an admin view that grew `.app`, a `neo/` primitive or a `pp-*` class would start
+  // repainting under it. Asserted BOTH ways: in the DOM, and on the source of the one
+  // file this row edits.
+  test('⚠ the admin cycle detail picked up no friends-theme styling', async ({ page }) => {
+    await expect(page.locator('.app')).toHaveCount(0)
+    await expect(page.locator('.modal-layer')).toHaveCount(0)
+    for (const cls of ['.cartbar', '.appbar', '.statuspill', '.field-lbl', '.copyrow', '.vbox', '.cat-tabs']) {
+      await expect(page.locator(cls), `no ${cls} on the cycle detail`).toHaveCount(0)
+    }
+
+    test.skip(!CAN_IMPORT_HELPER, NEEDS_SOURCE)
+    const source = fs.readFileSync(CYCLE_DETAIL_VIEW, 'utf8')
+    expect(source, 'non-vacuity: the file this row edits really was read').toContain('guest-unpaid-overview')
+    expect(source, 'the VS did land in this file').toContain('VS ')
+    for (const forbidden of ['components/neo/', 'friends-theme', 'class="pp-', "'pp-", ' pp-']) {
+      expect(source.includes(forbidden), `CycleDetail.vue must not use ${forbidden}`).toBe(false)
+    }
   })
 })

@@ -393,7 +393,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 ## 13. Payment links (15) — Revolut amount link, PayMe.sk, variable symbol
 
 - [x] PL-T1  `helpers/payment.js` (VS scheme: friend = order id, guest = `9`+id, balance = `8`+friend id; one `paymentSettings()` reader; `guestPaymentBlock()`) + admin setting `payment_creditor_name` (70-char bound, `maxlength`, AdminSettings „Meno príjemcu“, public `payment-settings`) + seed 3b — `15 §UC-PL-001,002` · model=heavy ⚠ no new admin route (settings GET/PUT already listed; `/api/admin/payment-settings` stays PUBLIC); VS derived, never stored; starts `payment-links.spec.js` (settings pins only). ⚠ Module-20 seam: `guestPaymentBlock().amount` is `order.total` until GP-T1 flips that ONE line to `total + delivery_fee` — leave the comment.
-- [ ] PL-T2  VS + `creditor_name` in every server payload (guest 201/status, friend order `payment:{variable_symbol}`, balance `payment` block „{Meno} / zostatok“, admin unpaid overview + orders tab, mail row „Variabilný symbol“) + CycleDetail „VS …“ on receivables card AND orders tab — `15 §UC-PL-003,008` · model=heavy ⚠ payloads only GROW; `amount/reference/iban/revolut_username` byte-identical; no revolut.me/payme.sk URL in mail (08 one-origin pin); balance „Zaplatiť“ UI is PL-T4.
+- [x] PL-T2  VS + `creditor_name` in every server payload (guest 201/status, friend order `payment:{variable_symbol}`, balance `payment` block „{Meno} / zostatok“, admin unpaid overview + orders tab, mail row „Variabilný symbol“) + CycleDetail „VS …“ on receivables card AND orders tab — `15 §UC-PL-003,008` · model=heavy ⚠ payloads only GROW; `amount/reference/iban/revolut_username` byte-identical; no revolut.me/payme.sk URL in mail (08 one-origin pin); balance „Zaplatiť“ UI is PL-T4.
 - [ ] PL-T3  `lib/payment-links.js` (`revolutLink` amount variant behind `REVOLUT_AMOUNT_LINK`, `paymeLink`, `payBySquarePayload` with `variableSymbol` + `beneficiary = creditorName || 'Gorifi'`) + PaymentModal additive props, amount-suffixed Revolut label, PayMe button (`pointer: coarse`, `v-if`), VS `NeoCopyRow`, guest confirmation/status wiring — `15 §UC-PL-004,005,006,007(guest)` · model=heavy ⚠ SANCTIONED edits ONLY in `guest-payment-modal.spec.js` (`independentQr` gains VS/beneficiary, `:366` href → amount variant, new `hasTouch` PayMe + VS-row tests); `money-rounding.spec.js` stays UNMODIFIED here (friend encode site is PL-T4's). D4 discipline: strike the „FROZEN props“ claim in 06 §UC-GX-005, the component header and the spec header. ⚠ PO verification, not a gate: Revolut `?amount=&currency=` on a phone (flag = one-line fallback), PayMe `CN` 70 / `MSG` 140 caps.
 - [ ] PL-T4  Friend surfaces: FriendOrder PaymentModal props + success modal re-pointed at the shared helper + NEW balance „Zaplatiť“ trigger (`data-testid="pay-balance"`, `balanceState==='neg'`) + PaymentModal mount on `FriendBalanceCard` + sanctioned `money-rounding.spec.js` `independentQr` edit (`variableSymbol: String(order.id)`, beneficiary stays `'Gorifi'`) + **module-15 closeout (full suite)** — `15 §UC-PL-007(friend, balance),009` · model=heavy ⚠ `FriendTransactionsModal.vue` UNTOUCHED (one-modal rule); `order-modals.spec.js` :877/:881 pass unmodified. ⚠ Module-18 seam: PI-T7 RELOCATES this trigger + mount into „Zostatok a platby“ and the landing debt banner — never a second PaymentModal for the balance. ⚠ Module-21 seam: messages reuse `helpers/payment.js` VS, never re-derive.
 
@@ -466,6 +466,53 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 
 ## Log
+
+- 2026-09-19 · PL-T2 · (this commit) · no PR (project convention) · **The VS reaches every payer and every
+  admin surface.** Guest 201 + `statusPayload` (canonical AND legacy pair) now composed by PL-T1's
+  `guestPaymentBlock()` — **both seam comments discharged**, `routes/guest.js` no longer imports
+  `guestPaymentReference` at all (the helper calls it); friend order GET/PUT/submit gain top-level
+  `payment:{variable_symbol}` (bare `orders.id`), `payment:null` on the no-order GET and the PUT `deleted`
+  branch; `GET /friends/:id/balance` gains a full `payment` block; the admin unpaid overview and orders tab
+  gain `variable_symbol` on friend AND nested guest rows (`null` on placeholders); the guest mail gains a
+  „Variabilný symbol" row; `CycleDetail` shows „VS …" on the receivables card and both order-row kinds.
+  **No new route, no SQL, no migration** — every value is derived from an id the payload already carried
+  (review verified: zero new SELECT/JOIN/INSERT/UPDATE lines in the backend diff), so the guest-aggregate
+  and row-multiplication rules are untouched. ⚠ **BYTE IDENTITY WAS THE WHOLE RISK** (`routes/guest.js` is
+  +40/−39, a rewrite of two blocks) **and it is pinned three ways**: a full `toEqual` against values the
+  test itself set; an **ORDERED `Object.keys`** comparison (catches a drop, an unannounced addition AND a
+  reordering — `toEqual` catches none of the third); and `JSON.stringify(status) === JSON.stringify(created)`
+  across 201 / canonical / legacy pair. Independent half: `guest-order.spec.js:270` and
+  `guest-status.spec.js:189` assert the same four fields against independently derived values and are
+  **byte-untouched**. `amount` stays `order.total` — **the module-20 seam has NOT moved** (GP-T1 still owns
+  the `+ delivery_fee` flip). ⚠ **DEVIATION FROM THE SPEC'S WORDING, declared not hidden:** §UC-PL-003 item 4
+  phrases the balance block as inline in `routes/friends.js`. Written that way it would have been the SECOND
+  hand-composed payment block — the exact defect `guestPaymentBlock()` exists to prevent, with PL-T4 and
+  module 21 queued as consumers. It is `balancePaymentBlock(friend)` in `helpers/payment.js` instead; the
+  spec specifies the FIELD SET, not the composition site, and review confirmed values match exactly
+  (`roundMoney(Math.max(0, -balance))` → `-26.189999999999998` becomes `26.19`; `0` and a credit both yield
+  `+0`). ⚠ **A DRAFT CART COLLIDED WITH A SHIPPED PIN** (`guest-admin-view.spec.js:1237` — that money cell
+  must be exactly „-"). A draft has an `orders.id`, so the payload legitimately carries a VS. Fixed in the
+  VIEW (`v-if="isOrdered(order) && order.variable_symbol"`), **not** by weakening the payload and **not** by
+  editing the shipped spec — that file is untouched. Both halves now pinned: the API asserts the draft row
+  DOES carry `String(order.id)`; the UI asserts its row has no „VS ". ⚠ **Deliberate, recorded as a rule
+  rather than a case:** a CANCELLED guest sub-order DOES keep its VS on the orders tab, because the refund
+  queue quotes the same symbol and a cancelled-but-paid order is exactly the row an admin matches money back
+  against. The test is "does this row correspond to money that moved or must move" — a draft never owed
+  anything; a cancelled paid order owes a refund. ⚠ **Both one-home sweeps still return ONLY the helper**
+  (`padStart`, `payment_iban`) — every new symbol derived and every setting read through it. Mail: one label
+  constant pushed into the existing `paymentRows` array, so text and HTML share the one mechanism;
+  `creditor_name` deliberately absent from the mail; **no `payme.sk` / `revolut.me` URL** (08's one-origin
+  pin), asserted as absence beside positive assertions on the same body so it is non-vacuous;
+  `mailgun-harness.js` reused untouched. Review: 1 round → **approve** (0 blocker, 0 major, 3 minor, all
+  fixed). ⚠⚠ **THE PATTERN, now recorded as the lesson it is:** the third narrower-than-what-it-protects rule
+  found TODAY — GR-T9's scrub verification covering fewer columns than the scrub, FUP-T21's one-home rule
+  naming two of three homes, and this row's CLAUDE.md line naming two of the four byte-identical fields.
+  **Enumerate the whole set at the point of statement, or point at the file that IS the set.** Giveaway: a
+  rule whose sentence is shorter than the test that enforces it. Gate: `node --check` clean on 5 backend
+  files; orchestrator's own runs **665 passed / 12 skipped / 0 failed** across 15 files in two batches, then
+  **209 / 0 / 0** after the fixes, on per-run template copies with a rebuilt frontend. ⚠ **Still OPEN for the
+  PO:** the balance `reference` copy „{Meno} / zostatok" is draft, and the 70-char `CN` cap is the ISO bound,
+  not a verified PayMe quote.
 
 - 2026-09-19 · PL-T1 · (this commit) · no PR (project convention) · **Module 15 opens: the ONE server home
   for payment data.** New `helpers/payment.js` — the VS scheme (friend = `orders.id` plain, guest =

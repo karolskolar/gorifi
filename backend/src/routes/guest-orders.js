@@ -12,6 +12,7 @@ import {
   loadSubOrder,
   softCancelGuestOrder,
 } from '../helpers/guest-orders.js';
+import { guestOrderVariableSymbol } from '../helpers/payment.js';
 
 const router = Router();
 
@@ -453,6 +454,11 @@ router.get('/cycle/:cycleId/unpaid', requireAdmin, (req, res) => {
       delivered: row.delivered,
       created_at: row.created_at,
       reference: guestPaymentReference(row, cycle.name),
+      // 15 §UC-PL-003 item 5 — the SAME symbol the guest was shown on their
+      // confirmation and status pages (`guestPaymentBlock()` derives it from the same
+      // helper), so a statement line reading `VS 9000123` lands on this row and no
+      // other. The hand-picked mapping is EXTENDED by name, never reshaped.
+      variable_symbol: guestOrderVariableSymbol(row.id),
       // The guest's canonical status URL is `/g/o/<this>` (14 §UC-GR-003) — the
       // admin composes it client-side; the token is never a URL in the payload.
       order_token: row.order_token,

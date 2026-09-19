@@ -1,11 +1,12 @@
 import db from '../db/schema.js';
 import { guestPaymentReference } from './guest-orders.js';
+import { roundMoney } from './pricing.js';
 
 // 15 §UC-PL-001 — THE ONE SERVER HOME FOR PAYMENT DATA.
 //
-// Everything a payer is ever handed (a variable symbol, the admin's bank details,
-// the guest `payment` block) is composed here, so no route, view or mail template
-// invents its own. `helpers/pricing.js`, `helpers/stock.js` and `helpers/packing.js`
+// Everything a payer is ever handed (a variable symbol, the admin's bank details, the
+// guest `payment` block, the balance one) is composed here, so no route, view or mail
+// template invents its own. `helpers/pricing.js`, `helpers/stock.js` and `helpers/packing.js`
 // are the precedent; CLAUDE.md §Money & data calls this the "ONE HOME each" rule.
 //
 // ⚠ WHY THIS FILE DOES NOT SWALLOW `guestPaymentReference()`, WHICH LIVES NEXT DOOR
@@ -101,6 +102,31 @@ export function paymentSettings() {
     iban: byKey.get(SETTING_IBAN) || '',
     revolut_username: byKey.get(SETTING_REVOLUT) || '',
     creditor_name: byKey.get(SETTING_CREDITOR_NAME) || '',
+  };
+}
+
+// THE ONE COMPOSER of the balance `payment` block (15 §UC-PL-003 item 4) — a friend
+// settling their WHOLE balance rather than one order. PL-T4's „Zaplatiť" on the balance
+// card and (module 21) any message that quotes the debt render this same object.
+//
+// ⚠ `amount` is what is OWED, never the balance: a friend in credit or exactly settled is
+// asked for `0`, and the surfaces then offer no payment control at all (§UC-PL-007). The
+// sign flip lives HERE, so no screen can quote the debt with the other sign.
+//
+// ⚠ `reference` is DRAFT copy, PO sign-off pending (§UC-PL-003 item 4 OPEN): the roadmap
+// defines the balance VS but no balance reference text. It is one string in one place.
+//
+// Takes the `{ id, name, balance }` shape the balance query already produces; it reads no
+// row of its own, so the caller's ownership guard stays the only gate on this data.
+export function balancePaymentBlock(friend) {
+  const settings = paymentSettings();
+  return {
+    amount: roundMoney(Math.max(0, -(friend.balance || 0))),
+    reference: `${friend.name} / zostatok`,
+    variable_symbol: balanceVariableSymbol(friend.id),
+    iban: settings.iban,
+    revolut_username: settings.revolut_username,
+    creditor_name: settings.creditor_name,
   };
 }
 

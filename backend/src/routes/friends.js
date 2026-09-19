@@ -7,6 +7,7 @@ import { authLimiter } from '../middleware/rate-limit.js';
 import { getPlaceholderCycleId } from '../helpers/friend-create.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { roundMoney } from '../helpers/pricing.js';
+import { balancePaymentBlock } from '../helpers/payment.js';
 // 10 §UC-GA-002. Imported here (rather than only where tokens are verified) so the
 // module's ONE boot line prints at server start — it is the only audit signal that the
 // `GOOGLE_AUTH_TEST_MODE` seam is off in production.
@@ -1028,9 +1029,18 @@ router.get('/:id/balance', (req, res) => {
     LIMIT 5
   `).all(friendId);
 
+  // 15 §UC-PL-003 item 4 — settling the WHOLE balance is a third debt with a third id
+  // space (`friends.id`), so it gets its own variable symbol and its own reference.
+  // Composed in `helpers/payment.js`, like the guest block: a second place that decided
+  // what a payer owes is how two screens end up quoting one debt differently.
+  //
+  // ⚠ Publishing the admin's IBAN to an authenticated friend is what the friend ORDER
+  // screen has always done (`GET /api/admin/payment-settings` is public); this route is
+  // `requireFriendOwner`-guarded, so it is not a wider audience.
   res.json({
     balance: friend.balance,
-    transactions
+    transactions,
+    payment: balancePaymentBlock(friend)
   });
 });
 

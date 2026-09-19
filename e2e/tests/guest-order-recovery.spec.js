@@ -2826,6 +2826,22 @@ test.describe('UC-GR-011 — the guest order-confirmation mail', () => {
       expect(fields.text, 'the reference the 201 carries, byte-identical').toContain(
         `${MAIL_REFERENCE_LABEL}: ${created.payment.reference}`
       )
+      // ⚠ ADDITIVE (15 §UC-PL-003 item 2, PL-T2): the variable symbol, directly after
+      // the reference, as TEXT. The 08 §UC-EM-005 one-origin pin is why it is not a
+      // payment link — the `payme.sk`/`revolut.me` buttons live on the payment modal,
+      // and the `hosts` assertion at the end of this test is what keeps them out of
+      // the html.
+      expect(created.payment.variable_symbol, 'the 201 carries a guest-scheme VS').toBe(
+        `9${String(created.order.id).padStart(6, '0')}`
+      )
+      expect(fields.text, 'the VS the 201 carries, byte-identical').toContain(
+        `Variabilný symbol: ${created.payment.variable_symbol}`
+      )
+      expect(fields.html, 'and it reaches the html part through the same one-array mechanism')
+        .toContain(created.payment.variable_symbol)
+      expect(fields.text, 'a symbol is not a payment button').not.toContain('payme.sk')
+      expect(fields.html).not.toContain('payme.sk')
+      expect(fields.html, 'the Revolut USERNAME here too, never a revolut.me link').not.toContain('revolut.me')
       expect(fields.text).toContain(`${MAIL_IBAN_LABEL}: ${IBAN}`)
       expect(fields.text).toContain(`${MAIL_REVOLUT_LABEL}: ${REVOLUT_USERNAME}`)
       expect(fields.text, 'the Revolut USERNAME, never a revolut.me link').not.toContain('revolut.me')

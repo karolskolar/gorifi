@@ -3,9 +3,9 @@ import db, { generateGuestToken } from '../db/schema.js';
 import { guestReadLimiter, guestWriteLimiter } from '../middleware/rate-limit.js';
 import { gramsByProductFromItems, stockViolations, cycleAvailability } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup, VARIANT_PRICE_COLUMNS, roundMoney } from '../helpers/pricing.js';
-import { guestOrderStatus, guestPaymentReference, softCancelGuestOrder } from '../helpers/guest-orders.js';
+import { guestOrderStatus, softCancelGuestOrder } from '../helpers/guest-orders.js';
 import { bindValue } from '../helpers/bind-value.js';
-import { paymentSettings } from '../helpers/payment.js';
+import { guestPaymentBlock } from '../helpers/payment.js';
 // 14 §UC-GR-011 — the guest order-confirmation mail. Module 08's seam, consumed
 // through the seam exactly: no layer change, no new block type, no new dependency.
 import { renderEmail } from '../helpers/email-templates.js';
@@ -220,11 +220,14 @@ function resolveLink(token, closedStatus) {
   return { link, cycle };
 }
 
-// ⚠ ONE HOME (15 §UC-PL-001). The private `paymentSettings()` that used to sit here —
-// two hand-written `SELECT value FROM settings` reads — is now imported from
-// `helpers/payment.js`, which also reads `payment_creditor_name`. The returned shape is
-// unchanged for this file's two callers (`iban`, `revolut_username`); the new
-// `creditor_name` reaches the guest payload with PL-T2, through `guestPaymentBlock()`.
+// ⚠ ONE HOME (15 §UC-PL-001/003). This file composes NO payment data of its own any
+// more: the private `paymentSettings()` that used to sit here (two hand-written
+// `SELECT value FROM settings` reads) and the two hand-written `payment` blocks that
+// used it are all one `guestPaymentBlock(order, cycle.name)` call now — the status
+// payload's, the submit 201's, and therefore the confirmation mail's. It is also why
+// `guestPaymentReference()` is no longer imported here: the helper calls it.
+// ⚠ A second guest payment block appearing in this file is the defect, whatever it is
+// called — the two that were here drifted apart in review more than once.
 
 // The guest's personal status/edit token (GSO-T4 serves the page). Same generator
 // and unguessability requirement as the link token (SEC-S2), with a collision
@@ -411,7 +414,6 @@ function pendingInvitationByPhone(phone) {
 // write budget spent per interaction).
 function statusPayload(link, cycle, order) {
   const items = loadItems(order.id);
-  const settings = paymentSettings();
   // A cancelled sub-order is terminal, and a closed cycle or a dead link both
   // shut the write half — see the PUT below, which enforces exactly this.
   const editable = cycle.status === 'open'
@@ -438,20 +440,12 @@ function statusPayload(link, cycle, order) {
     items,
     // Decision 1: the guest pays the ADMIN directly, and the "Zaplatiť" button
     // re-opens the same PaymentModal until `paid` is set (by the admin, GSO-T6).
-    // Same reference as the confirmation screen so one payment matches one order.
-    // ⚠ PL-T2 SEAM (15 §UC-PL-003 item 1): this hand-composed block — and its TWIN on
-    // the submit 201 below — is REPLACED by `guestPaymentBlock(order, cycle.name)` from
-    // `helpers/payment.js`, which PL-T1 already shipped. It is not called yet because
-    // doing so ADDS `variable_symbol` + `creditor_name` to a PUBLIC payload, which is
-    // PL-T2's row and its acceptance criteria. ⚠ Until that row lands, ANY edit here
-    // must be made in BOTH places: two guest surfaces showing different payment data
-    // for one sub-order is the bug the helper exists to make impossible.
-    payment: {
-      amount: order.total,
-      reference: guestPaymentReference(order, cycle.name),
-      iban: settings.iban,
-      revolut_username: settings.revolut_username,
-    },
+    // ⚠ ONE COMPOSER (15 §UC-PL-003 item 1, PL-T2): this block and the submit 201's
+    // are the SAME object from `helpers/payment.js` — amount, reference, variable
+    // symbol and the admin's bank details. Two guest surfaces quoting different
+    // payment data for one sub-order is the bug that helper exists to make
+    // impossible, so nothing is composed here. Change it there.
+    payment: guestPaymentBlock(order, cycle.name),
     editable,
     items_editable: itemsEditable,
     // GSO-T10 (§Lead Capture): the low-key "ask for your own account" CTA. The
@@ -608,6 +602,10 @@ const MAIL_ORDER_HEADING = 'Objednávka:';
 const MAIL_TOTAL_LABEL = 'Spolu';
 const MAIL_PAYMENT_HEADING = 'Platba:';
 const MAIL_REFERENCE_LABEL = 'Referencia';
+// 15 §UC-PL-003 item 2. Slovak banking's own name for the field — the payer types it
+// into the transfer form, which is why it is plain TEXT here and never a payment link
+// (see the IBAN/Revolut note at the rows below).
+const MAIL_VARIABLE_SYMBOL_LABEL = 'Variabilný symbol';
 const MAIL_IBAN_LABEL = 'IBAN';
 const MAIL_REVOLUT_LABEL = 'Revolut';
 const MAIL_AMOUNT_LABEL = 'Suma';
@@ -648,14 +646,23 @@ function deliverOrderConfirmation(req, { order, items, payment }) {
       rest: `${item.product_name} (${variantLabelFor(item)}) - ${eur(item.price * item.quantity)} €`,
     }));
 
-    // ⚠ `payment.reference` comes from the SHARED `guestPaymentReference()` via the
-    // 201 payload — one formatter, so the guest's mail and the admin's unpaid
-    // overview can never disagree about what to look for on the bank statement
-    // (the GSO-T6 rule). Never rebuilt here.
+    // ⚠ `payment` is the 201's block, i.e. `guestPaymentBlock()`'s output — one
+    // formatter for the reference AND the variable symbol, so the guest's mail, the
+    // guest's screen and the admin's unpaid overview can never disagree about what to
+    // look for on the bank statement (the GSO-T6 rule, 15 §UC-PL-003). Never rebuilt
+    // here.
     const paymentRows = [{ label: MAIL_REFERENCE_LABEL, value: payment.reference }];
+    // ⚠ Directly AFTER the reference, and only when the helper produced one: an empty
+    // VS is a degraded payment (`helpers/payment.js` fails closed), and a row reading
+    // "Variabilný symbol: " would be worse than no row at all.
+    if (payment.variable_symbol) {
+      paymentRows.push({ label: MAIL_VARIABLE_SYMBOL_LABEL, value: payment.variable_symbol });
+    }
     // IBAN and/or Revolut, as configured. ⚠ The Revolut USERNAME, never a
-    // revolut.me URL: a second host in the html would break 08 §UC-EM-005 item 3's
-    // no-remote/one-origin pin, and the mail is not a payment button.
+    // revolut.me URL — and, since module 15, never a payme.sk one either: a second
+    // host in the html would break 08 §UC-EM-005 item 3's no-remote/one-origin pin,
+    // and the mail is not a payment button. The links live on the payment MODAL
+    // (15 §UC-PL-005/006); this mail carries the symbol as text and nothing more.
     if (payment.iban) paymentRows.push({ label: MAIL_IBAN_LABEL, value: payment.iban });
     if (payment.revolut_username) paymentRows.push({ label: MAIL_REVOLUT_LABEL, value: payment.revolut_username });
     paymentRows.push({ label: MAIL_AMOUNT_LABEL, value: `${eur(order.total)} EUR` });
@@ -806,19 +813,13 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
   }
 
   const order = loadOrder(created.guestOrderId);
-  const settings = paymentSettings();
   const items = loadItems(order.id);
   // Decision 1: the guest pays the admin directly. `G<id>` disambiguates
-  // duplicate first names when the admin matches incoming payments.
-  // ⚠ PL-T2 SEAM — the TWIN of the `statusPayload` block above (see the note there):
-  // both become one `guestPaymentBlock(order, cycle.name)` call in PL-T2, and until
-  // then neither may drift from the other.
-  const payment = {
-    amount: order.total,
-    reference: guestPaymentReference(order, cycle.name),
-    iban: settings.iban,
-    revolut_username: settings.revolut_username,
-  };
+  // duplicate first names when the admin matches incoming payments, and the variable
+  // symbol (`9` + the padded id) is what the admin's bank statement shows.
+  // ⚠ ONE COMPOSER with the `statusPayload` block above (15 §UC-PL-003 item 1) —
+  // the confirmation screen, the status page and the mail below all quote THIS object.
+  const payment = guestPaymentBlock(order, cycle.name);
 
   res.status(201).json({
     order,

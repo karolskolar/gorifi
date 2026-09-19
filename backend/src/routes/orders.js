@@ -6,6 +6,7 @@ import { packOrder, unpackOrder, packingItemStats } from '../helpers/packing.js'
 import { gramsByProductFromItems, stockViolations } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup, roundMoney } from '../helpers/pricing.js';
 import { cycleSubOrdersByHost } from '../helpers/guest-orders.js';
+import { friendOrderVariableSymbol, guestOrderVariableSymbol } from '../helpers/payment.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { pickupTargetFor, activeLocation, applyPickup, readPickup, linkPickupsByHost } from '../helpers/pickup.js';
 
@@ -73,6 +74,24 @@ function enforceOrderOwnership(req, friendId) {
 }
 
 // Get order by cycle and friend (password protected)
+
+// 15 §UC-PL-003 item 3 — what the friend is told to type into their transfer.
+//
+// ⚠ A TOP-LEVEL `payment`, NOT a field on the `order` row. The order row is a
+// `SELECT *` result, and a derived value spliced into one is how it ends up looking
+// like a column to the next reader (and, eventually, like one to write to).
+//
+// ⚠ NO `iban`/`revolut_username` here, deliberately: `FriendOrder.vue` reads those
+// from `api.getPaymentSettings()`, which is the endpoint `money-rounding.spec.js`
+// mocks to make the friend QR hermetic. Moving the settings into this payload would
+// silently turn that mock dead.
+//
+// `null` — never an empty-string VS — when there is no order to pay for: the GET
+// before anything was ordered, and the PUT that emptied the cart and deleted the row.
+function friendOrderPayment(order) {
+  return order ? { variable_symbol: friendOrderVariableSymbol(order.id) } : null;
+}
+
 router.get('/cycle/:cycleId/friend/:friendId', (req, res) => {
   const { cycleId, friendId } = req.params;
 
@@ -109,7 +128,8 @@ router.get('/cycle/:cycleId/friend/:friendId', (req, res) => {
     order: order || null,
     items,
     friend: { id: friend.id, name: friend.name, packeta_address: friend.packeta_address || null },
-    cycle: validation.cycle
+    cycle: validation.cycle,
+    payment: friendOrderPayment(order)
   });
 });
 
@@ -260,7 +280,8 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
       order: null,
       items: [],
       friend: { id: friend.id, name: friend.name },
-      cycle
+      cycle,
+      payment: null
     });
   }
 
@@ -277,7 +298,8 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
     order: updatedOrder,
     items: updatedItems,
     friend: { id: friend.id, name: friend.name },
-    cycle
+    cycle,
+    payment: friendOrderPayment(updatedOrder)
   });
 });
 
@@ -403,7 +425,8 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
     order: updatedOrder,
     items,
     friend: { id: friend.id, name: friend.name },
-    cycle
+    cycle,
+    payment: friendOrderPayment(updatedOrder)
   });
 });
 
@@ -822,6 +845,27 @@ router.get('/cycle/:cycleId', requireAdmin, (req, res) => {
     order.pickup_location_id = pickup ? pickup.pickup_location_id : null;
     order.pickup_location_note = pickup ? pickup.pickup_location_note : null;
     order.pickup_location_name = pickup ? pickup.pickup_location_name : null;
+  }
+
+  // 15 §UC-PL-003 item 6 — the symbol the admin matches a bank statement line by,
+  // on the friend row AND on every nested guest row. Done in ONE pass here, after both
+  // placeholder loops and the link-pickup fill, so every row shape this endpoint can
+  // emit goes through the same line.
+  //
+  // ⚠ A PLACEHOLDER CARRIES `null`, NOT `''`: `id: null` is a friend who has not
+  // ordered (or a host whose only stake is their colleague's bags), so there is no debt
+  // to quote. The empty string is what `helpers/payment.js` returns when it REFUSES an
+  // out-of-range id, and the two must stay distinguishable on this screen.
+  //
+  // ⚠ The guest half is mapped into NEW objects rather than mutated in place: the rows
+  // come from the shared `cycleSubOrdersByHost()`, and this endpoint is not the only
+  // caller of it.
+  for (const order of orders) {
+    order.variable_symbol = order.id ? friendOrderVariableSymbol(order.id) : null;
+    order.guest_orders = (order.guest_orders || []).map((sub) => ({
+      ...sub,
+      variable_symbol: guestOrderVariableSymbol(sub.id),
+    }));
   }
 
   // Sort: submitted first, then draft, then none (by name within each group)

@@ -1892,7 +1892,17 @@ function getStatusVariant(status) {
                       <div class="text-xs text-muted-foreground">
                         {{ row.guest_phone }}<span v-if="row.guest_email"> · {{ row.guest_email }}</span>
                       </div>
-                      <div class="text-xs font-mono text-muted-foreground">{{ row.reference }}</div>
+                      <!-- 15 §UC-PL-008 — the VS first, then the human reference: the
+                           admin reading a statement line "VS 9000123" finds the row by the
+                           symbol, and still has the name-bearing reference beside it for
+                           the transfers that carry no VS at all. Server-derived
+                           (`helpers/payment.js`); nothing here composes one.
+                           ⚠ GUARDED, like the two row sites below: the helper fails closed
+                           with an EMPTY symbol for an out-of-range id, and an unguarded
+                           prefix would then render „VS  · " — a bare label and a dangling
+                           separator in front of the reference. One convention for this
+                           value across all four sites this row added. -->
+                      <div class="text-xs font-mono text-muted-foreground"><span v-if="row.variable_symbol">VS {{ row.variable_symbol }} · </span>{{ row.reference }}</div>
                     </div>
                     <div class="font-semibold">{{ formatPrice(row.amount) }}</div>
                   </div>
@@ -1925,7 +1935,17 @@ function getStatusVariant(status) {
                       <div class="text-xs text-muted-foreground">
                         {{ row.guest_phone }}<span v-if="row.guest_email"> · {{ row.guest_email }}</span>
                       </div>
-                      <div class="text-xs font-mono text-muted-foreground">{{ row.reference }}</div>
+                      <!-- 15 §UC-PL-008 — the VS first, then the human reference: the
+                           admin reading a statement line "VS 9000123" finds the row by the
+                           symbol, and still has the name-bearing reference beside it for
+                           the transfers that carry no VS at all. Server-derived
+                           (`helpers/payment.js`); nothing here composes one.
+                           ⚠ GUARDED, like the two row sites below: the helper fails closed
+                           with an EMPTY symbol for an out-of-range id, and an unguarded
+                           prefix would then render „VS  · " — a bare label and a dangling
+                           separator in front of the reference. One convention for this
+                           value across all four sites this row added. -->
+                      <div class="text-xs font-mono text-muted-foreground"><span v-if="row.variable_symbol">VS {{ row.variable_symbol }} · </span>{{ row.reference }}</div>
                     </div>
                     <div class="font-semibold">{{ formatPrice(row.amount) }}</div>
                   </div>
@@ -2103,6 +2123,22 @@ function getStatusVariant(status) {
                       <div v-if="isOrdered(order) && order.delivery_fee" class="text-xs text-muted-foreground">
                         ({{ formatPrice(order.total) }} + {{ formatPrice(order.delivery_fee) }} doručenie)
                       </div>
+                      <!-- 15 §UC-PL-008 — beside the money, which is what the admin is
+                           reconciling. A placeholder row (a friend who has not ordered, or
+                           a host whose only stake is their colleague's bags) carries
+                           `variable_symbol: null` and renders nothing: there is no debt to
+                           quote.
+                           ⚠ `isOrdered` — THE tab's one predicate — and not merely the
+                           presence of a symbol: a DRAFT has an `orders.id`, so the payload
+                           carries its VS, but a saved cart is not money owed and this
+                           screen shows it nothing but a „-“ everywhere else (the rule
+                           above `isOrdered`). Quoting a symbol for one would invite the
+                           admin to chase a payment nobody was asked for. -->
+                      <div
+                        v-if="isOrdered(order) && order.variable_symbol"
+                        class="text-xs font-mono text-muted-foreground"
+                        :data-testid="`order-vs-${order.id}`"
+                      >VS {{ order.variable_symbol }}</div>
                     </TableCell>
                     <TableCell class="text-right">
                       <BalanceBadge :balance="order.friend_balance || 0" />
@@ -2365,7 +2401,17 @@ function getStatusVariant(status) {
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell class="text-right text-sm">{{ formatPrice(sub.total) }}</TableCell>
+                    <TableCell class="text-right text-sm">
+                      {{ formatPrice(sub.total) }}
+                      <!-- The guest scheme (`9` + the padded sub-order id) — a different
+                           id space from the host's order above it, which is exactly why
+                           the two are prefixed apart (15 §UC-PL-001). -->
+                      <div
+                        v-if="sub.variable_symbol"
+                        class="text-xs font-mono text-muted-foreground"
+                        :data-testid="`guest-vs-${sub.id}`"
+                      >VS {{ sub.variable_symbol }}</div>
+                    </TableCell>
                     <TableCell class="text-center">
                       <button
                         @click="toggleGuestPaid(sub)"
