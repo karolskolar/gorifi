@@ -346,10 +346,18 @@ highlighted "ODOSLANÁ", sum card typography); copy-row flip per UC-DS-011
 `RevolutBtn` (ui.jsx) and `screenshots/12-shot.png`.
 
 **Shared-consumer contract (pinned):** `PaymentModal.vue` is consumed by
-`GuestOrder.vue`, `GuestOrderStatus.vue` AND `FriendOrder.vue` (module 04). Its props
+`GuestOrder.vue`, `GuestOrderStatus.vue` AND `FriendOrder.vue` (module 04) — and, from
+15 §UC-PL-007 item 4, `FriendBalanceCard.vue`. ~~Its props
 API is **frozen**: `open` (Boolean), `amount` (Number), `reference` (String), `iban`
-(String), `revolutUsername` (String); emits `close`. No admin view consumes it (repo
-grep 2026-08-07). Because `NeoModal` teleports to `<body>` and tokens ride on
+(String), `revolutUsername` (String); emits `close`.~~ **SUPERSEDED — 15 §UC-PL-004/D4
+(PL-T3):** the API is **additive**, not frozen. `variableSymbol` (String, `''`) and
+`creditorName` (String, `''`) joined it; every prop above, the `close` emit, the `v-if`
+mount and the `'-'` amount guard are unchanged, and a caller that passes neither new
+prop gets byte-identically what this section describes. What the word "frozen" was
+protecting still holds: a prop that REPLACES or reshapes an existing one breaks four
+screens at once. No admin view consumes it (repo
+grep 2026-08-07; swept from `router.js` by `payment-links.spec.js` since PL-T3).
+Because `NeoModal` teleports to `<body>` and tokens ride on
 `.modal-layer` (UC-DS-010), the restyled modal renders correctly from any friend or
 guest screen regardless of the caller's own migration state — module 04 inherits this
 restyle without changes on its side.

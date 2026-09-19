@@ -21,7 +21,13 @@
 > Out of scope (handoffs): the **timeline component and stage data** (`CycleTimeline.vue`,
 > `order_cycles.opens_at/closes_at/stage`, friend-facing stage labels) → **17** (consumed
 > here, never re-derived); **payment link formats / variable symbol / balance-payment
-> reference** → **15** (consumed via `PaymentModal.vue`'s frozen props); **guest surfaces**
+> reference** → **15** (consumed via ~~`PaymentModal.vue`'s frozen props~~ **its ADDITIVE
+> props — PL-T3 landed 15 §UC-PL-004/D4 and the API is no longer frozen**: `variableSymbol`
+> and `creditorName` joined `open`/`amount`/`reference`/`iban`/`revolutUsername`, every one
+> of which is unchanged. What "frozen" still protects: a prop that REPLACES or reshapes an
+> existing one breaks four screens at once. PI-T7 passes the two new props through when it
+> RELOCATES PL-T4's balance trigger + mount — it never adds a second `PaymentModal`);
+> **guest surfaces**
 > (`/g/…`, standing link, pre-open page, guest explainer) → **19/20**; **WhatsApp opt-in
 > semantics** (the `whatsapp_opt_in` checkbox module 21 inserts into this profile modal)
 > → **21**; the **admin app** (untouched — admin invariance re-asserted); the **voucher
@@ -1073,7 +1079,11 @@ specs + items 4–16's files), full suite only at the module milestone with `--w
 all five `RATE_LIMIT_*_MAX` raised, output to a file (CLAUDE.md §Running the e2e suite).
 Dependencies before this module's rows run: module 17 (`opens_at/closes_at/stage`,
 `CycleTimeline.vue`), module 16 (`handed_over_at`) for `orderHandedOver`; module 15 is
-consumed if present (PaymentModal props frozen either way).
+consumed if present (~~PaymentModal props frozen either way~~ — **PL-T3 superseded that:
+the props are ADDITIVE, not frozen (15 §UC-PL-004/D4)**. The claim it was making still
+holds in the form that matters here: a caller that passes neither `variableSymbol` nor
+`creditorName` gets byte-identically what shipped, so this module's rows compile against
+module 15 present or absent — they just have two more props to forward when it is present).
 
 ---
 

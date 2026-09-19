@@ -699,6 +699,8 @@ async function submitEdit(payloadItems) {
       :reference="payment.reference"
       :iban="payment.iban"
       :revolut-username="payment.revolut_username"
+      :variable-symbol="payment.variable_symbol"
+      :creditor-name="payment.creditor_name"
       @close="showPaymentModal = false"
     />
   </div>

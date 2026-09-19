@@ -1070,3 +1070,378 @@ test.describe('PL-T2 §UC-PL-008 — „VS …“ on the receivables card and th
     }
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. §UC-PL-004 (PL-T3) — `frontend/src/lib/payment-links.js`, the client home
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠ WHY THE THREE BUILDERS ARE DRIVEN IN A CHILD PROCESS AND NOT ONLY THROUGH THE
+// RENDERED MODAL. The surfaces prove the component calls the helper with the right
+// props; they cannot reach the inputs that decide whether the helper is SAFE — a
+// creditor name carrying `&`/`#`/a newline (the hand-off PL-T1 recorded in writing:
+// the name is validated for LENGTH ONLY), a zero or absent amount, a blank handle, and
+// the `REVOLUT_AMOUNT_LINK` flag turned off. `payment-links.js` is deliberately free of
+// the `@/` Vite alias for exactly this reason, so a plain `node` can import it.
+//
+// ⚠ THE ENCODING ASSERTION THAT ACTUALLY BITES IS THE PARAMETER KEY SET, not the value.
+// `new URL(href).searchParams.get('CN')` round-trips correctly even from a link that was
+// built by raw interpolation of a name WITHOUT an `&` in it — so the hostile fixture
+// carries one, and the test asserts the link has EXACTLY the eight documented keys. A
+// raw `CN=${name}` grows a ninth and fails; nothing weaker would.
+
+const FRONTEND_SRC = path.resolve(E2E_DIR, '../frontend/src')
+const LINKS_ENTRY = path.join(FRONTEND_SRC, 'lib/payment-links.js')
+const MONEY_ENTRY = path.join(FRONTEND_SRC, 'lib/money.js')
+const FRONTEND_NODE_MODULES = path.resolve(E2E_DIR, '../frontend/node_modules')
+const ROUTER_ENTRY = path.join(FRONTEND_SRC, 'router.js')
+const PAYMENT_MODAL = path.join(FRONTEND_SRC, 'components/PaymentModal.vue')
+// ⚠ The GATE is the frontend SOURCE TREE, never `payment-links.js` itself — "the helper
+// is missing" must be a RED run, not a silent skip (the vacuity trap the `DB_PATH`
+// self-skips have). Against a deployment there is no source beside `e2e/` and the whole
+// section skips honestly.
+const CAN_IMPORT_LINKS = fs.existsSync(FRONTEND_SRC) && fs.existsSync(FRONTEND_NODE_MODULES)
+const NEEDS_FRONTEND = 'needs the frontend source + node_modules beside e2e/ (skipped against a deployment)'
+
+// ⚠ THE HOSTILE NAME IS THE POINT OF THIS SECTION. Every character here is legal in the
+// `payment_creditor_name` setting today (70-char bound, no character rule) and every one
+// of them means something in a query string: `&` ends a parameter, `#` starts a fragment
+// and truncates everything after it, `+` decodes back as a SPACE, `%` starts an escape
+// and `=` splits key from value. The newline is the control character the bound does not
+// see. 70 characters or fewer, so it is a name the admin can really save.
+const HOSTILE_CREDITOR = 'A & B #1 +50% =x\nKaviareň'
+const HOSTILE_HANDLE = 'kar ol&x#y'
+const PAYME_KEYS = ['V', 'IBAN', 'AM', 'CC', 'DT', 'PI', 'MSG', 'CN']
+
+let links = null
+let linksFlagOff = null
+
+/** `YYYYMMDD` for today, the derivation both encode sites shipped with. */
+function todayCompact() {
+  const t = new Date()
+  return t.getFullYear().toString()
+    + (t.getMonth() + 1).toString().padStart(2, '0')
+    + t.getDate().toString().padStart(2, '0')
+}
+
+/**
+ * Drives the three builders in a throwaway `node`, against the module at `entryUrl`.
+ * Unlike the backend probe this one opens no database — the module is pure.
+ */
+async function runLinks(entryUrl) {
+  const script = [
+    "const m = await import(process.env.LINKS_URL)",
+    "const hostile = process.env.HOSTILE_CREDITOR",
+    "const hostileHandle = process.env.HOSTILE_HANDLE",
+    "const out = {",
+    "  flag: m.REVOLUT_AMOUNT_LINK,",
+    "  exports: Object.keys(m).sort(),",
+    "  revolut: {",
+    "    withAmount: m.revolutLink('karolskolar', 26.19),",
+    "    atStripped: m.revolutLink('@karolskolar', 26.19),",
+    "    padded: m.revolutLink('  karolskolar  ', 26.19),",
+    "    drift: m.revolutLink('karolskolar', 15 + 11.19),",
+    "    noAmount: m.revolutLink('karolskolar'),",
+    "    zero: m.revolutLink('karolskolar', 0),",
+    "    negative: m.revolutLink('karolskolar', -3),",
+    "    nan: m.revolutLink('karolskolar', NaN),",
+    "    stringAmount: m.revolutLink('karolskolar', '26.19'),",
+    "    blank: m.revolutLink('   ', 26.19),",
+    "    missing: m.revolutLink(undefined, 26.19),",
+    "    atOnly: m.revolutLink('@', 26.19),",
+    "    hostile: m.revolutLink(hostileHandle, 26.19),",
+    "    sub1c: m.revolutLink('karolskolar', 0.004),",
+    "  },",
+    "  payme: {",
+    "    full: m.paymeLink({ iban: 'SK31 1200 0000 1987 4263 7541', amount: 26.19, variableSymbol: '9000123', reference: 'G123 / Marek / Cyklus 7', creditorName: 'Karol Skolar', date: '20260919' }),",
+    "    lowerIban: m.paymeLink({ iban: 'sk3112000000198742637541', amount: 26.19, variableSymbol: '9000123', reference: 'R', creditorName: 'Karol Skolar', date: '20260919' }),",
+    "    noVs: m.paymeLink({ iban: 'SK3112000000198742637541', amount: 26.19, variableSymbol: '', reference: 'R', creditorName: 'Karol Skolar', date: '20260919' }),",
+    "    noReference: m.paymeLink({ iban: 'SK3112000000198742637541', amount: 26.19, variableSymbol: '9000123', reference: '', creditorName: 'Karol Skolar', date: '20260919' }),",
+    "    drift: m.paymeLink({ iban: 'SK3112000000198742637541', amount: 15 + 11.19, variableSymbol: '9000123', reference: 'R', creditorName: 'Karol Skolar', date: '20260919' }),",
+    "    longReference: m.paymeLink({ iban: 'SK3112000000198742637541', amount: 26.19, variableSymbol: '9000123', reference: 'x'.repeat(400), creditorName: 'Karol Skolar', date: '20260919' }),",
+    "    hostile: m.paymeLink({ iban: 'SK3112000000198742637541', amount: 26.19, variableSymbol: '9000123', reference: 'G1 & G2 #3', creditorName: hostile, date: '20260919' }),",
+    "    hostileVs: m.paymeLink({ iban: 'SK3112000000198742637541', amount: 26.19, variableSymbol: '9/0&0#1', reference: 'R', creditorName: 'Karol Skolar', date: '20260919' }),",
+    "    today: m.paymeLink({ iban: 'SK3112000000198742637541', amount: 26.19, variableSymbol: '9000123', reference: 'R', creditorName: 'Karol Skolar' }),",
+    "    blankCreditor: m.paymeLink({ iban: 'SK3112000000198742637541', amount: 26.19, variableSymbol: '9000123', reference: 'R', creditorName: '   ' }),",
+    "    missingCreditor: m.paymeLink({ iban: 'SK3112000000198742637541', amount: 26.19, variableSymbol: '9000123', reference: 'R' }),",
+    "    blankIban: m.paymeLink({ iban: '', amount: 26.19, creditorName: 'Karol Skolar' }),",
+    "    zeroAmount: m.paymeLink({ iban: 'SK3112000000198742637541', amount: 0, creditorName: 'Karol Skolar' }),",
+    "    nanAmount: m.paymeLink({ iban: 'SK3112000000198742637541', amount: NaN, creditorName: 'Karol Skolar' }),",
+    "    missingAmount: m.paymeLink({ iban: 'SK3112000000198742637541', creditorName: 'Karol Skolar' }),",
+    "    noArgs: m.paymeLink(),",
+    "  },",
+    "  payload: {",
+    "    shipped: m.payBySquarePayload({ amount: 26.19, iban: 'SK31 1200 0000 1987 4263 7541', reference: 'G1 / Marek / C', date: '20260919' }),",
+    "    full: m.payBySquarePayload({ amount: 15 + 11.19, iban: 'SK31 1200 0000 1987 4263 7541', variableSymbol: '9000123', reference: 'G1 / Marek / C', creditorName: hostile, date: '20260919' }),",
+    "    today: m.payBySquarePayload({ amount: 26.19, iban: 'SK3112000000198742637541' }),",
+    "  },",
+    "}",
+    // The non-string IBAN must still THROW — that is the arm `guest-payment-modal.spec.js`
+    // drives to paint the shipped error copy instead of an empty ink frame.
+    "try { m.payBySquarePayload({ amount: 1, iban: 123456 }); out.nonStringIban = 'no throw' }",
+    "catch (e) { out.nonStringIban = 'threw' }",
+    "process.stdout.write('\\nLINKS_RESULT:' + JSON.stringify(out) + '\\n')",
+  ].join('\n')
+
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    env: {
+      ...process.env,
+      LINKS_URL: entryUrl,
+      HOSTILE_CREDITOR,
+      HOSTILE_HANDLE,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  let output = ''
+  child.stdout.on('data', (c) => { output += c })
+  child.stderr.on('data', (c) => { output += c })
+  const exitCode = await new Promise((resolve) => child.on('exit', resolve))
+
+  const match = output.match(/LINKS_RESULT:(.*)/)
+  if (exitCode !== 0 || !match) {
+    throw new Error(`lib/payment-links.js could not be driven (exit ${exitCode}):\n${output}`)
+  }
+  return JSON.parse(match[1])
+}
+
+/**
+ * The SAME module with `REVOLUT_AMOUNT_LINK` flipped to `false`, imported from a
+ * throwaway directory.
+ *
+ * ⚠ This is the proof of the promise the spec makes about R6.1 — "if the amount variant
+ * does not prefill on a real phone, the fallback is ONE line in ONE place". A test that
+ * merely read the constant would prove nothing about what flipping it does. The copy
+ * sits in `os.tmpdir()` with a `node_modules` SYMLINK to the frontend's, so `bysquare`
+ * resolves and NOTHING is written into the repo (a leftover probe file under
+ * `frontend/src/lib/` would be a second home for this module, which is the one thing
+ * §UC-PL-004 exists to prevent).
+ */
+async function runLinksWithFlagOff() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `gorifi-links-${uniq}-`))
+  try {
+    const source = fs.readFileSync(LINKS_ENTRY, 'utf8')
+    const needle = 'export const REVOLUT_AMOUNT_LINK = true'
+    // Non-vacuity: if the declaration is written any other way the substitution below is
+    // a no-op and the test would "pass" against the flag still on.
+    expect(source.split(needle).length - 1, 'exactly one `REVOLUT_AMOUNT_LINK = true` to flip').toBe(1)
+    fs.writeFileSync(path.join(dir, 'payment-links.js'), source.replace(needle, 'export const REVOLUT_AMOUNT_LINK = false'))
+    fs.copyFileSync(MONEY_ENTRY, path.join(dir, 'money.js'))
+    fs.symlinkSync(FRONTEND_NODE_MODULES, path.join(dir, 'node_modules'), 'dir')
+    return await runLinks(pathToFileURL(path.join(dir, 'payment-links.js')).href)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test.describe('PL-T3 §UC-PL-004 — lib/payment-links.js, the one client home', () => {
+  test.skip(!CAN_IMPORT_LINKS, NEEDS_FRONTEND)
+
+  test.beforeAll(async () => {
+    links = await runLinks(pathToFileURL(LINKS_ENTRY).href)
+    linksFlagOff = await runLinksWithFlagOff()
+  })
+
+  test('it exports exactly the four documented names', () => {
+    expect(links.exports).toEqual(['REVOLUT_AMOUNT_LINK', 'paymeLink', 'payBySquarePayload', 'revolutLink'].sort())
+    expect(links.flag, 'shipped ON — the amount variant is the default (R6.1)').toBe(true)
+  })
+
+  // ── revolutLink ────────────────────────────────────────────────────────────
+  test('revolutLink: the amount variant is MINOR units, rounded before the conversion', () => {
+    expect(links.revolut.withAmount).toBe('https://revolut.me/karolskolar?amount=2619&currency=EUR')
+    // The float-drift shape from `money.js`'s header: 15 + 11.19 = 26.189999999999998.
+    // Unrounded, `Math.round(x * 100)` would still give 2619 — so the assertion that
+    // earns its keep is the sub-cent one below, where the two disagree.
+    expect(links.revolut.drift).toBe('https://revolut.me/karolskolar?amount=2619&currency=EUR')
+    expect(links.revolut.sub1c, 'under a cent rounds to 0 minor units, not to 0.4').toBe('https://revolut.me/karolskolar?amount=0&currency=EUR')
+  })
+
+  test('revolutLink: `@` stripped, whitespace trimmed, and the plain profile link for a non-amount', () => {
+    expect(links.revolut.atStripped).toBe('https://revolut.me/karolskolar?amount=2619&currency=EUR')
+    expect(links.revolut.padded).toBe('https://revolut.me/karolskolar?amount=2619&currency=EUR')
+    for (const key of ['noAmount', 'zero', 'negative', 'nan', 'stringAmount']) {
+      expect(links.revolut[key], `${key} falls back to the shipped profile link`).toBe('https://revolut.me/karolskolar')
+    }
+  })
+
+  test('revolutLink: a blank handle yields `\'\'` — the shipped render gate', () => {
+    expect(links.revolut.blank).toBe('')
+    expect(links.revolut.missing).toBe('')
+    expect(links.revolut.atOnly, 'an `@` alone is not a handle').toBe('')
+  })
+
+  test('⚠ revolutLink ENCODES the handle — it is never interpolated raw', () => {
+    // `kar ol&x#y`: the space, the `&` and the `#` all change what the URL means.
+    expect(links.revolut.hostile).toBe(`https://revolut.me/${encodeURIComponent(HOSTILE_HANDLE)}?amount=2619&currency=EUR`)
+    const url = new URL(links.revolut.hostile)
+    expect(decodeURIComponent(url.pathname.slice(1)), 'round-trips to the stored handle').toBe(HOSTILE_HANDLE)
+    expect(url.hash, 'the `#` did not open a fragment').toBe('')
+    expect([...url.searchParams.keys()], 'the `&` did not invent a parameter').toEqual(['amount', 'currency'])
+  })
+
+  // ── the flag ───────────────────────────────────────────────────────────────
+  test('⚠ REVOLUT_AMOUNT_LINK=false is a ONE-LINE fallback to the shipped profile link', () => {
+    expect(linksFlagOff.flag).toBe(false)
+    for (const key of ['withAmount', 'atStripped', 'drift', 'sub1c']) {
+      expect(linksFlagOff.revolut[key], `${key} drops the amount entirely`).toBe('https://revolut.me/karolskolar')
+    }
+    // Everything else is untouched by the flag — it gates the amount, not the link.
+    expect(linksFlagOff.revolut.blank).toBe('')
+    expect(linksFlagOff.payme.full, 'PayMe does not ride on the Revolut flag').toBe(links.payme.full)
+    expect(linksFlagOff.payload.full).toEqual(links.payload.full)
+  })
+
+  // ── paymeLink ──────────────────────────────────────────────────────────────
+  test('paymeLink: the exact documented parameter set, in order', () => {
+    // ⚠ THE `PI` SLASHES ARE BARE, AND THAT IS THE POINT OF WRITING THIS OUT RAW.
+    // `/` is legal unencoded in a query string, §UC-PL-006 writes the triplet literally,
+    // and a bank app that splits the RAW query instead of URL-decoding it would read
+    // `%2FVS…%2FSS%2FKS` verbatim — a malformed identifier on the one field that makes a
+    // statement match a person. A parsed assertion CANNOT see this (`searchParams.get`
+    // decodes, so both forms look identical), so the raw string is the only witness.
+    expect(links.payme.full).toBe(
+      'https://payme.sk/?V=1&IBAN=SK3112000000198742637541&AM=26.19&CC=EUR&DT=20260919'
+      + '&PI=/VS9000123/SS/KS'
+      + `&MSG=${encodeURIComponent('G123 / Marek / Cyklus 7')}`
+      + '&CN=Karol%20Skolar',
+    )
+    // Stated a second way, segment by segment, so a change to any OTHER parameter cannot
+    // be "fixed" by rewriting the whole literal above without noticing this one.
+    const rawParams = links.payme.full.split('?')[1].split('&')
+    expect(rawParams.find((p) => p.startsWith('PI=')), 'structure bare, value encoded')
+      .toBe('PI=/VS9000123/SS/KS')
+    const url = new URL(links.payme.full)
+    expect(url.origin + url.pathname).toBe('https://payme.sk/')
+    expect([...url.searchParams.keys()]).toEqual(PAYME_KEYS)
+    expect(url.searchParams.get('AM'), 'two decimals, always').toBe('26.19')
+    expect(url.searchParams.get('CC')).toBe('EUR')
+    expect(url.searchParams.get('PI')).toBe('/VS9000123/SS/KS')
+    expect(url.searchParams.get('MSG')).toBe('G123 / Marek / Cyklus 7')
+    expect(url.searchParams.get('CN')).toBe('Karol Skolar')
+  })
+
+  test('paymeLink: IBAN whitespace-free and upper-cased; the amount rounded, then formatted', () => {
+    expect(new URL(links.payme.lowerIban).searchParams.get('IBAN')).toBe('SK3112000000198742637541')
+    // 15 + 11.19 = 26.189999999999998 — `toFixed(2)` would hide it, but the QR beside it
+    // would carry the noise, so the rounding happens before both.
+    expect(new URL(links.payme.drift).searchParams.get('AM')).toBe('26.19')
+  })
+
+  test('paymeLink: no VS ⇒ no `PI` at all; no reference ⇒ no `MSG`; the message is capped at 140', () => {
+    expect([...new URL(links.payme.noVs).searchParams.keys()], 'an empty `PI=/VS/SS/KS` is malformed, not absent')
+      .toEqual(['V', 'IBAN', 'AM', 'CC', 'DT', 'MSG', 'CN'])
+    expect([...new URL(links.payme.noReference).searchParams.keys()])
+      .toEqual(['V', 'IBAN', 'AM', 'CC', 'DT', 'PI', 'CN'])
+    expect(new URL(links.payme.longReference).searchParams.get('MSG')).toBe('x'.repeat(140))
+  })
+
+  test('paymeLink: `DT` defaults to today, the same derivation the QR uses', () => {
+    expect(new URL(links.payme.today).searchParams.get('DT')).toBe(todayCompact())
+    expect(links.payload.today.payments[0].paymentDueDate, 'and the QR agrees').toBe(todayCompact())
+  })
+
+  test('paymeLink: NO link without a creditor name, an IBAN and a positive amount', () => {
+    for (const key of ['blankCreditor', 'missingCreditor', 'blankIban', 'zeroAmount', 'nanAmount', 'missingAmount', 'noArgs']) {
+      expect(links.payme[key], `${key} must not produce a PayMe link`).toBe('')
+    }
+  })
+
+  test('⚠ paymeLink ENCODES the creditor name and the reference — the PL-T1 hand-off', () => {
+    // The name is validated for LENGTH ONLY on the server (no character rule), so this
+    // is the only place `&`, `#`, `+`, `%` and a newline are made safe.
+    const url = new URL(links.payme.hostile)
+    // THE assertion: a raw `CN=${name}` would split on the `&` and grow a ninth key
+    // (and the `#` would truncate the link into a fragment). Eight keys, exactly.
+    expect([...url.searchParams.keys()], 'raw interpolation would invent parameters').toEqual(PAYME_KEYS)
+    expect(url.hash, 'the `#` in the name did not open a fragment').toBe('')
+    expect(url.searchParams.get('CN'), 'and it round-trips to the stored name').toBe(HOSTILE_CREDITOR)
+    expect(url.searchParams.get('MSG')).toBe('G1 & G2 #3')
+    // `+` in a query string decodes as a SPACE; `%` starts an escape. Both must be
+    // percent-encoded in the raw href, not merely survive a lenient parse.
+    expect(links.payme.hostile).toContain(`CN=${encodeURIComponent(HOSTILE_CREDITOR)}`)
+    expect(links.payme.hostile).not.toContain('+50%')
+    expect(links.payme.hostile.split('\n'), 'no raw newline in a URL').toHaveLength(1)
+  })
+
+  test('⚠ paymeLink encodes the VALUE inside `PI` while leaving the STRUCTURE bare', () => {
+    // The converse of the test above, and the distinction the over-encoding fix turned
+    // on: encode values, never structure. A symbol carrying `/`, `&` and `#` must not be
+    // able to forge a triplet, invent a parameter or open a fragment — while the two
+    // slashes that ARE the triplet stay literal.
+    const raw = links.payme.hostileVs.split('?')[1].split('&')
+    expect(raw.find((p) => p.startsWith('PI=')))
+      .toBe(`PI=/VS${encodeURIComponent('9/0&0#1')}/SS/KS`)
+    const url = new URL(links.payme.hostileVs)
+    expect([...url.searchParams.keys()], 'the `&` in the symbol invented nothing').toEqual(PAYME_KEYS)
+    expect(url.hash, 'the `#` in the symbol opened no fragment').toBe('')
+    expect(url.searchParams.get('PI'), 'and it round-trips').toBe('/VS9/0&0#1/SS/KS')
+  })
+
+  // ── payBySquarePayload ─────────────────────────────────────────────────────
+  test('payBySquarePayload: byte-identical to the shipped payload when VS and creditor name are absent', () => {
+    // ⚠ The independent statement of the shipped object. If this literal and the helper
+    // ever disagree, `money-rounding.spec.js` and `guest-payment-modal.spec.js` will be
+    // reading a QR nobody wrote on purpose.
+    expect(links.payload.shipped).toEqual({
+      invoiceId: '',
+      payments: [{
+        type: 1,
+        amount: 26.19,
+        currencyCode: 'EUR',
+        paymentDueDate: '20260919',
+        variableSymbol: '',
+        constantSymbol: '',
+        specificSymbol: '',
+        originatorsReferenceInformation: '',
+        paymentNote: 'G1 / Marek / C',
+        bankAccounts: [{ iban: 'SK3112000000198742637541', bic: '' }],
+        beneficiary: { name: 'Gorifi', street: '', city: '' },
+      }],
+    })
+    // Ordered keys too: `bysquare` serialises what it is given, and an added field is as
+    // much a payload change as a removed one.
+    expect(Object.keys(links.payload.shipped.payments[0])).toEqual([
+      'type', 'amount', 'currencyCode', 'paymentDueDate', 'variableSymbol', 'constantSymbol',
+      'specificSymbol', 'originatorsReferenceInformation', 'paymentNote', 'bankAccounts', 'beneficiary',
+    ])
+  })
+
+  test('payBySquarePayload: EXACTLY two fields change — the symbol and the beneficiary', () => {
+    const shipped = links.payload.shipped.payments[0]
+    const full = links.payload.full.payments[0]
+    const differing = Object.keys(full).filter((k) => JSON.stringify(full[k]) !== JSON.stringify(shipped[k]))
+    expect(differing.sort()).toEqual(['beneficiary', 'variableSymbol'])
+    expect(full.variableSymbol).toBe('9000123')
+    // D3 — the QR and the PayMe link must not name two different payees in one app. The
+    // name is NOT url-encoded here: this is a payload field, not a URL.
+    expect(full.beneficiary).toEqual({ name: HOSTILE_CREDITOR, street: '', city: '' })
+    expect(full.amount, 'and the drift is still rounded away').toBe(26.19)
+    expect(full.paymentNote, 'the reference stays the server’s, verbatim').toBe('G1 / Marek / C')
+  })
+
+  test('⚠ a non-string IBAN still THROWS — the caller’s error arm stays reachable', () => {
+    expect(links.nonStringIban).toBe('threw')
+  })
+
+  // ── the boundary ───────────────────────────────────────────────────────────
+  test('⚠ NO admin view imports payment-links.js or PaymentModal.vue', () => {
+    // The admin set is read off `router.js` rather than a hand-kept list, so a new admin
+    // screen joins this sweep the day it is routed.
+    const router = fs.readFileSync(ROUTER_ENTRY, 'utf8')
+    const adminViews = [...router.matchAll(/path:\s*'(\/admin[^']*)'[\s\S]{0,300}?import\('\.\/views\/([A-Za-z0-9]+\.vue)'\)/g)]
+      .map((m) => m[2])
+    expect(new Set(adminViews).size, 'non-vacuity: the admin routes were really parsed').toBeGreaterThan(8)
+
+    const offenders = [...new Set(adminViews)].filter((view) => {
+      const file = path.join(FRONTEND_SRC, 'views', view)
+      if (!fs.existsSync(file)) return false
+      const src = fs.readFileSync(file, 'utf8')
+      return src.includes('payment-links') || src.includes('PaymentModal')
+    })
+    expect(offenders, 'lib/money.js is friend/guest-only, and so is everything built on it').toEqual([])
+
+    // The other half: the component that DOES consume it really does (or the sweep above
+    // is a tautology over a module nobody imports).
+    expect(fs.readFileSync(PAYMENT_MODAL, 'utf8')).toContain('payment-links')
+  })
+})

@@ -304,3 +304,204 @@ exactly like prose; the row that adds 500 lines to a file owns its header.
   to money that moved or must move", not "is this row live".
 - The forward-looking PL-T1 line about `payment_creditor_name` not being in
   `e2e/scrub-template.sql` is still literally true — left as it stands.
+
+---
+
+## PL-T3 — `lib/payment-links.js`, the PayMe bar and the VS row (2026-09-19)
+
+**What shipped.** The client half of the money path: one module that turns a server
+`payment` block into links, and the shared Platba modal wired to it. No backend change,
+no new dependency (`@vueuse/core` was already installed and pre-approved).
+
+`frontend/src/lib/payment-links.js` exports exactly four names (pinned):
+
+| Export | Contract |
+|---|---|
+| `REVOLUT_AMOUNT_LINK` | `true`. Flipping it to `false` makes `revolutLink()` return the plain profile link for every amount and drops the amount from the modal's label — ONE line, ONE place |
+| `revolutLink(username, amount)` | `@` stripped, trimmed, `encodeURIComponent`'d. `https://revolut.me/<u>?amount=<minor units>&currency=EUR` when the flag is on and `Number.isFinite(amount) && amount > 0`; the shipped profile link otherwise; `''` for a blank handle |
+| `paymeLink({iban, amount, variableSymbol, reference, creditorName, date})` | `''` unless IBAN + creditor name + a positive amount. `https://payme.sk/?V=1&IBAN=…&AM=…&CC=EUR&DT=…[&PI=/VS…/SS/KS][&MSG=…]&CN=…`, IBAN whitespace-free + upper-cased, `MSG` capped at 140, `DT` = today |
+| `payBySquarePayload({…})` | the shipped bysquare object with EXACTLY two fields changed: `variableSymbol` and `beneficiary.name = creditorName \|\| 'Gorifi'` |
+
+**The hand-off PL-T1 wrote down is discharged, and the assertion that discharges it is
+not the obvious one.** The creditor name is validated for LENGTH ONLY, so `&`, `#`, `+`,
+`%` and a newline all reach this file. Every value that enters a URL goes through
+`encodeURIComponent` — but a test that only reads the value back
+(`new URL(href).searchParams.get('CN')`) **passes against a raw interpolation** whenever
+the fixture happens to contain no `&`. So the fixture carries one
+(`'A & B #1 +50% =x\nKaviareň'`) and the test asserts the **parameter KEY SET**:
+`['V','IBAN','AM','CC','DT','PI','MSG','CN']`, exactly eight. A raw `CN=${name}` grows a
+ninth and fails; the `#` is caught by asserting `url.hash === ''`. **Proven by mutation,
+not by reading:** reverting the encode to a raw interpolation and re-running turned both
+encoding tests red with `raw interpolation would invent parameters`. Same technique
+covers the Revolut handle (a space + `&` + `#` in the username).
+
+**The `REVOLUT_AMOUNT_LINK=false` fallback is proven by actually flipping it.** The spec
+promises "one line, one place" for the case where Revolut's `?amount=` format does not
+prefill on a real phone. A test that read the constant would prove nothing about what
+flipping it does, so the spec copies `payment-links.js` + `money.js` into an
+`os.tmpdir()` directory with a **`node_modules` symlink** to the frontend's (so `bysquare`
+resolves), substitutes the one line, imports the copy and asserts the plain profile link —
+with a non-vacuity gate that the needle appears exactly once in the source. Nothing is
+written into the repo: a probe file left under `frontend/src/lib/` would be a second home
+for the module, which is the one thing §UC-PL-004 exists to prevent.
+
+**⚠ The relative `./money.js` import is a testability decision, not a slip.** Every other
+consumer writes `@/lib/money`. Without the Vite alias this module is importable by a plain
+`node` process, which is what lets the spec drive the three builders over inputs no HTTP
+fixture can produce. The alias would have bought nothing and cost that.
+
+**A FOURTH edit to `guest-payment-modal.spec.js`, FORCED rather than planned — and the
+class of trap it belongs to.** The backlog sanctioned three edits (the `independentQr`
+signature, the `:366` href, new tests). §UC-PL-006 item 2 puts a second
+`label.field-lbl` („Variabilný symbol") in the reference section, and the shipped
+anatomy test asserts `expect(d.locator('.field-lbl')).toHaveText('Poznámka…')` — a
+**strict-mode violation** the moment a second one renders, because `toHaveText` with a
+STRING requires exactly one match. Retargeted to the array form, which pins both labels
+AND their order: strictly more than what it pinned before. ⚠ The general lesson:
+**an unscoped class locator with a single-string `toHaveText` is a landmine for the next
+row that adds a sibling** — it fails with a strict-mode error that looks nothing like the
+feature that caused it.
+
+**The PayMe bar is `v-if`, and the shipped `.m-body` order pin is what makes that
+mandatory.** `guest-payment-modal.spec.js` maps `.m-body`'s children by TAG
+(`c.tagName === 'A' ? 'revolut'`), so an `<a>` present-but-hidden by CSS on desktop counts
+as a **second Revolut bar** and reddens a shipped assertion for nothing. Confirmed by
+mutation: dropping the `coarsePointer` half of the gate turned BOTH the new desktop
+absence test and that shipped anatomy test red. The new touch tests use their own
+testid-aware mapper.
+
+**`pointer: coarse` emulation works, and the recipe is `ios-input-zoom.spec.js`'s.**
+`const { defaultBrowserType, ...IPHONE } = devices['iPhone 13']` + `test.use({ ...IPHONE,
+viewport: PHONE })`; `defaultBrowserType` MUST be stripped (it carries `'webkit'` and
+setting it inside a describe is a hard Playwright error). Every touch test reads
+`matchMedia('(pointer: coarse)').matches` back as a non-vacuity gate — both halves of this
+feature ("the button is there" / "the button is absent") are one emulation failure away
+from being meaningless. The recorded fallback gate `(pointer: coarse), (hover: none)` was
+NOT needed.
+
+**Hermetic negative cases through `page.route`, never a settings PUT.** "No creditor name
+⇒ no PayMe and the QR says Gorifi" and "no VS ⇒ no row and a VS-less QR" are driven by
+intercepting the status response and blanking ONE field, reusing the file's shipped
+`iban: 123456` idiom. Mutating the global `payment_creditor_name` would have left the
+instance blank on any crash and raced every other file in the batch.
+
+**Kept byte-identical on purpose.** `payBySquarePayload` calls `iban.replace(/\s/g,'')`
+on the RAW value: a non-string `iban` must still THROW, because that is the only lever the
+network offers on the caller's catch arm, and the shipped error copy („Nepodarilo sa
+vygenerovat QR kod.") must paint instead of an empty 190×190 ink frame that reads as "scan
+me". Pinned in the child probe as well as through the UI. Likewise the friend cart-bar
+modal (`FriendOrder.vue` untouched, PL-T4's row) passes neither new prop, so its payload
+is `variableSymbol: ''` / `beneficiary "Gorifi"` — which is what keeps
+`money-rounding.spec.js`'s hard-coded `'Gorifi'` valid and let that file run UNMODIFIED.
+
+**D4 discipline — the three struck claims.** "FROZEN props" was stated in three places and
+is struck (never deleted) with a pointer in all three: `06 §UC-GX-005`, `PaymentModal.vue`'s
+header and `15-payment-links.md`'s header.
+
+⚠ **THERE WERE SIX COPIES, NOT THREE — and "it lives in another module's file" is NOT a
+reason to leave a false claim standing.** The implementer struck the three the row named
+and left `18-portal-information-architecture.md:24` and `:1076` and
+`20-guest-packeta.md:300` ("`PaymentModal.vue` | no change — props frozen"), reasoning that
+they are a FUTURE module's rationale and out of a module-15 row's scope. **The orchestrator
+overruled that, correctly, and all six are struck now.** The reasoning to keep:
+
+- `CLAUDE.md §Documentation discipline` says EVERY copy, and this is the exact situation the
+  rule is for — the two rows that will read those lines (PI-T7, GP-T1) are precisely the
+  ones who would act on them.
+- A strike + pointer changes **no requirement and no acceptance criterion** of modules 18
+  and 20, so it is not an edit to their scope. It only stops a future reader trusting
+  something this row made untrue.
+- Same shape as the friend-portal label that survived a whole module, and the **third**
+  instance on this day (see the PL-T2 review follow-up: a rule written narrower than the
+  thing it protects).
+
+**Find the copies by grep, never from a list.** `grep -rn "frozen" docs/specification
+frontend/src e2e` is what turns three into six; a mental inventory does not. Each strike
+also states what "frozen" still protects (a prop that REPLACES or reshapes an existing one
+breaks four screens at once), so the pointer carries the surviving half of the claim rather
+than only deleting the dead half.
+
+**Testing notes worth reusing.**
+- The admin-boundary sweep reads the admin view set **off `router.js`** (every `/admin/...`
+  path's lazy `import('./views/X.vue')`) instead of a hand-kept list, so a new admin screen
+  joins the sweep the day it is routed. Non-vacuity: more than 8 admin routes parsed, and
+  `PaymentModal.vue` really does import the module (else the sweep is a tautology over a
+  file nobody imports).
+- The VS copy row is verified by READING THE CLIPBOARD (`grantPermissions(['clipboard-read',
+  'clipboard-write'])` + `navigator.clipboard.readText()`), not by the label flip —
+  `NeoCopyRow` flips green whether or not the write succeeded, by design.
+
+**Verified (2026-09-19, per-run copy of `e2e/fixtures/prod-template.sqlite`, frontend
+rebuilt into `backend/public`, `--workers=1`):** `guest-payment-modal` + `payment-links`
+**76 passed**; `guest-payment-modal` / `guest-order` / `guest-status` / `payment-links` /
+`money-rounding` **140 passed, 0 skipped**; `order-modals` / `guest-lead-capture` /
+`self-hosted-fonts` / `guest-status-shell` / `guest-order-shell` / `guest-order-recovery`
+**191 passed**. `vite build` green; `node --check` on both spec files.
+
+**⚠ THREE ITEMS ARE PO VERIFICATION, NOT GATES — none is automatable here.**
+1. **Revolut `?amount=<minor>&currency=EUR` on a real phone with the Revolut app.** If it
+   does not prefill, flip `REVOLUT_AMOUNT_LINK` to `false` — one line, and the label loses
+   its amount with it (the label is derived from the href, so there is no second switch).
+2. **The real PayMe field caps.** `CN` is the ISO/SEPA 70 (`MAX_CREDITOR_NAME_LENGTH`,
+   server-side) and `MSG` is 140 (`MAX_PAYME_MESSAGE_LENGTH`, client-side) — both are
+   defensible defaults, NOT verified quotes: the SBA Payment Link Standard PDF is still not
+   text-extractable and payme.sk states no caps. Each is one constant with one home.
+3. **How a real bank app parses `PI=/VS…/SS/KS`** (added by the PL-T3 review). It now ships
+   with BARE structural slashes and an encoded symbol. Nothing here can settle whether a
+   given app URL-decodes the query or splits it raw — a phone can. If an app is found that
+   requires the escaped form, the change is one line in `paymeLink()` **and** the two raw
+   pins that exist precisely to make it visible (`payment-links.spec.js`'s `PI=` segment
+   assertions and `guest-payment-modal.spec.js`'s rendered-href one).
+
+### PL-T3 review follow-ups (2026-09-19, approve + 4 minors — all fixed in the same commit)
+
+**⚠ THE REAL FINDING: „encode everything" IS NOT THE RULE. ENCODE VALUES, NEVER
+STRUCTURE.** `paymeLink()` put the whole payment-identification triplet through
+`encodeURIComponent`, emitting `PI=%2FVS9000123%2FSS%2FKS`. `/` is legal unencoded in a
+query string, §UC-PL-006 and the published PayMe examples write the parameter literally,
+and a receiving bank app that splits the RAW query instead of decoding it reads the escaped
+form verbatim — a malformed identifier on **the one field that makes a bank statement match
+a person**. Over-encoding failed in the same place under-encoding would have.
+
+⚠ **And NEITHER of the row's own tests could see it**, which is the transferable half: the
+parsed assertion (`new URL(...).searchParams.get('PI')`) **decodes**, so the two forms are
+indistinguishable to it, and the raw-string pin had the encoded form baked into its
+expectation. **A round-trip assertion cannot audit a wire format.** Fixed by pinning the
+RAW `PI=` segment character-for-character in both specs, plus a new case proving the
+converse still holds — a symbol carrying `/`, `&` and `#` is still encoded, so it can
+forge no triplet, invent no parameter and open no fragment.
+
+**Two "can't happen from today's callers" gaps, both closed by DERIVING instead of
+re-testing.** The lesson is the same in both: when two things must agree, compute one from
+the other rather than writing the predicate twice.
+- The Revolut **label** used `REVOLUT_AMOUNT_LINK && props.amount` (truthiness) while the
+  **link** used `Number.isFinite(amount) && amount > 0`, so a negative or infinite amount
+  would have shown a sum in the button over an href carrying none. Unreachable from today's
+  three non-negative payloads — and this component gains the BALANCE caller in PL-T4 and
+  the landing debt banner in module 18. Now the label is derived from the href
+  (`revolutHref.includes('?amount=')`), which also makes the `REVOLUT_AMOUNT_LINK` fallback
+  automatic and removes the constant from the component entirely.
+- The Revolut **render gate** was still the shipped `v-if="revolutUsername"` while the href
+  came from the builder, which returns `''` for a whitespace-only handle — and `PUT
+  /settings` trims only the creditor name. So a handle of spaces rendered `href=""`, which
+  is a link to the CURRENT URL: clicking it **reloads the page**, and on g-confirm that
+  discards the confirmation state (its payment data comes only from the submit response).
+  The shipped code's broken external link was at least honest; an empty href is
+  destructive. Now every control is gated on its own composed value (`revolutHref`,
+  `paymeHref`), never on the raw prop it was built from.
+
+**Recorded, not changed.**
+- ⚠ `01-architecture.md:221` and `:264` describe the deep-link composition as living in
+  `PaymentModal.vue`. Half true since this row: the two LIBRARY CALLS stayed in the
+  component (the error handling around them is its UI), while the payload and the link
+  composition moved to `lib/payment-links.js` (D6 pre-resolves the reading, and one of
+  those lines was already imprecise before this row). **For the module-15 closeout.**
+- ⚠ The VS copy row sits INSIDE the reference block, so a payload carrying a symbol but no
+  reference renders no row. Correct today — every server composer emits both together — and
+  worth remembering if a surface ever ships a reference-less payment block.
+
+**Left for PL-T4.** `FriendOrder.vue` (both the `PaymentModal` mount's two new props and
+the success modal re-pointed at `payBySquarePayload`/`revolutLink`), the balance
+„Zaplatiť" trigger + mount on `FriendBalanceCard.vue`, and the sanctioned
+`money-rounding.spec.js` `independentQr` edit. ⚠ The success modal gets NO PayMe bar and
+NO VS row (§UC-PL-007 item 1) — the full payment surface is „Zaplatiť“ → `PaymentModal`.

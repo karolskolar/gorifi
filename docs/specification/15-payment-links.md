@@ -36,8 +36,14 @@
 > (`settings.payment_creditor_name`), §Payment deep links, §Dependencies ("no new package;
 > `bysquare` gains the `variableSymbol` field it already supports"), §Testing & gate
 > (pixel-QR approach; payload change is a sanctioned spec edit, listed per module); repo
-> code: `frontend/src/components/PaymentModal.vue` (the FROZEN props contract of 06
-> §UC-GX-005 — extended here, see D4), `frontend/src/views/FriendOrder.vue` (`paymentTotal`,
+> code: `frontend/src/components/PaymentModal.vue` (~~the FROZEN props contract of 06
+> §UC-GX-005~~ — **no longer frozen as of PL-T3**: D4 landed, the API is ADDITIVE and
+> `variableSymbol`/`creditorName` are part of it, every prop it already had being
+> unchanged. What "frozen" still protects: a prop that REPLACES or reshapes an existing
+> one breaks four screens at once, and a caller passing neither new prop must keep getting
+> byte-identically what shipped. The strike is carried in 06 §UC-GX-005, the component
+> header, 18 §Out of scope + §Procedure and 20's surface table
+> too), `frontend/src/views/FriendOrder.vue` (`paymentTotal`,
 > `paymentReference`, `generateSuccessQr`, the inline Revolut `<a>` of the success modal),
 > `GuestOrder.vue`, `GuestOrderStatus.vue`, `FriendBalanceCard.vue`,
 > `FriendTransactionsModal.vue`, `frontend/src/lib/money.js` (`roundMoney`, `fmtEur`),

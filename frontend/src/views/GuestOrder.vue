@@ -667,6 +667,8 @@ function goToStatus() {
       :reference="confirmation.payment.reference"
       :iban="confirmation.payment.iban"
       :revolut-username="confirmation.payment.revolut_username"
+      :variable-symbol="confirmation.payment.variable_symbol"
+      :creditor-name="confirmation.payment.creditor_name"
       @close="showPaymentModal = false"
     />
   </div>

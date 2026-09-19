@@ -111,6 +111,21 @@ append the full write-up to the matching learnings file and add at most one line
   block — `routes/guest.js` composes none of its own (status payload, submit 201 and the confirmation
   mail all quote that one object) — and `balancePaymentBlock()` likewise owns the balance one, sign flip
   and rounding included). No `padStart(6` and no `payment_iban` literal outside it in `backend/src`.
+- CLIENT payment links have ONE home too: `frontend/src/lib/payment-links.js` (`revolutLink` amount variant
+  behind `REVOLUT_AMOUNT_LINK`, `paymeLink`, `payBySquarePayload` = the shipped bysquare object with EXACTLY
+  `variableSymbol` + `beneficiary.name = creditorName || 'Gorifi'` changed; relative `./money.js` import so
+  plain `node` can drive it; never imported by an admin view). ⚠ EVERY value interpolated into a URL goes
+  through `encodeURIComponent` — the creditor name is length-validated only, so `&`/`#`/`+`/`%`/newline are
+  this file's problem; pin the parameter KEY SET, not the value (raw interpolation grows a key). ⚠ But encode
+  VALUES, never STRUCTURE: PayMe's `PI=/VS<vs>/SS/KS` slashes stay BARE (a bank app may split the raw query),
+  only the symbol between them is encoded — and a `searchParams.get()` assertion DECODES, so a wire format
+  needs a raw-segment pin, never a round-trip one. Gate each control on its composed href, never on the raw
+  prop: an empty `href` is a link to the current URL, i.e. a reload that discards g-confirm's state.
+- `PaymentModal.vue` props are ADDITIVE, not frozen (15 D4: `variableSymbol`, `creditorName`; the struck claim
+  is rewritten in ALL SIX copies — 06 §UC-GX-005, the component header, 15's header, 18's §Out of scope + its
+  §Procedure, 20's surface table; `grep -rn frozen` found them, a list did not). The PayMe bar is `v-if` on
+  `(pointer: coarse)` — a CSS-hidden `<a>` counts as a second Revolut bar in the `.m-body` order pin. `€` on
+  lines / `EUR` on totals applies to the Revolut label's amount suffix too.
 - VS payloads GROW, never move: guest block 6 keys — `amount`, `reference`, `iban` AND
   `revolut_username` all stay byte-identical (name every one; a rule stated narrower than what it
   protects reads as licence to move the rest) — friend order

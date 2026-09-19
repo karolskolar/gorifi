@@ -394,7 +394,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 - [x] PL-T1  `helpers/payment.js` (VS scheme: friend = order id, guest = `9`+id, balance = `8`+friend id; one `paymentSettings()` reader; `guestPaymentBlock()`) + admin setting `payment_creditor_name` (70-char bound, `maxlength`, AdminSettings „Meno príjemcu“, public `payment-settings`) + seed 3b — `15 §UC-PL-001,002` · model=heavy ⚠ no new admin route (settings GET/PUT already listed; `/api/admin/payment-settings` stays PUBLIC); VS derived, never stored; starts `payment-links.spec.js` (settings pins only). ⚠ Module-20 seam: `guestPaymentBlock().amount` is `order.total` until GP-T1 flips that ONE line to `total + delivery_fee` — leave the comment.
 - [x] PL-T2  VS + `creditor_name` in every server payload (guest 201/status, friend order `payment:{variable_symbol}`, balance `payment` block „{Meno} / zostatok“, admin unpaid overview + orders tab, mail row „Variabilný symbol“) + CycleDetail „VS …“ on receivables card AND orders tab — `15 §UC-PL-003,008` · model=heavy ⚠ payloads only GROW; `amount/reference/iban/revolut_username` byte-identical; no revolut.me/payme.sk URL in mail (08 one-origin pin); balance „Zaplatiť“ UI is PL-T4.
-- [ ] PL-T3  `lib/payment-links.js` (`revolutLink` amount variant behind `REVOLUT_AMOUNT_LINK`, `paymeLink`, `payBySquarePayload` with `variableSymbol` + `beneficiary = creditorName || 'Gorifi'`) + PaymentModal additive props, amount-suffixed Revolut label, PayMe button (`pointer: coarse`, `v-if`), VS `NeoCopyRow`, guest confirmation/status wiring — `15 §UC-PL-004,005,006,007(guest)` · model=heavy ⚠ SANCTIONED edits ONLY in `guest-payment-modal.spec.js` (`independentQr` gains VS/beneficiary, `:366` href → amount variant, new `hasTouch` PayMe + VS-row tests); `money-rounding.spec.js` stays UNMODIFIED here (friend encode site is PL-T4's). D4 discipline: strike the „FROZEN props“ claim in 06 §UC-GX-005, the component header and the spec header. ⚠ PO verification, not a gate: Revolut `?amount=&currency=` on a phone (flag = one-line fallback), PayMe `CN` 70 / `MSG` 140 caps.
+- [x] PL-T3  `lib/payment-links.js` (`revolutLink` amount variant behind `REVOLUT_AMOUNT_LINK`, `paymeLink`, `payBySquarePayload` with `variableSymbol` + `beneficiary = creditorName || 'Gorifi'`) + PaymentModal additive props, amount-suffixed Revolut label, PayMe button (`pointer: coarse`, `v-if`), VS `NeoCopyRow`, guest confirmation/status wiring — `15 §UC-PL-004,005,006,007(guest)` · model=heavy ⚠ SANCTIONED edits ONLY in `guest-payment-modal.spec.js` (`independentQr` gains VS/beneficiary, `:366` href → amount variant, new `hasTouch` PayMe + VS-row tests); `money-rounding.spec.js` stays UNMODIFIED here (friend encode site is PL-T4's). D4 discipline: strike the „FROZEN props“ claim in 06 §UC-GX-005, the component header and the spec header. ⚠ PO verification, not a gate: Revolut `?amount=&currency=` on a phone (flag = one-line fallback), PayMe `CN` 70 / `MSG` 140 caps.
 - [ ] PL-T4  Friend surfaces: FriendOrder PaymentModal props + success modal re-pointed at the shared helper + NEW balance „Zaplatiť“ trigger (`data-testid="pay-balance"`, `balanceState==='neg'`) + PaymentModal mount on `FriendBalanceCard` + sanctioned `money-rounding.spec.js` `independentQr` edit (`variableSymbol: String(order.id)`, beneficiary stays `'Gorifi'`) + **module-15 closeout (full suite)** — `15 §UC-PL-007(friend, balance),009` · model=heavy ⚠ `FriendTransactionsModal.vue` UNTOUCHED (one-modal rule); `order-modals.spec.js` :877/:881 pass unmodified. ⚠ Module-18 seam: PI-T7 RELOCATES this trigger + mount into „Zostatok a platby“ and the landing debt banner — never a second PaymentModal for the balance. ⚠ Module-21 seam: messages reuse `helpers/payment.js` VS, never re-derive.
 
 ## 14. Distribution pipeline (16) — delivery types, hand-over stage, board
@@ -466,6 +466,58 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 
 ## Log
+
+- 2026-09-19 · PL-T3 · (this commit) · no PR (project convention) · **The client half: one home for payment
+  links.** New `frontend/src/lib/payment-links.js` — `revolutLink` (amount variant behind
+  `REVOLUT_AMOUNT_LINK`), `paymeLink`, `payBySquarePayload` (`variableSymbol` + `beneficiary =
+  creditorName || 'Gorifi'`), four exports pinned by an `Object.keys` assertion, imported relatively so
+  plain `node` can drive it — which is what makes the encoding testable. `PaymentModal.vue` gains ADDITIVE
+  props, an amount-suffixed Revolut label, a PayMe bar under `(pointer: coarse)` only, and a VS
+  `NeoCopyRow`; both guest views forward two props each. ⚠⚠ **THE ENCODING HAND-OFF, and it failed in the
+  direction nobody expects.** PL-T1 validated `creditor_name` for LENGTH ONLY and recorded that whoever put
+  it in a link owned the encoding. The first pass encoded thoroughly — **including the `PI=/VS…/SS/KS`
+  triplet's SLASHES**, emitting `PI=%2FVS…%2FSS%2FKS`. A bank app that splits the raw query rather than
+  URL-decoding then reads the escaped text verbatim: a malformed payment identification on **the one field
+  that makes a statement match a person**. Caught in review. **The rule is ENCODE VALUES, NEVER STRUCTURE** —
+  the VS alone is encoded, the separators stay bare. ⚠ **Why the tests could not see it, which is the
+  transferable half: a round-trip assertion cannot audit a wire format.** `searchParams.get('PI')` decodes,
+  so both forms are identical to it, and the raw pin had the encoded form baked into its expectation — a
+  test written from the implementation agrees with the implementation. Now pinned three ways (corrected raw
+  literal, a SEPARATE segment-level `PI=` assertion so a future rewrite of the literal cannot take it along,
+  and the raw segment of the RENDERED href), all three mutation-verified. ⚠ The converse still holds and is
+  its own test: a VS carrying `/`, `&`, `#` IS encoded, forging no triplet and inventing no parameter.
+  ⚠ **How the encoding was proved in the first place, worth reusing:** a value-only `get('CN')` check
+  round-trips even from a raw interpolation, so it proves NOTHING. The fixture is
+  `'A & B #1 +50% =x\nKaviareň'` and the assertion is the **full parameter KEY SET plus an empty fragment**
+  — a raw interpolation invents a ninth parameter named from the spaces and opens a hash. · Two more
+  by-construction fixes from review: `revolutAmountLabel` is now derived FROM THE HREF, so "the label and
+  the link are one number" holds by construction rather than by the callers' current ranges (side benefit:
+  the flag fallback is automatic and the component no longer imports the constant); and the Revolut control
+  is gated on `revolutHref`, not the raw prop — an EMPTY href is a link to the CURRENT URL, so a click
+  reloads and discards g-confirm's confirmation state, which is worse than the shipped visibly-broken link.
+  Generalised: **gate every control on its own composed value, never on the raw prop it was built from.**
+  ⚠ **SIX struck "props frozen" claims, not the three the row listed** — 06 §UC-GX-005, the component
+  header, 15's header, **18 ×2 and 20 ×1**. The implementer scoped the last three out ("another module's
+  file"); **orchestrator overruled**: the claim is false, a strike is not a scope edit, and the rows that
+  read those lines (PI-T7, GP-T1) are exactly the ones who would act on them. Operational rule recorded:
+  **find the copies by `grep`, never from a mental inventory — that is what turned three into six.** Each
+  strike now states what "frozen" still protects. Third instance today of a rule stated narrower than what
+  it protects. ⚠ **A FOURTH, FORCED spec edit** beyond the three sanctioned: §UC-PL-006's second
+  `label.field-lbl` makes a single-string `toHaveText` a strict-mode violation — retargeted to the array
+  form, which pins both labels AND their order, strictly more. `money-rounding.spec.js` **byte-untouched**
+  (the friend encode site is PL-T4's) — verified. ⚠ Backward compatibility: a caller passing neither new
+  prop gets the shipped bysquare object, key order included, pinned twice — which is why the friend spec
+  runs unmodified. ⚠ Deliberate: `PROGRESS.md:203`'s completed RD-GX-2 row still says "props API frozen" —
+  left as a historical build-log entry, the same classification applied to FC-T4's row earlier today.
+  Review: 1 round → **approve** (0 blocker, 0 major, 4 minor, all fixed). Gate: `vite build` + `node --check`
+  clean; orchestrator's own runs **192 passed / 0 failed**, then **172 / 0** after the fixes, on per-run
+  template copies with a rebuilt frontend. ⚠ **THREE PO VERIFICATION ITEMS, none a gate:** (1) Revolut
+  `?amount=&currency=EUR` prefilling on a real phone — if not, flip the flag, one line, and the label's
+  amount goes with it by construction; (2) the real PayMe `CN` 70 / `MSG` 140 caps (ISO/defensible
+  defaults, the SBA PDF is still not text-extractable); (3) **whether a bank app decodes the query or splits
+  it raw** — only a real phone settles the `PI` form, and the two raw pins exist to make a change visible.
+  ⚠ Module-15 closeout item: `01-architecture.md:221`/`:264` now describe the composition's location as
+  half true (the library calls stayed in the component, the payload and link composition moved).
 
 - 2026-09-19 · PL-T2 · (this commit) · no PR (project convention) · **The VS reaches every payer and every
   admin surface.** Guest 201 + `statusPayload` (canonical AND legacy pair) now composed by PL-T1's
