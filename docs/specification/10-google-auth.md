@@ -426,6 +426,41 @@ possible to invoke somewhere under their account").
   - Linking or unlinking here updates the section in place and the handshake-scoped
     `googleLinked` state (so UC-GA-006's prompt logic stays consistent within the
     session). It does NOT touch `google_prompt_dismissed` in either direction.
+- ⚠ **AMENDED (GA-T11, 2026-09-19) — the modal also carries a FIRST-password fold,
+  and it had to be built before this section's `hasCredentials` reasoning was
+  honest.** GA-T4 found that `hasCredentials` gates the CHANGE-password fold, which is
+  hidden when false, and `needsCredentialSetup` fires only in transition mode — so a
+  friend with no `password_hash` had no on-screen way to get one, and neither
+  neighbouring route served them (`PUT /:id/change-password` 400s without an existing
+  password; `POST /:id/setup-credentials` serves the transition flow and therefore
+  cannot carry a modern-mode guard). GA-T11 adds **`POST /api/friends/:id/set-password`**
+  — owner-guarded, **modern mode only** (409 `field: 'auth_mode'`, the UC-GA-004
+  credential-planting reasoning applied verbatim), first-time only (409 once
+  `password_hash` exists), optional `username` honoured **only while
+  `friends.username IS NULL`** and never as a rename (FUP-T20) — and a
+  **"Nastaviť heslo"** fold gated on `hasCredentials === false && authMode ===
+  'modern'`. ⚠ Measured reachability, which is what decided the username half: the
+  ONLY modern-mode session a credential-less friend can hold is a **Google login**
+  (every other mint requires `password_hash`, and a pre-flip session does not survive
+  the mode change). ⚠ `username`, however, is **NOT** guaranteed NULL on such a row:
+  admin `PUT /:id/admin-username` writes it without a password, and is the only writer
+  that does. That is precisely why a supplied `username` is honoured **only while the
+  column is NULL** and never as a rename — the branch is load-bearing, not dead code.
+- ⚠ **OPEN — PRODUCT-OWNER COPY DECISION, recorded rather than decided (GA-T11, sharpened
+  by that row's security review). The two sentences are now on screen AT THE SAME TIME,
+  which is a contradiction the friend can see, not merely a stale line.** The unlink
+  warning is gated on `googleNoPassword` (`googleUnlinkWarned || hasCredentials ===
+  false`, `FriendPortalSession.vue:2170` and `:2204`) — i.e. on **exactly** the friends
+  who also see the new **"Nastaviť heslo"** fold, in the **same open modal**. So the
+  modal simultaneously says *"without a password you will not be able to log in until
+  the administrator sets you a new one"* and offers a control that sets one immediately.
+  Neither statement is false — the warning describes what happens if the friend does
+  nothing, and the fold survives the unlink, so the account is recoverable in that same
+  session either way — but they read as contradictory. ⚠ The warning is product-owner
+  copy pinned in **three** e2e places, so it ships UNCHANGED until a new sentence is
+  signed; do not silently re-word it. The likely shape when it is signed: point the
+  warning AT the fold ("…alebo si hneď nastavte vlastné heslo nižšie") rather than at
+  the admin.
 - ⚠ `portal-profile-modal.spec.js` pins this modal's existing labels ~10× (07's
   standing warning) — the section is purely additive; every existing assertion must
   pass unchanged.

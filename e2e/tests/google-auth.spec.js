@@ -2437,22 +2437,24 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
 
       const section = await openProfileSection(page)
-      // ⚠ THE MISSING AFFORDANCE, pinned as an absence (constraint 3 above): this
-      // friend has no password, the change-password fold is keyed on `hasCredentials`
-      // and therefore hidden, and NOTHING replaces it — the profile offers no way to
-      // set a first password. Delete this assertion when the follow-up row lands.
+      // ⚠ WAS AN ABSENCE PIN, NOW THE POSITIVE (GA-T11 — e2e-immutability case (a),
+      // and this row is that assertion's stated mandate: it carried "delete this when
+      // the follow-up row lands"). It used to assert `toHaveCount(0)` over every
+      // `/heslo/i` button in this dialog, because a friend with no `password_hash` had
+      // NO way to get one: the change-password fold is keyed on `hasCredentials` and
+      // therefore hidden for exactly them, and `needsCredentialSetup` fires only in
+      // transition mode.
       //
-      // ⚠ Asserted as "no password control AT ALL", not as the absence of the string
-      // "Zmeniť heslo". That narrower form would (a) merely duplicate
-      // `portal-profile-modal.spec.js:265`, same locator and same condition, and
-      // (b) FAIL TO DETECT THE GAP CLOSING: a first-password affordance would be
-      // labelled "Nastaviť heslo", so it would sail straight past a check that only
-      // looks for "Zmeniť". `/heslo/i` catches both, and anything else somebody names
-      // it in Slovak.
-      const passwordControls = page.getByRole('dialog').getByRole('button', { name: /heslo/i })
-      await expect(passwordControls,
-        'a credential-less friend has NO password-setting control in the profile')
-        .toHaveCount(0)
+      // The invariant it protected is UNCHANGED and still asserted, only inverted:
+      // this friend must have a password control, and it must be the SET one, not the
+      // CHANGE one. The old pin was deliberately written on `/heslo/i` rather than on
+      // the string "Zmeniť heslo" precisely so that it would notice this difference —
+      // so the retarget names both labels explicitly.
+      const dialog = page.getByRole('dialog')
+      await expect(dialog.getByRole('button', { name: 'Nastaviť heslo', exact: true }),
+        'a credential-less friend is offered a FIRST password (GA-T11)').toHaveCount(1)
+      await expect(dialog.getByRole('button', { name: 'Zmeniť heslo', exact: true }),
+        'and never the CHANGE fold — there is no current password to prove').toHaveCount(0)
 
       await expect(section.getByTestId('profile-google-email')).toHaveText('nopass@example.test')
       await section.getByRole('button', { name: GOOGLE_UNLINK, exact: true }).click()
@@ -2471,6 +2473,77 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await expect(section).toContainText(GOOGLE_SECTION_HELPER)
       await expect(section.getByTestId('profile-google-warning')).toContainText(NO_PASSWORD_WARNING)
       expect(api.row(friend.id).google_sub).toBeNull()
+    })
+  })
+
+  test('⚠ GA-T11 — a credential-less friend SETS a first password from the profile, and can then log in with it', async ({ page }) => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    test.setTimeout(120_000)
+
+    // The gap this row closes, driven end to end through the UI the friend actually
+    // has. `first-password.spec.js` owns the route's statuses and boundaries; what is
+    // asserted HERE is the part only a browser can prove: the control exists on the
+    // one surface a credential-less friend can reach in modern mode, it is wired to
+    // the right endpoint, the session survives the write (the route invalidates every
+    // session, including the presenting one), and the resulting password really works
+    // on the login card.
+    await withPortal({}, async ({ backend, api }) => {
+      const friend = await api.plainFriend(tag('setpw'))
+      const sub = tag('sub-setpw')
+      api.linkGoogle(friend.id, { sub, email: 'setpw@example.test' })
+      await trackGoogle(page, { fulfilWith: GIS_STUB })
+
+      await page.goto(`${backend.baseUrl}/`)
+      await expect(page.getByTestId('google-signin')).toBeVisible()
+      await fireCredential(page, `TEST:${sub}:setpw@example.test`)
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+
+      await openProfileSection(page)
+      const dialog = page.getByRole('dialog')
+      const fold = dialog.getByTestId('profile-set-password')
+
+      // Collapsed: one toggle, and the honest reason for it.
+      await expect(fold).toContainText('Zatiaľ nemáte vlastné heslo')
+      await fold.getByRole('button', { name: 'Nastaviť heslo', exact: true }).click()
+
+      // ⚠ The username field is here BECAUSE this fixture's `friends.username` is NULL
+      // — a password with no name to type beside it would not be a login at all. It is
+      // NOT the only reachable state: admin `PUT /:id/admin-username` sets a username
+      // without a password, and for such a friend this field is absent and the supplied
+      // one is ignored (never a rename). `first-password.spec.js` owns that branch.
+      const username = `ga11${uniq}`.toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 30)
+      const password = 'firstOwnPw123'
+      await fold.getByLabel('Užívateľské meno *').fill(username)
+      await fold.getByLabel(/^heslo$/i).fill(password)
+      await fold.getByLabel(/^potvrdiť heslo$/i).fill(password)
+
+      const [res] = await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/set-password')),
+        fold.getByRole('button', { name: 'Nastaviť heslo', exact: true }).click(),
+      ])
+      expect(res.status(), 'the write went to the new route').toBe(200)
+      expect(res.request().method()).toBe('POST')
+
+      // ⚠ THE SESSION SURVIVED. The route deletes every `friend_sessions` row for this
+      // friend — the presenting one included — so a client that ignored the re-mint
+      // would look fine for one tick and 401 on its next request. Proving the portal is
+      // still usable is what catches that.
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+
+      // The fold flips IN PLACE off the merged `hasCredentials`, with no reload: the
+      // set form is gone and the change form has taken its slot.
+      await expect(dialog.getByTestId('profile-set-password')).toHaveCount(0)
+      await expect(dialog.getByRole('button', { name: 'Zmeniť heslo', exact: true })).toHaveCount(1)
+
+      const row = api.withDb((db) => db.prepare('SELECT username, password_hash FROM friends WHERE id = ?').get(Number(friend.id)))
+      expect(row.username).toBe(username)
+      expect(row.password_hash, 'a real hash, not the plaintext').toMatch(/^\$2[aby]\$/)
+
+      // ⚠ AND IT IS A REAL LOGIN, not just a 200. Out of the portal and back in through
+      // the modern login card, with nothing but the name and password just chosen.
+      await page.evaluate(() => localStorage.clear())
+      await loginModern(page, backend, { username, password })
+      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
     })
   })
 

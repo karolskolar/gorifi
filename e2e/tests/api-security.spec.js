@@ -201,6 +201,17 @@ const FRIEND_IDENTITY_ENDPOINTS = [
   { method: 'put', path: '/api/friends/1/google-link' },
   { method: 'delete', path: '/api/friends/1/google-link' },
   { method: 'post', path: '/api/friends/1/google-prompt-dismissed' },
+  // GA-T11 — the FIRST password (`POST /api/friends/:id/set-password`). Friend-OWNED,
+  // so it belongs here and NOT in `ADMIN_ENDPOINTS`: an admin token must not mint a
+  // friend a credential through it (the admin path is `PUT /:id/reset-password`, which
+  // is a different route and raises `must_change_password`).
+  //
+  // ⚠ It passes this target-agnostic sweep only because the ownership gate runs BEFORE
+  // the modern-mode 409 — the same ordering argument the two `google-link` routes rely
+  // on, and the reason the route is written in that order. With the checks reversed,
+  // this sweep would see 409 on a legacy target (which the shared seed is) and 401 on
+  // a modern one, i.e. it would fail for a deployment setting rather than a bug.
+  { method: 'post', path: '/api/friends/1/set-password' },
 ]
 
 test.describe('API security — friend-identity authorization', () => {

@@ -117,6 +117,14 @@ append the full write-up to the matching learnings file and add at most one line
 - SQLite: `WHERE col = ""` is an identifier and throws — use `''`. Single-row picks on second-resolution
   `created_at` need `, id DESC`. `orders` has no `UNIQUE(friend_id, cycle_id)` — get-or-create relies on `instances: 1`.
 - Friend creation via `POST /api/friends` sets no credentials; logins come only from approve / set-username / reset.
+- FOUR credential routes, never merged: `setup-credentials` (transition, so NO mode guard possible),
+  `change-password` (400s without one), admin `reset-password`, and `set-password` (GA-T11 — the FIRST
+  password, modern-mode-guarded, 409 once one exists, `username` honoured only while NULL, never a rename).
+  `hasCredentials === false` is reachable in modern mode ONLY via a Google login (every other mint needs
+  `password_hash`; a mode flip deletes all sessions). ⚠ Such a row MAY still have a `username` — admin
+  `PUT /:id/admin-username` is the one writer that sets it without a password — which is why `set-password`
+  honours a supplied one only while NULL. That branch is not dead code; deleting it reintroduces FUP-T20's
+  portal-side rename on a credential route.
 
 ### Frontend
 - `.app > *` is `position:relative; z-index:1` at (0,1,0) and loads after Tailwind — `fixed/sticky/absolute/z-*`

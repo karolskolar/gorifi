@@ -355,3 +355,119 @@ a pre-existing token oracle, the natural companion to a future "bound the admin-
 check surface" row; and a stale-token admin's own logout now leaves a dead `admin_token`
 row until it expires or the next login overwrites it (harmless — the expiry check
 already rejects it).
+
+### ⚠ GA-T11 — the FIRST password: `POST /api/friends/:id/set-password` (2026-09-19)
+
+**The gap.** `hasCredentials` gates the CHANGE-password fold in the profile modal, so a
+friend whose `password_hash` is NULL saw **no password control at all**;
+`needsCredentialSetup` fires only in transition mode, and the forced gate only when an
+admin reset a password that already exists. GA-T4 found it, GA-T7 could not close it
+(the fix is a backend route with its own security review), and the absence was pinned in
+`google-auth.spec.js` with "delete this when the follow-up row lands" — this row.
+
+**Why neither existing route fits, and the two reasons are different.**
+`PUT /:id/change-password` answers **400** `Nemáte nastavené osobné heslo` for exactly
+this friend. `POST /:id/setup-credentials` would **not** refuse them (its 409 needs
+`password_hash` **AND** `username`) — the mismatch is **security**: that route serves the
+TRANSITION-mode flow, i.e. it runs by definition while `auth_mode` is not modern, so it
+cannot carry the modern-mode guard without breaking the one flow it exists for. Adding
+the guard there is the obvious simplification and it is wrong.
+
+**⚠ THE MEASURED REACHABILITY FINDING — it decided the route's shape.** Every
+modern-mode session mint was walked, against a real server, not just read:
+
+| mint | can it produce `hasCredentials: false`? |
+|---|---|
+| `POST /friends/auth` personal | no — needs `username` + `password_hash` |
+| `POST /friends/auth` shared | no — 401 in modern mode |
+| `POST /magic-link/redeem` | no — `magic-link.js:130,337` require `password_hash` |
+| `POST /onboarding/:token` | no — always writes BOTH columns |
+| 07 approval (incl. GA-T9 Google) | no — the INSERT always writes `username`, `password_hash`, `must_change_password = 1` |
+| a session minted before a mode flip | **no — `PUT /api/admin/settings` DELETEs every `friend_sessions` row on a mode change** (`admin.js:556`; measured: the legacy token 401s straight after the flip) |
+| `POST /friends/auth/google` | **yes** — it needs `google_sub` and nothing else |
+
+So the ONE modern-mode session a credential-less friend can hold is a **Google login**,
+and a password-only route would therefore refuse 100 % of the friends who can reach the
+screen — hence the optional `username`.
+
+⚠ **CORRECTED BY THIS ROW'S SECURITY REVIEW — the first draft of this finding claimed
+"nothing that leaves `password_hash` NULL ever writes a `username`", and that is FALSE.**
+`PUT /api/friends/:id/admin-username` (`friends.js:1679`) runs `UPDATE friends SET
+username = ? WHERE id = ?` and never touches `password_hash`, so an admin can hand a
+password-less friend a username. It is the ONLY counterexample — every `UPDATE friends
+SET` and `INSERT INTO friends` in `backend/src` was walked to confirm it, and the admin
+PATCH's allow-list is name/display_name/active/phone/email only. The code was always
+right (the branch is `if (username == null)`) and `first-password.spec.js` builds
+exactly that row through `giveUsername()`, i.e. through that admin route — **the test
+was already proving the sentence wrong.** ⚠ Why it mattered enough to chase into six
+files: that sentence was the stated justification for the guard, so a reader taking it
+at face value could delete the branch as dead code and reintroduce a portal-side rename
+on a credential route — the decision FUP-T20 took against. The true form is: `username`
+may be non-NULL on such a row, which is exactly why a supplied one is honoured **only
+while NULL** and **never** as a rename. Documentation discipline in practice: a claim
+repeated in six places is six places to correct, and the e2e was the honest witness.
+⚠ Today that `google_sub` can only come from a migration/restore or an operator (the
+link route demands a modern session first, and approval mints a password), so the state
+is currently constructed, not walked into — but it is one admin-side "link Google" row
+away from routine, and the e2e harness already constructs it.
+
+**The route.** Owner gate (`requireGoogleLinkOwner`, its fourth caller) → modern-mode
+409 `field: 'auth_mode'` → 404 → **409** `Heslo je už nastavené…` (409, not 400: the
+body is fine and the caller is authorised; it conflicts with account STATE, and without
+it this would be a password change with no `currentPassword` proof) → username
+(400 `field: 'username'` / 409 taken) → FUP-T11 type guard → bcrypt **outside** the
+transaction → one UPDATE + `invalidateLoginTokens` inside → `invalidateFriendSessions`
++ re-mint carrying the presenting session's expiry, `via` NULL (`change-password`'s
+ending, copied — and the re-mint is not optional: the invalidate deletes the very token
+the request presented).
+
+- ⚠ **The modern-mode guard is the load-bearing control, not the ownership check**
+  (GA-T5's finding, re-verified): in legacy/transition mode `POST /friends/auth` with
+  `{password: <shared>, friendId: <anyone>}` mints a session that IS the victim's
+  resolved identity, so every ownership check downstream passes. The e2e asserts the
+  409 **with a perfectly resolved owner**, in legacy AND transition, and re-reads the
+  row. The guard sits AFTER the owner gate so an anonymous caller still gets the uniform
+  401 the `api-security.spec.js` sweep asserts (the route joined
+  `FRIEND_IDENTITY_ENDPOINTS`, not `ADMIN_ENDPOINTS` — an admin token must not mint a
+  friend a credential here; `PUT /:id/reset-password` is the admin path and it raises
+  `must_change_password`).
+- ⚠ **No rate limiter, deliberately** (§UC-GA-013's one-sentence rule): the route
+  verifies nothing attacker-suppliable — it demands the friend's own session, minted
+  behind `authLimiter` — so there is no secret to probe. Both siblings hash a password
+  with no limiter for the same reason. The five buckets stay five.
+- ⚠ **No `await` anywhere in the handler**, which is what keeps the check-then-write
+  atomic under `instances: 1`; the `SQLITE_CONSTRAINT`→409 translation on
+  `idx_friends_username` is the GSO-T10 second layer for PM2 cluster mode. Adding an
+  await later re-opens both races.
+
+**Frontend** (`FriendPortalSession.vue`): a fold labelled **`Nastaviť heslo`** (never
+"Zmeniť heslo" — the deleted pin was written on `/heslo/i` precisely so it would catch
+that difference), gated on `props.friend?.hasCredentials === false && authMode ===
+'modern'`. ⚠ **Strict `=== false`**, the `googlePromptEligible` trap again: the field is
+ABSENT until the profile fetch lands, and `!undefined` would offer a first-password form
+to a friend who has a good password and whose every submit the server would 409. The
+username input renders only when `friends.username` is missing, `maxlength="30"` mirrors
+`validateUsername`. Success emits `token` (or the friend is logged out by succeeding)
+then `friend-merged` with `hasCredentials: true`, so the change-password fold replaces
+it in place with no reload.
+
+**Left open, deliberately, and none is a placeholder:**
+0. ⚠ **The GA-T7 unlink warning and the new fold are on screen TOGETHER** — a
+   contradiction the friend can see, not a stale sentence (the framing this row's review
+   sharpened). The warning is gated on `googleNoPassword` =
+   `googleUnlinkWarned || hasCredentials === false` (`FriendPortalSession.vue:2170`,
+   `:2204`), which is **exactly** the population that now also gets "Nastaviť heslo" in
+   the same open modal: it says *"…kým vám správca nenastaví nové heslo"* one section
+   above a button that sets one. Neither half is false (the warning describes doing
+   nothing; the fold survives the unlink, so the session is recoverable either way), and
+   the copy is **product-owner text pinned in three e2e places** — so it ships unchanged
+   until a new sentence is signed. Tell the product owner the two appear together, not
+   that one is out of date. Likely fix: point the warning at the fold, not at the admin.
+1. **Legacy mode still has no answer.** A credential-less friend on a legacy deployment
+   can log in (shared password + dropdown) and still has no way to a personal password —
+   and the modern-mode guard is exactly why they must not. `setup-credentials` +
+   transition mode is the specced migration path; the real fix is finishing the
+   migration (`auth_mode=modern`), which is already an open follow-up.
+2. **Transition mode's dialog is dismissible** (`@close="showCredentialSetup = false"`),
+   so a friend who closes it has no way back that session. Same guard, same reasoning;
+   re-opening it from the profile would be an additive UI row, not a new route.

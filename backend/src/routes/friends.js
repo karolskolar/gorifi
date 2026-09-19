@@ -361,14 +361,17 @@ router.post('/auth/google', authLimiter, async (req, res) => {
       // ⚠ NOT the hardcoded `true` the password branch can afford: a friend created by
       // a Google-attached registration may have no password at all.
       //
-      // ⚠ AND THE OBVIOUS CONSUMER DOES NOT EXIST YET — do not assume it does.
-      // `FriendPortalSession.vue:1416` uses `hasCredentials` to gate the CHANGE-password
-      // fold, which is HIDDEN when false, and `needsCredentialSetup` only fires in
-      // transition mode. So a friend with no `password_hash` currently has **no
-      // on-screen path to set one at all** (`PUT /:id/change-password` 400s for them).
-      // The value here is right and stays; GA-T7 is specced to key its profile-modal
-      // "set a password" affordance on it and will find that affordance missing —
-      // building it is GA-T7's work, not an assumption this line can make.
+      // ⚠ THE CONSUMER NOW EXISTS (GA-T11) — and the history matters, because this
+      // field is the ONLY thing that decides which of two folds the profile modal
+      // renders. `hasCredentials` gates the CHANGE-password fold, which is hidden when
+      // false, and `needsCredentialSetup` only fires in transition mode: for one whole
+      // module a friend with no `password_hash` had NO on-screen path to set one
+      // (`PUT /:id/change-password` 400s for them, and GA-T7 could not close it because
+      // the fix is a new backend route with its own security review). GA-T11 shipped
+      // that route (`POST /:id/set-password`, modern mode only) and the matching
+      // "Nastaviť heslo" fold. So `hasCredentials: false` is now ACTIONABLE on this
+      // exact login path — the Google login is the only modern-mode mint that can
+      // produce it — and the value here stays load-bearing for it.
       hasCredentials: !!friend.password_hash,
       // Resolved decision #1 — a Google login honours the forced-change gate exactly
       // like a password login. The flag means an ADMIN-KNOWN password exists on the
@@ -607,6 +610,232 @@ router.put('/:id/change-password', (req, res) => {
   const session = createFriendSession(friendId, { expiresAt: carryExpiry });
 
   res.json({ success: true, token: session.token, expiresAt: session.expiresAt });
+});
+
+// POST /friends/:id/set-password — the FIRST password for a friend who has NONE
+// (GA-T11; 10 §UC-GA-004's security model, §UC-GA-007's surface).
+//
+// ⚠⚠ WHY A FOURTH CREDENTIAL ROUTE, when two already exist. Neither fits, and the
+// two reasons are different — do not "consolidate" them later without re-reading both.
+//   · `PUT /:id/change-password` (above) answers 400 `Nemáte nastavené osobné heslo`
+//     for exactly this friend. It CHANGES a password; there is none to change, and its
+//     `currentPassword` proof has nothing to compare against.
+//   · `POST /:id/setup-credentials` (above) would NOT refuse them — its 409 needs
+//     `password_hash` AND `username`, and this friend has neither — so the mismatch is
+//     SECURITY, not status codes. That route serves the TRANSITION-mode
+//     `needsCredentialSetup` flow, i.e. it runs BY DEFINITION while `auth_mode` is not
+//     modern, so it cannot carry the modern-mode guard below without breaking the one
+//     flow it exists for. Adding the guard there is the "obvious" simplification and
+//     it is wrong.
+//
+// ⚠⚠ THE MODERN-MODE GUARD IS THE LOAD-BEARING CONTROL, NOT THE OWNERSHIP CHECK —
+// GA-T5's finding, restated here because this route writes a credential and the
+// distinction decides whether it is safe. `requireGoogleLinkOwner` below closes only
+// the ONE-REQUEST form of shared-password auth (the bare `X-Friends-Password` header).
+// The TWO-REQUEST form survives it completely: while `auth_mode` is legacy or
+// transition, `POST /friends/auth` with `{ password: <shared>, friendId: <anyone> }`
+// mints a session that IS the victim's resolved identity, so every ownership check
+// downstream passes for anyone holding the office password. Refusing the WRITE outside
+// modern mode is what stops a PLANTED password — a permanent alternative credential
+// that would activate the moment the admin flips to modern and survive the victim's
+// own later password change. It costs a legitimate friend nothing: outside modern mode
+// they already have `setup-credentials` (transition) and, in legacy mode, no personal
+// login exists to use the password with in the first place.
+//
+// ⚠ NO RATE LIMITER, and that is a decision, not an omission (§UC-GA-013's
+// one-sentence rule: the buckets are for CREDENTIAL GUESSING). This route verifies
+// nothing attacker-suppliable — it demands the friend's own session, minted behind
+// `authLimiter` — so there is no secret here to probe. Its two siblings
+// (`setup-credentials`, `change-password`) hash a password with no limiter for the
+// same reason, and singling this one out would buy nothing while breaking that
+// symmetry. The five buckets in `middleware/rate-limit.js` stay five and stay separate.
+//
+// ⚠ THE REACHABILITY FINDING (GA-T11, measured — it is why `username` is accepted).
+// Every modern-mode session mint was walked: the personal login needs `password_hash`,
+// the shared login is 401 in modern mode, `magic-link/redeem` needs `password_hash`,
+// `POST /onboarding/:token` and 07's approval BOTH always write `username` AND
+// `password_hash`, and a session minted before the flip does not survive it
+// (`PUT /api/admin/settings` DELETEs every `friend_sessions` row on a mode change). The
+// one remaining mint is `POST /friends/auth/google`, which needs `google_sub` alone.
+// A friend who can reach this route therefore has `password_hash` NULL, and a password
+// alone would give them nothing to type it beside — hence the optional `username`.
+//
+// ⚠ BUT `username` IS **NOT** GUARANTEED NULL ON SUCH A ROW, and that is exactly why
+// the branch below is `if (username == null)` rather than an unconditional write.
+// `PUT /:id/admin-username` (this file, ~line 1679) runs `UPDATE friends SET
+// username = ? WHERE id = ?` and never touches `password_hash`, so an admin can hand a
+// password-less friend a username — and it is the ONLY such writer (verified by
+// walking every `UPDATE friends SET` / `INSERT INTO friends` in `backend/src`; the
+// admin PATCH's allow-list is name/display_name/active/phone/email only). So the
+// supplied `username` is honoured ONLY while `friends.username IS NULL` and is NEVER a
+// rename — FUP-T20's product decision keeps the username read-only in the portal, and
+// the admin renames. ⚠ Do not "simplify" this branch away as dead: deleting it turns a
+// credential route into a portal-side rename, which is the decision FUP-T20 took
+// against. `first-password.spec.js` builds the non-NULL row through that admin route
+// and pins it.
+router.post('/:id/set-password', (req, res) => {
+  // 1. Ownership FIRST, so an anonymous caller gets the uniform 401 the api-security
+  //    sweep asserts rather than the mode 409 below (GA-T5's ordering rule, and the
+  //    reason `google-link` passes that sweep). `requireGoogleLinkOwner` is declared
+  //    with the Google routes further down — it is the ONE home for "a resolved friend
+  //    identity, never a bare shared password", and this is its fourth caller.
+  const owner = requireGoogleLinkOwner(req, res);
+  if (!owner) return;
+
+  // 2. Modern mode only — see the block comment above. Byte-identical placement to
+  //    `PUT /:id/google-link`: after the identity gate, before any state is read.
+  if (getAuthMode() !== 'modern') {
+    return res.status(409).json({
+      error: 'Nastavenie vlastného hesla je dostupné až po prechode na osobné prihlasovanie',
+      field: 'auth_mode'
+    });
+  }
+
+  const friendId = req.params.id;
+  const friend = db.prepare('SELECT id, name, uid, username, password_hash FROM friends WHERE id = ? AND active = 1').get(friendId);
+  if (!friend) {
+    return res.status(404).json({ error: 'Priateľ nebol nájdený' });
+  }
+
+  // 3. FIRST-time only. 409 rather than 400 deliberately: the request is well-formed
+  //    and the caller is authorised — it conflicts with the CURRENT STATE of the
+  //    account, which is what 409 says and what `setup-credentials` already answers
+  //    for its own "already set" case. A 400 would read as "you sent junk", and the
+  //    client's recovery is to use the change-password fold, not to fix the body.
+  //    ⚠ Load-bearing beyond tidiness: without it this route would be a password
+  //    change with NO `currentPassword` proof.
+  if (friend.password_hash) {
+    return res.status(409).json({ error: 'Heslo je už nastavené. Použite zmenu hesla.' });
+  }
+
+  // 4. The username, and ONLY when there is none. An existing one is never renamed
+  //    here — a `username` in the body is simply not read in that case.
+  //    ⚠ `typeof === 'string'` BEFORE `.toLowerCase()` (the FUP-T12 class:
+  //    `{"username":{"toLowerCase":1}}` is "1 is not a function", i.e. a 500 plus a
+  //    stack in the log for a merely malformed body). `validateUsername` then answers
+  //    the same "je povinne" message for a null as for an absent one.
+  const body = (req.body && typeof req.body === 'object') ? req.body : {};
+  let username = friend.username;
+  if (username == null) {
+    const requested = typeof body.username === 'string' ? body.username.toLowerCase().trim() : null;
+    const usernameError = validateUsername(requested);
+    if (usernameError) {
+      return res.status(400).json({ error: usernameError, field: 'username' });
+    }
+    if (isUsernameTaken(requested, friendId)) {
+      return res.status(409).json({ error: 'Užívateľské meno je už obsadené', field: 'username' });
+    }
+    username = requested;
+  }
+
+  // 5. ⚠ Type-guard BEFORE `hashPassword` (FUP-T11, the HASH half of the split — see
+  //    `setup-credentials` above for why the rule lives at the route and not in the
+  //    helper). `!password || password.length < 8` reads `.length` off whatever the
+  //    body carried, so `{"password":{"length":12}}`, a number and `true` all reach
+  //    `bcrypt.hashSync`, which throws `Illegal arguments` ⇒ 500. Same status, same
+  //    message, same refusal for a short string — only non-strings move 500 → 400.
+  const password = body.password;
+  if (typeof password !== 'string' || password.length < 8) {
+    return res.status(400).json({ error: 'Heslo musí mať aspoň 8 znakov' });
+  }
+
+  // ⚠ bcrypt runs ABOVE the transaction (the IA-T3 structural invariant, restated
+  // because no test can hold it: better-sqlite3 transactions are synchronous, so a
+  // ~62 ms hash inside one would hold the write lock for its whole duration).
+  // Everything below this line is pure SQL.
+  //
+  // ⚠ AND THERE IS NO `await` ANYWHERE IN THIS HANDLER, deliberately. That is what
+  // makes the check-then-write above atomic under PM2 `instances: 1` — the
+  // `password_hash` re-read and the `isUsernameTaken` pre-check cannot be interleaved
+  // with another request. Adding an await (a token verification, a mail send) would
+  // reopen both races and would require the re-check-before-write that CLAUDE.md
+  // mandates for that case. The catch below is the GSO-T10 second layer, which covers
+  // the PM2-cluster scenario the pre-check cannot.
+  const passwordHash = hashPassword(password);
+
+  try {
+    // §UC-ML-009 rule 2 — a `password_hash` write and the magic-link delete are ONE
+    // transaction, exactly as `setup-credentials` and `change-password` do it.
+    // Conservative hygiene only (§UC-ML-005's own checks remain the load-bearing gate).
+    // ⚠ `must_change_password = 0` is named literally and in the safe direction: the
+    // friend CHOSE this password, so nothing is forced. (No reachable state has it set
+    // while `password_hash` is NULL — the admin reset writes both — so this is belt
+    // and braces, not a behaviour.)
+    // ⚠ `AND password_hash IS NULL` is the SECOND LAYER on the first-time-only rule —
+    // the same dual-layer shape the username collision already had (GSO-T10), and it
+    // is here so a reader does not have to wonder why one check had two layers and the
+    // other one. The app-level `if (friend.password_hash)` above remains the
+    // load-bearing half under `instances: 1` (this handler holds no `await`, so nothing
+    // can interleave); this clause is defence in depth against a future PM2 cluster
+    // mode, which CLAUDE.md warns reopens exactly these races.
+    //
+    // ⚠ NO HTTP TEST CAN REACH THIS BRANCH, and that is recorded rather than faked:
+    // under `instances: 1` the pre-check always answers first, so a test of "409 when a
+    // password exists" proves the pre-check and says nothing about this clause. Same
+    // situation as `writeGoogleLink`'s constraint translation, which is why that one is
+    // exported and driven in a child process. Not worth restructuring this route for —
+    // but do not read the missing test as a missing guard.
+    //
+    // ⚠ `changes === 0` means ONE thing here and it is not "not found": the row was
+    // SELECTed a few lines up and friends are deactivated, never deleted, so the only
+    // way to match zero rows is a concurrent writer having set `password_hash` first.
+    // Hence the SAME 409 and the same sentence as the pre-check — one consistent answer
+    // for one condition, never a 404.
+    //
+    // ⚠ The IA-T3 shape is intact: bcrypt is still above the boundary, and the
+    // transaction still holds AT MOST the same two writes — the early return does
+    // fewer, never more, and `invalidateLoginTokens` is deliberately inside the branch
+    // so a refused write never drops the friend's outstanding magic links.
+    const written = db.transaction(() => {
+      const info = db.prepare(
+        'UPDATE friends SET username = ?, password_hash = ?, must_change_password = 0 WHERE id = ? AND password_hash IS NULL'
+      ).run(username, passwordHash, friendId);
+      if (info.changes === 0) return false;
+      invalidateLoginTokens(friendId);
+      return true;
+    })();
+
+    if (!written) {
+      return res.status(409).json({ error: 'Heslo je už nastavené. Použite zmenu hesla.' });
+    }
+  } catch (e) {
+    // The dual-layer 409 (GSO-T10): `idx_friends_username` is a partial UNIQUE index,
+    // and the app-level pre-check above is the load-bearing half under `instances: 1`.
+    // Scoped to the username — any other constraint failure is a real server fault and
+    // must keep its 500.
+    const message = String(e?.message || '');
+    if (/UNIQUE/i.test(message) && /username/i.test(message)) {
+      return res.status(409).json({ error: 'Užívateľské meno je už obsadené', field: 'username' });
+    }
+    throw e;
+  }
+
+  // The "I have secured my account" event, handled exactly as `change-password` ends:
+  // every session dies and the caller is handed a fresh one. It applies here for the
+  // same reason it applies there — a friend who just gained a personal credential must
+  // not leave a Google-minted session of theirs alive on another device — and the
+  // re-mint is not optional: `invalidateFriendSessions` deletes the very token this
+  // request presented, so without it the friend would be logged out by succeeding.
+  //
+  // ⚠ Read the presenting session's expiry BEFORE invalidating (that call deletes the
+  // row we are reading): a friend on the Google login's 60-day horizon keeps it rather
+  // than being silently dropped to 24 h for setting a password (09 §UC-ML-002 item 2).
+  const carryExpiry = presentedSessionExpiry(req);
+  invalidateFriendSessions(friendId);
+  // ⚠ `via` is deliberately NOT carried over — see `change-password`: a NULL `via` is
+  // what retires the §UC-ML-008 `currentPassword` waiver.
+  const session = createFriendSession(friendId, { expiresAt: carryExpiry });
+
+  // ⚠ HAND-PICKED, NEVER A `SELECT *` SPREAD (11 §UC-FC-005's strip rule, inherited).
+  // `hasCredentials` rides along so the client can flip the profile modal's fold from
+  // "Nastaviť heslo" to "Zmeniť heslo" without a reload; `username` so it can render
+  // the login the friend must now type.
+  res.json({
+    success: true,
+    friend: { id: friend.id, name: friend.name, uid: friend.uid, username, hasCredentials: true },
+    token: session.token,
+    expiresAt: session.expiresAt
+  });
 });
 
 // GET /friends/check-username/:username - Public check if username is available
@@ -1182,7 +1411,9 @@ export function writeGoogleLink(friendId, sub, email) {
   }
 }
 
-// The identity gate these three routes add ON TOP of `requireFriendOwner`.
+// The identity gate these routes add ON TOP of `requireFriendOwner` — the three Google
+// routes below, and (GA-T11) `POST /:id/set-password` above, which is why this is a
+// named function rather than three inline copies.
 //
 // `requireFriendOwner` resolves `{ friendId: null }` for bare shared-password auth
 // while `auth_mode` is 'legacy' (its documented migration window), so without this gate

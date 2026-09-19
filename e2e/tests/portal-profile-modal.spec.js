@@ -295,6 +295,17 @@ test.describe('Profile modal — structure on NeoModal (UC-FL-009)', () => {
     await expect(dialog.getByRole('button', { name: 'Zmeniť heslo' })).toHaveCount(0)
     // …while the editable fields are all still there.
     await expect(dialog.getByLabel('Meno a priezvisko *')).toBeVisible()
+
+    // ⚠ STILL ZERO AFTER GA-T11, and for a reason worth stating rather than
+    // rediscovering. That row added a SECOND fold — "Nastaviť heslo", for a friend
+    // whose `password_hash` is NULL — but it is gated on `hasCredentials === false`
+    // AND modern mode, and this stub publishes NO `hasCredentials` at all. Absent is
+    // not false (`!undefined` would be the bug), and this target is legacy. So the
+    // property this test names is unchanged: an UNHYDRATED legacy modal offers no
+    // password control of either kind.
+    // ⚠ NOT WEAKENED AND NOT RETARGETED — the assertion above is the shipped one,
+    // byte for byte; the line below only widens the claim it already made.
+    await expect(dialog.getByRole('button', { name: /heslo/i })).toHaveCount(0)
   })
 
   test('the fold toggles, and its label flips', async ({ page }) => {

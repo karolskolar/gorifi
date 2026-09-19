@@ -231,6 +231,26 @@ const changePasswordError = ref('')
 const changePasswordSaving = ref(false)
 const changePasswordSuccess = ref('')
 
+// First password (inside the profile modal) — GA-T11, 10 §UC-GA-007.
+//
+// ⚠ THE FOLD ABOVE IS HIDDEN FOR EXACTLY THE PEOPLE WHO NEED THIS ONE. It is keyed on
+// `hasCredentials`, so a friend with no `password_hash` sees no password control at
+// all; `showCredentialSetup` below only fires in TRANSITION mode, and the forced gate
+// only when an admin reset a password that exists. For one whole module that left a
+// credential-less friend with no on-screen way to get a password (`PUT
+// /:id/change-password` 400s for them — it changes a password, and there is none).
+// `POST /friends/:id/set-password` is the route that closes it.
+//
+// ⚠ Session-scoped by construction, like every ref in this file: the parent's `v-if`
+// destroys this instance on logout, so the typed password cannot survive into the next
+// person's dialog — the RD-FL-6 leak, restated. No module scope, no localStorage.
+const showPasswordSet = ref(false)
+const firstUsername = ref('')
+const firstPassword = ref('')
+const firstPasswordConfirm = ref('')
+const firstPasswordError = ref('')
+const firstPasswordSaving = ref(false)
+
 // Credential setup (transition mode)
 const showCredentialSetup = ref(!!props.entry?.needsCredentialSetup)
 const setupUsername = ref('')
@@ -498,6 +518,36 @@ async function dismissGooglePromptForever() {
     googlePromptBusy.value = false
   }
 }
+
+// ---------------------------------------------------------------------------
+// First-password fold in the profile modal (GA-T11, 10 §UC-GA-007)
+// ---------------------------------------------------------------------------
+
+// ⚠ STRICT `=== false`, never `!props.friend?.hasCredentials` — the same trap
+// `googlePromptEligible` and `googleNoPassword` document. `hasCredentials` is ABSENT
+// until the owner-scoped profile fetch lands (and absent for good on a stubbed or
+// failed hydrate), and `!undefined` is `true`, which would offer a first-password form
+// to a friend who has a perfectly good password — and whose every submit the server
+// would then 409. Absence means "not known", not "no password".
+//
+// ⚠ AND THE MODE TERM IS NOT DECORATION: `POST /:id/set-password` answers 409
+// `field: 'auth_mode'` outside modern mode, deliberately (a shared password can mint
+// anybody's session there, so minting a credential is credential PLANTING). Offering
+// the fold on a legacy or transition deployment would offer a form every attempt
+// refuses. Transition mode already has its own answer — `needsCredentialSetup` raises
+// the credential-setup dialog, which calls `setup-credentials` and works there.
+const canSetFirstPassword = computed(
+  () => props.friend?.hasCredentials === false && props.authMode === 'modern'
+)
+
+// Whether the form must also ask for a name to log in with — DERIVED, never assumed,
+// because a friend who reaches this fold may well already have one: admin
+// `PUT /:id/admin-username` writes `friends.username` without touching
+// `password_hash`, and it is the only writer that does (GA-T11's corrected
+// reachability finding). So both states are real, and the field renders only for the
+// one that needs it. The server decides the same thing independently: it honours a
+// supplied username only while the column is NULL, and never as a rename (FUP-T20).
+const firstNeedsUsername = computed(() => canSetFirstPassword.value && !props.friend?.username)
 
 // ---------------------------------------------------------------------------
 // Google section in the profile modal (10 §UC-GA-007)
@@ -1047,6 +1097,68 @@ async function changePassword() {
     changePasswordError.value = e.message
   } finally {
     changePasswordSaving.value = false
+  }
+}
+
+/**
+ * Set a FIRST password (GA-T11) — the fold the change-password one above cannot serve.
+ *
+ * ⚠ The client rules are the SERVER's rules, restated so a mistyped form does not cost
+ * a round trip; the server stays authoritative and its refusals render in the same
+ * banner. Length 8 and the username format are copied from `validateUsername` /
+ * `friends.js` verbatim — if one moves, both move.
+ */
+async function submitFirstPassword() {
+  firstPasswordError.value = ''
+
+  const username = firstUsername.value.toLowerCase().trim()
+  if (firstNeedsUsername.value) {
+    if (username.length < 3 || username.length > 30 || !/^[a-z0-9._-]+$/.test(username)) {
+      firstPasswordError.value = 'Meno musí mať 3 – 30 znakov a obsahovať len malé písmená, čísla, bodku, podtržník a pomlčku'
+      return
+    }
+  }
+
+  if (!firstPassword.value || firstPassword.value.length < 8) {
+    firstPasswordError.value = 'Heslo musí mať aspoň 8 znakov'
+    return
+  }
+
+  if (firstPassword.value !== firstPasswordConfirm.value) {
+    firstPasswordError.value = 'Heslá sa nezhodujú'
+    return
+  }
+
+  firstPasswordSaving.value = true
+  try {
+    const result = await api.setFirstPassword(
+      props.friendId,
+      firstPassword.value,
+      firstNeedsUsername.value ? username : null
+    )
+
+    // ⚠ The token FIRST and unconditionally: the route invalidates every session of
+    // this friend (including the one this request presented — `change-password`'s
+    // contract, copied), so without handing the re-mint to the parent the friend would
+    // be logged out by succeeding.
+    if (result.token) {
+      emit('token', { token: result.token, expiresAt: result.expiresAt })
+    }
+    // `hasCredentials: true` rides in `result.friend`, so the fold below this one —
+    // the change-password one, keyed on exactly that field — replaces this one in
+    // place, with no reload and no second fetch.
+    if (result.friend) {
+      emit('friend-merged', result.friend)
+    }
+
+    showPasswordSet.value = false
+    firstUsername.value = ''
+    firstPassword.value = ''
+    firstPasswordConfirm.value = ''
+  } catch (e) {
+    firstPasswordError.value = e.message
+  } finally {
+    firstPasswordSaving.value = false
   }
 }
 
@@ -1893,6 +2005,102 @@ defineExpose({ openProfileModal, openInviteModal })
           @click="changePassword()"
         >
           {{ changePasswordSaving ? 'Mením heslo...' : 'Zmeniť heslo' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- FIRST-password fold (GA-T11) — the OTHER half of the fold above, and the two
+         are mutually exclusive by construction: that one needs `hasCredentials` truthy,
+         this one needs it strictly `false`. It exists because the friend it serves
+         could previously see NEITHER — `needsCredentialSetup` fires only in transition
+         mode, and the change fold is hidden exactly when there is nothing to change.
+
+         ⚠ The toggle says "Nastaviť heslo", NOT "Zmeniť heslo", and the difference is
+         pinned in `google-auth.spec.js`: setting a first password and changing an
+         existing one are different acts with different endpoints, and a friend who has
+         never had a password must not be asked for a current one.
+         ⚠ Same two-state trick as the fold above: the toggle reads "Skryť nastavenie
+         hesla" exactly when the submit button exists, so
+         `getByRole('button', { name: 'Nastaviť heslo' })` stays unambiguous in both. -->
+    <div
+      v-if="canSetFirstPassword"
+      data-testid="profile-set-password"
+      style="border-top:2px solid rgba(10,10,10,0.12);padding-top:12px"
+    >
+      <button
+        type="button"
+        class="btn ghost sm"
+        style="color:var(--accent);font-weight:700;padding:0"
+        @click="showPasswordSet = !showPasswordSet"
+      >
+        {{ showPasswordSet ? 'Skryť nastavenie hesla' : 'Nastaviť heslo' }}
+      </button>
+      <div v-if="!showPasswordSet" class="field-help" style="margin-top:6px">
+        Zatiaľ nemáte vlastné heslo. Nastavte si ho a budete sa môcť prihlásiť menom a heslom.
+      </div>
+
+      <div
+        v-if="showPasswordSet"
+        style="display:flex;flex-direction:column;gap:12px;margin-top:12px"
+      >
+        <div v-if="firstPasswordError" class="banner danger slim">
+          <span class="dot"></span>
+          <div style="min-width:0">{{ firstPasswordError }}</div>
+        </div>
+
+        <!-- Rendered only when there is no name to log in with yet. It is the ONE
+             place this view writes `friends.username`, and it writes it exactly once:
+             the server honours it while the column is NULL and never as a rename, so
+             the read-only box at the top of this modal stays the only view of an
+             existing one (FUP-T20's product decision).
+             ⚠ `maxlength` mirrors the server bound (`validateUsername`: 3–30) — the
+             GSO-T3 mirror convention. -->
+        <div v-if="firstNeedsUsername">
+          <label class="field-lbl" for="pp-first-username">Užívateľské meno *</label>
+          <input
+            id="pp-first-username"
+            v-model="firstUsername"
+            class="inp"
+            maxlength="30"
+            autocapitalize="none"
+            autocomplete="username"
+            :disabled="firstPasswordSaving"
+          />
+          <div class="field-help">3 – 30 znakov: malé písmená, čísla, bodka, podtržník a pomlčka.</div>
+        </div>
+
+        <div>
+          <label class="field-lbl" for="pp-first-password">Heslo</label>
+          <input
+            id="pp-first-password"
+            v-model="firstPassword"
+            class="inp"
+            type="password"
+            autocomplete="new-password"
+            :disabled="firstPasswordSaving"
+          />
+          <div class="field-help">Aspoň 8 znakov.</div>
+        </div>
+        <div>
+          <label class="field-lbl" for="pp-first-password-confirm">Potvrdiť heslo</label>
+          <input
+            id="pp-first-password-confirm"
+            v-model="firstPasswordConfirm"
+            class="inp"
+            type="password"
+            autocomplete="new-password"
+            :disabled="firstPasswordSaving"
+            @keyup.enter="submitFirstPassword()"
+          />
+        </div>
+
+        <button
+          type="button"
+          class="btn sm dark"
+          :disabled="firstPasswordSaving || (firstNeedsUsername && !firstUsername) || !firstPassword || !firstPasswordConfirm"
+          @click="submitFirstPassword()"
+        >
+          {{ firstPasswordSaving ? 'Nastavujem heslo...' : 'Nastaviť heslo' }}
         </button>
       </div>
     </div>

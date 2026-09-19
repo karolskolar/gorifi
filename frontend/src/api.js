@@ -251,6 +251,16 @@ export const api = {
     method: 'POST',
     body: { username, password }
   }),
+  // GA-T11 (10 §UC-GA-004's security model, §UC-GA-007's surface) — the FIRST password
+  // for a friend who has none. A separate endpoint from both neighbours on purpose:
+  // `change-password` 400s without an existing password, and `setup-credentials` serves
+  // the transition-mode flow and therefore cannot carry this route's modern-mode guard.
+  // ⚠ `username` travels ONLY when the caller has one to offer — the server honours it
+  // while `friends.username` is NULL and ignores it otherwise (never a rename).
+  setFirstPassword: (friendId, password, username = null) => request(`/friends/${friendId}/set-password`, {
+    method: 'POST',
+    body: username ? { username, password } : { password }
+  }),
   changeFriendPassword: (friendId, currentPassword, newPassword) => request(`/friends/${friendId}/change-password`, {
     method: 'PUT',
     body: { currentPassword, newPassword }
