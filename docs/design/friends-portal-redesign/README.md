@@ -76,3 +76,58 @@ Prototype state is per-screen React state (cart map `productId|variant → qty`,
 
 ## Out of scope (next task)
 Admin app redesign; voucher modal; legacy shared-password login.
+
+---
+
+## Addendum 2026-09-05 — Portál v2 (nová informačná architektúra)
+
+Interactive prototype of the portal redesign from `docs/superpowers/specs/2026-09-03-roadmap-requirements.md`
+(features F1 + F2 + F3). Open `Podpultovka Friends.html` → screen **„Priateľ · portál v2 (2026-09)“**.
+Everything is clickable: hamburger → menu drawer → views; steppers mutate the cart; modals open.
+
+**Files:** `friends/portal2.jsx` (screen, menu, timeline, explainer, history, balance) · `friends/portal2.css`
+(`p2-*` additions only — `theme.css` is unchanged). Demo data lives at the top of `portal2.jsx` (`P2`).
+
+**States (selector „Stav“):**
+- *Otvorené* — landing = the product grid of the current round (no cycle list). Slim status line
+  („Objednávky do piatku 12. 9.“ + link „Ako to funguje?“), red debt banner with Zaplatiť, tabs, cards,
+  cartbar with a share icon beside „Odoslať objednávku“. Submit → Spôsob prevzatia → Hotovo.
+- *Zatvorené* — grid faded/read-only behind a modal („Objednávky sú zatvorené“, next opening date,
+  compact 6-dot timeline, buttons Ako to funguje / Prezrieť ponuku). After dismissal a yellow slim banner stays.
+- *Uzamknuté — kde je káva* — „Vaša objednávka“ card (lines, total, pickup badge, Nezaplatené + Zaplatiť),
+  „Kde je vaša káva“ vertical timeline with the current stage highlighted, then the grid read-only.
+- *Prvé prihlásenie* — opens on the „Ako to funguje“ explainer (six phases, three ways to get the coffee,
+  how to pay, a personal note, „Už mi to neukazovať“, „Rozumiem, idem na ponuku“).
+
+**Menu (hamburger):** Aktuálna ponuka · Moje objednávky (history, expandable rounds) · Zostatok a platby
+(balance + transactions + Zaplatiť) · Zdieľať s kolegami (open round only) · Pozvať priateľa · Ako to funguje ·
+Profil · Odhlásiť sa. The v1 appbar chips (pencil, Pozvať, logout) and the subscription gear are gone.
+
+**Decisions this prototype asks the PO to make (comment in Claude Design):**
+1. Debt banner on the landing (zero/positive balance is shown only under Zostatok a platby) — R2.3.
+2. Closed state: modal once + banner, or banner only.
+3. Where „Zdieľať s kolegami“ lives: cartbar icon + menu item (as drawn) vs. a visible button.
+4. Explainer as a full screen (as drawn) vs. a modal; also as a public page on podpultovka.biz.
+5. Cycle vocabulary: „kolo“ in history only; the word „cyklus“ never appears to a friend.
+
+**Not a production contract:** money is formatted in the prototype convention (`9.90 EUR`); production keeps
+the repo's `fmtEur` (`9,90 €` on lines, `47,80 EUR` on totals). Pickup-point names, hours and the Packeta fee
+are placeholders — real values come from admin settings.
+
+### Addendum 2026-09-06 — guest link v2, admin prototypes, PO decisions folded in
+- **Portál v2 copy:** „objednávka“ replaces „kolo“ in every user-facing message („Ďalšia objednávka sa otvorí…“);
+  the **Pozvať** chip is back in the appbar (lock icon only when closed/locked); the explainer gains
+  „Kto sme a odkiaľ je káva“ (Goriffee = pražiareň, Robo = domáci pražič, SCA výbery — draft texts for the PO to polish)
+  and the corrected delivery sentence („Nie ste z Bratislavy? Objednajte si a nechajte poslať cez Packetu.“).
+- **`friends/guest2.jsx` — „Kolega · odkaz v2“:** *Zatvorené* = the share link works before the round opens (F9):
+  host name, next opening, 3-step how-it-works, roasters line, „Dajte mi vedieť“ form (meno, mobil, WhatsApp súhlas),
+  faded catalogue preview. *Otvorené — 3 kroky* = the compact 3-step alternative for guests (Q3.a), expandable.
+- **`friends/admin2.jsx` + `admin2.css` — „Admin (prototyp 2026-09)“** (desktop by default; layout/flow only,
+  the admin re-skin is a later task): *Distribúcia* = plan cards per delivery target with counts and
+  zabalené/odovzdané progress, group-by (doručenie / stav / priateľ), stage filter, groups with
+  „Odovzdať zabalené (n)“ + confirm, per-bag Zabalené → Odovzdané checkboxes (second disabled until first),
+  guest bags nested under their host and inheriting hand-over. *WhatsApp správy* = segment list (auto-built from
+  hand-over, open round, waitlist), template editor with placeholders, per-recipient preview, „Cez bota“ vs
+  „Ručne (wa.me)“ tabs — the PO decides Phase A vs B here. *Nastavenia · WhatsApp* = bot status, QR pairing,
+  pacing, opt-in count, the five templates (3 on at start).
+- Roadmap v3 and all decisions: `docs/superpowers/specs/2026-09-03-roadmap-requirements.md` §16–§18.

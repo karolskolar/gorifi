@@ -90,6 +90,37 @@ changes; the "no backend change" rule scopes 02–06 only. Canonical source:
   tier-progress on the order page (cut entirely), discovery/engagement module 14 —
   none are drafted; the schema and stats must support the badges later.
 
+## Scope extension — roadmap October 2026 (confirmed 2026-09-19)
+
+Source of truth: `docs/superpowers/specs/2026-09-03-roadmap-requirements.md` (§16 decisions,
+§18 roadmap v3, §19 profile) and the interactive prototypes in the Claude Design project
+mirrored at `docs/design/friends-portal-redesign/` (`friends/portal2.jsx`, `guest2.jsx`,
+`admin2.jsx`, README addenda 2026-09-05/06). Later sections of the roadmap doc win over
+earlier ones (struck text is superseded). Modules **15–21** below; all include backend +
+schema changes unless a module says otherwise.
+
+- **Why:** newly onboarded friends and their guests do not understand "objednávkové cykly";
+  the portal must open on the current offer, explain the process once, and the admin must
+  be able to plan distribution by delivery type and tell people when their bag left.
+- **Confirmed product decisions (PO):** bakery cycles are retiring (coffee only, at most one
+  open cycle); user-facing copy says **„objednávka“**, never „kolo“/„cyklus“; the **Pozvať**
+  chip stays in the appbar; Podpultovka stays **private** (no public explainer page — the
+  guest link carries it); free-text pickup note stays available to everyone; guests may
+  order via a host who orders nothing; guest Packeta = same fee as friends, free-text
+  point, no Packeta API; WhatsApp = **whatsapp-web.js only** (no Baileys, no Cloud API),
+  new dedicated number, three templates to start, messages released per group by the
+  admin, and it is the **last** slice, after the next ordering round; payment links use
+  Revolut **@karolskolar** and PayMe creditor **„Karol Skolar“**; a friend never needs to
+  see their `uid`.
+- **Out of scope (not drafted):** bag labels (F7 — built elsewhere), public „Ako to
+  funguje“ page, Packeta widget/API, Baileys / WhatsApp Business Cloud API, cycle
+  auto-completion, "pick up within N days" copy.
+- **2026-09-19: every `OPEN:` item of modules 15–21 was resolved with the PO** — see the „PO decisions 2026-09-19“ block at the end of each module file. Two defaults were overturned: admin gets read/regenerate of a host's standing link (19), and a cancelled paid Packeta guest order is refunded items + fee (20). `expected_date` now means delivery expectation; `closes_at` is the ordering deadline (17).
+- ~~**Open prototype decisions** are written with their defaults and marked `OPEN:` in the~~ (resolved, see above) — original text kept: written with their defaults and marked `OPEN:` in the
+  module files so `/plan-backlog` can proceed: debt banner on the landing (default yes),
+  closed-state modal once + banner (default), guest explainer 3 steps (default), board
+  layout as prototyped, WhatsApp bot with wa.me fallback.
+
 ## Specification files
 
 | File | Scope | UC prefix |
@@ -109,6 +140,13 @@ changes; the "no backend change" rule scopes 02–06 only. Canonical source:
 | `12-product-catalog.md` | Consolidated `coffee_products` catalog + snapshot links; CATALOG-targeted import from the admin main menu (bakery-pattern pivot 2026-08-22; parsing byte-identical, Goriffee-only, exact auto-link / fuzzy confirm, price auto-apply + report, naturally idempotent); cycle creation ticks catalog products (picker + snapshot); per-cycle importers retired; one-time historical migration + admin merge tool; cross-cycle statistics; AdminCatalog view. Backend + schema changes | UC-PC |
 | `13-coffee-passport.md` | **DEFERRED wholesale (PM 2026-08-22)** — drafted, not planned/built. Friend-facing catalog layer: multi-select brew methods (`friend_brew_methods`), passport "Moje kávy" (stats header, history, Objednať znova), 👍/😐/👎 micro-reviews, product detail modal (Región/Nadmorská výška/Farma/Odroda/Spracovanie — display only). Backend + schema changes | UC-CP |
 | `14-guest-order-recovery.md` | Guest order recovery + admin guest controls (from the 2026-08-26 Martina Tomašová incident): canonical `/g/o/:orderToken` decoupled from the share link (legacy pair form keeps working), admin read/create of host share links (revocation stays host-only), admin soft-cancel of guest sub-orders (no paid blockade — paid+cancelled lands in the refund queue), `order_token` published to host + admin for resending (conscious GSO-T2 reversal), share-dialog standing copy (one link for all; regenerate only on a leak). Backend changes, NO schema change | UC-GR |
+| `15-payment-links.md` | Amount-prefilled Revolut link (`@karolskolar`), PayMe.sk deep link (new `payment_creditor_name` setting, mobile only), numeric variable symbol in the bysquare payload and reference — one component (`PaymentModal.vue`), four surfaces. Backend + settings change, no schema table | UC-PL |
+| `16-distribution-pipeline.md` | `helpers/delivery.js` (party → `packeta` / `pickup` / `in_person` / `via_host`), ledger-neutral `handed_over_at` on `orders` + `guest_orders` (409 before packed, reversible, guests inherit from host), hand-over + bulk endpoints, distribution board (plan cards per target, group-by doručenie/stav/priateľ, stage filter, per-group hand-over with confirm), outbox enqueue hook (no sending). Prototype `a-dist`. Backend + schema changes | UC-DP |
+| `17-cycle-stages.md` | `order_cycles.opens_at` / `closes_at` / `stage` (`ordered` → `arrived` → `ready`, auto-fed by the first hand-over), admin controls on cycle detail, `CycleTimeline.vue` (vertical + compact dots) used by portal, guest status page and admin header. Backend + schema changes | UC-CS |
+| `18-portal-information-architecture.md` | Landing = current offer (open / closed-modal / locked with own-order card + timeline), hamburger drawer (ponuka, moje objednávky, zostatok a platby, zdieľať, pozvať, ako to funguje, profil, odhlásiť), first-login explainer incl. „Kto sme a odkiaľ je káva“ (Goriffee + Robo), „objednávka“ wording, subscription filter retired, profile modal per roadmap §19 (Login ro, Meno a priezvisko, Mobil, E-mail, Packeta). Prototype `f-portal2`. Frontend + small backend (`explainer_seen_at`, cycle payload) | UC-PI |
+| `19-guest-standing-link.md` | Per-host standing guest link resolving to "the current round"; pre-open guest page (host, next opening, 3-step explainer, roasters, „Dajte mi vedieť“ waitlist with WhatsApp consent); `guest_waitlist` table + public rate-limited write; host „kto čaká“ count; compact 3-step explainer on the open guest page. Prototype `g-link2`. Backend + schema changes | UC-GL |
+| `20-guest-packeta.md` | Guest checkout choice „Prevezmem od {host}“ / „Poslať Packetou (+fee)“ when the cycle allows parcels; `guest_orders.delivery_fee` + `packeta_address`; e-mail required for Packeta; amount = total + fee in QR/links/status; edits/cancel rules; host/admin/distribution surfaces; `helpers/pickup.js` extended to guest rows. Backend + schema changes | UC-GP |
+| `21-whatsapp-notifications.md` | Outbox table (`channel`, `status`, per-group release), segments (`helpers/segments.js`: handed-over per target, host's guests, not-ordered, waitlist), `phone_e164` normalisation, `whatsapp_opt_in` in profile, templates (3 on at start), admin composer (segment → template → preview → „Poslať skupine“; wa.me fallback tab), `gorifi-wa` whatsapp-web.js PM2 process with QR pairing + health, settings page, server sizing (8 GB / 4 vCPU). Prototypes `a-wa`, `a-wa-settings`. Backend + schema + deploy changes | UC-WA |
 
 ## Glossary
 
@@ -128,3 +166,11 @@ changes; the "no backend change" rule scopes 02–06 only. Canonical source:
 - **Passport / Moje kávy** — the friend's cross-cycle coffee history screen (module 13); also the micro-review collection surface.
 - **Micro-review** — 👍/😐/👎 verdict + optional brew method, one row per (friend, catalog product), latest wins. No stars, no text.
 - **Flavor chips** — the 4 consumer taste families concept; **REMOVED from v1 by PM decision 2026-08-22** (risk of misleading tags). No column, no tagger, no display; returns, if ever, with module 14.
+- **Round / objednávka** — user-facing name for a cycle from module 18 on („Ďalšia objednávka sa otvorí…“); „cyklus“/„kolo“ never appear to a friend or guest. Admin UI may keep „cyklus“.
+- **Delivery type** — derived per party by `helpers/delivery.js`: `packeta` (parcel), `pickup` (a `pickup_locations` row), `in_person` (neither), `via_host` (a guest bag inside the host's bag; inherits the host's type/target for planning).
+- **Bag stages** — Na zabalenie → **Zabalené** (`orders.packed`, the ledger moment, unchanged) → **Odovzdané** (`handed_over_at`, admin-only, ledger-neutral, the notification moment). The host's `guest_orders.delivered` tick stays a separate, later, host-only flag.
+- **Cycle stage** — `order_cycles.stage` while `locked`: `ordered` (at roastery) → `arrived` → `ready` (first bag handed over); shown on the timeline.
+- **Standing link** — a host's cycle-independent guest link (`friends.guest_link_token`) that resolves to the current round, or to the pre-open page when nothing is open.
+- **Waitlist** — `guest_waitlist` rows left by guests on the pre-open page; becomes a WhatsApp segment when the round opens.
+- **Outbox** — `notifications` rows queued by hand-over / admin composer; nothing is sent without an explicit admin „Poslať“ per group.
+- **Segment** — a computed recipient list (SQL in `helpers/segments.js`) the composer sends to.

@@ -1,6 +1,6 @@
 /* Podpultovka Friends — data (grounded in gorifi repo + live screenshots) */
 window.FP_DATA = (function () {
-  const friend = { name: "Lego", code: "X42KPGZZ", username: "lego", balance: -74.24, packeta: "Z-BOX Hlavná 15, Bratislava" };
+  const friend = { name: "Lego", code: "X42KPGZZ", username: "lego", phone: "0905 012 998", email: "lego@priklad.sk", balance: -74.24, packeta: "Z-BOX Hlavná 15, Bratislava" };
 
   const cycle = {
     id: "aug26", name: "Goriffee August 2026", type: "coffee", status: "open",
@@ -84,10 +84,12 @@ window.FP_DATA = (function () {
     ] },
   ];
   const subTotal = (o) => o.items.reduce((s, [, p]) => s + p, 0);
+  const kgOf = (n) => { const q = parseInt(n) || 1; const m = n.match(/(\d+(?:[.,]\d+)?)\s*(kg|g)\s*$/i); return m ? q * (m[2].toLowerCase() === "kg" ? +m[1] : +m[1] / 1000) : 0; };
   const liveSubs = subOrders.filter((o) => o.status !== "cancelled");
   const subTotals = {
     count: liveSubs.length,
     total: liveSubs.reduce((s, o) => s + subTotal(o), 0),
+    kilos: +liveSubs.reduce((s, o) => s + o.items.reduce((k, [n]) => k + kgOf(n), 0), 0).toFixed(2),
     pendingDelivery: liveSubs.filter((o) => !o.delivered).length,
   };
 
@@ -118,7 +120,7 @@ window.FP_DATA = (function () {
 
   // portal cycle list
   const portalCycles = [
-    { ...cycle, hasOrder: true, orderTotal: 7.60, orderKilos: "0.25 kg", ordered: true, shared: true, guestCount: subTotals.count },
+    { ...cycle, hasOrder: true, orderTotal: 7.60, orderKilos: "0.25 kg", ordered: true, shared: true, guestCount: subTotals.count, guestKilos: subTotals.kilos },
     { ...bakeryCycle, hasOrder: false, ordered: false },
     { id: "sep26", name: "Goriffee September 2026", type: "coffee", status: "planned", date: "26. september 2026", plan: ["Plánovaný cyklus — objednávky sa otvoria 19.9."], hasOrder: false },
   ];

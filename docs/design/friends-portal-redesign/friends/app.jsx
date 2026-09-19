@@ -2,6 +2,13 @@
 const { useState: useAS, useEffect: useAE, useRef: useAR } = React;
 
 const ROUTES = {
+  "f-portal2": { group: "Priateľ · portál v2 (2026-09)", label: "Portál v2 — ponuka / menu / stavy", Comp: (p) => <FPortal2 {...p} />,
+    states: [["open", "Otvorené"], ["closed", "Zatvorené"], ["locked", "Uzamknuté — kde je káva"], ["first", "Prvé prihlásenie"]] },
+  "g-link2": { group: "Kolega · odkaz v2 (2026-09)", label: "Guest — odkaz pred otvorením / 3 kroky", Comp: (p) => <GLink2 {...p} />,
+    states: [["closed", "Zatvorené — čakám na otvorenie"], ["open3", "Otvorené — 3 kroky (alternatíva)"]] },
+  "a-dist": { group: "Admin (prototyp 2026-09)", label: "Distribúcia — plán a odovzdanie", Comp: (p) => <ADist {...p} />, defaultDevice: "desktop" },
+  "a-wa": { group: "Admin (prototyp 2026-09)", label: "WhatsApp — správy skupinám", Comp: (p) => <AWa {...p} />, defaultDevice: "desktop" },
+  "a-wa-settings": { group: "Admin (prototyp 2026-09)", label: "WhatsApp — nastavenia bota", Comp: (p) => <AWaSettings {...p} />, defaultDevice: "desktop" },
   "f-login": { group: "Priateľ", label: "Prihlásenie", Comp: (p) => <FLogin {...p} /> },
   "f-portal": { group: "Priateľ", label: "Portál — cykly", Comp: (p) => <FPortal {...p} /> },
   "f-order": { group: "Priateľ", label: "Objednávka — moja", Comp: (p) => <FOrder {...p} /> },
@@ -17,7 +24,7 @@ const ROUTES = {
     states: [["notfound", "Neexistuje"], ["inactive", "Deaktivovaný"], ["closed", "Uzavretý cyklus"]] },
 };
 const URLS = {
-  "f-login": "podpultovka.sk/", "f-portal": "podpultovka.sk/", "f-order": "podpultovka.sk/cycle/42",
+  "g-link2": "podpultovka.biz/g/49GYGVKX", "a-dist": "podpultovka.biz/admin/cycles/42/distribution", "a-wa": "podpultovka.biz/admin/whatsapp", "a-wa-settings": "podpultovka.biz/admin/settings/whatsapp", "f-portal2": "podpultovka.biz/", "f-login": "podpultovka.sk/", "f-portal": "podpultovka.sk/", "f-order": "podpultovka.sk/cycle/42",
   "f-guests": "podpultovka.sk/cycle/42", "f-guests-empty": "podpultovka.sk/cycle/42",
   "f-order-locked": "podpultovka.sk/cycle/41", "f-bakery": "podpultovka.sk/cycle/43",
   "g-order": "podpultovka.sk/g/49GYGVKX", "g-confirm": "podpultovka.sk/g/49GYGVKX",
@@ -30,13 +37,14 @@ function loadFState() { try { return JSON.parse(localStorage.getItem(LSF)) || {}
 function FriendsApp() {
   const init = loadFState();
   const [device, setDevice] = useAS(init.device || "phone");
-  const [route, setRoute] = useAS(ROUTES[init.route] ? init.route : "f-order");
+  const [route, setRoute] = useAS(ROUTES[init.route] ? init.route : "f-portal2");
   const [subStates, setSubStates] = useAS(init.subStates || {});
   const layerRef = useAR(null);
   const [, force] = useAS(0);
 
   useAE(() => { localStorage.setItem(LSF, JSON.stringify({ device, route, subStates })); }, [device, route, subStates]);
   useAE(() => { force((n) => n + 1); }, [device]); // re-render so portal layer ref is fresh after frame swap
+  useAE(() => { const d = ROUTES[route] && ROUTES[route].defaultDevice; if (d) setDevice(d); }, [route]); // admin screens open on desktop
 
   const r = ROUTES[route];
   const subState = r.states ? (subStates[route] || r.states[0][0]) : undefined;
