@@ -4107,6 +4107,9 @@ const ADMIN_GUARD_401 = 'Neautorizovaný prístup'
 /** §UC-GA-010's acceptance criterion, as a raw-text regex over the FULL body. */
 const SUB_KEY_RE = /"sub"/
 
+/** FUP-T19 item 2: where an unsalvageable allowlist is parked before it is overwritten. */
+const CORRUPT_KEY = 'admin_google_subs_corrupt'
+
 test.describe('§UC-GA-010 — the admin Google allowlist', () => {
   test('empty ⇒ {entries: []}; adding proves possession and the entry is {email, added_at} — the sub is stored but NEVER published', async () => {
     test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
@@ -4281,6 +4284,73 @@ test.describe('§UC-GA-010 — the admin Google allowlist', () => {
       // A well-formed add heals it rather than compounding it.
       expect((await api.allowlistAdd({ id_token: `TEST:${tag('ga10-heal')}:heal@example.test` })).status()).toBe(200)
       expect((await (await api.allowlistGet()).json()).entries).toHaveLength(1)
+
+      // ⚠ FUP-T19 item 2 — AND THE ORIGINAL SURVIVES THE HEAL. Reading a corrupt ACL
+      // as EMPTY is correct (it fails closed), but the next successful write used to
+      // `INSERT OR REPLACE` straight over it, destroying entries a human could have
+      // salvaged from truncated JSON. The raw value is now parked, byte for byte,
+      // under a sibling settings key before the overwrite.
+      expect(api.setting(CORRUPT_KEY)?.value, 'the unreadable value is recoverable by hand').toBe('not json at all')
+    })
+  })
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // FUP-T19 item 2 — parking the unsalvageable value
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  test('FUP-T19 — a DELETE parks too, and a SECOND corruption never clobbers the parked copy', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      // ⚠ The DELETE half matters as much as the POST: `DELETE /google-allowlist`
+      // writes UNCONDITIONALLY (it is idempotent when nothing matched), so an admin
+      // revoking an address they can no longer see would otherwise wipe the evidence.
+      const first = '[{"sub":"prvy","email":"prvy@example.test"'
+      api.writeSetting('admin_google_subs', first)
+      expect((await api.allowlistRemove({ email: 'ktokolvek@example.test' })).status()).toBe(200)
+      expect(api.setting(CORRUPT_KEY)?.value, 'a revocation parked it before overwriting').toBe(first)
+      expect(api.setting('admin_google_subs').value, 'and the live key is now a readable empty list').toBe('[]')
+
+      // ⚠ THE DECISION, stated as a test: the parked slot is a HUMAN RECOVERY slot and
+      // holds the OLDEST unsalvageable copy. A second corruption arriving while the
+      // first is still unresolved means nobody has looked yet — overwriting then would
+      // destroy the only salvageable copy, which is precisely what this feature exists
+      // to prevent. The later value is logged (bounded) and dropped, never parked over.
+      const second = '{"totally":"different corruption"'
+      api.writeSetting('admin_google_subs', second)
+      expect((await api.allowlistAdd({ id_token: `TEST:${tag('fup19-second')}:druhy@example.test` })).status()).toBe(200)
+      expect(api.setting(CORRUPT_KEY)?.value, 'the FIRST parked copy is kept').toBe(first)
+      expect((await (await api.allowlistGet()).json()).entries, 'the add still went through').toHaveLength(1)
+    })
+  })
+
+  test('FUP-T19 — parking happens ONLY when the whole stored value is discarded, never on the normal path', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
+    await withGoogleBackend({}, async ({ api }) => {
+      // The normal path: add, re-add, delete. Nothing is ever parked.
+      const sub = tag('fup19-normal')
+      expect((await api.allowlistAdd({ id_token: `TEST:${sub}:normal@example.test` })).status()).toBe(200)
+      expect((await api.allowlistAdd({ id_token: `TEST:${sub}:normal2@example.test` })).status()).toBe(200)
+      expect((await api.allowlistRemove({ email: 'normal2@example.test' })).status()).toBe(200)
+      expect(api.setting(CORRUPT_KEY), 'a healthy allowlist never parks anything').toBeUndefined()
+
+      // ⚠ AND THE BOUNDARY, both sides of it — in this order, because the second half
+      // fills the parked slot and the first half needs it provably empty.
+      // (a) A well-formed ARRAY with some malformed members does NOT park: the read
+      //     salvaged everything salvageable and showed it to the admin, so the write
+      //     that follows is a decision taken over what they saw — not a silent loss.
+      api.writeSetting('admin_google_subs', JSON.stringify([
+        { sub: 'dobry', email: 'dobry@example.test', added_at: '2026-08-17T10:00:00.000Z' },
+        { sub: 'bez-mailu' },
+      ]))
+      expect((await (await api.allowlistGet()).json()).entries, 'the readable half is shown').toHaveLength(1)
+      expect((await api.allowlistRemove({ email: 'nikto@example.test' })).status()).toBe(200)
+      expect(api.setting(CORRUPT_KEY), 'a partially-filtered array is not a corruption').toBeUndefined()
+
+      // (b) Valid JSON that is not an array is discarded WHOLE by `readAdminGoogleSubs`
+      //     exactly like a parse failure, so it parks.
+      api.writeSetting('admin_google_subs', '{"sub":"nie-je-pole"}')
+      expect((await api.allowlistAdd({ id_token: `TEST:${tag('fup19-obj')}:obj@example.test` })).status()).toBe(200)
+      expect(api.setting(CORRUPT_KEY)?.value, 'a non-array value is just as unreadable').toBe('{"sub":"nie-je-pole"}')
     })
   })
 

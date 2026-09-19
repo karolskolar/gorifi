@@ -263,3 +263,95 @@ recorded phase-2 follow-up).
   sees, so the test passes for the wrong reason. Navigate in-SPA instead.
 
 
+
+### FUP-T19 — `POST /api/admin/logout` was an unauthenticated denial of the admin surface (2026-09-19)
+
+`router.post('/logout', …)` deleted the `settings('admin_token')` row **unconditionally**.
+There is exactly ONE admin token app-wide, so any anonymous caller could end the admin's
+session, and a loop of anonymous POSTs could keep the admin permanently logged out —
+indistinguishable from a bug. It leaked nothing and granted nothing: a **denial**, not an
+escalation. Surfaced by GA-T10's review (that row's "ONE admin token app-wide" reasoning
+makes it visible), pre-existing since Phase 1.
+
+**The shape that shipped, and why it is not `requireAdmin`.** The route stays **PUBLIC**
+and keeps answering a byte-identical idempotent `{ success: true }` 200; it deletes the
+row only when the caller presents the **current** token, read exactly as the middleware
+reads it (`req.headers['x-admin-token']` through the shared `isValidAdminToken`, expiry
+check included, so the two cannot drift). A 401 would have been the obvious fix and would
+have been wrong: **four** admin views carry the same three-line `logout()`
+(`AdminDashboard.vue:173`, `AdminFriends.vue:279`, `AdminCatalog.vue:812`,
+`AdminBakeryProducts.vue:193`) and **not one has a try/catch**, while `api.js`'s
+`request()` throws on a non-ok response — a 401 would abort before
+`localStorage.removeItem('adminToken')` and before the redirect, leaving an admin holding
+a **stale** token stuck on a dead dashboard with no way to log out. Stale tokens are
+routine since module 10: `POST /api/admin/google-login` mints and **rotates** the same
+single row, so a second browser holding the previous token is exactly that case. The
+idempotent 200 (the GSO-T5 convergence idiom, as on the guest DELETE) closes the denial
+**and** lets the stale client finish its own cleanup. **Frontend-free**: `request()`
+already attaches `X-Admin-Token` on every call, so no caller changed — and because the
+route binds no body, the unbindable-body-shape family cannot reach it.
+
+⚠ **It must NOT join `ADMIN_ENDPOINTS`** in `api-security.spec.js` — that sweep asserts
+401-without-a-token and this route deliberately answers 200 to everyone, so listing it
+would pin the opposite of its contract. The standing rule is "every new **guarded** admin
+route joins the sweep", so the omission needs a reason on record: it is written at the
+route itself, and the route's real invariant (the **effect**, not the status code) is
+pinned in two `FUP-T19` describes at the bottom of `api-security.spec.js`.
+
+⚠ **Testing a route that destroys the app-wide token.** The two NON-destructive cases
+(anonymous caller, stale/garbage token → 200 with the session provably still usable) run
+against whatever `BASE_URL` points at. The destructive one (current token → row gone →
+next admin call 401 → a second logout still 200 → a fresh login recovers) runs on a
+**throwaway backend** (`startBackend`, self-skipping without the backend source), so the
+gate's single admin session can never be left destroyed for the next spec file. The
+session row is read straight out of the DB there, which is what makes the two no-op cases
+non-vacuous: they are proven by the row surviving, not by a status code.
+
+### FUP-T19 item 2 — a corrupt `admin_google_subs` was silently destroyed by the next write
+
+`readAdminGoogleSubs()` treats an unparsable allowlist as EMPTY (correct — it fails
+closed), but `writeAdminGoogleSubs()` then `INSERT OR REPLACE`d straight over it,
+destroying entries a human could have salvaged from truncated JSON.
+
+- The raw value is now **parked byte-for-byte** under the sibling settings key
+  `admin_google_subs_corrupt` **before** the overwrite. `settings` is a key-value table
+  (`key TEXT PRIMARY KEY, value TEXT NOT NULL`), so no migration.
+- **Parking happens only when the read discards the value WHOLE** — `JSON.parse` throws,
+  or the parse result is not an array. A well-formed array whose individual members the
+  read's filter drops is **not** parked: the read salvaged everything salvageable and
+  showed it to the admin, so the write that follows is a decision taken over what they
+  saw. Parking those too would file a "corruption" on ordinary edits and the slot would
+  stop meaning anything.
+- **A parked value is never clobbered.** The slot holds the OLDEST unsalvageable copy: a
+  second corruption arriving while the first is still parked means nobody has looked yet,
+  so overwriting would destroy the only salvageable copy. The newer value is logged
+  (bounded) and dropped; clearing the slot is a human's decision, taken in the database.
+- Both the read-site `console.error` and the two write-site lines carry a **bounded**
+  200-char excerpt plus the value's length (the FUP-T3/FUP-T7 log rule) — the read line
+  runs on every settings-page load, so an unbounded dump would be its own flood.
+- ⚠ `DELETE /api/admin/google-allowlist` writes **unconditionally** (it is idempotent when
+  nothing matched), so it parks too — an admin revoking an address they can no longer see
+  would otherwise wipe the evidence. Both halves are pinned in `google-auth.spec.js`.
+
+⚠ **`POST /api/admin/logout` carries NO rate limiter, deliberately** (FUP-T19 review).
+`authLimiter` is a per-IP bucket shared with `/login` and `/google-login`, so a flood of
+anonymous logouts would spend the office's NAT budget and lock the admin out of **logging
+in** — the failure mode the five-bucket split exists to prevent, and the exact inversion
+of the denial this row fixed. A sixth bucket buys nothing: without the current token the
+handler is a pure no-op doing strictly less work than before, and it answers
+byte-identically either way, so there is no oracle to meter. Recorded at the route too.
+
+⚠ **`/api/admin` has SEVEN unguarded routes**, not the five the old sweep comment listed:
+`GET /setup-status` (:367), `POST /setup` (:373), `POST /login` (:393), `POST /verify`
+(:423), `POST /logout` (:480), `GET /payment-settings` (:503), `POST /google-login`
+(:333). `POST /setup` is public but **self-limiting** — it 400s `Admin uz je nastaveny`
+once `settings('admin_password')` exists — which is why it is not a hole. The
+enumeration in `api-security.spec.js` is now exhaustive: it is the comment a reader
+trusts when deciding whether an absent route is an oversight.
+
+Two known, untouched behaviours recorded so they are not rediscovered as bugs:
+`POST /api/admin/verify` is public, unrated and distinguishes `{valid:true}` from 401 —
+a pre-existing token oracle, the natural companion to a future "bound the admin-token
+check surface" row; and a stale-token admin's own logout now leaves a dead `admin_token`
+row until it expires or the next login overwrites it (harmless — the expiry check
+already rejects it).

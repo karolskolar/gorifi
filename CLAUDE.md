@@ -62,6 +62,11 @@ append the full write-up to the matching learnings file and add at most one line
 ### Auth & boundaries
 - Admin routers are guarded server-side (`requireAdmin` in `index.js`). Every new admin route also goes into
   `ADMIN_ENDPOINTS` in `e2e/tests/api-security.spec.js`. Frontend token checks are UX only.
+- `POST /api/admin/logout` is PUBLIC and idempotent-200 by design (four `logout()` callers have no try/catch, so a
+  401 would strand a stale-token admin): it deletes the one `admin_token` row only for the CURRENT token, reads it
+  via `isValidAdminToken`, binds no body, and must never join `ADMIN_ENDPOINTS` (FUP-T19).
+- A wholly unreadable `admin_google_subs` (parse throws / not an array) is parked byte-for-byte under
+  `admin_google_subs_corrupt` before any overwrite — never clobber a parked copy, never park a merely filtered array.
 - `routes/invitations.js` and `/api/guest-orders` are MIXED mounts — gate per route, never wrap the mount.
   `routes/guest.js` (`/api/guest`) is PUBLIC: the URL token is the credential and it is the app's only
   unauthenticated write. Treat it as hostile input (bounds: ≤100 lines, qty ≤100, name 120 / phone 32 / email 160).

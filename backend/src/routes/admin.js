@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
 import crypto from 'crypto';
-import { requireAdmin } from '../middleware/admin-auth.js';
+import { requireAdmin, isValidAdminToken } from '../middleware/admin-auth.js';
 import { authLimiter } from '../middleware/rate-limit.js';
 import { hashPassword as bcryptHash, comparePassword as bcryptCompare } from '../middleware/friend-auth.js';
 import { bindValue } from '../helpers/bind-value.js';
@@ -86,6 +86,9 @@ function mintAdminToken() {
 // named cannot be revoked, and an admin ACL with no way out is worse than a missing
 // feature.
 const ADMIN_GOOGLE_SUBS_KEY = 'admin_google_subs';
+const ADMIN_GOOGLE_SUBS_CORRUPT_KEY = 'admin_google_subs_corrupt';
+const CORRUPT_EXCERPT = 200;
+const corruptExcerpt = (value) => JSON.stringify(String(value).slice(0, CORRUPT_EXCERPT));
 const ADMIN_GOOGLE_DENIED = 'Tento Google účet nemá prístup do administrácie';
 const ADMIN_GOOGLE_NO_EMAIL = 'Tento Google účet nemá overenú e-mailovú adresu, nedá sa pridať do zoznamu';
 const ADMIN_GOOGLE_EMAIL_TAKEN = 'Tento e-mail už v zozname patrí inému Google účtu. Najprv odoberte pôvodný záznam.';
@@ -102,7 +105,11 @@ function readAdminGoogleSubs() {
   try {
     parsed = JSON.parse(row.value);
   } catch (e) {
-    console.error('[admin] admin_google_subs is not valid JSON — treating the allowlist as EMPTY');
+    // ⚠ BOUNDED EXCERPT, never the whole blob (the FUP-T3/FUP-T7 log rule). This line
+    // runs on EVERY read of a corrupt value — i.e. on every settings-page load — so an
+    // unbounded dump would be its own log flood. The full value stays recoverable from
+    // the database, and `writeAdminGoogleSubs` parks it before anything overwrites it.
+    console.error(`[admin] admin_google_subs is not valid JSON — treating the allowlist as EMPTY. value[0..${CORRUPT_EXCERPT}] of ${row.value.length} chars: ${corruptExcerpt(row.value)}`);
     return [];
   }
   if (!Array.isArray(parsed)) return [];
@@ -117,11 +124,58 @@ function readAdminGoogleSubs() {
   }));
 }
 
+// ⚠ FUP-T19 item 2 — PARK AN UNSALVAGEABLE ALLOWLIST BEFORE OVERWRITING IT.
+// `readAdminGoogleSubs` above fails closed on a value it cannot read, which is right,
+// but the next successful write used to `INSERT OR REPLACE` straight over the original
+// — destroying entries a human could still have salvaged from truncated JSON. The raw
+// value is therefore copied, BYTE FOR BYTE, to a sibling settings key first. `settings`
+// is a key-value table (`db/schema.js`: `key TEXT PRIMARY KEY, value TEXT NOT NULL`),
+// so this needs no migration and no new column.
+//
+// ⚠ THE LINE BETWEEN "corrupt" AND "merely partly malformed", and it is deliberate:
+// TRUE only when the read discards the value WHOLE (JSON.parse throws, or the result is
+// not an array). A well-formed ARRAY whose individual members are dropped by the read's
+// filter is NOT parked — the read salvaged everything salvageable and SHOWED it to the
+// admin, so the write that follows is a decision taken over what they saw, not a silent
+// loss. Parking those too would file a "corruption" on ordinary edits and the slot
+// would stop meaning anything.
+function isUnreadableAllowlist(value) {
+  if (typeof value !== 'string' || !value.trim()) return false;
+  try {
+    return !Array.isArray(JSON.parse(value));
+  } catch (e) {
+    return true;
+  }
+}
+
 function writeAdminGoogleSubs(entries) {
+  const current = db.prepare('SELECT value FROM settings WHERE key = ?').get(ADMIN_GOOGLE_SUBS_KEY);
+  if (current && isUnreadableAllowlist(current.value)) {
+    const parked = db.prepare('SELECT value FROM settings WHERE key = ?').get(ADMIN_GOOGLE_SUBS_CORRUPT_KEY);
+    if (parked) {
+      // ⚠ NEVER CLOBBER THE PARKED COPY. The slot is a HUMAN RECOVERY slot and holds the
+      // OLDEST unsalvageable value: a second corruption arriving while the first is
+      // still parked means nobody has looked at it yet, so overwriting would destroy
+      // the only salvageable copy — exactly what this feature exists to prevent. The
+      // newer value is logged (bounded) and dropped. Clearing the slot is a human's
+      // decision, taken in the database once the entries have been recovered.
+      console.error(`[admin] admin_google_subs is corrupt again, but ${ADMIN_GOOGLE_SUBS_CORRUPT_KEY} is already holding an earlier copy — KEEPING the earlier one and dropping this value: ${corruptExcerpt(current.value)}`);
+    } else {
+      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(
+        ADMIN_GOOGLE_SUBS_CORRUPT_KEY,
+        current.value
+      );
+      console.error(`[admin] admin_google_subs was unreadable and is about to be overwritten — the raw value is parked under ${ADMIN_GOOGLE_SUBS_CORRUPT_KEY} (${current.value.length} chars): ${corruptExcerpt(current.value)}`);
+    }
+  }
   db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(
     ADMIN_GOOGLE_SUBS_KEY,
     JSON.stringify(entries)
   );
+  // ⚠ NOTHING MAY FOLLOW THIS WRITE. Both callers run this inside a `db.transaction`,
+  // and the `console.error` lines above have already claimed the park happened — a
+  // statement added here that throws would roll the parked row back while the log still
+  // says it was saved, i.e. the one state this feature exists to make impossible.
 }
 
 // ⚠ THE STRIP (§UC-GA-010, the module-11 strip rule extended to admin subs). EVERY
@@ -396,9 +450,49 @@ router.post('/verify', (req, res) => {
   res.status(401).json({ valid: false });
 });
 
-// Logout
+// Logout — PUBLIC, and DELIBERATELY NOT `requireAdmin` (FUP-T19).
+//
+// ⚠ WHY IT IS NOT IN `ADMIN_ENDPOINTS` (`e2e/tests/api-security.spec.js`). That sweep
+// asserts 401-without-a-token and every new admin route joins it; this route answers an
+// idempotent 200 to everybody, so listing it there would pin the OPPOSITE of its
+// contract. The omission is a decision, recorded here because the sweep's next reader
+// would otherwise read it as an oversight. What this route must never do is the
+// effect, not the status code — and that IS pinned, in the two `FUP-T19` describes at
+// the bottom of `api-security.spec.js`.
+//
+// ⚠ WHAT WAS WRONG BEFORE. There is ONE `admin_token` row app-wide, and this handler
+// deleted it unconditionally: any anonymous caller could end the admin's session, and a
+// loop of anonymous POSTs could keep the admin permanently logged out — indistinguish-
+// able from a bug. It leaks nothing and grants nothing; it is an unauthenticated DENIAL
+// of the admin surface. The fix is to delete only for the holder of the CURRENT token.
+//
+// ⚠ WHY NOT A 401 FOR EVERYONE ELSE. FOUR admin views carry the same three-line
+// `logout()` (`AdminDashboard.vue:173`, `AdminFriends.vue:279`, `AdminCatalog.vue:812`,
+// `AdminBakeryProducts.vue:193`) and NOT ONE of them has a try/catch, while `api.js`'s
+// `request()` THROWS on a non-ok response — a 401 would abort before
+// `localStorage.removeItem('adminToken')` and before the redirect, leaving an admin
+// holding a stale token stuck on a dead dashboard with no way out. Stale tokens are routine since module 10: `POST /google-login` mints
+// and ROTATES the same single row, so a second browser still holding the previous token
+// is exactly this case. An idempotent 200 (the GSO-T5 convergence idiom, as on the
+// guest DELETE) closes the denial AND lets that client finish its own cleanup.
+//
+// ⚠ NO RATE LIMITER, AND THAT IS A DECISION — do not "fix" it in. `authLimiter` is a
+// per-IP bucket SHARED with `/login` and `/google-login`, so a flood of anonymous
+// logouts would spend the office's shared NAT budget and lock the admin out of LOGGING
+// IN: the failure mode the five-bucket split exists to prevent, and the exact inversion
+// of the denial this route was fixed for. A sixth bucket buys nothing either — without
+// the current token the handler is a pure no-op that does strictly less work than
+// before, and it answers byte-identically either way, so there is no oracle to meter.
+//
+// The token is read the same way `requireAdmin` reads it — the `X-Admin-Token` header,
+// via the SAME `isValidAdminToken` (expiry check included) — so the two cannot drift.
+// Nothing is read from the body: `api.js` already attaches the header on every call, so
+// this is a frontend-free change, and a route that binds no body cannot be broken by an
+// unbindable body shape.
 router.post('/logout', (req, res) => {
-  db.prepare("DELETE FROM settings WHERE key = 'admin_token'").run();
+  if (isValidAdminToken(req.headers['x-admin-token'])) {
+    db.prepare("DELETE FROM settings WHERE key = 'admin_token'").run();
+  }
   res.json({ success: true });
 });
 

@@ -1,5 +1,9 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+// FUP-T19: the one destructive logout case runs on a THROWAWAY backend, so the gate's
+// single app-wide admin token can never be left deleted for the next spec file.
+import { CAN_SPAWN_BACKEND, startBackend } from '../mailgun-harness.js'
 
 // API-level assertions for Phase 1: server-side admin authorization, no
 // credential leakage, CORS lockdown. These are deterministic and are the
@@ -73,8 +77,23 @@ const ADMIN_ENDPOINTS = [
   // `google-auth.spec.js` by MESSAGE, which is what distinguishes "the handler
   // refused you" from "the guard did".
   //
-  // ⚠ `/api/admin` is a MIXED mount (public `setup-status`, `login`, `verify`,
-  // `payment-settings`, `google-login`), so these guards are per-route.
+  // ⚠ `/api/admin` is a MIXED mount, so these guards are per-route. SEVEN routes on it
+  // carry no `requireAdmin`, and the enumeration is exhaustive on purpose (the
+  // documentation-discipline rule: a list a reader will trust must name every member) —
+  // verified against `backend/src/routes/admin.js`: `GET /setup-status` (:367),
+  // `POST /setup` (:373), `POST /login` (:393), `POST /verify` (:423),
+  // `POST /logout` (:480), `GET /payment-settings` (:503), `POST /google-login` (:333).
+  // `POST /setup` is public but SELF-LIMITING — it 400s (`Admin uz je nastaveny`) once
+  // `settings('admin_password')` exists, so on any live instance it is closed, which is
+  // why it is not a hole and not in this sweep.
+  //
+  // ⚠ `POST /api/admin/logout` is one of those seven and is
+  // ABSENT FROM THIS LIST BY DECISION, not by oversight (FUP-T19): it answers an
+  // idempotent 200 to everyone and deletes the session row only for the holder of
+  // the CURRENT token, so a 401 assertion here would pin the opposite of its
+  // contract. Its effect-level invariants — anonymous and stale callers destroy
+  // nothing — are pinned in the two `FUP-T19` describes at the bottom of this file,
+  // and the reasoning is repeated at the route.
   { method: 'get', path: '/api/admin/google-allowlist' },
   { method: 'post', path: '/api/admin/google-allowlist', data: { id_token: 'TEST:evil:evil@example.test' } },
   { method: 'delete', path: '/api/admin/google-allowlist', data: { email: 'evil@example.test' } },
@@ -238,5 +257,138 @@ test.describe('API security — CORS lockdown', () => {
     const acao = res.headers()['access-control-allow-origin']
     expect(acao, 'evil origin must never be granted').not.toBe('https://evil.example.com')
     await ctx.dispose()
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FUP-T19 — `POST /api/admin/logout`
+//
+// ⚠⚠ THIS ROUTE IS PUBLIC ON PURPOSE AND MUST NOT JOIN `ADMIN_ENDPOINTS` ABOVE.
+// The sweep asserts 401-without-a-token; this route deliberately answers 200 to
+// everyone, so listing it there would pin the OPPOSITE of its contract. Its real
+// invariant is not the status code but the EFFECT: without the current token,
+// nothing is deleted. That is what this describe pins, and it is the reason the
+// omission above is a decision rather than an oversight (the WHY is also recorded
+// at the route itself, in `backend/src/routes/admin.js`).
+//
+// ⚠ WHY NOT `requireAdmin`: `AdminDashboard.vue:173` calls `api.logout()` with NO
+// try/catch, and `api.js`'s `request()` throws on a non-ok response — a 401 would
+// abort before `localStorage.removeItem('adminToken')` and before the redirect,
+// leaving an admin holding a stale token stuck on a dead dashboard with no way to
+// log out. A stale token is routine since module 10: `POST /api/admin/google-login`
+// rotates THE ONE app-wide token, so a second browser holding the previous one is
+// exactly this case. An idempotent 200 (the GSO-T5 convergence idiom) closes the
+// unauthenticated denial AND lets the stale client finish its own cleanup.
+//
+// ⚠ THE DESTRUCTIVE HALF RUNS ON A THROWAWAY BACKEND, and that is structural, not a
+// preference: there is ONE `admin_token` row app-wide, so a successful logout on the
+// shared gate would invalidate the token every other spec file captured — the IA trap
+// GA-T10 documents. On a throwaway backend the deletion dies with the process, so this
+// file can never leave the gate's admin session destroyed. The two NON-destructive
+// cases (anonymous, stale) are safe anywhere and therefore run against whatever
+// `BASE_URL` points at, which is where they are worth the most.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const LOGOUT_OK = { success: true }
+
+test.describe('API security — POST /api/admin/logout is public but not destructive (FUP-T19)', () => {
+  test('an ANONYMOUS logout is a 200 no-op — the admin session survives it', async ({ request }) => {
+    const login = await request.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+    expect(login.status(), 'admin login for the anonymous-logout probe').toBe(200)
+    const { token } = await login.json()
+
+    // The `request` fixture carries no default headers (`playwright.config.js` sets
+    // none), so this call is genuinely anonymous — the same shape as every
+    // `ADMIN_ENDPOINTS` probe above, which is exactly what makes them comparable.
+    const res = await request.post('/api/admin/logout')
+    expect(res.status(), 'the route stays publicly callable').toBe(200)
+    expect(await res.json(), 'and its body is unchanged').toEqual(LOGOUT_OK)
+
+    // ⚠ THE ACTUAL SECURITY FIX, and it needs more than a status code: the session
+    // the anonymous caller tried to end must still be usable.
+    const after = await request.get('/api/friends', { headers: { 'X-Admin-Token': token } })
+    expect(after.status(), 'an anonymous POST must not end the admin session').toBe(200)
+  })
+
+  test('a STALE token (rotated out by a later login) logs out nothing — the live session survives', async ({ request }) => {
+    const first = await request.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+    expect(first.status()).toBe(200)
+    const stale = (await first.json()).token
+
+    // The rotation module 10 made routine: a second mint replaces the one row.
+    const second = await request.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+    expect(second.status()).toBe(200)
+    const live = (await second.json()).token
+    expect(live, 'the second login really did rotate the token').not.toBe(stale)
+    expect((await request.get('/api/friends', { headers: { 'X-Admin-Token': stale } })).status(),
+      'non-vacuity: the stale token is genuinely dead').toBe(401)
+
+    const res = await request.post('/api/admin/logout', { headers: { 'X-Admin-Token': stale } })
+    expect(res.status(), 'the stale client still gets its 200 and can finish its cleanup').toBe(200)
+    expect(await res.json()).toEqual(LOGOUT_OK)
+
+    const after = await request.get('/api/friends', { headers: { 'X-Admin-Token': live } })
+    expect(after.status(), 'a stale token must not end somebody else’s session').toBe(200)
+
+    const garbage = await request.post('/api/admin/logout', { headers: { 'X-Admin-Token': 'not-a-real-token' } })
+    expect(garbage.status(), 'a garbage token is the same no-op').toBe(200)
+    expect(await garbage.json()).toEqual(LOGOUT_OK)
+    expect((await request.get('/api/friends', { headers: { 'X-Admin-Token': live } })).status(),
+      'and it leaves the live session alone too').toBe(200)
+  })
+})
+
+test.describe('API security — logout WITH the current token really logs out (FUP-T19)', () => {
+  test('the current token deletes the row; a second logout is still 200; a fresh login recovers', async () => {
+    test.skip(!CAN_SPAWN_BACKEND, 'needs the backend source beside e2e/ (skipped against a deployment)')
+    let backend
+    let ctx
+    try {
+      backend = await startBackend({})
+      ctx = await playwrightRequest.newContext({ baseURL: backend.baseUrl })
+      const readToken = () => {
+        const db = new DatabaseSync(backend.dbPath)
+        try {
+          return db.prepare("SELECT value FROM settings WHERE key = 'admin_token'").get()
+        } finally {
+          db.close()
+        }
+      }
+
+      const login = await ctx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+      expect(login.status(), 'harness admin login (did seed.mjs run?)').toBe(200)
+      const token = (await login.json()).token
+      expect(readToken(), 'the session row exists before we touch it').toBeTruthy()
+
+      // Non-vacuity for the two no-op cases above, read off the row itself rather
+      // than off a status code: neither an anonymous nor a stale caller may delete it.
+      expect((await ctx.post('/api/admin/logout')).status()).toBe(200)
+      expect((await ctx.post('/api/admin/logout', { headers: { 'X-Admin-Token': 'wrong' } })).status()).toBe(200)
+      expect(readToken(), 'the row survived both refused logouts').toBeTruthy()
+      expect((await ctx.get('/api/friends', { headers: { 'X-Admin-Token': token } })).status()).toBe(200)
+
+      // …and the holder of the CURRENT token really does end the session.
+      const out = await ctx.post('/api/admin/logout', { headers: { 'X-Admin-Token': token } })
+      expect(out.status()).toBe(200)
+      expect(await out.json()).toEqual(LOGOUT_OK)
+      expect(readToken(), 'the session row is gone').toBeUndefined()
+      expect((await ctx.get('/api/friends', { headers: { 'X-Admin-Token': token } })).status(),
+        'and the token it destroyed no longer opens anything').toBe(401)
+
+      // Idempotence (GSO-T5): logging out twice is not an error, and the client that
+      // already lost its session still gets a clean answer.
+      const again = await ctx.post('/api/admin/logout', { headers: { 'X-Admin-Token': token } })
+      expect(again.status()).toBe(200)
+      expect(await again.json()).toEqual(LOGOUT_OK)
+      expect(readToken()).toBeUndefined()
+
+      // The way back is unaffected: password login mints a new session.
+      const relogin = await ctx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD } })
+      expect(relogin.status(), 'logging out did not break logging back in').toBe(200)
+      expect((await ctx.get('/api/friends', { headers: { 'X-Admin-Token': (await relogin.json()).token } })).status()).toBe(200)
+    } finally {
+      await ctx?.dispose()
+      await backend?.stop()
+    }
   })
 })
