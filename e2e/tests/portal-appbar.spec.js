@@ -467,106 +467,20 @@ test.describe('BrandChrome `.titles` — RD-DS-5\'s obligations, INVERTED by 18 
 
 // ---------------------------------------------------------------------------
 
-test.describe('Balance card — three money states (UC-FL-005)', () => {
-  test('a negative balance renders the bordered red pill', async ({ page }) => {
-    await signIn(page)
-    await stubBalance(page, -74.24)
-    await openPortal(page)
-
-    const card = page.locator('.card', { hasText: 'Môj účet' }).first()
-    await expect(card.locator('.field-lbl')).toHaveText('Môj účet')
-
-    const value = card.locator('.neg.pill')
-    await expect(value).toHaveText('-74.24 EUR')
-    await expect(value).toHaveCSS('color', 'rgb(209, 26, 91)') // var(--danger)
-    await expect(value).toHaveCSS('font-size', '16px')
-    // Bordered pill, not a bare number.
-    await expect(value).toHaveCSS('border-width', '2px')
-    await expect(value).toHaveCSS('background-color', 'rgb(255, 224, 234)') // var(--danger-soft)
-  })
-
-  test('a settled balance renders the muted zero state', async ({ page }) => {
-    await signIn(page)
-    await stubBalance(page, 0)
-    await openPortal(page)
-
-    const card = page.locator('.card', { hasText: 'Môj účet' }).first()
-    await expect(card.locator('.zero')).toHaveText('0.00 EUR')
-    await expect(card.locator('.neg')).toHaveCount(0)
-  })
-
-  test('a positive balance renders the recorded OPEN default: green mono with a + sign', async ({ page }) => {
-    await signIn(page)
-    await stubBalance(page, 12.5)
-    await openPortal(page)
-
-    const card = page.locator('.card', { hasText: 'Môj účet' }).first()
-    const value = card.locator('.mono')
-    await expect(value).toHaveText('+12.50 EUR')
-    await expect(value).toHaveCSS('color', 'rgb(15, 93, 60)') // var(--ok-deep)
-    await expect(value).toHaveCSS('font-weight', '700')
-  })
-
-  test('"Transakcie" opens the existing transactions modal', async ({ page }) => {
-    await signIn(page)
-    await stubBalance(page, -74.24)
-    await openPortal(page)
-
-    const button = page.getByRole('button', { name: 'Transakcie' })
-    await expect(button).toHaveClass(/\bbtn\b/)
-    await expect(button).toHaveClass(/\bsm\b/)
-    // UC-DS-005 hit target: `.btn.sm` is 38px.
-    expect((await button.boundingBox()).height).toBeGreaterThanOrEqual(38)
-
-    await button.click()
-    await expect(page.getByRole('dialog').getByText('Všetky transakcie')).toBeVisible()
-  })
-
-  test('a failed balance load renders .banner.danger.slim inside the card and hides the button', async ({ page }) => {
-    await signIn(page)
-    await page.route('**/api/friends/*/balance', (route) => route.fulfill({
-      status: 500,
-      contentType: 'application/json',
-      body: JSON.stringify({ error: 'Zostatok sa nepodarilo načítať' }),
-    }))
-    await openPortal(page)
-
-    const card = page.locator('.card', { hasText: 'Môj účet' }).first()
-    await expect(card.locator('.banner.danger.slim')).toContainText('Zostatok sa nepodarilo načítať')
-    await expect(page.getByRole('button', { name: 'Transakcie' })).toHaveCount(0)
-  })
-
-  test('the loading state shows "Načítavam..." before the balance resolves', async ({ page }) => {
-    await signIn(page)
-    let release
-    const held = new Promise((resolve) => { release = resolve })
-    await page.route('**/api/friends/*/balance', async (route) => {
-      await held
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ balance: -5, transactions: [] }) })
-    })
-
-    await page.goto('/')
-    const card = page.locator('.card', { hasText: 'Môj účet' }).first()
-    await expect(card.locator('.sub')).toHaveText('Načítavam...')
-    release()
-    await expect(card.locator('.neg.pill')).toHaveText('-5.00 EUR')
-  })
-
-  test('⚠ BalanceBadge is still the admin component — the card must not render it', async ({ page }) => {
-    await signIn(page)
-    await stubBalance(page, -74.24)
-    await openPortal(page)
-
-    // BalanceBadge's signature is its Tailwind palette pills
-    // (`bg-red-100` / `bg-green-100` / `bg-gray-100` + `inline-flex rounded`).
-    // It is SHARED WITH ADMIN, so the restyle had to stop importing it rather
-    // than edit it — the card renders the theme's own money classes instead.
-    const card = page.locator('.card', { hasText: 'Môj účet' }).first()
-    await expect(card.locator('.bg-red-100, .bg-green-100, .bg-gray-100')).toHaveCount(0)
-    await expect(card.locator('.inline-flex.rounded')).toHaveCount(0)
-    await expect(card.locator('.neg.pill')).toHaveCount(1)
-  })
-})
+// ⚠ MOVED OUT BY PI-T7 — 18 §UC-PI-019 item 7, case (a) of the immutability rule.
+//
+// The „Balance card — three money states (UC-FL-005)" describe (7 tests) lived here
+// because module 03 rendered that card on the LANDING, which is where this file's
+// fixtures already were. §UC-PI-008 takes it off the landing entirely (R2.3: zero or
+// positive must NEVER appear there) and §UC-PI-010 re-purposes it into „Zostatok
+// a platby". The describe went with it, to `portal-balance.spec.js` §2, where six of
+// its seven tests continue — the three money states, the failed load, the loading
+// state and the „BalanceBadge is not rendered here" pin. The seventh („Transakcie"
+// opens the transactions modal) is DROPPED as unsatisfiable: §UC-PI-010 removes that
+// button and PI-T7 deletes `FriendTransactionsModal.vue`.
+//
+// What stays HERE is what this file is about — the appbar. `stubBalance` below is
+// still used by the tests that follow, for the drawer badge (§UC-PI-004 item 3).
 
 // ---------------------------------------------------------------------------
 

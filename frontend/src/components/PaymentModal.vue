@@ -3,13 +3,18 @@
 //
 // ⚠ SHARED-CONSUMER CONTRACT, PINNED. Four callers mount this component —
 // `GuestOrder.vue` (the g-confirm screen), `GuestOrderStatus.vue` (the guest's
-// status page), `FriendOrder.vue` (module 04's cart bar) and — from PL-T4 —
-// `FriendBalanceCard.vue` (15 §UC-PL-007 item 4, the whole-balance debt: its own
-// amount, its own reference and its own `8`-prefixed symbol — PL-T4 shipped it).
-// ⚠ That balance mount belongs to the CARD, and module 18 (PI-T7) RELOCATES it
-// rather than adding a second one: there is never more than one `PaymentModal` for
-// the balance. It emits `close` and nothing else. No admin view consumes it (swept from `router.js` by
-// `payment-links.spec.js`).
+// status page), `FriendOrder.vue` (module 04's cart bar) and — from PL-T4 — the
+// whole-balance debt (15 §UC-PL-007 item 4: its own amount, its own reference and
+// its own `8`-prefixed symbol).
+// ⚠ ~~That balance mount belongs to the CARD (`FriendBalanceCard.vue`), and module
+// 18 (PI-T7) RELOCATES it~~ — **RELOCATED, exactly as that line promised (PI-T7,
+// 18 §UC-PI-008/010).** Module 18 gives that one debt TWO surfaces on two different
+// VIEWS — the „Zostatok a platby" card and the landing's debt banner — so the mount
+// moved UP into `FriendPortalSession.vue`, which both reach through
+// `openBalancePayment()`. There is still never more than one `PaymentModal` for the
+// balance; what changed is which file holds it, and a mount inside the card is now
+// the thing that would force a second. It emits `close` and nothing else. No admin
+// view consumes it (swept from `router.js` by `payment-links.spec.js`).
 //
 // ~~Its props API is FROZEN: `open`, `amount`, `reference`, `iban`,
 // `revolutUsername`.~~ **SUPERSEDED — 15 §UC-PL-004/D4 (PL-T3).** The API is

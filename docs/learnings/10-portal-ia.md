@@ -1414,3 +1414,156 @@ weakening — a second loader still fails exactly as before.
 4. ⚠ **PI-T12's `portal-fidelity` A10 list should gain `history-round .display`** — the
    20px round name and the 18px total both carry inline `line-height`, for the reason
    every `.display` on this surface does.
+
+---
+
+## PI-T7 — the money surfaces: the debt banner, „Zostatok a platby", and a relocation that had to happen in a third file
+
+18 §UC-PI-008, §UC-PI-010, §UC-PI-019 items 7 and 9. Branch `task/pi-t7`.
+
+### 1. RELOCATE, NEVER DUPLICATE — and the relocation target was neither of the two obvious files
+
+PL-T4 made `FriendBalanceCard.vue` the one home of three things at once: the balance
+FETCH, the „Zaplatiť" TRIGGER and the `PaymentModal` MOUNT. Module 18 gives that one debt
+**two surfaces on two different VIEWS** — the landing's debt banner (§UC-PI-008) and the
+account card on `/zostatok` (§UC-PI-010) — and that is what breaks the three apart:
+
+- a mount that lives in the card **cannot be opened from a banner on another view**, and
+  the second mount that would fix that is precisely the defect the rule forbids;
+- so the mount went UP into `FriendPortalSession.vue`, together with the fetch, and both
+  surfaces open it through one `openBalancePayment()`.
+
+⚠ **„Relocated" therefore does NOT mean „moved into the balance view".** Reading it that
+way is what produces two mounts, one per surface, each with its own copy of
+`balancePaymentBlock()`'s answer. The end state is:
+
+| thing | home | count |
+|---|---|---|
+| `api.getFriendBalance()` on the friend surface | `FriendPortalSession.vue` | 1 |
+| balance `<PaymentModal>` mount | `FriendPortalSession.vue` | 1 |
+| `data-testid="pay-balance"` | `FriendBalanceCard.vue` | 1 |
+| `debt-banner-pay` | `DebtBanner.vue` (3 call sites) | 1 |
+| `balance < -0.01` | `DebtBanner.vue` | 1 |
+
+⚠ **The banner's button deliberately does NOT carry `pay-balance`.** Two elements
+answering to one testid would make every `getByTestId('pay-balance')` in the suite
+ambiguous the day both surfaces ever render together — and „they never do" is a property
+of today's routing, not of the testid. Different control, same single modal.
+
+### 2. The count PI-T2 left, and why an exact bound was the right instrument
+
+`payment-links.spec.js` asserted `afterLoad === 2` with the comment „exactly two readers
+on load: the card (03) and the session (18)". PI-T2 shipped the second reader knowingly
+and tightened `<= 2` to `toBe(2)` so that this row could not collapse the readers while
+the sentence naming two of them silently went false. It worked exactly as designed: the
+pin reddened on the first run of this row and forced a deliberate rewrite.
+
+⚠ **The rewrite is not „change 2 to 1".** The landing and the VIEW answer different
+questions and the number had to be split between two files:
+- §UC-PI-004 „one request per session load" is about the LANDING (the drawer badge must
+  not cost a request per menu open) ⇒ `payment-links.spec.js` now pins **1** there;
+- §UC-PI-010 „the view reloads balance + transactions on mount (a payment marked by the
+  admin shows after re-entering the view — no polling)" is about `/zostatok`
+  ⇒ `portal-balance.spec.js` §4 pins the reload, and entering the view makes it 2.
+
+Measuring both in one number would have folded two rules into one assertion. Implemented
+as `watch(view, …)` firing only on `shop → balance`; a COLD load at `/zostatok` never
+changes `view`, so it reads once, from the session mount.
+
+### 3. The migration mapping (produced BEFORE anything was deleted)
+
+`portal-transactions-modal.spec.js` (11) → `portal-balance.spec.js`, plus
+`portal-appbar.spec.js`'s „Balance card" describe (7). **18 out, 23 in the new file.**
+
+| from | verdict |
+|---|---|
+| modal: opens/teleports onto `.modal-layer` | **RETARGETED** → „renders IN PAGE, with no dialog parked" (the inverse question, and the one that matters: a `.modal-scrim` is `pointer-events:auto`) |
+| modal: × closes/unmounts, one „Zavrieť" | **DROPPED (unsatisfiable)** — the shell is gone. Its PROPERTY („a dialog here must UNMOUNT or its scrim eats clicks") is carried onto the one dialog the view still has, the balance `PaymentModal` |
+| rows: one row per tx; sign/colour | **KEPT** (scope: dialog → page) |
+| modal: the three money states in `.m-head` | **RETARGETED** to the card's `balance-amount`; the modal's duplicate `balanceState` derivation died with it |
+| empty / error / loading | **KEPT** (error is now SCOPED — the card renders its own `.banner.danger.slim` on a balance failure and an unscoped locator would let it satisfy the ledger's assertion) |
+| 320 px unbreakable name | **KEPT, outer measurement moved** — see §5 |
+| admin invariance ×2 | **KEPT verbatim** |
+| appbar: negative / zero / positive | **RETARGETED** — `.neg.pill` 16px → one `.display` 38px (canon) |
+| appbar: „Transakcie" opens the modal | **DROPPED (unsatisfiable)** — §UC-PI-010 removes the button, PI-T7 deletes the component |
+| appbar: failed load / loading / no BalanceBadge | **KEPT** on `/zostatok` |
+
+**The accounting, and it adds up exactly.** 18 tests came in: **11 KEPT** (rows ×2,
+empty, error, ledger loading, 320 px, admin ×2, failed balance load, card loading, no
+BalanceBadge), **5 RETARGETED** (in-page instead of teleported; the `.m-head`
+money states → the card's `balance-amount`; negative / zero / positive), **2 DROPPED as
+unsatisfiable** (the × / „Zavrieť" shell test, „Transakcie" opens the modal). ⚠ An
+earlier version of THIS sentence listed the × / „Zavrieť" test as BOTH retargeted and
+dropped, and omitted the `.m-head` states — the TABLE above was right and the summary was
+not (review, 2026-09-20). The dropped test's PROPERTY (a dialog here unmounts) survives on
+`PaymentModal` (`portal-balance.spec.js:260-279`), which is what made the double-listing
+easy to write and easy to miss: a property carried forward is not the same as the test
+being retargeted. Plus **7
+NEW**: the drawer entry point, the „Zaplatiť {suma}" shape, the no-block case, the
+re-entry reload, and three source pins. 11 + 5 + 7 = **23**, and 16 + 2 = 18.
+
+Across every touched file: `portal-transactions-modal` 11 → 0 (renamed),
+`portal-balance` 0 → 23, `portal-appbar` 21 → 14, `portal-landing` 37 → 43 (+6, §8),
+`payment-links` 67 → 67 (5 retargeted in place + the exact-count rewrite),
+`portal-fidelity` 9 → 9 (one assertion retired, one re-pointed). **145 → 156, net +11.**
+
+### 4. Every kept assertion was proved to still fail — six mutations
+
+| mutation | reds |
+|---|---|
+| `n < -0.01` → `n <= 0` in `DebtBanner` | landing „zero and positive" + the source threshold pin |
+| a second `<PaymentModal>` mounted in the card | `portal-balance` §6 ONLY — **invisible in every DOM test**, which is the whole argument for a source pin |
+| „Nedoplatok — po zaplatení…" shortened | `portal-balance` §2 + `payment-links` |
+| the card's own `getFriendBalance()` restored | `payment-links` exact-count + `portal-balance` §4 + §6 |
+| the LOCKED `<DebtBanner>` call site removed | landing „LOCKED state: above the own-order card" |
+| `overflow-wrap:anywhere` deleted from a ledger row | `portal-balance` §5 (320 px) |
+
+⚠ Each mutation was **rebuilt into `backend/public` and the mutation verified present in
+the source** before running — a mutation that never reached the served bundle proves the
+opposite of what it looks like.
+
+### 5. Things this row measured that are easy to get wrong
+
+- ⚠ **`.neg.pill` and `.zero` now have NO renderer in `frontend/src`.** The card paints
+  one `.display` at 38px (canon `portal2.jsx:232`), and `.neg`/`.display` cannot be
+  combined: `friends-theme.css:216` declares `.neg{font-family:var(--font-mono);
+  font-size:13px}` AFTER `:25`'s `.display` at equal specificity, so `.display.neg` paints
+  the display face away. `portal-fidelity.spec.js`'s A10 pin was re-pointed at the
+  surviving `.neg` (a ledger amount on `/zostatok`); its `near(…, CANON.negPill)` HEIGHT
+  measurement is retired, with `CANON.negPill` kept as the record. The two classes stay in
+  the canon-ported theme file.
+- ⚠ **The 320 px outer measurement MOVED with the markup.** In the modal, `.modal-scrim`
+  was `overflow-y:auto` — CSS computes the other axis of a non-`visible` overflow to
+  `auto` too — so the scrim absorbed every spill and `documentElement.scrollWidth` never
+  moved; the load-bearing pair was SCRIM + ROW. In the page there is no scrim, so the pair
+  is ROW + DOCUMENT. Copying the old assertion verbatim would have measured nothing.
+- ⚠ **„no `0.00 EUR` on the landing" is the wrong absence, and it reddened on the real
+  thing:** an OPEN landing's cartbar legitimately prints an empty cart's total (measured:
+  3 matches). What must be absent is the BALANCE's vocabulary — `Nedoplatok`,
+  `Môj účet`, `balance-amount`, `pay-balance`.
+- ⚠ **A `shop` landing whose state is `closed` mounts `LandingStateModal` automatically**,
+  and its scrim intercepts the appbar's Menu click. `portal-balance.spec.js` stubs
+  `GET /friends/cycles` to ONE completed round so `dismissLandingState()` is always
+  applicable, and enters `/zostatok` by URL for everything except the one test that pins
+  the drawer entry point §UC-PI-019 item 9 names.
+- **No `.card.flat` wrapper around the ledger**, though `portal2.jsx:236` has one: the
+  lifted `.suborder` is already a bordered, shadowed card and wrapping would double-frame.
+- **PI-T5's „the session mounts NO second PaymentModal" pin reddened, correctly**, and was
+  rewritten rather than deleted: the session's one mount is now the BALANCE's (pinned by
+  `:amount="balancePayment.amount"`), and `payOwnOrder()` still reaches FriendOrder's own.
+
+### What PI-T7 LEAVES BEHIND
+
+1. **PI-T8/T9 inherit a session that owns the money state.** `balance`, `balancePayment`,
+   `balanceLoading`, `balanceError`, `canPayBalance`, `openBalancePayment()` are all
+   session-level and all destroyed by the parent's `v-if` + `:key` on logout.
+2. ⚠ **PI-T12's `portal-fidelity` A10 list should gain the balance card's 38px
+   `.display`** — it carries an inline `line-height:1`, for the reason every `.display`
+   on this surface does — and should decide whether to retire `CANON.negPill` outright.
+3. **Module 21 (messages) quotes `balancePaymentBlock()`.** The note now lives in
+   `FriendBalanceCard.vue`'s header AND in the session's mount comment, because the
+   reader composing a debt message may be looking at either.
+4. ⚠ **PI-T11's vocabulary sweep gains `DebtBanner.vue`** (its copy is „Nedoplatok
+   {suma}" + „Zaplatiť", no „kolo") and `FriendTransactionList.vue`. The prototype's
+   „z minulého kola" is dropped by 18 resolved conflict 1 — which is also why the
+   sweep finds nothing there.

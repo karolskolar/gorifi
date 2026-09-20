@@ -431,7 +431,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] PI-T4  Landing CLOSED state: parametrised NeoModal „Objednávky sú zatvorené“ once per SESSION (PO: „once, then banner“ = the spec's session rule, no persistence) + `nextText` card + `CycleTimeline variant="compact"` (own caption row) + `.banner.warn.slim` after dismiss + read-only `catalogCycle` grid (`readonly` landing mode: `.p2-ro`, tabs live, no stock bars/cartbar/tabgroup) + empty „Ponuka ešte nie je pripravená.“ — `18 §UC-PI-006` ⚠ modal title/intro/lead are PROPS so PI-T5 only passes strings for the no-order locked variant.
 - [x] PI-T5  Landing LOCKED state: own-order card (`CartLineList`, hoisted `lib/order-lines.js`, pickup row = exactly one of location/note/„Packeta · …“, Zaplatené/Nezaplatené + Zaplatiť → PaymentModal with `paymentTotal` incl. `delivery_fee`, VS from PL-T2) + „Kde je vaša káva“ `CycleTimeline vertical` + next-round banner + read-only `currentCycle` grid WITH tabgroup (Kolegovia hand-over ticks stay) + no-order variant „Objednávky sú uzamknuté“ — `18 §UC-PI-007` · model=heavy ⚠ NO ledger write; `paid` admin-only; shipped locked banner/cartbar stay on `/cycle/:id` (PI-T11 verifies); `order-locked.spec.js` pins unchanged on the deep link.
 - [x] PI-T6  „Moje objednávky“ history view: `hasOrder` rounds newest-first, short badges (Odoslaná / V pražiarni / Balíme / Zabalená / Odovzdaná / Vyzdvihnuté — owned HERE, never shared with 17's long labels), lazy `CartLineList` per round (`rowSeq`, one expanded), empty state, READ-ONLY (PO: no „Otvoriť“ link) — `18 §UC-PI-009` ⚠ NEW `portal-history.spec.js`; `orderHandedOver` from PI-T1 drives „Odovzdaná“.
-- [ ] PI-T7  Money surfaces: debt banner + Zaplatiť on the landing in ALL states (`balance < -0.01`; PO: zero/positive NEVER on landing) + „Zostatok a platby“ view (`FriendBalanceCard` re-purposed, PL-T4's `pay-balance` trigger + mount RELOCATED here — never duplicated; keep „po zaplatení sa zostatok vyrovná do 1–2 dní“) + `FriendTransactionList.vue` lifted verbatim from `FriendTransactionsModal.vue` (deleted) + landing balance card REMOVED — `18 §UC-PI-008,010,019(items 7,9)` ⚠ SANCTIONED: RENAME `portal-transactions-modal.spec.js` → `portal-balance.spec.js` (keep every `tx-*` pin, sign/colour, 320 px test, admin invariance describe; drop the unsatisfiable modal-shell pins); parked `portal-appbar` balance describe lands here. ⚠ `BalanceBadge.vue` untouched (admin-shared).
+- [x] PI-T7  Money surfaces: debt banner + Zaplatiť on the landing in ALL states (`balance < -0.01`; PO: zero/positive NEVER on landing) + „Zostatok a platby“ view (`FriendBalanceCard` re-purposed, PL-T4's `pay-balance` trigger + mount RELOCATED here — never duplicated; keep „po zaplatení sa zostatok vyrovná do 1–2 dní“) + `FriendTransactionList.vue` lifted verbatim from `FriendTransactionsModal.vue` (deleted) + landing balance card REMOVED — `18 §UC-PI-008,010,019(items 7,9)` ⚠ SANCTIONED: RENAME `portal-transactions-modal.spec.js` → `portal-balance.spec.js` (keep every `tx-*` pin, sign/colour, 320 px test, admin invariance describe; drop the unsatisfiable modal-shell pins); parked `portal-appbar` balance describe lands here. ⚠ `BalanceBadge.vue` untouched (admin-shared).
 - [ ] PI-T8  „Ako to funguje“ view: six phases (static text, live timeline NOT mounted), three delivery ways from `api.getPickupLocations('coffee')` (Packeta fee badge gated on `parcel_enabled`), „Kto sme a odkiaľ je káva“ + `lib/roasters.js` ONE home (Goriffee / Robo prototype drafts — PO polishes), „Ako platím“ (keep „(PayMe)“ — 15 shipped), personal note „— Karol“ (PO draft), keep WhatsApp mention in phase 2 (PO), `asGate` prop for PI-T9 + product-card roaster badge popover (one `NeoModal`, `role=button` only on a match) + `NeoIcon` I2 set — `18 §UC-PI-012,014` ⚠ seam → GL-T4 imports `lib/roasters.js`; admin never imports it. NEW `portal-explainer.spec.js` (content part).
 - [ ] PI-T9  First-login explainer gate: `friends.explainer_seen_at` (try/catch ALTER, **NO back-fill — PO: every existing friend sees it once**) + `POST /friends/:id/explainer-seen` (`requireFriendOwner`, idempotent COALESCE; shared-password `friendId:null` ⇒ 401) + field in all four login payloads (friends.js :173/:230/:358, magic-link.js :406; session restore is NOT a login) + `beginSession({explainerPending})` → `router.replace('/ako-to-funguje')` + pre-ticked „Už mi to neukazovať“ / „Rozumiem“ — `18 §UC-PI-013,019(item 16)` ⚠ `FRIEND_IDENTITY_ENDPOINTS += POST /api/friends/1/explainer-seen` (NEVER `ADMIN_ENDPOINTS`). ⚠ SUITE-WIDE: `e2e/seed.mjs` pre-stamps `explainer_seen_at` for every seeded friend except one dedicated fixture (orchestrator clarification (b)) — otherwise every login-then-land spec hits the explainer. Precedence: forced-password > Google prompt > explainer.
 - [ ] PI-T10 Profile modal per roadmap §19: **Login** read-only row (help avoids the adjective — `grep -i prihlasovac` guard stays EMPTY) · **Meno a priezvisko *** · **Mobil *** (NEW required on the self-edit route only: blank ⇒ 400 `{field:'phone'}`) · **E-mail** (help: Packeta + recovery) · Adresa Packeta (server bound 160 + `maxlength`) · password fold + Google untouched · NO uid; auto-open until Mobil filled (PO; after the gates of PI-T9, dismissible per session, re-opens next login) — `18 §UC-PI-015,019(items 10,11)` ⚠ marked SLOT under Mobil for module 21's `whatsapp_opt_in` checkbox (renders nothing here). ⚠ „E-mail required when Packeta chosen“ lives in the delivery-choice modal — module 20 (GP-T3) for guests, friend side stays as today. ⚠ SANCTIONED: `portal-profile-modal.spec.js` label/help-order/maxlength pins; `friends-consolidation.spec.js` 14 help-text pins → §19 E-mail help; FUP-T20 grep test verbatim.
@@ -475,6 +475,41 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## Log
 
+- 2026-09-20 · PI-T7 · (this commit) · no PR (project convention) · **The money surfaces — and a
+  „one home" claim that was false in four documents at once.** New `DebtBanner.vue` +
+  `FriendTransactionList.vue`; `FriendTransactionsModal.vue` DELETED (222 lines);
+  `portal-transactions-modal.spec.js` → `portal-balance.spec.js`; the landing balance card
+  removed; `FriendBalanceCard` re-purposed and props-fed. No backend change, no ledger write.
+  ⚠ **„Relocate into the balance view" would have produced TWO mounts** — the debt has surfaces on
+  two views and a mount inside the card cannot be opened from a banner elsewhere. The mount went to
+  a THIRD file (the session). Exactly one `pay-balance`, one `debt-banner-pay`, one balance
+  `PaymentModal`. A second mount in the card reds ONLY the source pin — every DOM test stays green,
+  because a duplicate is invisible until the two disagree. That is the argument for source pins,
+  demonstrated rather than asserted.
+  ⚠⚠ **THE THRESHOLD CLAIM WAS THE RECURRING DEFECT, AGAIN.** The row declared „`balance < -0.01`
+  lives here, ONCE" in the component, CLAUDE.md, the spec amendment and the learnings — while the
+  comparison was live in THREE files (banner gate, card state, drawer badge tone). Not three
+  questions sharing a constant: all three ask „is this friend in debt?" and only the rendering
+  differs, and §UC-PI-008 had already pointed the banner's gate AT the card. ⚠ **It was also
+  untestable:** only the banner's copy had a boundary fixture (−0.004 / −0.02); the card's stubs
+  were 0 / 12.5 / −5 / −30 / −74.24, so a banner-vs-card disagreement anywhere between −0.01 and
+  −1.00 rendered a debt banner above a card that did not call it debt, invisibly. ⚠⚠ And a TEST
+  entrenched it, blessing the session's copy as „the drawer badge's tone, not a restatement".
+  Fixed: `lib/money.js` now owns `DEBT_EPSILON` / `isInDebt()` / `balanceState()`; all three import
+  it; `BalanceBadge.vue` keeps its own copy ON PURPOSE (admin-shared) and that exception is named.
+  The pin is now a sweep — no friend-surface file may restate the literal — mutation-proved.
+  ⚠ **The exact count I left for this row did its job:** `toBe(2)` reddened on the first run and was
+  rewritten AND SPLIT (landing reads once; entering the view makes it two, owned by the other spec).
+  ⚠ Review then caught that the split's own label was wrong — the helper does a `page.goto`, so the
+  second read is a new document's mount, not the in-session watch. Re-worded; the watch is pinned
+  where it is actually measured.
+  ⚠ Three more stale claims fixed: the watch fires from ANY view (docs said „shop → balance"), a
+  comment cited a watch this row had just deleted, and the migration summary double-counted one test
+  while omitting another — the table was right, the prose was not.
+  Migration: 18 tests in → 23 out (11 kept, 5 retargeted, 2 dropped unsatisfiable, 7 new); total
+  145 → 156.
+  Gate: **244 passed / 0 failed** over nine files, asked-vs-ran reconciled with a pre-flight
+  existence check, server log clean. Review: **revise → addressed**, one major + four minors.
 - 2026-09-20 · PI-T6 · (this commit) · no PR (project convention) · **„Moje objednávky" — and a
   harness rule that had been cited all week turned out to be necessary but NOT sufficient.**
   New `lib/history-badges.js`, the history view (rounds with `hasOrder`, newest first; lazy

@@ -57,7 +57,7 @@ import { loadGis } from '../lib/gis'
 // dialog was the last radix consumer on the authenticated friend surface; it now
 // composes on `NeoModal`, so `Input`/`Label`/`Button`/`Alert`/`Dialog*` are gone.
 // UC-DS-004 rule 4 keeps radix ADMIN-only — do not re-introduce one here.
-import { fmtEur, roundMoney } from '@/lib/money'
+import { fmtEur, roundMoney, isInDebt } from '@/lib/money'
 import { VARIANT_GRAMS } from '@/lib/guest-cart'
 import { colleaguesLabel, ordersAccusativeLabel, weeksLabel } from '@/lib/plural'
 import { kgLabel } from '@/lib/kg'
@@ -68,7 +68,22 @@ import { fmtDate, fmtDayMonth, fmtWeekdayDayMonth, weeksUntil } from '@/lib/date
 // 18 §UC-PI-002 — the ONE home of "which round is this landing about, and in what
 // state". Never re-derive open/locked/closed beside it.
 import { resolveLanding } from '@/lib/portal-state'
+// 18 §UC-PI-008/010 — the money surfaces (PI-T7).
+//
+// ⚠⚠ ONE TRIGGER, ONE MOUNT, and this import block is where that is enforced.
+// `FriendBalanceCard.vue` is module 03's card RE-PURPOSED into the „Zostatok
+// a platby“ view: it owns the one `data-testid="pay-balance"` control and now takes
+// the balance as PROPS instead of fetching it. `DebtBanner.vue` is the landing's
+// §UC-PI-008 banner, mounted at three call sites (one per landing state) with the
+// `isInDebt()` (`lib/money.js`, the ONE home since the PI-T7 review) inside it. Neither mounts a `PaymentModal`: this file
+// mounts exactly ONE for the balance, at the bottom of the template, and both
+// surfaces open it through `openBalancePayment()`. A second mount would give „what
+// does this friend owe" two homes that can disagree — see `FriendBalanceCard`'s
+// header and CLAUDE.md §Money & data.
 import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
+import FriendTransactionList from '@/components/FriendTransactionList.vue'
+import DebtBanner from '@/components/DebtBanner.vue'
+import PaymentModal from '@/components/PaymentModal.vue'
 // 18 §UC-PI-005 — the landing IS the order screen. `FriendOrder.vue` is the ONE home
 // of that surface and is mounted here in `mode="landing"`; it is never forked, and no
 // slice of it is copied into this file. It also owns the only `GuestShareDialog`
@@ -1215,27 +1230,107 @@ const nextRoundShort = computed(() => {
 // not sure of, and a failed balance is not a reason to shout at someone opening
 // a menu. There is no error surface and no retry by design.
 //
-// ⚠ PI-T7 SEAM. `FriendBalanceCard.vue` still makes its OWN `getFriendBalance`
-// call, because module 03's card is still mounted on the landing until PI-T7
-// re-purposes it into the „Zostatok a platby“ view. So today a session load
-// makes TWO balance requests, and that is KNOWN, not overlooked: collapsing them
-// means pushing a prop into a component PI-T7 relocates wholesale, i.e. editing
-// it twice. PI-T7 feeds the card (and the landing debt banner) from THIS ref and
-// deletes the card's own fetch — at which point the §UC-PI-004 sentence above is
-// literally true. Until then the drawer badge is the one-per-session call.
+// ~~⚠ PI-T7 SEAM. `FriendBalanceCard.vue` still makes its OWN `getFriendBalance`
+// call … So today a session load makes TWO balance requests, and that is KNOWN.~~
+// **CLOSED by PI-T7 (2026-09-20).** The card takes `balance` / `payment` /
+// `loading` / `error` as PROPS and fetches nothing; this is the only
+// `api.getFriendBalance` call on the friend surface, and a landing load makes
+// exactly ONE. `payment-links.spec.js`'s exact-count pin was rewritten with it
+// (it asserted `toBe(2)` and named the two readers, precisely so this row could
+// not leave a stale claim behind).
+//
+// ⚠ THREE CONSUMERS, ONE ANSWER: the drawer badge (§UC-PI-004 item 3), the landing
+// debt banner (§UC-PI-008) and the account card (§UC-PI-010) all read these refs.
+// That is the whole point — the day `balancePaymentBlock()` changes, there is one
+// place that quotes it.
+//
+// ⚠ THE ERROR IS AUDIENCE-SCOPED, and that is spec, not caution. `balanceError` is
+// rendered ONLY by the card on `/zostatok` (§UC-PI-010: „error `.banner.danger.slim`
+// (shipped copy)“). The drawer badge and the debt banner render NOTHING on a failure
+// (§UC-PI-008: „a failed balance fetch renders NO banner and no error on the landing
+// (the balance view owns the error surface)“) — they get that for free from
+// `balance` being `null`, without a second predicate about loading.
 const balance = ref(null)
+// The server's `payment` block, QUOTED — never recomposed on the client.
+const balancePayment = ref(null)
+const balanceLoading = ref(true)
+const balanceError = ref('')
 
 async function loadBalance() {
   if (!props.friendId) return
+  balanceLoading.value = true
+  balanceError.value = ''
+  // ⚠ CLEARED BEFORE THE READ, not merged after it — the defence-in-depth rule that
+  // came up here from `FriendBalanceCard.vue` with the mount (CLAUDE.md §Money &
+  // data). It is NOT what keeps one session's payment block out of the next
+  // session's: that is structural and lives in `FriendPortal.vue`, which mounts this
+  // component with `v-if` + `:key="sessionSeq"` and DESTROYS the subtree on logout
+  // (the six-leak guard named in this file's header). What the clear covers is the
+  // gap a FAILED reload leaves: without it the card paints its error banner while a
+  // stale block sits behind a „Zaplatiť“ that still opens. Closing the dialog with
+  // it is the same rule — a dialog quoting a debt that is no longer on screen has
+  // no owner.
+  balancePayment.value = null
+  showBalancePayment.value = false
   try {
     const data = await api.getFriendBalance(props.friendId)
     const value = Number(data?.balance)
     balance.value = Number.isFinite(value) ? value : null
-  } catch {
-    // Swallowed: see above. No badge is the failure surface.
+    balancePayment.value = data?.payment || null
+  } catch (e) {
     balance.value = null
+    balanceError.value = e.message
+  } finally {
+    balanceLoading.value = false
   }
 }
+
+/**
+ * §UC-PI-010 business rule: „The view reloads balance + transactions on mount (a
+ * payment marked by the admin shows after re-entering the view — no polling)."
+ *
+ * ⚠ AND THAT IS NOT A CONTRADICTION OF „one request per session load". §UC-PI-004's
+ * sentence is about the LANDING load — the drawer badge must not cost a request per
+ * menu open. Re-entering `/zostatok` is a deliberate navigation to the screen whose
+ * whole subject is the number, and a stale one there is the bug the rule names. The
+ * transactions half needs no code here: `FriendTransactionList` is `v-if`-gated on
+ * this view, so leaving unmounts it and coming back re-runs its `onMounted`.
+ */
+// ⚠ ON ENTERING THE BALANCE VIEW FROM **ANY** OTHER VIEW — not only from the landing.
+// `history → balance` and `explainer → balance` re-read too, which is the behaviour
+// §UC-PI-010 wants; the docs said „`shop → balance`" and were narrower than the code
+// (review, 2026-09-20). The `prev !== 'balance'` term is belt-and-braces: a watcher
+// cannot fire on an unchanged value, so it can never be false here.
+watch(view, (next, prev) => {
+  if (next === 'balance' && prev !== 'balance') loadBalance()
+})
+
+// ⚠⚠ THE ONE BALANCE `PaymentModal` IN THE TREE, and the one function that opens it.
+// `FriendBalanceCard`'s „Zaplatiť {suma}" (`pay-balance`, on `/zostatok`) and
+// `DebtBanner`'s „Zaplatiť" (`debt-banner-pay`, on the landing) both call this; the
+// mount is at the bottom of the template. PL-T4 put both in the card, which module
+// 18 RELOCATES rather than duplicates (15 §UC-PL-007 item 4, CLAUDE.md §Money &
+// data): a mount inside the card cannot be opened from a banner on another view, and
+// the second mount that would fix that is exactly the defect — two components each
+// holding their own copy of `balancePaymentBlock()`'s answer.
+//
+// ⚠ Nothing here writes money. Opening or closing this modal posts no
+// `transactions` row, and `close` deliberately does NOT reload the balance: paying
+// through a link changes nothing in the ledger until the admin records the transfer,
+// and a refreshed-looking balance would tell the friend otherwise.
+const showBalancePayment = ref(false)
+
+function openBalancePayment() {
+  showBalancePayment.value = true
+}
+
+// The „Zaplatiť“ gate, shared by both surfaces so they can never disagree about
+// whether this debt is payable: a block, and somewhere to send the money. The DEBT
+// half of the predicate lives in each surface (the card's `balanceState`, the
+// banner's `-0.01` threshold), because the card also renders the settled and credit
+// states while the banner renders nothing at all.
+const canPayBalance = computed(() => !!balancePayment.value
+  && !!(balancePayment.value.iban || balancePayment.value.revolut_username))
 
 // ── the appbar (§UC-PI-003) ──────────────────────────────────────────────────
 
@@ -1380,7 +1475,8 @@ const menuItems = computed(() => {
       // rounds to zero is not painted as debt.
       badge: balance.value === null
         ? null
-        : { text: fmtEur(balance.value), tone: balance.value < -0.01 ? 'danger' : 'ok' },
+        // ⚠ `isInDebt`, not a fourth copy of the comparison (`lib/money.js`).
+        : { text: fmtEur(balance.value), tone: isInDebt(balance.value) ? 'danger' : 'ok' },
     },
     ...(landing.value.state === 'open'
       ? [{ key: 'share', icon: 'share', label: 'Zdieľať s kolegami', sub: shareSub.value }]
@@ -2060,8 +2156,12 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
       </div>
     </div>
 
-    <!-- Balance Card -->
-    <FriendBalanceCard :friend-id="friendId" />
+    <!-- ⚠ WHAT WAS HERE AND IS GONE (PI-T7, §UC-PI-008): module 03's „Môj účet"
+         balance card, which rendered on EVERY view and in every landing state.
+         A settled or positive balance must never appear on the landing at all —
+         R2.3, a product decision, not an oversight — so the card moved into the
+         „Zostatok a platby" view below and the landing keeps only the debt banner,
+         positioned per state by §UC-PI-005/006/007. -->
 
     <!-- ═══════════════ 18 §UC-PI-005 — THE LANDING, OPEN STATE (PI-T3) ═══════════
          ⚠ WHAT WAS HERE AND IS GONE: module 03's cycle LIST — the „Objednávkové
@@ -2121,8 +2221,9 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
         </div>
       </div>
 
-      <!-- 2. The debt banner is PI-T7's slot (§UC-PI-008). Left empty on purpose;
-              `FriendBalanceCard` above stays until that row relocates it. -->
+      <!-- 2. THE DEBT BANNER (§UC-PI-008) — one of three call sites for ONE
+              component; the debt predicate is `lib/money.js isInDebt()` and lives inside it. -->
+      <DebtBanner :balance="balance" :can-pay="canPayBalance" @pay="openBalancePayment" />
 
       <!-- 3./4. THE ORDER SURFACE AND ITS `.cartbar` (§UC-PI-005 items 3 and 4).
            ⚠ ONE HOME, EXTENDED — never forked, never partially copied. The `ref` is
@@ -2189,7 +2290,8 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
         <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Objednávky sú zatvorené.</b> {{ landing.nextText }}</div>
       </div>
 
-      <!-- 3. The debt banner is PI-T7's slot (§UC-PI-008), in this state too. -->
+      <!-- 3. THE DEBT BANNER (§UC-PI-008) — „shown in all three landing states". -->
+      <DebtBanner :balance="balance" :can-pay="canPayBalance" @pay="openBalancePayment" />
 
       <!-- 4. THE READ-ONLY CATALOGUE of `catalogCycle` — the newest `locked` or
              `completed` round (`lib/portal-state.js`). ⚠ NOT `currentCycle`, which
@@ -2249,8 +2351,10 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
          `transactions` rows still come only from the friend paid toggle and
          pack/unpack (CLAUDE.md §Money & data). -->
     <template v-else-if="view === 'shop' && landing.state === 'locked' && landing.currentCycle">
-      <!-- 1. The debt banner is PI-T7's slot (§UC-PI-008) — „above the own-order
-              card in `locked`". Left empty on purpose, as in the other two states. -->
+      <!-- 1. THE DEBT BANNER (§UC-PI-008) — „above the own-order card in `locked`",
+              and above the no-order variant's modal/banner for the same reason: it
+              is the first thing on this landing, before anything about the round. -->
+      <DebtBanner :balance="balance" :can-pay="canPayBalance" @pay="openBalancePayment" />
 
       <template v-if="landing.currentCycle.hasOrder">
         <!-- 2. THE OWN-ORDER CARD (§UC-PI-007 item 2).
@@ -2539,7 +2643,71 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
         </div>
       </div>
     </div>
+
+    <!-- ═══════════════ 18 §UC-PI-010 — „ZOSTATOK A PLATBY" (PI-T7) ══════════════
+         The whole money picture, on the one screen that is allowed to show a
+         settled balance. It replaces 03 §UC-FL-005's landing card AND the
+         „Transakcie" modal behind it (`FriendTransactionsModal.vue`, deleted in this
+         commit; the supersession map at 18 §7 records both).
+
+         ⚠ Its own flex column (`portal2.jsx:228`), like the history view — the page
+         column is not one. -->
+    <div v-if="view === 'balance'" style="display:flex;flex-direction:column;gap:14px">
+      <!-- 28px on phone / 34px on desktop (§UC-PI-010), the history heading's rule.
+           `.h-screen .hl` is the theme's own accent-block rule; the size is the only
+           thing this call site supplies. -->
+      <h2 class="h-screen text-[28px] sm:text-[34px]">Zostatok <span class="hl">a platby</span></h2>
+
+      <!-- 1. THE ACCOUNT CARD. It reads the SESSION's balance refs (one fetch per
+              session load, re-run on entering this view) and emits `pay`; the modal
+              it opens is mounted once, below. -->
+      <FriendBalanceCard
+        :balance="balance"
+        :payment="balancePayment"
+        :loading="balanceLoading"
+        :error="balanceError"
+        @pay="openBalancePayment"
+      />
+
+      <!-- 2. THE LEDGER — `FriendTransactionList.vue`, lifted verbatim out of the
+              deleted modal (§UC-PI-010 item 2). It owns its own
+              `api.getTransactions` call and its own loading/empty/error copy; being
+              `v-if`-gated here is what makes „reloads on mount" true for it.
+
+              ⚠ NO `.card.flat` WRAPPER, though `portal2.jsx:236` has one: the
+              lifted markup's `.suborder` is ALREADY a bordered, shadowed card
+              (`friends-theme.css:226`), so wrapping it would double-frame the list.
+              §UC-PI-010 says the rows come over VERBATIM, which settles it — the
+              prototype's `.p2-tx` row and its frame are the thing not adopted. -->
+      <FriendTransactionList :friend-id="friendId" />
+    </div>
   </div>
+
+  <!-- ⚠⚠ THE ONE BALANCE `PaymentModal` IN THE TREE (§UC-PI-008 / §UC-PI-010; 15
+       §UC-PL-007 item 4 RELOCATED, never duplicated). PL-T4 mounted it inside
+       `FriendBalanceCard.vue`; module 18 gives the same debt two surfaces on two
+       different views, so the mount came UP here where both can reach it —
+       `pay-balance` on the card and `debt-banner-pay` in the landing banner both
+       call `openBalancePayment()`.
+
+       PROPS IN / LINKS OUT: every value is the server's (`balancePaymentBlock()`),
+       and nothing on this side composes a symbol, a reference or an amount.
+
+       ⚠ `close` deliberately does NOT reload the balance: paying through a link
+       changes nothing in the ledger until the admin records the transfer, and a
+       refreshed-looking balance would tell the friend otherwise. No `transactions`
+       row is written anywhere on this surface. -->
+  <PaymentModal
+    v-if="balancePayment"
+    :open="showBalancePayment"
+    :amount="balancePayment.amount"
+    :reference="balancePayment.reference"
+    :iban="balancePayment.iban"
+    :revolut-username="balancePayment.revolut_username"
+    :variable-symbol="balancePayment.variable_symbol"
+    :creditor-name="balancePayment.creditor_name"
+    @close="showBalancePayment = false"
+  />
 
   <!-- Profile modal (UC-FL-009) — the first CLOSABLE form-bearing NeoModal.
        Composed from `portal.jsx:176-199`: same nodes, same inline styles.

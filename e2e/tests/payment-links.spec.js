@@ -31,6 +31,13 @@ import { readQrModules, qrMatrix } from '../helpers/qr-pixels.js'
 //   6. §UC-PL-007 (PL-T4) — the FRIEND surfaces: the cart-bar Platba modal's VS, the
 //      success modal's re-pointed QR and Revolut link, and the NEW balance „Zaplatiť“
 //      on `FriendBalanceCard.vue` (trigger, mount, and the ledger that stays untouched).
+//      ⚠ PI-T7 (18 §UC-PI-008/010) MOVED that card off the landing into the „Zostatok
+//      a platby“ view and relocated the `PaymentModal` mount up into
+//      `FriendPortalSession.vue` — one trigger, one mount, one balance read. Section 6's
+//      assertions are re-pointed at `/zostatok` (case (a)); the protected properties —
+//      the balance VS, the creditor name, the shared modal, „open/close re-reads
+//      nothing“ and „no ledger row“ — are untouched. `portal-balance.spec.js` owns the
+//      card's own rendering.
 // The guest confirmation mail's VS row (§UC-PL-003 item 2) is pinned where the mail
 // harness already lives: `guest-order-recovery.spec.js`'s UC-GR-011 describe.
 //
@@ -1592,6 +1599,22 @@ async function gotoCycle(page, cycle) {
 
 const balanceCard = (page) => page.locator('.card').filter({ hasText: 'Môj účet' })
 
+/**
+ * „Zostatok a platby“ — where the balance card lives from PI-T7 (18 §UC-PI-010).
+ *
+ * ⚠ It enters by URL rather than through the drawer. A `shop` landing whose state is
+ * `closed` or `locked`-without-an-order mounts `LandingStateModal` automatically
+ * (§UC-PI-006), and this file's fixtures do not control which rounds the target
+ * carries — a scrim would then intercept the appbar's Menu click. Non-`shop` views
+ * mount no state modal, so a direct `goto` is the deterministic entry.
+ * `portal-balance.spec.js` §1 owns the drawer entry point itself.
+ */
+async function openBalanceView(page) {
+  await page.goto('/zostatok')
+  await expectLanding(page)
+  await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-view', 'balance')
+}
+
 async function ledgerRowCount(friendId) {
   const res = await adminReq(`/api/friends/${friendId}/detail`)
   expect(res.status(), 'admin friend detail').toBe(200)
@@ -1618,34 +1641,52 @@ test.describe('PL-T4 §UC-PL-007 item 4 — the balance „Zaplatiť“', () => 
     settled = await makeFriend('vyrovnany4')
   })
 
-  test('a friend in debt is offered „Zaplatiť“, BEFORE „Transakcie“', async ({ page }) => {
+  test('a friend in debt is offered „Zaplatiť {suma}“ on „Zostatok a platby“', async ({ page }) => {
+    // ⚠ RETARGETED BY PI-T7, case (a), and three of this test's assertions changed
+    // with the structure the spec changed:
+    //   · the card is on `/zostatok`, not the landing (§UC-PI-008: zero or positive
+    //     must NEVER appear on the landing, so the card cannot live there);
+    //   · `.neg.pill` at 16px is now one `.display` at 38px (§UC-PI-010,
+    //     `portal2.jsx:232`) — pinned through `balance-amount`;
+    //   · „the order is the spec's: paying comes before reading the ledger" is
+    //     UNSATISFIABLE — §UC-PI-010 removes the „Transakcie" button outright and the
+    //     ledger is rendered below the card. What replaces it is stronger: the card
+    //     offers exactly ONE control, and it is this one.
     await signInAs(page, debtor)
-    await openPortal(page)
+    await openBalanceView(page)
 
     const card = balanceCard(page)
     await expect(card, 'non-vacuity: the balance card is on screen').toBeVisible()
-    await expect(card.locator('.neg.pill')).toHaveText('-26.19 EUR')
+    await expect(page.getByTestId('balance-amount')).toHaveText('-26.19 EUR')
 
     const pay = page.getByTestId('pay-balance')
     await expect(pay).toBeVisible()
-    // The order is the spec's: paying comes before reading the ledger.
-    await expect(card.locator('button')).toHaveText(['Zaplatiť', 'Transakcie'])
-    await expect(pay).toHaveClass(/\bok\b/)
-    await expect(pay).toHaveClass(/\bsm\b/)
+    await expect(pay, 'the amount is on the button (§UC-PI-010)').toHaveText('Zaplatiť 26.19 EUR')
+    await expect(card.locator('button'), 'one control on the card, and it is this one').toHaveCount(1)
+    await expect(pay).toHaveClass(/\baccent\b/)
+    await expect(pay).toHaveClass(/\bblock\b/)
+
+    // …and the landing offers the debt without ever naming the account.
+    await openPortal(page)
+    await expect(page.getByTestId('debt-banner')).toContainText('Nedoplatok 26.19 EUR')
+    await expect(page.getByText('Môj účet'), 'the card does not follow onto the landing').toHaveCount(0)
   })
 
   test('it opens the SHARED Platba modal, carrying the balance VS and the creditor name', async ({ page }) => {
     test.skip(!CAN_IMPORT_LINKS, NEEDS_FRONTEND)
     await signInAs(page, debtor)
-    await openPortal(page)
+    await openBalanceView(page)
 
     await expect(page.getByRole('dialog'), 'nothing is mounted until it is opened').toHaveCount(0)
     await page.getByTestId('pay-balance').click()
 
     const d = page.getByRole('dialog')
-    // ⚠ EXACTLY ONE. The balance modal is mounted by the CARD, never a second time
-    // inside `FriendTransactionsModal` (UC-DS-010, and module 18 relocates this one
-    // rather than adding another).
+    // ⚠ EXACTLY ONE. ~~The balance modal is mounted by the CARD, never a second time
+    // inside `FriendTransactionsModal`~~ — PI-T7 deleted that component and RELOCATED
+    // the mount into `FriendPortalSession.vue`, where the landing's debt banner can
+    // reach the same one (UC-DS-010's one-modal rule, unchanged in substance). The
+    // count is the property; which file holds it is pinned in source by
+    // `portal-balance.spec.js` §6.
     await expect(d, 'one modal, not two').toHaveCount(1)
     await expect(d.locator('.m-title')).toHaveText('Platba')
     await expect(d).toContainText('26.19 EUR')
@@ -1683,30 +1724,47 @@ test.describe('PL-T4 §UC-PL-007 item 4 — the balance „Zaplatiť“', () => 
 
     await signInAs(page, debtor)
     await openPortal(page)
-    await expect(page.getByTestId('pay-balance')).toBeVisible()
+    await expect(page.getByTestId('debt-banner')).toBeVisible()
 
-    // ⚠ SANCTIONED EDIT — PI-T2 (18 §UC-PI-004), case (a). This asserted
-    // `toBe(1)`: „the card read the balance once, on mount". Module 18's drawer
-    // needs the balance for its „Zostatok a platby" badge and fetches it at SESSION
-    // level — so a session load now makes TWO reads, the card's and the session's,
-    // and that is transitional by design: PI-T7 re-purposes `FriendBalanceCard` into
-    // the „Zostatok a platby" view, feeds it from the session's ref and deletes the
-    // card's own fetch, at which point this is 1 again.
+    // ⚠⚠ THE COUNT PI-T2 LEFT FOR THIS ROW, COLLAPSED AND REWRITTEN DELIBERATELY.
     //
-    // THE PROTECTED PROPERTY IS UNTOUCHED, and it was never the number 1 — it is
-    // „opening and closing the payment modal re-reads NOTHING". That is asserted
-    // below against the count taken after load, so it holds at any number of
-    // loaders. The upper bound is kept as its own assertion so the count cannot
-    // creep: two readers are named and accounted for; a third would red here.
+    // History, because the number alone says nothing. PL-T4 asserted `toBe(1)`:
+    // „the card read the balance once, on mount". PI-T2 (18 §UC-PI-004) added a
+    // SESSION-level read for the drawer's „Zostatok a platby" badge and knowingly
+    // shipped a second request, tightening this pin from `<= 2` to `toBe(2)` — an
+    // upper bound also passes at 1, so a later row could have collapsed the readers
+    // while the sentence naming two of them quietly went false.
+    //
+    // PI-T7 is that row. `FriendBalanceCard.vue` takes the balance as PROPS now and
+    // fetches nothing; `FriendPortalSession.vue` holds the only `getFriendBalance`
+    // call on the friend surface (pinned in SOURCE by `portal-balance.spec.js` §6,
+    // because a second fetch is not visible in a DOM). So a LANDING load is one read,
+    // and §UC-PI-004's „one request per session load" is now literally true.
+    //
+    // ⚠ WHY THE LANDING AND NOT THE VIEW. Entering „Zostatok a platby" DOES read the
+    // balance again, by §UC-PI-010's „the view reloads balance + transactions on
+    // mount (a payment marked by the admin shows after re-entering the view — no
+    // polling)". Measuring there would fold two different rules into one number.
+    // This pin is the landing's; `portal-balance.spec.js` §4 owns the view's.
+    //
+    // THE PROTECTED PROPERTY IS UNTOUCHED, and it was never the number — it is
+    // „opening and closing the payment modal re-reads NOTHING", asserted below
+    // against a baseline taken once the surface is up, so it holds at any number of
+    // loaders. The exact count is kept as its own assertion so a reader cannot creep
+    // back in unnamed.
+    expect(balanceReads, 'exactly one reader on a landing load: the session (18)').toBe(1)
+
+    await openBalanceView(page)
+    await expect(page.getByTestId('pay-balance')).toBeVisible()
     const afterLoad = balanceReads
     expect(afterLoad, 'the balance really was read on load').toBeGreaterThan(0)
-    // ⚠ EXACT, not an upper bound (tightened in the PI-T2 review). `<= 2` also passes
-    // at 1, so when PI-T7 feeds the card from the session ref and deletes its own
-    // fetch, this file would have stayed GREEN while the comment above it — „exactly
-    // two readers on load" — quietly became false. An exact count forces PI-T7 to
-    // rewrite the claim deliberately instead of leaving a stale one behind, and it is
-    // no weaker against a third reader appearing.
-    expect(afterLoad, 'exactly two readers on load: the card (03) and the session (18)')
+    // ⚠ WHAT THIS NUMBER ACTUALLY MEASURES, corrected at the PI-T7 review. `openBalanceView`
+    // is a `page.goto`, i.e. a fresh DOCUMENT — so read #2 is the NEW session's `onMounted`
+    // fetch, not the in-session `watch(view)`. Delete that watch and this stays green at 2.
+    // The watch IS pinned, in `portal-balance.spec.js` §4, which enters via `menuGo` and
+    // asserts 1→2→3 without reloading. Naming it correctly here matters because this file's
+    // whole point is that a comment attached to a count must not go stale.
+    expect(afterLoad, 'one read per DOCUMENT load — the landing, then the view')
       .toBe(2)
 
     for (let i = 0; i < 3; i++) {
@@ -1724,39 +1782,66 @@ test.describe('PL-T4 §UC-PL-007 item 4 — the balance „Zaplatiť“', () => 
 
   test('a settled friend and a friend in credit are offered nothing at all', async ({ page }) => {
     await signInAs(page, settled)
-    await openPortal(page)
+    await openBalanceView(page)
 
-    const card = balanceCard(page)
-    await expect(card.locator('.zero'), 'non-vacuity: the settled card really rendered').toHaveText('0.00 EUR')
+    // ⚠ RETARGETED, case (a): `.zero` / `.mono` at 16px are the 03 card's classes;
+    // §UC-PI-010 paints one `.display`. „and the shipped button is untouched" is
+    // UNSATISFIABLE — that spec removes the „Transakcie" button. The settled COPY it
+    // mandates takes its place, which is the same question asked of the new surface.
+    await expect(page.getByTestId('balance-amount'), 'non-vacuity: the settled card really rendered')
+      .toHaveText('0.00 EUR')
     await expect(page.getByTestId('pay-balance')).toHaveCount(0)
-    await expect(card.getByRole('button', { name: 'Transakcie' }), 'and the shipped button is untouched').toBeVisible()
+    await expect(page.getByTestId('balance-sub')).toHaveText('Všetko vyrovnané.')
+
+    // ⚠ R2.3, the product decision PI-T7 exists for: a settled balance is not news,
+    // so the landing says nothing about money at all.
+    await openPortal(page)
+    await expect(page.getByTestId('debt-banner')).toHaveCount(0)
+    await expect(page.getByText('Môj účet')).toHaveCount(0)
+    // ⚠ NOT „no `0.00 EUR` on the page": an OPEN landing's cartbar legitimately
+    // prints an empty cart's total, and this assertion reddened on exactly that
+    // (measured: 3 matches). What must be absent is the BALANCE's vocabulary.
+    await expect(page.getByText(/Nedoplatok/)).toHaveCount(0)
+    await expect(page.getByTestId('balance-amount')).toHaveCount(0)
 
     expect((await adminReq('/api/transactions/adjustment', {
       method: 'post', data: { friend_id: settled.id, amount: 5, note: 'PL4 kredit' },
     })).status()).toBe(201)
 
-    await openPortal(page)
-    await expect(card.locator('.mono')).toContainText('+5.00 EUR')
+    await openBalanceView(page)
+    await expect(page.getByTestId('balance-amount')).toHaveText('+5.00 EUR')
     await expect(page.getByTestId('pay-balance'), 'credit is not a debt').toHaveCount(0)
+    await openPortal(page)
+    await expect(page.getByTestId('debt-banner'), 'and credit is not news either').toHaveCount(0)
   })
 
   test('a balance payload WITHOUT a payment block renders exactly the shipped card', async ({ page }) => {
-    // ⚠ This is not a hypothetical: `portal-transactions-modal.spec.js` stubs this
-    // endpoint with `{ balance, transactions }` and no payment block at all, and it
-    // must keep passing byte-unmodified. A surface with no payment data offers no
-    // payment control rather than a made-up one (§UC-PL-007 business rules).
+    // ⚠ This is not a hypothetical: a deployment with neither an IBAN nor a Revolut
+    // handle configured answers exactly this, and `portal-balance.spec.js` (the
+    // renamed `portal-transactions-modal.spec.js`) still stubs it. A surface with no
+    // payment data offers no payment control rather than a made-up one (§UC-PL-007
+    // business rules).
     await page.route('**/api/friends/*/balance', (route) => route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ balance: -30, transactions: [] }),
     }))
     await signInAs(page, debtor)
-    await openPortal(page)
+    await openBalanceView(page)
 
-    const card = balanceCard(page)
-    await expect(card.locator('.neg.pill'), 'non-vacuity: the debt is on screen').toHaveText('-30.00 EUR')
+    await expect(page.getByTestId('balance-amount'), 'non-vacuity: the debt is on screen').toHaveText('-30.00 EUR')
     await expect(page.getByTestId('pay-balance'), 'no block, no button').toHaveCount(0)
-    await expect(card.getByRole('button', { name: 'Transakcie' })).toBeVisible()
+    // The card still SAYS what is owed — only the way to settle it is missing.
+    await expect(page.getByTestId('balance-sub'))
+      .toHaveText('Nedoplatok — po zaplatení sa zostatok vyrovná do 1–2 dní.')
+
+    // ⚠ Same rule on the landing: the banner is the NEWS, the button is the ACTION.
+    // §UC-PI-008 — „the button is absent when neither is configured", the banner is
+    // not. A debt with no payable link is still a debt.
+    await openPortal(page)
+    const banner = page.getByTestId('debt-banner')
+    await expect(banner).toContainText('Nedoplatok 30.00 EUR')
+    await expect(banner.getByTestId('debt-banner-pay'), 'no block, no button — here too').toHaveCount(0)
   })
 })
 

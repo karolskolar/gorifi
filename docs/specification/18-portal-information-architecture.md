@@ -639,8 +639,8 @@ shows `li.ln` lines; a round without an order is absent; no „Archív“ text a
 **Structure (`/zostatok`):** `<h2 class="h-screen">Zostatok <span class="hl">a platby</span></h2>`,
 then:
 
-1. **Account card** — `FriendBalanceCard.vue` **re-purposed** (one home for the balance
-   fetch + the three-state derivation; the „Transakcie“ button is removed): `div.card`
+1. **Account card** — `FriendBalanceCard.vue` **re-purposed** (~~one home for the balance
+   fetch~~ + the three-state derivation; the „Transakcie“ button is removed): `div.card`
    (+`.hl` when negative), `padding:16`; `field-lbl` **„Môj účet“**; `.display` 38px
    `{fmtEur(balance)}` coloured `var(--danger)` (neg) / `var(--ok-deep)` (zero, pos —
    positive keeps the leading `+`); `.sub`: negative **„Nedoplatok — po zaplatení sa
@@ -656,10 +656,34 @@ then:
    **„Žiadne transakcie“**; loading/error copy as shipped. `FriendTransactionsModal.vue`
    is **deleted** (no caller left).
 
+⚠ **PI-T7 AMENDMENT (2026-09-20) — WHERE THE FETCH AND THE MOUNT ACTUALLY LANDED, and
+neither is in this card.** Item 1 above said „one home for the balance fetch"; that half
+is struck, because §UC-PI-008 gives the SAME debt a second surface on a DIFFERENT view.
+A `PaymentModal` mounted inside this card cannot be opened from the landing's banner, and
+the second mount that would fix that is exactly what §UC-PI-008's „Relocated, never
+duplicated" forbids. So `FriendPortalSession.vue` holds the ONE
+`api.getFriendBalance()` call, the ONE balance `<PaymentModal>` and `openBalancePayment()`;
+this card takes `balance` / `payment` / `loading` / `error` as PROPS, emits `pay`, and owns
+the one `data-testid="pay-balance"` control, while `DebtBanner.vue` (three landing call
+sites, the `balance < -0.01` gate written once inside it) owns `debt-banner-pay`. Both call
+that one function. What the card DOES keep as a one home is the three-state derivation —
+the deleted modal's duplicate copy of it went with the modal. Counts are pinned in SOURCE,
+per file, in `portal-balance.spec.js` §6: a second mount is invisible in any DOM.
+⚠ The card's money classes follow the canon here, not module 03: `portal2.jsx:232` and the
+text above both say ONE `.display` at 38px, and `.display.neg` is not available as a
+compromise — `friends-theme.css:216` declares `.neg{font-family:var(--font-mono);
+font-size:13px}` after `:25`'s `.display` at equal specificity. `.neg.pill` and `.zero`
+consequently have no renderer left in `frontend/src`.
+
 **Business rules:** `fmtEur` everywhere (dot decimal, ` EUR`); `BalanceBadge.vue` stays
 untouched (admin-shared); no admin view imports anything from here. The view reloads
 balance + transactions on mount (a payment marked by the admin shows after re-entering the
-view — no polling).
+view — no polling). ⚠ **That is NOT in tension with §UC-PI-004's „one request per session
+load" (PI-T7):** the latter is about the LANDING, so that the drawer badge costs nothing
+per menu open, and `payment-links.spec.js` pins the landing count at exactly **1**;
+entering this view is a deliberate navigation to the screen whose subject is the number,
+and it re-reads. Implemented as a `watch` on `view` firing only on `shop → balance`, so a
+cold load of `/zostatok` still reads once.
 
 **Acceptance criteria:** −74.24 ⇒ red display amount, Nedoplatok copy, Zaplatiť 74.24 EUR;
 0 ⇒ „0.00 EUR“ green + „Všetko vyrovnané.“, no button; rows with the pinned testids and
@@ -1135,6 +1159,20 @@ and `[aria-label="Zatvoriť dialóg"]` pins are structurally unsatisfiable (no m
 list renders in-page; keep every `tx-*` row pin, the sign/colour rule, loading/empty/error
 copy, the 320 px unbreakable-name test (measure the ROW and the PAGE now), and the admin
 invariance describe (382–429) unchanged.
+⚠ **DONE by PI-T7 (2026-09-20), with the accounting this item did not ask for and should
+have.** 18 tests came in (11 from the modal file, 7 from item 7's appbar describe) and 23
+are in `portal-balance.spec.js`: **11 kept**, **5 retargeted**, **2 dropped as
+unsatisfiable** (the × / „Zavrieť“ NeoModal shell test — its „closing must UNMOUNT or the
+scrim keeps eating clicks“ property is carried onto the balance `PaymentModal`; and
+„„Transakcie“ opens the transactions modal“, whose button §UC-PI-010 removes), **7 new**.
+Six more land in `portal-landing.spec.js` §8 (the debt banner in all three states).
+⚠ Two things item 9 could not know: the drawer entry (`menuGo`) is pinned ONCE and the
+rest of the file enters `/zostatok` by URL, because a `closed` landing auto-mounts
+`LandingStateModal` and its scrim intercepts the appbar's Menu click; and the 320 px
+test's OUTER measurement changed from the `.modal-scrim` to the DOCUMENT — in the modal
+the scrim (`overflow-y:auto`, so `overflow-x` computes to `auto` too) absorbed every spill
+and the document never moved, so copying that assertion verbatim would have measured
+nothing.
 
 **10. `portal-profile-modal.spec.js`:** `getByLabel('Užívateľské meno')` → `'Login'`;
 `.field-help` nth(0)/nth(1) texts → the §19 table order (Login help first, then Meno,

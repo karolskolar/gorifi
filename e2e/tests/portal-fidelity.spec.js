@@ -70,6 +70,8 @@ const LONG_URL = 'https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUv
 // The canon, measured in `docs/design/friends-portal-redesign/Podpultovka
 // Friends.html` served over HTTP (file:// breaks it — Babel XHRs the .jsx),
 // phone frame, fonts force-loaded before measuring.
+// ⚠ `negPill` is kept as the RECORD of the canon height, not as a live expectation:
+// PI-T7 removed the last `.neg.pill` from the app (see the A10 test below).
 const CANON = { ticker: 34, negPill: 28 }
 
 const near = (actual, expected, what) =>
@@ -236,15 +238,34 @@ test.describe('A9/A10 — the preflight line-height counter is in force (02 §UC
     await expect(ticker).toHaveCSS('line-height', 'normal')
     near((await ticker.boundingBox()).height, CANON.ticker, '.ticker height')
 
-    const pill = page.locator('.neg.pill')
-    await expect(pill).toHaveCSS('line-height', 'normal')
-    near((await pill.boundingBox()).height, CANON.negPill, '.neg.pill height')
+    // ⚠ PI-T7 · 18 §UC-PI-008/010 — `.neg.pill` IS NO LONGER RENDERED ANYWHERE, and
+    // the two halves of what it measured part company here.
+    //   · The STRUCTURE is gone: the pill was module 03's balance figure on the
+    //     landing, and §UC-PI-008 takes the balance off the landing entirely (R2.3),
+    //     while §UC-PI-010 paints the account card's figure as one `.display` at
+    //     38px (`portal2.jsx:232`). `.neg.pill` has no caller in `frontend/src` at
+    //     all now — a grep returns the theme declaration and two comments — so
+    //     `near(…, CANON.negPill)` is unsatisfiable, not merely relocated. `CANON`
+    //     keeps the number as the record of what the canon said.
+    //   · The RULE — A10 covers `.neg`, so it must compute `line-height:normal` —
+    //     survives and is re-measured below on the surviving `.neg`: the ledger row
+    //     amount in „Zostatok a platby" (`FriendTransactionList.vue`). The landing's
+    //     own A10 equivalents stay PI-T12's, per item 13.
+    await page.route('**/api/transactions/friend/*', (r) => r.fulfill({
+      json: [{ id: 1, type: 'charge', amount: -74.24, created_at: '2026-03-04 12:00:00', cycle_name: 'A10', note: null }],
+    }))
+    await page.goto('/zostatok')
+    await expectLanding(page)
+    await fontsReady(page)
+    const neg = page.locator('[data-testid="tx-amount"].neg')
+    await expect(neg, 'non-vacuity: a `.neg` really is on screen').toHaveCount(1)
+    await expect(neg).toHaveCSS('line-height', 'normal')
 
     // ⚠ PI-T3 · 18 §UC-PI-019 item 13 — THE CYCLE-CARD HALF OF THIS TEST IS RETIRED
     // WITH THE CARD (§UC-PI-005). It pinned A10 on `span.display` / `h3.display` /
     // `.badge.ok` / `[data-testid=cycle-date]` / `[data-testid=cycle-plan]`, five
     // elements that no longer exist on any screen. The A10 RULE is unchanged and is
-    // still measured above on `.ticker` and `.neg.pill`; item 13 assigns the LANDING
+    // still measured above on `.ticker` and `.neg`; item 13 assigns the LANDING
     // equivalents (`.banner.slim`, `.badge`, `own-order-card .display`, `.cs-tl .lbl`)
     // to PI-T12, once PI-T4/T5 have built the surfaces that carry them.
     //

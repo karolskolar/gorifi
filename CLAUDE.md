@@ -175,12 +175,22 @@ append the full write-up to the matching learnings file and add at most one line
   lines / `EUR` on totals applies to the Revolut label's amount suffix too.
 - Every payment SURFACE quotes the server's block; no client derives a symbol. `FriendOrder.vue` reads
   `payment.variable_symbol` off the last order GET/PUT/submit (`''` when `payment` is `null`), never from
-  `order.id`; `FriendBalanceCard.vue` is the ONE home of the balance trigger + `PaymentModal` mount (module 18
-  RELOCATES it, never a second one; `FriendTransactionsModal.vue` mounts no modal), clears `payment` BEFORE
+  `order.id`; ~~`FriendBalanceCard.vue` is the ONE home of the balance trigger + `PaymentModal` mount~~
+  **— RELOCATED by PI-T7 exactly as that clause promised (18 §UC-PI-008/010): the balance is one debt with
+  TWO surfaces on two views, so `FriendPortalSession.vue` holds the ONE `<PaymentModal>` mount, the ONE
+  `getFriendBalance()` call and `openBalancePayment()`; `FriendBalanceCard.vue` (now on `/zostatok`, props-fed,
+  no fetch) owns the ONE `data-testid="pay-balance"` control and `DebtBanner.vue` (three landing call sites,
+  `balance < -0.01` written once inside it) owns `debt-banner-pay`. Both call that one function.
+  `FriendTransactionsModal.vue` is DELETED; `FriendTransactionList.vue` is its verbatim row markup. Counts are
+  pinned in SOURCE per file (`portal-balance.spec.js` §6) because a second mount is invisible in the DOM.**
+  It clears `payment` BEFORE
   each read (defence in depth for an in-place `friendId` change + the failed-reload gap — CROSS-SESSION is
   structural: `FriendPortal.vue` mounts `FriendPortalSession` with `v-if` + `:key`, which DESTROYS the
   subtree on logout, and that `v-if` is the six-leak guard), and does NOT reload on close — module 15
-  writes no ledger row.
+  writes no ledger row. ⚠ Entering `/zostatok` DOES re-read the balance (18 §UC-PI-010) — that is the VIEW's
+  rule; „one request per session load" (§UC-PI-004) is the LANDING's, and `payment-links.spec.js` pins the
+  landing count at exactly 1. `.neg.pill` / `.zero` now have no renderer left (the card paints one 38px
+  `.display`); they stay in the canon-ported theme.
   `FriendOrder`'s success modal shares `payBySquarePayload`/`revolutLink` but carries NO VS row and NO PayMe.
 - VS payloads GROW, never move: guest block 6 keys — `amount`, `reference`, `iban` AND
   `revolut_username` all stay byte-identical (name every one; a rule stated narrower than what it

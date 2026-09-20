@@ -1541,7 +1541,28 @@ test.describe('PI-T5 · 18 §UC-PI-007 — one loader, one modal, one normaliser
     // state the rule; this is where it is measured.
     const mounts = (src) => (src.match(/<PaymentModal\b/g) || []).length
     expect(mounts(order), 'FriendOrder.vue is the ONE home of this order\'s payment surface').toBe(1)
-    expect(mounts(session), 'the session reaches it through `openPaymentModal()` — it mounts none').toBe(0)
+    // ⚠ SANCTIONED EDIT, PI-T7, case (a) of the immutability rule (03 §UC-FL-013).
+    // ~~`expect(mounts(session)).toBe(0)` — „the session reaches it through
+    // `openPaymentModal()`; it mounts none".~~ 18 §UC-PI-008/010 makes that
+    // UNSATISFIABLE and for the right reason: the BALANCE's `PaymentModal` — a
+    // different debt, a different `8`-prefixed symbol — was mounted in
+    // `FriendBalanceCard.vue`, and PI-T7 gives that debt two surfaces on two views
+    // (the „Zostatok a platby" card and the landing's debt banner). A mount inside
+    // the card cannot be opened from a banner on another view, so it RELOCATED here
+    // rather than being duplicated.
+    //
+    // THE PROTECTED PROPERTY IS UNTOUCHED, and it was never the zero: it is „this
+    // ORDER's payment surface has one home, and the session is not a second one".
+    // Stated precisely instead of by absence — the session's single mount is the
+    // BALANCE's, it quotes `balancePayment`, and it is nowhere near the locked
+    // card's `payOwnOrder()`. A second one makes the count 2, exactly as before.
+    expect(mounts(session), 'exactly ONE PaymentModal in the session, and it is the balance\'s').toBe(1)
+    expect(session, 'it quotes the server\'s balance block, not an order')
+      .toMatch(/<PaymentModal[\s\S]{0,400}?:amount="balancePayment\.amount"/)
+    expect(session, 'and the locked card still reaches FriendOrder\'s own modal')
+      .toMatch(/function payOwnOrder\(\)[\s\S]{0,200}?lockedOrder\.value\?\.openPaymentModal/)
+    expect(session, 'the session composes no amount, reference or symbol of its own')
+      .not.toMatch(/:amount="[^"]*paymentTotal/)
 
     // …and the card's DATA is the same component's loaded order, not a second fetch.
     //
@@ -1585,5 +1606,189 @@ test.describe('PI-T5 · 18 §UC-PI-007 — one loader, one modal, one normaliser
     expect(src).toMatch(/:role="hasTabs \? 'tabpanel' : null"/)
     expect(src).toMatch(/:aria-labelledby="hasTabs \? 'tab-own' : null"/)
     expect(src, 'the cards wrapper still fades on `isReadonly`').toMatch(/'p2-ro': isReadonly/)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 8. PI-T7 · 18 §UC-PI-008 — the debt banner, in all three landing states
+//
+// ⚠ §UC-PI-019 item 17 parks „debt banner three balances" in THIS file, because the
+// banner is a property of the LANDING; the „Zostatok a platby" view it pays into is
+// `portal-balance.spec.js`'s. The two halves of R2.3 are asserted here together on
+// purpose: „never hide debt" and „never show a settled balance on the landing" are
+// one product decision, and a test file that pinned only the first would let the
+// second rot silently.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** A block shaped like `helpers/payment.js balancePaymentBlock()` publishes one. */
+const DEBT_PAYMENT = {
+  amount: 52.8,
+  reference: 'PI7 / zostatok',
+  iban: 'SK3112000000198742637541',
+  revolut_username: 'gorifitest',
+  variable_symbol: '8000777',
+  creditor_name: 'Gorifi',
+}
+
+async function stubBalanceAt(page, balance, payment = DEBT_PAYMENT) {
+  await page.route('**/api/friends/*/balance', (r) => r.fulfill({
+    json: { balance, transactions: [], payment },
+  }))
+}
+
+const debtBanner = (page) => page.getByTestId('debt-banner')
+
+/** Index of a node among the page column's element children — for ORDER pins. */
+async function columnIndex(page, testid) {
+  return page.evaluate((id) => {
+    const col = document.querySelector('[data-testid="portal-landing"]')
+    const kids = [...col.children]
+    return kids.findIndex((el) => el.matches(`[data-testid="${id}"]`) || el.querySelector(`[data-testid="${id}"]`))
+  }, testid)
+}
+
+test.describe('PI-T7 · 18 §UC-PI-008 — the debt banner', () => {
+  test('OPEN state: the banner sits between the status line and the order surface', async ({ page }) => {
+    const friend = await makeFriend('DebtOpen')
+    const cycle = await makeCycle('DebtOpen', { closes_at: '2026-09-25' })
+    await addProduct(cycle.id, { name: `PI7 Open Bean ${uniq}`, purpose: 'Espresso', price_250g: 7 })
+
+    await signIn(page, friend)
+    await stubBalanceAt(page, -52.8)
+    await open(page)
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-landing-state', 'open')
+
+    const banner = debtBanner(page)
+    await expect(banner).toBeVisible()
+    await expect(banner).toContainText('Nedoplatok 52.80 EUR')
+    // The prototype's „z minulého kola" is DROPPED and nothing replaces it (18
+    // resolved conflict 1) — which is also what keeps „kolo" off a friend surface.
+    await expect(banner).not.toContainText('kola')
+    await expect(banner).toHaveClass(/\bdanger\b/)
+    await expect(banner).toHaveClass(/\bslim\b/)
+    await expect(banner.locator('.dot')).toHaveCount(1)
+
+    // §UC-PI-005 item 2: slot TWO — after the status line, before the grid.
+    const status = await columnIndex(page, 'landing-status')
+    const debt = await columnIndex(page, 'debt-banner')
+    expect(status, 'non-vacuity: both are really on the page').toBeGreaterThanOrEqual(0)
+    expect(debt, 'the debt banner follows the status line').toBeGreaterThan(status)
+    const gridIdx = await page.evaluate(() => {
+      const col = document.querySelector('[data-testid="portal-landing"]')
+      return [...col.children].findIndex((el) => el.matches('[data-fo-mode="landing"]') || el.querySelector('[data-fo-mode="landing"]'))
+    })
+    expect(gridIdx, 'and precedes the order surface').toBeGreaterThan(debt)
+  })
+
+  test('CLOSED state: the banner is there once the state modal is dismissed', async ({ page }) => {
+    const friend = await makeFriend('DebtClosed')
+    await signIn(page, friend)
+    await stubBalanceAt(page, -52.8)
+    await stubCycles(page, [cycleRow({ n: 70, status: 'completed' })])
+    await open(page)
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-landing-state', 'closed')
+
+    await dismissLandingState(page)
+    const banner = debtBanner(page)
+    await expect(banner).toContainText('Nedoplatok 52.80 EUR')
+    // §UC-PI-006 item 3: after the „Objednávky sú zatvorené." warn banner.
+    const closed = await columnIndex(page, 'landing-closed-banner')
+    const debt = await columnIndex(page, 'debt-banner')
+    expect(closed, 'non-vacuity: the closed banner is on the page').toBeGreaterThanOrEqual(0)
+    expect(debt, 'the debt banner follows it').toBeGreaterThan(closed)
+  })
+
+  test('LOCKED state: the banner sits ABOVE the own-order card', async ({ page }) => {
+    const fx = await lockedRound('DebtLocked')
+    await signIn(page, fx.friend)
+    await stubBalanceAt(page, -52.8)
+    await stubCycles(page, [
+      cycleRow({ n: 71, id: fx.cycle.id, name: fx.cycle.name, status: 'locked', stage: 'ordered', hasOrder: true }),
+    ])
+    await open(page)
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-landing-state', 'locked')
+
+    await expect(ownCard(page), 'non-vacuity: the own-order card really rendered').toBeVisible()
+    await expect(debtBanner(page)).toContainText('Nedoplatok 52.80 EUR')
+
+    // §UC-PI-007 item 1: „above the own-order card in `locked`".
+    const debt = await columnIndex(page, 'debt-banner')
+    const card = await columnIndex(page, 'own-order-card')
+    expect(debt, 'non-vacuity: both are on the page').toBeGreaterThanOrEqual(0)
+    expect(card, 'the own-order card follows the debt banner').toBeGreaterThan(debt)
+  })
+
+  test('⚠ zero and positive: NOTHING about money on the landing, in any state', async ({ page }) => {
+    // R2.3, and it is a PRODUCT DECISION rather than a rounding tolerance: a settled
+    // friend gets no „Môj účet", no „Transakcie" and no figure at all.
+    const friend = await makeFriend('DebtZero')
+    const cycle = await makeCycle('DebtZero')
+    await addProduct(cycle.id, { name: `PI7 Zero Bean ${uniq}`, purpose: 'Espresso', price_250g: 7 })
+    await signIn(page, friend)
+
+    for (const balance of [0, 0.004, -0.004, 10.5]) {
+      await page.unroute('**/api/friends/*/balance')
+      await stubBalanceAt(page, balance)
+      await open(page)
+      await expect(page.getByTestId('landing-status'), `non-vacuity (${balance}): the landing really rendered`).toBeVisible()
+      await expect(debtBanner(page), `balance ${balance} is not a debt`).toHaveCount(0)
+      await expect(page.getByText('Môj účet'), `balance ${balance}: no account card`).toHaveCount(0)
+      await expect(page.getByRole('button', { name: 'Transakcie' })).toHaveCount(0)
+      await expect(page.getByTestId('pay-balance')).toHaveCount(0)
+      // ⚠ NOT „no `EUR` anywhere": the open landing's cartbar legitimately prints a
+      // total. The thing that must be absent is the BALANCE's vocabulary.
+      await expect(page.getByText(/Nedoplatok/), `balance ${balance}: no debt copy`).toHaveCount(0)
+      await expect(page.getByTestId('balance-amount'), `balance ${balance}: no figure`).toHaveCount(0)
+    }
+
+    // …and one cent past the threshold it IS a debt — the gate is real, not an
+    // absence that would pass whatever the balance were.
+    await page.unroute('**/api/friends/*/balance')
+    await stubBalanceAt(page, -0.02)
+    await open(page)
+    await expect(debtBanner(page)).toContainText('Nedoplatok 0.02 EUR')
+  })
+
+  test('„Zaplatiť“ opens the ONE shared Platba modal with the server\'s block', async ({ page }) => {
+    const friend = await makeFriend('DebtPay')
+    const cycle = await makeCycle('DebtPay')
+    await addProduct(cycle.id, { name: `PI7 Pay Bean ${uniq}`, purpose: 'Espresso', price_250g: 7 })
+    await signIn(page, friend)
+    await stubBalanceAt(page, -52.8)
+    await open(page)
+
+    await expect(page.getByRole('dialog'), 'nothing is mounted until it is opened').toHaveCount(0)
+    await page.getByTestId('debt-banner-pay').click()
+
+    const d = page.getByRole('dialog')
+    await expect(d, 'ONE modal — the mount is relocated into the session, never duplicated').toHaveCount(1)
+    await expect(d.locator('.m-title')).toHaveText('Platba')
+    await expect(d, '§UC-PI-008: amount = -balance').toContainText('Suma na úhradu:')
+    await expect(d).toContainText('52.80 EUR')
+    // Quoted from the server's block, never composed here (15 §UC-PL-003 item 4).
+    await expect(page.getByTestId('payment-vs').locator('.val')).toHaveText('8000777')
+    await expect(page.getByTestId('payment-reference')).toContainText('PI7 / zostatok')
+
+    await d.getByRole('button', { name: 'Zavrieť' }).click()
+    await expect(page.getByRole('dialog'), 'closing UNMOUNTS it — a live scrim eats every click').toHaveCount(0)
+    await expect(debtBanner(page), 'and the banner is still there: nothing was settled').toBeVisible()
+  })
+
+  test('a FAILED balance renders no banner and no error on the landing', async ({ page }) => {
+    // §UC-PI-008: „the balance view owns the error surface". The landing says nothing.
+    const friend = await makeFriend('DebtFail')
+    const cycle = await makeCycle('DebtFail')
+    await addProduct(cycle.id, { name: `PI7 Fail Bean ${uniq}`, purpose: 'Espresso', price_250g: 7 })
+    await signIn(page, friend)
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({
+      status: 500, contentType: 'application/json',
+      body: JSON.stringify({ error: 'Zostatok sa nepodarilo načítať' }),
+    }))
+    await open(page)
+
+    await expect(page.getByTestId('landing-status'), 'non-vacuity: the landing rendered').toBeVisible()
+    await expect(debtBanner(page)).toHaveCount(0)
+    await expect(page.getByText('Zostatok sa nepodarilo načítať')).toHaveCount(0)
+    await expect(page.locator('.banner.danger')).toHaveCount(0)
   })
 })
