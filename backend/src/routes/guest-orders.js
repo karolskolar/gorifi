@@ -13,6 +13,10 @@ import {
   softCancelGuestOrder,
 } from '../helpers/guest-orders.js';
 import { guestOrderVariableSymbol } from '../helpers/payment.js';
+import { deliveryOf } from '../helpers/delivery.js';
+import { readHandedOverFlag, partyDelivery, guestOrderStage } from '../helpers/handover.js';
+import { enqueueForHandOver, cancelForUnHandOver } from '../helpers/outbox.js';
+import { markCycleReady } from '../helpers/cycle-stage.js';
 
 const router = Router();
 
@@ -22,8 +26,9 @@ const router = Router();
 //   HOST-only  (friend Bearer identity, §UC-GSO-007/008)
 //     PATCH  /:id/delivered
 //     DELETE /:id
-//   ADMIN-only (`requireAdmin`, §UC-GSO-009/010, 14 §UC-GR-005)
+//   ADMIN-only (`requireAdmin`, §UC-GSO-009/010, 14 §UC-GR-005, 16 §UC-DP-005)
 //     PATCH  /:id/paid
+//     PATCH  /:id/handed-over
 //     POST   /:id/cancel
 //     GET    /cycle/:cycleId/unpaid
 // Wrapping the mount in either guard would be wrong in both directions — an admin
@@ -35,6 +40,13 @@ const router = Router();
 //     the colleague picks their bag up; the admin will see it read-only (GSO-T6)
 //     and never toggles it (their own delivery tracking is the Distribution
 //     packing flow, a separate concept).
+//   - `handed_over_at` is ADMIN-only (16 §UC-DP-005), exactly as `paid` is and
+//     unlike `delivered`. ⚠ THE TWO ARE DIFFERENT COLUMNS AND DIFFERENT EVENTS:
+//     `handed_over_at` is the admin letting the bag go (into the host's hands, to
+//     Packeta, onto the pickup point's shelf); `delivered` is the host afterwards
+//     confirming the colleague actually took it. Neither writes the other, and the
+//     guards point in OPPOSITE directions on the same row — which is the whole
+//     reason this mount is bare and every route states its own guard.
 //   - `paid` is ADMIN-only — the admin is the money recipient. The host sees it
 //     READ-ONLY, so NOTHING in this file may write `paid`/`paid_at`. Every UPDATE
 //     below names its columns literally for exactly that reason: the request body
@@ -284,6 +296,167 @@ router.patch('/:id/paid', requireAdmin, (req, res) => {
   }
 
   res.json(mutationPayload(row));
+});
+
+// PATCH /guest-orders/:id/handed-over — STAGE 3 for ONE guest bag (DP-T3,
+// 16 §UC-DP-005). ADMIN-only. Body: `{ handed_over: boolean }` — an EXPLICIT
+// boolean, exactly as on the friend route; `{}`, `true`, `[id]`, `'abc'`, `'true'`
+// and `1` are all 400 and write nothing. There is deliberately no absent-field
+// toggle here either: a hand-over enqueues a message.
+//
+// ⚠ WHY A PER-BAG ROUTE EXISTS AT ALL. Most guest bags are handed over by
+// INHERITANCE, when their host's `PATCH /orders/:id/handed-over` fires — they are
+// physically inside the host's bag. This route is for the three cases where a guest
+// bag IS the unit:
+//   (a) a module-20 Packeta guest, who is their own party;
+//   (b) a host with NO own `orders` row — their „party" is exactly the set of their
+//       guest bags, and there is no order id to PATCH (§Edge Cases);
+//   (c) a correction on ONE withheld bag under a host who is already handed over.
+//
+// ⚠ IT DOES NOT TOUCH THE HOST'S `orders.handed_over_at`, in either direction. A
+// guest-level hand-over is a statement about one bag; the board renders a mixed
+// host as „odovzdané okrem {n}" (§UC-DP-011) rather than promoting or demoting the
+// host's own row behind the admin's back.
+//
+// ⚠ NO `transactions` ROW — the same rule as the `paid` toggle and the admin cancel
+// below, and for the same reason: guests have no `friend_id` and no balance, and the
+// only friend anywhere near this row is the HOST, whose real balance a copied
+// friend-handler INSERT would move for money that never went through it. Stage 3 is
+// ledger-neutral for friends too (`helpers/packing.js` is the ledger moment), so
+// there is no version of this route that writes one.
+//
+// Status codes:
+//   400 — the body is not an explicit boolean
+//   404 — no such sub-order
+//   409 — `cancelled` (terminal: there is nothing to give), or `not_packed` (the bag
+//         has no items, or one of them is still unchecked)
+//   200 — handed over / taken back, or already in that state (idempotent — a double
+//         click or a second device converges, and the FIRST timestamp is the record)
+router.patch('/:id/handed-over', requireAdmin, (req, res) => {
+  const handedOver = readHandedOverFlag(req.body);
+  if (handedOver === undefined) {
+    return res.status(400).json({
+      error: 'Zadajte, či je balíček odovzdaný',
+      field: 'handed_over',
+    });
+  }
+
+  const row = findSubOrderWithLink(req.params.id);
+  if (!row) {
+    return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
+  }
+
+  // `cancelled` is terminal (GSO-T4) — the same shape and reason the host's
+  // `delivered` tick answers, because it is the same impossibility: there is no bag.
+  //
+  // ⚠ UNOWNED SEAM, RECORDED (DP-T3 review, 2026-09-20 — see the DP-T4 and WA-T5
+  // rows of PROGRESS.md). A sub-order cancelled AFTER it was handed over is
+  // unreachable in BOTH directions: this 409 refuses the reversal, and the host's
+  // reversal skips cancelled bags by predicate — while `softCancelGuestOrder()`
+  // clears neither `handed_over_at` nor the queued notification. The bag stays
+  // stamped and a „odovzdané priateľovi" message stays queued for something nobody
+  // will receive. Both predicates are literally what §UC-DP-004/005 specify, so the
+  // fix does not belong here: the cheapest one is at the ADMIN cancel below (reverse
+  // the hand-over for that bag, or refuse with 409 when it is already handed over),
+  // with a release-time guard in WA-T5 as the alternative.
+  if (guestOrderStatus(row) === 'cancelled') {
+    return res.status(409).json({
+      error: 'Táto objednávka bola zrušená, nie je čo odovzdať.',
+      reason: 'cancelled',
+    });
+  }
+
+  // The pack gate, asked of the SHARED stage rule rather than re-derived here: a bag
+  // is packable only when it HAS items and every one of them is checked off (an
+  // empty bag is `to_pack`, not a free pass). An already handed-over bag skips the
+  // gate — that is the idempotent case.
+  const current = loadSubOrder(row.id);
+  if (handedOver && guestOrderStage(current) === 'to_pack') {
+    return res.status(409).json({
+      error: 'Najprv označte všetky položky ako zabalené',
+      reason: 'not_packed',
+    });
+  }
+
+  const apply = db.transaction(() => {
+    // The guest's own delivery, classified with the HOST's — the DP-T1 call-site
+    // contract (§UC-DP-003). Without it a guest would be classified as a standalone
+    // bag and enqueued against the wrong segment.
+    const hostDelivery = partyDelivery(row.cycle_id, row.host_friend_id);
+    const delivery = deliveryOf(current, { host: hostDelivery });
+    const bag = {
+      kind: 'guest',
+      cycleId: row.cycle_id,
+      guestOrderId: row.id,
+      hostFriendId: row.host_friend_id,
+      delivery,
+    };
+
+    if (!handedOver) {
+      db.prepare('UPDATE guest_orders SET handed_over_at = NULL WHERE id = ?').run(row.id);
+      return { queued: 0, dequeued: cancelForUnHandOver([bag]), cycleStage: null };
+    }
+
+    // Re-read inside the transaction, so "was it already handed over?" is answered
+    // by the row and not by the pre-check's snapshot.
+    const before = db.prepare('SELECT handed_over_at FROM guest_orders WHERE id = ?').get(row.id);
+    if (!before) return { conflict: 'gone' };
+
+    // THE RE-CHECK, inside the transaction and as the UPDATE's own predicate —
+    // literally §UC-DP-005's statement. `handed_over_at IS NULL` makes the repeat a
+    // no-op that keeps the first timestamp; the two item clauses re-assert the pack
+    // gate, so an item unchecked between the read above and this write cannot slip
+    // through. ⚠ `COALESCE(packed, 0)` because the column is nullable — a bare
+    // `packed = 0` drops NULL rows in SQL's three-valued logic, which is the
+    // dangerous direction (it would hand over a bag nobody checked).
+    const written = db.prepare(`
+      UPDATE guest_orders SET handed_over_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND handed_over_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM guest_order_items WHERE guest_order_id = ? AND COALESCE(packed, 0) = 0
+         )
+         AND EXISTS (SELECT 1 FROM guest_order_items WHERE guest_order_id = ?)
+    `).run(row.id, row.id, row.id);
+
+    // `changes === 0` means either the bag was ALREADY handed over (the idempotent
+    // 200) or the pack gate refused it between the pre-check and here (the 409).
+    // The re-read above is what tells the two apart.
+    const stamped = written.changes > 0;
+    if (!stamped && !before.handed_over_at) return { conflict: 'not_packed' };
+
+    return {
+      // ⚠ ONLY WHEN THIS CALL ACTUALLY STAMPED — the same rule, and the same reason,
+      // as the friend route: `enqueueForHandOver` dedupes on a `queued` row, which
+      // holds only until module 21 moves one to `released`/`sent` (WA-T5). After
+      // that, a repeat `handed_over: true` on an already-handed bag would mint a
+      // second „odovzdané priateľovi" message for a request that changed nothing.
+      queued: stamped ? enqueueForHandOver([bag]) : 0,
+      dequeued: 0,
+      // §UC-DP-009, inside the transaction, once per request. A stub until CS-T1.
+      cycleStage: markCycleReady(row.cycle_id),
+    };
+  });
+
+  const applied = apply();
+  if (applied.conflict === 'gone') {
+    return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
+  }
+  if (applied.conflict === 'not_packed') {
+    return res.status(409).json({
+      error: 'Najprv označte všetky položky ako zabalené',
+      reason: 'not_packed',
+    });
+  }
+
+  const payload = mutationPayload(row);
+  res.json({
+    ...payload,
+    stage: guestOrderStage(payload.guest_order),
+    queued_notifications: applied.queued,
+    dequeued_notifications: applied.dequeued,
+    cycle_stage: applied.cycleStage,
+  });
 });
 
 // POST /guest-orders/:id/cancel — the ADMIN calls off a guest sub-order

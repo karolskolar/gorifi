@@ -367,6 +367,16 @@ export const api = {
   // cleared_parcel, parcel_fee_removed }`.
   setPartyPickup: (cycleId, friendId, data) =>
     request(`/orders/cycle/${cycleId}/friend/${friendId}/pickup`, { method: 'PATCH', body: data }),
+  // 16 §UC-DP-004/013 — STAGE 3: „the bag left my hands". ⚠ ALWAYS an EXPLICIT
+  // boolean, never a toggle like `togglePacked` above: a hand-over queues messages,
+  // so the intent is stated and a double click converges instead of flipping back.
+  // Answers `{ order: { …, stage }, guests: [{ id, handed_over_at, stage }],
+  // queued_notifications, dequeued_notifications, cycle_stage }` — enough for the
+  // board to patch its rows in place. 409 `reason: 'not_packed'` when the bag is not
+  // packed yet; the reversal is always allowed.
+  // ⚠ Ledger-neutral: unlike `togglePacked`, this writes NO balance transaction.
+  setOrderHandedOver: (id, handedOver) =>
+    request(`/orders/${id}/handed-over`, { method: 'PATCH', body: { handed_over: handedOver } }),
   toggleItemPacked: (itemId) => request(`/order-items/${itemId}/packed`, { method: 'PATCH' }),
   // GSO-T7: the same per-item Distribution checkbox for a guest bag. Separate
   // endpoint because the item lives in `guest_order_items`; the response carries the
@@ -528,6 +538,16 @@ export const api = {
   // Who still owes for this cycle — name, amount, payment reference, host, contact
   // — plus the refund queue (paid but cancelled).
   getGuestUnpaid: (cycleId) => adminRequest(`/guest-orders/cycle/${cycleId}/unpaid`),
+
+  // 16 §UC-DP-005/013 — STAGE 3 for ONE guest bag. ADMIN-only, exactly as `paid` is
+  // and unlike `setGuestOrderDelivered` above: `handed_over_at` is the admin letting
+  // the bag go, `delivered` is the host confirming the colleague took it. Two
+  // columns, two events, opposite guards on the same mixed router.
+  // ⚠ It never touches the host's own order — a per-bag correction is a correction
+  // of one bag. Used for a host with NO own order (their party IS their guest bags),
+  // for a module-20 Packeta guest, and for one withheld bag under a handed-over host.
+  setGuestOrderHandedOver: (id, handedOver) =>
+    adminRequest(`/guest-orders/${id}/handed-over`, { method: 'PATCH', body: { handed_over: handedOver } }),
 
   // Guest share links, ADMIN side (14 §UC-GR-004). The `/guest-links` router is
   // MIXED-auth: the three host routes above ride the friend Bearer token, these

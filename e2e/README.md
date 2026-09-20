@@ -458,10 +458,21 @@ BASE_URL=http://localhost:3997 node seed.mjs
 #       • adds one extra assertion in guest-admin-view.spec.js (a GLOBAL
 #         `transactions` row count around the guest paid toggle, which also catches a
 #         row written with a NULL friend_id), and
-#       • un-skips TWO tests in distribution-handover.spec.js ("handed_over_at moves
-#         stage to handed…", "derived handed_over_at: only when EVERY live sub-order
-#         carries one") — they stamp `handed_over_at` directly because DP-T2 shipped
-#         before any writer existed. DP-T3 retires both the stamping and this skip.
+#       • ~~un-skips TWO tests in distribution-handover.spec.js ("handed_over_at
+#         moves stage to handed…", "derived handed_over_at: …")~~ — **RETIRED by
+#         DP-T3, 2026-09-20, exactly as that row promised.** Both now drive the real
+#         `PATCH …/handed-over` routes and carry NO gate, so they run on every
+#         target. Nothing in that file stamps the column any more; its only DB_PATH
+#         use left is the strictly-EXTRA ledger watermark (an assertion additive to
+#         an API-level one, never a scenario), so losing DB_PATH cannot make it
+#         vanish, and
+#       • un-skips ONE test in distribution-foundation.spec.js ("only the hand-over
+#         routes write a notifications row — and these are the rows"). That gate is
+#         permanent and is a DIFFERENT kind: `notifications` has NO API at all in
+#         module 16, so the queued rows' COLUMNS (template/segment keys, `body IS
+#         NULL`) are unobservable without the file. The route BEHAVIOUR (how many
+#         rows, and when none) is asserted ungated in distribution-handover.spec.js
+#         through the `queued_notifications` / `dequeued_notifications` counts.
 # ⚠ THE TELL IS THE SKIP COUNT, NOT THE FAILURE COUNT. A run that loses DB_PATH is
 #   still green. This bit once already (DP-T2, 2026-09-20): `RUN_DB=$(mktemp) && … &`
 #   backgrounds the WHOLE `&&` list, so the variable never exists in the foreground

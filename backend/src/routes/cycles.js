@@ -9,6 +9,7 @@ import { roundMoney } from '../helpers/pricing.js';
 import { readPickup } from '../helpers/pickup.js';
 import { packingItemStats } from '../helpers/packing.js';
 import { deliveryOf, deliveryGroupOrder, TARGET_LABELS } from '../helpers/delivery.js';
+import { orderStage, guestOrderStage } from '../helpers/handover.js';
 
 const router = Router();
 
@@ -90,17 +91,12 @@ function locIdOf(targetKey) {
   return hit ? Number(hit[1]) : null;
 }
 
-/**
- * A guest sub-order's stage. Its own `handed_over_at` wins; otherwise it is packed
- * only when it HAS items and every one of them is checked off — an empty bag is
- * `to_pack`, not a free pass (`[].every()` is `true`, which is exactly the bug the
- * length test prevents; the same shape as the pack gate's `total > 0`).
- */
-function guestStage(subOrder) {
-  if (subOrder.handed_over_at) return 'handed';
-  const items = Array.isArray(subOrder.items) ? subOrder.items : [];
-  return items.length > 0 && items.every((item) => !!item.packed) ? 'packed' : 'to_pack';
-}
+// ⚠ `guestStage()` and the friend half of `partyStage()` MOVED to
+// `helpers/handover.js` in DP-T3 (as `guestOrderStage()` / `orderStage()`), because
+// the hand-over routes answer the same `stage` in their mutation payloads. Two
+// copies is how the row the board patches in place stops agreeing with the row a
+// reload fetches. The synthetic-host branch below stays here: it is the board's own
+// derivation and has no mutation counterpart.
 
 /**
  * The synthetic host's hand-over, DERIVED: they have no `orders` row to stamp, so
@@ -128,7 +124,7 @@ function derivedHandedOver(subOrders) {
  */
 function partyStage(party, cycleId) {
   if (party.handed_over_at) return 'handed';
-  if (party.has_own_order) return party.packed ? 'packed' : 'to_pack';
+  if (party.has_own_order) return orderStage(party);
   const stats = packingItemStats({ orderId: null, friendId: party.id, cycleId });
   const total = Number(stats?.total || 0);
   const packedCount = Number(stats?.packed_count || 0);
@@ -758,7 +754,7 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
       // this is omitted; that backstop is not a licence to omit it.
       sub.delivery = deliveryOf(sub, { host: party.delivery, locationsById });
       sub.kg = itemsGrams(sub.items);
-      sub.stage = guestStage(sub);
+      sub.stage = guestOrderStage(sub);
       guestGrams += sub.kg;
     }
 

@@ -46,13 +46,27 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 //     type shows „0“ even with nobody on it — otherwise the admin cannot tell „no
 //     bags there“ from „that point is not set up“.
 //
-// ⚠ NO WRITER FOR `handed_over_at` EXISTS YET. `PATCH /orders/:id/handed-over` and
-// `PATCH /guest-orders/:id/handed-over` are DP-T3's. So the `stage: 'handed'` and
-// `handed_count` cases here stamp the column DIRECTLY through `node:sqlite`, which
-// needs `DB_PATH` pointed at the server's database and therefore carries the
-// documented skip (the `distribution-foundation.spec.js` / `guest-admin-view.spec.js`
-// idiom). ⚠ DP-T3 MUST REWRITE those two tests to drive the real routes — left as
-// direct writes they stop being evidence about the endpoint the moment one exists.
+// ⚠ ~~NO WRITER FOR `handed_over_at` EXISTS YET … so the `stage: 'handed'` cases
+// stamp the column DIRECTLY through `node:sqlite` behind a `DB_PATH` skip.~~
+// **SUPERSEDED BY DP-T3**, which ships the two writers. Both of those tests now
+// drive `PATCH /api/orders/:id/handed-over` and
+// `PATCH /api/guest-orders/:id/handed-over`, and the `DB_PATH` gate on them is
+// GONE: a test that writes the column itself stopped being evidence about the
+// route the moment the route existed, and the skip made it vanish SILENTLY
+// whenever the variable was unset (the false-clean measured on DP-T2). The only
+// `DB_PATH` use left in this file is the strictly-extra LEDGER WATERMARK of
+// section 4 — an assertion that is additive to an API-level one, never the
+// scenario itself.
+//
+// ─── DP-T3 adds section 4 below: 16 §UC-DP-004 / §UC-DP-005 / §UC-DP-008 ──────
+// The two hand-over routes, the outbox counts they report, and the two rules no
+// test can infer from a payload: NO `transactions` row is ever written by either
+// of them, and `PATCH /api/guest-orders/:id/delivered` stays HOST-only on the
+// same MIXED router. The `notifications` rows' COLUMNS (template keys, segment
+// keys, `body IS NULL`) are proven in `distribution-foundation.spec.js`, which
+// already owns the outbox — that table has no API, so column-level evidence needs
+// the database file and belongs beside the rest of the DB_PATH-gated outbox
+// assertions rather than scattered here.
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000'
 const DB_PATH = process.env.DB_PATH || ''
@@ -70,15 +84,63 @@ async function admin(path, opts = {}) {
   })
 }
 
-/** ⚠ TEMPORARY — DP-T3 replaces every call with the real admin route. */
-function stampHandedOver(table, id, when) {
-  const db = new DatabaseSync(DB_PATH)
+// ⚠ DP-T3 RETIRED `stampHandedOver()`. Nothing in this file writes
+// `handed_over_at` any more — the routes do, and that is the point.
+
+/** The admin hand-over of a friend bag. Always an EXPLICIT boolean (§UC-DP-004). */
+async function handOverOrder(orderId, handedOver) {
+  return admin(`/api/orders/${orderId}/handed-over`, {
+    method: 'patch', data: { handed_over: handedOver },
+  })
+}
+
+/** The admin hand-over of ONE guest bag (§UC-DP-005). */
+async function handOverGuest(guestOrderId, handedOver) {
+  return admin(`/api/guest-orders/${guestOrderId}/handed-over`, {
+    method: 'patch', data: { handed_over: handedOver },
+  })
+}
+
+// ── the LEDGER WATERMARK (strictly extra, the guest-distribution.spec.js idiom) ──
+// Stage 3 is ledger-neutral by construction: `helpers/packing.js` is and stays the
+// only ledger moment. A GLOBAL count would be a value claim over rows this file does
+// not own (a concurrent spec's pack reddens it), so the watermark is FILTERED to the
+// friend whose bag moved — the only identity a hand-over can reach — OR to the
+// `order_id` that moved, which is what a copied `PATCH /orders/:id/paid` would tag.
+function withDb(fn) {
+  if (!DB_PATH) return null
+  let db
   try {
-    // `table` is a literal from this file only; `id` is bound.
-    db.prepare(`UPDATE ${table} SET handed_over_at = ? WHERE id = ?`).run(when, Number(id))
+    db = new DatabaseSync(DB_PATH, { readOnly: true })
+  } catch {
+    return null
+  }
+  try {
+    return fn(db)
   } finally {
     db.close()
   }
+}
+
+function ledgerWatermark() {
+  return withDb((db) => Number(db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM transactions').get().n))
+}
+
+function ledgerRowsSince(watermark, friendId, orderId) {
+  if (watermark === null) return null
+  return withDb((db) =>
+    db.prepare(
+      'SELECT id, friend_id, order_id, type, amount, note FROM transactions WHERE id > ? AND (friend_id = ? OR order_id = ?)'
+    ).all(watermark, Number(friendId), Number(orderId || 0))
+  )
+}
+
+/** The API-level half of the same claim, which needs no DB_PATH at all. */
+async function ledgerSnapshot(friendId) {
+  const res = await admin(`/api/friends/${friendId}/detail`)
+  expect(res.status(), 'friend detail').toBe(200)
+  const body = await res.json()
+  return { count: (body.transactions || []).length, balance: body.balance }
 }
 
 let friendSeq = 0
@@ -492,29 +554,50 @@ test.describe('DP-T2 · 16 §UC-DP-003 — the distribution payload', () => {
     expect(planFor(body, `loc${fx.L.id}`).handed_count).toBe(0)
   })
 
+  // ⚠ REWRITTEN BY DP-T3 (was: two `stampHandedOver()` calls behind a `DB_PATH`
+  // skip). It drives the two real routes now, so it runs on EVERY target and the
+  // payload assertions below are evidence about the endpoints rather than about a
+  // column this file wrote itself. The exact timestamps are gone with the direct
+  // write — they are the server's `CURRENT_TIMESTAMP` — so what is pinned instead
+  // is the RELATION: the payload echoes exactly what the route answered.
   test('handed_over_at moves stage to handed, on the party and on the guest', async () => {
-    // ⚠ DP-T3: rewrite this to drive PATCH /api/orders/:id/handed-over.
-    test.skip(!DB_PATH, 'needs DB_PATH pointed at the server database (the documented skip)')
+    const handA = await handOverOrder(fx.aOrder.id, true)
+    expect(handA.status(), 'a packed bag hands over').toBe(200)
+    const handedA = await handA.json()
+    expect(handedA.order.handed_over_at, 'the route stamps it').toBeTruthy()
+    expect(handedA.order.stage).toBe('handed')
 
-    stampHandedOver('orders', fx.aOrder.id, '2026-09-20 10:00:00')
-    stampHandedOver('guest_orders', fx.guest1.id, '2026-09-20 10:05:00')
+    // ⚠ ONE guest bag, through the GUEST route — §UC-DP-005 case (c), the withheld
+    // bag under a host who has not been handed over. It must not touch the host.
+    const handG1 = await handOverGuest(fx.guest1.id, true)
+    expect(handG1.status(), 'every item of that bag is checked off').toBe(200)
+    const handedG1 = await handG1.json()
+    expect(handedG1.guest_order.handed_over_at).toBeTruthy()
+    expect(handedG1.stage).toBe('handed')
 
     const body = await payload(fx.cycle.id)
     const a = partyOf(body, fx.a.id)
-    expect(a.handed_over_at).toBe('2026-09-20 10:00:00')
+    expect(a.handed_over_at, 'the payload echoes the route').toBe(handedA.order.handed_over_at)
     expect(a.stage, 'handed wins over packed').toBe('handed')
 
     const party = partyOf(body, fx.host.id)
     const g1 = party.guest_orders.find((g) => g.id === fx.guest1.id)
-    expect(g1.handed_over_at).toBe('2026-09-20 10:05:00')
+    expect(g1.handed_over_at).toBe(handedG1.guest_order.handed_over_at)
     expect(g1.stage).toBe('handed')
     expect(party.stage, 'a host with an own order reads its OWN column').toBe('packed')
-    expect(party.handed_over_at).toBe(null)
+    expect(party.handed_over_at, 'a guest-level hand-over never stamps the host').toBe(null)
 
     expect(body.totals).toEqual({ count: 5, packed_count: 2, handed_count: 1 })
     const plan = planFor(body, `loc${fx.L.id}`)
     expect(plan.handed_count).toBe(1)
     expect(plan.packed_count, 'packed_count still INCLUDES the handed party').toBe(2)
+
+    // …and back, so the serial describe leaves the cycle as it found it.
+    expect((await handOverOrder(fx.aOrder.id, false)).status()).toBe(200)
+    expect((await handOverGuest(fx.guest1.id, false)).status()).toBe(200)
+    const after = await payload(fx.cycle.id)
+    expect(partyOf(after, fx.a.id).handed_over_at, 'reversal clears it').toBe(null)
+    expect(after.totals.handed_count).toBe(0)
   })
 })
 
@@ -626,26 +709,52 @@ test.describe('DP-T2 · the synthetic host: derived hand-over and a dangling loc
     expect(body.totals).toEqual({ count: 1, packed_count: 1, handed_count: 0 })
   })
 
+  // ⚠ REWRITTEN BY DP-T3 (was: two `stampHandedOver()` calls behind a `DB_PATH`
+  // skip). This is §UC-DP-005 case (b) end to end: a host with NO `orders` row has
+  // no id to PATCH, so their party is handed over exactly by handing over each of
+  // their guest bags — and the payload's `derivedHandedOver()` is what turns that
+  // into one party stage. Now route-driven, so it runs on every target.
   test('derived handed_over_at: only when EVERY live sub-order carries one', async () => {
-    // ⚠ DP-T3: rewrite this to drive PATCH /api/guest-orders/:id/handed-over.
-    test.skip(!DB_PATH, 'needs DB_PATH pointed at the server database (the documented skip)')
+    const first = await handOverGuest(fx.g1.id, true)
+    expect(first.status(), 'the synthetic host has no order id — the bag IS the unit').toBe(200)
+    const firstStamp = (await first.json()).guest_order.handed_over_at
+    expect(firstStamp).toBeTruthy()
 
-    stampHandedOver('guest_orders', fx.g1.id, '2026-09-20 11:00:00')
     let body = await payload(fx.cycle.id)
     expect(body.distribution[0].handed_over_at, 'one of two is not the bag').toBe(null)
     expect(body.distribution[0].stage).toBe('packed')
     expect(body.totals.handed_count).toBe(0)
 
-    stampHandedOver('guest_orders', fx.g2.id, '2026-09-20 11:30:00')
+    const second = await handOverGuest(fx.g2.id, true)
+    expect(second.status()).toBe(200)
+    const secondStamp = (await second.json()).guest_order.handed_over_at
+    expect(secondStamp).toBeTruthy()
+
     body = await payload(fx.cycle.id)
     const party = body.distribution[0]
-    expect(party.handed_over_at, 'the MAX over the live sub-orders').toBe('2026-09-20 11:30:00')
+    // SQLite timestamps are `YYYY-MM-DD HH:MM:SS` and sort lexicographically; the two
+    // hand-overs may well land in the same second, so the claim is "the MAX", not
+    // "the second one".
+    const expectedMax = [firstStamp, secondStamp].sort().pop()
+    expect(party.handed_over_at, 'the MAX over the live sub-orders').toBe(expectedMax)
     expect(party.stage).toBe('handed')
     expect(body.totals).toEqual({ count: 1, packed_count: 1, handed_count: 1 })
     expect(body.plan.find((e) => e.target_key === `loc${fx.D.id}`).handed_count).toBe(1)
 
-    // ⚠ the CANCELLED sub-order was never stamped and must never have blocked this.
+    // ⚠ the CANCELLED sub-order was never handed over and must never have blocked
+    // this — a bag nobody gives anybody cannot hold the party open forever. Handing
+    // it over is refused outright, which is the other half of the same rule.
     expect(party.guest_orders.length).toBe(2)
+    const cancelled = await handOverGuest(fx.gX.id, true)
+    expect(cancelled.status(), 'cancelled is terminal').toBe(409)
+    expect((await cancelled.json()).reason).toBe('cancelled')
+
+    // one bag comes back ⇒ the derived party stage falls back to packed
+    expect((await handOverGuest(fx.g2.id, false)).status()).toBe(200)
+    body = await payload(fx.cycle.id)
+    expect(body.distribution[0].handed_over_at, 'one live bag is back in hand').toBe(null)
+    expect(body.distribution[0].stage).toBe('packed')
+    expect((await handOverGuest(fx.g1.id, false)).status()).toBe(200)
   })
 })
 
@@ -663,5 +772,461 @@ test.describe('DP-T2 · 16 §UC-DP-013 — the read stays admin-only', () => {
       headers: { 'X-Admin-Token': 'not-a-real-token' }, timeout: TIMEOUT,
     })
     expect(wrong.status()).toBe(401)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. DP-T3 — the two hand-over WRITERS: `PATCH /api/orders/:id/handed-over`
+//    (§UC-DP-004) and `PATCH /api/guest-orders/:id/handed-over` (§UC-DP-005),
+//    with the outbox counts of §UC-DP-008 and the §UC-DP-009 stage echo.
+//
+// What carries this section, in the order of how badly each one bites:
+//
+//  1. ⚠ **NO `transactions` ROW, EVER.** Stage 2 (`packed`) is and stays the
+//     ledger moment (`helpers/packing.js`); stage 3 is ledger-neutral by
+//     construction. Pinned TWICE, and the API half needs no `DB_PATH`: the
+//     friend's own `GET /api/friends/:id/detail` returns every row
+//     `WHERE friend_id = ?` and its `balance`, so a copied `PATCH /orders/:id/paid`
+//     reddens it immediately. The `MAX(id)` watermark on top is the strictly-extra
+//     half that also sees a row tagged with the `order_id` but credited to the
+//     WRONG friend — the shape an actual copy-paste of the paid handler produces.
+//  2. ⚠ **`routes/guest-orders.js` is a MIXED router.** `handed_over` is
+//     ADMIN-only exactly as `paid` is, and `delivered` stays HOST-only. Both
+//     directions are asserted, on the same sub-order, in the same test — a guard
+//     wrapped around the MOUNT would break one of the two whichever way it went.
+//  3. **Idempotence is convergence, not a refusal.** A second `true` keeps the
+//     FIRST timestamp (a double click or a second device converges) and enqueues
+//     no second message; a second `false` is a clean 200.
+//  4. **Inheritance is symmetric.** A host's hand-over stamps every LIVE
+//     `via_host` sub-order with the identical timestamp and skips the cancelled
+//     one; the reversal clears exactly the same set.
+//  5. **`in_person` enqueues NOTHING** (module 21 defines no template for it),
+//     while `pickup` and `packeta` enqueue one row for the friend. The counts are
+//     in the response, so they are evidence on every target; the COLUMNS those
+//     rows carry are `distribution-foundation.spec.js`'s (the outbox has no API).
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('DP-T3 · 16 §UC-DP-004/005/008 — the hand-over routes', () => {
+  test.describe.configure({ mode: 'serial' })
+
+  const fx = {}
+
+  test.beforeAll(async () => {
+    fx.cycle = await makeCycle('Odovzdanie', { parcel_enabled: true, parcel_fee: 3.9 })
+    fx.product = await addProduct(fx.cycle.id)
+    fx.P = await makeLocation('Miesto P')
+
+    const p = fx.product.id
+    const line = (variant, quantity) => [{ product_id: p, variant, quantity }]
+
+    // the pickup host: own order + two live guests + one cancelled
+    fx.host = await makeFriend('Vydaj Hostitel', '0921 111 111')
+    fx.hostOrder = await ownOrder(fx.host, fx.cycle.id, line('250g', 1), { pickup_location_id: fx.P.id })
+    const link = await shareLink(fx.host, fx.cycle.id)
+    fx.g1 = await submitGuest(link.token, `Vydaj Jedna ${uniq}`, '0922 222 222', line('250g', 1))
+    fx.g2 = await submitGuest(link.token, `Vydaj Dva ${uniq}`, '0923 333 333', line('250g', 1))
+    fx.gX = await submitGuest(link.token, `Vydaj Zruseny ${uniq}`, '0924 444 444', line('1kg', 1))
+    expect((await admin(`/api/guest-orders/${fx.gX.id}/cancel`, { method: 'post' })).status()).toBe(200)
+
+    fx.parcel = await makeFriend('Vydaj Packeta', '0925 555 555')
+    fx.parcelOrder = await ownOrder(fx.parcel, fx.cycle.id, line('250g', 1), {
+      use_parcel_delivery: true, packeta_address: 'Packeta Petrzalka, Bratislava',
+    })
+
+    fx.person = await makeFriend('Vydaj Osobne', '0926 666 666')
+    fx.personOrder = await ownOrder(fx.person, fx.cycle.id, line('250g', 1), {
+      pickup_location_note: 'Donesiem do prace',
+    })
+
+    // a second host who never gets touched — the "nothing else moved" witness
+    fx.bystander = await makeFriend('Vydaj Svedok', '0927 777 777')
+    fx.bystanderOrder = await ownOrder(fx.bystander, fx.cycle.id, line('250g', 1), { pickup_location_id: fx.P.id })
+  })
+
+  test.afterAll(async () => {
+    if (!fx.P) return
+    const res = await admin(`/api/pickup-locations/${fx.P.id}`, { method: 'delete' })
+    expect([204, 404], 'fixture location retired').toContain(res.status())
+  })
+
+  // ── the gates, BEFORE anything is packed ──────────────────────────────────
+  test('true on an unpacked submitted order ⇒ 409 not_packed, and the row is read back unchanged', async () => {
+    const before = await ledgerSnapshot(fx.host.id)
+    const mark = ledgerWatermark()
+
+    const res = await handOverOrder(fx.hostOrder.id, true)
+    expect(res.status(), 'no partial-bag hand-over (PO Q8.a)').toBe(409)
+    const body = await res.json()
+    expect(body.reason).toBe('not_packed')
+    expect(body.error, 'the copy names the fix').toMatch(/zabalen/i)
+
+    // ⚠ refusal tests read the row back (CLAUDE.md §Running the e2e suite).
+    const party = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(party.handed_over_at, 'a refused hand-over writes nothing').toBe(null)
+    expect(party.stage).toBe('to_pack')
+    expect(party.guest_orders.every((g) => g.handed_over_at === null), 'nor on the guests').toBe(true)
+
+    expect(await ledgerSnapshot(fx.host.id), 'ledger untouched').toEqual(before)
+    const rows = ledgerRowsSince(mark, fx.host.id, fx.hostOrder.id)
+    if (rows !== null) expect(rows, `a refusal wrote a ledger row: ${JSON.stringify(rows)}`).toEqual([])
+  })
+
+  test('a guest bag with an unchecked item ⇒ 409 not_packed; a cancelled one ⇒ 409 cancelled; unknown ⇒ 404', async () => {
+    const res = await handOverGuest(fx.g1.id, true)
+    expect(res.status()).toBe(409)
+    expect((await res.json()).reason).toBe('not_packed')
+
+    const party = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(party.guest_orders.find((g) => g.id === fx.g1.id).handed_over_at).toBe(null)
+
+    const cancelled = await handOverGuest(fx.gX.id, true)
+    expect(cancelled.status(), 'cancelled is terminal — there is nothing to give').toBe(409)
+    expect((await cancelled.json()).reason).toBe('cancelled')
+
+    const missing = await handOverGuest(99999999, true)
+    expect(missing.status()).toBe(404)
+  })
+
+  test('a draft / unknown order: 400 on a non-submitted order, 404 on an unknown id', async () => {
+    const missing = await handOverOrder(99999999, true)
+    expect(missing.status()).toBe(404)
+
+    // a DRAFT: the cart exists, nothing was submitted
+    const drafter = await makeFriend('Vydaj Draft', '0928 888 888')
+    const put = await ctx.put(`/api/orders/cycle/${fx.cycle.id}/friend/${drafter.id}`, {
+      headers: drafter.auth, data: { items: [{ product_id: fx.product.id, variant: '250g', quantity: 1 }] },
+      timeout: TIMEOUT,
+    })
+    expect(put.status()).toBe(200)
+    const draft = (await put.json()).order
+    expect(draft, 'the cart PUT created a draft orders row').toBeTruthy()
+    expect(draft.status, 'non-vacuity: it really is a draft').toBe('draft')
+
+    const res = await handOverOrder(draft.id, true)
+    expect(res.status(), 'a whole-order flag only means something once there IS an order').toBe(400)
+    expect((await res.json()).error).toMatch(/odoslan/i)
+
+    // …and `false` is refused on the same basis, rather than silently succeeding.
+    expect((await handOverOrder(draft.id, false)).status()).toBe(400)
+  })
+
+  // ── the body contract: an EXPLICIT boolean, never a toggle ────────────────
+  test('unbindable and non-boolean bodies are 400, never 500 — and write nothing', async () => {
+    const raws = ['{}', 'true', 'false', `[${fx.hostOrder.id}]`, '"abc"', '[]', 'null',
+      '{"handed_over":"true"}', '{"handed_over":1}', '{"handed_over":null}', '{"handed_over":[true]}']
+
+    for (const raw of raws) {
+      for (const path of [`/api/orders/${fx.hostOrder.id}/handed-over`, `/api/guest-orders/${fx.g1.id}/handed-over`]) {
+        const res = await ctx.patch(path, {
+          headers: { 'X-Admin-Token': adminToken, 'Content-Type': 'application/json' },
+          data: raw,
+          timeout: TIMEOUT,
+        })
+        expect(res.status(), `${path} with ${raw} must be 400`).toBe(400)
+        const text = await res.text()
+        expect(text, 'no internals leak').not.toMatch(/TypeError|RangeError|node_modules|at .*\.js/)
+      }
+    }
+
+    const party = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(party.handed_over_at, 'not one malformed body wrote anything').toBe(null)
+    expect(party.guest_orders.every((g) => g.handed_over_at === null)).toBe(true)
+  })
+
+  // ── the happy path, with inheritance and the outbox ───────────────────────
+  test('a packed pickup bag hands over: guests inherit the SAME timestamp, the cancelled one is skipped', async () => {
+    // pack everything: own items, both live guest bags, then the whole order
+    await packGuestItems(fx.cycle.id, fx.host.id, fx.g1.id)
+    await packGuestItems(fx.cycle.id, fx.host.id, fx.g2.id)
+    await packOrderItems(fx.hostOrder.id, fx.cycle.id, fx.host.id)
+
+    const before = await ledgerSnapshot(fx.host.id)
+    const mark = ledgerWatermark()
+
+    const res = await handOverOrder(fx.hostOrder.id, true)
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+
+    expect(body.order.id).toBe(fx.hostOrder.id)
+    expect(body.order.handed_over_at, 'stamped').toBeTruthy()
+    expect(body.order.packed, 'packed is untouched').toBe(1)
+    expect(body.order.stage).toBe('handed')
+    expect(body.cycle_stage, 'CS-T1 fills the body; until then the stub answers null').toBe(null)
+
+    // §UC-DP-008: 1 × pickup for the friend + 1 × host per live guest = 3
+    expect(body.queued_notifications, 'friend + two live guests').toBe(3)
+
+    const guestIds = body.guests.map((g) => g.id).sort((a, b) => a - b)
+    expect(guestIds, 'the cancelled sub-order is not in the bag').toEqual([fx.g1.id, fx.g2.id].sort((a, b) => a - b))
+    for (const guest of body.guests) {
+      expect(guest.handed_over_at, 'the IDENTICAL timestamp, bound once').toBe(body.order.handed_over_at)
+      expect(guest.stage).toBe('handed')
+    }
+
+    const party = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(party.handed_over_at).toBe(body.order.handed_over_at)
+    expect(party.stage).toBe('handed')
+    for (const guest of party.guest_orders) {
+      expect(guest.handed_over_at, 'every live bag inherited').toBe(body.order.handed_over_at)
+    }
+
+    // the cancelled sub-order, read through the host's own view (it is filtered out
+    // of the distribution payload entirely)
+    const hostView = await ctx.get(`/api/guest-links/cycle/${fx.cycle.id}`, { headers: fx.host.auth, timeout: TIMEOUT })
+    expect(hostView.status()).toBe(200)
+    const cancelledRow = (await hostView.json()).guest_orders.find((g) => g.id === fx.gX.id)
+    expect(cancelledRow.status).toBe('cancelled')
+    expect(cancelledRow.handed_over_at, 'a called-off bag is never handed over').toBe(null)
+
+    // ⚠ ledger-neutral, both ways of asking
+    expect(await ledgerSnapshot(fx.host.id), 'no charge, no payment, no reversal').toEqual(before)
+    const rows = ledgerRowsSince(mark, fx.host.id, fx.hostOrder.id)
+    if (rows !== null) expect(rows, `hand-over wrote a ledger row: ${JSON.stringify(rows)}`).toEqual([])
+
+    // nobody else moved
+    const bystander = partyOf(await payload(fx.cycle.id), fx.bystander.id)
+    expect(bystander.handed_over_at, 'another party at the same pickup point is untouched').toBe(null)
+  })
+
+  test('a second true is 200, keeps the FIRST timestamp and enqueues nothing', async () => {
+    const first = partyOf(await payload(fx.cycle.id), fx.host.id).handed_over_at
+    expect(first).toBeTruthy()
+
+    const res = await handOverOrder(fx.hostOrder.id, true)
+    expect(res.status(), 'a double click converges').toBe(200)
+    const body = await res.json()
+    expect(body.order.handed_over_at, 'the first hand-over time IS the record').toBe(first)
+    expect(body.queued_notifications, 'a repeat enqueues no second message').toBe(0)
+    expect(body.order.stage).toBe('handed')
+  })
+
+  test('false clears the order AND every inherited guest, and dequeues exactly its queued rows', async () => {
+    const before = await ledgerSnapshot(fx.host.id)
+    const mark = ledgerWatermark()
+
+    const res = await handOverOrder(fx.hostOrder.id, false)
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.order.handed_over_at, 'the mis-click case').toBe(null)
+    expect(body.order.stage, 'still packed — the reversal has no packed dependency').toBe('packed')
+    expect(body.dequeued_notifications, 'the three queued rows go, and only them').toBe(3)
+    expect(body.guests.every((g) => g.handed_over_at === null), 'inheritance is symmetric').toBe(true)
+
+    const party = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(party.handed_over_at).toBe(null)
+    expect(party.guest_orders.every((g) => g.handed_over_at === null)).toBe(true)
+
+    // idempotent the other way too
+    const again = await handOverOrder(fx.hostOrder.id, false)
+    expect(again.status()).toBe(200)
+    expect((await again.json()).dequeued_notifications, 'nothing left to dequeue').toBe(0)
+
+    expect(await ledgerSnapshot(fx.host.id), 'a reversal is not a ledger event either').toEqual(before)
+    const rows = ledgerRowsSince(mark, fx.host.id, fx.hostOrder.id)
+    if (rows !== null) expect(rows, `un-hand-over wrote a ledger row: ${JSON.stringify(rows)}`).toEqual([])
+  })
+
+  test('un-hand-over is ALWAYS allowed — even on a bag that is not packed', async () => {
+    // the in-person bag was never packed; `false` on it is a clean no-op 200.
+    const res = await handOverOrder(fx.personOrder.id, false)
+    expect(res.status(), 'reversal has no gate of its own').toBe(200)
+    const body = await res.json()
+    expect(body.order.handed_over_at).toBe(null)
+    expect(body.order.stage).toBe('to_pack')
+  })
+
+  // ── §UC-DP-008: which bags enqueue, and which enqueues NOTHING ────────────
+  test('packeta enqueues one row; in_person enqueues NONE', async () => {
+    await packOrderItems(fx.parcelOrder.id, fx.cycle.id, fx.parcel.id)
+    const parcel = await handOverOrder(fx.parcelOrder.id, true)
+    expect(parcel.status()).toBe(200)
+    expect((await parcel.json()).queued_notifications, 'template `packeta`, one row').toBe(1)
+
+    await packOrderItems(fx.personOrder.id, fx.cycle.id, fx.person.id)
+    const person = await handOverOrder(fx.personOrder.id, true)
+    expect(person.status()).toBe(200)
+    const personBody = await person.json()
+    expect(personBody.order.handed_over_at, 'the bag IS handed over').toBeTruthy()
+    expect(
+      personBody.queued_notifications,
+      'module 21 defines NO template for an in-person hand-over — the admin arranges it directly'
+    ).toBe(0)
+
+    // …and the reversal of an in-person bag has nothing to delete
+    const back = await handOverOrder(fx.personOrder.id, false)
+    expect(back.status()).toBe(200)
+    expect((await back.json()).dequeued_notifications).toBe(0)
+
+    const parcelBack = await handOverOrder(fx.parcelOrder.id, false)
+    expect((await parcelBack.json()).dequeued_notifications, 'the packeta row goes').toBe(1)
+  })
+
+  // ── §UC-DP-005: the per-bag route, and what it must NOT touch ────────────
+  test('a guest hand-over never touches the host — and enqueues one `host` row', async () => {
+    const hostBefore = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(hostBefore.handed_over_at, 'the host is back in hand from the reversal above').toBe(null)
+
+    const res = await handOverGuest(fx.g1.id, true)
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.guest_order.id).toBe(fx.g1.id)
+    expect(body.guest_order.handed_over_at).toBeTruthy()
+    expect(body.stage).toBe('handed')
+    expect(body.queued_notifications, 'one `host` row for this guest').toBe(1)
+    expect(body.cycle_stage).toBe(null)
+    expect(body.totals, 'the shipped mutationPayload shape survives').toBeTruthy()
+
+    const party = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(party.handed_over_at, 'a correction on ONE bag is not a hand-over of the party').toBe(null)
+    expect(party.stage).toBe('packed')
+    expect(party.guest_orders.find((g) => g.id === fx.g1.id).stage).toBe('handed')
+    expect(party.guest_orders.find((g) => g.id === fx.g2.id).stage, 'the other bag is untouched').toBe('packed')
+
+    // idempotent, and reversible
+    const again = await handOverGuest(fx.g1.id, true)
+    expect(again.status()).toBe(200)
+    const againBody = await again.json()
+    expect(againBody.guest_order.handed_over_at).toBe(body.guest_order.handed_over_at)
+    expect(againBody.queued_notifications).toBe(0)
+
+    const back = await handOverGuest(fx.g1.id, false)
+    expect(back.status()).toBe(200)
+    const backBody = await back.json()
+    expect(backBody.guest_order.handed_over_at).toBe(null)
+    expect(backBody.dequeued_notifications).toBe(1)
+  })
+
+  test('the host hand-over LEAVES a guest that was handed over on its own with its own stamp', async () => {
+    // g2 alone first, then the whole party: the host UPDATE only touches rows whose
+    // `handed_over_at IS NULL`, so g2 keeps ITS timestamp while g1 gets the host's.
+    const solo = await handOverGuest(fx.g2.id, true)
+    expect(solo.status()).toBe(200)
+    const soloStamp = (await solo.json()).guest_order.handed_over_at
+
+    const res = await handOverOrder(fx.hostOrder.id, true)
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    const g1 = body.guests.find((g) => g.id === fx.g1.id)
+    const g2 = body.guests.find((g) => g.id === fx.g2.id)
+    expect(g1.handed_over_at, 'a bag that had none takes the host stamp').toBe(body.order.handed_over_at)
+    expect(g2.handed_over_at, 'a bag already out keeps its own first record').toBe(soloStamp)
+    expect(body.queued_notifications, 'g2 already had a queued row — only the friend and g1 are new').toBe(2)
+
+    // and the host reversal clears BOTH, because inheritance is symmetric
+    const back = await handOverOrder(fx.hostOrder.id, false)
+    expect(back.status()).toBe(200)
+    const backBody = await back.json()
+    expect(backBody.guests.every((g) => g.handed_over_at === null)).toBe(true)
+    expect(backBody.dequeued_notifications, 'friend + both guest rows').toBe(3)
+  })
+
+  // ⚠ REVIEW FINDING (DP-T3): a reversal of nothing must reverse nothing. The
+  // specification's un-hand-over is unconditional, and taken literally it made a
+  // `false` on a host who was NEVER handed over clear every live guest's stamp and
+  // delete their queued rows — so one no-op click on the host row silently undid a
+  // per-bag hand-over (§UC-DP-005 case c) and destroyed a real record. The guests
+  // are cleared because the HOST's hand-over is being taken back; when there is
+  // none to take back, there is nothing to propagate.
+  test('a no-op reversal on the host does NOT undo a guest handed over on its own', async () => {
+    const start = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(start.handed_over_at, 'non-vacuity: the host is NOT handed over').toBe(null)
+
+    const solo = await handOverGuest(fx.g2.id, true)
+    expect(solo.status()).toBe(200)
+    const soloStamp = (await solo.json()).guest_order.handed_over_at
+    expect(soloStamp).toBeTruthy()
+
+    const noop = await handOverOrder(fx.hostOrder.id, false)
+    expect(noop.status(), 'a reversal is always allowed, even when there is nothing to reverse').toBe(200)
+    const body = await noop.json()
+    expect(body.guests, 'nothing was propagated').toEqual([])
+    expect(body.dequeued_notifications, 'the guest\'s own queued row survives').toBe(0)
+
+    const party = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(party.handed_over_at).toBe(null)
+    expect(
+      party.guest_orders.find((g) => g.id === fx.g2.id).handed_over_at,
+      'the bag that really left is still recorded as gone'
+    ).toBe(soloStamp)
+
+    // clean up: a REAL reversal of that one bag, through its own route
+    expect((await handOverGuest(fx.g2.id, false)).status()).toBe(200)
+    const after = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(after.guest_orders.every((g) => g.handed_over_at === null)).toBe(true)
+  })
+
+  // ── the MIXED router, from both sides ─────────────────────────────────────
+  test('handed_over is ADMIN-only while delivered stays HOST-only — on the same sub-order', async () => {
+    // the admin route refuses the HOST's own Bearer token…
+    const asHost = await ctx.patch(`/api/guest-orders/${fx.g1.id}/handed-over`, {
+      headers: fx.host.auth, data: { handed_over: true }, timeout: TIMEOUT,
+    })
+    expect(asHost.status(), 'handed_over is admin-only exactly as paid is').toBe(401)
+
+    // …and the host route refuses the ADMIN token, unchanged by this row.
+    const asAdmin = await admin(`/api/guest-orders/${fx.g1.id}/delivered`, {
+      method: 'patch', data: { delivered: true },
+    })
+    expect(asAdmin.status(), 'an admin token is not host identity').toBe(401)
+
+    // the host's own delivered tick still works, and is a DIFFERENT column
+    const hostTick = await ctx.patch(`/api/guest-orders/${fx.g1.id}/delivered`, {
+      headers: fx.host.auth, data: { delivered: true }, timeout: TIMEOUT,
+    })
+    expect(hostTick.status(), 'PATCH …/delivered is undisturbed').toBe(200)
+    const ticked = (await hostTick.json()).guest_order
+    expect(ticked.delivered).toBe(1)
+    expect(ticked.delivered_at).toBeTruthy()
+    expect(ticked.handed_over_at, 'delivered is not handed_over').toBe(null)
+
+    const untick = await ctx.patch(`/api/guest-orders/${fx.g1.id}/delivered`, {
+      headers: fx.host.auth, data: { delivered: false }, timeout: TIMEOUT,
+    })
+    expect(untick.status()).toBe(200)
+  })
+
+  test('both routes are 401 to anonymous, to a friend Bearer and to a wrong token', async () => {
+    const targets = [
+      `/api/orders/${fx.hostOrder.id}/handed-over`,
+      `/api/guest-orders/${fx.g1.id}/handed-over`,
+    ]
+    for (const path of targets) {
+      const anon = await ctx.patch(path, { data: { handed_over: true }, timeout: TIMEOUT })
+      expect(anon.status(), `${path} anonymous`).toBe(401)
+
+      const friend = await ctx.patch(path, {
+        headers: fx.bystander.auth, data: { handed_over: true }, timeout: TIMEOUT,
+      })
+      expect(friend.status(), `${path} friend Bearer`).toBe(401)
+
+      const wrong = await ctx.patch(path, {
+        headers: { 'X-Admin-Token': 'not-a-real-token' }, data: { handed_over: true }, timeout: TIMEOUT,
+      })
+      expect(wrong.status(), `${path} wrong admin token`).toBe(401)
+    }
+
+    // non-vacuity: nothing above changed a thing
+    const party = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(party.handed_over_at).toBe(null)
+  })
+
+  // ── the ledger, over the WHOLE flow ───────────────────────────────────────
+  test('across every hand-over and reversal in this file, the ledger never moved', async () => {
+    const before = await ledgerSnapshot(fx.host.id)
+    const mark = ledgerWatermark()
+
+    // ⚠ the bag is ALREADY packed here, and deliberately not re-packed:
+    // `PATCH /orders/:id/packed` TOGGLES, and an un-pack posts the ledger reversal
+    // — which is precisely the row this test must not see.
+    const packedNow = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(packedNow.stage, 'non-vacuity: there is a packed bag to hand over').toBe('packed')
+
+    expect((await handOverOrder(fx.hostOrder.id, true)).status()).toBe(200)
+    expect((await handOverGuest(fx.g1.id, false)).status()).toBe(200)
+    expect((await handOverGuest(fx.g1.id, true)).status()).toBe(200)
+    expect((await handOverOrder(fx.hostOrder.id, false)).status()).toBe(200)
+
+    expect(await ledgerSnapshot(fx.host.id), 'stage 3 is ledger-neutral by construction').toEqual(before)
+    const rows = ledgerRowsSince(mark, fx.host.id, fx.hostOrder.id)
+    if (rows !== null) expect(rows, `the flow wrote a ledger row: ${JSON.stringify(rows)}`).toEqual([])
   })
 })

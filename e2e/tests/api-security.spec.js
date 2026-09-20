@@ -42,6 +42,18 @@ const ADMIN_ENDPOINTS = [
   // that dropped the guard would hand an anonymous caller a working guest credential
   // for every bag in the cycle, so it belongs in this sweep permanently.
   { method: 'get', path: '/api/cycles/1/distribution' },
+  // 16 §UC-DP-004 / §UC-DP-013 (DP-T3): STAGE 3, the two hand-over WRITERS. They
+  // stamp `handed_over_at` on a friend bag (and, by inheritance, on every live guest
+  // bag inside it) and queue the „your coffee is at X" messages. An anonymous caller
+  // reaching either one could mark a whole cycle's bags as handed over — which on
+  // the board is the admin's only record of what has actually left the flat — and
+  // fill the outbox for module 21 to send.
+  { method: 'patch', path: '/api/orders/1/handed-over', data: { handed_over: true } },
+  // ⚠ The guest half rides the MIXED /api/guest-orders mount. `handed_over` is
+  // ADMIN-only exactly as `paid` is, while `PATCH /:id/delivered` and `DELETE /:id`
+  // on the same prefix stay HOST-identity routes in FRIEND_IDENTITY_ENDPOINTS below.
+  // Only this one joins the admin sweep.
+  { method: 'patch', path: '/api/guest-orders/1/handed-over', data: { handed_over: true } },
   // GSO-T6: the admin half of the MIXED-auth /api/guest-orders router (the host
   // half is gated by friend identity instead — see guest-host-view.spec.js).
   { method: 'patch', path: '/api/guest-orders/1/paid', data: { paid: true } },

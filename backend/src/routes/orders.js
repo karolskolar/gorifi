@@ -5,7 +5,12 @@ import { requireAdmin } from '../middleware/admin-auth.js';
 import { packOrder, unpackOrder, packingItemStats } from '../helpers/packing.js';
 import { gramsByProductFromItems, stockViolations } from '../helpers/stock.js';
 import { basePriceForVariant, applyMarkup, roundMoney } from '../helpers/pricing.js';
-import { cycleSubOrdersByHost } from '../helpers/guest-orders.js';
+import { cycleSubOrdersByHost, loadSubOrder } from '../helpers/guest-orders.js';
+import {
+  readHandedOverFlag, partyDelivery, inheritingGuests, orderStage, guestOrderStage,
+} from '../helpers/handover.js';
+import { enqueueForHandOver, cancelForUnHandOver } from '../helpers/outbox.js';
+import { markCycleReady } from '../helpers/cycle-stage.js';
 import { friendOrderVariableSymbol, guestOrderVariableSymbol } from '../helpers/payment.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { pickupTargetFor, activeLocation, applyPickup, readPickup, linkPickupsByHost } from '../helpers/pickup.js';
@@ -567,6 +572,211 @@ router.patch('/:id/packed', requireAdmin, (req, res) => {
   res.json({
     ...updated,
     friend_balance: balanceResult.balance
+  });
+});
+
+// Admin: STAGE 3 — the friend's bag left my hands (DP-T3, 16 §UC-DP-004).
+//
+// „Dropped at Packeta, left at the pickup point, handed to the friend." It sits
+// next to `PATCH /:id/packed` above because the two are the same checklist one step
+// apart — and the difference between them is the whole point of this route:
+//
+// ⚠ **STAGE 2 IS THE LEDGER MOMENT. STAGE 3 IS LEDGER-NEUTRAL BY CONSTRUCTION.**
+// `PATCH /:id/packed` posts the charge and its reversal through
+// `helpers/packing.js`; this handler writes `handed_over_at` and the outbox, and
+// NOTHING ELSE — no `transactions` row in either direction, and no `total` /
+// `paid` / `packed` / `delivered` / `delivery_fee` write. There is no path through
+// it that reaches a money column, and `distribution-handover.spec.js` pins that
+// from two sides (the friend's own ledger through `GET /friends/:id/detail`, and a
+// `MAX(id)` watermark filtered to the friend and the order).
+//
+// ⚠ **AN EXPLICIT BOOLEAN, NEVER A TOGGLE.** Unlike the host's `delivered` tick,
+// an absent field does not flip the state: a hand-over enqueues messages, so the
+// intent has to be stated. `readHandedOverFlag()` is the one binder; `{}`, `true`,
+// `[id]`, `'abc'`, `'true'` and `1` are all 400 and write nothing.
+//
+// ⚠ **NO CYCLE-STATUS GATE** — the same basis as `PATCH /:id/packed` and the pickup
+// PATCH above: the action is needed while the cycle is `locked` (that is when the
+// admin distributes), and a correction may be needed after `completed`.
+//
+// ⚠ **ONE SYNCHRONOUS TRANSACTION, RE-CHECKED INSIDE IT.** The pre-checks below are
+// redundant under TODAY's runtime (`instances: 1` + a fully synchronous handler), and
+// that is not a reason to drop the predicate in the UPDATE: it is the layer that
+// survives PM2 cluster mode, and the day this handler gains an `await` between a
+// check and its write it becomes the only thing standing between two admins on two
+// phones and a bag handed over twice (GA-T8). There is deliberately no `await`
+// anywhere in here.
+//
+// Reversal (`false`) has NO `packed` dependency and no gate of its own — the
+// mis-click case is always allowed.
+router.patch('/:id/handed-over', requireAdmin, (req, res) => {
+  const handedOver = readHandedOverFlag(req.body);
+  if (handedOver === undefined) {
+    return res.status(400).json({
+      error: 'Zadajte, či je balíček odovzdaný',
+      field: 'handed_over',
+    });
+  }
+
+  const order = db.prepare(`
+    SELECT id, friend_id, cycle_id, status, packed, packed_at, handed_over_at
+      FROM orders WHERE id = ?
+  `).get(req.params.id);
+
+  if (!order) {
+    return res.status(404).json({ error: 'Objednávka neexistuje' });
+  }
+
+  // Same family as the packed route's guard, and for the same reason: a whole-order
+  // flag only means something once there IS an order. A draft cart is not a bag.
+  if (order.status !== 'submitted') {
+    return res.status(400).json({ error: 'Len odoslané objednávky môžu byť označené ako odovzdané' });
+  }
+
+  // PO Q8.a: no partial-bag hand-over. An ALREADY handed-over bag skips this (it is
+  // the idempotent case, and re-checking `packed` there would refuse a second click
+  // on a bag that has demonstrably already left).
+  if (handedOver && !order.packed && !order.handed_over_at) {
+    return res.status(409).json({
+      error: 'Najprv označte balíček ako zabalený',
+      reason: 'not_packed',
+    });
+  }
+
+  const apply = db.transaction(() => {
+    const current = db.prepare('SELECT id, packed, handed_over_at FROM orders WHERE id = ?').get(order.id);
+    if (!current) return { conflict: 'gone' };
+
+    // The party's delivery, resolved through `helpers/pickup.js` (which row stores
+    // the pickup) + `helpers/delivery.js` (what it is). It decides the friend's
+    // template key AND which guest bags travel inside this one.
+    const delivery = partyDelivery(order.cycle_id, order.friend_id);
+    const guests = inheritingGuests(order.friend_id, order.cycle_id, delivery);
+
+    const friendBag = {
+      kind: 'friend',
+      cycleId: order.cycle_id,
+      orderId: order.id,
+      friendId: order.friend_id,
+      delivery,
+    };
+    const guestBags = guests.map((guest) => ({
+      kind: 'guest',
+      cycleId: order.cycle_id,
+      guestOrderId: guest.id,
+      hostFriendId: order.friend_id,
+      delivery: guest.delivery,
+    }));
+
+    if (!handedOver) {
+      // ⚠ Literal columns, one statement each — the request body is never spread
+      // into an UPDATE, so nothing outside `handed_over_at` can be written here.
+      db.prepare('UPDATE orders SET handed_over_at = NULL WHERE id = ?').run(order.id);
+
+      // ⚠ A REVERSAL OF NOTHING REVERSES NOTHING. The spec's reversal is
+      // unconditional, and taken literally that means a `false` on a bag that was
+      // NEVER handed over still clears every live guest's stamp and deletes their
+      // queued rows — so a per-bag hand-over (§UC-DP-005 case c, the withheld bag,
+      // and case b's synthetic-host party in full) could be silently undone by a
+      // no-op click on the host row. Inheritance is symmetric, and that is exactly
+      // the reason: the guests are cleared because the HOST's hand-over is being
+      // taken back, so when there was none to take back there is nothing to
+      // propagate. The host's own dequeue still runs (it is scoped to this
+      // `order_id` and finds nothing when the bag was never handed over).
+      const reverted = !!current.handed_over_at;
+      if (reverted) {
+        const clear = db.prepare('UPDATE guest_orders SET handed_over_at = NULL WHERE id = ?');
+        for (const guest of guests) clear.run(guest.id);
+      }
+      return {
+        guestIds: reverted ? guests.map((guest) => guest.id) : [],
+        queued: 0,
+        dequeued: cancelForUnHandOver(reverted ? [friendBag, ...guestBags] : [friendBag]),
+        cycleStage: null,
+      };
+    }
+
+    // ⚠ WHAT THIS CALL ACTUALLY STAMPED — and the ONLY thing it may enqueue for.
+    // `changes` from each UPDATE, never "the bag ended up handed over".
+    let orderStamped = false;
+    if (!current.handed_over_at) {
+      // THE RE-CHECK, as a predicate rather than a second read: `changes === 0`
+      // after the pre-check above means the bag was un-packed between them.
+      const written = db.prepare(`
+        UPDATE orders SET handed_over_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND packed = 1 AND handed_over_at IS NULL
+      `).run(order.id);
+      if (written.changes === 0) return { conflict: 'not_packed' };
+      orderStamped = true;
+    }
+
+    // ONE timestamp for the whole bag — read back, then BOUND to every guest, so the
+    // host and their colleagues carry the identical string. Already-handed guests
+    // keep their own first record (`handed_over_at IS NULL` in the predicate): the
+    // first hand-over time is the record, here as on the order itself.
+    const stamp = db.prepare('SELECT handed_over_at FROM orders WHERE id = ?').get(order.id).handed_over_at;
+    const stampGuest = db.prepare(
+      'UPDATE guest_orders SET handed_over_at = ? WHERE id = ? AND handed_over_at IS NULL'
+    );
+    const stampedBags = [];
+    if (orderStamped) stampedBags.push(friendBag);
+    for (let i = 0; i < guests.length; i += 1) {
+      if (stampGuest.run(stamp, guests[i].id).changes > 0) stampedBags.push(guestBags[i]);
+    }
+
+    // ⚠ ENQUEUE ONLY FOR THE BAGS THIS CALL ACTUALLY STAMPED — not for every bag
+    // that happens to be handed over. `enqueueForHandOver` dedupes on a `queued` row,
+    // which is enough ONLY while every earlier row is still `queued`: the moment
+    // module 21 moves one to `released`/`sent` (WA-T5), a second `handed_over: true`
+    // on an ALREADY-handed bag would stop being deduped and mint a fresh full set —
+    // duplicate „your coffee is at X" messages to real people, for a request that
+    // changed no state at all. A no-op hand-over is not an event, so it queues
+    // nothing. The case that matters is preserved by construction: a guest whose
+    // sub-order arrived AFTER the host was handed over is stamped by this call, so
+    // it IS in `stampedBags` and does get its message.
+    //
+    // ⚠ RECORDED, not a defect: `segment_key` freezes at enqueue time. Correcting a
+    // party's pickup point after the hand-over leaves the queued row pointing at the
+    // old target, and a delivery-type change plus a genuine re-hand-over can leave
+    // two rows under different templates. Only module 21's GROUPING is affected — it
+    // renders every body from the live row at release time — so this is 21's call to
+    // refine (WA-T5), not a reason to rewrite history here.
+    const queued = enqueueForHandOver(stampedBags);
+
+    // §UC-DP-009 — the module-17 seam, called INSIDE the transaction, once per
+    // request. A no-op stub today: there is no `order_cycles.stage` column until
+    // CS-T1, so every response echoes `cycle_stage: null`. ⚠ Nothing in module 16
+    // writes `order_cycles.status` — completion is the admin's button (§UC-DP-014).
+    const cycleStage = markCycleReady(order.cycle_id);
+
+    return { guestIds: guests.map((guest) => guest.id), queued, dequeued: 0, cycleStage };
+  });
+
+  const applied = apply();
+  if (applied.conflict === 'gone') {
+    return res.status(404).json({ error: 'Objednávka neexistuje' });
+  }
+  if (applied.conflict === 'not_packed') {
+    return res.status(409).json({
+      error: 'Najprv označte balíček ako zabalený',
+      reason: 'not_packed',
+    });
+  }
+
+  const updated = db.prepare(
+    'SELECT id, packed, packed_at, handed_over_at FROM orders WHERE id = ?'
+  ).get(order.id);
+
+  // Enough for the board to patch its rows in place without a reload (§UC-DP-004).
+  res.json({
+    order: { ...updated, stage: orderStage(updated) },
+    guests: applied.guestIds.map((id) => {
+      const row = loadSubOrder(id);
+      return { id, handed_over_at: row ? row.handed_over_at : null, stage: guestOrderStage(row) };
+    }),
+    queued_notifications: applied.queued,
+    dequeued_notifications: applied.dequeued,
+    cycle_stage: applied.cycleStage,
   });
 });
 

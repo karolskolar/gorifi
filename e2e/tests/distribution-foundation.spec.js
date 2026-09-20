@@ -541,11 +541,21 @@ test.describe('DP-T1 · handed_over_at is published, notifications stays empty',
   const admin = (method, url, data) =>
     ctx[method](url, { headers: { 'X-Admin-Token': adminToken }, ...(data ? { data } : {}) })
 
-  function notificationCount() {
+  // ⚠ SCOPED TO THIS FIXTURE'S CYCLE since DP-T3. A GLOBAL count was right while
+  // NOTHING wrote the table; now that the hand-over routes do, other spec files
+  // legitimately leave `queued` rows behind, and a global claim would be a value
+  // claim over rows this file does not own — the FUP-T17 lesson, applied before it
+  // can bite. Every assertion below is about THIS cycle's outbox.
+  function notificationRows(cycleId) {
     if (!DB_PATH) return null
     const db = new DatabaseSync(DB_PATH, { readOnly: true })
     try {
-      return Number(db.prepare('SELECT COUNT(*) AS n FROM notifications').get().n)
+      return db.prepare(`
+        SELECT id, channel, template_key, segment_key, recipient_kind, recipient_id,
+               phone_e164, body, status, cycle_id, order_id, guest_order_id,
+               released_at, sent_at, error
+          FROM notifications WHERE cycle_id = ? ORDER BY id
+      `).all(Number(cycleId))
     } finally {
       db.close()
     }
@@ -600,10 +610,51 @@ test.describe('DP-T1 · handed_over_at is published, notifications stays empty',
     })
     expect(guestRes.status(), 'guest submit').toBe(201)
 
-    fixture = { friend, cycle, hostAuth, guestOrder: await guestRes.json() }
+    // ── DP-T3 additions: what the FIRST WRITER needs in order to be provable ──
+    // §UC-DP-008's acceptance case is „a `pickup` friend with two live guests
+    // inserts exactly three queued rows", so the fixture grows a second colleague
+    // and the host grows an own order collected at a pickup point.
+    const guest2Res = await ctx.post(`/api/guest/${link.token}/orders`, {
+      data: {
+        guest_name: `DPT1 Host'ka Dva ${uniq}`, guest_phone: '0902 345 678',
+        items: [{ product_id: product.id, variant: '250g', quantity: 1 }],
+      },
+    })
+    expect(guest2Res.status(), 'second guest submit').toBe(201)
+
+    // ⚠ `pickup_locations` is GLOBAL and every ACTIVE row becomes an <option> in the
+    // picker every admin cycle row renders, so this one is retired in afterAll (the
+    // cross-spec hygiene rule recorded in distribution-handover.spec.js).
+    const locRes = await admin('post', '/api/pickup-locations', {
+      name: `DPT1 Miesto ${uniq}`, address: 'Testovacia 1', for_coffee: true, for_bakery: true,
+    })
+    expect(locRes.status(), 'pickup location create').toBe(201)
+    const location = await locRes.json()
+
+    const cartRes = await ctx.put(`/api/orders/cycle/${cycle.id}/friend/${friend.id}`, {
+      headers: hostAuth, data: { items: [{ product_id: product.id, variant: '250g', quantity: 1 }] },
+    })
+    expect(cartRes.status(), 'host cart').toBe(200)
+    const submitRes = await ctx.post(`/api/orders/cycle/${cycle.id}/friend/${friend.id}/submit`, {
+      headers: hostAuth, data: { pickup_location_id: location.id },
+    })
+    expect(submitRes.status(), 'host submit').toBe(200)
+
+    fixture = {
+      friend, cycle, hostAuth, location,
+      order: (await submitRes.json()).order,
+      guestOrder: await guestRes.json(),
+      guestOrder2: await guest2Res.json(),
+    }
   })
 
-  test.afterAll(async () => { await ctx?.dispose() })
+  test.afterAll(async () => {
+    if (fixture?.location) {
+      const res = await admin('delete', `/api/pickup-locations/${fixture.location.id}`)
+      expect([204, 404], 'fixture location retired').toContain(res.status())
+    }
+    await ctx?.dispose()
+  })
 
   test('the host view publishes handed_over_at through GUEST_ORDER_FIELDS', async () => {
     const res = await ctx.get(`/api/guest-links/cycle/${fixture.cycle.id}`, { headers: fixture.hostAuth })
@@ -632,25 +683,160 @@ test.describe('DP-T1 · handed_over_at is published, notifications stays empty',
     expect(party.guest_orders[0].handed_over_at).toBe(null)
   })
 
-  test('nothing in the app writes a notifications row', async () => {
-    // ⚠ RECORDED LIMIT, for the row that lands the first writer (DP-T3): this test
-    // can only pass while NO writer exists at all — the load-bearing evidence today
-    // is the repo-wide absence of any `INSERT INTO notifications`, not this burst.
-    // Once the hand-over routes ship, REWRITE it as "only those routes write":
-    // hand over a bag, assert the expected `queued` rows appear (UC-DP-008's
-    // counts/columns), and assert the burst below still adds none. Left as-is it
-    // degrades into a tautology that passes whatever DP-T3 does.
-    test.skip(!DB_PATH, 'needs DB_PATH pointed at the server database (the documented skip)')
-    const before = notificationCount()
-    expect(before, 'the outbox starts empty — DP-T3 is the first writer').toBe(0)
+  // ⚠ REWRITTEN BY DP-T3, per the note this test used to carry. It used to say
+  // „nothing in the app writes a notifications row", which could only ever pass
+  // while NO writer existed — the load-bearing evidence was the repo-wide absence
+  // of any `INSERT INTO notifications`, not the burst. DP-T3 IS the first writer,
+  // so the claim becomes the one that stays true: **ONLY the two hand-over routes
+  // write, and this is exactly what they write.**
+  //
+  // ⚠ The `DB_PATH` skip stays here and ONLY here, for a reason that is not the one
+  // the two retired `distribution-handover.spec.js` tests had: `notifications` has
+  // no API at all, in this module or in 21's read-only direction, so the COLUMNS of
+  // a queued row are unobservable without the file. The route BEHAVIOUR (how many
+  // rows, and when none) is asserted ungated over there, through the
+  // `queued_notifications` / `dequeued_notifications` counts the routes answer.
+  test('only the hand-over routes write a notifications row — and these are the rows', async () => {
+    test.skip(!DB_PATH, 'the outbox has no API — column-level evidence needs the database file')
 
-    // A burst of real traffic over the surfaces this row touched.
-    expect((await admin('get', `/api/cycles/${fixture.cycle.id}/distribution`)).status()).toBe(200)
-    expect((await ctx.get(`/api/guest-links/cycle/${fixture.cycle.id}`, { headers: fixture.hostAuth })).status()).toBe(200)
-    expect((await admin('get', `/api/guest-orders/cycle/${fixture.cycle.id}/unpaid`)).status()).toBe(200)
+    const cycleId = fixture.cycle.id
+    expect(notificationRows(cycleId), 'this cycle\'s outbox starts empty').toEqual([])
+
+    // 1. A burst of REAL traffic over every surface module 16 touched. None of it is
+    //    a hand-over, so none of it may queue anything.
+    expect((await admin('get', `/api/cycles/${cycleId}/distribution`)).status()).toBe(200)
+    expect((await ctx.get(`/api/guest-links/cycle/${cycleId}`, { headers: fixture.hostAuth })).status()).toBe(200)
+    expect((await admin('get', `/api/guest-orders/cycle/${cycleId}/unpaid`)).status()).toBe(200)
     expect((await admin('patch', `/api/guest-orders/${fixture.guestOrder.order.id}/paid`, { paid: true })).status()).toBe(200)
-    expect((await admin('patch', `/api/cycles/${fixture.cycle.id}`, { status: 'locked' })).status()).toBe(200)
+    expect((await admin('patch', `/api/cycles/${cycleId}`, { status: 'locked' })).status()).toBe(200)
 
-    expect(notificationCount(), 'still empty after the burst').toBe(0)
+    expect(notificationRows(cycleId), 'ordinary traffic still adds none').toEqual([])
+
+    // 2. Pack the bag. ⚠ Packing is STAGE 2 and is the LEDGER moment — it is also
+    //    not a hand-over, so it queues nothing either. (No cycle-open gate: the
+    //    cycle is `locked` by now, which is exactly when the admin packs.)
+    const beforePack = await admin('get', `/api/cycles/${cycleId}/distribution`)
+    const party = (await beforePack.json()).distribution.find((r) => r.id === fixture.friend.id)
+    for (const item of party.items) {
+      expect((await admin('patch', `/api/order-items/${item.id}/packed`)).status()).toBe(200)
+    }
+    for (const guest of party.guest_orders) {
+      for (const item of guest.items) {
+        expect((await admin('patch', `/api/guest-order-items/${item.id}/packed`)).status()).toBe(200)
+      }
+    }
+    expect((await admin('patch', `/api/orders/${fixture.order.id}/packed`)).status()).toBe(200)
+    expect(notificationRows(cycleId), 'packing is not a hand-over').toEqual([])
+
+    // 3. THE hand-over. §UC-DP-008's acceptance case: a `pickup` friend with two
+    //    live guests inserts exactly THREE `queued` rows.
+    const handed = await admin('patch', `/api/orders/${fixture.order.id}/handed-over`, { handed_over: true })
+    expect(handed.status()).toBe(200)
+    expect((await handed.json()).queued_notifications).toBe(3)
+
+    const rows = notificationRows(cycleId)
+    expect(rows.length, 'one per (recipient, bag) — and not one more').toBe(3)
+
+    for (const row of rows) {
+      // ⚠ The fixed columns of §UC-DP-008. `body` and `phone_e164` are NULL ON
+      // PURPOSE: module 21 renders the text and resolves the number at RELEASE
+      // time, because the template is editable in its composer first — rendering
+      // here would freeze stale wording into rows.
+      expect(row.channel).toBe('whatsapp')
+      expect(row.status, 'no `released` transition exists in module 16').toBe('queued')
+      expect(row.body, 'facts, not text').toBe(null)
+      expect(row.phone_e164, 'resolved by module 21 at release').toBe(null)
+      expect(row.released_at).toBe(null)
+      expect(row.sent_at).toBe(null)
+      expect(row.error).toBe(null)
+      expect(row.cycle_id).toBe(cycleId)
+    }
+
+    const friendRows = rows.filter((row) => row.recipient_kind === 'friend')
+    expect(friendRows.length, 'one for the friend whose bag it is').toBe(1)
+    expect(friendRows[0]).toMatchObject({
+      template_key: 'pickup',
+      segment_key: `loc${fixture.location.id}`,
+      recipient_id: fixture.friend.id,
+      order_id: fixture.order.id,
+      guest_order_id: null,
+    })
+
+    const guestRows = rows.filter((row) => row.recipient_kind === 'guest')
+    expect(guestRows.length, 'one per inherited colleague').toBe(2)
+    expect(guestRows.map((row) => row.guest_order_id).sort((a, b) => a - b)).toEqual(
+      [fixture.guestOrder.order.id, fixture.guestOrder2.order.id].sort((a, b) => a - b)
+    )
+    for (const row of guestRows) {
+      expect(row.template_key, 'a guest travelling with their host hears about the HOST').toBe('host')
+      expect(row.segment_key, 'grouped by host, not by where the host collects')
+        .toBe(`host:${fixture.friend.id}`)
+      expect(row.recipient_id, 'a guest recipient IS the sub-order').toBe(row.guest_order_id)
+      expect(row.order_id).toBe(null)
+    }
+
+    // 4. A repeat inserts NONE — while the rows are still `queued`, the dedupe key
+    //    is what stops it.
+    const repeat = await admin('patch', `/api/orders/${fixture.order.id}/handed-over`, { handed_over: true })
+    expect(repeat.status()).toBe(200)
+    expect((await repeat.json()).queued_notifications).toBe(0)
+    expect(notificationRows(cycleId).length, 'still three').toBe(3)
+
+    // 5. ⚠ REVIEW FINDING (DP-T3), and the reason this file keeps a WRITE handle:
+    //    the dedupe above only holds WHILE the rows are `queued`. Module 21 moves
+    //    them to `released`/`sent` (WA-T5), and from that moment a dedupe-only
+    //    guard would let a second `handed_over: true` on an ALREADY-handed bag mint
+    //    a fresh full set — duplicate „your coffee is at X" messages to real people,
+    //    for a request that changed no state at all. The rule that survives 21 is
+    //    the one asserted here: a hand-over enqueues for the bags IT STAMPED, so a
+    //    no-op call mints nothing whatever the old rows' status is.
+    //
+    //    Simulated by flipping this cycle's rows directly, because no route in
+    //    module 16 can produce a non-`queued` row — those transitions are 21's.
+    const flip = new DatabaseSync(DB_PATH)
+    try {
+      flip.prepare("UPDATE notifications SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE cycle_id = ? AND status = 'queued'")
+        .run(cycleId)
+    } finally {
+      flip.close()
+    }
+    expect(notificationRows(cycleId).filter((row) => row.status === 'sent').length, 'all three are history now').toBe(3)
+
+    const noopAfterSent = await admin('patch', `/api/orders/${fixture.order.id}/handed-over`, { handed_over: true })
+    expect(noopAfterSent.status()).toBe(200)
+    expect(
+      (await noopAfterSent.json()).queued_notifications,
+      'a hand-over that stamps nothing queues nothing — even with nothing left to dedupe against'
+    ).toBe(0)
+    expect(notificationRows(cycleId).length, 'not one duplicate message was minted').toBe(3)
+
+    // 6. The reversal deletes `queued` rows ONLY — history is never deleted.
+    const reversedOverSent = await admin('patch', `/api/orders/${fixture.order.id}/handed-over`, { handed_over: false })
+    expect(reversedOverSent.status()).toBe(200)
+    expect((await reversedOverSent.json()).dequeued_notifications, 'nothing is queued').toBe(0)
+    const survivors = notificationRows(cycleId)
+    expect(survivors.length, 'the sent rows survive the reversal').toBe(3)
+    expect(survivors.every((row) => row.status === 'sent')).toBe(true)
+
+    // 7. A GENUINE re-hand-over after that reversal IS a new event, so the `sent`
+    //    rows do not block a new `queued` set.
+    const again = await admin('patch', `/api/orders/${fixture.order.id}/handed-over`, { handed_over: true })
+    expect(again.status()).toBe(200)
+    expect(
+      (await again.json()).queued_notifications,
+      'a `sent` row does not block a new `queued` one — the bag really left again'
+    ).toBe(3)
+
+    const mixed = notificationRows(cycleId)
+    expect(mixed.length, 'three sent plus three fresh queued').toBe(6)
+    expect(mixed.filter((row) => row.status === 'sent').length).toBe(3)
+    expect(mixed.filter((row) => row.status === 'queued').length).toBe(3)
+
+    // 8. …and the reversal takes exactly the fresh three.
+    const cleared = await admin('patch', `/api/orders/${fixture.order.id}/handed-over`, { handed_over: false })
+    expect((await cleared.json()).dequeued_notifications).toBe(3)
+    const finalRows = notificationRows(cycleId)
+    expect(finalRows.length, 'history survives the dequeue').toBe(3)
+    expect(finalRows.every((row) => row.status === 'sent')).toBe(true)
   })
 })
