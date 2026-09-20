@@ -428,6 +428,13 @@ admin skin (shadcn, no `neo/` classes, no theme tokens outside the mounted compo
 
 - Native `type="date"` emits ISO `YYYY-MM-DD` — exactly the server format, no client
   parsing. Empty ⇒ `null` ⇒ clear.
+- ⚠⚠ **THIS BULLET AND THE „follow `saveExpectedDate`" INSTRUCTION ABOVE CONTRADICT EACH
+  OTHER** (found and resolved in CS-T3, 2026-09-20). `saveExpectedDate()` keeps its
+  `loadAll()` INSIDE the `try`, so a refused save never refetches and the rejected value
+  STAYS IN THE INPUT — the opposite of snapping back. The snap-back requirement wins
+  (CLAUDE.md is the tiebreaker), so the two new savers put `loadAll()` in `finally`; copy
+  THEM, not `saveExpectedDate`. (`expected_date`/`plan_note` keep the old shape and it is
+  unobservable: the route validates neither column, so neither has a 400 path at all.)
 - A 400 (`Neplatný dátum` / `dates_order`) lands in `error.value` and the control snaps
   back to the stored value on the `loadAll()` refetch (CLAUDE.md: a refused change snaps
   the control back).
@@ -544,8 +551,16 @@ every changed backend file, then Playwright.
    - **UI:** CycleDetail date save + revert-on-400 + stage buttons + compact `now` index
      (UC-CS-007); guest status page card, cancelled hides it, edit mode hides it, the new
      `status-readonly` sentence (UC-CS-008); vertical variant's `done/now/next` counts
-     for a locked+`arrived` cycle; the component's `.mk` border computed inside the admin
-     page (no `.app`) is `3px solid`.
+     for a locked+`arrived` cycle; ~~the component's `.mk` border computed inside the admin
+     page (no `.app`) is `3px solid`~~ — ⚠ **UNREACHABLE AS WRITTEN, retargeted by CS-T3
+     (2026-09-20): §UC-CS-007 mounts `variant="compact"`, whose marker is `.d`, NOT `.mk`.**
+     The claim is delivered on `.cs-dots .d`, which carries the byte-identical
+     `border: 3px solid var(--nb-ink, #0a0a0a)`. ⚠⚠ And it CANNOT be moved to CS-T4 instead:
+     the guest status page's root is `<div class="app …">`, and `.app` DEFINES
+     `--nb-ink:#0a0a0a` — byte-identical to the fallback — so a computed-style read there
+     would pass whether or not the fallback exists. **CS-T3's `.d` measurement is module 17's
+     only runtime proof of the fallback mechanism**; per-declaration fallback coverage is
+     CS-T2's source gate, not a second computed-style test.
 2. **`api-security.spec.js` — `ADMIN_ENDPOINTS` +=** `{ method: 'patch', path:
    '/api/cycles/1', data: { stage: 'arrived' } }` (UC-CS-002). No public route is added,
    so the zero-external-requests sweep in `self-hosted-fonts.spec.js` is unchanged.

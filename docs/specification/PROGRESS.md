@@ -386,8 +386,8 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 > markCycleReady()` — stub in DP-T1, body in CS-T1, called by DP-T3/T4; `notifications` table — CREATE in
 > DP-T1, rows written by DP-T3, rendered/released/sent by module 21; `helpers/phone.js toE164` — shipped by
 > GL-T3, adopted unchanged by WA-T1; `lib/roasters.js` — created by PI-T8, imported by GL-T4;
-> `helpers/delivery.js` — DP-T1, consumed by GP-T6 and WA-T3; `CycleTimeline.vue` — CS-T2, mounted by
-> PI-T4/T5 and CS-T4; balance „Zaplatiť“ trigger — PL-T4 on `FriendBalanceCard`, RELOCATED (never
+> `helpers/delivery.js` — DP-T1, consumed by GP-T6 and WA-T3; `CycleTimeline.vue` — CS-T2, mounted FIRST by
+> CS-T3 (admin header, `compact`), then PI-T4/T5 and CS-T4; balance „Zaplatiť“ trigger — PL-T4 on `FriendBalanceCard`, RELOCATED (never
 > duplicated) by PI-T7.
 
 ## 13. Payment links (15) — Revolut amount link, PayMe.sk, variable symbol
@@ -416,7 +416,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 - [x] CS-T1  Schema `opens_at`/`closes_at`/`stage` on `order_cycles` (ALTERs placed AFTER the `_check_test` recreate block, schema.js ~177-201) + `helpers/cycle-stage.js` (`CYCLE_STAGES`, `LOCKED_STAGE_DEFAULT`, **`markCycleReady()` BODY replacing DP-T1's stub** — idempotent, forward-only, never touches `status`) + `POST/PATCH /cycles` contract (ISO dates, 400 `Neplatný dátum`/`dates_order`, stage 409 `not_locked`, lock ⇒ `ordered`, unlock ⇒ NULL) + payload publication on friend/public/guest/admin cycle blocks; `PATCH /api/cycles/1` joins `ADMIN_ENDPOINTS` — `17 §UC-CS-001,002,003,004` · model=heavy ⚠ PO O2: `expected_date` = DELIVERY expectation, `closes_at` = deadline — published side by side, unchanged `expected_date`; the cartbar/status-line switch is PI-T1/T3's. ⚠ DP-T3/T4 already call the stub inside their transactions, so the `cycle-stages.spec.js` seam section (hand-over ⇒ `ready`, idempotent, un-hand-over keeps `ready`, `transactions` unmoved) runs LIVE here — no self-skip needed; verify DP's rows echo `cycle_stage:'ready'`.
 - [x] CS-T2  `lib/cycle-stages.js` (STEPS ×6, `stageIndex`, `fmtDay`, `daysUntil`, `inWeeksText` „o n dní/týždne/týždňov“, `nextOpeningText` three branches, `openUntilText`, `currentCycleFor`) + `lib/plural.js daysLabel/weeksLabel` + `CycleTimeline.vue` ONE component, `vertical` + `compact` variants, scoped styles with token fallbacks, no `.app` dependency — `17 §UC-CS-005,006` ⚠ NO string containing kolo/cyklus anywhere (regex sweep, non-vacuous ≥6 labels); labels are PO staging-review drafts (O1); consumers: PI-T4 (dots + own caption row), PI-T5 (vertical), CS-T4 (guest status), GL-T5 (`nextOpeningText`).
-- [ ] CS-T3  CycleDetail admin controls: `type=date` fields Otvorenie/Uzávierka objednávok (save/clear, 400 snaps back), forward-only stage buttons „Káva dorazila“ / „Zabalené, rozvážame“ (PO O3), stage badge + read-only compact timeline in the header — `17 §UC-CS-007` ⚠ NO date fields in the dashboard create dialog (PO O5); `expected_date`/`plan_note` fields untouched here; shares the header with DP-T8's plan line.
+- [x] CS-T3  CycleDetail admin controls: `type=date` fields Otvorenie/Uzávierka objednávok (save/clear, 400 snaps back), forward-only stage buttons „Káva dorazila“ / „Zabalené, rozvážame“ (PO O3), stage badge + read-only compact timeline in the header — `17 §UC-CS-007` ⚠ NO date fields in the dashboard create dialog (PO O5); `expected_date`/`plan_note` fields untouched here; shares the header with DP-T8's plan line.
 - [ ] CS-T4  Guest status page mounts the vertical timeline („Kde je vaša káva“ card, all SIX steps — PO O4; hidden in edit mode and on cancelled) + `readOnlyReason` copy retarget (drops „cykle“) + **module-17 closeout (full suite)** — `17 §UC-CS-008,009` ⚠ SANCTIONED: `guest-status-shell.spec.js:356` toHaveText retarget; `nonstring-body-shape.spec.js` gains the three fields; `api-security` += PATCH cycles (from CS-T1). The 3-step LINK-page explainer is GL-T4's.
 
 ## 16. Portal information architecture (18) — landing = current offer, menu, explainer, profile
@@ -471,6 +471,32 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## Log
 
+- 2026-09-20 · CS-T3 · (this commit) · no PR (project convention) · **The admin controls — and the
+  spec contradicted itself TWICE, both caught and both struck.** Two `type="date"` fields on the
+  cycle settings card, the two forward-only stage buttons plus a stage badge, and the first real
+  MOUNT of `CycleTimeline` (compact, in the header beside DP-T8's plan line).
+  ⚠ **Contradiction 1 — snap-back.** §UC-CS-007 said „follow `saveExpectedDate`" AND „the control
+  snaps back on the `loadAll()` refetch". That function keeps `loadAll()` inside the `try`, so a
+  refused save never refetches and the rejected value STAYS IN THE INPUT. CLAUDE.md is the
+  tiebreaker; the two new savers refetch in `finally`. Unobservable for `expected_date`/`plan_note`
+  — the route validates neither column, so neither has a 400 path at all.
+  ⚠ **Contradiction 2 — `.mk` in the admin page.** §UC-CS-009 asked for the `.mk` border computed
+  on the admin page, but §UC-CS-007 mounts `variant="compact"`, whose marker is `.d`. Delivered on
+  `.d` (byte-identical declaration) and struck in the spec.
+  ⚠⚠ **A FIFTH can't-fail assertion, caught BEFORE it was written.** The `.mk` claim cannot simply
+  move to CS-T4: `GuestOrderStatus.vue`'s root is `.app`, which DEFINES `--nb-ink:#0a0a0a` — byte
+  identical to the component's fallback — so a computed-style read there passes whether the
+  fallback exists or not. **CS-T3's `.d` measurement is module 17's only runtime proof of the
+  fallback mechanism**, because the admin page is the one place the component renders with the
+  portal tokens genuinely absent. Recorded so CS-T4 pins counts, not fallbacks.
+  ⚠ The stage-index table repeats the module's pattern: inverting `stageIndex()` reds only ONE of
+  six rows — the `completed` fixture built lock→`ready`→complete, the only one carrying a stale
+  stage. The other five pair agreeing values and are fixed points.
+  Admin-skin invariance held: zero `neo/`, zero `friends-theme`/`.app` tokens, no admin CSS,
+  `AdminDashboard.vue` untouched, the file's separate kg badge untouched. Passes `:cycle`, never
+  `:steps`.
+  Gate: **378 passed / 0 failed / 0 skipped** over six files. Review: **approve**, four minors, all
+  acted on.
 - 2026-09-20 · CS-T2 · (this commit) · no PR (project convention) · **The step model, the copy and the
   timeline component — and THREE assertions that could not fail for the reason they claimed.**
   `lib/cycle-stages.js` (STEPS ×6, `stageIndex`, `timelineSteps`, `fmtDay`, `daysUntil`,

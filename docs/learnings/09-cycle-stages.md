@@ -166,8 +166,9 @@ same principle leaking one transition too far, and C contradicts it outright.
 **What shipped.** `frontend/src/lib/cycle-stages.js` (six `STEPS` + `stageIndex`,
 `timelineSteps`, `fmtDay`, `daysUntil`, `inWeeksText`, `nextOpeningText`,
 `openUntilText`, `currentCycleFor`); `lib/plural.js` gained `daysLabel` / `weeksLabel`;
-`components/CycleTimeline.vue` — ONE component, `vertical` + `compact`. Nothing mounts it
-yet: CS-T3 puts it in the admin header, CS-T4 on the guest status page.
+`components/CycleTimeline.vue` — ONE component, `vertical` + `compact`. ~~Nothing mounts it
+yet:~~ **superseded — CS-T3 mounted it (admin header, `compact`); see §CS-T3 below.** CS-T4
+still owns the guest status page and the first `vertical` render.
 
 ### 1. §10's warning was worth the paragraph — and the mutation proves it silently
 
@@ -217,8 +218,10 @@ switched, the same mutation reds. Any future date arithmetic here needs the same
 
 ### 5. The component has no rendered coverage in this row, deliberately
 
-CS-T2 ships `CycleTimeline.vue` and mounts it nowhere, so §UC-CS-009 item 1's rendered
-`done`/`now`/`next` counts and the computed `.mk` border belong to CS-T3/CS-T4. What IS
+~~CS-T2 ships `CycleTimeline.vue` and mounts it nowhere, so §UC-CS-009 item 1's rendered
+`done`/`now`/`next` counts and the computed `.mk` border belong to CS-T3/CS-T4.~~
+**SUPERSEDED — CS-T3 mounted it and delivered the rendered half on `.d`; the `.mk` half is
+UNREACHABLE as written (see §CS-T3).** What IS
 provable now is the set nobody later would notice breaking, and it is pinned at source level
 by compiling the SFC with `@vue/compiler-sfc` out of `frontend/node_modules`:
 
@@ -264,3 +267,125 @@ array is in play, so an injected array of a different length still labels correc
   sentence are two facts, and folding `expected_date` in here would make this lib a second
   home for a string module 18 owns. **PI-T1/PI-T3 must compose the two clauses at the call
   site; do not grow the fallback into this helper.**
+
+---
+
+## CS-T3 — the admin controls, and the component's first mount anywhere (2026-09-20)
+
+**What shipped.** `CycleDetail.vue` only: two `type="date"` controls (Otvorenie
+objednávok / Uzávierka objednávok) on the cycle settings card, a stage `Badge` and the
+two forward-only buttons („Káva dorazila" / „Zabalené, rozvážame") in the header, and
+`<CycleTimeline :cycle="cycle" variant="compact" />` with a muted caption line beside
+DP-T8's plan line. No backend change, no schema change, no new dependency.
+`AdminDashboard.vue` is untouched (PO O5).
+
+### 1. ⚠ `saveExpectedDate()` is the pattern, and it does NOT snap back
+
+The spec says to follow `saveExpectedDate()` (`CycleDetail.vue:1149`) and, three lines
+later, that a 400 must leave the control showing the STORED value. Those two
+instructions contradict each other: that function's `await loadAll()` sits INSIDE the
+`try`, after the call that throws, so a refused `expected_date` keeps standing in its
+input. The two new savers put the refetch in `finally` instead — it runs on both paths,
+and `loadAll()` does not clear `error`, so the banner explaining the refusal outlives
+the reload that undoes it. Mutation-proved in both directions: move the refetch back
+into the `try` and „⚠ a refused pair shows the server message and the control SNAPS
+BACK" reds on the input value, with the rest of the file green.
+
+⚠ `expected_date` and `plan_note` were deliberately left on the old behaviour. They are
+out of scope (PO O2, resolved conflict 6) and changing them would move an assertion
+nobody asked to move; the divergence is recorded here so the next reader does not
+"fix" the new savers back into the old shape.
+
+### 2. ⚠ The admin skin renamed the colliding tokens years ago, and that is why this works
+
+`CycleTimeline.vue`'s port reads `--nb-ink`, `--accent`, `--accent-ink`, `--ink-dim`,
+`--ink-faint`, `--font-mono`, `--font-display`, each behind a fallback. shadcn's
+`style.css` defines `--accent` and `--border` in `:root` in EVERY other project; this
+one calls them `--ui-accent` / `--ui-border`. Had it not, `background: var(--accent,
+#ff2d87)` on the admin page would have resolved to the HSL TRIPLET `60 5% 96%` —
+invalid at computed-value time, i.e. a transparent dot, and the fallback would never
+have fired. The component is safe here by an accident of someone else's naming, so the
+test asserts the PRECONDITION (`--nb-ink` / `--accent` / `--ink-dim` all empty on
+`document.documentElement`, and zero `.app` / `.modal-layer` elements on the page)
+before it asserts a single computed value. Without those two lines the whole test would
+be just as green on a page that DID supply the tokens.
+
+Measured mutation (drop the fallback from `.cs-dots .d`):
+`3px solid rgb(10, 10, 10)` → **`0px none rgb(28, 25, 23)`** — the entire `border`
+shorthand is dropped and the colour falls through to the plate's `currentColor`. That
+is the whole reason CS-T2 built the component with fallbacks, now measured rather than
+argued.
+
+⚠ **The `.mk` in §UC-CS-009 item 1 is not reachable from this row.** `.mk` is the
+VERTICAL variant's marker; §UC-CS-007 mounts `variant="compact"`, whose marker is `.d`.
+The two carry the same `3px solid var(--nb-ink, …)` declaration, so the claim is
+delivered on `.d`, and the first `.mk` render belongs to CS-T4's guest status card.
+
+⚠⚠ **BUT CS-T4 CANNOT INHERIT THE FALLBACK CLAIM, AND THIS IS THE FIFTH CAN'T-FAIL
+ASSERTION THIS MODULE HAS PRODUCED — CAUGHT BEFORE IT WAS WRITTEN** (CS-T3 review,
+2026-09-20). `GuestOrderStatus.vue`'s root is `<div class="app flex flex-col">`, and
+`friends-theme.css` defines `--nb-ink:#0a0a0a` on `.app` — **byte-identical to the
+component's own fallback**. A CS-T4 test that reads `getComputedStyle('.mk').borderTopColor`
+there gets `rgb(10, 10, 10)` whether the fallback exists or not: delete every `, #0a0a0a`
+in the SFC and it still passes. The `.app` ancestor is exactly what makes the reading
+meaningless, and it is unavoidable on that page.
+
+**So: CS-T3's `.d` measurement is module 17's ONLY runtime proof of the fallback
+mechanism** — the admin page is the only place the component renders where the portal
+tokens are genuinely absent (`style.css` defines `--ui-accent`/`--ui-border`, and neither
+`--accent` nor `--nb-ink` nor `--ink-dim`). Per-declaration fallback COVERAGE is CS-T2's
+source gate (`cycle-stages.spec.js`, the `bare` array must be `[]`), not a second
+computed-style test. CS-T4 should pin the vertical variant's `done`/`now`/`next` COUNTS and
+its label — which are real there — and must not add a fallback assertion on that page.
+Same for "the vertical variant's done/now/next counts" in that item — the counts are
+pinned here on the compact strip (which has no `done` class: a dot with neither `now`
+nor `next` IS done), and the vertical ones are CS-T4's.
+
+### 3. ⚠ The six-row index table is only evidence because the `completed` row is stale
+
+The acceptance criterion names four indices (planned 0, open 1, locked+ready 4,
+completed 5). Four rows whose statuses each map to their own index prove that
+`stageIndex` was called — not that it reads `status` before `stage`, which is the one
+property CS-T1 §10 and CS-T2 §1 say is load-bearing. The table here is six rows, all
+six indices distinct, and the `completed` fixture is built through **lock → stage
+`ready` → complete**, so it carries a STALE `stage = 'ready'` (§UC-CS-002: `completed`
+leaves the stage alone, it is the historical record). Invert `stageIndex()` and that
+row — and only that row — reds, at step 4 instead of 5. The other five are fixed points
+of the inversion, exactly as CS-T2 warned. The test says so at the fixture and repeats
+the discriminating assertion alone afterwards, so the failure message names the defect
+rather than a deep-equality diff.
+
+### 4. The NULL-stage row needed a UI twin, and it is DB_PATH-gated
+
+`canMarkArrived` is `stage === null || stage === 'ordered'`. Drop the NULL half and
+every locked round **in production** loses its „Káva dorazila" button, because the
+no-backfill rule left them all at NULL — and no sequence of API calls reproduces that
+row (locking writes `ordered`, unlocking also opens the cycle, `stage: null` is a 400).
+So the UI test manufactures it with `node:sqlite`, the BUILD-THE-SCENARIO kind of gate,
+and `e2e/README.md`'s DB_PATH inventory went from THREE un-skipped tests in this file
+to FOUR. Mutation-proved: drop the NULL branch and that test alone reds.
+
+### 5. The header is shared, and the proof is that the plan line comes back byte-identical
+
+DP-T8's `cycle-plan-line` renders for `locked` and `completed` rounds in the same
+header block. The stage badge went into a flex row beside the status badge and the
+timeline under the plan line. The sharing test captures the plan sentence, clicks
+„Káva dorazila" (which re-runs `loadAll()`, and with it `loadDistributionPlan()`), and
+requires the same string back — so "does not re-derive its numbers" is asserted as an
+invariant across a reload rather than as a grep. Mutation-proved by deleting the `<p>`.
+
+### 6. Small things measured rather than assumed
+
+- The compact strip's connectors are `flex: 1`, so a shrink-to-fit container collapses
+  them to zero and prints six touching squares. The plate is `w-64 max-w-full`.
+- Chromium serialises `box-shadow` with the spread: `rgb(10, 10, 10) 2px 2px 0px 0px`,
+  not `… 0px`. The first version of that assertion failed on the trailing `0px`.
+- The header plate is `bg-background text-foreground` because the header itself is
+  `bg-primary`; the ported component draws ink on white. That is also what makes the
+  fallback mutation VISIBLE — `currentColor` there is `rgb(28, 25, 23)`, not the ink.
+- `Input.vue` has no `inheritAttrs: false`, so `type="date"` falls through. No wrapper
+  was needed and none was added.
+- ⚠ **Process, not code:** `git checkout -- <file>` to revert a MUTATION also reverts
+  the uncommitted task work in that file. It cost a full re-application of this row's
+  `CycleDetail.vue` diff mid-gate. Keep a pristine copy in the scratchpad and restore
+  from that; `git checkout` is safe only for files the row does not touch.

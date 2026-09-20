@@ -1452,3 +1452,383 @@ test.describe('CS-T2 · 17 §UC-CS-006 — CycleTimeline.vue', () => {
     expect(src).toMatch(/:style="s\.state === 'now' \? \{ lineHeight: '1' \} : null"/)
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. CS-T3 · §UC-CS-007 — the admin controls on `CycleDetail.vue`
+//
+// ⚠ THIS IS THE FIRST MOUNT OF `CycleTimeline.vue` ANYWHERE. CS-T2 shipped the
+// component and mounted it nowhere, so everything it guarantees was pinned at
+// SOURCE level only (the SFC compiles, one scoped style block, no `.app` selector,
+// every token behind a fallback). §UC-CS-009 item 1's RENDERED half therefore lands
+// here: the `done` / `now` / `next` counts off the live DOM, and the marker border
+// read out of `getComputedStyle` on a page that has no `.app` ancestor at all —
+// which is the entire reason the port carries fallbacks.
+//
+// ⚠ ONE ADMIN TOKEN APP-WIDE. Every test below logs in through the BROWSER first
+// and adopts that token before it builds its fixture through the API; a UI login
+// mints a new row and invalidates whatever `beforeAll` minted.
+//
+// ⚠ THE INDEX FIXTURES ARE CHOSEN SO THAT NO TWO OF THEM COINCIDE. Six statuses,
+// six distinct step indices — a table whose rows shared an index would be a fixed
+// point of the mutation it exists to catch. The `completed` row goes further: it
+// carries a STALE `stage = 'ready'` (CS-T1 §10, reachable through lock → ready →
+// complete), so it renders step 5 only while `stageIndex()` reads `status` first.
+// A stage-first read lights step 4 there instead, and nothing else in this file
+// would notice.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CS3_VIEW = join(CS2_FRONTEND_SRC, 'views/CycleDetail.vue')
+
+async function loginAsAdminUI(page) {
+  await page.goto('/admin')
+  await page.locator('#password').fill(ADMIN_PASSWORD)
+  await page.getByRole('button', { name: /Prihlásiť sa/ }).click()
+  await expect(page).toHaveURL(/\/admin\/dashboard/)
+}
+
+async function adoptBrowserToken(page) {
+  const token = await page.evaluate(() => localStorage.getItem('adminToken'))
+  expect(token, 'the browser is logged in').toBeTruthy()
+  adminToken = token
+}
+
+/** Log in through the UI and hand the API half the browser's token. */
+async function adminUI(page) {
+  await loginAsAdminUI(page)
+  await adoptBrowserToken(page)
+}
+
+/** The six dots as `'done' | 'now' | 'next'`, in order. */
+async function dotStates(page) {
+  const dots = page.locator('[data-testid="cycle-timeline-compact"] .d')
+  await expect(dots, 'the compact strip renders all six steps').toHaveCount(6)
+  return dots.evaluateAll((els) => els.map((el) => (
+    el.classList.contains('now') ? 'now' : el.classList.contains('next') ? 'next' : 'done'
+  )))
+}
+
+test.describe('CS-T3 · 17 §UC-CS-007 — the two planning dates on the settings card', () => {
+  test('both dates save through the card and survive a reload', async ({ page }) => {
+    await adminUI(page)
+    const cycle = await makeCycle('T3Dates')
+    await page.goto(`/admin/cycle/${cycle.id}`)
+
+    await expect(page.getByTestId('cycle-opens-at'), 'an unset column is an empty control').toHaveValue('')
+    await expect(page.getByTestId('cycle-closes-at')).toHaveValue('')
+
+    // ⚠ `type="date"` emits ISO `YYYY-MM-DD`, which is byte-for-byte what the route
+    // stores — the read-back below is the whole claim: no client parsing anywhere.
+    await page.getByTestId('cycle-opens-at').fill('2026-10-05')
+    await page.getByTestId('cycle-opens-at-save').click()
+    await expect.poll(async () => (await readCycle(cycle.id)).opens_at,
+      { message: 'the opening reaches the column' }).toBe('2026-10-05')
+
+    await page.getByTestId('cycle-closes-at').fill('2026-10-12')
+    await page.getByTestId('cycle-closes-at-save').click()
+    await expect.poll(async () => (await readCycle(cycle.id)).closes_at,
+      { message: 'the deadline reaches the column' }).toBe('2026-10-12')
+
+    await page.reload()
+    await expect(page.getByTestId('cycle-opens-at')).toHaveValue('2026-10-05')
+    await expect(page.getByTestId('cycle-closes-at')).toHaveValue('2026-10-12')
+
+    // The two dates are INDEPENDENT of the shipped `expected_date`, which PO O2 made
+    // the DELIVERY expectation — neither save may touch it or the plan note.
+    const row = await readCycle(cycle.id)
+    expect({ expected_date: row.expected_date, plan_note: row.plan_note })
+      .toEqual({ expected_date: null, plan_note: null })
+  })
+
+  test('⚠ a refused pair shows the server message and the control SNAPS BACK', async ({ page }) => {
+    await adminUI(page)
+    const cycle = await makeCycle('T3Refuse', { opens_at: '2026-10-05' })
+    await page.goto(`/admin/cycle/${cycle.id}`)
+    await expect(page.getByTestId('cycle-opens-at')).toHaveValue('2026-10-05')
+
+    await page.getByTestId('cycle-closes-at').fill('2026-10-01')
+    await page.getByTestId('cycle-closes-at-save').click()
+
+    // The server's own sentence, unrewritten by the client.
+    await expect(page.getByText('Uzávierka nemôže byť pred otvorením')).toBeVisible()
+    // ⚠ THE SNAP-BACK (CLAUDE.md §Frontend). The refused value is gone from the
+    // control, which is back at the STORED one — the refetch runs on the failure
+    // path too, and `loadAll()` does not clear the banner that explains why.
+    await expect(page.getByTestId('cycle-closes-at'), 'the refused value does not stand').toHaveValue('')
+    expect(stageTriple(await readCycle(cycle.id)), 'and nothing was written')
+      .toEqual({ opens_at: '2026-10-05', closes_at: null, stage: null })
+
+    // ⚠ NON-VACUITY: a LEGAL deadline on the very same control saves and sticks, so
+    // the empty value above is a revert and not a control that refuses every edit.
+    await page.getByTestId('cycle-closes-at').fill('2026-10-20')
+    await page.getByTestId('cycle-closes-at-save').click()
+    await expect(page.getByTestId('cycle-closes-at')).toHaveValue('2026-10-20')
+    expect((await readCycle(cycle.id)).closes_at).toBe('2026-10-20')
+  })
+
+  test('an emptied control CLEARS the column', async ({ page }) => {
+    await adminUI(page)
+    const cycle = await makeCycle('T3Clear', { opens_at: '2026-10-05', closes_at: '2026-10-12' })
+    await page.goto(`/admin/cycle/${cycle.id}`)
+    await expect(page.getByTestId('cycle-opens-at')).toHaveValue('2026-10-05')
+
+    await page.getByTestId('cycle-opens-at').fill('')
+    await page.getByTestId('cycle-opens-at-save').click()
+    await expect.poll(async () => (await readCycle(cycle.id)).opens_at).toBe(null)
+    // ⚠ NON-VACUITY: the OTHER date is untouched, so „cleared" is one column and not
+    // a save that wipes the card.
+    expect((await readCycle(cycle.id)).closes_at).toBe('2026-10-12')
+    await page.reload()
+    await expect(page.getByTestId('cycle-opens-at')).toHaveValue('')
+    await expect(page.getByTestId('cycle-closes-at')).toHaveValue('2026-10-12')
+  })
+})
+
+test.describe('CS-T3 · 17 §UC-CS-007 — the forward-only stage buttons and the badge', () => {
+  test('the two buttons walk the badge forward and then disappear', async ({ page }) => {
+    await adminUI(page)
+    const cycle = await makeCycle('T3Stage')
+    expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
+    await page.goto(`/admin/cycle/${cycle.id}`)
+
+    // The admin reads exactly what the friend reads — the label comes from the lib's
+    // `STEPS`, never from a second copy on this screen.
+    await expect(page.getByTestId('cycle-stage-badge'))
+      .toHaveText('Objednávky uzavreté, káva objednaná v pražiarni')
+    await expect(page.getByTestId('cycle-stage-arrived')).toBeVisible()
+    await expect(page.getByTestId('cycle-stage-ready')).toBeVisible()
+
+    await page.getByTestId('cycle-stage-arrived').click()
+    await expect(page.getByTestId('cycle-stage-badge')).toHaveText('Káva dorazila, balíme')
+    await expect(page.getByTestId('cycle-stage-arrived'), 'forward-only: it hides itself').toHaveCount(0)
+    await expect(page.getByTestId('cycle-stage-ready'), 'the next move is still offered').toBeVisible()
+    expect((await readCycle(cycle.id)).stage).toBe('arrived')
+
+    await page.getByTestId('cycle-stage-ready').click()
+    await expect(page.getByTestId('cycle-stage-badge')).toHaveText('Zabalené, rozvážame')
+    await expect(page.getByTestId('cycle-stage-arrived')).toHaveCount(0)
+    await expect(page.getByTestId('cycle-stage-ready'), 'after `ready`: badge only').toHaveCount(0)
+    expect((await readCycle(cycle.id)).stage).toBe('ready')
+    // ⚠ The stage move writes NO status: „Ukončiť objednávku" stays the only way to
+    // `completed` (CLAUDE.md §Money & data, §UC-CS-003).
+    expect((await readCycle(cycle.id)).status).toBe('locked')
+  })
+
+  test('„Zabalené, rozvážame" may be used WITHOUT the arrival step', async ({ page }) => {
+    await adminUI(page)
+    const cycle = await makeCycle('T3Skip')
+    expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
+    await page.goto(`/admin/cycle/${cycle.id}`)
+
+    await page.getByTestId('cycle-stage-ready').click()
+    await expect(page.getByTestId('cycle-stage-badge')).toHaveText('Zabalené, rozvážame')
+    await expect(page.getByTestId('cycle-stage-arrived')).toHaveCount(0)
+    await expect(page.getByTestId('cycle-stage-ready')).toHaveCount(0)
+    expect((await readCycle(cycle.id)).stage).toBe('ready')
+  })
+
+  test('a PRE-MODULE locked round (`stage IS NULL`) offers both buttons and reads as `ordered`', async ({ page }) => {
+    test.skip(!DB_PATH, 'needs DB_PATH: locking always writes `ordered`, so the NULL row is unreachable through the API')
+    await adminUI(page)
+    const cycle = await makeCycle('T3NullStage')
+    expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
+    // The state every locked round in production is in — the no-backfill rule
+    // (§UC-CS-001) leaves them at NULL and no API call produces it.
+    withDb((db) => db.prepare('UPDATE order_cycles SET stage = NULL WHERE id = ?').run(cycle.id))
+    expect((await readCycle(cycle.id)).stage, 'the fixture really is NULL').toBe(null)
+
+    await page.goto(`/admin/cycle/${cycle.id}`)
+    await expect(page.getByTestId('cycle-stage-badge'))
+      .toHaveText('Objednávky uzavreté, káva objednaná v pražiarni')
+    await expect(page.getByTestId('cycle-stage-arrived'), 'NULL is „not started", not „past it"').toBeVisible()
+    await expect(page.getByTestId('cycle-stage-ready')).toBeVisible()
+  })
+
+  test('an OPEN cycle offers no stage badge and no stage buttons — the 409 is unreachable from the UI', async ({ page }) => {
+    await adminUI(page)
+    const cycle = await makeCycle('T3Open')
+    await page.goto(`/admin/cycle/${cycle.id}`)
+
+    // ⚠ NON-VACUITY: the header DID render, so the three absences below are about
+    // the status and not about a page that failed to load.
+    await expect(page.getByTestId('cycle-stage-timeline')).toBeVisible()
+    await expect(page.getByTestId('cycle-stage-badge')).toHaveCount(0)
+    await expect(page.getByTestId('cycle-stage-arrived')).toHaveCount(0)
+    await expect(page.getByTestId('cycle-stage-ready')).toHaveCount(0)
+    expect((await readCycle(cycle.id)).stage).toBe(null)
+  })
+
+  test('the badge and the timeline caption are ONE label, rendered twice', async ({ page }) => {
+    await adminUI(page)
+    const cycle = await makeCycle('T3OneLabel')
+    expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
+    expect((await patchCycle(cycle.id, { stage: 'arrived' })).status()).toBe(200)
+    await page.goto(`/admin/cycle/${cycle.id}`)
+
+    await expect(page.getByTestId('cycle-stage-badge')).toHaveText('Káva dorazila, balíme')
+    await expect(page.getByTestId('cycle-stage-caption')).toHaveText('Káva dorazila, balíme')
+  })
+})
+
+test.describe('CS-T3 · 17 §UC-CS-007 / §UC-CS-009 — the header timeline, RENDERED', () => {
+  test('⚠ the `now` dot sits at `stageIndex` for all six steps, and no two fixtures share one', async ({ page }) => {
+    await adminUI(page)
+
+    const planned = await makeCycle('T3Ix0', { status: 'planned' })
+    const open = await makeCycle('T3Ix1')
+    const ordered = await makeCycle('T3Ix2')
+    expect((await patchCycle(ordered.id, { status: 'locked' })).status()).toBe(200)
+    const arrived = await makeCycle('T3Ix3')
+    expect((await patchCycle(arrived.id, { status: 'locked' })).status()).toBe(200)
+    expect((await patchCycle(arrived.id, { stage: 'arrived' })).status()).toBe(200)
+    const ready = await makeCycle('T3Ix4')
+    expect((await patchCycle(ready.id, { status: 'locked' })).status()).toBe(200)
+    expect((await patchCycle(ready.id, { stage: 'ready' })).status()).toBe(200)
+    // ⚠ THE DISCRIMINATOR. `completed` keeps the stage it finished on (§UC-CS-002:
+    // it is the historical record), so this row's `stage` is a STALE `'ready'`. It
+    // renders step 5 only because `stageIndex()` reads `status` first; a stage-first
+    // read lights step 4 instead, and every other row in this table is a fixed point
+    // of that mutation.
+    const completed = await makeCycle('T3Ix5')
+    expect((await patchCycle(completed.id, { status: 'locked' })).status()).toBe(200)
+    expect((await patchCycle(completed.id, { stage: 'ready' })).status()).toBe(200)
+    expect((await patchCycle(completed.id, { status: 'completed' })).status()).toBe(200)
+    const completedRow = await readCycle(completed.id)
+    expect({ status: completedRow.status, stage: completedRow.stage },
+      'the fixture really does carry a stale stage').toEqual({ status: 'completed', stage: 'ready' })
+
+    const table = [
+      [planned, 0, 'planned'],
+      [open, 1, 'open'],
+      [ordered, 2, 'locked + ordered'],
+      [arrived, 3, 'locked + arrived'],
+      [ready, 4, 'locked + ready'],
+      [completed, 5, 'completed, stage still `ready`'],
+    ]
+    // Six fixtures, six DIFFERENT indices — nothing here is proved by coincidence.
+    expect(new Set(table.map(([, i]) => i)).size).toBe(6)
+
+    for (const [cycle, index, label] of table) {
+      await page.goto(`/admin/cycle/${cycle.id}`)
+      const states = await dotStates(page)
+      expect(states, `${label} ⇒ step ${index}`).toEqual(
+        Array.from({ length: 6 }, (_, i) => (i < index ? 'done' : i === index ? 'now' : 'next')),
+      )
+      // §UC-CS-009 item 1's rendered counts, stated as counts rather than inferred
+      // from the array above.
+      expect(states.filter((s) => s === 'done'), `${label}: done count`).toHaveLength(index)
+      expect(states.filter((s) => s === 'now'), `${label}: exactly one current step`).toHaveLength(1)
+      expect(states.filter((s) => s === 'next'), `${label}: next count`).toHaveLength(5 - index)
+    }
+
+    // Said once more, alone, so the failure message names the defect: on the
+    // completed round step 4 is BEHIND the friend, not where they are.
+    await page.goto(`/admin/cycle/${completed.id}`)
+    const finished = await dotStates(page)
+    expect(finished[4], 'a stage-first read would light step 4 here').toBe('done')
+    expect(finished[5], 'and `completed` is the last step, whatever the stale stage says').toBe('now')
+  })
+
+  test('⚠ the timeline styles itself with NO `.app` ancestor — that is what the token fallbacks buy', async ({ page }) => {
+    await adminUI(page)
+    const cycle = await makeCycle('T3Skin')
+    expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
+    await page.goto(`/admin/cycle/${cycle.id}`)
+    const strip = page.locator('[data-testid="cycle-timeline-compact"]')
+    await expect(strip).toBeVisible()
+
+    // ⚠ THE PRECONDITION, ASSERTED RATHER THAN ASSUMED. Without these two lines the
+    // computed values below would be just as green on a page that DID supply the
+    // portal's tokens, and the claim would be about nothing.
+    expect(await page.locator('.app, .modal-layer').count(),
+      'the admin page carries neither skin root').toBe(0)
+    expect(await page.evaluate(() => ['--nb-ink', '--accent', '--ink-dim']
+      .map((n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim())),
+    'and the admin skin defines none of the portal tokens').toEqual(['', '', ''])
+
+    // …so every number below comes from the FALLBACK in the component's own scoped
+    // CSS. Drop one and the declaration is invalid at computed-value time: the
+    // border collapses to `currentColor` (the plate's foreground — a different rgb)
+    // and the accent background to transparent.
+    //
+    // ⚠ This is the compact variant's marker, `.d`. The vertical variant's `.mk`
+    // carries the SAME `3px solid var(--nb-ink, …)` declaration but is not on this
+    // screen: §UC-CS-007 mounts `variant="compact"` in the admin header, and the
+    // first vertical mount is CS-T4's guest status card.
+    const marker = strip.locator('.d').first()
+    expect(await marker.evaluate((el) => {
+      const cs = getComputedStyle(el)
+      return `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`
+    }), 'the ported marker border, resolved from its fallback').toBe('3px solid rgb(10, 10, 10)')
+
+    const now = strip.locator('.d.now')
+    await expect(now).toHaveCount(1)
+    expect(await now.evaluate((el) => getComputedStyle(el).backgroundColor),
+      'the accent fallback').toBe('rgb(255, 45, 135)')
+    expect(await now.evaluate((el) => getComputedStyle(el).boxShadow),
+      'and the ink fallback inside the shadow').toBe('rgb(10, 10, 10) 2px 2px 0px 0px')
+
+    // The dot strip is a single `role="img"`, and its label has to name the step —
+    // six identical squares say nothing to a screen reader.
+    await expect(strip).toHaveAttribute('role', 'img')
+    await expect(strip).toHaveAttribute('aria-label',
+      'Krok 3 z 6: Objednávky uzavreté, káva objednaná v pražiarni')
+  })
+
+  test('the stage controls SHARE the header with DP-T8\'s plan line', async ({ page }) => {
+    await adminUI(page)
+    const cycle = await makeCycle('T3Header')
+    const product = await addProduct(cycle.id)
+    const friend = await makeFriend('Hdr')
+    await ownOrder(friend, cycle.id, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+    expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
+    await page.goto(`/admin/cycle/${cycle.id}`)
+
+    const planLine = page.getByTestId('cycle-plan-line')
+    await expect(planLine, '16 §UC-DP-014\'s line is still there').toBeVisible()
+    const before = ((await planLine.textContent()) || '').replace(/\s+/g, ' ').trim()
+    expect(before, 'and it still says something').not.toBe('')
+
+    // Beside it, not instead of it.
+    await expect(page.getByTestId('cycle-stage-badge')).toBeVisible()
+    await expect(page.getByTestId('cycle-stage-timeline')).toBeVisible()
+
+    // ⚠ A stage move re-reads the whole page; the plan sentence must come back
+    // BYTE-IDENTICAL, because nothing on this screen re-derives its numbers — they
+    // are the server's `plan[]` / `totals` through `lib/distribution-plan.js`.
+    await page.getByTestId('cycle-stage-arrived').click()
+    await expect(page.getByTestId('cycle-stage-badge')).toHaveText('Káva dorazila, balíme')
+    await expect(planLine).toHaveText(before)
+  })
+})
+
+test.describe('CS-T3 · 17 §UC-CS-007 — the admin skin is untouched', () => {
+  test.skip(!CS2_HAS_SRC, CS2_NEEDS_SRC)
+
+  test('⚠ the view passes `cycle`, never a `steps` array of its own', () => {
+    const src = readFileSync(CS3_VIEW, 'utf8')
+    // The component's optional `steps` prop is module 18's seam. A consumer that
+    // builds its own array owns the `state` field — which is how stage-first
+    // ordering, the defect this whole module guards against, gets back on a screen.
+    expect(src, 'the cycle goes in whole; the component derives the steps')
+      .toMatch(/<CycleTimeline\s+:cycle="cycle"\s+variant="compact"\s*\/>/)
+    expect(src, 'no hand-built step array on this surface').not.toMatch(/:steps=/)
+  })
+
+  test('no `neo/` component, no theme token, no `.app` wrapper in the admin view', () => {
+    const src = readFileSync(CS3_VIEW, 'utf8')
+    expect(src).not.toMatch(/components\/neo\//)
+    expect(src).not.toMatch(/friends-theme/)
+    // A `class` attribute whose whitespace-separated tokens include a bare `app`.
+    expect(src, 'the portal skin root never wraps an admin view')
+      .not.toMatch(/class="(?:[^"]*\s)?app(?:\s[^"]*)?"/)
+    expect(src).not.toMatch(/modal-layer/)
+    // ⚠ NON-VACUITY: the one styled island IS mounted, so the four absences above
+    // are about the skin and not about a view that renders no timeline.
+    expect(src).toContain("import CycleTimeline from '@/components/CycleTimeline.vue'")
+    // …and the labels still come from the one home, not from a copy typed here.
+    expect(src).toMatch(/import \{ STEPS, stageIndex \} from '\.\.\/lib\/cycle-stages\.js'/)
+    for (const label of ['Pripravujeme ďalšiu objednávku', 'Káva dorazila, balíme', 'Objednávka ukončená']) {
+      expect(src, `„${label}" must live only in lib/cycle-stages.js`).not.toContain(label)
+    }
+  })
+})

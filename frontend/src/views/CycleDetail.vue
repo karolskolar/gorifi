@@ -14,7 +14,15 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import BalanceBadge from '@/components/BalanceBadge.vue'
 import GuestLinkRowControls from '@/components/GuestLinkRowControls.vue'
 import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
+import CycleTimeline from '@/components/CycleTimeline.vue'
 import { planLineText, allPartiesHandedOver } from '../lib/distribution-plan'
+// ⚠ READ-ONLY CONSUMPTION ONLY (17 §UC-CS-007). The step model, its six labels and
+// the status→step translation live in `lib/cycle-stages.js`; this view prints them
+// and never re-derives one. In particular it passes `cycle` to `CycleTimeline` and
+// NOT the component's optional `steps` prop: a consumer that builds its own array
+// owns the `state` field, and that is exactly how stage-first ordering — the defect
+// CS-T1 §10 measured and CS-T2 pinned — would get back onto a screen.
+import { STEPS, stageIndex } from '../lib/cycle-stages.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -70,6 +78,23 @@ const expectedDateSaving = ref(false)
 // Plan note
 const planNote = ref('')
 const planNoteSaving = ref(false)
+
+// Opening / deadline (17 §UC-CS-007). `<input type="date">` emits ISO `YYYY-MM-DD`,
+// which is byte-for-byte the storage format §UC-CS-002 validates — no client parsing,
+// and `''` is the empty control, which the save sends as `null` to CLEAR the column.
+//
+// ⚠ ONE PENDING FLAG PER CONTROL, never a shared one (CLAUDE.md §Frontend: per-row
+// pending state). The two dates are independent writes and so are the two stage
+// buttons; one boolean would grey out a control whose own request is not running.
+const opensAt = ref('')
+const opensAtSaving = ref(false)
+const closesAt = ref('')
+const closesAtSaving = ref(false)
+// The stage button currently in flight — `''`, `'arrived'` or `'ready'`. A string
+// rather than two booleans because the two requests are mutually exclusive by
+// construction (both write the same column) and the value IS the identity of the
+// control: `stagePending === 'arrived'` disables that button and only that button.
+const stagePending = ref('')
 
 // Cycle name editing
 const editingCycleName = ref(false)
@@ -365,6 +390,12 @@ async function loadAll() {
     // Initialize expected date
     expectedDate.value = cycleData.expected_date || ''
     planNote.value = cycleData.plan_note || ''
+    // ⚠ THIS IS THE SNAP-BACK (CLAUDE.md §Frontend: a refused change snaps the
+    // control back). Both save handlers refetch on the FAILURE path too, and it is
+    // these two lines that then put the stored value back into the input while the
+    // server's refusal stands in `error`.
+    opensAt.value = cycleData.opens_at || ''
+    closesAt.value = cycleData.closes_at || ''
     parcelEnabled.value = !!cycleData.parcel_enabled
     parcelFee.value = cycleData.parcel_fee || 0
     // Same non-blocking contract, and it has to run AFTER `cycle.value` is set: the
@@ -539,6 +570,24 @@ async function loadDistributionPlan() {
 const planLine = computed(() => planLineText(distributionPlan.value, distributionTotals.value))
 const allHandedOver = computed(() => allPartiesHandedOver(distributionTotals.value))
 const completingCycle = ref(false)
+
+// ── The stage badge, its caption and the two buttons (17 §UC-CS-007) ─────────
+//
+// The label the ADMIN reads is the label the FRIEND reads, taken from the one home
+// via `stageIndex()` — so the header can never describe the round differently from
+// the timeline beside it, or from the guest's own page.
+//
+// ⚠ `stageIndex()` spans STATUS and stage together (six steps over three stage
+// values), which is why nothing here switches on `cycle.stage` to pick a label. The
+// BUTTONS do read the raw column, because their visibility is a question about the
+// enum ("is there a forward move left?"), not about the step.
+const stageStepLabel = computed(() => STEPS[stageIndex(cycle.value)].label)
+// `null` for a cycle that is not locked, for a locked one the no-backfill rule left
+// at NULL, and for junk — the two button gates below both treat it as "not started".
+const cycleStage = computed(() => cycle.value?.stage || null)
+const isLocked = computed(() => cycle.value?.status === 'locked')
+const canMarkArrived = computed(() => isLocked.value && (cycleStage.value === null || cycleStage.value === 'ordered'))
+const canMarkReady = computed(() => isLocked.value && cycleStage.value !== 'ready')
 
 // The first name of the host who invited this guest — what the nested badge says
 // ("Hosť • pozval Peťo"), so a sub-order is never mistaken for the host's own.
@@ -1159,6 +1208,69 @@ async function saveExpectedDate() {
   }
 }
 
+// ── The two planning dates (17 §UC-CS-007) ──────────────────────────
+//
+// `saveExpectedDate()` above is the pattern, with ONE deliberate difference: the
+// refetch happens on BOTH paths. That function leaves a refused value standing in
+// its input, because a 400 skips its `loadAll()`; §UC-CS-007 requires the opposite
+// here — „a 400 (`Neplatný dátum` / `dates_order`) lands in `error.value` and the
+// control snaps back to the stored value on the `loadAll()` refetch". `loadAll()`
+// does not clear `error`, so the refusal survives the reload that undoes it.
+//
+// `expected_date` and `plan_note` are NOT touched by either of these (PO O2,
+// resolved conflict 6): `expected_date` is the DELIVERY expectation, `closes_at` is
+// the ordering deadline, and they are published side by side.
+async function saveOpensAt() {
+  if (opensAtSaving.value) return
+  opensAtSaving.value = true
+  error.value = ''
+  try {
+    await api.updateCycle(cycleId.value, { opens_at: opensAt.value || null })
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    await loadAll()
+    opensAtSaving.value = false
+  }
+}
+
+async function saveClosesAt() {
+  if (closesAtSaving.value) return
+  closesAtSaving.value = true
+  error.value = ''
+  try {
+    await api.updateCycle(cycleId.value, { closes_at: closesAt.value || null })
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    await loadAll()
+    closesAtSaving.value = false
+  }
+}
+
+// The two forward-only stage buttons (§UC-CS-007, PO decision O3). The server
+// accepts any of the three values in any order — stepping BACK is a legitimate API
+// correction — but the UI offers only the two forward moves, so a mis-click cannot
+// walk the friend's timeline backwards.
+//
+// ⚠ THE `disabled` ATTRIBUTE IS NOT THE GUARD (DP-T7 measured a dispatched click
+// reaching the handler anyway), so the pending flag is re-read here. It is checked
+// against ANY in-flight stage write, not just this button's: both write the same
+// column, and the second request would otherwise race the first one's `loadAll()`.
+async function setStage(next) {
+  if (stagePending.value) return
+  stagePending.value = next
+  error.value = ''
+  try {
+    await api.updateCycle(cycleId.value, { stage: next })
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    await loadAll()
+    stagePending.value = ''
+  }
+}
+
 async function savePlanNote() {
   planNoteSaving.value = true
   error.value = ''
@@ -1484,17 +1596,48 @@ function getStatusVariant(status) {
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
               </svg>
             </h1>
-            <Badge v-if="cycle" :variant="getStatusVariant(cycle.status)" class="mt-1 text-primary-foreground bg-primary-foreground/20 border-primary-foreground/30">
-              {{ cycle.status === 'planned' ? 'Plánovaný' : cycle.status === 'open' ? 'Otvorený' : cycle.status === 'locked' ? 'Uzamknutý' : 'Dokončený' }}
-            </Badge>
+            <div class="mt-1 flex flex-wrap items-center gap-2">
+              <Badge v-if="cycle" :variant="getStatusVariant(cycle.status)" class="text-primary-foreground bg-primary-foreground/20 border-primary-foreground/30">
+                {{ cycle.status === 'planned' ? 'Plánovaný' : cycle.status === 'open' ? 'Otvorený' : cycle.status === 'locked' ? 'Uzamknutý' : 'Dokončený' }}
+              </Badge>
+              <!-- The STAGE badge (17 §UC-CS-007) — only while the cycle is locked,
+                   which is the only status on which `stage` has meaning. It says what
+                   the friend is told, word for word. -->
+              <Badge
+                v-if="isLocked"
+                variant="outline"
+                class="text-primary-foreground bg-primary-foreground/20 border-primary-foreground/30"
+                data-testid="cycle-stage-badge"
+              >{{ stageStepLabel }}</Badge>
+            </div>
             <!-- The plan without opening the board (16 §UC-DP-014). Absent while the
                  cycle is open, absent when the fetch failed, absent when there is
-                 nothing to distribute — never a half-line. -->
+                 nothing to distribute — never a half-line.
+                 ⚠ 17 §UC-CS-007 SHARES this header with that line: the stage badge
+                 and the timeline sit BESIDE it. Nothing below re-derives its numbers,
+                 which come from the server's `plan[]` / `totals` through
+                 `lib/distribution-plan.js`. -->
             <p
               v-if="planLine"
               class="mt-1 text-sm text-primary-foreground/80"
               data-testid="cycle-plan-line"
             >{{ planLine }}</p>
+            <!-- The read-only compact timeline, on EVERY status (17 §UC-CS-007). The
+                 shadcn chrome is the light `bg-background` plate: the ported component
+                 draws ink-on-white markers, and this header is `bg-primary`.
+                 ⚠ `:cycle`, never `:steps` — see the import note at the top. The
+                 component calls `timelineSteps(cycle)` itself, so this surface cannot
+                 own the `state` field and cannot reorder the six steps.
+                 ⚠ The dot strip's connectors are `flex: 1`, so the plate needs a
+                 width; with `w-fit` the six dots would touch. -->
+            <div
+              v-if="cycle"
+              class="mt-2 w-64 max-w-full rounded-md bg-background px-3 py-2 text-foreground"
+              data-testid="cycle-stage-timeline"
+            >
+              <CycleTimeline :cycle="cycle" variant="compact" />
+              <p class="mt-1 text-xs text-muted-foreground" data-testid="cycle-stage-caption">{{ stageStepLabel }}</p>
+            </div>
           </div>
         </div>
         <div class="flex flex-wrap gap-2">
@@ -1514,6 +1657,32 @@ function getStatusVariant(status) {
             @click="toggleLock"
           >
             {{ cycle?.status === 'locked' ? 'Odomknúť' : 'Uzamknúť' }}
+          </Button>
+          <!-- Forward-only stage moves (17 §UC-CS-007, PO O3). „Káva dorazila" is
+               offered while the round is still at `ordered` (or at the NULL every
+               pre-module locked round carries); „Zabalené, rozvážame" until `ready`,
+               after which the badge alone remains. Skipping straight to `ready` is
+               allowed — the hand-over board usually gets there first (§UC-CS-003),
+               and these buttons exist for the admin who distributes without it. -->
+          <Button
+            v-if="canMarkArrived"
+            variant="secondary"
+            size="sm"
+            data-testid="cycle-stage-arrived"
+            :disabled="stagePending === 'arrived'"
+            @click="setStage('arrived')"
+          >
+            Káva dorazila
+          </Button>
+          <Button
+            v-if="canMarkReady"
+            variant="secondary"
+            size="sm"
+            data-testid="cycle-stage-ready"
+            :disabled="stagePending === 'ready'"
+            @click="setStage('ready')"
+          >
+            Zabalené, rozvážame
           </Button>
           <Button
             v-if="cycle?.status === 'locked'"
@@ -1590,6 +1759,52 @@ function getStatusVariant(status) {
                     size="sm"
                   >
                     {{ expectedDateSaving ? 'Ukladám...' : 'Uložiť' }}
+                  </Button>
+                </div>
+              </div>
+              <!-- Opening / deadline (17 §UC-CS-007). Two INDEPENDENT writes beside
+                   „Očakávaný dátum objednávky", which stays exactly as it is: PO O2
+                   made `expected_date` the DELIVERY expectation and `closes_at` the
+                   ordering deadline, and both are published side by side.
+                   `type="date"` emits ISO `YYYY-MM-DD` — the storage format, so no
+                   client parsing — and an empty control clears the column. -->
+              <div class="space-y-1">
+                <Label class="text-sm font-medium">Otvorenie objednávok:</Label>
+                <div class="flex items-center gap-2">
+                  <Input
+                    v-model="opensAt"
+                    type="date"
+                    data-testid="cycle-opens-at"
+                    class="flex-1"
+                    :disabled="opensAtSaving"
+                  />
+                  <Button
+                    @click="saveOpensAt"
+                    :disabled="opensAtSaving"
+                    size="sm"
+                    data-testid="cycle-opens-at-save"
+                  >
+                    {{ opensAtSaving ? 'Ukladám...' : 'Uložiť' }}
+                  </Button>
+                </div>
+              </div>
+              <div class="space-y-1">
+                <Label class="text-sm font-medium">Uzávierka objednávok:</Label>
+                <div class="flex items-center gap-2">
+                  <Input
+                    v-model="closesAt"
+                    type="date"
+                    data-testid="cycle-closes-at"
+                    class="flex-1"
+                    :disabled="closesAtSaving"
+                  />
+                  <Button
+                    @click="saveClosesAt"
+                    :disabled="closesAtSaving"
+                    size="sm"
+                    data-testid="cycle-closes-at-save"
+                  >
+                    {{ closesAtSaving ? 'Ukladám...' : 'Uložiť' }}
                   </Button>
                 </div>
               </div>

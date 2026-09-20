@@ -549,13 +549,18 @@ BASE_URL=http://localhost:3997 node seed.mjs
 #         use left is the strictly-EXTRA ledger watermark (an assertion additive to
 #         an API-level one, never a scenario), so losing DB_PATH cannot make it
 #         vanish, and
-#       • un-skips THREE tests in cycle-stages.spec.js (CS-T1) — the storage-layer
-#         CHECK probe, plus two of the BUILD-THE-SCENARIO kind: "a PRE-MODULE locked cycle (`stage IS NULL`) is
+#       • un-skips FOUR tests in cycle-stages.spec.js (three CS-T1, one CS-T3) —
+#         the storage-layer
+#         CHECK probe, plus three of the BUILD-THE-SCENARIO kind: "a PRE-MODULE locked cycle (`stage IS NULL`) is
 #         promoted to `ready`" manufactures the row the no-backfill rule creates
 #         (locking writes `ordered`, unlocking also opens the cycle, and `stage:
-#         null` is a 400, so NO sequence of API calls produces it), and the global
-#         `transactions` row count. A run without DB_PATH silently loses the one
-#         test that covers the predicate DP-T1's superseded stub got wrong, and
+#         null` is a 400, so NO sequence of API calls produces it), the global
+#         `transactions` row count, and CS-T3's UI twin of the first one ("a
+#         PRE-MODULE locked round (`stage IS NULL`) offers both buttons and reads as
+#         `ordered`"), which manufactures the SAME unreachable row to prove the admin
+#         header treats NULL as "not started" rather than "past it" — the state every
+#         locked round in production is in. A run without DB_PATH silently loses the
+#         one test that covers the predicate DP-T1's superseded stub got wrong, and
 #       • un-skips ONE test in distribution-foundation.spec.js ("only the hand-over
 #         routes write a notifications row — and these are the rows"). That gate is
 #         permanent and is a DIFFERENT kind: `notifications` has NO API at all in
