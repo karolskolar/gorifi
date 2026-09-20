@@ -9,6 +9,7 @@ import PaymentModal from '@/components/PaymentModal.vue'
 import GuestProductGrid from '@/components/GuestProductGrid.vue'
 import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
 import CartLineList from '@/components/CartLineList.vue'
+import CycleTimeline from '@/components/CycleTimeline.vue'
 import { fmtEur } from '@/lib/money'
 import { purposeOrder } from '@/lib/purposes'
 import {
@@ -162,10 +163,18 @@ const statusLines = computed(() => items.value.map((item) => ({
 
 // Why editing is impossible, in the guest's terms. The backend owns the decision;
 // this only words it.
+//
+// ⚠ CS-T4 (17 §UC-CS-008): the first branch used to say „Objednávanie v tomto
+// CYKLE je uzavreté…". „cyklus" is an ADMIN word (00-overview glossary, resolved
+// conflict 2) — every friend- and guest-facing string in this area says
+// „objednávka". The sentence keeps its job (read-only is explained) and only its
+// vocabulary changed, which is why `guest-status-shell.spec.js:356` was retargeted
+// rather than deleted. The SECOND branch (the dead link) never said it and is
+// untouched.
 const readOnlyReason = computed(() => {
   if (editable.value || isCancelled.value) return ''
   if (cycle.value && cycle.value.status !== 'open') {
-    return 'Objednávanie v tomto cykle je uzavreté, objednávku už nie je možné upraviť.'
+    return 'Objednávky sú uzavreté, objednávku už nie je možné upraviť.'
   }
   return 'Odkaz na túto spoločnú objednávku už nie je aktívny, objednávku už nie je možné upraviť.'
 })
@@ -537,6 +546,35 @@ async function submitEdit(payloadItems) {
         <div v-else class="flex flex-wrap gap-2">
           <span class="statuspill" :class="isPaid ? 'ok' : 'warn'" data-testid="status-paid"><span class="sq"></span>{{ isPaid ? 'Zaplatené' : 'Nezaplatené' }}</span>
           <span class="statuspill" :class="isDelivered ? 'ok' : 'off'" data-testid="status-delivered"><span class="sq"></span>{{ isDelivered ? 'Odovzdané' : 'Zatiaľ neodovzdané' }}</span>
+        </div>
+
+        <!-- ================= „Kde je vaša káva" (17 §UC-CS-008) =================
+             The ROUND's state, which is a different fact from the two pills above:
+             those are this guest's own bag (`paid` is the ADMIN's flag, `delivered`
+             the HOST's), this is where everyone's coffee is. Both read-only — the
+             guest owns none of these three values.
+
+             ⚠ `:cycle`, never `:steps`. The optional `steps` prop is module 18's
+             desc-injection seam; a consumer that builds its own array also owns the
+             `state` field, and that is exactly where stage-before-status ordering —
+             the defect this module exists to keep off a screen (CS-T1 §10) — gets
+             back in. The component calls `timelineSteps()` itself.
+
+             The three fields ride `statusPayload` (§UC-CS-004), so this costs no
+             request. It is rendered in the OPEN state too (step 1 tells a guest who
+             can still edit how long they have), and hidden only when the sub-order
+             is `cancelled` — a cancelled guest has no coffee to locate, and the
+             danger banner above carries that state instead. Edit mode hides it with
+             the whole read view (one `v-if`, the `GuestInviteRequest` pattern), and
+             the status-404 card is a separate branch with no cycle at all. -->
+        <div
+          v-if="cycle && !isCancelled"
+          class="card"
+          style="padding:16px"
+          data-testid="guest-timeline-card"
+        >
+          <div class="field-lbl">Kde je vaša káva</div>
+          <CycleTimeline :cycle="cycle" />
         </div>
 
         <!-- Items + total. A cancelled sub-order KEEPS its lines — GSO-T4 cancels by

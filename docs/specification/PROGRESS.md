@@ -412,12 +412,14 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] DP-T7  Per-group bulk hand-over: „Odovzdať zabalené (n)“ → radix Dialog „Odovzdať zabalené?“ (subtitle + ledger-neutral banner; Zrušiť / Áno, odovzdané) → POST bulk → in-place patch + re-fetch + 3.5 s toast; 409 `not_packed` → Alert + row highlight — `16 §UC-DP-012` ⚠ the WhatsApp sentence in the modal and the „· n správ zaradených“ toast half are module 21's (`queued_notifications` ignored by the UI here).
 - [x] DP-T8  Admin cycle header: non-blocking plan line (locked + completed) + „Označiť ako dokončený“ relabelled **„Ukončiť objednávku“** with UX-ONLY gate (all parties handed over; PO: NO server 409 — pin that the API still completes with un-handed bags) on CycleDetail AND the board header; board header „Vytlačiť štítky“ placeholder + „· uzamknuté / · ukončené“ sub + **module-16 closeout (full suite, learnings, CLAUDE.md one-liners)** — `16 §UC-DP-014,010(header),015` ⚠ nothing here writes `order_cycles.stage` (17's) or `status` except the button; module 17's stage controls will share this header.
 
+- [ ] FUP-T26  ⚠ **Three cycle transitions leave `order_cycles.stage` disagreeing with `status`, and ONE of them rewinds the friend-facing timeline.** Measured against a running server in CS-T1 and re-confirmed at the module-17 closeout (`docs/learnings/09-cycle-stages.md` §10): **A** `locked(ready) → planned` leaves `stage='ready'`; **B** `completed(ready) → open` leaves `stage='ready'` (the unlock branch is gated on `cycle.status === 'locked'`, so it never fires from `completed`); **C** `completed(ready) → locked` **RESETS** `stage` to `'ordered'` (the lock branch is `cycle.status !== 'locked'`) — and `completed → locked` is precisely the admin's recovery path for a mis-completed round, so a round whose coffee has already been handed out walks back from step 5 („Zabalené, rozvážame") to step 2. ⚠ **All three are invisible TODAY only because `lib/cycle-stages.js stageIndex()` reads `status` before `stage`** — pinned by one purpose-built test (`cycle-stages.spec.js`, „`status` is consulted BEFORE `stage`"), which is the single thing standing between these rows and a friend's screen. ⚠ §UC-CS-005's own seven-row acceptance table is a FIXED POINT of that inversion (every row pairs an agreeing stage/status), so the obvious test cannot catch it — do not rely on it. ⚠ Nothing pins the transitions SERVER-side; the routes may still write the disagreeing value. CS-T1 offered „(1) fix the transitions, or (2) leave and pin"; CS-T2 took (2) and the module closed without an owner for (1). ⚠ Scope if actioned: re-read §UC-CS-002's „`completed` — stage untouched, it is the historical record" FIRST — A and B are that principle leaking one transition too far, while **C contradicts it outright** and is the only one that rewrites rather than strands a value. Decide C at minimum. ⚠ Acceptance: whichever transitions change get a server-side pin that reds on the old behaviour, and §10's table is rewritten in every copy.
+
 ## 15. Cycle stages (17) — opens_at / closes_at / stage, timeline component
 
 - [x] CS-T1  Schema `opens_at`/`closes_at`/`stage` on `order_cycles` (ALTERs placed AFTER the `_check_test` recreate block, schema.js ~177-201) + `helpers/cycle-stage.js` (`CYCLE_STAGES`, `LOCKED_STAGE_DEFAULT`, **`markCycleReady()` BODY replacing DP-T1's stub** — idempotent, forward-only, never touches `status`) + `POST/PATCH /cycles` contract (ISO dates, 400 `Neplatný dátum`/`dates_order`, stage 409 `not_locked`, lock ⇒ `ordered`, unlock ⇒ NULL) + payload publication on friend/public/guest/admin cycle blocks; `PATCH /api/cycles/1` joins `ADMIN_ENDPOINTS` — `17 §UC-CS-001,002,003,004` · model=heavy ⚠ PO O2: `expected_date` = DELIVERY expectation, `closes_at` = deadline — published side by side, unchanged `expected_date`; the cartbar/status-line switch is PI-T1/T3's. ⚠ DP-T3/T4 already call the stub inside their transactions, so the `cycle-stages.spec.js` seam section (hand-over ⇒ `ready`, idempotent, un-hand-over keeps `ready`, `transactions` unmoved) runs LIVE here — no self-skip needed; verify DP's rows echo `cycle_stage:'ready'`.
 - [x] CS-T2  `lib/cycle-stages.js` (STEPS ×6, `stageIndex`, `fmtDay`, `daysUntil`, `inWeeksText` „o n dní/týždne/týždňov“, `nextOpeningText` three branches, `openUntilText`, `currentCycleFor`) + `lib/plural.js daysLabel/weeksLabel` + `CycleTimeline.vue` ONE component, `vertical` + `compact` variants, scoped styles with token fallbacks, no `.app` dependency — `17 §UC-CS-005,006` ⚠ NO string containing kolo/cyklus anywhere (regex sweep, non-vacuous ≥6 labels); labels are PO staging-review drafts (O1); consumers: PI-T4 (dots + own caption row), PI-T5 (vertical), CS-T4 (guest status), GL-T5 (`nextOpeningText`).
 - [x] CS-T3  CycleDetail admin controls: `type=date` fields Otvorenie/Uzávierka objednávok (save/clear, 400 snaps back), forward-only stage buttons „Káva dorazila“ / „Zabalené, rozvážame“ (PO O3), stage badge + read-only compact timeline in the header — `17 §UC-CS-007` ⚠ NO date fields in the dashboard create dialog (PO O5); `expected_date`/`plan_note` fields untouched here; shares the header with DP-T8's plan line.
-- [ ] CS-T4  Guest status page mounts the vertical timeline („Kde je vaša káva“ card, all SIX steps — PO O4; hidden in edit mode and on cancelled) + `readOnlyReason` copy retarget (drops „cykle“) + **module-17 closeout (full suite)** — `17 §UC-CS-008,009` ⚠ SANCTIONED: `guest-status-shell.spec.js:356` toHaveText retarget; `nonstring-body-shape.spec.js` gains the three fields; `api-security` += PATCH cycles (from CS-T1). The 3-step LINK-page explainer is GL-T4's.
+- [x] CS-T4  Guest status page mounts the vertical timeline („Kde je vaša káva“ card, all SIX steps — PO O4; hidden in edit mode and on cancelled) + `readOnlyReason` copy retarget (drops „cykle“) + **module-17 closeout (full suite)** — `17 §UC-CS-008,009` ⚠ SANCTIONED: `guest-status-shell.spec.js:356` toHaveText retarget; `nonstring-body-shape.spec.js` gains the three fields; `api-security` += PATCH cycles (from CS-T1). The 3-step LINK-page explainer is GL-T4's.
 
 ## 16. Portal information architecture (18) — landing = current offer, menu, explainer, profile
 
@@ -471,6 +473,33 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## Log
 
+- 2026-09-20 · CS-T4 · (this commit) · no PR (project convention) · **Module 17 closed — and the
+  closeout earned its keep by catching what four green rows had not.** The guest status page mounts
+  the vertical timeline („Kde je vaša káva", hidden on cancelled and in edit mode), the read-only
+  sentence drops „cykle", and `opens_at`/`closes_at`/`stage` join the malformed-body sweep.
+  ⚠ **The obvious assertion was NOT written, on purpose.** §UC-CS-009 asks for the `.mk` border
+  computed on this page; `GuestOrderStatus.vue`'s root is `.app`, which supplies `--nb-ink` with a
+  value byte-identical to the component's fallback, so that read passes with every fallback deleted.
+  CS-T3's `.d` measurement on the admin page is module 17's ONLY runtime proof of the mechanism.
+  Pinned instead: the state vector on three loads at three different indices, so no constant works.
+  ⚠ **§UC-CS-006's „exactly 6 `.d` and 5 `.ln`" was closing UNPINNED.** `grep '.ln'` returned
+  nothing; dropping the connector's `v-if` rendered six connectors with the whole suite green.
+  Now asserted, and mutation-proven both ways. **Generalised lesson: a criterion of the form
+  „N of X and M of Y" gets pinned on X and silently dropped on Y — grep the criterion, not the
+  feature.**
+  ⚠ **`FUP-T26` filed.** CS-T1's three measured stale-/reset-stage transitions were closing unfixed
+  AND unowned: CS-T1 offered „fix or pin", CS-T2 pinned, nobody filed the fix. The sharp one resets a
+  completed round back to `ordered`, rewinding a handed-out timeline from step 5 to step 2 on the
+  admin's own recovery path.
+  ⚠ **The vocabulary ban ships with THREE known guest-facing exceptions**, not the one I recorded:
+  `routes/guest.js:216` (served on a 409 that DOES render, not only a refused PUT as I wrote),
+  `GuestOrder.vue:170` and `GuestProductGrid.vue:76` — the last inside this page's own EDIT mode, so
+  §UC-CS-008's „no „kolo"/„cyklus" on the page" is true of the READ view only. All three left
+  standing on purpose; PO decision pending on the real inventory.
+  Gate: **FULL SUITE, orchestrator's own run — 2124 passed / 0 failed / 4 skipped**, 87/87 spec
+  files, 13.3 min, skips exactly the four documented ones. (The implementer's run had two
+  `catalog-admin` timeouts; both PASSED in mine — independent confirmation of the documented box
+  flakiness, not a self-confirmed flake.) Review: **revise → addressed**, one major + four minors.
 - 2026-09-20 · CS-T3 · (this commit) · no PR (project convention) · **The admin controls — and the
   spec contradicted itself TWICE, both caught and both struck.** Two `type="date"` fields on the
   cycle settings card, the two forward-only stage buttons plus a stage badge, and the first real

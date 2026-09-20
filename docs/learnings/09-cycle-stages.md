@@ -389,3 +389,192 @@ invariant across a reload rather than as a grep. Mutation-proved by deleting the
   the uncommitted task work in that file. It cost a full re-application of this row's
   `CycleDetail.vue` diff mid-gate. Keep a pristine copy in the scratchpad and restore
   from that; `git checkout` is safe only for files the row does not touch.
+
+---
+
+## CS-T4 — the guest status card, the copy retarget, the module closeout (2026-09-20)
+
+**What shipped.** `GuestOrderStatus.vue` only: a „Kde je vaša káva" `div.card`
+(`data-testid="guest-timeline-card"`) after the `status-paid`/`status-delivered`
+pill row carrying `<CycleTimeline :cycle="cycle" />` — the module's FIRST
+`variant="vertical"` render anywhere — plus the `readOnlyReason` retarget. Tests:
+a CS-T4 section in `cycle-stages.spec.js`, the sanctioned
+`guest-status-shell.spec.js:356` edit, and three new rows in the FUP-T13 sweep
+(`nonstring-body-shape.spec.js`). No backend change, no schema change, no new
+dependency. Module 17 is closed.
+
+### 1. ⚠ THE SIXTH CAN'T-FAIL ASSERTION WAS NOT WRITTEN, BECAUSE CS-T3 PREDICTED IT
+
+§UC-CS-009 item 1 asks for the `.mk` border read out of `getComputedStyle`. On this
+page it CANNOT FAIL: `GuestOrderStatus.vue`'s root is `<div class="app …">`, and
+`friends-theme.css` sets `--nb-ink:#0a0a0a` on `.app` — byte-identical to the
+component's own fallback, so `rgb(10, 10, 10)` comes back whether or not the
+fallback exists. CS-T3 wrote that down before CS-T4 opened, the spec was amended,
+and the assertion was never written. What this row pins instead is what the `.app`
+ancestor cannot fake: the vertical variant's `done`/`now`/`next` STATE VECTOR, the
+`now` key + label, and the `when` line. **CS-T3's `.d` measurement on the admin page
+remains module 17's only runtime proof of the fallback mechanism.** Per-declaration
+fallback COVERAGE stays CS-T2's source gate (the `bare` array must be `[]`).
+
+The general shape, five times over in this module: *an assertion whose expected
+value is also produced by the environment it runs in proves nothing.* Ask what
+value would make it pass for the wrong reason BEFORE writing it.
+
+### 2. ⚠ TWO stage fixtures, one step apart, because ONE is a fixed point
+
+`locked+ready` (index 4) and `locked+arrived` (index 3) produce different vectors,
+different `now` keys and different labels. A component that rendered a FIXED index —
+or a page that passed a stale/ignored `cycle` — satisfies at most one of them. With a
+single fixture, `:cycle="null"` (index 0) would have been the only mutation caught.
+Measured: `:cycle="null"` reds three CS-T4 tests plus the source pin; nothing else in
+the suite notices.
+
+Beside the counts, `steps.map(key)` is asserted against the six spec keys in order —
+a component rendering ONE step six times satisfies every count on its own.
+
+### 3. The `when` line is the only assertion that proves the WIRING
+
+`status`/`stage` could in principle come from a default. „do 10. októbra" on step 1
+exists only if the cycle OBJECT the guest payload publishes reached the component and
+was formatted by the lib. Mutation-proved: `closes_at: null` in `routes/guest.js`'s
+two status blocks reds that test and the `arrived` one, and nothing else in CS-T4.
+
+### 4. `textContent`, not `innerText`, in the step reader
+
+`.st.now .lbl` and `.when` are `text-transform: uppercase` in the port, and
+`innerText` APPLIES that (the standing CLAUDE.md trap). A reader built on `innerText`
+would have to compare labels in a casing the lib never produced — i.e. it would be
+asserting this component's CSS rather than the step model. `verticalSteps()` reads
+`textContent`.
+
+⚠ The RENDERED-COPY sweep is the opposite case and must stay on `innerText`:
+`e2e/helpers/copy-sweep.js` reads the page as a human sees it, so a re-introduced
+„kolá" in the uppercased card label arrives as „KOLÁ" — caught only because the ban
+is case-insensitive. Measured, as a mutation.
+
+### 5. The vocabulary ban has ONE regex home now
+
+`BANNED = /\bkol[oáa]|cykl/iu` moved from inside CS-T2's describe to module scope in
+`cycle-stages.spec.js`, because CS-T4 sweeps the rendered guest page with the same
+ban. Two copies of a ban is how the two halves start banning different words; the
+shipped „the regex itself catches what it claims to catch" test is now the single
+proof for both readers.
+
+### 6. ⚠ The retarget had two decoys next to it, and a blanket replace breaks one
+
+- `catalog-import.spec.js:558` — „Produkt už v tomto cykle existuje." is ADMIN copy;
+  „cyklus" is legitimate there (00-overview glossary). A repo-wide substitution
+  breaks it.
+- `cycle-stages.spec.js:1299` — the OLD sentence is a deliberate BAD fixture proving
+  the ban catches it. It is a test fixture, not app copy, and stays valid afterwards.
+- ⚠ **A THIRD one is left standing on purpose and is worth a decision later:**
+  `backend/src/routes/guest.js:216` answers a 409 with „Objednávanie v tomto cykle je
+  už uzavreté." — a genuinely GUEST-FACING string with „cykle" in it. §UC-CS-008
+  sanctions exactly one retarget (`readOnlyReason`), and
+  `19-guest-standing-link.md:208` pins that server message as „the shipped message",
+  so changing it here would move a contract module 19 is written against. Recorded,
+  not changed. ~~It never reaches CS-T4's sweep because that sweep runs on the READ
+  view and this message only appears after a refused PUT.~~ ⚠ **THAT SENTENCE IS WRONG
+  IN BOTH HALVES — corrected at the closeout review (2026-09-20), and the correction
+  matters because the PO is being asked to decide on it.** `resolveLink()` serves the
+  string from **TWO** call sites, not one: `POST /api/guest/:token/orders` answers **409**
+  (`guest.js:763`) and that message DOES reach a guest's screen — `GuestOrder.vue` assigns
+  it to `checkoutError` and renders it in the `checkout-error` banner — while
+  `GET /api/guest/:token` answers **410** (`guest.js:538`), whose message `GuestOrder.vue`
+  discards in favour of its own copy. So it is reachable, it is a PUT-independent path, and
+  the only reason the sweep misses it is that the sweep loads the READ view of a resolvable
+  link, never a refused write.
+
+  ⚠⚠ **And the list was presented as complete when it was not.** Two further guest-facing
+  strings render app-owned copy with the banned word, and both were missing from it:
+  `frontend/src/views/GuestOrder.vue:170` („Cyklus sa medzičasom uzamkol — objednávky už
+  neprijímame.", pinned by `guest-invite-dead.spec.js:381`) and
+  `frontend/src/components/GuestProductGrid.vue:76` („V tomto cykle zatiaľ nie sú žiadne
+  produkty."). The second renders inside `GuestOrderStatus.vue`'s OWN edit mode, so
+  §UC-CS-008's „the page contains neither „kolo" nor „cyklus"" is true **of the read view
+  only**. Leaving all three is still right — `18-portal-information-architecture.md`'s
+  hand-off list already owns the two client ones and 19 §208 pins the server one — but the
+  PO decision has to be made on the real inventory, which is THREE strings plus a read-view
+  caveat, not one.
+
+The supersession was written into every copy: `06-guest-flow.md:48` (conflict #1) and
+`:456` (the `readOnlyReason` table) both carry ~~strike~~ + pointer, the view carries
+the reason at the computed, and the shell spec's assertion carries the citation.
+
+### 7. FUP-T13's sweep: `stage` is the odd one out on BOTH cycle routes
+
+The three new fields do not behave alike, and one sentence in §UC-CS-009 item 3
+covers both describes as if they did:
+
+| route | `opens_at` / `closes_at` | `stage` |
+|---|---|---|
+| `POST /api/cycles` | `bindValue` ⇒ absent ⇒ **201**, column NULL | **IGNORED outright** ⇒ 201, column NULL (17 §UC-CS-002: a new cycle is open/planned) |
+| `PATCH /api/cycles/:id` | `bindValue` ⇒ skipped ⇒ **200**, stored value survives | **400 `Neplatná fáza`** — NOT read through `bindValue` |
+
+So `stage` got its own test in each describe rather than a row in the field loop, and
+the PATCH one carries the ordering proof: a VALID enum value on the same open cycle is
+refused by a DIFFERENT door (409 `not_locked`), so the 400s came from the shape guard
+and not from a route that 400s every `stage` key.
+
+⚠ **The `opens_at`/`closes_at` rows were seeded with REAL dates** on the shared
+`t13Cycle` fixture (`2026-12-01` / `2026-12-20`). Without that, „the stored value
+survives an unbindable shape" is null-survives-null — the vacuous version of the claim
+the whole FUP-T13 block exists for.
+
+### 8. Mutations run (all reverted from a scratchpad copy, never `git checkout`)
+
+| # | Mutation | Reds |
+|---|---|---|
+| M1 | drop `!isCancelled` from the card's `v-if` | the cancelled test, alone |
+| M2 | render the card in edit mode too | the edit-mode test, alone |
+| M3 | `<CycleTimeline :cycle="null" />` | 3 rendered tests + the `:cycle` source pin |
+| M4 | restore „…v tomto cykle…" | `guest-status-shell:356`, the CS-T4 banner test, the source pin |
+| M4b | „dve kolá" in the card label | the card-label pin + the sweep's `offenders` (as „KOLÁ") |
+| M5 | PATCH dates lose `bindValue` | the FUP-T13 read-back loop, naming `opens_at` |
+| M6 | delete the PATCH stage enum guard | the new PATCH `stage` test, alone |
+| M7 | POST honours `stage` | the new POST `stage` test + CS-T1's „IGNORED" test |
+| M8 | `closes_at: null` in the guest payload | the `when` test + the `arrived` test (+ CS-T1's listing pin) |
+
+### 9. Small things
+
+- The card renders in the OPEN state too (§UC-CS-008) — step 1 („Objednávky otvorené ·
+  do …") is useful precisely while the guest can still edit. The status-404 card is a
+  different branch with no cycle at all, so „no cycle, no timeline" needs no guard.
+- The pills STAY and are asserted beside the card: `paid` (admin's) and `delivered`
+  (host's) are this guest's BAG; the timeline is the ROUND. Both read-only.
+- Edit mode hides the card for free — the whole read view is one `v-else` — so the
+  test is about a structure, and M2 is what proves the test can see it break.
+- The card is asserted NOT to be a direct child of `.app` (the `.app > *` cascade
+  rule) and to sit inside `[data-testid="guest-status"]`.
+- No `data-user-copy` marker was needed: every string the sweep reads on this page is
+  either app copy or fixture data this row chose.
+
+### What module 17 LEAVES BEHIND (the closeout's actual job)
+
+A closeout is not „the last row passed". These are the things the four rows did not
+finish, each with an owner, so the chain does not end at „the next row inherits it".
+
+1. ⚠ **`FUP-T26` — the three stale-/reset-stage transitions (§10) close UNFIXED.** CS-T1
+   measured them and offered „(1) fix, or (2) leave and pin"; CS-T2 took (2); nobody filed
+   (1), so the module was about to close with a known defect and no owner. Now filed. The
+   sharp end is **C** (`completed(ready) → locked` resets to `ordered`), which rewinds a
+   handed-out round's timeline from step 5 to step 2 on the admin's own recovery path.
+   Today it is invisible **because of one test** — the `status`-before-`stage` pin — and
+   §UC-CS-005's seven-row acceptance table is a fixed point of that inversion, so the
+   obvious test would not have caught it.
+2. ⚠ **THREE guest-facing „cyklus" strings survive the module's own vocabulary ban**
+   (`routes/guest.js:216`, `GuestOrder.vue:170`, `GuestProductGrid.vue:76`). Leaving them
+   is correct — 19 §208 pins the server one and 18's hand-off list owns the two client ones
+   — but §UC-CS-008's „the page contains neither „kolo" nor „cyklus"" is therefore true of
+   the READ VIEW ONLY, because the third renders in `GuestOrderStatus.vue`'s own edit mode.
+   PO decision pending; the inventory above is the real one.
+3. **The vertical `when` line for step 0 („otvorí sa {opens_at}") is pinned at lib level
+   only** — no module-17 surface renders a vertical timeline for a planned round (the admin
+   header is compact; a guest sub-order cannot exist on a planned cycle). Module 18's
+   landing is its first real render and owns that assertion.
+4. **`§UC-CS-006`'s „5 `.ln`" was closing UNPINNED** and was caught here, not by a row:
+   `grep '\.ln'` over the spec file returned nothing, and dropping the connector's `v-if`
+   rendered six connectors with the entire suite green. Now asserted beside the dot count.
+   ⚠ The lesson generalises past this module: **an acceptance criterion written as „exactly
+   N of X and M of Y" tends to get pinned on X and silently dropped on Y.** Grep the
+   criterion, not the feature.

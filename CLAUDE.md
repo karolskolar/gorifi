@@ -54,7 +54,7 @@ cd frontend && npm run dev     # :5173
 | Admin sets a party's pickup point (`helpers/pickup.js`, `PickupLocationPicker.vue`) | `docs/learnings/06-pickup-point.md` |
 | Payment links, variable symbol, `payment_creditor_name` (module 15) | `docs/learnings/07-payment-links.md` |
 | Distribution pipeline: hand-over, the board, the outbox enqueue, the cycle header (module 16) | `docs/learnings/08-distribution-pipeline.md` |
-| Cycle stages: the three `order_cycles` columns, `markCycleReady()`, the `POST/PATCH /cycles` contract, `lib/cycle-stages.js` + `CycleTimeline.vue`, the admin date/stage controls (module 17) | `docs/learnings/09-cycle-stages.md` |
+| Cycle stages: the three `order_cycles` columns, `markCycleReady()`, the `POST/PATCH /cycles` contract, `lib/cycle-stages.js` + `CycleTimeline.vue`, the admin date/stage controls, the guest „Kde je vaša káva" card (module 17) | `docs/learnings/09-cycle-stages.md` |
 
 Specs: `docs/specification/*.md`, `docs/superpowers/specs/*.md`. Spec text that cites "CLAUDE.md GSO-T3" /
 "CLAUDE.md 2026-08-07" etc. now resolves to these files (search by task id or date). When you finish a task,
@@ -209,7 +209,12 @@ append the full write-up to the matching learnings file and add at most one line
   variants, scoped styles with token FALLBACKS and no `.app`/`.modal-layer` ancestor — it renders in
   the portal, in the modal layer and in the shadcn admin header). ⚠ A consumer passes `:cycle` and lets
   the component call `timelineSteps()`; `:steps` is module 18's desc-injection seam ONLY, because the
-  array's `state` field is where stage-first ordering gets back on a screen (CS-T3).
+  array's `state` field is where stage-first ordering gets back on a screen (CS-T3). ⚠ Its token
+  FALLBACKS are measurable ONLY on the admin page (CS-T3's `.d`): `GuestOrderStatus.vue`'s root is
+  `.app`, which DEFINES `--nb-ink:#0a0a0a` byte-identically, so a computed-style read of `.mk` there
+  passes with every fallback deleted — pin the vertical variant's state vector, keys and labels
+  instead (CS-T4). Its one vertical mount is that page's „Kde je vaša káva" card
+  (`guest-timeline-card`, `cycle && !isCancelled`, INSIDE the read view so edit mode hides it).
 - Where a round IS: `lib/cycle-stages.js` is the one home of the six `STEPS`, their Slovak copy and
   `stageIndex`/`timelineSteps`/`fmtDay`/`daysUntil`/`inWeeksText`/`nextOpeningText`/`openUntilText`/
   `currentCycleFor`; it imports only `./plural.js` (which owns `daysLabel`/`weeksLabel`) so a Playwright
@@ -217,7 +222,17 @@ append the full write-up to the matching learnings file and add at most one line
   `stage`, and that order is the ONLY thing hiding the three stale-/reset-stage transitions CS-T1
   measured (learnings 09 §10); invert it and all three reach the friend with nothing going red. No
   string in the lib or the component may contain „kolo"/„kolá"/„cyklus"/„cykl" (sweep regex
-  `/\bkol[oáa]|cykl/iu` — the spec's `kol[oáa]\b` misses „kolá" and false-positives „okolo").
+  `/\bkol[oáa]|cykl/iu` — the spec's `kol[oáa]\b` misses „kolá" and false-positives „okolo") — ONE
+  module-scoped `BANNED` in `cycle-stages.spec.js`, shared by the lib harvest and CS-T4's
+  rendered-page sweep. The guest read-only sentence is „Objednávky sú uzavreté, objednávku už nie je
+  možné upraviť." (CS-T4 dropped „cykle"). ⚠ THREE guest-facing „cyklus" strings survive
+  deliberately, and the read-view sweep sees none of them: `routes/guest.js:216` („…v tomto cykle je
+  už uzavreté.", served on BOTH a 409 from `POST …/orders` — which DOES render, via
+  `GuestOrder.vue`'s `checkout-error` banner — and a 410 from `GET /:token`, whose text the view
+  discards; module 19 §208 pins it as the shipped message), `GuestOrder.vue:170` and
+  `GuestProductGrid.vue:76` (the latter renders inside `GuestOrderStatus.vue`'s own EDIT mode, so
+  §UC-CS-008's „no „kolo"/„cyklus" on the page" holds for the READ view only). Owned by
+  `18-portal-information-architecture.md`'s hand-off list; PO decision pending.
 - A dialog/loader reused across entities needs a `loadSeq` guard; per-row mutations need per-id pending state;
   friend-authenticated children of `FriendOrder` need the `ready` gate; its two panels stay `v-show`.
 - `v-model` on `<select>` (never `:value`); a refused change snaps the control back.

@@ -45,8 +45,12 @@
 1. **Locked-state banner copy.** README §Screens item 9 gives a long variant ("…Prípadnú
    zmenu skúste vyriešiť s organizátorom objednávky alebo objednávku môžete zrušiť.");
    `guest.jsx` (what the prototype actually renders) has the short
-   "Objednávanie v tomto cykle je uzavreté, objednávku už nie je možné upraviť." —
-   which is also the shipped copy. Resolution: **guest.jsx wins.** The README variant is
+   ~~"Objednávanie v tomto cykle je uzavreté, objednávku už nie je možné upraviť."~~ —
+   which is also the shipped copy. **⚠ SUPERSEDED by 17 §UC-CS-008 (CS-T4, 2026-09-20):
+   the sentence now reads "Objednávky sú uzavreté, objednávku už nie je možné upraviť."**
+   Only the VOCABULARY moved — „cyklus" is an admin word (00-overview glossary, 17
+   resolved conflict 2) — so conflict #1's resolution below (short over long, guest.jsx
+   over the README) still stands unchanged. Resolution: **guest.jsx wins.** The README variant is
    additionally wrong on behavior: after the lock the server 409s a cancel (`PUT` on a
    non-open cycle, GSO-T4), so "objednávku môžete zrušiť" would promise an action the
    backend refuses.
@@ -453,8 +457,10 @@ admin / host). The `items_editable === undefined` fallback for older payloads st
    - *read-only / locked* (`!editable && !isCancelled`): `btn ok block` **Zaplatiť**
      when `!isPaid && hasPaymentDetails`; then `div.banner.warn.slim` (+`.dot`),
      `data-testid="status-readonly"`, wording by the shipped `readOnlyReason`
-     computed: cycle not open → **"Objednávanie v tomto cykle je uzavreté, objednávku
-     už nie je možné upraviť."** (= prototype, conflict #1); link/host dead →
+     computed: cycle not open → ~~**"Objednávanie v tomto cykle je uzavreté, objednávku
+     už nie je možné upraviť."**~~ **"Objednávky sú uzavreté, objednávku už nie je možné
+     upraviť."** (⚠ retargeted by 17 §UC-CS-008 / CS-T4, 2026-09-20 — the vocabulary
+     rule; conflict #1's short-over-long resolution is untouched); link/host dead →
      **"Odkaz na túto spoločnú objednávku už nie je aktívny, objednávku už nie je
      možné upraviť."** (shipped copy kept — the prototype has no dead-link-while-
      holding-a-status-URL variant, and the read-side resolver is deliberately

@@ -272,6 +272,15 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   column: the recreate block's `INSERT ... SELECT` names `type` while the ALTER that adds
   it is ~430 lines later, so on a genuinely old database that block throws at boot (a
   pre-existing defect, recorded and deliberately not fixed here).
+  It also carries CS-T2 (the lib + the SFC, at source level), CS-T3 (the admin
+  controls + the header's COMPACT timeline, incl. the only runtime proof of the
+  component's token fallbacks — `.d` measured on a page with no `.app`) and CS-T4
+  (17 §UC-CS-008: the guest status page's „Kde je vaša káva" card — the module's only
+  VERTICAL mount). ⚠ CS-T4 deliberately does NOT re-measure the fallbacks: that page's
+  root is `.app`, which DEFINES `--nb-ink:#0a0a0a` byte-identically to the component's
+  own fallback, so a `getComputedStyle('.mk')` read there passes with every fallback
+  deleted. It pins the state VECTOR, keys, labels and the `when` line instead, on TWO
+  fixtures one step apart (`ready` and `arrived`) so a fixed index cannot satisfy both.
 - `tests/self-hosted-fonts.spec.js` — RD-DS-6: the brand webfonts must be
   **self-hosted**, and the CSP hole that hid it. The Podpultovka restyle loaded
   Darker Grotesque / Figtree / Courier Prime from `fonts.googleapis.com`, which

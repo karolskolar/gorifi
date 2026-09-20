@@ -6,6 +6,10 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+// CS-T4: the ONE home of the rendered-copy sweep (`e2e/helpers/copy-sweep.js`) —
+// visible text plus the attributes that render as copy, with every
+// `[data-user-copy]` subtree dropped.
+import { collectAppCopy } from '../helpers/copy-sweep.js'
 
 // CS-T1 — module 17 (cycle stages), 17 §UC-CS-001 / §UC-CS-002 / §UC-CS-003 /
 // §UC-CS-004. The BACKEND half of the stage model: three columns on
@@ -1217,24 +1221,29 @@ test.describe('CS-T2 · 17 §UC-CS-005 — `currentCycleFor`', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // 10. §UC-CS-005 / §UC-CS-006 — the vocabulary ban, swept NON-VACUOUSLY
 // ─────────────────────────────────────────────────────────────────────────────
+// Resolved conflict 2 + the 00-overview glossary: every friend- and guest-facing
+// string in module 17 says „objednávka". „cyklus" survives on ADMIN screens only.
+//
+// ⚠ NOT §UC-CS-009's literal `/kol[oáa]\b|cykl/i`, and both differences are
+// measured, not stylistic:
+//   · that regex does NOT match „kolá" — `á` is outside ASCII `\w`, so the
+//     trailing `\b` never fires after it. A ban that misses one of the four words
+//     it names is a ban that passes on the string it exists to catch.
+//   · it DOES match „okolo", which is module 18's own copy („Káva príde okolo
+//     {expected_date}", PO decision O2) — a false positive waiting for the first
+//     consumer that reuses this sweep.
+// A leading `\b` plus the `u` flag fixes both, and the test below proves the
+// regex on both lists rather than asserting it on faith.
+//
+// ⚠ MODULE-SCOPED since CS-T4, which sweeps the RENDERED guest status page with the
+// same regex (§UC-CS-008). Two copies of a ban is how the two halves start banning
+// different words; the „the regex itself catches what it claims to catch" test
+// below is the single proof for both readers.
+const BANNED = /\bkol[oáa]|cykl/iu
+
 test.describe('CS-T2 · 17 §UC-CS-005 — no „kolo", no „cyklus", anywhere', () => {
   test.skip(!CS2_HAS_SRC, CS2_NEEDS_SRC)
   test.beforeAll(async () => { cs2 = await import(pathToFileURL(CS2_LIB).href) })
-
-  // Resolved conflict 2 + the 00-overview glossary: every friend- and guest-facing
-  // string in module 17 says „objednávka". „cyklus" survives on ADMIN screens only.
-  //
-  // ⚠ NOT §UC-CS-009's literal `/kol[oáa]\b|cykl/i`, and both differences are
-  // measured, not stylistic:
-  //   · that regex does NOT match „kolá" — `á` is outside ASCII `\w`, so the
-  //     trailing `\b` never fires after it. A ban that misses one of the four words
-  //     it names is a ban that passes on the string it exists to catch.
-  //   · it DOES match „okolo", which is module 18's own copy („Káva príde okolo
-  //     {expected_date}", PO decision O2) — a false positive waiting for the first
-  //     consumer that reuses this sweep.
-  // A leading `\b` plus the `u` flag fixes both, and the test below proves the
-  // regex on both lists rather than asserting it on faith.
-  const BANNED = /\bkol[oáa]|cykl/iu
 
   /** Every string the module EXPORTS or BUILDS, harvested by calling it. */
   function harvest() {
@@ -1342,9 +1351,14 @@ test.describe('CS-T2 · 17 §UC-CS-005 — no „kolo", no „cyklus", anywhere'
 // row. What IS provable here is the set of properties that no later row's test
 // would notice being broken — that the SFC compiles at all, that its styles carry
 // no `.app` / `.modal-layer` ancestor, that every token has a fallback, and that it
-// re-types none of the lib's Slovak. The rendered `done`/`now`/`next` counts and
+// re-types none of the lib's Slovak. ~~The rendered `done`/`now`/`next` counts and
 // the computed `.mk` border (§UC-CS-009 item 1) belong to CS-T3/CS-T4, which have
-// a page to load.
+// a page to load.~~ ⚠ **SUPERSEDED TWICE — see the CS-T4 header block below.** CS-T3
+// delivered the counts and the fallback measurement on the COMPACT `.d` (the admin page
+// is the only surface that renders this component with the portal tokens absent), and
+// CS-T4 established that the `.mk` reading CANNOT be delivered at all: the guest status
+// page's `.app` root supplies `--nb-ink` with a value byte-identical to the fallback, so
+// the assertion passes with every fallback deleted. §UC-CS-009 is amended to match.
 test.describe('CS-T2 · 17 §UC-CS-006 — CycleTimeline.vue', () => {
   test.skip(!CS2_HAS_SRC, CS2_NEEDS_SRC)
 
@@ -1454,7 +1468,7 @@ test.describe('CS-T2 · 17 §UC-CS-006 — CycleTimeline.vue', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 10. CS-T3 · §UC-CS-007 — the admin controls on `CycleDetail.vue`
+// 12. CS-T3 · §UC-CS-007 — the admin controls on `CycleDetail.vue`
 //
 // ⚠ THIS IS THE FIRST MOUNT OF `CycleTimeline.vue` ANYWHERE. CS-T2 shipped the
 // component and mounted it nowhere, so everything it guarantees was pinned at
@@ -1500,8 +1514,16 @@ async function adminUI(page) {
 
 /** The six dots as `'done' | 'now' | 'next'`, in order. */
 async function dotStates(page) {
-  const dots = page.locator('[data-testid="cycle-timeline-compact"] .d')
+  const strip = page.locator('[data-testid="cycle-timeline-compact"]')
+  const dots = strip.locator('.d')
   await expect(dots, 'the compact strip renders all six steps').toHaveCount(6)
+  // ⚠ ADDED AT THE MODULE-17 CLOSEOUT (CS-T4 review, 2026-09-20). §UC-CS-006's
+  // acceptance says „exactly 6 `.d` and 5 `.ln`" and the connector half was pinned
+  // NOWHERE — `grep '\.ln'` over this file returned nothing. Dropping the
+  // `v-if="i < items.length - 1"` on `CycleTimeline.vue`'s connector renders SIX
+  // connectors and the entire suite stayed green. An acceptance criterion the module
+  // was about to close without.
+  await expect(strip.locator('.ln'), 'five connectors between six dots — never six').toHaveCount(5)
   return dots.evaluateAll((els) => els.map((el) => (
     el.classList.contains('now') ? 'now' : el.classList.contains('next') ? 'next' : 'done'
   )))
@@ -1830,5 +1852,241 @@ test.describe('CS-T3 · 17 §UC-CS-007 — the admin skin is untouched', () => {
     for (const label of ['Pripravujeme ďalšiu objednávku', 'Káva dorazila, balíme', 'Objednávka ukončená']) {
       expect(src, `„${label}" must live only in lib/cycle-stages.js`).not.toContain(label)
     }
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13. CS-T4 · §UC-CS-008 — the guest status page mounts the VERTICAL timeline
+//
+// The module's closeout row, and the first `variant="vertical"` render anywhere
+// (CS-T3 mounted the COMPACT strip in the admin header).
+//
+// ⚠⚠ WHAT IS DELIBERATELY NOT ASSERTED HERE, AND WHY. The obvious test on this
+// page is `getComputedStyle('.mk').borderTopColor === 'rgb(10, 10, 10)'` — §UC-CS-009
+// item 1 asks for exactly that, and CS-T3 could only deliver it on the compact
+// variant's `.d`. IT CANNOT FAIL ON THIS PAGE. `GuestOrderStatus.vue`'s root is
+// `<div class="app …">`, and `friends-theme.css` defines `--nb-ink:#0a0a0a` on
+// `.app` — BYTE-IDENTICAL to the component's own fallback. Delete every `, #0a0a0a`
+// in the SFC and that assertion still reads `rgb(10, 10, 10)`, because the token is
+// genuinely supplied here. CS-T3's `.d` measurement on the admin page (which defines
+// none of the portal tokens) is module 17's ONLY runtime proof of the fallback
+// mechanism; per-declaration fallback COVERAGE is CS-T2's source gate above (the
+// `bare` array must be `[]`). §UC-CS-009 was amended to say so, and this row pins
+// what IS real on this page instead: the vertical variant's done/now/next COUNTS,
+// its `now` LABEL, and the `when` line — none of which the `.app` ancestor can fake.
+//
+// ⚠ THE TWO STAGE FIXTURES DIFFER BY ONE STEP ON PURPOSE. `locked+ready` (index 4)
+// and `locked+arrived` (index 3) produce different state vectors, different `now`
+// keys and different labels, so a component that rendered a FIXED index — or a page
+// that passed a stale/ignored `cycle` — cannot satisfy both. A single fixture would
+// have been a fixed point of exactly that mutation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CS4_VIEW = join(CS2_FRONTEND_SRC, 'views/GuestOrderStatus.vue')
+
+let cs4Seq = 0
+
+/** A cycle + product + host + share link + one submitted guest sub-order on it. */
+async function guestScenario(label, over = {}) {
+  const n = ++cs4Seq
+  const cycle = await makeCycle(label, over)
+  const product = await addProduct(cycle.id)
+  const host = await makeFriend(`${label}H`)
+  await ownOrder(host, cycle.id, [{ product_id: product.id, variant: '250g', quantity: 1 }])
+  const link = await shareLink(host, cycle.id)
+  const guest = await submitGuest(link.token, `CS4 Hostka ${uniq}${n}`, '0901234567',
+    [{ product_id: product.id, variant: '250g', quantity: 2 }])
+  return { cycle, product, host, link, guest, url: `/g/o/${guest.order_token}` }
+}
+
+/**
+ * The vertical timeline's six rows, in order.
+ *
+ * ⚠ `textContent`, never `innerText`: `.st.now .lbl` and `.when` are
+ * `text-transform: uppercase` in the port, and `innerText` APPLIES that (the
+ * standing CLAUDE.md trap) — the labels would then have to be compared in a casing
+ * the lib never produced, i.e. the assertion would be about this file's CSS.
+ */
+async function verticalSteps(page) {
+  const steps = page.locator('[data-testid="cycle-timeline"] .st')
+  await expect(steps, 'the vertical timeline renders all six steps').toHaveCount(6)
+  return steps.evaluateAll((els) => els.map((el) => ({
+    state: ['done', 'now', 'next'].find((c) => el.classList.contains(c)) || '',
+    key: el.getAttribute('data-step'),
+    label: (el.querySelector('.lbl')?.textContent || '').trim(),
+    when: (el.querySelector('.when')?.textContent || '').trim(),
+  })))
+}
+
+test.describe('CS-T4 · 17 §UC-CS-008 — „Kde je vaša káva" on the guest status page', () => {
+  test('a locked+`ready` round: four done, „Zabalené, rozvážame" now, one next', async ({ page }) => {
+    const fx = await guestScenario('T4Ready', { closes_at: '2026-10-10' })
+    expect((await patchCycle(fx.cycle.id, { status: 'locked' })).status()).toBe(200)
+    expect((await patchCycle(fx.cycle.id, { stage: 'ready' })).status()).toBe(200)
+
+    await page.goto(fx.url)
+    const card = page.getByTestId('guest-timeline-card')
+    await expect(card).toBeVisible()
+    // `textContent`, so the label reads as it is typed — `.field-lbl` is uppercased
+    // by the theme and `toHaveText` resolves from `textContent`, not `innerText`.
+    await expect(card.locator('.field-lbl')).toHaveText('Kde je vaša káva')
+
+    const steps = await verticalSteps(page)
+    expect(steps.map((s) => s.state), 'the whole state vector, not just a count')
+      .toEqual(['done', 'done', 'done', 'done', 'now', 'next'])
+    // …and the counts §UC-CS-008's acceptance criterion names, spelled out, so a
+    // failure says which half moved.
+    expect(steps.filter((s) => s.state === 'done')).toHaveLength(4)
+    expect(steps.filter((s) => s.state === 'now')).toHaveLength(1)
+    expect(steps.filter((s) => s.state === 'next')).toHaveLength(1)
+
+    const now = steps.find((s) => s.state === 'now')
+    expect(now.key, 'the round is at `ready`').toBe('ready')
+    expect(now.label).toBe('Zabalené, rozvážame')
+
+    // ⚠ NON-COINCIDENCE: six DISTINCT keys in the spec's order. A component that
+    // rendered one step six times would satisfy every count above.
+    expect(steps.map((s) => s.key))
+      .toEqual(['planned', 'open', 'ordered', 'arrived', 'ready', 'completed'])
+
+    // The pills are a DIFFERENT fact and they stay: `paid` is the admin's flag,
+    // `delivered` the host's, both about THIS guest's bag. The timeline is the
+    // round's state. Nothing here replaced anything.
+    await expect(page.getByTestId('status-paid')).toBeVisible()
+    await expect(page.getByTestId('status-delivered')).toBeVisible()
+
+    // ⚠ CLAUDE.md `.app > *`: a direct child of the skin root computes
+    // `position:relative; z-index:1` whatever it asked for. The card lives inside
+    // the read-view wrapper, which is where every prototype placement puts it.
+    expect(await page.locator('.app > [data-testid="guest-timeline-card"]').count(),
+      'never a direct child of `.app`').toBe(0)
+    expect(await page.locator('[data-testid="guest-status"] [data-testid="guest-timeline-card"]').count(),
+      'it sits inside the read view').toBe(1)
+  })
+
+  test('a locked+`arrived` round lights the step BEFORE it — three done, two next', async ({ page }) => {
+    const fx = await guestScenario('T4Arrived', { closes_at: '2026-10-10' })
+    expect((await patchCycle(fx.cycle.id, { status: 'locked' })).status()).toBe(200)
+    expect((await patchCycle(fx.cycle.id, { stage: 'arrived' })).status()).toBe(200)
+
+    await page.goto(fx.url)
+    await expect(page.getByTestId('guest-timeline-card')).toBeVisible()
+
+    const steps = await verticalSteps(page)
+    expect(steps.map((s) => s.state)).toEqual(['done', 'done', 'done', 'now', 'next', 'next'])
+    expect(steps.filter((s) => s.state === 'done')).toHaveLength(3)
+    expect(steps.filter((s) => s.state === 'next')).toHaveLength(2)
+    expect(steps[3].key).toBe('arrived')
+    expect(steps[3].label).toBe('Káva dorazila, balíme')
+
+    // Steps 3-5 have no timestamp to print (resolved conflict 8) — the deadline
+    // lines belong to 0-2 only, and `when` does not depend on `state`.
+    expect(steps.slice(3).map((s) => s.when), 'no invented „when" on the later steps')
+      .toEqual(['', '', ''])
+    expect(steps[2].when, 'the deadline still prints on a closed round').toBe('10. októbra')
+  })
+
+  test('the OPEN state renders too, and the DEADLINE reaches the DOM from `closes_at`', async ({ page }) => {
+    const fx = await guestScenario('T4Open', { closes_at: '2026-10-10' })
+
+    await page.goto(fx.url)
+    await expect(page.getByTestId('guest-timeline-card'),
+      '„useful while they can still edit" — §UC-CS-008').toBeVisible()
+
+    const steps = await verticalSteps(page)
+    expect(steps.map((s) => s.state)).toEqual(['done', 'now', 'next', 'next', 'next', 'next'])
+    expect(steps[1].label).toBe('Objednávky otvorené')
+    // ⚠ THE FIELD THAT PROVES THE WIRING. `status`/`stage` alone could come from a
+    // default; this line exists only if the cycle OBJECT the guest payload publishes
+    // reached the component — §UC-CS-004's `closes_at`, formatted by the lib.
+    expect(steps[1].when).toBe('do 10. októbra')
+    expect(steps[2].when).toBe('10. októbra')
+  })
+
+  test('EDIT MODE hides the card, and leaving restores it', async ({ page }) => {
+    const fx = await guestScenario('T4Edit', { closes_at: '2026-10-10' })
+
+    await page.goto(fx.url)
+    await expect(page.getByTestId('guest-timeline-card'), 'the gate: it is there to begin with').toBeVisible()
+
+    await page.getByTestId('start-edit').click()
+    await expect(page.getByTestId('save-edit'), 'really in edit mode').toBeVisible()
+    await expect(page.getByTestId('guest-timeline-card'), 'the cart has the screen').toHaveCount(0)
+    await expect(page.locator('[data-testid="cycle-timeline"]'),
+      'and no stray timeline anywhere else on the page').toHaveCount(0)
+
+    await page.getByTestId('abort-edit').click()
+    await expect(page.getByTestId('guest-timeline-card')).toBeVisible()
+  })
+
+  test('a CANCELLED sub-order has no coffee to locate — the card is gone', async ({ page }) => {
+    const fx = await guestScenario('T4Cancel', { closes_at: '2026-10-10' })
+
+    await page.goto(fx.url)
+    await expect(page.getByTestId('guest-timeline-card'), 'the gate: present while the bag lives').toBeVisible()
+
+    // The destructive edit the module-14 contract requires: a LITERAL empty array.
+    const cancelled = await ctx.put(`/api/guest/${fx.link.token}/orders/${fx.guest.order_token}`, {
+      data: { items: [] }, timeout: TIMEOUT,
+    })
+    expect(cancelled.status(), 'guest cancel').toBe(200)
+
+    await page.reload()
+    await expect(page.getByTestId('guest-status'), 'the page still renders').toBeVisible()
+    await expect(page.getByTestId('status-cancelled'), 'the danger banner carries that state').toBeVisible()
+    await expect(page.getByTestId('guest-timeline-card')).toHaveCount(0)
+  })
+
+  test('⚠ the read-only banner drops „cykle", and the whole page says neither „kolo" nor „cyklus"', async ({ page }) => {
+    const fx = await guestScenario('T4Copy', { closes_at: '2026-10-10' })
+    expect((await patchCycle(fx.cycle.id, { status: 'locked' })).status()).toBe(200)
+
+    await page.goto(fx.url)
+    const banner = page.getByTestId('status-readonly')
+    await expect(banner).toBeVisible()
+    // The retarget of `guest-status-shell.spec.js:356` (§UC-CS-009 item 5): the
+    // sentence keeps its job, only its vocabulary moved.
+    await expect(banner).toHaveText('Objednávky sú uzavreté, objednávku už nie je možné upraviť.')
+
+    const copy = await page.evaluate(collectAppCopy())
+    // ⚠ NON-VACUITY, TWICE OVER — an absence assertion over an empty sweep passes
+    // for the wrong reason. The sweep must have seen the retargeted sentence AND a
+    // step label off the mounted timeline (step 5 is `next`, so it is not one of the
+    // uppercased rows `innerText` would re-case).
+    expect(copy, 'the sweep saw the read-only banner')
+      .toContain('Objednávky sú uzavreté, objednávku už nie je možné upraviť.')
+    expect(copy, 'the sweep saw the timeline it is supposed to be sweeping')
+      .toContain('Objednávka ukončená')
+    await expect(page.getByTestId('guest-timeline-card')).toBeVisible()
+
+    const offenders = copy.split('\n').filter((line) => BANNED.test(line))
+    expect(offenders, 'no guest-facing string on this page may say „kolo" or „cyklus"').toEqual([])
+  })
+})
+
+test.describe('CS-T4 · 17 §UC-CS-008 — the guest surface keeps its own skin', () => {
+  test.skip(!CS2_HAS_SRC, CS2_NEEDS_SRC)
+
+  test('⚠ the view passes `cycle`, never a `steps` array of its own', () => {
+    const src = readFileSync(CS4_VIEW, 'utf8')
+    // Same rule as CS-T3's admin mount, and the same reason: `steps` is module 18's
+    // desc-injection seam, and a consumer that builds its own array owns the `state`
+    // field — which is where stage-before-status ordering gets back onto a screen.
+    expect(src, 'the cycle goes in whole; the component derives the steps')
+      .toMatch(/<CycleTimeline\s+:cycle="cycle"\s*\/>/)
+    expect(src, 'no hand-built step array on this surface').not.toMatch(/:steps=/)
+    expect(src).toContain("import CycleTimeline from '@/components/CycleTimeline.vue'")
+  })
+
+  test('the six labels are still typed in exactly one place', () => {
+    const src = readFileSync(CS4_VIEW, 'utf8')
+    for (const label of ['Pripravujeme ďalšiu objednávku', 'Objednávky otvorené',
+      'Káva dorazila, balíme', 'Zabalené, rozvážame', 'Objednávka ukončená']) {
+      expect(src, `„${label}" must live only in lib/cycle-stages.js`).not.toContain(label)
+    }
+    // …and the retargeted sentence is here, once, so the two absences above are not
+    // about a view that renders nothing.
+    expect(src).toContain('Objednávky sú uzavreté, objednávku už nie je možné upraviť.')
+    expect(src, 'the superseded wording is gone from the app').not.toContain('Objednávanie v tomto cykle je uzavreté')
   })
 })

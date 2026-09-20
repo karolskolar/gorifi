@@ -905,9 +905,14 @@ view, state and modal of this module.
 | prototype tickers/banners „ĎALŠIE KOLO“, „z minulého kola“ | | rewritten in UC-PI-003/008 |
 
 **Handed off (guest surface, modules 19/20 — listed so nothing is silently kept):**
-`GuestOrderStatus.vue:168` „v tomto cykle“, `GuestOrder.vue:170` „Cyklus sa medzičasom
-uzamkol“, `GuestProductGrid.vue:73` „V tomto cykle“. The guard's file list widens to those
-files when 19 lands.
+~~`GuestOrderStatus.vue:168` „v tomto cykle“~~ **— DONE, shipped by CS-T4 (17 §UC-CS-008,
+2026-09-20): it now reads „Objednávky sú uzavreté, objednávku už nie je možné upraviť."** —
+`GuestOrder.vue:170` „Cyklus sa medzičasom uzamkol“, `GuestProductGrid.vue:76` („:73" was
+stale) „V tomto cykle zatiaľ nie sú žiadne produkty.“. The guard's file list widens to the
+two REMAINING files when 19 lands. ⚠ A third, server-side: `backend/src/routes/guest.js:216`
+„Objednávanie v tomto cykle je už uzavreté." — left standing because
+`19-guest-standing-link.md:208` pins it as the shipped message; see the PO note in
+`docs/learnings/09-cycle-stages.md`.
 
 **Not covered (by design):** `routes/*.js` error strings a friend may see (e.g.
 `'Cyklus nie je otvorený'`-style 409s) — `OPEN:` sweep server messages returned to friend

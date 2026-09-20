@@ -353,7 +353,14 @@ test.describe('RD-GX-3 · the read view, four states (§UC-GX-006)', () => {
     await expect(banner).toHaveClass(/\bslim\b/)
     // Resolved conflict #1: guest.jsx's SHORT wording wins over the README's, which
     // additionally promised a cancel the backend 409s after the lock.
-    await expect(banner).toHaveText('Objednávanie v tomto cykle je uzavreté, objednávku už nie je možné upraviť.')
+    //
+    // ⚠ RETARGETED BY CS-T4 (17 §UC-CS-008 / §UC-CS-009 item 5) — sanctioned, and
+    // case (a) of the e2e-immutability rule: the protected property („read-only is
+    // explained, in the guest's own terms") is unchanged; only the VOCABULARY moved,
+    // because „cyklus" is an admin word (00-overview glossary, 17 resolved conflict
+    // 2). The other seven `status-readonly` pins in this file assert visibility and
+    // classes and needed no edit.
+    await expect(banner).toHaveText('Objednávky sú uzavreté, objednávku už nie je možné upraviť.')
 
     await expect(page.getByTestId('start-edit')).toHaveCount(0)
     await expect(page.getByTestId('cancel-order'), 'a PUT would 409 here — do not offer it').toHaveCount(0)
