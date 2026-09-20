@@ -69,7 +69,17 @@ export function read(relPath) {
  * reversing the last two lets `ui/*` in a `//` comment swallow a third of the file.
  */
 export function code(relPath) {
-  return read(relPath)
+  return stripComments(read(relPath))
+}
+
+/**
+ * The comment-strip RULE itself, for text this helper did not read — a spec file, a
+ * backend module, anything outside `frontend/src`. FUP-T27 needs it to pin that
+ * `api-security.spec.js` does not IMPORT the retrying admin helper, and a rule with two
+ * copies is a rule with one of them wrong (the ordering trap above is exactly that).
+ */
+export function stripComments(text) {
+  return text
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .split('\n').map((l) => l.replace(/(^|\s)\/\/.*$/, '$1')).join('\n')
     .replace(/\/\*[\s\S]*?\*\//g, ' ')

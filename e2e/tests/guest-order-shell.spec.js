@@ -1,5 +1,6 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // RD-GX-1 — the g-order SHELL, the shared neo grid and the checkout modal
 // (06 §UC-GX-001..003).
@@ -66,12 +67,14 @@ const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
 const GUEST_TICKER = '+++ KÁVA POD PULTOM +++ BEZ ÚČTU · BEZ REČÍ +++ POŠLI ODKAZ ĎALEJ +++'
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // A friend with real credentials — the identity `/api/guest-links` requires.
 async function makeHost() {

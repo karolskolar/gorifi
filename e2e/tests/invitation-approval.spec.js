@@ -1,4 +1,5 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+import { makeAdmin } from '../helpers/admin.js'
 import { DatabaseSync } from 'node:sqlite'
 import {
   ADMIN_PASSWORD,
@@ -94,12 +95,14 @@ function uniqueUsername(label) {
   return `${String(label).toLowerCase().replace(/[^a-z0-9]/g, '')}`.slice(0, 30 - suffix.length) + suffix
 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // ── DB_PATH: strictly-extra assertions only ──────────────────────────────────
 // Everything that CAN be seen through the API is asserted through the API so the

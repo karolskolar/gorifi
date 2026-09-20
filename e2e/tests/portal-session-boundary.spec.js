@@ -5,6 +5,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // tied to its copy could not survive the screen. Same claim, one home.
 import { expectLanding, logout, openProfile } from '../helpers/portal.js'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // RD-FL-7 — the session-boundary regression net.
 //
@@ -91,13 +92,15 @@ function uniq() {
   return `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-    timeout: TIMEOUT,
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
+})
 
 /**
  * A friend with a username and a known personal password, no forced-change flag.

@@ -1,5 +1,6 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD, TARGET_IS_LOCAL, NEEDS_LOCAL_TARGET } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // GSO-T10: lead capture (§UC-GSO-015, §Lead Capture, Decision 7).
 //
@@ -46,12 +47,14 @@ function uniquePhone() {
   return `09${phoneSeed}${String(++phoneSeq).padStart(2, '0')}`
 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // A friend with a real per-friend Bearer session — the host identity the
 // guest-link endpoints require. Mirrors guest-status.spec.js.

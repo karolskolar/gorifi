@@ -5,6 +5,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // tied to its copy could not survive the screen. Same claim, one home.
 import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD, CYCLE_NAME } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // GSO-T2: the host's guest share link (`guest_order_links`) — create,
 // regenerate (keeps the row id, and therefore any sub-orders hanging off it),
@@ -25,12 +26,14 @@ const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 // outside, so — as elsewhere in this suite — length + alphabet is the proxy.
 const TOKEN_ALPHABET = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]+$/
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // Create a friend with real credentials and log them in, so we hold a per-friend
 // Bearer session token (the identity these endpoints require).

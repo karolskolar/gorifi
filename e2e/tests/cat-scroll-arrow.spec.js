@@ -5,6 +5,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // tied to its copy could not survive the screen. Same claim, one home.
 import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // The `.cat-tabs` horizontal-scroll affordance (`components/CatScrollArrow.vue`).
 //
@@ -70,13 +71,15 @@ let few = null
 let manyLink = null
 let fewLink = null
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-    timeout: TIMEOUT,
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
+})
 
 async function makeCycle(label) {
   const name = `E2E CATARROW ${label} ${uniq}`

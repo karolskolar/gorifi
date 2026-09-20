@@ -2,6 +2,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 import { assertReadable, code, HAS_SRC, NEEDS_SRC } from '../helpers/source-pins.js'
 import { expectLanding, drawer, openMenu, menuGo, gotoCycle } from '../helpers/portal.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // PI-T3 — 18 §UC-PI-005 (the landing, OPEN state), §UC-PI-011 (the two new share
 // entry points), §UC-PI-016 (the cycle list, the gear and the archive retired) and
@@ -44,13 +45,15 @@ const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 let ctx = null
 let adminToken = ''
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-    timeout: TIMEOUT,
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
+})
 
 test.beforeAll(async () => {
   ctx = await playwrightRequest.newContext({ baseURL: BASE_URL })

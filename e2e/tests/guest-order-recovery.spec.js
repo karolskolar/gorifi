@@ -1,4 +1,5 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+import { makeAdmin } from '../helpers/admin.js'
 // PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
@@ -62,12 +63,14 @@ let ctx
 let adminToken
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // The backend keeps exactly ONE live admin session, overwritten on every
 // /api/admin/login — a UI login elsewhere invalidates a token captured earlier.

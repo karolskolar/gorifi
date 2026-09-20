@@ -13,6 +13,7 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 // A second copy under `e2e/` would let the two drift.
 import { encode, decode, PaymentOptions, CurrencyCode, Version } from '../../frontend/node_modules/bysquare/lib/index.js'
 import QRCode from '../../frontend/node_modules/qrcode/lib/index.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE PRODUCTION MONEY BUG, and the rule that closes it.
@@ -66,13 +67,15 @@ function expect2dp(value, label) {
   expect(value, `${label} = ${value} carries float noise past 2 decimals`).toBe(round2(value))
 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-    timeout: TIMEOUT,
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
+})
 
 /**
  * A friend with real credentials and a Bearer session. Each test that touches a

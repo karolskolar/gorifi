@@ -5,6 +5,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // tied to its copy could not survive the screen. Same claim, one home.
 import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // GSO-T5: the host's "Objednávky kolegov" view — the enriched
 // `GET /api/guest-links/cycle/:cycleId` payload (§UC-GSO-006), plus the two
@@ -50,12 +51,14 @@ async function markPaid(guestOrderId) {
   expect((await res.json()).guest_order.paid).toBe(1)
 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // A friend with a real per-friend Bearer session — the host identity these
 // endpoints require. Mirrors guest-status.spec.js.

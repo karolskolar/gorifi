@@ -6,6 +6,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { expectLanding, logout, openProfile as portalOpenProfile } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD, fixtureEmail } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // FC-T1 / 11 §UC-FC-004,005,007 — the API half of the friends-consolidation module:
 // type guards + bounds on the two admin write routes, the response-stripping
@@ -44,12 +45,14 @@ function uniqueName(label) {
   return `E2E FC ${label} ${uniq}${++seq}`
 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data !== undefined ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // A plain friend via the admin route (valid string name — the same shape
 // invitation-approval.spec.js uses, which UC-FC-008 item 3 keeps working).

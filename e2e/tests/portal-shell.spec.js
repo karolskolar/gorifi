@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 import { expectLanding, expectNoLanding, LANDING, logout, expectChromeName } from '../helpers/portal.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // PI-T1 — module 18 (portal information architecture), 18 §UC-PI-001 /
 // §UC-PI-002 / §UC-PI-019 items 1, 2, 15. The SHELL: four routes on one session,
@@ -56,13 +57,15 @@ const LIB_CYCLE_STAGES = join(FRONTEND_SRC, 'lib/cycle-stages.js')
 let ctx = null
 let adminToken = ''
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-    timeout: TIMEOUT,
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
+})
 
 let friendSeq = 0
 async function makeFriend(label) {

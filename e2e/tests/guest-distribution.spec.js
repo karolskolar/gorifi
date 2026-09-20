@@ -1,6 +1,7 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { makeAdmin } from '../helpers/admin.js'
 
 // GSO-T7: the guest leg of the Distribution view (§UC-GSO-011).
 //
@@ -104,12 +105,14 @@ function txRowsFor(watermark, friendId, orderId) {
   )
 }
 
-async function admin(path, opts = {}) {
-  return ctx[opts.method || 'get'](path, {
-    headers: { 'X-Admin-Token': adminToken },
-    ...(opts.data ? { data: opts.data } : {}),
-  })
-}
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a
+// 401 instead of trusting a token the next `POST /api/admin/login` anywhere in the
+// suite silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+})
 
 // The backend keeps exactly ONE live admin session, so a UI login through the form
 // invalidates a token captured earlier. Blocks that mix API fixture-building with a

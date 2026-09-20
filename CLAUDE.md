@@ -363,8 +363,13 @@ Full recipe and env in `e2e/README.md`. Checklist:
   tests found.`, exit 1 — measured 2026-09-20), so the failure mode is running MORE than you meant
   and reporting a count nobody reconciles, never running less.
 - Never run the full suite per task: targeted spec files per row, full suite at module milestones. Full run
-  ~11 min; on this 4 GB/2-core box Chromium SIGSEGVs (exit 139) non-deterministically — confirm a suspicious
-  failure by running its file alone, twice, on a fresh DB.
+  **~12 min on an IDLE box** (measured repeatedly 2026-09-20: 11.8–11.9 min green; **~14 min is the tell that
+  the box is loaded**, and ~17 min meant a corrupt DB). ⚠ ~~on this 4 GB/2-core box~~ — **the hardware claim
+  was STALE: measured 2026-09-20 it is 8-core / 12 GB.** The Chromium SIGSEGV (exit 139) guidance was written
+  for the old box and has not been re-observed since; keep the habit, drop the certainty. **Confirm a
+  suspicious failure by running its file alone, twice, on a fresh DB — and check the box and the SERVER log
+  before blaming the diff** (see the loaded-box rule above; 65 `disk image is malformed` lines once sat unread
+  in a server log while a file-ordering theory was built on the test log).
 - Spec hygiene: refusal tests read the row back; absence assertions need a non-vacuity gate; Playwright role
   names match as case-insensitive substrings unless `exact: true`; `innerText` applies `text-transform`;
   NBSP survives regex `toHaveText`; `li` counts must be `li.ln`; UI+API admin tests must adopt the browser's token.
@@ -378,3 +383,20 @@ Full recipe and env in `e2e/README.md`. Checklist:
   reads as „30.00 EUR" — a 1-in-10 flake steered by whichever spec created orders first (DP-T2, 2026-09-20).
 - `node:sqlite` (test helpers) and better-sqlite3 (routes) report DIFFERENT constraint error codes — verify a
   constraint guard against the driver the route loads.
+- The admin request path has ONE home: `e2e/helpers/admin.js` `makeAdmin({ctx,token,adopt,timeout})`, which
+  re-authenticates **exactly once** on a 401 and publishes the fresh token back into the file's own
+  `adminToken` (42 spec files adopt it; a private `async function admin(path…)` copy is swept out by
+  `admin-token-retry.spec.js` §5). There is ONE `admin_token` row and every login REPLACES it, so a late login
+  kills every cached token — the cascade's FIRST failure is a 10 s timeout on the admin login redirect, the
+  401s are downstream (FUP-T27). ⚠ `api-security.spec.js` tests staleness ON PURPOSE and must NEVER adopt it —
+  pinned in source AND demonstrated live (§4 shows the retry answering 200 where that test needs 401).
+  ⚠ **The remaining gap, with ONE definition and its MEASURED number** (the first write-up said „31 files",
+  which is wrong under every reading): **41** spec files mention `X-Admin-Token`, **34** of them do not adopt
+  the helper, and **23** carry the exact `headers: { 'X-Admin-Token'` shape without adopting. FIVE files both
+  adopt AND still inline (`cycle-stages`, `distribution-handover`, `guest-order-recovery`,
+  `invitation-approval`, plus the retry spec itself) — so „adopted" does NOT mean „protected": the PATCH
+  matrices in `cycle-stages` and `distribution-handover` still build their own header and get no retry.
+  ⚠ Adoption is NOT always a drop-in: a file that ROTATES the admin password mid-test
+  (`bcrypt-nonstring-shape`, `admin-password`) needs the helper's `password` option, or the retry logs in with
+  the default, 401s and THROWS instead of returning the route's answer. Loud, not silent — but not free. ⚠ Run `npx playwright test --list` after ANY
+  scripted edit of the suite: a SyntaxError reports as `Total: 0 tests in 0 files`, which is not a pass.

@@ -246,3 +246,121 @@ second is the dangerous one:
 template or a different `ADMIN_ENDPOINTS` length WOULD move them. Both matched the other
 run byte-for-byte, which is what proved the gap was a file and not fixture state. Compare
 per-file counts before reaching for a data-driven explanation.
+
+
+### ⚠⚠ ONE `admin_token` row, 42 cached copies of it — the load-sensitive false regression (FUP-T27, 2026-09-20)
+
+**The defect, in one line.** The backend keeps exactly ONE `admin_token` row and every
+`POST /api/admin/login` REPLACES it, so a login anywhere in the suite — including one whose
+response lands *after its own test already timed out* — kills the token every other spec
+file cached in its own `beforeAll`. Those files then 401 on their next fixture
+(`POST /api/friends`, `POST /api/cycles`), and the run reads as „a dozen unrelated admin
+files regressed".
+
+⚠ **The first failure in the cascade is a 10 s TIMEOUT on the admin login redirect, not a
+401.** The 401s are downstream. That inversion is why PI-T3 spent a day building a theory
+about spec-file ordering: the same tree ran 115-failed and 33-failed on a loaded box and
+0-failed on an idle one (`10-portal-ia.md` §10). It is a LOAD-SENSITIVE LATENT DEFECT, not
+a regression, and it has been in the suite as long as the convention that mitigated it.
+
+**What shipped.** `e2e/helpers/admin.js` — `makeAdmin({ ctx, token, adopt, timeout })`,
+ONE home for the admin request path, which re-authenticates **exactly once** on a 401 and
+publishes the fresh token back into the calling file's own `adminToken` variable. The 42
+spec files that carried a private `async function admin(path, opts)` adopt it; their
+`admin()` definition becomes a six-line `makeAdmin({…})` call, so the diff is a swap, not a
+rewrite. `e2e/tests/admin-token-retry.spec.js` is the row's real deliverable.
+
+#### 1. ⚠⚠ THE ACCEPTANCE BAR WAS A REPRODUCTION, NOT A GREEN SUITE — and that was right
+
+PI-T3's implementer refused to write this fix because it could not reproduce the failure.
+The reproduction turned out to be four lines: **a second `APIRequestContext` that logs in**
+is the rotation, in full. No load, no timing, no ordering.
+
+`admin-token-retry.spec.js` therefore pins, in this order:
+
+| § | Property | Why it is there |
+|---|---|---|
+| §1 | a cached token that worked a moment ago 401s after a login from another context | **THE DEFECT ITSELF**, and the non-vacuity gate for everything below — without it §2 proves only that a working token works |
+| §2 | the same rotation, through `makeAdmin()`, succeeds — in exactly ONE login — and the refreshed token is published back | the fix |
+| §3 | a 401 re-authentication CANNOT fix (`GET /api/friends/1/profile` — an admin token is not friend identity) comes back 401 after ONE login attempt | not a loop; a loop hides a real auth failure behind a timeout |
+| §4 | the retry, applied to `api-security.spec.js`'s staleness assertion, answers **200 where that test needs 401** — plus a source pin that the file does not import the helper | the exclusion, DEMONSTRATED |
+| §5 | no spec file keeps a private `admin(path, …)` copy | 42 copies is how one of them stops working |
+
+⚠ **§1 is the part to keep.** A harness fix whose only evidence is „the full suite went
+green" is unfalsifiable, and this module has paid for that pattern repeatedly. §1 keeps the
+pre-fix shape (`cachedAdmin`) alive in the file on purpose, so the defect stays reproducible
+*after* the fix.
+
+#### 2. ⚠ THE EXCLUSION IS A LIVE TEST, NOT A COMMENT
+
+`api-security.spec.js:377` asserts „a STALE token (rotated out by a later login) logs out
+nothing", and its non-vacuity line is `expect(stale → GET /api/friends).toBe(401)`. A
+retrying helper turns that into a 200 and **deletes the test's meaning while leaving it
+green**. „Remember not to adopt it there" is not a guard, so it is pinned twice: §4 runs the
+assertion through the helper and asserts the 200 (so the hazard is measured, not described),
+and a source pin asserts the file contains neither `helpers/admin.js` nor `makeAdmin`.
+
+**M4 proved both halves on demand**: routing that one line through `makeAdmin` reds
+`api-security.spec.js:377` with *Expected 401 / Received 200* **and** reds the source pin in
+the same run — i.e. the guard fires before a human has to notice the deletion.
+
+#### 3. ⚠⚠ THE SWEEP MATCHED ITSELF — the `pgrep -f` trap in a new costume
+
+§5's first version filtered spec files on `/async function admin\s*\(\s*path/` and reported
+**itself** as an offender: the regex literal *and the test title* both contain that text, and
+the sweep reads every file in `tests/`. Same shape as the `pgrep -f "playwright test"`
+watcher that matches its own command line — the rule this repo already documents, arriving
+from a completely different direction. Fixed the same way: a bracket class
+(`[a]dmin`) the file cannot contain, **and the title reworded**, because a title is file text
+too. Its non-vacuity gate now asserts the pattern still matches the retired shape,
+assembled from two string halves so the control cannot resurrect the self-match.
+
+#### 4. Small things measured rather than assumed
+
+- **42, not 48.** The measured count of files carrying a private `async function admin(`
+  is 42, all at column 0, all one of four near-identical shapes (± `timeout: TIMEOUT`,
+  ± `...(opts.headers || {})`, ± `opts.data !== undefined`). A scripted swap matched all 42
+  with zero unmatched.
+- ⚠ **The import insertion broke two files and `--list` is what caught it.** A naive „insert
+  after the last `import` line" put the new import INSIDE the multi-line
+  `import { CAN_SPAWN_BACKEND, … }` of `guest-order-recovery.spec.js` and
+  `invitation-approval.spec.js` — a `SyntaxError` at collection, which `--list` reports as
+  **`Total: 0 tests in 0 files`**. That is the „`No tests found` is not a pass" rule paying
+  for itself: a wrapper grepping for `✘` would have called it a clean run. **Run `--list`
+  after any scripted edit of the suite** — it is 20 s and it type-checks the whole tree.
+- **`adopt` is not bookkeeping.** Most adopting files use `adminToken` in more places than
+  their `admin()` helper (seeding `localStorage` for a UI admin test, raw `ctx.*` headers).
+  Without publishing the refreshed token back, the retry fixes one call and leaves the next
+  eleven stale — **M3 reds three tests**, not one.
+- **The files that inline `headers: { 'X-Admin-Token': adminToken }` are NOT converted** — ⚠ MEASURED, because „31“ was wrong under every reading: **41** spec files mention `X-Admin-Token`, **34** do not adopt the helper, **28** carry the exact inline shape and **23** of those do not adopt. ⚠⚠ FIVE files BOTH adopt AND still inline (`cycle-stages`, `distribution-handover`, `guest-order-recovery`, `invitation-approval`, and this row's own spec) — so a file appearing in the „adopted“ list is NOT thereby protected: `cycle-stages`' and `distribution-handover`'s PATCH matrices still build their own header and get no retry.
+  and are the remaining gap, named here rather than left to be rediscovered:
+  `catalog-admin`, `magic-link`, `image-upload`, `ssrf`, `modern-login`, `session-expiry`,
+  `first-password`, … Adopting them is a bigger, less mechanical diff (147 assignment sites
+  suite-wide); the home exists and `makeAdmin` takes them unchanged when someone does — ⚠ **EXCEPT where the file ROTATES the admin password mid-test** (`bcrypt-nonstring-shape.spec.js:529-545`, `admin-password.spec.js`): there the retry logs in with the DEFAULT password, 401s and **throws** rather than returning the route's answer, so adoption there needs the helper's `password` option. Loud, not silent — but „unchanged“ was too strong (review, 2026-09-20).
+  ⚠ `api-security.spec.js` is on that list and must STAY on it.
+- **`stripComments()` is now exported from `helpers/source-pins.js`.** The §4 source pin is
+  about a SPEC file, which that helper (rooted at `frontend/src`) could not read — and a
+  second copy of the strip rule is how the ordering trap documented at the top of that file
+  got written in the first place.
+- **The re-login inside the retry rotates the row itself.** That is fine under
+  `--workers=1` (files run one at a time) and is why the helper never re-mints on a healthy
+  token — pinned: „a call that needs no retry makes no login at all".
+- **`refreshAdminToken()`-style per-block re-logins were left in place** in the files that
+  had them. They are now belt-and-braces rather than the only guard; removing them is churn
+  with no measured benefit.
+
+#### 5. The mutation matrix (all reverted from a scratchpad copy, never `git checkout`)
+
+| # | Mutation | Reds |
+|---|---|---|
+| M1 | the retry removed — trust the cached token, as before this row | **3** — §2 recovery, §3 one-login count, §4 the exclusion demo |
+| M2 | the ONE retry becomes a loop | 1 — §3 „ONE login attempt, then the answer stands" |
+| M3 | `adopt(fresh)` removed (the fresh token is not published back) | **3** — §2 recovery, §3, §4 |
+| M4 | the retry wrongly applied inside `api-security.spec.js`'s staleness test | **2** — `api-security.spec.js:377` *(Expected 401 / Received 200)* **and** §4's source pin |
+
+⚠ **What the reproduction does NOT prove.** It proves the mechanism (one row, replaced by
+any login) and the recovery. It does **not** reproduce the ORIGINAL trigger — a login whose
+response arrives after its own test timed out — because that needs a loaded box, which is
+exactly the thing that cannot be made deterministic. The claim „this makes the full suite
+stable under load" therefore rests on the mechanism being the same one, which §10 of
+`10-portal-ia.md` measured, not on this file.
