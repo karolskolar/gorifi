@@ -1681,7 +1681,30 @@ test.describe('PL-T4 §UC-PL-007 item 4 — the balance „Zaplatiť“', () => 
     await signInAs(page, debtor)
     await openPortal(page)
     await expect(page.getByTestId('pay-balance')).toBeVisible()
-    expect(balanceReads, 'the card read the balance once, on mount').toBe(1)
+
+    // ⚠ SANCTIONED EDIT — PI-T2 (18 §UC-PI-004), case (a). This asserted
+    // `toBe(1)`: „the card read the balance once, on mount". Module 18's drawer
+    // needs the balance for its „Zostatok a platby" badge and fetches it at SESSION
+    // level — so a session load now makes TWO reads, the card's and the session's,
+    // and that is transitional by design: PI-T7 re-purposes `FriendBalanceCard` into
+    // the „Zostatok a platby" view, feeds it from the session's ref and deletes the
+    // card's own fetch, at which point this is 1 again.
+    //
+    // THE PROTECTED PROPERTY IS UNTOUCHED, and it was never the number 1 — it is
+    // „opening and closing the payment modal re-reads NOTHING". That is asserted
+    // below against the count taken after load, so it holds at any number of
+    // loaders. The upper bound is kept as its own assertion so the count cannot
+    // creep: two readers are named and accounted for; a third would red here.
+    const afterLoad = balanceReads
+    expect(afterLoad, 'the balance really was read on load').toBeGreaterThan(0)
+    // ⚠ EXACT, not an upper bound (tightened in the PI-T2 review). `<= 2` also passes
+    // at 1, so when PI-T7 feeds the card from the session ref and deletes its own
+    // fetch, this file would have stayed GREEN while the comment above it — „exactly
+    // two readers on load" — quietly became false. An exact count forces PI-T7 to
+    // rewrite the claim deliberately instead of leaving a stale one behind, and it is
+    // no weaker against a third reader appearing.
+    expect(afterLoad, 'exactly two readers on load: the card (03) and the session (18)')
+      .toBe(2)
 
     for (let i = 0; i < 3; i++) {
       await page.getByTestId('pay-balance').click()
@@ -1692,7 +1715,7 @@ test.describe('PL-T4 §UC-PL-007 item 4 — the balance „Zaplatiť“', () => 
 
     // ⚠ `close` does NOT reload: paying through a link changes nothing in the ledger
     // until the admin records it, and a refreshed-looking balance would say otherwise.
-    expect(balanceReads, 'closing the modal re-read nothing').toBe(1)
+    expect(balanceReads, 'closing the modal re-read nothing').toBe(afterLoad)
     expect(await ledgerRowCount(debtor.id), 'no transaction row was written').toBe(before)
   })
 

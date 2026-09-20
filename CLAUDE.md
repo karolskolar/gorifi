@@ -54,7 +54,7 @@ cd frontend && npm run dev     # :5173
 | Admin sets a party's pickup point (`helpers/pickup.js`, `PickupLocationPicker.vue`) | `docs/learnings/06-pickup-point.md` |
 | Payment links, variable symbol, `payment_creditor_name` (module 15) | `docs/learnings/07-payment-links.md` |
 | Distribution pipeline: hand-over, the board, the outbox enqueue, the cycle header (module 16) | `docs/learnings/08-distribution-pipeline.md` |
-| Portal IA: the four friend routes, `resolveLanding`, `lib/dates.js`, the `portal-landing` gate (module 18) | `docs/learnings/10-portal-ia.md` |
+| Portal IA: the four friend routes, `resolveLanding`, `lib/dates.js`, the `portal-landing` gate, the appbar per state + the drawer / `useModalLayer()` (module 18) | `docs/learnings/10-portal-ia.md` |
 | Cycle stages: the three `order_cycles` columns, `markCycleReady()`, the `POST/PATCH /cycles` contract, `lib/cycle-stages.js` + `CycleTimeline.vue`, the admin date/stage controls, the guest „Kde je vaša káva" card (module 17) | `docs/learnings/09-cycle-stages.md` |
 
 Specs: `docs/specification/*.md`, `docs/superpowers/specs/*.md`. Spec text that cites "CLAUDE.md GSO-T3" /
@@ -204,10 +204,22 @@ append the full write-up to the matching learnings file and add at most one line
 
 ### Frontend
 - `.app > *` is `position:relative; z-index:1` at (0,1,0) and loads after Tailwind — `fixed/sticky/absolute/z-*`
-  on a DIRECT child of `.app` silently compute `relative/1`. Overlays: `NeoModal`, radix `Dialog`, or
+  on a DIRECT child of `.app` silently compute `relative/1`. Overlays: `NeoModal`, `NeoDrawer`, radix `Dialog`, or
   `<Teleport to="body">`; never a hand-rolled fixed div at root. `.cartbar`/`.cat-tabs` survive only by cascade order.
 - `<script setup>` has NO module scope: a singleton/guard/cache needs a plain `<script>` block.
-- `friends-theme.css` is a byte-for-byte canon port with a numbered adaptation list (ends **A12**). New styling
+- `components/neo/use-modal-layer.js` is the ONE home of what a `.modal-layer` surface DOES — body scroll
+  lock (ONE module-scope counter across every surface), Esc, the capture-phase scrim-mousedown ORIGIN rule,
+  the focus trap, the focus restore. `NeoModal.vue` and `NeoDrawer.vue` both call it; a third surface calls
+  it too, never a second copy. `closable`/`trapping` are passed as GETTERS so both stay read at event time.
+- The drawer is `v-if`-mounted and carries `role="dialog"` — 30 spec files resolve `getByRole('dialog')`, so
+  a spec that counts dialogs while the menu is open is counting the menu; `v-show` there breaks all of them.
+- The friend appbar's per-view chrome (subtitle, ticker, lock chip, menu-vs-back) is a `computed` the SESSION
+  exposes (`defineExpose({ appbar })`) and `FriendPortal.vue` reads — never a ref in the parent, which
+  outlives the session. `.appbar .titles .s` is the VIEW SUBTITLE (fixed strings); the friend's `name`
+  renders in ONE place, the drawer header (`data-testid="drawer-friend-name"`), and no uid anywhere.
+  `.titles` has no role/tabindex/aria-label in ANY state, and there is no logout glyph and no pencil.
+- `friends-theme.css` is a byte-for-byte canon port with a numbered adaptation list (ends **A13** — the
+  `portal2.css` canon sync, with its two recorded deviations D1/D2). New styling
   goes in `<style scoped>` (or a real canon sync), never ad-hoc theme edits. `line-height` often must be inline.
 - One-home components — extend, never fork: `CartLineList.vue` (every ordered-items list), `GuestProductGrid.vue`
   + `lib/guest-cart.js`, `CatScrollArrow.vue`, `ProductImageModal.vue`, `GuestShareDialog.vue`,

@@ -1,4 +1,5 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+import { logout } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
 // RD-FL-5 — the open-cycle card's share row (03 §UC-FL-007): the colleague-count
@@ -417,7 +418,7 @@ test.describe('⚠ Session scoping and the sequence guard (UC-FL-007)', () => {
   }
 
   async function logOut(page) {
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+    await logout(page)
     await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
   }
 

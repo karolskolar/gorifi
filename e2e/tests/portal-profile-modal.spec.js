@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding } from '../helpers/portal.js'
+import { expectLanding, logout, openProfile as portalOpenProfile, expectChromeName } from '../helpers/portal.js'
 import { readFileSync, existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -153,12 +153,17 @@ async function openPortal(page) {
 /**
  * Open the profile modal and return its locator.
  *
- * The appbar `.titles` block is the trigger (UC-FL-004). `hydrateCurrentFriend`
- * is fire-and-forget, so wait for the username box — the one field that only
- * exists once the profile GET has landed — before touching anything.
+ * ⚠ RETARGETED BY PI-T2 (18 §UC-PI-019 item 5, case (a)). The trigger used to be
+ * the appbar `.titles` block (03 §UC-FL-004); §UC-PI-003 strips `.titles` of its
+ * role, tabindex, aria-label and handler in EVERY state and moves the profile into
+ * the drawer, so the trigger is now the „Profil" menu row — `portalOpenProfile()`
+ * from `helpers/portal.js`, the one home. The PROTECTED PROPERTY is untouched:
+ * `hydrateCurrentFriend` is still fire-and-forget, so this still waits for the
+ * username box — the one field that only exists once the profile GET has landed —
+ * before anything touches the form.
  */
 async function openProfile(page, { hydrated = true } = {}) {
-  await page.locator('.appbar .titles').click()
+  await portalOpenProfile(page)
   const dialog = page.getByRole('dialog')
   await expect(dialog.locator('.m-title')).toHaveText('Upraviť profil')
   if (hydrated) await expect(dialog.getByTestId('profile-username')).toBeVisible()
@@ -554,9 +559,13 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
     const who = await makeFriend('save')
     await signIn(page, who)
     await openPortal(page)
-    // ⚠ The NAME lives in `.s` since 2026-08-09; `.t` is the constant Podpultovka
-    // wordmark. This test is about the name updating live, so it follows the name.
-    await expect(page.locator('.appbar .titles .s')).toHaveText(who.name)
+    // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)). `.appbar .titles .s` was the
+    // friend's NAME from 2026-08-09 until this module; it is now a FIXED per-view
+    // subtitle, and the name moved to the drawer header — the only place a friend's
+    // identity renders now. The protected property is „saving a new name updates the
+    // chrome IMMEDIATELY, with no reload", so the assertion follows the name into
+    // the drawer instead of following the selector.
+    await expectChromeName(page, who.name)
 
     const dialog = await openProfile(page)
     const renamed = `${who.name} R`
@@ -566,9 +575,14 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
     // No reload anywhere: the appbar name is RD-FL-3's `getCurrentFriendName()`
     // reading `currentFriend`, which `saveProfile` patches in place.
     await expect(page.getByRole('dialog')).toHaveCount(0)
-    await expect(page.locator('.appbar .titles .s')).toHaveText(renamed)
-    // The wordmark is not data and must NOT follow the rename.
+    // ⚠ Same retarget, the load-bearing half: the name the CHROME renders is the
+    // drawer header's, and it followed the save with no reload in between.
+    await expectChromeName(page, renamed)
+    // The wordmark is not data and must NOT follow the rename — and neither does
+    // the subtitle, which is now a fixed per-view string (§UC-PI-003).
     await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
+    await expect(page.locator('.appbar .titles .s')).toHaveText('Aktuálna ponuka')
+    await expect(page.locator('.appbar')).not.toContainText(renamed)
 
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('gorifi_friend_auth')))
     expect(stored.friendName).toBe(renamed)
@@ -1052,7 +1066,7 @@ test.describe('⚠ session-scoped modal state dies with the session', () => {
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
     // Log out…
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+    await logout(page)
     await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
 
     // …and back in through the form. On a shared device this is routinely a
@@ -1138,7 +1152,7 @@ test.describe('⚠ session-scoped modal state dies with the session', () => {
     await expectLanding(page)
 
     // Log out, and let a DIFFERENT friend log in with the same shared password.
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+    await logout(page)
     await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
 
     // B's dialog opens by itself — that is the whole point — and it must be blank.

@@ -1,4 +1,5 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+import { logout } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
 // RD-FL-4 — the portal's cycle list: section heading + gear trigger
@@ -613,7 +614,7 @@ test.describe('Archive fold (UC-FL-008)', () => {
     await page.getByTestId('archive-toggle').click()
     await expect(page.getByTestId('archive-toggle')).toHaveAttribute('aria-expanded', 'true')
 
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+    await logout(page)
     await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
 
     await page.getByLabel(/^užívateľské meno$/i).fill(friend.username)

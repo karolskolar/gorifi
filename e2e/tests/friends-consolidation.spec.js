@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding } from '../helpers/portal.js'
+import { expectLanding, logout, openProfile as portalOpenProfile } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD, fixtureEmail } from '../fixtures.js'
 
@@ -862,8 +862,10 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
 
   // `hydrateCurrentFriend` is fire-and-forget; the username box only exists once
   // the profile GET landed, so it is the hydration gate (portal-profile-modal idiom).
+  // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-019 item 5): the trigger moved from the appbar
+  // `.titles` block to the drawer's „Profil" row. Same wait, same protected property.
   async function openProfile(page) {
-    await page.locator('.appbar .titles').click()
+    await portalOpenProfile(page)
     const dialog = page.getByRole('dialog')
     await expect(dialog.locator('.m-title')).toHaveText('Upraviť profil')
     await expect(dialog.getByTestId('profile-username')).toBeVisible()
@@ -1019,7 +1021,7 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
 
     // Log out WITHOUT ever letting A's hydrate resolve — the held GET is still
     // pending in the browser's network layer; app-level logout does not abort it.
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+    await logout(page)
     await expect(page.getByRole('heading', { name: 'Kto klope?' })).toBeVisible()
 
     // Log B in on the SAME document — no reload, so the pending request survives.

@@ -830,7 +830,8 @@ the 12th differs in 3 pixels at Δ1 — a difference reproduced exactly by a
 same-build control capture, i.e. the harness's own antialiasing noise.** A runtime
 DOM scan of all 12 for `pp-*`, `font-display`/`font-courier` and 35 theme class
 names returns **0 hits**; `class="app"` exists only in `FriendPortal.vue` and
-`class="modal-layer"` only in `NeoModal.vue`; `BalanceBadge.vue` is untouched.
+`class="modal-layer"` only in ~~`NeoModal.vue`~~ **`NeoModal.vue` + `NeoDrawer.vue`** (PI-T2,
+18 §UC-PI-004); `BalanceBadge.vue` is untouched.
 
 **Regression net added:** `e2e/tests/portal-fidelity.spec.js` (11 tests, new file,
 zero edits to existing specs) pins the A9/A10 counter — `line-height: normal`

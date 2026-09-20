@@ -424,7 +424,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 ## 16. Portal information architecture (18) — landing = current offer, menu, explainer, profile
 
 - [x] PI-T1  Portal shell: routes `/moje-objednavky`, `/zostatok`, `/ako-to-funguje` (+ `meta.view`, bodies later) + `lib/portal-state.js` `resolveLanding()` (state/currentCycle/catalogCycle/nextCycle/nextText; two-open `console.warn`) + `lib/dates.js` + `GET /friends/cycles` payload extension (`opens_at/closes_at/stage` from CS-T1, `orderHandedOver` from DP-T1's `handed_over_at`) + `data-testid="portal-landing"` + `e2e/helpers/portal.js` gate retarget across ~27 files — `18 §UC-PI-001,002,019(items 1,2,15)` ⚠ all session state in `FriendPortalSession.vue` (`:key`), never `FriendPortal.vue`/localStorage; `closes_at` date only (PO); subscription filter block stays server-side. ⚠ SANCTIONED: `getByRole('heading',{name:'Objednávkové cykly'})` → `expectLanding(page)` (skip `portal-cycles`/`portal-share-row`, retired in PI-T3); `portal-appbar.spec.js:268`; `self-hosted-fonts` sweep += the three routes.
-- [ ] PI-T2  Appbar per state (menu · brand + subtitle · **Pozvať chip stays** · lock chip when not open · three tickers) + `NeoDrawer.vue` via `useModalLayer()` extracted from `NeoModal` (scrim/Esc/focus-trap/scroll-lock ONE home) + A13 `portal2.css` port into `friends-theme.css` + drawer items 1–3/5–7 (item 4 slot left for PI-T3) + ONE session-level balance fetch + badge + logout/profile moved into the drawer + `NeoIcon menu` — `18 §UC-PI-003,004,019(items 4,5,7)` · model=heavy ⚠ drawer = `Teleport` → `.modal-layer` → `aside[role=dialog]`, never a fixed child of `.app` (z-index trap); shipped specs counting dialogs must open it deliberately. ⚠ header = friend `name` only (PO: no uid, no „člen od“). ⚠ SANCTIONED (large): logout control → `logout(page)` in portal-appbar ×6, portal-session-boundary ×3, portal-profile-modal ×2, friends-consolidation:1006, google-auth ×12; `.titles`→profile pins INVERTED; pencil tests → one `profile-pencil` count-0 pin; `portal-appbar` ticker rewrite; balance-card describe PARKED for PI-T7; NEW `portal-menu.spec.js`.
+- [x] PI-T2  Appbar per state (menu · brand + subtitle · **Pozvať chip stays** · lock chip when not open · three tickers) + `NeoDrawer.vue` via `useModalLayer()` extracted from `NeoModal` (scrim/Esc/focus-trap/scroll-lock ONE home) + A13 `portal2.css` port into `friends-theme.css` + drawer items 1–3/5–7 (item 4 slot left for PI-T3) + ONE session-level balance fetch + badge + logout/profile moved into the drawer + `NeoIcon menu` — `18 §UC-PI-003,004,019(items 4,5,7)` · model=heavy ⚠ drawer = `Teleport` → `.modal-layer` → `aside[role=dialog]`, never a fixed child of `.app` (z-index trap); shipped specs counting dialogs must open it deliberately. ⚠ header = friend `name` only (PO: no uid, no „člen od“). ⚠ SANCTIONED (large): logout control → `logout(page)` in portal-appbar ×6, portal-session-boundary ×3, portal-profile-modal ×2, friends-consolidation:1006, google-auth ×12; `.titles`→profile pins INVERTED; pencil tests → one `profile-pencil` count-0 pin; `portal-appbar` ticker rewrite; balance-card describe PARKED for PI-T7; NEW `portal-menu.spec.js`.
 - [ ] PI-T3  Landing OPEN state: `FriendOrder.vue` `mode='landing'` (props `cycleId/friendId/mode`; no `.app`/BrandChrome inside; `.cartbar` stays a theme class) + cycle list, gear and subscription modal RETIRED (column/endpoint kept) + status line („Objednávky do {closes_at} · Káva príde okolo {expected_date} — Ako to funguje?“) + cartbar share icon + drawer item 4 via `defineExpose({openShareDialog})` + „Späť na ponuku“ + DELETE `portal-cycles.spec.js`/`portal-share-row.spec.js` (protected properties move to `portal-landing`/`portal-menu`) — `18 §UC-PI-005,011,016,019(items 3,6,8,12)` · model=heavy ⚠ riskiest row: FriendOrder is the ONE home — extend, never fork; leave guard fires on drawer `router.push`; exactly ONE `GuestShareDialog` instance. ⚠ landing slot 2 left empty for the debt banner (PI-T7); `FriendBalanceCard` stays on the landing until PI-T7. ⚠ SANCTIONED: `guest-link.spec.js` 255 / 291–380 retargets, `portal-subscription-invite` describes → two pins, `catalog-admin:2419`, `order-cartbar` landing variant; `share-dialog.spec.js` unmodified.
 - [ ] PI-T4  Landing CLOSED state: parametrised NeoModal „Objednávky sú zatvorené“ once per SESSION (PO: „once, then banner“ = the spec's session rule, no persistence) + `nextText` card + `CycleTimeline variant="compact"` (own caption row) + `.banner.warn.slim` after dismiss + read-only `catalogCycle` grid (`readonly` landing mode: `.p2-ro`, tabs live, no stock bars/cartbar/tabgroup) + empty „Ponuka ešte nie je pripravená.“ — `18 §UC-PI-006` ⚠ modal title/intro/lead are PROPS so PI-T5 only passes strings for the no-order locked variant.
 - [ ] PI-T5  Landing LOCKED state: own-order card (`CartLineList`, hoisted `lib/order-lines.js`, pickup row = exactly one of location/note/„Packeta · …“, Zaplatené/Nezaplatené + Zaplatiť → PaymentModal with `paymentTotal` incl. `delivery_fee`, VS from PL-T2) + „Kde je vaša káva“ `CycleTimeline vertical` + next-round banner + read-only `currentCycle` grid WITH tabgroup (Kolegovia hand-over ticks stay) + no-order variant „Objednávky sú uzamknuté“ — `18 §UC-PI-007` · model=heavy ⚠ NO ledger write; `paid` admin-only; shipped locked banner/cartbar stay on `/cycle/:id` (PI-T11 verifies); `order-locked.spec.js` pins unchanged on the deep link.
@@ -473,6 +473,35 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## Log
 
+- 2026-09-20 · PI-T2 · (this commit) · no PR (project convention) · **The appbar, the drawer, and a
+  shared-behaviour extraction whose real finding was that FOUR of the behaviours it moved had no
+  test watching them.** `use-modal-layer.js` extracted from `NeoModal.vue` (ELEVEN consumers),
+  `NeoDrawer.vue` on the modal layer, A13 canon port, drawer items 1–3/5–7, one session-level
+  balance fetch, logout/profile into the drawer.
+  ⚠⚠ **The extraction is correct BY CONSTRUCTION and was almost entirely UNWATCHED.** Proven by
+  statement diff (106 in / 107 out; review redid it as an ORDERED diff, which a multiset cannot
+  catch reordering with). But the per-behaviour mutation map showed **M2 Esc-honours-`closable`,
+  M5 restore-saved-overflow, M6 focus-on-mount and M7 focus-restore each reddened NOTHING** — four
+  behaviours, 68 tests across 4 files, all blind. Had the move broken them, the suite stays green.
+  The implementer went looking for this and disclosed it rather than reporting „extraction complete,
+  all tests pass", which would have been literally true.
+  ⚠ **Orchestrator PINNED three of the four** (review costed them at ~3 lines each): M5 needed a
+  non-empty seeded `overflow`, because `''` makes „restore the saved value" and „hardcode `''`"
+  indistinguishable. ⚠ My first attempt seeded it with `addInitScript`, which runs before
+  `document.body` exists, so it no-opped — **my own non-vacuity line caught it**. All three
+  mutation-proved; M6's first mutation hit the wrong line and proved nothing either way, which is
+  not the same as proving absence. M2 stays unpinned and named: the forced-change modal is
+  `:closable="false"` and binds NO `@close`, so the guard emits into nothing and the parent's `v-if`
+  is what actually holds the modal open.
+  ⚠ **A money assertion was loosened and is now EXACT.** `payment-links` pinned `balanceReads === 1`;
+  the session adds a second reader, so it became `<= 2` — which also passes at 1, so PI-T7's collapse
+  would have left the file green and its „exactly two readers" comment false. Now `toBe(2)`.
+  ⚠ **Another two-shape enumeration:** the appbar subtitle was the friend's NAME in **14** places in
+  two shapes — `.titles .s` toHaveText (6) and `toContainText` on the whole appbar (8) — and a grep
+  for the first cannot see the second. 13 retargeted through one helper, the 14th inverted.
+  ⚠ Deliberate, documented: TWO balance requests per session load until PI-T7 collapses them.
+  Gate: **FULL SUITE, orchestrator's own run — 2182 passed / 0 failed / 4 skipped**, 89/89 files,
+  14.3 min, skips exactly the documented four. Review: **approve**, five minors, all acted on.
 - 2026-09-20 · PI-T1 · (this commit) · no PR (project convention) · **Module 18 opens: the portal
   shell, the landing resolver, and a gate retarget across 28 spec files.** Three routes with
   `meta.view`, `lib/portal-state.js resolveLanding()`, `lib/dates.js`, an additive

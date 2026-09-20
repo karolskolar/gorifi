@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ADMIN_PASSWORD } from '../fixtures.js'
-import { expectLanding, expectNoLanding, LANDING } from '../helpers/portal.js'
+import { expectLanding, expectNoLanding, LANDING, logout, expectChromeName } from '../helpers/portal.js'
 
 // PI-T1 — module 18 (portal information architecture), 18 §UC-PI-001 /
 // §UC-PI-002 / §UC-PI-019 items 1, 2, 15. The SHELL: four routes on one session,
@@ -131,7 +131,7 @@ test.describe('PI-T1 · 18 §UC-PI-019 item 1 — the „portal is ready" marker
     await page.reload()
     await expectLanding(page)
 
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+    await logout(page)
     await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
     await expectNoLanding(page)
   })
@@ -193,7 +193,7 @@ test.describe('PI-T1 · 18 §UC-PI-001 — the four routes and the session bound
     await page.goto('/moje-objednavky')
     await expectLanding(page)
 
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+    await logout(page)
     await expectNoLanding(page)
     await expect(page.getByText('Prihlásenie')).toBeVisible()
     expect(new URL(page.url()).pathname).toBe('/moje-objednavky')
@@ -215,15 +215,26 @@ test.describe('PI-T1 · 18 §UC-PI-001 — the four routes and the session bound
       await page.goto(path)
       await expectLanding(page)
     }
-    await expect(page.locator('.appbar .titles .s')).toHaveText(a.name)
+    // ⚠ Back to `/` first: the loop above ends on `/ako-to-funguje`, and §UC-PI-003
+    // puts a BACK CHEVRON there instead of the hamburger — so there is no menu to
+    // open in the explainer view, by design.
+    await page.goto('/')
+    await expectLanding(page)
+    // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)): the appbar `.s` line was the
+    // friend's NAME and is now a FIXED per-view subtitle; the name moved into the
+    // DRAWER header, which is the only place a friend's identity renders. The
+    // protected property — „the chrome shows THIS session's friend, and nothing of
+    // the previous one" — follows the name, not the selector.
+    await expectChromeName(page, a.name)
+    await expect(page.locator('.appbar .titles .s')).toHaveText('Aktuálna ponuka')
 
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+    await logout(page)
     await expectNoLanding(page)
 
     await signIn(page, b)
     await page.reload()
     await expectLanding(page)
-    await expect(page.locator('.appbar .titles .s')).toHaveText(b.name)
+    await expectChromeName(page, b.name)
     // Non-vacuity: the two names are different, so „shows B" is a real claim.
     expect(a.name).not.toBe(b.name)
     await expect(page.locator('body')).not.toContainText(a.name)
@@ -237,7 +248,7 @@ test.describe('PI-T1 · 18 §UC-PI-001 — the four routes and the session bound
     await signIn(page, friend)
     await page.goto('/zostatok')
     await expectLanding(page)
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+    await logout(page)
     await expectNoLanding(page)
 
     const keys = await page.evaluate(() => Object.keys(localStorage))

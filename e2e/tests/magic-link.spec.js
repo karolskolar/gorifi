@@ -37,7 +37,7 @@ import { test, expect, devices, request as playwrightRequest } from '@playwright
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding, expectNoLanding } from '../helpers/portal.js'
+import { expectLanding, expectNoLanding, openProfile, expectChromeName } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import crypto from 'node:crypto'
 // FRIEND_NAME / FRIENDS_PASSWORD are ML-T4's: the §UC-ML-007 block at the bottom
@@ -1237,8 +1237,10 @@ test.describe('UC-ML-005 — the /magic/:token page, full flow (throwaway backen
       expect(wholeStorage, "Alice's session token is gone from this device").not.toContain(aliceAuth.token)
       expect(wholeStorage, "Alice's name is gone from this device").not.toContain(alice.name)
 
-      // The appbar renders the NEW friend, so the leak would be visible too.
-      await expect(page.locator('.appbar')).toContainText(bob.name)
+      // The chrome renders the NEW friend, so the leak would be visible too.
+      // ⚠ PI-T2: that identity moved from the appbar into the drawer header
+      // (§UC-PI-003) — same claim, one home (`helpers/portal.js`).
+      await expectChromeName(page, bob.name)
 
       // ── single use, seen from the UI ────────────────────────────────────────
       // A FRESH DOCUMENT LOAD legitimately re-attempts (new module state — the
@@ -1954,7 +1956,7 @@ async function redeemInBrowser(page, backend, api, stub, friend) {
  *  is fire-and-forget — the password fold is gated on `friend?.hasCredentials`, which
  *  only arrives with the profile GET, so wait for the toggle rather than the dialog. */
 async function openPasswordFold(page) {
-  await page.locator('.appbar .titles').click()
+  await openProfile(page)
   const dialog = page.getByRole('dialog')
   await expect(dialog.locator('.m-title')).toHaveText('Upraviť profil')
   await dialog.getByRole('button', { name: 'Zmeniť heslo' }).click()

@@ -31,12 +31,18 @@ import { expect } from '@playwright/test'
 // the heading it replaces did not carry those claims either (it rendered above
 // the list, empty or not), so nothing is weakened by saying so out loud.
 //
-// ── WHAT IS DELIBERATELY NOT HERE YET ────────────────────────────────────────
-// §UC-PI-019 item 1 also names `openMenu`, `menuGo`, `logout`, `openProfile` and
-// `openInvite`. Every one of them drives the hamburger DRAWER, which PI-T2 builds;
-// written now they would be helpers no test can call and nobody can prove. PI-T2
-// adds them HERE, to this file, and retargets the logout/profile call sites onto
-// them (§UC-PI-019 items 4, 5).
+// ── THE DRAWER HALF (PI-T2) ──────────────────────────────────────────────────
+// `openMenu` / `menuGo` / `logout` / `openProfile` / `openInvite` landed with the
+// hamburger drawer (18 §UC-PI-004). They are HERE, in the same file, on the same
+// argument: the logout control alone had ~26 call sites across five spec files
+// before PI-T2 moved it from an appbar glyph into the drawer footer, and the next
+// IA change must edit one file rather than five.
+//
+// ⚠ THE DRAWER IS A `role="dialog"`, MOUNTED WITH `v-if`. 28 spec files resolve
+// `getByRole('dialog')`; the drawer is in the DOM only while it is open, so none
+// of them became ambiguous. The corollary binds every future spec: a test that
+// counts dialogs while the menu is open is counting the menu too, and must open
+// it deliberately.
 
 /** The `data-testid` on `FriendPortalSession.vue`'s page column. One spelling. */
 export const LANDING = 'portal-landing'
@@ -60,4 +66,114 @@ export async function expectLanding(page) {
  */
 export async function expectNoLanding(page) {
   await expect(page.getByTestId(LANDING)).toHaveCount(0)
+}
+
+/** The drawer itself, once open. Scope every menu locator to it. */
+export function drawer(page) {
+  return page.getByRole('dialog', { name: 'Menu' })
+}
+
+/**
+ * Open the hamburger drawer and wait for it.
+ *
+ * ⚠ The appbar button is matched by its `aria-label`, not by a glyph or a class:
+ * `.p2-icobtn` is shared with the explainer's back chevron (§UC-PI-003 `#leading`
+ * renders one or the other), so a class locator would silently resolve to "the
+ * control that happens to be there" on `/ako-to-funguje` — where there is no menu
+ * at all.
+ */
+export async function openMenu(page) {
+  await page.locator('.appbar [aria-label="Menu"]').click()
+  await expect(drawer(page)).toBeVisible()
+  return drawer(page)
+}
+
+/**
+ * The friend's name as the CHROME renders it.
+ *
+ * ⚠ THE RETARGET OF `expect(page.locator('.appbar')).toContainText(name)` and of
+ * `.appbar .titles .s` — 18 §UC-PI-003 moved the friend's `name` out of the appbar
+ * (whose `.s` line is now a fixed per-view subtitle) into the DRAWER HEADER, which
+ * is the ONLY place a friend's identity renders. THIRTEEN shipped assertions across
+ * five files made that claim — in two shapes, `.appbar .titles .s` toHaveText and
+ * `expect(page.locator('.appbar')).toContainText(name)`, the second invisible to a
+ * grep for the first. They make it here now, once.
+ *
+ * ⚠ Call sites: google-auth ×7, portal-shell ×2, portal-profile-modal ×2,
+ * portal-appbar ×1, magic-link ×1.
+ *
+ * It opens the drawer and closes it again, so the page is left as it was found and
+ * `getByRole('dialog')` goes back to whatever it was — a caller that asserts dialog
+ * counts afterwards is not counting a menu this helper forgot to close.
+ *
+ * ⚠ IT NEEDS THE MODAL LAYER FREE. The hamburger sits behind any open NeoModal's
+ * scrim, so a call site with a dialog up (the Google link prompt, the forced-change
+ * gate) cannot use this and must assert identity another way — the stored session's
+ * `friendName` is the honest fallback there, and it is a weaker claim: it says whose
+ * session this is, not whose name is painted.
+ */
+export async function expectChromeName(page, name) {
+  const wasOpen = await drawer(page).count()
+  if (!wasOpen) await openMenu(page)
+  await expect(page.getByTestId('drawer-friend-name')).toHaveText(name)
+  if (!wasOpen) {
+    await page.keyboard.press('Escape')
+    await expect(drawer(page)).toHaveCount(0)
+  }
+}
+
+/**
+ * Open the menu and choose a row by its visible label.
+ *
+ * The row is a `role="button"` whose accessible name is its label plus its
+ * sub-line, and Playwright matches a role name as a case-insensitive SUBSTRING
+ * unless `exact: true` — which is exactly what makes „Moje objednávky" resolve a
+ * row whose full name is „Moje objednávky 3 objednávky · naposledy …". Scoped to
+ * the drawer, because „Pozvať priateľa" would otherwise also see the appbar's
+ * „Pozvať" chip.
+ */
+export async function menuGo(page, label) {
+  const menu = await openMenu(page)
+  await menu.getByRole('button', { name: label }).click()
+  // Every row closes the drawer first and then acts (§UC-PI-004), so waiting for
+  // it to go is waiting for the action to have been dispatched.
+  await expect(drawer(page)).toHaveCount(0)
+}
+
+/**
+ * Log out through the drawer footer — the retarget of
+ * `.appbar span[aria-label="Odhlásiť sa"]` and of
+ * `getByRole('button', { name: 'Odhlásiť sa' })` (§UC-PI-019 item 4).
+ *
+ * ⚠ It asserts the outcome, not just the click: the wordmark is back (the appbar
+ * survived the state change — it is ONE instance across all three auth states)
+ * and the session is UNMOUNTED, not merely hidden. Those two assertions were in
+ * most of the call sites it replaces; keeping them here is what stops the
+ * retarget from weakening them.
+ */
+export async function logout(page) {
+  const menu = await openMenu(page)
+  await menu.getByRole('button', { name: 'Odhlásiť sa' }).click()
+  await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
+  await expectNoLanding(page)
+}
+
+/**
+ * Open the profile modal — the retarget of `.appbar .titles` clicks
+ * (§UC-PI-019 item 5). `.titles` has no action at all any more (§UC-PI-003).
+ */
+export async function openProfile(page) {
+  await menuGo(page, 'Profil')
+  await expect(page.getByRole('dialog').locator('.m-title')).toHaveText('Upraviť profil')
+}
+
+/**
+ * Open the invite modal from the appbar chip. The chip STAYS in the appbar
+ * (roadmap §16 / Q2.a), so this locator is unchanged from module 03 — the helper
+ * exists so that the drawer's „Pozvať priateľa" row and the chip have one named
+ * entry point each rather than an inline locator per call site.
+ */
+export async function openInvite(page) {
+  await page.locator('.appbar .chip.acc').click()
+  await expect(page.getByRole('dialog').locator('.m-title')).toHaveText('Pozvi priateľa')
 }

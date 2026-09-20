@@ -1,4 +1,6 @@
-// The 14 inline stroke glyphs of the Podpultovka Neobrutal theme (UC-DS-007).
+// The inline stroke glyphs of the Podpultovka Neobrutal theme (UC-DS-007):
+// the canonical 14 from `ui.jsx` (`I`), then the v2 portal set from
+// `portal2.jsx` (`I2`) added by PI-T2.
 //
 // This is the ONLY icon source for friend/guest surfaces — no icon font, no icon
 // package, no new dependency. The table below is a mechanical 1:1 transcription of
@@ -7,9 +9,12 @@
 // same per-icon default size and stroke-width. The fat 3.6 stroke on `check` is
 // deliberate — it is what makes the checkbox tick read at 14px.
 //
-// The source svgs carry no `stroke-linecap`/`stroke-linejoin`, so neither does
-// `NeoIcon.vue`: the glyphs render with the SVG defaults (butt/miter), exactly as
-// the prototype does. Colour is always `currentColor` — there is no fill or stroke
+// ⚠ The FOURTEEN `I` glyphs carry no `stroke-linecap`/`stroke-linejoin` and so
+// declare none: they render with the SVG defaults (butt/miter), exactly as the
+// prototype does. The `I2` glyphs added below DO set them where `portal2.jsx`
+// does, so the table grew two OPTIONAL keys (`linecap`, `linejoin`) which
+// `NeoIcon.vue` binds. Vue omits a binding whose value is `undefined`, so every
+// one of the original fourteen still renders byte-identically. Colour is always `currentColor` — there is no fill or stroke
 // prop; consumers set `color` on an ancestor.
 //
 // ⚠ This map lives in its own module, NOT inside `NeoIcon.vue`'s `<script setup>`,
@@ -127,6 +132,67 @@ export const ICONS = {
     shapes: [
       { tag: 'path', attrs: { d: 'M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z' } },
       { tag: 'path', attrs: { d: 'M12 9v4M12 17h.01' } }
+    ]
+  },
+  // ── I2 (prototype `portal2.jsx`, the v2 portal's own set) ──────────────────
+  // ⚠ Transcribed on the same rules as the 14 above: same shapes, same order,
+  // same attribute values, same default size and stroke-width. The I2 glyphs
+  // DO carry `stroke-linecap` / `stroke-linejoin` where the prototype sets them
+  // — the v1 set does not, and the difference is real, not an oversight — so
+  // they are declared per icon below and `NeoIcon.vue` passes them through.
+  //
+  // PI-T2 ports the six the appbar and the drawer need (18 §UC-PI-003/004).
+  // ⚠ SEAM: PI-T8 (the explainer) and GL-T4 (the guest steps) add `cup`, `box`,
+  // `hand`, `truck`, `pin`, `pause`, `bell` from the same table — to THIS file,
+  // never a second icon module (RD-DS-2).
+  menu: {
+    size: 20,
+    strokeWidth: '2.6',
+    linecap: 'round',
+    shapes: [
+      { tag: 'path', attrs: { d: 'M3 6h18M3 12h18M3 18h18' } }
+    ]
+  },
+  bag: {
+    size: 20,
+    strokeWidth: '2.2',
+    linejoin: 'round',
+    shapes: [
+      { tag: 'path', attrs: { d: 'M6 7h12l1 14H5z' } },
+      { tag: 'path', attrs: { d: 'M9 7V5a3 3 0 0 1 6 0v2' } }
+    ]
+  },
+  list: {
+    size: 20,
+    strokeWidth: '2.2',
+    linecap: 'round',
+    shapes: [
+      { tag: 'path', attrs: { d: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01' } }
+    ]
+  },
+  wallet: {
+    size: 20,
+    strokeWidth: '2.2',
+    shapes: [
+      { tag: 'rect', attrs: { x: '2', y: '6', width: '20', height: '14', rx: '2' } },
+      { tag: 'path', attrs: { d: 'M2 10h20M16 15h2' } }
+    ]
+  },
+  help: {
+    size: 20,
+    strokeWidth: '2.2',
+    linecap: 'round',
+    shapes: [
+      { tag: 'circle', attrs: { cx: '12', cy: '12', r: '10' } },
+      { tag: 'path', attrs: { d: 'M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2-3 4M12 17h.01' } }
+    ]
+  },
+  user: {
+    size: 20,
+    strokeWidth: '2.2',
+    shapes: [
+      { tag: 'path', attrs: { d: 'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2' } },
+      { tag: 'circle', attrs: { cx: '12', cy: '7', r: '4' } }
     ]
   }
 }

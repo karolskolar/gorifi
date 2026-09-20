@@ -43,7 +43,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding } from '../helpers/portal.js'
+import { expectLanding, logout, openProfile, expectChromeName } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { execFileSync } from 'node:child_process'
@@ -1686,7 +1686,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       expect(api.row(friend.id).google_prompt_dismissed, 'and writes nothing to the DB').toBe(0)
 
       // ── the next login shows it again ──────────────────────────────────────
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginModern(page, backend, friend)
       await expect(promptOf(page), 'a declined prompt returns at the next login').toBeVisible()
     })
@@ -1714,7 +1714,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       expect(api.row(friend.id).google_prompt_dismissed).toBe(1)
       expect(api.row(friend.id).google_sub, 'dismissing is not linking').toBeNull()
 
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginModern(page, backend, friend)
       await expectLanding(page)
       await expect(promptOf(page), 'a dismissed prompt never auto-opens again').toHaveCount(0)
@@ -1736,7 +1736,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       await expectLanding(page)
       await expect(promptOf(page), 'googleLinked === true ⇒ nothing to offer').toHaveCount(0)
 
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginModern(page, backend, dismissed)
       await expectLanding(page)
       await expect(promptOf(page), 'googlePromptDismissed === true ⇒ silenced').toHaveCount(0)
@@ -1859,7 +1859,10 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       // Non-vacuity: the portal really rendered. "Zero requests" is otherwise
       // satisfied by a page that failed to mount at all.
       await expectLanding(page)
-      await expect(page.locator('.appbar')).toContainText(friend.name)
+      // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)): the friend's name left the
+      // appbar for the drawer header, which is now the only place the chrome paints
+      // an identity. Same claim, one home (`helpers/portal.js`).
+      await expectChromeName(page, friend.name)
       await expect(page.getByTestId('google-signin'), 'the login card never rendered').toHaveCount(0)
       await page.waitForLoadState('networkidle')
       expect(hits,
@@ -1915,7 +1918,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       expect(handshake.googlePromptDismissed, '…and false').toBe(false)
 
       // ── flip the SAME backend to modern: the absence above cannot be vacuous ──
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await api.setAuthMode('modern')
       await loginModern(page, backend, friend)
       await expect(promptOf(page), 'modern ⇒ the very same friend is offered the link').toBeVisible()
@@ -1963,7 +1966,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
 
       // The next login has no gate, so it does get the prompt — the absence above is
       // about the gate, not about this friend.
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginModern(page, backend, { ...friend, password: 'gatePass12345' })
       await expect(promptOf(page)).toBeVisible()
     })
@@ -2002,19 +2005,30 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
       await expect(promptOf(page)).toHaveCount(0)
 
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginInPlace(bob)
 
-      await expect(page.locator('.appbar')).toContainText(bob.name)
       await expect(promptOf(page), "Alice's decision must not reach Bob").toBeVisible()
 
       // …and back the other way, still in the same document: Bob dismissing must not
       // re-arm — or re-silence — Alice.
       await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await expect(promptOf(page)).toHaveCount(0)
+      // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)) — and MOVED one step later,
+      // which is the load-bearing detail. The friend's name left the appbar for the
+      // drawer header, and the drawer opens from a hamburger that any open NeoModal's
+      // scrim covers. The Google prompt is exactly such a modal, so the identity claim
+      // is made once the prompt has been dismissed — the same claim, one step later,
+      // and still inside the SAME document (no reload), which is what this test is
+      // about.
+      await expectChromeName(page, bob.name)
+
+      await logout(page)
       await loginInPlace(alice)
-      await expect(page.locator('.appbar')).toContainText(alice.name)
       await expect(promptOf(page), 'each handshake owns its own decision').toBeVisible()
+      await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
+      await expect(promptOf(page)).toHaveCount(0)
+      await expectChromeName(page, alice.name)
     })
   })
 
@@ -2067,7 +2081,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       // silently dead. Nothing else in the suite can see this.
       await promptOf(page).getByRole('button', { name: 'Zatvoriť dialóg' }).click()
       await expect(promptOf(page)).toHaveCount(0)
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await expect(page.getByTestId('google-signin')).toBeVisible()
       await expect
         .poll(async () => (await page.evaluate(() => window.__gisCalls.initialize)).length,
@@ -2077,8 +2091,11 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       // Proof rather than inference: the callback the login card now owns really is a
       // LOGIN callback — firing it signs the (now linked) friend straight in.
       await page.evaluate((token) => window.__gisCallback({ credential: token }), `TEST:${sub}:me@example.test`)
-      await expect(page.locator('.appbar')).toContainText(friend.name)
       await expectLanding(page)
+      // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)): the friend's name left the
+      // appbar for the drawer header, which is now the only place the chrome paints
+      // an identity. Same claim, one home (`helpers/portal.js`).
+      await expectChromeName(page, friend.name)
 
       // ⚠ "NEVER FOR A GOOGLE LOGIN" (§UC-GA-006) — the one trigger branch that had no
       // assertion of its own. The two lines above do NOT cover it: the portal heading
@@ -2253,7 +2270,7 @@ const sectionOf = (page) => page.getByTestId('profile-google')
  */
 async function openProfileSection(page) {
   await expectLanding(page)
-  await page.locator('.appbar .titles').click()
+  await openProfile(page)
   await expect(page.getByRole('dialog').locator('.m-title')).toHaveText('Upraviť profil')
   return sectionOf(page)
 }
@@ -2652,7 +2669,7 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
 
       // ── 3. the LOGIN CARD takes it back when it re-renders ────────────────
       await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await expect(page.getByTestId('google-signin')).toBeVisible()
       await expect
         .poll(async () => (await page.evaluate(() => window.__gisCalls.initialize)).length,
@@ -2663,8 +2680,11 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
 
       // Proof rather than inference: the callback it now owns is a LOGIN callback.
       await fireCredential(page, `TEST:${mySub}:own7@example.test`)
-      await expect(page.locator('.appbar')).toContainText(friend.name)
       await expectLanding(page)
+      // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)): the friend's name left the
+      // appbar for the drawer header, which is now the only place the chrome paints
+      // an identity. Same claim, one home (`helpers/portal.js`).
+      await expectChromeName(page, friend.name)
     })
   })
 
@@ -2713,10 +2733,17 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await closeModal()
 
       // ── direction 1: A's TRUE state must not reach B, who is unlinked ─────
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginInPlace(b)
-      await expect(page.locator('.appbar')).toContainText(b.name)
       await declinePrompt()
+      // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)) — and MOVED one step later,
+      // which is the load-bearing detail. The friend's name left the appbar for the
+      // drawer header, and the drawer opens from a hamburger that any open NeoModal's
+      // scrim covers. The Google prompt is exactly such a modal, so the identity claim
+      // is made once the prompt has been dismissed — the same claim, one step later,
+      // and still inside the SAME document (no reload), which is what this test is
+      // about.
+      await expectChromeName(page, b.name)
       section = await openProfileSection(page)
       await expect(section, "A's link must not reach B").toContainText(GOOGLE_SECTION_HELPER)
       await expect(section.getByRole('button', { name: GOOGLE_UNLINK, exact: true })).toHaveCount(0)
@@ -2737,10 +2764,13 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await closeModal()
 
       // ── direction 2: B's FALSE state must not reach A, who IS linked ──────
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await loginInPlace(a)
-      await expect(page.locator('.appbar')).toContainText(a.name)
       await expect(promptOf(page), 'A is linked now — no prompt').toHaveCount(0)
+      // ⚠ RETARGETED BY PI-T2 (18 §UC-PI-003, case (a)): the friend's name left the
+      // appbar for the drawer header, which is now the only place the chrome paints
+      // an identity. Same claim, one home (`helpers/portal.js`).
+      await expectChromeName(page, a.name)
       section = await openProfileSection(page)
       await expect(section.getByTestId('profile-google-email'), "B's unlink must not reach A")
         .toHaveText('a@example.test')
@@ -2827,7 +2857,7 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
 
       // ── flip the SAME backend to modern: the absence above cannot be vacuous ──
-      await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
+      await logout(page)
       await api.setAuthMode('modern')
       await loginModern(page, backend, friend)
       await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()

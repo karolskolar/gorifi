@@ -232,3 +232,229 @@ one, or the first assertion is about a no-op.
    17's pieces), beyond the five §UC-PI-002 names. It exists so PI-T4's closed modal can set
    the date in display type on its own line without splitting the sentence string. Published
    shapes GROW.
+
+---
+
+## PI-T2 — the appbar per state, `NeoDrawer`, `useModalLayer()`, the A13 canon sync (2026-09-20)
+
+**What shipped.** `components/neo/use-modal-layer.js` (extracted verbatim out of
+`NeoModal.vue`); `components/neo/NeoDrawer.vue`; six `I2` glyphs in `icons.js` plus two
+optional `linecap`/`linejoin` keys threaded through `NeoIcon.vue`; the **A13** canon sync of
+`portal2.css` into `friends-theme.css`; the appbar rewritten per §UC-PI-003 in
+`FriendPortal.vue` (reading a `computed` the session exposes); `menuOpen`, the
+session-level balance fetch, the six drawer rows and `backHome()` in
+`FriendPortalSession.vue`; five new helpers in `e2e/helpers/portal.js`; a new
+`portal-menu.spec.js`; and the sanctioned retargets across **9** shipped spec files.
+
+### 1. ⚠ THE EXTRACTION WAS PROVED BY DIFF, NOT BY A GREEN SUITE
+
+`NeoModal` has **17 mount sites in 8 files**, and every one of them depends on five
+behaviours that are 300 lines of hard-won comments. "The tests pass" is not evidence that a
+move of that code is behaviour-preserving — it is evidence about the cases the tests cover.
+
+So the move was made mechanically and then *checked* mechanically: strip comments and blank
+lines from the OLD code (the plain `<script>` block + the per-instance block), apply the
+four substitutions the parameterisation requires, sort both sides, and diff as multisets.
+**106 statements in, 107 out, and the whole difference is three lines:**
+
+```
++export function useModalLayer(el, { closable, trapping, onClose, tag = 'NeoModal' } = {}) {
+-if (document.activeElement === el) return true
++if (document.activeElement === node) return true
+```
+
+i.e. the new wrapper signature, and the one loop variable renamed out of the way of the
+`el` parameter. The substitutions themselves are the whole API: `props.closable →
+closable()`, `trapping.value → trapping()`, `emit('close') → onClose()`, `modalEl → el` —
+the first two are GETTERS precisely so that "read at event time, never captured" (which
+three of NeoModal's comments insist on) survives the move.
+
+### 2. THE BEHAVIOUR/TEST MAP — AND THE FOUR BEHAVIOURS NOTHING PINS
+
+Written out because half of it is a finding, not a checklist:
+
+| Behaviour | The test that reds if it breaks | Mutation |
+|---|---|---|
+| body scroll LOCK | `modern-login` "cannot be dismissed", `product-photo-lightbox` "(1) it is on the NeoModal shell", `portal-menu` "scroll-locked" | M1 |
+| **Esc honours `closable`** | **NOTHING** (see below) | M2 |
+| scrim mousedown ORIGIN + one-shot | `portal-profile-modal` "a text-selection drag out of .m-body must NOT close", `portal-menu` "a drag that STARTS inside" | M3 |
+| focus TRAP | `modern-login` "Tab and Shift+Tab cannot escape the gate", `portal-menu` "cannot escape the drawer" | M4 |
+| lock RELEASE (the counter) | `modern-login` "setting a valid password closes the gate" (`overflow === ''`), `product-photo-lightbox` | M1 covers |
+| **restore to the SAVED value, not `''`** | **NOTHING** | M5 |
+| **focus moved INTO the dialog on mount** | **NOTHING** | M6 |
+| **focus RESTORED to the opener on close** | **NOTHING** | M7 |
+| **the `didLock` mount/unmount pairing guard** | **NOTHING** | — |
+| **the dev-only "more than one modal" warning** | **NOTHING** | — |
+
+Mutations M1–M4 each red exactly the predicted tests and nothing else: M1 → 3
+(`modern-login` "cannot be dismissed", `portal-menu` "scroll-locked",
+`product-photo-lightbox` "on the NeoModal shell"); M3 → 4 (the `portal-menu` drag test plus
+all three `portal-profile-modal` scrim-drag tests, including the capture-phase and
+non-primary-press ones); M4 → 2 (both trap tests). M2 → **0**, see below.
+
+⚠ **M2 IS THE SURPRISE, AND IT IS A PRE-EXISTING GAP, NOT A REGRESSION.** Deleting
+`if (!closable()) return` from the Escape branch — i.e. letting Esc dismiss the forced
+password-change GATE — reds **nothing**: `modern-login` runs 12/12 green. The reason is that
+the gate's `<NeoModal :closable="false">` binds **no `@close` listener at all**, so the
+emit lands nowhere. `modern-login`'s "Esc must not dismiss it" assertion is therefore
+satisfied by the parent, not by the guard it looks like it is testing. `NeoModal`'s own
+comment ("`closable: false` kills ×, scrim-close and Esc") is true of the × and the scrim —
+both go through `requestClose()`, which IS guarded and IS pinned — and currently only
+incidentally true of Esc. Nothing is broken; the guard is correct and must stay, because the
+next `closable:false` consumer that DOES bind `@close` would dismiss on Esc without it. It
+is simply not the thing that test measures.
+
+M5+M6+M7 were applied TOGETHER and the four files that exercise modals stayed green — which
+is the finding stated as a measurement rather than as a suspicion. **Those three were
+already unpinned before this row**; the extraction did not weaken them, and this table is
+the first time anyone has said so out loud. They are cheap to pin (an `activeElement` read
+after a close; a `document.body.style.overflow = 'scroll'` prelude) and are left as named
+work rather than smuggled into an unrelated row.
+
+### 3. THE APPBAR HAD TO READ SESSION STATE WITHOUT HOLDING IT
+
+`BrandChrome` is ONE instance across all three auth states (03 §UC-FL-001 — it must not
+remount on login), so it lives in `FriendPortal.vue`. But §UC-PI-003's subtitle, ticker and
+lock chip are functions of `route.meta.view` and of `resolveLanding(cycles)` — session data,
+and PI-T1's source pin forbids `route.meta` in the parent outright.
+
+The shape that satisfies both: the session exposes ONE `computed`, `appbar`, and the parent
+reads it as `computed(() => session.value?.appbar || null)`. The parent stores nothing; when
+`authState` leaves `authenticated` the session is destroyed, `session.value` is `null`, and
+the login chrome renders by construction. `backHome()` is exposed for the same reason —
+keeping the parent router-free is what keeps the "no `route.meta` here" pin meaningful
+rather than incidental.
+
+### 4. ⚠ THE `.s` LINE WAS AN IDENTITY ASSERTION IN FOURTEEN PLACES, AND THE SPEC NAMED FIVE
+
+§UC-PI-019 items 4/5 enumerate the logout and `.titles` call sites. Measured, the retarget
+was bigger in two directions:
+
+- **`portal-shell.spec.js` is in NEITHER list** — it is PI-T1's own file, written after the
+  spec, and it carried 4 logout clicks and 2 `.appbar .titles .s` identity pins. Same class
+  as PI-T1's `payment-links.spec.js` finding, one row later: *re-enumerate, never trust the
+  enumeration*.
+- **`.appbar .titles .s` was the friend's NAME**, and §UC-PI-003 turns it into a fixed
+  per-view subtitle. That is not in items 4/5 at all, and it appears as
+  `.titles .s`-toHaveText (5 sites) AND as `expect(page.locator('.appbar')).toContainText(name)`
+  (8 sites, in `google-auth` ×7 and `magic-link` ×1) — the second shape invisible to a grep
+  for the first.
+
+All thirteen now go through ONE helper, `expectChromeName(page, name)`, which opens the
+drawer, asserts the header and closes it again. **The claim moved with the name, not with
+the selector.**
+
+⚠ **And it has a limit worth knowing before the next row hits it:** the hamburger sits
+behind any open `NeoModal`'s scrim, so `expectChromeName` (and `logout`, and `openProfile`)
+cannot be called while a dialog is up. Three `google-auth` sites asserted identity while the
+Google link prompt was open; the fix was to make the claim ONE STEP LATER, after the prompt
+is dismissed, in the same document. The tempting alternative — reading `friendName` out of
+`localStorage` — was written, run, and **failed**: `loginInPlace()` does not tick
+"remember me", so there is no stored payload at all. A weaker assertion that also happens to
+be wrong is the worst of both.
+
+### 5. THE A13 CANON SYNC: VERBATIM, WITH TWO DEVIATIONS RECORDED IN THE FILE
+
+`portal2.css` ported as a trailing section, byte-for-byte, with exactly two departures, both
+written into the A13 block rather than reconciled silently:
+
+- **D1 — `.p2-icobtn` also gets a `.modal-layer` scope.** The prototype writes `.app
+  .p2-icobtn` only, because ITS modal layer is a node inside `.app`; in production the layer
+  is teleported OUT (02 §UC-DS-001 A6/A8). The prototype selector therefore reaches the
+  appbar's hamburger but NOT the drawer's ×, which would render as a bare 18px glyph — under
+  UC-DS-005's 44px minimum. Grouped into one declaration block, prototype specificity (0,2,0)
+  kept. **Pinned** by a `boundingBox()` assertion in `portal-menu.spec.js`, and
+  mutation-proved by reverting the selector (M14).
+- **D2 — the two TIMELINE blocks (`.p2-tl`, `.p2-dots` — **19 rule blocks / 24 comma-separated
+  selectors**, measured; the first write-up said „15 selectors", which was neither) are NOT ported.**
+  CS-T2 already shipped that component as `CycleTimeline.vue` with `.cs-` scoped styles
+  (17 §UC-CS-006, and §UC-PI-019 item 13 already records the rename). Porting them would add
+  fifteen selectors matching nothing AND a second home for how the timeline is painted.
+
+The rest of the file (`.p2-lines`, `.p2-tot`, `.p2-step`, `.p2-hl`, `.p2-ro`, `.p2-tx`) is
+ported now although PI-T2 uses none of it: **a canon sync is one act**, and PI-T4/5/7/8 are
+its consumers. They must not re-port their slice.
+
+⚠ A10 note: the drawer HEADER's friend-name div carries no class, so it takes A10's
+documented call-site remedy (`line-height:normal` inline) — the case a class list
+structurally cannot reach.
+
+### 6. `getByRole('dialog')` — 30 FILES, AND WHY `v-if` IS LOAD-BEARING TWICE
+
+The drawer is `role="dialog" aria-modal="true" aria-label="Menu"`. **Measured: 30 spec files
+and 206 occurrences of `getByRole('dialog')`.** Rendered-but-hidden, the drawer would make
+every unscoped one of those a strict-mode violation. The parent mounts it with `v-if`, so it
+is in the DOM only while open; `portal-menu.spec.js` pins that in both directions (count 0 →
+1 → 0, and the profile modal still resolving to exactly ONE dialog with the menu closed), and
+M8 (`v-if` → `v-show`) reds it.
+
+Verified by running 13 of the 14 friend-facing dialog-counting files, not by argument. The
+corollary is now in `CLAUDE.md`: a spec that counts dialogs while the menu is open is
+counting the menu.
+
+### 7. Small things measured rather than assumed
+
+- **`menuGo()` returns BEFORE the router has navigated.** §UC-PI-004 says "close the drawer
+  first, then act", so the drawer is gone while `router.push` is still a microtask away. Three
+  tests read `page.url()` once and got `/` instead of `/moje-objednavky`. The rule: assert a
+  URL with a RETRYING matcher (`expect(page).toHaveURL(...)`), never with a one-shot read —
+  and the helper deliberately does NOT wait for navigation, because two of the six rows open a
+  modal and navigate nowhere.
+- **The ticker is uppercased in JS, not by CSS.** `.ticker` is `text-transform:uppercase`, and
+  `toContainText` resolves from `textContent`, which does not apply a transform. A lower-case
+  source would look right on screen and red here — M10 proves the direction.
+- **`weeksUntil` (18) and `inWeeksText` (17) genuinely differ** and the ticker uses 18's:
+  17's builder switches to DAYS under a week (PO O6), while §UC-PI-003 specifies
+  weeks-or-„DÁME VEDIEŤ". Two rules, and the split is by SENTENCE (PI-T1 §1), not by taste.
+- **The `.s` subtitle for a LOCKED round is state-dependent in two ways**: „Vaša objednávka"
+  only when the friend has an order in it, „Aktuálna ponuka" otherwise. Both branches are
+  pinned, because a one-branch fixture would pass against a component that ignored `hasOrder`.
+- **The legacy login card lists every friend by name** in its „Vyberte svoje meno" dropdown,
+  so `expect(body).not.toContainText(otherFriendsName)` is UNSATISFIABLE on the login screen.
+  That assertion was written, failed, and moved to the next session's chrome, where it is
+  both satisfiable and discriminating.
+- **The subtitle rewrite broke the „explainer has no hamburger" assumption in PI-T1's own
+  file**: `portal-shell`'s four-view walk ends on `/ako-to-funguje`, where §UC-PI-003 puts a
+  back chevron instead of the menu. The test now returns to `/` first — the swap is the spec,
+  not a workaround.
+
+### 8. The mutation matrix, in full (all reverted from a scratchpad copy, never `git checkout`)
+
+| # | Mutation | Reds |
+|---|---|---|
+| M1 | the scroll lock never writes `overflow:hidden` | 3 — `modern-login`, `portal-menu`, `product-photo-lightbox` |
+| M2 | Escape ignores `closable()` | **0** — §2: the gate binds no `@close` |
+| M3 | the scrim click drops the origin/one-shot check | 4 — `portal-menu` drag + all 3 `portal-profile-modal` scrim tests |
+| M4 | the focus trap never runs | 2 — both Tab-escape tests |
+| M5+M6+M7 | restore-to-`''`, no focus-on-mount, no focus-restore | **0** (four files, 68 tests) |
+| M8 | the drawer mounted with `v-show` | **27** — every `portal-menu` test plus 8 in `portal-appbar` (a second permanent dialog breaks the whole file) |
+| M9 | the lock chip is also `.chip.acc` | 1 — the state-ticker/lock test |
+| M10 | the ticker suffix is not uppercased in JS | 1 — the same test (run SEPARATELY from M9, so each is covered on its own) |
+| M11 | badge threshold `< 0` instead of `< -0.01` | 1 — the badge test |
+| M12 | „Moje objednávky" counts all rounds, not `hasOrder` | 1 — the item-2 test |
+| M13 | the balance is fetched per drawer OPEN | 1 — the fetched-ONCE test |
+| M14 | A13 deviation D1 reverted (`.app`-only `.p2-icobtn`) | 1 — the ×-hit-target assertion in the close-paths test |
+
+⚠ M9 and M10 were first run TOGETHER and reddened ONE test — which cannot distinguish them,
+because that test asserts both. They were re-run separately for exactly that reason; a
+combined mutation is only evidence when it reds disjoint tests (as M11–M14 did, 1:1).
+
+### What PI-T2 LEAVES BEHIND
+
+1. **TWO balance requests per session load**, and it is deliberate: `FriendBalanceCard.vue`
+   still makes its own (module 03's card is still on the landing). PI-T7 relocates that card
+   and feeds it from the session's `balance` ref, at which point §UC-PI-004's "one request per
+   session load" is literally true. The per-OPEN rule — the half this row owns — is pinned now.
+2. **Item 4 („Zdieľať s kolegami") and item 1's „ · v košíku {suma}" clause are PI-T3's.**
+   Both need things that do not exist yet (the share dialog re-pointed at the landing; a
+   landing cart). The empty slot between items 3 and 5 is PINNED empty in `portal-menu.spec.js`
+   so filling it is a deliberate edit.
+3. ⚠ **A SPEC DISCREPANCY, recorded rather than resolved silently.** §UC-PI-004's `.on` rule
+   says „the item whose view is current gets `.on`" and its parenthetical says „(only items
+   1/2/6 map to a view)" — but item 3's action IS a view (`/zostatok`, `meta.view: 'balance'`).
+   FOUR rows map, not three; the prototype agrees. Implemented as the general rule.
+4. **Four `useModalLayer` behaviours have no test at all** (§2). Naming them is the deliverable;
+   pinning them is a row someone should schedule.
+5. **`icons.js` grew two optional keys** (`linecap`, `linejoin`) because the `I2` glyphs set
+   them and the original fourteen do not. PI-T8 and GL-T4 add the remaining I2 glyphs to THAT
+   file — `cup`, `box`, `hand`, `truck`, `pin`, `pause`, `bell` — never a second icon module.

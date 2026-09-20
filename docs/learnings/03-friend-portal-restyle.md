@@ -737,7 +737,11 @@ frontend-only, typography-only change (`git diff -- backend/` is empty):
 - **`--font-cond`, `.pspec` and `.pnotes` are a CANON SYNC**, not a local invention:
   the design project's own `friends/theme.css` carries all three verbatim (fetched and
   compared, 2026-08-13). So they are ported into `friends-theme.css` like every other
-  rule there — **not** as a numbered adaptation (the list still ends at A12).
+  rule there — **not** as a numbered adaptation (~~the list still ends at A12~~ —
+  **superseded: PI-T2 added A13**, the `portal2.css` canon port for the drawer/appbar;
+  see the A13 block at the end of `friends-theme.css` and `docs/learnings/10-portal-ia.md`
+  §A13. This file is what CLAUDE.md's index tells the next implementer to read BEFORE
+  touching the theme, so the number has to be right here.)
 - ⚠ **The canon also moved `--font-mono` to `'Space Mono','Courier Prime',monospace`.
   That is NOT ported.** Space Mono is not self-hosted here, so the stack would fall
   straight through to Courier Prime and render identically while implying a face we do

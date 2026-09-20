@@ -59,8 +59,12 @@ import { loadGis } from '../lib/gis'
 // UC-DS-004 rule 4 keeps radix ADMIN-only — do not re-introduce one here.
 import { fmtEur } from '@/lib/money'
 import { VARIANT_GRAMS } from '@/lib/guest-cart'
-import { colleaguesLabel } from '@/lib/plural'
+import { colleaguesLabel, ordersAccusativeLabel, weeksLabel } from '@/lib/plural'
 import { kgLabel } from '@/lib/kg'
+// 18 §UC-PI-002 — the SHORT date forms. A date standing alone (here: the drawer's
+// „Otvorené do …“ sub-line) comes from `lib/dates.js`; a date inside one of module
+// 17's composed sentences comes from `cycle-stages.js` (PI-T1 §1).
+import { fmtDate, weeksUntil } from '@/lib/dates'
 // 18 §UC-PI-002 — the ONE home of "which round is this landing about, and in what
 // state". Never re-derive open/locked/closed beside it.
 import { resolveLanding } from '@/lib/portal-state'
@@ -70,6 +74,7 @@ import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
+import NeoDrawer from '@/components/neo/NeoDrawer.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -125,6 +130,11 @@ const emit = defineEmits([
   // ⚠ An emit rather than a write, for the same reason `token` is one — the parent is
   // the single owner of localStorage, and this component must never touch it.
   'magic-prompt-dismissed',
+  // 18 §UC-PI-004 — the drawer's „Odhlásiť sa“ footer. An EMIT, not a call: ending a
+  // session means clearing the credential store, localStorage and the identity the
+  // appbar renders, all of which are the parent's (`switchUser()`, and its header
+  // explains why those three cannot move here). This component only asks.
+  'logout',
 ])
 
 // ---------------------------------------------------------------------------
@@ -756,6 +766,13 @@ const shareCycle = ref(null)
 
 onMounted(async () => {
   const seq = ++guestCountSeq
+  // 18 §UC-PI-004 — ONE balance request per session load, for the drawer badge
+  // (and, from PI-T7, the landing debt banner). Fire-and-forget: the badge is
+  // decoration on a menu that is not even open yet, so it must not delay the
+  // voucher check, and it owns no error surface (see `loadBalance`). It is
+  // issued BEFORE the `await` below rather than after, so the one request it
+  // makes is already in flight while the voucher check settles.
+  loadBalance()
   // `cycles` and `subscriptions` are already seeded from the handshake, so the
   // only fetch the first render still owes is the voucher check.
   await checkPendingVouchers()
@@ -973,6 +990,221 @@ const view = computed(() => route.meta?.view || 'shop')
  * never fires a request of its own.
  */
 const landing = computed(() => resolveLanding(cycles.value))
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-003/004 — THE APPBAR PER STATE, AND THE DRAWER (PI-T2).
+//
+// ⚠ ALL OF IT LIVES HERE, on the session side of the parent's `v-if` +
+// `:key="sessionSeq"`, for the reason the block above states: `menuOpen`, the
+// balance, the drawer's labels and the appbar's own subtitle are SESSION data,
+// and a logout must destroy them with no list to maintain. The parent renders
+// `BrandChrome` (one instance across all three auth states — 03 §UC-FL-001, it
+// must not remount on login), so it READS `appbar` below through the exposed
+// session; it stores nothing of its own, and when the session is gone the whole
+// object is gone with it.
+// ---------------------------------------------------------------------------
+
+const menuOpen = ref(false)
+
+function openMenu() {
+  menuOpen.value = true
+}
+
+// ── the balance, fetched ONCE per session ────────────────────────────────────
+//
+// §UC-PI-004 item 3: "Balance for item 3 comes from the same
+// `api.getFriendBalance(friendId)` call the debt banner uses (UC-PI-008) — one
+// request per session load, shared state." So it is fetched HERE, at session
+// level, and NOT per drawer open: a menu that refetched on every open would put
+// a request behind a gesture people make constantly, and two components each
+// holding their own answer is how „what does this friend owe" acquires two homes.
+//
+// `null` means "not loaded (or failed)", which is exactly the state the badge is
+// specified to render as NOTHING — a menu must never show a money figure it is
+// not sure of, and a failed balance is not a reason to shout at someone opening
+// a menu. There is no error surface and no retry by design.
+//
+// ⚠ PI-T7 SEAM. `FriendBalanceCard.vue` still makes its OWN `getFriendBalance`
+// call, because module 03's card is still mounted on the landing until PI-T7
+// re-purposes it into the „Zostatok a platby“ view. So today a session load
+// makes TWO balance requests, and that is KNOWN, not overlooked: collapsing them
+// means pushing a prop into a component PI-T7 relocates wholesale, i.e. editing
+// it twice. PI-T7 feeds the card (and the landing debt banner) from THIS ref and
+// deletes the card's own fetch — at which point the §UC-PI-004 sentence above is
+// literally true. Until then the drawer badge is the one-per-session call.
+const balance = ref(null)
+
+async function loadBalance() {
+  if (!props.friendId) return
+  try {
+    const data = await api.getFriendBalance(props.friendId)
+    const value = Number(data?.balance)
+    balance.value = Number.isFinite(value) ? value : null
+  } catch {
+    // Swallowed: see above. No badge is the failure surface.
+    balance.value = null
+  }
+}
+
+// ── the appbar (§UC-PI-003) ──────────────────────────────────────────────────
+
+/**
+ * The `.titles .s` line: a FIXED string per view, never free text and never the
+ * friend's name any more (§UC-PI-003; the name moved into the drawer header).
+ * `shop` splits on the landing state: a LOCKED round the friend actually ordered
+ * in is „Vaša objednávka“, everything else is „Aktuálna ponuka“.
+ */
+const appbarSubtitle = computed(() => {
+  if (view.value === 'history') return 'Moje objednávky'
+  if (view.value === 'balance') return 'Zostatok a platby'
+  if (view.value === 'explainer') return 'Ako to funguje'
+  const l = landing.value
+  if (l.state === 'locked' && l.currentCycle?.hasOrder) return 'Vaša objednávka'
+  return 'Aktuálna ponuka'
+})
+
+/**
+ * The three state tickers (§UC-PI-003). The prototype's „ĎALŠIE KOLO“ is rewritten
+ * to „ĎALŠIA OBJEDNÁVKA“ — 18 resolved conflict 1 / §16: no „kolo“ or „cyklus“
+ * anywhere a friend can read (§UC-PI-017).
+ *
+ * ⚠ The week count is `lib/dates.js weeksUntil()` + `lib/plural.js weeksLabel()`,
+ * i.e. 18's own short rule, NOT 17's `inWeeksText()`. They genuinely differ:
+ * `inWeeksText` switches to DAYS under a week (PO decision O6) and this ticker is
+ * specified as weeks-or-nothing („…else DÁME VEDIEŤ“). Uppercased in JS rather
+ * than left to `.ticker { text-transform:uppercase }`, because `textContent` — what
+ * Playwright's `toContainText` reads — does not apply a text-transform.
+ */
+const appbarTicker = computed(() => {
+  const state = landing.value.state
+  if (state === 'open') return '+++ OBJEDNÁVKY OTVORENÉ +++ NEHOVOR O TOM NAHLAS +++'
+  if (state === 'locked') return '+++ OBJEDNÁVKY UZAMKNUTÉ +++ KÁVA JE NA CESTE +++'
+  const weeks = weeksUntil(landing.value.nextCycle?.opens_at)
+  const suffix = weeks !== null && weeks >= 1 ? `O ${weeksLabel(weeks).toUpperCase()}` : 'DÁME VEDIEŤ'
+  return `+++ OBJEDNÁVKY ZATVORENÉ +++ ĎALŠIA OBJEDNÁVKA ${suffix} +++`
+})
+
+/**
+ * Everything `FriendPortal.vue`'s `BrandChrome` needs, as ONE object — exposed
+ * rather than emitted, so the parent holds no state of its own (a ref there would
+ * survive the logout that unmounts this component, which is the whole six-leak
+ * class). It is a `computed`: it has no value to clear.
+ */
+const appbar = computed(() => ({
+  // The explainer swaps the hamburger for a back chevron (prototype `portal2.jsx`
+  // :309) — there is nowhere to go back to from the other three views.
+  menu: view.value !== 'explainer',
+  subtitle: appbarSubtitle.value,
+  ticker: appbarTicker.value,
+  // The lock chip is present whenever the round is NOT open, and it is decorative
+  // (`aria-hidden`) — the state is spoken by the banner, not by a glyph.
+  lock: landing.value.state === 'open'
+    ? null
+    : landing.value.state === 'locked' ? 'Objednávky sú uzamknuté' : 'Objednávky sú zatvorené',
+}))
+
+// ── the drawer's rows (§UC-PI-004) ───────────────────────────────────────────
+
+/** Rounds the friend has actually ordered in — 18 resolved conflict 8. */
+const orderedCycles = computed(() => cycles.value.filter((c) => c && c.hasOrder))
+
+/**
+ * Item 1's sub-line. Open ⇒ „Otvorené do {fmtDate(closes_at)}“, or the bare
+ * „Objednávky sú otvorené“ when no deadline is stored; closed/locked ⇒
+ * „Objednávky sú zatvorené“.
+ *
+ * ⚠ PI-T3 SEAM — the „ · v košíku {fmtEur(total)}“ clause §UC-PI-004 appends when
+ * the landing cart is non-empty is NOT here, deliberately. There IS no landing
+ * cart yet: PI-T3 mounts `FriendOrder.vue` in `mode='landing'` and it owns the
+ * cart. Writing the clause now would mean shipping a branch nothing can reach and
+ * no test can red — the same „dead helper" reasoning that kept `openMenu`/`logout`
+ * out of `e2e/helpers/portal.js` until this row (PI-T1 §4). PI-T3 appends it here.
+ */
+const shopSub = computed(() => {
+  const l = landing.value
+  if (l.state !== 'open') return 'Objednávky sú zatvorené'
+  const closes = fmtDate(l.currentCycle?.closes_at)
+  return closes ? `Otvorené do ${closes}` : 'Objednávky sú otvorené'
+})
+
+/** Item 2's sub-line: „{n} objednávky · naposledy {cycleName}“, or „Zatiaľ žiadne“. */
+const historySub = computed(() => {
+  const list = orderedCycles.value
+  if (!list.length) return 'Zatiaľ žiadne'
+  // `cycles` arrives `ORDER BY created_at DESC` (friends.js), so the first row
+  // carrying an order is the most recent one.
+  return `${ordersAccusativeLabel(list.length)} · naposledy ${list[0].name}`
+})
+
+/**
+ * The rows, in the spec's order. `view` maps the four navigating rows onto `.on`.
+ *
+ * ⚠ RECORDED SPEC DISCREPANCY (§UC-PI-004): the business rule says „the item whose
+ * view is current gets `.on`“ and its parenthetical says „(only items 1/2/6 map to
+ * a view)“ — but item 3's action IS a view (`/zostatok`, `meta.view: 'balance'`),
+ * so FOUR rows map, not three. The prototype agrees (`portal2.jsx` renders
+ * `Item k="balance"` through the same `view === k ? " on"` test as the others), and
+ * the general rule is the one written as a rule. Implemented as the general rule;
+ * the parenthetical reads as a miscount.
+ *
+ * ⚠ PI-T3 SEAM — item 4 („Zdieľať s kolegami“, `state === 'open'` only, opening
+ * `GuestShareDialog`) is deliberately ABSENT. Its sub-line is one
+ * `GET /guest-links/cycle/:id` for the current open cycle behind the `loadSeq`
+ * rule, and its action is the share dialog PI-T3 re-points at the landing. The
+ * slot is between `balance` and `invite`.
+ */
+const menuItems = computed(() => {
+  const rows = [
+    { key: 'shop', view: 'shop', icon: 'bag', label: 'Aktuálna ponuka', sub: shopSub.value },
+    { key: 'history', view: 'history', icon: 'list', label: 'Moje objednávky', sub: historySub.value },
+    {
+      key: 'balance',
+      view: 'balance',
+      icon: 'wallet',
+      label: 'Zostatok a platby',
+      // While it is loading (or after a failure) there is NO badge — never a
+      // placeholder figure. `-0.01` is the spec's threshold, so a balance that
+      // rounds to zero is not painted as debt.
+      badge: balance.value === null
+        ? null
+        : { text: fmtEur(balance.value), tone: balance.value < -0.01 ? 'danger' : 'ok' },
+    },
+    { key: 'invite', icon: 'invite', label: 'Pozvať priateľa', sub: 'Váš pozývací odkaz' },
+    { key: 'explainer', view: 'explainer', icon: 'help', label: 'Ako to funguje' },
+    { key: 'profile', icon: 'user', label: 'Profil', sub: 'Meno, telefón, Packeta, heslo' },
+  ]
+  return rows.map((row) => ({ ...row, on: !!row.view && row.view === view.value }))
+})
+
+/**
+ * §UC-PI-004: "Choosing any item closes the drawer first, then acts." Not
+ * cosmetic — a `router.push` out of a view whose leave guard prompts (PI-T3) would
+ * otherwise run with the drawer still on the modal layer, over the confirm.
+ */
+function onMenuSelect(key) {
+  menuOpen.value = false
+  if (key === 'invite') return openInviteModal()
+  if (key === 'profile') return openProfileModal()
+  const path = key === 'history' ? '/moje-objednavky' : key === 'balance' ? '/zostatok' : key === 'explainer' ? '/ako-to-funguje' : '/'
+  if (route.path !== path) router.push(path)
+}
+
+function onMenuLogout() {
+  menuOpen.value = false
+  emit('logout')
+}
+
+/**
+ * The explainer view's back chevron (§UC-PI-003 `#leading`). It lives here, not in
+ * the parent, so that ROUTING has one home on the authenticated surface — the same
+ * place `view`, `onMenuSelect` and (from PI-T9) the explainer gate's
+ * `router.replace` live. Keeping the parent router-free is also what keeps
+ * `portal-shell.spec.js`'s source pin („no `route.meta` in `FriendPortal.vue`")
+ * meaningful rather than incidental.
+ */
+function backHome() {
+  if (route.path !== '/') router.push('/')
+}
 
 function getCycleTypeLabel(type) {
   if (type === 'bakery') return 'Pekáreň'
@@ -1394,7 +1626,12 @@ function getInviteUrl() {
 // pair of "open this modal" booleans owned by the parent, which is precisely the
 // session state this extraction exists to keep out of it.
 // ---------------------------------------------------------------------------
-defineExpose({ openProfileModal, openInviteModal })
+// ⚠ `appbar` is exposed as well as the two openers (18 §UC-PI-003): `BrandChrome`
+// is the PARENT's one instance across all three auth states, so the parent has to
+// read the per-view subtitle, the ticker and the lock chip from somewhere — and
+// „somewhere" must not be a ref of its own, or friend A's chrome greets friend B.
+// A `computed` read through the exposed session dies with the session.
+defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
 </script>
 
 <template>
@@ -2600,6 +2837,25 @@ defineExpose({ openProfileModal, openInviteModal })
       <button type="button" class="btn" @click="showInviteModal = false">Zavrieť</button>
     </template>
   </NeoModal>
+
+  <!-- The hamburger drawer (18 §UC-PI-004). `v-if`, exactly like every NeoModal
+       on this screen, and for one extra reason of its own: it carries
+       `role="dialog"`, and 28 shipped spec files resolve `getByRole('dialog')`.
+       Rendered-but-hidden it would turn every one of them into a strict-mode
+       violation; mounted only while open, `getByRole('dialog')` still returns
+       exactly one element on every screen that had one before.
+
+       It teleports to `.modal-layer` — never a `position:fixed` child of `.app`,
+       which `.app > * { position:relative; z-index:1 }` would silently flatten
+       (CLAUDE.md §Frontend). `.app .p2-drawer` therefore counts 0. -->
+  <NeoDrawer
+    v-if="menuOpen"
+    :friend-name="friendName"
+    :items="menuItems"
+    @select="onMenuSelect"
+    @logout="onMenuLogout"
+    @close="menuOpen = false"
+  />
 
   <!-- Share with colleagues (guest link) — shared with FriendOrder -->
   <GuestShareDialog

@@ -58,7 +58,7 @@
 > **Design reference:** `portal2.jsx` `Timeline` + `portal2.css:22-35` (vertical) and
 > `Dots` + `portal2.css:38-42` (compact) are the pixel canon — port the CSS
 > byte-equivalent into the component's `<style scoped>`, never into `friends-theme.css`
-> (canon port ends at A12; new styling is scoped). The guest status page keeps its own
+> (canon port ended at A12 when this was written; **PI-T2 added A13** — new styling is still scoped). The guest status page keeps its own
 > lagging skin around the mounted card; the admin header wraps the compact variant in
 > shadcn chrome and adds no `neo/` class.
 

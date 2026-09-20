@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding } from '../helpers/portal.js'
+import { expectLanding, openProfile } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
 // RD-FL-8b — module 03's CLOSEOUT net (03 §UC-FL-013 procedure items 3 and 4).
@@ -379,7 +379,7 @@ test.describe('320 px — zero horizontal document overflow with hostile free te
 
   test('profile modal — long username and Packeta address', async ({ page }) => {
     await openPortal(page, { cycles: HOSTILE, packeta: `Z-BOX ${LONG_URL}` })
-    await page.locator('.appbar .titles').click()
+    await openProfile(page)
     await expect(page.getByRole('dialog')).toBeVisible()
     await noOverflow(page, 'profile modal')
     await page.getByRole('button', { name: 'Zmeniť heslo' }).click()

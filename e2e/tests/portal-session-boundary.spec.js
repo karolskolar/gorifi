@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding } from '../helpers/portal.js'
+import { expectLanding, logout, openProfile } from '../helpers/portal.js'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 
 // RD-FL-7 — the session-boundary regression net.
@@ -265,7 +265,7 @@ async function walkAuthenticated(page, { fill, snaps = [], label = '' } = {}) {
   }
 
   // Modal: profile, appbar `.titles` (UC-FL-004/009) — plus its password fold.
-  await page.locator('.appbar .titles').click()
+  await openProfile(page)
   let dialog = page.getByRole('dialog')
   await expect(dialog.locator('.m-title')).toHaveText('Upraviť profil')
   const fold = dialog.getByRole('button', { name: 'Zmeniť heslo' })
@@ -400,7 +400,7 @@ test.describe('⚠ nothing crosses the session boundary (the whole friend surfac
     await walkAuthenticated(page, { fill: true })
 
     // --- the boundary itself
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+    await logout(page)
     await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
 
     const snaps = [await snapshot(page, 'login-after-logout')]
@@ -474,7 +474,7 @@ test.describe('⚠ nothing crosses the session boundary (the whole friend surfac
     await expect(page.getByRole('dialog')).toHaveCount(0)
     await walkAuthenticated(page, { fill: true })
 
-    await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+    await logout(page)
     await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
 
     const reopened = await sharedLogin(b)
@@ -562,7 +562,7 @@ test.describe('⚠ nothing crosses the session boundary (the whole friend surfac
       await page.keyboard.press('Escape')
       await expect(page.getByRole('dialog')).toHaveCount(0)
 
-      await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
+      await logout(page)
       await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
 
       const next = await sharedLogin(b)

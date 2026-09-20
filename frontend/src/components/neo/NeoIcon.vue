@@ -36,6 +36,8 @@ watchEffect(() => {
     fill="none"
     stroke="currentColor"
     :stroke-width="icon.strokeWidth"
+    :stroke-linecap="icon.linecap"
+    :stroke-linejoin="icon.linejoin"
   >
     <component :is="shape.tag" v-for="(shape, i) in icon.shapes" :key="i" v-bind="shape.attrs" />
   </svg>
