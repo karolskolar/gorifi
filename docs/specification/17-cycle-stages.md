@@ -534,8 +534,13 @@ every changed backend file, then Playwright.
    - **Lib derivation (UC-CS-005):** `import('../../frontend/src/lib/cycle-stages.js')`
      directly (plain ESM, only `./plural.js`): the `stageIndex` table, `fmtDay`,
      `inWeeksText` declensions, `nextOpeningText` branches, `openUntilText`,
-     `currentCycleFor` precedence; a regex sweep `/kol[oáa]\b|cykl/i` over every string
-     the module exports or builds ⇒ zero matches (non-vacuous: ≥ 6 labels checked).
+     `currentCycleFor` precedence; a regex sweep ~~`/kol[oáa]\b|cykl/i`~~ `/\bkol[oáa]|cykl/iu`
+     over every string the module exports or builds ⇒ zero matches (non-vacuous: ≥ 6 labels
+     checked). ⚠ **The struck regex is BROKEN IN BOTH DIRECTIONS** (CS-T2, 2026-09-20,
+     measured): a trailing `\b` after `á` never fires, because `á` is outside ASCII `\w`, so
+     it MISSES „kolá" — the very plural it bans — and it false-positives „okolo", which is
+     module 18's own PO-approved „Káva príde okolo {expected_date}". The LEADING `\b` is the
+     fix; the `u` flag is cosmetic.
    - **UI:** CycleDetail date save + revert-on-400 + stage buttons + compact `now` index
      (UC-CS-007); guest status page card, cancelled hides it, edit mode hides it, the new
      `status-readonly` sentence (UC-CS-008); vertical variant's `done/now/next` counts

@@ -415,7 +415,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 ## 15. Cycle stages (17) — opens_at / closes_at / stage, timeline component
 
 - [x] CS-T1  Schema `opens_at`/`closes_at`/`stage` on `order_cycles` (ALTERs placed AFTER the `_check_test` recreate block, schema.js ~177-201) + `helpers/cycle-stage.js` (`CYCLE_STAGES`, `LOCKED_STAGE_DEFAULT`, **`markCycleReady()` BODY replacing DP-T1's stub** — idempotent, forward-only, never touches `status`) + `POST/PATCH /cycles` contract (ISO dates, 400 `Neplatný dátum`/`dates_order`, stage 409 `not_locked`, lock ⇒ `ordered`, unlock ⇒ NULL) + payload publication on friend/public/guest/admin cycle blocks; `PATCH /api/cycles/1` joins `ADMIN_ENDPOINTS` — `17 §UC-CS-001,002,003,004` · model=heavy ⚠ PO O2: `expected_date` = DELIVERY expectation, `closes_at` = deadline — published side by side, unchanged `expected_date`; the cartbar/status-line switch is PI-T1/T3's. ⚠ DP-T3/T4 already call the stub inside their transactions, so the `cycle-stages.spec.js` seam section (hand-over ⇒ `ready`, idempotent, un-hand-over keeps `ready`, `transactions` unmoved) runs LIVE here — no self-skip needed; verify DP's rows echo `cycle_stage:'ready'`.
-- [ ] CS-T2  `lib/cycle-stages.js` (STEPS ×6, `stageIndex`, `fmtDay`, `daysUntil`, `inWeeksText` „o n dní/týždne/týždňov“, `nextOpeningText` three branches, `openUntilText`, `currentCycleFor`) + `lib/plural.js daysLabel/weeksLabel` + `CycleTimeline.vue` ONE component, `vertical` + `compact` variants, scoped styles with token fallbacks, no `.app` dependency — `17 §UC-CS-005,006` ⚠ NO string containing kolo/cyklus anywhere (regex sweep, non-vacuous ≥6 labels); labels are PO staging-review drafts (O1); consumers: PI-T4 (dots + own caption row), PI-T5 (vertical), CS-T4 (guest status), GL-T5 (`nextOpeningText`).
+- [x] CS-T2  `lib/cycle-stages.js` (STEPS ×6, `stageIndex`, `fmtDay`, `daysUntil`, `inWeeksText` „o n dní/týždne/týždňov“, `nextOpeningText` three branches, `openUntilText`, `currentCycleFor`) + `lib/plural.js daysLabel/weeksLabel` + `CycleTimeline.vue` ONE component, `vertical` + `compact` variants, scoped styles with token fallbacks, no `.app` dependency — `17 §UC-CS-005,006` ⚠ NO string containing kolo/cyklus anywhere (regex sweep, non-vacuous ≥6 labels); labels are PO staging-review drafts (O1); consumers: PI-T4 (dots + own caption row), PI-T5 (vertical), CS-T4 (guest status), GL-T5 (`nextOpeningText`).
 - [ ] CS-T3  CycleDetail admin controls: `type=date` fields Otvorenie/Uzávierka objednávok (save/clear, 400 snaps back), forward-only stage buttons „Káva dorazila“ / „Zabalené, rozvážame“ (PO O3), stage badge + read-only compact timeline in the header — `17 §UC-CS-007` ⚠ NO date fields in the dashboard create dialog (PO O5); `expected_date`/`plan_note` fields untouched here; shares the header with DP-T8's plan line.
 - [ ] CS-T4  Guest status page mounts the vertical timeline („Kde je vaša káva“ card, all SIX steps — PO O4; hidden in edit mode and on cancelled) + `readOnlyReason` copy retarget (drops „cykle“) + **module-17 closeout (full suite)** — `17 §UC-CS-008,009` ⚠ SANCTIONED: `guest-status-shell.spec.js:356` toHaveText retarget; `nonstring-body-shape.spec.js` gains the three fields; `api-security` += PATCH cycles (from CS-T1). The 3-step LINK-page explainer is GL-T4's.
 
@@ -471,6 +471,30 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## Log
 
+- 2026-09-20 · CS-T2 · (this commit) · no PR (project convention) · **The step model, the copy and the
+  timeline component — and THREE assertions that could not fail for the reason they claimed.**
+  `lib/cycle-stages.js` (STEPS ×6, `stageIndex`, `timelineSteps`, `fmtDay`, `daysUntil`,
+  `inWeeksText`, `nextOpeningText`, `openUntilText`, `currentCycleFor`; imports only `./plural.js`,
+  so a Playwright worker imports it directly — this project's substitute for a unit runner),
+  `lib/plural.js` += `daysLabel`/`weeksLabel`, and `CycleTimeline.vue` as ONE component with
+  `vertical` + `compact` variants, scoped styles, every token behind a fallback, no `.app` ancestor.
+  ⚠⚠ **§UC-CS-005's own seven-row acceptance table is a FIXED POINT of the mutation it exists to
+  catch.** Every row pairs a `stage` that agrees with its `status`, so reading `stage` first leaves
+  all seven GREEN. Orchestrator reproduced it: the inversion reds exactly ONE test, the purpose-built
+  „`status` is consulted BEFORE `stage`" pin — which is the only thing keeping CS-T1 §10's three
+  measured transitions off the friend's screen, one of which rewinds the timeline from step 5 to 2.
+  ⚠ **The DST pin was vacuous on this box** — it runs UTC, so a naive local-time `daysUntil` passed
+  unchanged. Fixed with an explicit `Europe/Bratislava`; the same mutation then reds.
+  ⚠ **The non-vacuity gate was itself vacuous** (found in review): it asserted the harvest held ≥30
+  strings while the LABELS ALONE contribute 54, so every builder could have returned `''` and the
+  gate would still have claimed it „saw the built sentences". Builders are now required BY IDENTITY.
+  Proven both ways: emptying `openUntilText` now reds the sweep, and did not before.
+  ⚠ **The spec's OWN sweep regex is broken in both directions** — `/kol[oáa]\b|cykl/i` misses „kolá"
+  (a trailing `\b` after `á` never fires: `á` is outside ASCII `\w`) and false-positives „okolo",
+  module 18's PO-approved copy. Measured and struck in the spec; the LEADING `\b` is the fix.
+  ⚠ `new Date('2026-02-31T00:00:00')` is **3 March** in V8, so shape-only validation would have
+  printed a date nobody chose; both date functions do a re-serialise-and-compare round trip.
+  Gate: **166 passed / 0 failed / 0 skipped**. Review: **approve**, six minors, all acted on.
 - 2026-09-20 · CS-T1 · (this commit) · no PR (project convention) · **The cycle stage model ships, and
   the stub it replaces had recorded the WRONG contract.** `opens_at`/`closes_at`/`stage` on
   `order_cycles` (CREATE + ALTER, the ALTERs placed AFTER the `_check_test` recreate block, which

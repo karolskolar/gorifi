@@ -54,7 +54,7 @@ cd frontend && npm run dev     # :5173
 | Admin sets a party's pickup point (`helpers/pickup.js`, `PickupLocationPicker.vue`) | `docs/learnings/06-pickup-point.md` |
 | Payment links, variable symbol, `payment_creditor_name` (module 15) | `docs/learnings/07-payment-links.md` |
 | Distribution pipeline: hand-over, the board, the outbox enqueue, the cycle header (module 16) | `docs/learnings/08-distribution-pipeline.md` |
-| Cycle stages: the three `order_cycles` columns, `markCycleReady()`, the `POST/PATCH /cycles` contract (module 17) | `docs/learnings/09-cycle-stages.md` |
+| Cycle stages: the three `order_cycles` columns, `markCycleReady()`, the `POST/PATCH /cycles` contract, `lib/cycle-stages.js` + `CycleTimeline.vue` (module 17) | `docs/learnings/09-cycle-stages.md` |
 
 Specs: `docs/specification/*.md`, `docs/superpowers/specs/*.md`. Spec text that cites "CLAUDE.md GSO-T3" /
 "CLAUDE.md 2026-08-07" etc. now resolves to these files (search by task id or date). When you finish a task,
@@ -204,7 +204,18 @@ append the full write-up to the matching learnings file and add at most one line
   goes in `<style scoped>` (or a real canon sync), never ad-hoc theme edits. `line-height` often must be inline.
 - One-home components — extend, never fork: `CartLineList.vue` (every ordered-items list), `GuestProductGrid.vue`
   + `lib/guest-cart.js`, `CatScrollArrow.vue`, `ProductImageModal.vue`, `GuestShareDialog.vue`,
-  `PickupLocationPicker.vue` (props `cycleId`+`friendId`, never an order id), `lib/plural.js`.
+  `PickupLocationPicker.vue` (props `cycleId`+`friendId`, never an order id), `lib/plural.js`,
+  `CycleTimeline.vue` (props `cycle`/`variant` `vertical|compact`/`steps`; ONE component for both
+  variants, scoped styles with token FALLBACKS and no `.app`/`.modal-layer` ancestor — it renders in
+  the portal, in the modal layer and in the shadcn admin header).
+- Where a round IS: `lib/cycle-stages.js` is the one home of the six `STEPS`, their Slovak copy and
+  `stageIndex`/`timelineSteps`/`fmtDay`/`daysUntil`/`inWeeksText`/`nextOpeningText`/`openUntilText`/
+  `currentCycleFor`; it imports only `./plural.js` (which owns `daysLabel`/`weeksLabel`) so a Playwright
+  spec can import it — this repo's substitute for a unit test. ⚠ `stageIndex()` reads `status` BEFORE
+  `stage`, and that order is the ONLY thing hiding the three stale-/reset-stage transitions CS-T1
+  measured (learnings 09 §10); invert it and all three reach the friend with nothing going red. No
+  string in the lib or the component may contain „kolo"/„kolá"/„cyklus"/„cykl" (sweep regex
+  `/\bkol[oáa]|cykl/iu` — the spec's `kol[oáa]\b` misses „kolá" and false-positives „okolo").
 - A dialog/loader reused across entities needs a `loadSeq` guard; per-row mutations need per-id pending state;
   friend-authenticated children of `FriendOrder` need the `ready` gate; its two panels stay `v-show`.
 - `v-model` on `<select>` (never `:value`); a refused change snaps the control back.

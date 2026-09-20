@@ -112,3 +112,30 @@ export function itemsLabel(count) {
   if (n >= 2 && n <= 4) return `${n} položky`
   return `${n} položiek`
 }
+
+// 1 deň / 2-4 dni / 5+ dní — the ACCUSATIVE after „o", because the only sentence
+// that prints it is `lib/cycle-stages.js inWeeksText()`'s „o 3 dni" (17 §UC-CS-005,
+// PO decision O6). Slovak „deň" happens to be identical in the nominative and the
+// accusative singular, so the case is invisible in the 1-branch and visible only in
+// the 2-4 one („dni", not „dní").
+//
+// ⚠ These two live HERE and not in `cycle-stages.js` for the reason this whole file
+// exists: the declension is the shared thing, the sentence around it is not. Module
+// 19's pre-open page prints the same „o n týždňov" from `nextOpeningText()`, and
+// module 21's notification copy is the next candidate — a second three-branch copy
+// is how one screen ends up reading „o 3 týždňov".
+export function daysLabel(count) {
+  const n = Number(count) || 0
+  if (n === 1) return '1 deň'
+  if (n >= 2 && n <= 4) return `${n} dni`
+  return `${n} dní`
+}
+
+// 1 týždeň / 2-4 týždne / 5+ týždňov — the accusative after „o" again, and the
+// prototype's exact form („o 4 týždne", `portal2.jsx` P2.next.inWeeks).
+export function weeksLabel(count) {
+  const n = Number(count) || 0
+  if (n === 1) return '1 týždeň'
+  if (n >= 2 && n <= 4) return `${n} týždne`
+  return `${n} týždňov`
+}

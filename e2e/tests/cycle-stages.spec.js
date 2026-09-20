@@ -1,7 +1,7 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { DatabaseSync } from 'node:sqlite'
 import { execFileSync } from 'node:child_process'
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -827,5 +827,628 @@ test.describe('CS-T1 · 17 §UC-CS-003 — the hand-over seam', () => {
     const orphans = withDb((db) =>
       Number(db.prepare('SELECT COUNT(*) AS n FROM transactions WHERE friend_id IS NULL').get().n))
     expect(orphans, 'hand-over is ledger-neutral, on every path').toBe(0)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CS-T2 — 17 §UC-CS-005 / §UC-CS-006: `lib/cycle-stages.js`, the two new
+// `lib/plural.js` declensions, and `components/CycleTimeline.vue`.
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠ WHY THIS SECTION IMPORTS THE LIB INSTEAD OF DRIVING A PAGE. There is no unit
+// runner in this project and adding one is out of scope (01-architecture §Testing),
+// but `lib/cycle-stages.js` is dependency-free plain ESM (it imports `./plural.js`
+// and nothing else — no Vue, no `@/` alias), so a Playwright worker can import it
+// directly. §UC-CS-009 item 4 asks for exactly that. It is also the ONLY way to
+// reach these branches in this row: CS-T2 ships the component but mounts it
+// nowhere — the guest status page is CS-T4, the admin header is CS-T3 — so there
+// is no rendered surface to assert against yet.
+//
+// ⚠ THE GATE IS THE FRONTEND SOURCE TREE, never the lib file itself. "The module
+// is missing" must be a RED run, not a silent skip — the vacuity trap the
+// `DB_PATH` gates above carry by necessity. Against a deployment there is no
+// `frontend/` beside `e2e/` and the whole section skips honestly (the
+// `payment-links.spec.js` precedent).
+const CS2_HERE = dirname(fileURLToPath(import.meta.url))
+const CS2_FRONTEND_SRC = resolve(CS2_HERE, '../../frontend/src')
+const CS2_NODE_MODULES = resolve(CS2_HERE, '../../frontend/node_modules')
+const CS2_LIB = join(CS2_FRONTEND_SRC, 'lib/cycle-stages.js')
+const CS2_PLURAL = join(CS2_FRONTEND_SRC, 'lib/plural.js')
+const CS2_SFC = join(CS2_FRONTEND_SRC, 'components/CycleTimeline.vue')
+const CS2_HAS_SRC = existsSync(CS2_FRONTEND_SRC)
+const CS2_NEEDS_SRC = 'needs the frontend source beside e2e/ (skipped against a deployment)'
+
+// A fixed "now" so the day/week arithmetic is not a function of when the suite runs.
+const CS2_TODAY = new Date('2026-09-20T12:00:00')
+/** The ISO date `n` calendar days after `CS2_TODAY`, in the SAME local zone. */
+function cs2Day(n) {
+  const d = new Date(CS2_TODAY)
+  d.setDate(d.getDate() + n)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/**
+ * Runs `fn` with the worker's timezone switched. Node re-reads `process.env.TZ`
+ * for every `Date` created after the assignment, which is what lets a UTC box
+ * exercise a DST boundary at all.
+ */
+function withTz(tz, fn) {
+  const previous = process.env.TZ
+  process.env.TZ = tz
+  try {
+    fn()
+  } finally {
+    if (previous === undefined) delete process.env.TZ
+    else process.env.TZ = previous
+  }
+}
+
+/** The six labels, harvested from the lib — never re-typed here. */
+let cs2 = null
+let cs2Plural = null
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. §UC-CS-005 — the step model
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('CS-T2 · 17 §UC-CS-005 — `stageIndex` and the step model', () => {
+  test.skip(!CS2_HAS_SRC, CS2_NEEDS_SRC)
+
+  test.beforeAll(async () => {
+    cs2 = await import(pathToFileURL(CS2_LIB).href)
+    cs2Plural = await import(pathToFileURL(CS2_PLURAL).href)
+  })
+
+  test('the six STEPS are exactly the spec table, in order', () => {
+    expect(cs2.STEPS.map((s) => s.key)).toEqual(
+      ['planned', 'open', 'ordered', 'arrived', 'ready', 'completed'])
+    expect(cs2.STEPS.map((s) => s.label)).toEqual([
+      'Pripravujeme ďalšiu objednávku',
+      'Objednávky otvorené',
+      'Objednávky uzavreté, káva objednaná v pražiarni',
+      'Káva dorazila, balíme',
+      'Zabalené, rozvážame',
+      'Objednávka ukončená',
+    ])
+  })
+
+  test('`stageIndex` — the whole table, including locked+NULL ⇒ 2', () => {
+    expect(cs2.stageIndex(null), 'no cycle').toBe(0)
+    expect(cs2.stageIndex(undefined), 'undefined').toBe(0)
+    expect(cs2.stageIndex('open'), 'a string is not a cycle').toBe(0)
+    expect(cs2.stageIndex({ status: 'planned' })).toBe(0)
+    expect(cs2.stageIndex({ status: 'open' })).toBe(1)
+    expect(cs2.stageIndex({ status: 'locked', stage: null }), 'the no-backfill row').toBe(2)
+    expect(cs2.stageIndex({ status: 'locked' }), 'stage absent entirely').toBe(2)
+    expect(cs2.stageIndex({ status: 'locked', stage: 'ordered' })).toBe(2)
+    expect(cs2.stageIndex({ status: 'locked', stage: 'arrived' })).toBe(3)
+    expect(cs2.stageIndex({ status: 'locked', stage: 'ready' })).toBe(4)
+    expect(cs2.stageIndex({ status: 'completed' })).toBe(5)
+    expect(cs2.stageIndex({ status: 'draft' }), 'an unknown status').toBe(0)
+  })
+
+  test('⚠ `status` is consulted BEFORE `stage` — the three stale-stage rows CS-T1 measured stay off the screen', () => {
+    // docs/learnings/09-cycle-stages.md §10. None of these three transitions is
+    // named by §UC-CS-002, so the backend leaves a `stage` that disagrees with its
+    // `status`; all three are invisible ONLY because this function reads `status`
+    // first. Nothing else in the suite pins that ordering, so this test is it.
+    //
+    // ⚠ Every row below carries `stage: 'ready'` or `'ordered'`, i.e. a value a
+    // stage-first implementation would map to a DIFFERENT index (4 / 2) — the
+    // assertion pair is index + label, and the follow-up asserts the index is not
+    // the one the stale value would have produced. A fixture whose stale stage
+    // happened to agree with its status would prove nothing at all.
+    const A = { status: 'planned', stage: 'ready' }   // locked(ready) → planned
+    const B = { status: 'open', stage: 'ready' }      // completed(ready) → open
+    const C = { status: 'locked', stage: 'ordered' }  // completed(ready) → locked
+
+    expect(cs2.stageIndex(A), 'A: a planned round renders as planned').toBe(0)
+    expect(cs2.stageIndex(A), 'A: never as `ready`').not.toBe(4)
+    expect(cs2.STEPS[cs2.stageIndex(A)].label).toBe('Pripravujeme ďalšiu objednávku')
+
+    expect(cs2.stageIndex(B), 'B: a re-opened round renders as open').toBe(1)
+    expect(cs2.stageIndex(B), 'B: never as `ready`').not.toBe(4)
+    expect(cs2.STEPS[cs2.stageIndex(B)].label).toBe('Objednávky otvorené')
+
+    expect(cs2.stageIndex(C), 'C: a re-locked round renders where its stage says').toBe(2)
+    expect(cs2.STEPS[cs2.stageIndex(C)].label).toBe('Objednávky uzavreté, káva objednaná v pražiarni')
+
+    // And the historical stage on a COMPLETED round is never current, whatever it is.
+    for (const stage of ['ordered', 'arrived', 'ready', null]) {
+      expect(cs2.stageIndex({ status: 'completed', stage }), `completed + ${stage}`).toBe(5)
+    }
+  })
+
+  test('`timelineSteps` — done / now / next around the current step, and the `when` lines', () => {
+    const steps = cs2.timelineSteps({
+      status: 'locked', stage: 'arrived', opens_at: '2026-09-05', closes_at: '2026-09-12',
+    })
+    expect(steps).toHaveLength(6)
+    expect(steps.filter((s) => s.state === 'done')).toHaveLength(3)
+    expect(steps.filter((s) => s.state === 'now')).toHaveLength(1)
+    expect(steps.filter((s) => s.state === 'next')).toHaveLength(2)
+    expect(steps.find((s) => s.state === 'now').label).toBe('Káva dorazila, balíme')
+    expect(steps.map((s) => s.when)).toEqual(
+      ['otvorí sa 5. septembra', 'do 12. septembra', '12. septembra', '', '', ''])
+    expect(steps.map((s) => s.desc), 'desc is the consumers\' slot, empty in v1')
+      .toEqual(['', '', '', '', '', ''])
+    expect(steps.map((s) => s.key)).toEqual(cs2.STEPS.map((s) => s.key))
+  })
+
+  test('`timelineSteps` — a planned round with only an opening date', () => {
+    const steps = cs2.timelineSteps({ status: 'planned', opens_at: '2026-10-03' })
+    expect(steps[0].state).toBe('now')
+    expect(steps[0].when).toBe('otvorí sa 3. októbra')
+    expect(steps.slice(1).every((s) => s.state === 'next')).toBe(true)
+    expect(steps.slice(1).map((s) => s.when), 'no deadline ⇒ no `when` anywhere else')
+      .toEqual(['', '', '', '', ''])
+  })
+
+  test('`timelineSteps(null)` is the step-0 timeline, not an empty one', () => {
+    const steps = cs2.timelineSteps(null)
+    expect(steps).toHaveLength(6)
+    expect(steps[0].state).toBe('now')
+    expect(steps.map((s) => s.when)).toEqual(['', '', '', '', '', ''])
+  })
+
+  test('`STEPS` cannot be edited from a consumer', () => {
+    expect(() => { cs2.STEPS[0] = { key: 'x', label: 'x' } }).toThrow()
+    expect(cs2.STEPS[0].label).toBe('Pripravujeme ďalšiu objednávku')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. §UC-CS-005 — dates, the „o n týždňov" derivation and the copy builders
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('CS-T2 · 17 §UC-CS-005 — dates and copy', () => {
+  test.skip(!CS2_HAS_SRC, CS2_NEEDS_SRC)
+
+  test.beforeAll(async () => {
+    cs2 = await import(pathToFileURL(CS2_LIB).href)
+    cs2Plural = await import(pathToFileURL(CS2_PLURAL).href)
+  })
+
+  test('`fmtDay` prints the Slovak genitive month and no year', () => {
+    expect(cs2.fmtDay('2026-10-03')).toBe('3. októbra')
+    expect(cs2.fmtDay('2026-09-12')).toBe('12. septembra')
+    expect(cs2.fmtDay('2026-01-01')).toBe('1. januára')
+    expect(cs2.fmtDay('2026-10-03')).not.toMatch(/2026/)
+    // ⚠ The DISPLAY date is built from LOCAL midnight on purpose: format the UTC
+    // instant instead and a viewer west of Greenwich reads the day before.
+    withTz('America/New_York', () => {
+      expect(cs2.fmtDay('2026-10-03'), 'the stored day, not the viewer\'s instant').toBe('3. októbra')
+    })
+  })
+
+  test('⚠ an IMPOSSIBLE calendar day is `\'\'`, not silently rolled forward', () => {
+    // `new Date('2026-02-31T00:00:00')` is **3 March** in V8, not Invalid Date — a
+    // shape-only check would print „3. marca" for a date the user never chose.
+    expect(cs2.fmtDay('2026-02-31')).toBe('')
+    // ⚠ NON-VACUITY: the very day it would have rolled to formats perfectly, so the
+    // empty string above is a refusal, not a broken formatter.
+    expect(cs2.fmtDay('2026-03-03')).toBe('3. marca')
+  })
+
+  test('`fmtDay` never throws and never prints „Invalid Date"', () => {
+    for (const junk of ['2026-13-40', '2026-1-3', '03.10.2026', '', '   ', 'zajtra',
+      null, undefined, 20261003, {}, [], new Date()]) {
+      expect(cs2.fmtDay(junk), `fmtDay(${JSON.stringify(junk)})`).toBe('')
+    }
+  })
+
+  test('`daysUntil` counts whole CALENDAR days, and junk is `null`', () => {
+    expect(cs2.daysUntil(cs2Day(0), CS2_TODAY), 'today').toBe(0)
+    expect(cs2.daysUntil(cs2Day(1), CS2_TODAY)).toBe(1)
+    expect(cs2.daysUntil(cs2Day(13), CS2_TODAY)).toBe(13)
+    expect(cs2.daysUntil(cs2Day(-4), CS2_TODAY), 'a past date is negative').toBe(-4)
+    // ⚠ THE DST ASSERTION ONLY MEANS ANYTHING IN A ZONE THAT HAS DST, and this
+    // box runs on UTC — measured: the naive local-time implementation passes here
+    // unchanged, i.e. the fixture would be a fixed point of the mutation it claims
+    // to catch. So the worker's zone is switched for the duration: across 25
+    // October 2026 the local-time difference is 12 days and 1 HOUR, which a naive
+    // subtraction reports as 12.0416…, while UTC-midnight arithmetic is exact.
+    withTz('Europe/Bratislava', () => {
+      expect(cs2.daysUntil('2026-11-01', new Date('2026-10-20T12:00:00')),
+        'the autumn boundary').toBe(12)
+      expect(cs2.daysUntil('2026-04-01', new Date('2026-03-20T12:00:00')),
+        'the spring boundary').toBe(12)
+      expect(cs2.daysUntil('2026-11-01', new Date('2026-10-20T23:30:00')),
+        'late in the evening, an hour from rolling over').toBe(12)
+    })
+    for (const junk of ['2026-02-31', '2026-13-40', 'zajtra', null, 20261003, {}]) {
+      expect(cs2.daysUntil(junk, CS2_TODAY), `daysUntil(${JSON.stringify(junk)})`).toBeNull()
+    }
+    expect(cs2.daysUntil('2026-10-03', 'nie je dátum'), 'an unusable `today`').toBeNull()
+  })
+
+  test('`inWeeksText` — „o n dní" under a week, „o n týždňov" from seven days up', () => {
+    expect(cs2.inWeeksText(cs2Day(1), CS2_TODAY)).toBe('o 1 deň')
+    expect(cs2.inWeeksText(cs2Day(3), CS2_TODAY)).toBe('o 3 dni')
+    expect(cs2.inWeeksText(cs2Day(6), CS2_TODAY)).toBe('o 6 dní')
+    expect(cs2.inWeeksText(cs2Day(7), CS2_TODAY)).toBe('o 1 týždeň')
+    expect(cs2.inWeeksText(cs2Day(18), CS2_TODAY)).toBe('o 3 týždne')
+    expect(cs2.inWeeksText(cs2Day(35), CS2_TODAY)).toBe('o 5 týždňov')
+  })
+
+  test('`inWeeksText` has nothing to announce for today, the past, or junk', () => {
+    expect(cs2.inWeeksText(cs2Day(0), CS2_TODAY), 'today').toBeNull()
+    expect(cs2.inWeeksText(cs2Day(-1), CS2_TODAY), 'yesterday').toBeNull()
+    expect(cs2.inWeeksText(cs2Day(-40), CS2_TODAY)).toBeNull()
+    expect(cs2.inWeeksText('2026-02-31', CS2_TODAY)).toBeNull()
+    expect(cs2.inWeeksText(null, CS2_TODAY)).toBeNull()
+  })
+
+  test('the declensions come from `plural.js`, not from a second copy in the lib', () => {
+    // The one-home claim, asserted as DELEGATION rather than as a grep: the
+    // sentence must be byte-identical to the label `plural.js` produces.
+    expect(cs2Plural.daysLabel(3)).toBe('3 dni')
+    expect(cs2Plural.weeksLabel(3)).toBe('3 týždne')
+    expect(cs2.inWeeksText(cs2Day(3), CS2_TODAY)).toBe(`o ${cs2Plural.daysLabel(3)}`)
+    expect(cs2.inWeeksText(cs2Day(21), CS2_TODAY)).toBe(`o ${cs2Plural.weeksLabel(3)}`)
+  })
+
+  test('`daysLabel` / `weeksLabel` — all three branches each', () => {
+    expect([1, 2, 4, 5, 11, 0].map(cs2Plural.daysLabel))
+      .toEqual(['1 deň', '2 dni', '4 dni', '5 dní', '11 dní', '0 dní'])
+    expect([1, 2, 4, 5, 12, 0].map(cs2Plural.weeksLabel))
+      .toEqual(['1 týždeň', '2 týždne', '4 týždne', '5 týždňov', '12 týždňov', '0 týždňov'])
+  })
+
+  test('`nextOpeningText` — branch 1: a planned round with an opening date', () => {
+    const out = cs2.nextOpeningText({ status: 'planned', opens_at: cs2Day(28) }, CS2_TODAY)
+    expect(out.date).toBe(cs2.fmtDay(cs2Day(28)))
+    expect(out.inWeeks).toBe('o 4 týždne')
+    expect(out.text).toBe(`Ďalšia objednávka sa otvorí približne ${out.date} (o 4 týždne).`)
+  })
+
+  test('`nextOpeningText` — a date already reached loses the parenthesis, not the sentence', () => {
+    const out = cs2.nextOpeningText({ status: 'planned', opens_at: cs2Day(0) }, CS2_TODAY)
+    expect(out.inWeeks).toBeNull()
+    expect(out.text).toBe(`Ďalšia objednávka sa otvorí približne ${out.date}.`)
+    expect(out.text, 'no empty parenthesis').not.toMatch(/\(\s*\)/)
+  })
+
+  test('`nextOpeningText` — branch 2: the plan note, VERBATIM, newlines kept', () => {
+    const note = 'Ešte nevieme presne.\nPravdepodobne po sviatkoch.'
+    const out = cs2.nextOpeningText({ status: 'planned', opens_at: null, plan_note: note }, CS2_TODAY)
+    expect(out).toEqual({ date: null, inWeeks: null, text: note })
+  })
+
+  test('`nextOpeningText` — branch 3: nothing planned', () => {
+    const expected = { date: null, inWeeks: null, text: 'O ďalšej objednávke dáme vedieť.' }
+    expect(cs2.nextOpeningText(null, CS2_TODAY)).toEqual(expected)
+    expect(cs2.nextOpeningText(undefined, CS2_TODAY)).toEqual(expected)
+    expect(cs2.nextOpeningText({ status: 'planned' }, CS2_TODAY), 'neither date nor note').toEqual(expected)
+    expect(cs2.nextOpeningText({ status: 'planned', plan_note: '   ' }, CS2_TODAY), 'a blank note is no note')
+      .toEqual(expected)
+  })
+
+  test('⚠ an unusable `opens_at` falls through to the note — never a sentence with a hole in it', () => {
+    const out = cs2.nextOpeningText(
+      { status: 'planned', opens_at: '2026-02-31', plan_note: 'Niekedy v marci.' }, CS2_TODAY)
+    expect(out.text).toBe('Niekedy v marci.')
+    expect(out.text, 'the sentence is not composed around an empty date')
+      .not.toMatch(/približne\s*[.(]/)
+  })
+
+  test('`openUntilText` — with and without a deadline', () => {
+    expect(cs2.openUntilText({ status: 'open', closes_at: '2026-09-12' }))
+      .toBe('Objednávky otvorené · do 12. septembra')
+    expect(cs2.openUntilText({ status: 'open', closes_at: null })).toBe('Objednávky otvorené')
+    expect(cs2.openUntilText({ status: 'open', closes_at: '2026-02-31' }), 'an unusable deadline')
+      .toBe('Objednávky otvorené')
+    expect(cs2.openUntilText(null)).toBe('Objednávky otvorené')
+    // The bare form is a PREFIX of the dated one and identical to step 1's label —
+    // one wording, two lengths.
+    expect(cs2.openUntilText({})).toBe(cs2.STEPS[1].label)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. §UC-CS-005 — `currentCycleFor`, the one place "the current round" is decided
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('CS-T2 · 17 §UC-CS-005 — `currentCycleFor`', () => {
+  test.skip(!CS2_HAS_SRC, CS2_NEEDS_SRC)
+  test.beforeAll(async () => { cs2 = await import(pathToFileURL(CS2_LIB).href) })
+
+  const row = (id, status, created_at) => ({ id, status, created_at, name: `c${id}` })
+
+  test('open beats locked beats planned, and `completed` is never current', () => {
+    const planned = row(1, 'planned', '2026-09-01 10:00:00')
+    const locked = row(2, 'locked', '2026-09-02 10:00:00')
+    const open = row(3, 'open', '2026-08-01 10:00:00')
+    const done = row(4, 'completed', '2026-09-30 10:00:00')
+    expect(cs2.currentCycleFor([planned, locked, open, done]).id, 'open wins even when it is the oldest').toBe(3)
+    expect(cs2.currentCycleFor([planned, locked, done]).id, 'then locked').toBe(2)
+    expect(cs2.currentCycleFor([planned, done]).id, 'then planned').toBe(1)
+    expect(cs2.currentCycleFor([done]), 'a finished round is not current').toBeNull()
+  })
+
+  test('“newest” is `created_at` DESC then `id` DESC — the second-resolution tie', () => {
+    const same = '2026-09-02 10:00:00'
+    expect(cs2.currentCycleFor([row(7, 'locked', same), row(9, 'locked', same), row(8, 'locked', same)]).id,
+      'same second ⇒ the higher id').toBe(9)
+    expect(cs2.currentCycleFor([
+      row(9, 'locked', '2026-09-01 10:00:00'),
+      row(2, 'locked', '2026-09-05 10:00:00'),
+    ]).id, 'a newer timestamp beats a higher id').toBe(2)
+  })
+
+  test('two rounds open at once: the newest wins and a `console.warn` names it (R1.2)', () => {
+    const warnings = []
+    const original = console.warn
+    console.warn = (...args) => warnings.push(args.join(' '))
+    try {
+      const picked = cs2.currentCycleFor([
+        row(4, 'open', '2026-09-01 10:00:00'),
+        row(5, 'open', '2026-09-08 10:00:00'),
+      ])
+      expect(picked.id).toBe(5)
+    } finally {
+      console.warn = original
+    }
+    expect(warnings, 'exactly one warning').toHaveLength(1)
+    expect(warnings[0]).toMatch(/2/)
+    expect(warnings[0].toLowerCase()).toMatch(/open/)
+  })
+
+  test('ONE open round warns about nothing', () => {
+    const warnings = []
+    const original = console.warn
+    console.warn = (...args) => warnings.push(args.join(' '))
+    try {
+      expect(cs2.currentCycleFor([row(4, 'open', '2026-09-01 10:00:00'), row(5, 'locked', '2026-09-08 10:00:00')]).id)
+        .toBe(4)
+    } finally {
+      console.warn = original
+    }
+    expect(warnings, 'the warning is about the data error, not about every call').toHaveLength(0)
+  })
+
+  test('an empty list, a non-array and junk rows are `null`, never a throw', () => {
+    expect(cs2.currentCycleFor([])).toBeNull()
+    expect(cs2.currentCycleFor(null)).toBeNull()
+    expect(cs2.currentCycleFor(undefined)).toBeNull()
+    expect(cs2.currentCycleFor('open')).toBeNull()
+    expect(cs2.currentCycleFor([null, undefined, 'x', 7])).toBeNull()
+    expect(cs2.currentCycleFor([null, row(3, 'open', '2026-09-01 10:00:00')]).id).toBe(3)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. §UC-CS-005 / §UC-CS-006 — the vocabulary ban, swept NON-VACUOUSLY
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('CS-T2 · 17 §UC-CS-005 — no „kolo", no „cyklus", anywhere', () => {
+  test.skip(!CS2_HAS_SRC, CS2_NEEDS_SRC)
+  test.beforeAll(async () => { cs2 = await import(pathToFileURL(CS2_LIB).href) })
+
+  // Resolved conflict 2 + the 00-overview glossary: every friend- and guest-facing
+  // string in module 17 says „objednávka". „cyklus" survives on ADMIN screens only.
+  //
+  // ⚠ NOT §UC-CS-009's literal `/kol[oáa]\b|cykl/i`, and both differences are
+  // measured, not stylistic:
+  //   · that regex does NOT match „kolá" — `á` is outside ASCII `\w`, so the
+  //     trailing `\b` never fires after it. A ban that misses one of the four words
+  //     it names is a ban that passes on the string it exists to catch.
+  //   · it DOES match „okolo", which is module 18's own copy („Káva príde okolo
+  //     {expected_date}", PO decision O2) — a false positive waiting for the first
+  //     consumer that reuses this sweep.
+  // A leading `\b` plus the `u` flag fixes both, and the test below proves the
+  // regex on both lists rather than asserting it on faith.
+  const BANNED = /\bkol[oáa]|cykl/iu
+
+  /** Every string the module EXPORTS or BUILDS, harvested by calling it. */
+  function harvest() {
+    const strings = []
+    const push = (v) => { if (typeof v === 'string' && v.trim()) strings.push(v) }
+    const cycles = [
+      null,
+      { status: 'planned', opens_at: '2026-10-03' },
+      { status: 'planned', plan_note: 'Otvoríme to po sviatkoch.' },
+      { status: 'open', opens_at: '2026-09-05', closes_at: '2026-09-12' },
+      { status: 'locked', stage: null, closes_at: '2026-09-12' },
+      { status: 'locked', stage: 'arrived', closes_at: '2026-09-12' },
+      { status: 'locked', stage: 'ready', closes_at: '2026-09-12' },
+      { status: 'completed', stage: 'ready', opens_at: '2026-09-05', closes_at: '2026-09-12' },
+    ]
+    for (const step of cs2.STEPS) push(step.label)
+    for (const cycle of cycles) {
+      for (const step of cs2.timelineSteps(cycle)) { push(step.label); push(step.when); push(step.desc) }
+      push(cs2.openUntilText(cycle))
+      const next = cs2.nextOpeningText(cycle, CS2_TODAY)
+      push(next.text); push(next.date); push(next.inWeeks)
+    }
+    for (const n of [1, 2, 3, 5, 7, 14, 30, 60]) push(cs2.inWeeksText(cs2Day(n), CS2_TODAY))
+    push(cs2.nextOpeningText(null, CS2_TODAY).text)
+    return strings
+  }
+
+  test('⚠ the sweep, with its non-vacuity gate: ≥ 6 labels harvested, zero matches', () => {
+    const strings = harvest()
+    // ⚠ THE GATE. An absence assertion over an EMPTY harvest passes for the wrong
+    // reason, and this repo has been bitten by exactly that. So: the six labels
+    // must be present by IDENTITY (not by count of some array we built), and the
+    // whole harvest must be substantially bigger than them.
+    const labels = cs2.STEPS.map((s) => s.label)
+    expect(labels, 'the step model still has six labels').toHaveLength(6)
+    for (const label of labels) {
+      expect(strings, `the sweep saw the label „${label}"`).toContain(label)
+    }
+    // ⚠ THE GATE ABOVE WAS ITSELF VACUOUS UNTIL CS-T2 REVIEW (2026-09-20). It read
+    // `expect(strings.length).toBeGreaterThanOrEqual(30)` — but the labels alone
+    // contribute 54 strings (6 + 8 fixtures × 6), so every BUILDER could have returned
+    // `''` and the gate would still have passed while claiming it "saw the built
+    // sentences". A non-vacuity gate that cannot fail is the bug it exists to prevent.
+    // Builders are now required BY IDENTITY, like the labels.
+    expect(strings, 'the sweep saw openUntilText()').toContain(
+      cs2.openUntilText({ status: 'open', closes_at: '2026-09-12' }),
+    )
+    expect(strings, 'the sweep saw nextOpeningText() branch 1').toContain(
+      cs2.nextOpeningText({ status: 'planned', opens_at: '2026-10-03' }, CS2_TODAY).text,
+    )
+    expect(strings, 'the sweep saw nextOpeningText() branch 3 (no planned cycle)').toContain(
+      cs2.nextOpeningText(null, CS2_TODAY).text,
+    )
+    expect(strings, 'the sweep saw inWeeksText()').toContain(cs2.inWeeksText(cs2Day(14), CS2_TODAY))
+
+    const offenders = strings.filter((s) => BANNED.test(s))
+    expect(offenders, 'no friend-facing string in module 17 may say „kolo" or „cyklus"').toEqual([])
+  })
+
+  test('⚠ the regex itself catches what it claims to catch', () => {
+    // A ban whose regex matches nothing is the same bug as a sweep over nothing.
+    for (const bad of ['Pripravujeme ďalšie kolo', 'Kolo ukončené', 'Objednávanie v tomto cykle je uzavreté',
+      'cyklus', 'dve kolá', 'v troch kolách', '„kolo"']) {
+      expect(BANNED.test(bad), `the sweep would catch „${bad}"`).toBe(true)
+    }
+    // And the words this app says on purpose are NOT offenders — „kolega" is the
+    // host's word for the people on their link, and „okolo" is module 18's.
+    for (const good of ['Pripravujeme ďalšiu objednávku', 'Objednávka ukončená', 'Zabalené, rozvážame',
+      '1 kolega', '5 kolegov', 'Káva príde okolo 24. 9.']) {
+      expect(BANNED.test(good), `„${good}" is not a false positive`).toBe(false)
+    }
+  })
+
+  test('the SOURCE of both files is clean too, not only the reachable strings', () => {
+    // The harvest above covers what a user can reach; this catches a banned word
+    // parked in a branch no fixture exercises, or in the component's markup.
+    //
+    // ⚠ COMMENTS ARE STRIPPED FIRST, and that is not the usual "grep everything,
+    // comments included" rule being weakened: the two headers NAME „kolo" and
+    // „cyklus" precisely in order to ban them, so a raw line sweep reds on its own
+    // documentation. The non-vacuity gate below is what keeps the strip honest —
+    // a strip that ate the file would pass this test for the wrong reason.
+    const strip = (text) => text
+      .replace(/<!--[\s\S]*?-->/g, ' ')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/^\s*\/\/.*$/gm, ' ')
+    for (const [file, canary] of [[CS2_LIB, cs2.STEPS[0].label], [CS2_SFC, 'Krok ']]) {
+      const stripped = strip(readFileSync(file, 'utf8'))
+      expect(stripped, `the strip left ${file.split('/').pop()} standing`).toContain(canary)
+      const hits = stripped.split('\n')
+        .map((line, i) => [i + 1, line])
+        .filter(([, line]) => BANNED.test(line))
+      expect(hits.map(([n, l]) => `${file.split('/').pop()}:${n} ${l.trim()}`)).toEqual([])
+    }
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. §UC-CS-006 — `CycleTimeline.vue`: ONE component, two variants, three skins
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ⚠ These are SOURCE-level assertions, and that is a deliberate choice, not a
+// shortcut: CS-T2 mounts the component nowhere (CS-T3 puts it in the admin header,
+// CS-T4 on the guest status page), so there is no rendered DOM to query in this
+// row. What IS provable here is the set of properties that no later row's test
+// would notice being broken — that the SFC compiles at all, that its styles carry
+// no `.app` / `.modal-layer` ancestor, that every token has a fallback, and that it
+// re-types none of the lib's Slovak. The rendered `done`/`now`/`next` counts and
+// the computed `.mk` border (§UC-CS-009 item 1) belong to CS-T3/CS-T4, which have
+// a page to load.
+test.describe('CS-T2 · 17 §UC-CS-006 — CycleTimeline.vue', () => {
+  test.skip(!CS2_HAS_SRC, CS2_NEEDS_SRC)
+
+  let src = ''
+  let descriptor = null
+  let styleCss = ''
+
+  test.beforeAll(async () => {
+    cs2 = await import(pathToFileURL(CS2_LIB).href)
+    expect(existsSync(CS2_SFC), 'components/CycleTimeline.vue must exist (§UC-CS-006)').toBe(true)
+    src = readFileSync(CS2_SFC, 'utf8')
+    const sfcCompiler = join(CS2_NODE_MODULES, '@vue/compiler-sfc/dist/compiler-sfc.esm-browser.js')
+    test.skip(!existsSync(sfcCompiler), 'needs frontend/node_modules for the SFC compile')
+    const sfc = await import(pathToFileURL(sfcCompiler).href)
+    const parsed = sfc.parse(src, { filename: 'CycleTimeline.vue' })
+    expect(parsed.errors.map(String), 'the SFC parses').toEqual([])
+    descriptor = parsed.descriptor
+    const script = sfc.compileScript(descriptor, { id: 'cst2' })
+    const tpl = sfc.compileTemplate({
+      source: descriptor.template.content,
+      filename: 'CycleTimeline.vue',
+      id: 'cst2',
+      scoped: true,
+      compilerOptions: { bindingMetadata: script.bindings },
+    })
+    expect(tpl.errors.map(String), 'the template compiles').toEqual([])
+    for (const style of descriptor.styles) {
+      const out = sfc.compileStyle({
+        source: style.content, filename: 'CycleTimeline.vue', id: 'data-v-cst2', scoped: style.scoped,
+      })
+      expect(out.errors.map(String), 'the scoped CSS compiles').toEqual([])
+      styleCss += out.code
+    }
+  })
+
+  test('ONE component, both variants, each with its own testid', () => {
+    expect(src).toContain('data-testid="cycle-timeline"')
+    expect(src).toContain('data-testid="cycle-timeline-compact"')
+    expect(src.match(/variant === 'compact'/g), 'one switch, not two components').toHaveLength(1)
+  })
+
+  test('every label comes from the lib — the component re-types no Slovak but its aria-label', () => {
+    for (const label of cs2.STEPS.map((s) => s.label)) {
+      expect(src, `„${label}" must live only in lib/cycle-stages.js`).not.toContain(label)
+    }
+    expect(src, 'the step model is imported, not re-declared')
+      .toMatch(/import \{[^}]*timelineSteps[^}]*\} from '\.\.\/lib\/cycle-stages\.js'/)
+    expect(src, 'the one Slovak string it owns').toContain('Krok ')
+    // The compact strip is one `role="img"`, so the label must name the step.
+    expect(src).toContain('role="img"')
+    expect(src).toContain(':aria-label="dotsLabel"')
+  })
+
+  test('⚠ the styles are scoped, and carry no `.app` / `.modal-layer` ancestor', () => {
+    expect(descriptor.styles, 'exactly one style block').toHaveLength(1)
+    expect(descriptor.styles[0].scoped, '<style scoped>').toBe(true)
+    // ⚠ COMMENTS STRIPPED FIRST: the ported block NAMES `.app` in a comment to say
+    // the prefix was dropped, so a raw grep over the CSS has a hit that is not a
+    // selector. Strip, then assert.
+    const selectors = styleCss.replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(selectors, 'the portal skin is not an ancestor requirement').not.toContain('.app')
+    expect(selectors, 'neither is the modal layer').not.toContain('.modal-layer')
+    expect(selectors, 'no theme file was edited from here').toContain('.cs-tl')
+    expect(selectors).toContain('.cs-dots')
+  })
+
+  test('⚠ every design token is read through a FALLBACK (the admin skin defines none)', () => {
+    const css = styleCss.replace(/\/\*[\s\S]*?\*\//g, '')
+    const vars = css.match(/var\(--[a-z-]+[^)]*\)/g) || []
+    // Non-vacuity: a component that stopped using tokens would otherwise pass this.
+    expect(vars.length, 'the component still themes itself through tokens').toBeGreaterThanOrEqual(10)
+    const bare = vars.filter((v) => !v.includes(','))
+    expect(bare, 'a token with no fallback renders as nothing on the admin page').toEqual([])
+  })
+
+  test('⚠ nothing here depends on the `.app > *` cascade', () => {
+    const css = styleCss.replace(/\/\*[\s\S]*?\*\//g, '')
+    // CLAUDE.md: `fixed`/`sticky`/`z-*` on a direct child of `.app` silently
+    // computes to `relative`/`1`. The component must not need any of them; the one
+    // `position: absolute` is the connector rule, positioned against `.st`.
+    expect(css).not.toMatch(/position\s*:\s*(fixed|sticky)/)
+    expect(css, 'no stacking context to lose').not.toMatch(/z-index/)
+    const absolutes = css.match(/position\s*:\s*absolute/g) || []
+    expect(absolutes, 'only the `.st::before` connector').toHaveLength(1)
+    expect(css, 'and its containing block is `.st`, a grandchild').toMatch(/\.st[^{]*\{[^}]*position\s*:\s*relative/)
+  })
+
+  test('the prototype port kept the numbers (`portal2.css:22-42`)', () => {
+    const css = styleCss.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, '')
+    for (const decl of [
+      'left:13px', 'top:28px', 'border-left:3pxsolidrgba(10,10,10,0.18)',   // the connector
+      'width:28px', 'height:28px', 'border-radius:8px',                      // the vertical marker
+      'font-size:20px',                                                      // the `now` label
+      'font-size:11.5px', 'letter-spacing:0.04em',                           // the `when` line
+      'width:22px', 'height:22px', 'border-radius:6px',                      // the dots
+      'border-top:3pxsolidrgba(10,10,10,0.25)',                              // the dot connector
+    ]) {
+      expect(css, `ported declaration ${decl}`).toContain(decl)
+    }
+  })
+
+  test('the `now` label carries its `line-height` INLINE', () => {
+    // CLAUDE.md §Frontend: `line-height` often has to be inline here, and
+    // §UC-CS-006 names this label specifically.
+    expect(src).toMatch(/:style="s\.state === 'now' \? \{ lineHeight: '1' \} : null"/)
   })
 })

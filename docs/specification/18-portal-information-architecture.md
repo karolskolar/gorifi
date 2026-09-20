@@ -1037,7 +1037,8 @@ Escape, `page.goto('/cycle/<B>')`, open there ⇒ B's link, never A's (the dialo
 **13. `portal-fidelity.spec.js`:** portal tests built on `div.p-4`, `cycle-date`,
 `cycle-plan`, `archive-toggle` (216–261, 347–363) → retire; ADD landing equivalents:
 A10 `line-height:normal` on `.banner.slim`, `.badge`, `.display` inside `own-order-card`,
-`.p2-tl .lbl` (via 17's component), 320 px hostile text in `plan_note`/`expected_date`/
+`.cs-tl .lbl` (via 17's component — ⚠ the prototype's `.p2-` prefix was dropped when
+CS-T2 shipped `CycleTimeline.vue`; 17 §UC-CS-006 always said `.cs-`), 320 px hostile text in `plan_note`/`expected_date`/
 pickup note/cycle name on all three states. Login/modal tests stay (377 via item 5).
 
 **14. `portal-session-boundary.spec.js`:** the surface walk (252–307) → drawer-based:

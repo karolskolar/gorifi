@@ -139,8 +139,15 @@ recovery path for a mis-completed cycle is exactly `completed → locked`.
 `locked` — so A and B render from `planned`/`open` and never read the stale value, and C
 renders step 2 for a cycle that genuinely is locked again. ⚠ **That ordering is therefore
 not a stylistic preference, it is the only thing keeping these three out of the UI.** If
-`stageIndex()` ever consults `stage` before `status`, all three surface at once and
-**nothing reds** — no test pins any of them, in this row or any other.
+`stageIndex()` ever consults `stage` before `status`, all three surface at once ~~and
+**nothing reds** — no test pins any of them, in this row or any other~~ — **the „nothing
+reds" half is SUPERSEDED by CS-T2 (2026-09-20): see §CS-T2 item 1.** Inverting `stageIndex()`
+now reds one purpose-built test. ⚠ The rest of the paragraph stands, and the distinction
+matters: the three BACKEND transitions are still unpinned server-side — nothing stops the
+routes from writing the disagreeing value. What CS-T2 pinned is only that the FRONTEND keeps
+reading `status` first. ⚠⚠ And the obvious test does NOT catch it: every row of §UC-CS-005's
+seven-row acceptance table pairs a stage that agrees with its status, so a stage-first read
+is a fixed point of all seven. Only the dedicated test discriminates.
 
 **Deliberately NOT fixed in CS-T1.** The spec does not name these transitions, and widening
 a backend contract inside a row whose scope is the columns + the seam is how a contract
@@ -151,3 +158,109 @@ the column mean what its name says; (2) leave it and pin the `status`-first rule
 so CS-T2 cannot silently invert it. ⚠ Whoever does (1) must re-read §UC-CS-002's
 „`completed` — stage untouched, it is the historical record" line first: A and B are that
 same principle leaking one transition too far, and C contradicts it outright.
+
+---
+
+## CS-T2 — the lib, the two declensions, the component (2026-09-20)
+
+**What shipped.** `frontend/src/lib/cycle-stages.js` (six `STEPS` + `stageIndex`,
+`timelineSteps`, `fmtDay`, `daysUntil`, `inWeeksText`, `nextOpeningText`,
+`openUntilText`, `currentCycleFor`); `lib/plural.js` gained `daysLabel` / `weeksLabel`;
+`components/CycleTimeline.vue` — ONE component, `vertical` + `compact`. Nothing mounts it
+yet: CS-T3 puts it in the admin header, CS-T4 on the guest status page.
+
+### 1. §10's warning was worth the paragraph — and the mutation proves it silently
+
+Inverting `stageIndex()` to read `stage` before `status` reds **exactly one** test
+(„⚠ `status` is consulted BEFORE `stage`…"). The seven-row `stageIndex` table test stays
+GREEN under that mutation, because every row in it has a `stage` that agrees with its
+`status`. That is the fixed-point trap in miniature: the obvious table proves nothing about
+the ordering, and without the dedicated test the three defects CS-T1 measured would have
+reached the friend with a fully green suite. The dedicated test therefore asserts, per row,
+both the index AND `not.toBe()` the index the stale value would have produced.
+
+### 2. ⚠ §UC-CS-009's sweep regex does not do what it says
+
+`/kol[oáa]\b|cykl/i` **does not match „kolá"**: `á` is outside ASCII `\w`, so the trailing
+`\b` never fires after it. A ban that misses one of the four words it names is the one
+failure mode a ban cannot have. It also matches „okolo", which is module 18's own copy
+(„Káva príde okolo {expected_date}", PO decision O2) — a false positive waiting for the
+first consumer to reuse the sweep. Shipped as **`/\bkol[oáa]|cykl/iu`**, and the spec file
+carries a test that runs the regex over a bad list AND a good list, so the regex itself is
+evidence rather than faith. ~~Spec text not edited (copy/regex text is the PO's)~~ —
+**the spec WAS edited, by the orchestrator, at `17-cycle-stages.md:537`**: the broken regex
+is struck in place with the working one beside it. The reasoning that it was „the PO's" does
+not apply — the six LABELS are PO copy, but a verification regex in §UC-CS-009 is a test
+instruction, and leaving a broken one there hands it to CS-T4's closeout sweep. ⚠ Precision:
+the LEADING `\b` is the whole fix; the `u` flag is cosmetic.
+
+### 3. ⚠ `new Date('2026-02-31T00:00:00')` is 3 MARCH, not Invalid Date
+
+V8 falls back to lenient parsing for out-of-range days, so a shape-only `^\d{4}-\d{2}-\d{2}$`
+check would have printed „3. marca" for a date nobody chose. `fmtDay` and `daysUntil` both
+follow the regex with the same UTC round-trip the route uses. The refusal test carries its
+own non-vacuity line — `fmtDay('2026-03-03') === '3. marca'` — so the empty string is a
+refusal and not a broken formatter.
+
+Display uses LOCAL midnight (`T00:00:00`), validation uses UTC (`T00:00:00Z`). Formatting the
+UTC instant instead reds the `fmtDay` test only under a negative-offset zone, so that
+assertion runs inside `withTz('America/New_York', …)`.
+
+### 4. ⚠ A DST assertion on a UTC box is a fixed point
+
+The first version of „`daysUntil` counts whole CALENDAR days" **passed unchanged** when the
+implementation was mutated to naive local-time subtraction — this box runs UTC, where the two
+are identical. The fix is `withTz('Europe/Bratislava', …)` around the boundary assertions
+(`process.env.TZ` is re-read per `Date`, so a worker can switch zones mid-test). With the zone
+switched, the same mutation reds. Any future date arithmetic here needs the same treatment:
+**a timezone assertion that does not name a timezone is measuring nothing.**
+
+### 5. The component has no rendered coverage in this row, deliberately
+
+CS-T2 ships `CycleTimeline.vue` and mounts it nowhere, so §UC-CS-009 item 1's rendered
+`done`/`now`/`next` counts and the computed `.mk` border belong to CS-T3/CS-T4. What IS
+provable now is the set nobody later would notice breaking, and it is pinned at source level
+by compiling the SFC with `@vue/compiler-sfc` out of `frontend/node_modules`:
+
+- it parses / the template compiles / the scoped CSS compiles (a missing end tag reds it);
+- exactly one `<style scoped>` block, and the COMPILED css — comments stripped first, because
+  the port's header names `.app` in order to say the prefix was dropped — contains no `.app`
+  and no `.modal-layer`;
+- every `var(--…)` has a fallback, gated on `≥ 10` tokens so a component that stopped theming
+  itself could not pass;
+- no `position: fixed|sticky`, no `z-index`, exactly ONE `position: absolute` (the `.st::before`
+  connector, whose containing block is `.st`) — i.e. nothing that the `.app > *` cascade rule
+  could silently flatten;
+- none of the six labels appears in the SFC (the only Slovak it owns is „Krok ");
+- the ported numbers from `portal2.css:22-42` (13/28 px connector, 28 px marker, 20 px `now`
+  label, 11.5 px `when`, 22 px dots, the two rgba rules).
+
+### 6. The `steps` prop is the module-18 seam, and `desc` is why it exists
+
+`timelineSteps()` returns `desc: ''` for all six (resolved conflict 8). A consumer that wants
+the prototype's sentences passes its own array through `steps` — which keeps the LABELS in the
+lib while letting 18 own its copy. `aria-label` and the `now` index are derived from whatever
+array is in play, so an injected array of a different length still labels correctly.
+
+### 7. Deviations from the spec text, all deliberate
+
+- The sweep regex (§2 above).
+- `nextOpeningText` branch 1 is gated on `fmtDay()` returning something, not on the raw
+  `opens_at`: a malformed date falls through to `plan_note`/the fallback instead of composing
+  „…približne ." with a hole in it. `openUntilText` does the same.
+- `inWeeksText(iso, today)` takes `today` explicitly (the spec writes `inWeeksText(opens_at)`
+  inside `nextOpeningText`); without it the whole section would be a function of the clock.
+- `.cs-tl .bd` adds `overflow-wrap: anywhere` to the prototype's inline `minWidth: 0`
+  (CLAUDE.md: `min-w-0` is not `overflow-wrap`).
+- `currentCycleFor`'s `console.warn` is English: it is a developer diagnostic, not user copy,
+  and the rendered-copy sweep never sees it.
+- ⚠ **A FIFTH deviation, found in review and missing from this list when it was written:**
+  `openUntilText` does **not** fall back to `expected_date` when `closes_at` is NULL — it
+  returns the bare „Objednávky otvorené". §UC-CS-005's PO-O2 banner (`17-cycle-stages.md:284`)
+  says the copy helpers do fall back. The SHIPPED behaviour is the right one, and module 18 is
+  why: `18-portal-information-architecture.md:356-360` specifies „`closes_at` null ⇒
+  **Objednávky sú otvorené.**" with „Káva príde okolo {expected_date}" as a SEPARATE clause,
+  omitted independently when `expected_date` is null. The deadline sentence and the delivery
+  sentence are two facts, and folding `expected_date` in here would make this lib a second
+  home for a string module 18 owns. **PI-T1/PI-T3 must compose the two clauses at the call
+  site; do not grow the fallback into this helper.**
