@@ -231,8 +231,19 @@ second is the dangerous one:
 - ⚠ **The inverse was CLAIMED here and it is FALSE — measured, not reasoned (2026-09-20).**
   The first draft of this entry said a filter matching no file "collects nothing and Playwright
   reports that as a clean pass". It does not: `npx playwright test tests/zzz-nonexistent.spec.js`
-  answers `Error: No tests found.` on **exit 1**, both as a run and under `--list`. Under-collection
-  is LOUD. **The asymmetry is the whole lesson: over-collection is the silent one.** A filter that
+  answers `Error: No tests found.` on **exit 1**, both as a run and under `--list`.
+  ⚠⚠ ~~Under-collection is LOUD. **The asymmetry is the whole lesson: over-collection is the
+  silent one.**~~ **THAT CORRECTION WAS ITSELF INCOMPLETE — falsified by PI-T5 (2026-09-20), and
+  the incomplete half is the DANGEROUS one.** Measured: loudness holds only when EVERY filter
+  matches nothing. In a list where ONE entry misses **and the others match**, Playwright runs the
+  matches, DROPS the missing entry in silence and exits **0**. That is the ordinary shape of a
+  targeted gate, so a deleted or mistyped spec leaves a row's verification with the summary still
+  reading „N passed". PI-T5 passed `tests/order-flow.spec.js`, which does not exist, and the run
+  said nothing. **Both directions are silent in the case you will actually hit; the only defence
+  is to reconcile the files that RAN against the files you asked for.** See CLAUDE.md
+  §Running the e2e suite. ⚠ Note what happened here: a correction written to fix an over-broad
+  claim was itself stated more broadly than it had been measured, in the file whose job is to stop
+  that. Measure the case you are about to generalise over. A filter that
   matches more files than you meant runs them, passes them, and inflates a count that nobody
   reconciles — which is exactly how this 89-test gap was born. Anchor with the `.spec.js` suffix
   to bound the match, and read the files that RAN off the log rather than off your command line.

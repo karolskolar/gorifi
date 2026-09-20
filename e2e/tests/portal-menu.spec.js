@@ -182,6 +182,13 @@ test.describe('PI-T2 · 18 §UC-PI-004 — the drawer rows', () => {
     // The same friend, a round that is not open: the row is GONE, not disabled.
     await stubCycles(page, [cycleRow({ n: 2, status: 'locked' })])
     await open(page)
+    // ⚠ SANCTIONED EDIT, PI-T5 (18 §UC-PI-007, immutability case (a)): `cycleRow`
+    // seeds `hasOrder: false`, which is §UC-PI-007's „locked, NO own order" branch —
+    // the closed-state treatment, i.e. a `NeoModal` that opens by itself and whose
+    // scrim covers the hamburger. `openMenu()` would time out on actionability
+    // rather than on anything this test claims. Same one-line remedy PI-T4 added for
+    // the closed landing; the row-set assertion is untouched.
+    await dismissLandingState(page)
     await openMenu(page)
     expect((await rows(page)).map((r) => r.label)).toEqual([
       'Aktuálna ponuka',
@@ -235,6 +242,9 @@ test.describe('PI-T2 · 18 §UC-PI-004 — the drawer rows', () => {
     await page.unroute('**/api/friends/cycles*')
     await stubCycles(page, [cycleRow({ n: 4, status: 'locked' })])
     await open(page)
+    // ⚠ SANCTIONED EDIT, PI-T5 — see the note in the row-set test above: a locked
+    // landing with no own order now opens the state modal by itself.
+    await dismissLandingState(page)
     await openMenu(page)
     expect((await rows(page))[0].sub).toBe('Objednávky sú zatvorené')
   })
@@ -276,9 +286,12 @@ test.describe('PI-T2 · 18 §UC-PI-004 — the drawer rows', () => {
     // round alone IS the CLOSED landing, which now opens its state modal by itself,
     // and the modal's scrim covers the hamburger — `openMenu()` would time out on
     // actionability instead of measuring the sub-line. The claim (item 2's singular
-    // accusative) is untouched; only the way to the drawer is. ⚠ This is the ONE
-    // fixture in this file that lands `closed`; every other row above is `open` or
-    // `locked`, neither of which shows a modal.
+    // accusative) is untouched; only the way to the drawer is. ⚠ This is the one
+    // fixture in this file that lands `closed` — but NOT the only one that needs this
+    // call: since PI-T5, a `locked` round with NO OWN ORDER shows a state modal too,
+    // which is why the two locked fixtures above (:189, :246) dismiss it as well. The
+    // earlier wording said `locked` never shows a modal and was contradicted by its own
+    // commit 100 lines above.
     await dismissLandingState(page)
     await openMenu(page)
     expect((await rows(page))[1].sub).toBe('1 objednávku · naposledy PI2 Jediná')

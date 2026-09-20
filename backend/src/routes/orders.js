@@ -13,7 +13,7 @@ import { enqueueForHandOver, cancelForUnHandOver } from '../helpers/outbox.js';
 import { markCycleReady } from '../helpers/cycle-stage.js';
 import { friendOrderVariableSymbol, guestOrderVariableSymbol } from '../helpers/payment.js';
 import { bindValue } from '../helpers/bind-value.js';
-import { pickupTargetFor, activeLocation, applyPickup, readPickup, linkPickupsByHost } from '../helpers/pickup.js';
+import { pickupTargetFor, activeLocation, applyPickup, readPickup, pickupOf, linkPickupsByHost } from '../helpers/pickup.js';
 
 const router = Router();
 
@@ -122,8 +122,16 @@ router.get('/cycle/:cycleId/friend/:friendId', (req, res) => {
   const order = db.prepare('SELECT * FROM orders WHERE friend_id = ? AND cycle_id = ?').get(friendId, cycleId);
 
   // Get order items if order exists
+  //
+  // ⚠ 18 §UC-PI-007 (PI-T5) — `p.purpose` IS ADDITIVE AND IT IS NOT DECORATION.
+  // The locked landing's own-order card renders these rows through `CartLineList`,
+  // which GROUPS BY PURPOSE (one badge header per group, the one-home rule from
+  // 2026-08-12). Without the column every line fell into the component's
+  // `'Ostatné'` fallback bucket, so a friend's espresso and filter were listed under
+  // one wrong header. The client cannot fill the hole from `products` either: the
+  // history view (PI-T6) renders the lines of rounds whose catalogue it never loads.
   const items = order ? db.prepare(`
-    SELECT oi.*, p.name as product_name, p.roast_type, p.description1, p.variant_label
+    SELECT oi.*, p.name as product_name, p.roast_type, p.description1, p.variant_label, p.purpose
     FROM order_items oi
     JOIN products p ON p.id = oi.product_id
     WHERE oi.order_id = ?
@@ -132,6 +140,19 @@ router.get('/cycle/:cycleId/friend/:friendId', (req, res) => {
   res.json({
     order: order || null,
     items,
+    // 18 §UC-PI-007 item 2 — the party's delivery target, for the own-order card's
+    // pickup badge. TOP-LEVEL, never spliced into the `order` row (same reason as
+    // `payment` above: a derived value inside a `SELECT *` result starts reading
+    // like a column and eventually like one to write to).
+    //
+    // ⚠ `pickupOf()` is `helpers/pickup.js`'s home for this shape, and asking it is
+    // what keeps the badge's NAME lookup identical to every admin surface's —
+    // including its deliberate absence of an `active = 1` filter, so a location
+    // soft-deleted after this order chose it still renders its name instead of going
+    // blank. ⚠ It is NOT `readPickup()`: that one re-resolves WHICH STORE a party's
+    // pickup lives in, and this route already holds the `orders` row, which is the
+    // store that wins whenever it exists.
+    pickup: order ? pickupOf(order) : null,
     friend: { id: friend.id, name: friend.name, packeta_address: friend.packeta_address || null },
     cycle: validation.cycle,
     payment: friendOrderPayment(order)

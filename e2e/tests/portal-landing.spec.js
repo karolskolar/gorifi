@@ -542,13 +542,17 @@ test.describe('PI-T3 · 18 §UC-PI-011 — two entry points, ONE dialog', () => 
       await expect(page.getByTestId('portal-landing'), state)
         .toHaveAttribute('data-landing-state', state === 'locked' ? 'locked' : 'closed')
 
-      // ⚠ SANCTIONED EDIT, PI-T4 (18 §UC-PI-006, immutability case (a)): the CLOSED
-      // landing now opens its state modal by itself, and a NeoModal's scrim covers
-      // the appbar — so `openMenu()` below would time out on actionability rather
-      // than on anything this test is about. The claim („a round that is not open
-      // offers no share affordance") is unchanged; only the step that reaches the
-      // drawer is. The LOCKED half has no modal until PI-T5, hence the condition.
-      if (state === 'closed') await dismissLandingState(page)
+      // ⚠ SANCTIONED EDIT, PI-T4 (18 §UC-PI-006, immutability case (a)) and now
+      // PI-T5 (§UC-PI-007): the landing opens its state modal by itself, and a
+      // NeoModal's scrim covers the appbar — so `openMenu()` below would time out on
+      // actionability rather than on anything this test is about. The claim („a round
+      // that is not open offers no share affordance") is unchanged; only the step
+      // that reaches the drawer is.
+      // ⚠ The condition is GONE, not inverted: PI-T4's note („the LOCKED half has no
+      // modal until PI-T5") expired with this row — `cycleRow` seeds `hasOrder: false`,
+      // which is exactly §UC-PI-007's „locked, NO own order" branch, i.e. the closed
+      // treatment with two different strings.
+      await dismissLandingState(page)
 
       await expect(cartbarShare(page), `${state}: no cartbar icon`).toHaveCount(0)
       await expect(page.getByRole('button', { name: 'Zdieľať s kolegami' }),
@@ -1091,5 +1095,483 @@ test.describe('PI-T4 · 18 §UC-PI-006 — the landing, closed state', () => {
     await expect(page.getByTestId('stock-bar').first()).toBeVisible()
     await expect(page.locator('.cartbar')).toBeVisible()
     await expect(page.getByTestId('main-tab-own')).toBeVisible()
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 6. PI-T5 — the landing, LOCKED state (18 §UC-PI-007)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠ THE FIXTURE IS THE HALF THAT MATTERS HERE, and PI-T4 paid for the lesson: every
+// closed-state fixture in §5 used a FRESH friend, so „the read-only grid ignores the
+// stored order" passed by accident until one was added that had really ordered. On a
+// LOCKED landing the friend almost always HAS an order — it is the whole subject of
+// the screen — so every fixture below submits one, and §6.1 asserts both halves at
+// once: the quantities are in the CARD and the grid beside it still reads 0.
+//
+// ⚠ AND ONE OBVIOUS ASSERTION IS DELIBERATELY ABSENT. This is the first
+// `variant="vertical"` `CycleTimeline` on the friend portal, and module 17 recorded
+// (09 §UC-CS-006 / its learnings) that a computed-style read of the marker's border
+// proves NOTHING inside `.app`: the portal supplies `--nb-ink` with a value
+// byte-identical to the component's own fallback, so the assertion passes whether
+// the fallback exists or not. The runtime proof of that mechanism lives on the admin
+// page, where the token is genuinely absent. §6.5 pins the step COUNTS and the
+// current step's LABEL, which are real here — and drives the stage so the „now" step
+// MOVES, which a hardcoded render could not fake.
+
+/** The stage a freshly locked round gets (CS-T1: lock ⇒ `ordered`) ⇒ step 3 of 6. */
+const STEP_ORDERED = 'Objednávky uzavreté, káva objednaná v pražiarni'
+const STEP_ARRIVED = 'Káva dorazila, balíme'
+
+/**
+ * A REAL round with a REAL submitted order, then LOCKED — §UC-PI-007's subject.
+ *
+ * `delivery` picks which ONE of the three pickup targets the order carries
+ * (`helpers/pickup.js`: exactly one of them exists). The `location` variant also
+ * DEACTIVATES its pickup point straight after the submit, which does double duty: it
+ * leaves no active row behind for the other spec files (`pickup_locations` is global
+ * — `distribution-board.spec.js` §5) and it pins that the badge reads the server's
+ * `pickup` block, whose name lookup carries no `active = 1` filter on purpose.
+ */
+async function lockedRound(label, { delivery = 'note' } = {}) {
+  const friend = await makeFriend(label)
+  // ⚠ No `markup_ratio` is passed: `POST /api/cycles` does not read one and the
+  // column defaults to 1.0, which is what makes the amounts below exact.
+  const cycle = await makeCycle(label)
+  const espresso = await addProduct(cycle.id, {
+    name: `PI5 ${label} Espresso ${uniq}`, purpose: 'Espresso', price_250g: 8, stock_limit_g: 5000,
+  })
+  const filter = await addProduct(cycle.id, {
+    name: `PI5 ${label} Filter ${uniq}`, purpose: 'Filter', price_250g: 10,
+  })
+
+  let location = null
+  const body = {}
+  if (delivery === 'packeta') {
+    expect((await admin(`/api/cycles/${cycle.id}`, {
+      method: 'patch', data: { parcel_enabled: true, parcel_fee: 3.5 },
+    })).status(), 'parcel enabled').toBe(200)
+    body.use_parcel_delivery = true
+    body.packeta_address = `Z-BOX Hlavná 15, Bratislava ${uniq}`
+  } else if (delivery === 'location') {
+    const created = await admin('/api/pickup-locations', {
+      method: 'post', data: { name: `PI5 Bod ${label} ${uniq}`, address: 'Ružová 1' },
+    })
+    expect(created.status(), 'pickup location create').toBe(201)
+    location = await created.json()
+    body.pickup_location_id = location.id
+  } else {
+    body.pickup_location_note = `Pri fontáne ${uniq}`
+  }
+
+  const friendCall = (path, data, method = 'put') => ctx[method](path, {
+    headers: { Authorization: `Bearer ${friend.token}` }, data, timeout: TIMEOUT,
+  })
+
+  expect((await friendCall(`/api/orders/cycle/${cycle.id}/friend/${friend.id}`, {
+    items: [
+      { product_id: espresso.id, variant: '250g', quantity: 2 },
+      { product_id: filter.id, variant: '250g', quantity: 1 },
+    ],
+  })).status(), 'cart saved').toBe(200)
+
+  const submitted = await friendCall(`/api/orders/cycle/${cycle.id}/friend/${friend.id}/submit`, body, 'post')
+  expect(submitted.status(), 'order submitted').toBe(200)
+
+  if (location) {
+    expect((await admin(`/api/pickup-locations/${location.id}`, {
+      method: 'patch', data: { active: false },
+    })).status(), 'pickup point deactivated again').toBe(200)
+  }
+
+  expect((await admin(`/api/cycles/${cycle.id}`, { method: 'patch', data: { status: 'locked' } })).status())
+    .toBe(200)
+
+  const read = await friendCall(`/api/orders/cycle/${cycle.id}/friend/${friend.id}`, undefined, 'get')
+  const orderRow = (await read.json()).order
+
+  return { friend, cycle, espresso, filter, location, order: orderRow, packeta: body.packeta_address || null, note: body.pickup_location_note || null }
+}
+
+/** Land on the locked round, with the cycles payload stubbed to it (+ extra rows). */
+async function openLocked(page, fx, { hasOrder = true, extraRows = [] } = {}) {
+  await signIn(page, fx.friend)
+  await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+  await stubCycles(page, [
+    cycleRow({ n: 60, id: fx.cycle.id, name: fx.cycle.name, status: 'locked', stage: 'ordered', hasOrder }),
+    ...extraRows,
+  ])
+  await open(page)
+}
+
+const ownCard = (page) => page.getByTestId('own-order-card')
+
+test.describe('PI-T5 · 18 §UC-PI-007 — the landing, locked state', () => {
+  test('the own-order card carries the lines, the fee and the total — the grid beside it carries none of it', async ({ page }) => {
+    const fx = await lockedRound('Card', { delivery: 'packeta' })
+    await openLocked(page, fx)
+
+    const card = ownCard(page)
+    await expect(card).toBeVisible()
+    await expect(card).toContainText('Vaša objednávka')
+    await expect(card.getByText('Odoslaná', { exact: true })).toBeVisible()
+
+    // ⚠ `CartLineList`, the ONE home — so the lines are `li.ln`, grouped by purpose
+    // with a badge header each, and the amounts carry `€` (never `EUR`, which is the
+    // TOTALS unit — CLAUDE.md §Frontend).
+    const lines = card.getByTestId('own-order-line')
+    await expect(lines).toHaveCount(2)
+    await expect(lines.nth(0)).toContainText(fx.espresso.name)
+    await expect(lines.nth(0).locator('.ln-qty')).toHaveText('2×')
+    await expect(lines.nth(0).locator('.ln-amt')).toHaveText('16.00 €')
+    await expect(lines.nth(1)).toContainText(fx.filter.name)
+    await expect(lines.nth(1).locator('.ln-amt')).toHaveText('10.00 €')
+    // The group headers, in the category strip's order (`availablePurposes`).
+    await expect(card.locator('li.ln-group')).toHaveText(['Espresso', 'Filter'])
+
+    // ⚠ THE PACKETA FEE IS AN EXTRA, NEVER AN ITEM: `orders.delivery_fee` is a field
+    // ON the order and has never been an `order_items` row (CLAUDE.md §Money & data).
+    // So it has no purpose header, no quantity and no size — and it is NOT one of the
+    // two `own-order-line` rows counted above.
+    const fee = card.locator('li.ln').filter({ hasText: 'Doručenie Packetou' })
+    await expect(fee).toHaveCount(1)
+    await expect(fee.locator('.ln-amt')).toHaveText('3.50 €')
+    await expect(fee.locator('.ln-qty')).toHaveCount(0)
+
+    // ⚠ `paymentTotal` = goods + `delivery_fee`, for DISPLAY (04 resolved conflict
+    // #9). 16 + 10 + 3.50. `EUR` on a total.
+    await expect(card.getByTestId('own-order-total')).toHaveText('29.50 EUR')
+
+    // ⚠⚠ AND THE GRID BESIDE IT SHOWS NOTHING OF THIS ORDER. PI-T4's fix
+    // (`if (isReadonly.value) cart.value = {}`) is what keeps the friend's three
+    // bags out of the faded, disabled steppers — this is the screen it was written
+    // for, and this fixture is one that can measure it.
+    const orderedCard = page.getByTestId('product-card').filter({ hasText: fx.espresso.name })
+    await expect(orderedCard).toBeVisible()
+    await expect(orderedCard.locator('.val').first(),
+      'the order belongs to the CARD, not to the grid\'s steppers').toHaveText('0')
+    await expect(page.locator('.app .cartbar')).toHaveCount(0)
+  })
+
+  test('the pickup row shows EXACTLY ONE target — location, note or Packeta', async ({ page }) => {
+    // Three rounds, because the rule is „exactly one of the three" and one fixture
+    // can only ever show that one of them renders.
+    const cases = [
+      { delivery: 'location', label: 'Loc', expected: (fx) => fx.location.name, absent: ['Packeta', 'fontáne'] },
+      { delivery: 'note', label: 'Note', expected: (fx) => fx.note, absent: ['Packeta'] },
+      { delivery: 'packeta', label: 'Pkt', expected: (fx) => `Packeta · ${fx.packeta}`, absent: ['fontáne'] },
+    ]
+
+    for (const c of cases) {
+      const fx = await lockedRound(c.label, { delivery: c.delivery })
+      await openLocked(page, fx)
+
+      const badge = ownCard(page).getByTestId('own-order-pickup')
+      await expect(badge, `${c.delivery}: exactly one target`).toHaveCount(1)
+      await expect(badge).toContainText(c.expected(fx))
+      for (const gone of c.absent) await expect(badge).not.toContainText(gone)
+    }
+  })
+
+  test('Nezaplatené ⇒ Zaplatiť opens the ONE PaymentModal with the order total and the SERVER\'s VS — and writes no ledger row', async ({ page }) => {
+    const fx = await lockedRound('Pay')
+    await page.route('**/api/admin/payment-settings', (route) => route.fulfill({
+      json: { paymentIban: 'SK3112000000198742637541', paymentRevolutUsername: 'gorifi', paymentCreditorName: '' },
+    }))
+    await openLocked(page, fx)
+
+    const ledgerBefore = await ctx.get(`/api/transactions/friend/${fx.friend.id}`, {
+      headers: { Authorization: `Bearer ${fx.friend.token}` }, timeout: TIMEOUT,
+    })
+    expect(ledgerBefore.status()).toBe(200)
+    const rowsBefore = (await ledgerBefore.json()).length
+
+    const card = ownCard(page)
+    await expect(card.getByTestId('own-order-paid')).toHaveText('Nezaplatené')
+    const pay = card.getByTestId('own-order-pay')
+    await expect(pay).toHaveText('Zaplatiť 26.00 EUR')
+    await pay.click()
+
+    // ⚠ ONE modal — `FriendOrder`'s own. The session mounts none (the source pin
+    // below), so this is the same surface the cartbar's „Zaplatiť" opens elsewhere.
+    const modal = page.getByRole('dialog')
+    await expect(modal).toHaveCount(1)
+    await expect(modal).toContainText('Suma na úhradu: 26.00 EUR')
+
+    // ⚠ THE VARIABLE SYMBOL IS THE SERVER'S — a friend order's VS IS its order id
+    // (`backend/src/helpers/payment.js`), quoted from the order response. No client
+    // derives one (CLAUDE.md §Money & data), which is why this asserts the value the
+    // API issued rather than a locally composed string.
+    await expect(modal.getByTestId('payment-vs')).toContainText(String(fx.order.id))
+
+    await page.keyboard.press('Escape')
+
+    // ⚠ NO LEDGER ROW, AND THAT IS THE POINT OF THE ASSERTION. `transactions` rows
+    // come ONLY from the friend paid toggle and pack/unpack (CLAUDE.md §Money & data);
+    // this surface shows a QR and writes nothing at all.
+    const ledgerAfter = await ctx.get(`/api/transactions/friend/${fx.friend.id}`, {
+      headers: { Authorization: `Bearer ${fx.friend.token}` }, timeout: TIMEOUT,
+    })
+    expect((await ledgerAfter.json()).length, 'opening a payment surface writes no ledger row').toBe(rowsBefore)
+  })
+
+  test('the admin marks it paid ⇒ „Zaplatené" and no button at all', async ({ page }) => {
+    const fx = await lockedRound('Paid')
+    // `paid` is ADMIN-ONLY (CLAUDE.md §Money & data) — the friend surface renders it,
+    // it never writes it. This is the admin route doing the write.
+    expect((await admin(`/api/orders/${fx.order.id}/paid`, { method: 'patch', data: { paid: true } })).status())
+      .toBe(200)
+
+    await openLocked(page, fx)
+    const card = ownCard(page)
+    await expect(card.getByTestId('own-order-paid')).toHaveText('Zaplatené')
+    await expect(card.getByTestId('own-order-pay')).toHaveCount(0)
+    // Non-vacuity: the card really is the one under test.
+    await expect(card.getByTestId('own-order-total')).toHaveText('26.00 EUR')
+  })
+
+  test('„Kde je vaša káva" — module 17\'s VERTICAL timeline, and the „now" step really moves', async ({ page }) => {
+    const fx = await lockedRound('Timeline')
+    await openLocked(page, fx)
+
+    const tl = page.getByTestId('cycle-timeline')
+    await expect(page.getByTestId('where-is-my-coffee')).toContainText('Kde je vaša káva')
+    await expect(tl).toHaveCount(1)
+    // Six steps, and the compact dot strip is NOT what this surface mounts.
+    await expect(tl.locator('.st')).toHaveCount(6)
+    await expect(page.getByTestId('cycle-timeline-compact')).toHaveCount(0)
+
+    // A freshly locked round is `stage = 'ordered'` (CS-T1: lock ⇒ `ordered`) ⇒
+    // step 3 of 6: two done, one now, three next.
+    await expect(tl.locator('.st.done')).toHaveCount(2)
+    await expect(tl.locator('.st.now')).toHaveCount(1)
+    await expect(tl.locator('.st.next')).toHaveCount(3)
+    await expect(tl.locator('.st.now .lbl')).toHaveText(STEP_ORDERED)
+
+    // ⚠ THE DISCRIMINATING HALF: the admin advances the stage and the „now" step
+    // MOVES. A hardcoded render, or one that built its own step array, passes every
+    // assertion above and fails here — which is what makes „17 owns the now rule;
+    // this module only mounts it" measurable rather than merely written down.
+    expect((await admin(`/api/cycles/${fx.cycle.id}`, { method: 'patch', data: { stage: 'arrived' } })).status())
+      .toBe(200)
+    await page.unroute('**/api/friends/cycles*')
+    await stubCycles(page, [cycleRow({
+      n: 61, id: fx.cycle.id, name: fx.cycle.name, status: 'locked', stage: 'arrived', hasOrder: true,
+    })])
+    await open(page)
+
+    await expect(tl.locator('.st.now .lbl')).toHaveText(STEP_ARRIVED)
+    await expect(tl.locator('.st.done')).toHaveCount(3)
+    expect(STEP_ARRIVED, 'the two labels differ — otherwise the move above measures nothing')
+      .not.toBe(STEP_ORDERED)
+  })
+
+  test('the next-round banner: the SHORT date, the plan note, and „dáme vedieť"', async ({ page }) => {
+    const fx = await lockedRound('Next')
+    const opensAt = isoPlusDays(14)
+    await openLocked(page, fx, {
+      extraRows: [cycleRow({ n: 62, status: 'planned', opens_at: opensAt, created_at: '2026-09-09 10:00:00' })],
+    })
+
+    const banner = page.getByTestId('landing-next-round')
+    await expect(banner).toContainText('Ďalšia objednávka')
+    await expect(banner).toContainText(`približne ${shortForm(opensAt)}`)
+    await expect(banner).toContainText('ponuku si už môžete prezrieť nižšie')
+
+    // ⚠⚠ THE SHORT FORM, AND IT IS NOT A CALL-SITE RESOLUTION OF THE RECORDED PO
+    // QUESTION (§5's header, learnings 10 §1). That question is about module 17's
+    // ONE sentence — „Ďalšia objednávka sa otvorí približne {fmtDay}" — which this
+    // banner is not: §UC-PI-007 specifies a shorter sentence of module 18's own,
+    // and PI-T1's rule says a date standing alone after a preposition is SHORT.
+    // The long form must not appear here, and the two spellings must differ or this
+    // whole assertion measures nothing.
+    expect(shortForm(opensAt)).not.toBe(longForm(opensAt))
+    await expect(banner).not.toContainText(longForm(opensAt))
+
+    // Branch 2 — the admin's `plan_note`, verbatim.
+    await page.unroute('**/api/friends/cycles*')
+    await stubCycles(page, [
+      cycleRow({ n: 60, id: fx.cycle.id, name: fx.cycle.name, status: 'locked', stage: 'ordered', hasOrder: true }),
+      cycleRow({ n: 63, status: 'planned', plan_note: 'Otvoríme po sviatkoch.', created_at: '2026-09-09 10:00:00' }),
+    ])
+    await open(page)
+    await expect(banner).toContainText('Ďalšia objednávka Otvoríme po sviatkoch. — ponuku si už môžete prezrieť nižšie.')
+
+    // Branch 3 — nothing planned at all.
+    await page.unroute('**/api/friends/cycles*')
+    await stubCycles(page, [
+      cycleRow({ n: 60, id: fx.cycle.id, name: fx.cycle.name, status: 'locked', stage: 'ordered', hasOrder: true }),
+    ])
+    await open(page)
+    await expect(banner).toContainText('Ďalšia objednávka — dáme vedieť — ponuku si už môžete prezrieť nižšie.')
+  })
+
+  test('⚠ the tabgroup STAYS here and is GONE on the closed catalogue — the same grid, one split term', async ({ page }) => {
+    const fx = await lockedRound('Tabs')
+    await openLocked(page, fx)
+
+    // ── the LOCKED landing (§UC-PI-007): inert grid, LIVE tabs ────────────────
+    await expect(page.getByTestId('main-tab-own')).toBeVisible()
+    await expect(page.getByTestId('main-tab-guests')).toBeVisible()
+    // The panel really is a tab interface again — `readonly` alone used to strip
+    // these two attributes with the tabs.
+    await expect(page.locator('#panel-own')).toHaveAttribute('role', 'tabpanel')
+    await expect(page.locator('#panel-own')).toHaveAttribute('aria-labelledby', 'tab-own')
+    await page.getByTestId('main-tab-guests').click()
+    await expect(page.locator('#panel-guests')).toBeVisible()
+    await page.getByTestId('main-tab-own').click()
+
+    // …and the grid is still read-only: faded, inert, no stock bars, no cartbar.
+    const grid = page.getByTestId('product-grid')
+    await expect(grid).toHaveClass(/\bp2-ro\b/)
+    const card = page.getByTestId('product-card').filter({ hasText: fx.espresso.name })
+    const plus = card.getByRole('button', { name: 'viac' }).first()
+    await expect(plus).toBeDisabled()
+    await plus.evaluate((el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    await expect(card.locator('.val').first(),
+      'a DISPATCHED click cannot mutate a read-only cart (CLAUDE.md: `disabled` stops nothing)')
+      .toHaveText('0')
+    await expect(page.getByTestId('stock-bar')).toHaveCount(0)
+    await expect(page.locator('.app .cartbar')).toHaveCount(0)
+    // The shipped locked treatment is REPLACED here (§UC-PI-007), not repeated.
+    await expect(page.getByTestId('portal-landing'))
+      .not.toContainText('Už nie je možné meniť objednávku')
+
+    // ── the SAME round, now CLOSED (§UC-PI-006): inert grid, NO tabs ──────────
+    // ⚠ This is the other direction of the split, measured on one page object: a
+    // single `isReadonly` term cannot satisfy both halves, which is exactly why
+    // PI-T5 had to split it. Collapse `hasTabs` back into `isReadonly` and one of
+    // these two blocks goes red whichever way it is collapsed.
+    expect((await admin(`/api/cycles/${fx.cycle.id}`, { method: 'patch', data: { status: 'completed' } })).status())
+      .toBe(200)
+    await page.unroute('**/api/friends/cycles*')
+    await stubCycles(page, [cycleRow({ n: 64, id: fx.cycle.id, name: fx.cycle.name, status: 'completed' })])
+    await open(page)
+    await dismissLandingState(page)
+
+    await expect(page.getByTestId('portal-landing')).toContainText(`Minulá ponuka · ${fx.cycle.name}`)
+    await expect(page.getByTestId('main-tab-own')).toHaveCount(0)
+    await expect(page.getByTestId('main-tab-guests')).toHaveCount(0)
+    await expect(page.locator('#panel-own')).not.toHaveAttribute('role', 'tabpanel')
+    // Non-vacuity: the grid is still the same read-only grid, so what changed is the
+    // tabgroup and nothing else.
+    await expect(page.getByTestId('product-grid')).toHaveClass(/\bp2-ro\b/)
+    await expect(page.getByTestId('own-order-card')).toHaveCount(0)
+  })
+
+  test('locked with NO own order ⇒ the SAME parametrised modal, two different strings', async ({ page }) => {
+    const fx = await lockedRound('NoOrder')
+    // A DIFFERENT friend, who never ordered in this round — and the payload says so.
+    const stranger = await makeFriend('Stranger')
+    await signIn(page, stranger)
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+    await stubCycles(page, [
+      cycleRow({ n: 65, id: fx.cycle.id, name: fx.cycle.name, status: 'locked', stage: 'ordered', hasOrder: false }),
+      cycleRow({ n: 66, status: 'planned', opens_at: isoPlusDays(14), created_at: '2026-09-09 10:00:00' }),
+    ])
+    await open(page)
+
+    const modal = landingStateModal(page)
+    await expect(modal).toBeVisible()
+    await expect(modal.locator('.m-title')).toHaveText('Objednávky sú uzamknuté')
+    await expect(modal).toContainText('Táto objednávka je už uzavretá — káva je objednaná v pražiarni.')
+    // The shared card and the shared dots — one component, three strings.
+    await expect(modal.getByTestId('next-round-card')).toBeVisible()
+    await expect(modal.getByTestId('cycle-timeline-compact')).toHaveCount(1)
+
+    // ⚠ THE DOTS DESCRIBE THE ROUND IN FLIGHT, NOT THE PLANNED ONE. §UC-PI-006's
+    // closed modal is handed `nextCycle ?? catalogCycle` and emphasises „Pauza";
+    // here the caller hands it `currentCycle`, which is locked, so the caption is
+    // „Doručenie". The planned row above exists precisely so the two answers
+    // DIFFER — without it this assertion could not tell which cycle was passed.
+    const captions = modal.getByTestId('timeline-captions').locator('span')
+    await expect(captions).toHaveText(['Pauza', 'Objednávky', 'Doručenie'])
+    expect(await captions.nth(2).evaluate((el) => getComputedStyle(el).fontWeight)).toBe('700')
+    expect(await captions.nth(0).evaluate((el) => getComputedStyle(el).fontWeight)).not.toBe('700')
+    await expect(modal.locator('[aria-label^="Krok 3 z 6"]'), 'the dots come from 17\'s stageIndex')
+      .toHaveCount(1)
+
+    await dismissLandingState(page)
+
+    // …then the warn banner with this state's words, and no own-order surface at all.
+    await expect(page.getByTestId('landing-locked-banner')).toContainText('Objednávky sú uzamknuté.')
+    await expect(page.getByTestId('own-order-card')).toHaveCount(0)
+    await expect(page.getByTestId('where-is-my-coffee')).toHaveCount(0)
+    await expect(page.getByTestId('landing-next-round')).toHaveCount(0)
+
+    // ⚠ The grid and the TABS are still here: a host who ordered nothing themselves
+    // is exactly the party whose colleagues' hand-over ticks happen now
+    // (`helpers/pickup.js`'s PO decision 2026-09-03 is about that very person).
+    await expect(page.getByTestId('portal-landing')).toContainText(`Ponuka · ${fx.cycle.name}`)
+    await expect(page.getByTestId('main-tab-own')).toBeVisible()
+    await expect(page.getByTestId('main-tab-guests')).toBeVisible()
+    await expect(page.getByTestId('product-grid')).toHaveClass(/\bp2-ro\b/)
+    await expect(page.locator('.app .cartbar')).toHaveCount(0)
+  })
+
+  test('the appbar says „Vaša objednávka" with an order and „Aktuálna ponuka" without one', async ({ page }) => {
+    const fx = await lockedRound('Subtitle')
+    await openLocked(page, fx)
+    await expect(page.locator('.appbar .titles .s')).toHaveText('Vaša objednávka')
+    await expect(page.locator('.appbar .chip.p2-lock')).toHaveAttribute('title', 'Objednávky sú uzamknuté')
+
+    await page.unroute('**/api/friends/cycles*')
+    await stubCycles(page, [cycleRow({
+      n: 67, id: fx.cycle.id, name: fx.cycle.name, status: 'locked', stage: 'ordered', hasOrder: false,
+    })])
+    await open(page)
+    await expect(page.locator('.appbar .titles .s')).toHaveText('Aktuálna ponuka')
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 6b. PI-T5 — the one-home pins the DOM cannot see (18 §UC-PI-007)
+// ═════════════════════════════════════════════════════════════════════════════
+test.describe('PI-T5 · 18 §UC-PI-007 — one loader, one modal, one normaliser', () => {
+  test.skip(!HAS_SRC, NEEDS_SRC)
+
+  test('the session mounts NO second PaymentModal and runs NO second order loader', () => {
+    const session = assertReadable('views/FriendPortalSession.vue', ['lockedOwnOrder', 'payOwnOrder'])
+    const order = assertReadable('views/FriendOrder.vue', ['defineExpose', 'ownOrder'])
+
+    // ⚠ Same argument as the `GuestShareDialog` pin above, and the same reason it
+    // cannot be a DOM one: a second `PaymentModal` mounted beside the first is
+    // INVISIBLE until the two disagree about an amount or a variable symbol, which
+    // is a state no test can reach on purpose. 15 §UC-PL-004/D4 and CLAUDE.md both
+    // state the rule; this is where it is measured.
+    const mounts = (src) => (src.match(/<PaymentModal\b/g) || []).length
+    expect(mounts(order), 'FriendOrder.vue is the ONE home of this order\'s payment surface').toBe(1)
+    expect(mounts(session), 'the session reaches it through `openPaymentModal()` — it mounts none').toBe(0)
+
+    // …and the card's DATA is the same component's loaded order, not a second fetch.
+    expect(session, 'no second order GET in the session view').not.toContain('getOrderByFriend')
+    expect(session).toMatch(/lockedOrder\.value\?\.ownOrder/)
+    expect(order).toMatch(/defineExpose\(\{[^}]*ownOrder/)
+    expect(order).toMatch(/defineExpose\(\{[^}]*openPaymentModal/)
+  })
+
+  test('the ordered-line normaliser has ONE home, and both screens ask it', () => {
+    const lib = assertReadable('lib/order-lines.js', ['export function orderLines', 'export function lineSize'])
+    const order = assertReadable('views/FriendOrder.vue', ['cartLines'])
+    expect(lib).toContain('export function cartLines')
+    expect(lib).toContain('export function deliveryExtras')
+    // The rule really MOVED rather than being copied: the `variant_label` / 'ks' /
+    // raw-key ladder and the fee's name exist in the lib and nowhere in the view.
+    expect(order, 'lineSize moved to lib/order-lines.js').not.toMatch(/function lineSize\(/)
+    expect(order, "the fee's name has one spelling").not.toContain("name: 'Doručenie Packetou'")
+    expect(order).toMatch(/from '@\/lib\/order-lines'/)
+  })
+
+  test('the tabgroup term is SPLIT — `hasTabs` asks a different question from `isReadonly`', () => {
+    const src = assertReadable('views/FriendOrder.vue', ['const hasTabs = computed', 'colleaguesTab'])
+    // The four sites §UC-PI-006/007 disagree about are all on `hasTabs` now, and the
+    // grid's four `readonly` switches are all still on `isReadonly`. Mixing them up
+    // is precisely the defect the split exists to prevent, and neither name may
+    // quietly absorb the other.
+    expect(src).toMatch(/v-if="hasTabs" class="tabgroup"/)
+    expect(src).toMatch(/v-show="!hasTabs \|\| mainTab === 'own'"/)
+    expect(src).toMatch(/:role="hasTabs \? 'tabpanel' : null"/)
+    expect(src).toMatch(/:aria-labelledby="hasTabs \? 'tab-own' : null"/)
+    expect(src, 'the cards wrapper still fades on `isReadonly`').toMatch(/'p2-ro': isReadonly/)
   })
 })

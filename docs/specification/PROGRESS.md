@@ -429,7 +429,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] PI-T2  Appbar per state (menu · brand + subtitle · **Pozvať chip stays** · lock chip when not open · three tickers) + `NeoDrawer.vue` via `useModalLayer()` extracted from `NeoModal` (scrim/Esc/focus-trap/scroll-lock ONE home) + A13 `portal2.css` port into `friends-theme.css` + drawer items 1–3/5–7 (item 4 slot left for PI-T3) + ONE session-level balance fetch + badge + logout/profile moved into the drawer + `NeoIcon menu` — `18 §UC-PI-003,004,019(items 4,5,7)` · model=heavy ⚠ drawer = `Teleport` → `.modal-layer` → `aside[role=dialog]`, never a fixed child of `.app` (z-index trap); shipped specs counting dialogs must open it deliberately. ⚠ header = friend `name` only (PO: no uid, no „člen od“). ⚠ SANCTIONED (large): logout control → `logout(page)` in portal-appbar ×6, portal-session-boundary ×3, portal-profile-modal ×2, friends-consolidation:1006, google-auth ×12; `.titles`→profile pins INVERTED; pencil tests → one `profile-pencil` count-0 pin; `portal-appbar` ticker rewrite; balance-card describe PARKED for PI-T7; NEW `portal-menu.spec.js`.
 - [x] PI-T3  Landing OPEN state: `FriendOrder.vue` `mode='landing'` (props `cycleId/friendId/mode`; no `.app`/BrandChrome inside; `.cartbar` stays a theme class) + cycle list, gear and subscription modal RETIRED (column/endpoint kept) + status line („Objednávky do {closes_at} · Káva príde okolo {expected_date} — Ako to funguje?“) + cartbar share icon + drawer item 4 via `defineExpose({openShareDialog})` + „Späť na ponuku“ + DELETE `portal-cycles.spec.js`/`portal-share-row.spec.js` (protected properties move to `portal-landing`/`portal-menu`) — `18 §UC-PI-005,011,016,019(items 3,6,8,12)` · model=heavy ⚠ riskiest row: FriendOrder is the ONE home — extend, never fork; leave guard fires on drawer `router.push`; exactly ONE `GuestShareDialog` instance. ⚠ landing slot 2 left empty for the debt banner (PI-T7); `FriendBalanceCard` stays on the landing until PI-T7. ⚠ SANCTIONED: `guest-link.spec.js` 255 / 291–380 retargets, `portal-subscription-invite` describes → two pins, `catalog-admin:2419`, `order-cartbar` landing variant; ~~`share-dialog.spec.js` unmodified~~ **— WRONG, and unsatisfiable: its entry point B is the cycle CARD (`portalCard()`), so nine call sites were re-pointed at the landing cartbar icon under case (a); `guest-order-recovery.spec.js` carries the same helper and is in no list. The `heading.click()` retarget is TWENTY files, not two (`helpers/portal.js gotoCycle()` is its one home) — see 18 §UC-PI-019 item 3, amended in place.**
 - [x] PI-T4  Landing CLOSED state: parametrised NeoModal „Objednávky sú zatvorené“ once per SESSION (PO: „once, then banner“ = the spec's session rule, no persistence) + `nextText` card + `CycleTimeline variant="compact"` (own caption row) + `.banner.warn.slim` after dismiss + read-only `catalogCycle` grid (`readonly` landing mode: `.p2-ro`, tabs live, no stock bars/cartbar/tabgroup) + empty „Ponuka ešte nie je pripravená.“ — `18 §UC-PI-006` ⚠ modal title/intro/lead are PROPS so PI-T5 only passes strings for the no-order locked variant.
-- [ ] PI-T5  Landing LOCKED state: own-order card (`CartLineList`, hoisted `lib/order-lines.js`, pickup row = exactly one of location/note/„Packeta · …“, Zaplatené/Nezaplatené + Zaplatiť → PaymentModal with `paymentTotal` incl. `delivery_fee`, VS from PL-T2) + „Kde je vaša káva“ `CycleTimeline vertical` + next-round banner + read-only `currentCycle` grid WITH tabgroup (Kolegovia hand-over ticks stay) + no-order variant „Objednávky sú uzamknuté“ — `18 §UC-PI-007` · model=heavy ⚠ NO ledger write; `paid` admin-only; shipped locked banner/cartbar stay on `/cycle/:id` (PI-T11 verifies); `order-locked.spec.js` pins unchanged on the deep link.
+- [x] PI-T5  Landing LOCKED state: own-order card (`CartLineList`, hoisted `lib/order-lines.js`, pickup row = exactly one of location/note/„Packeta · …“, Zaplatené/Nezaplatené + Zaplatiť → PaymentModal with `paymentTotal` incl. `delivery_fee`, VS from PL-T2) + „Kde je vaša káva“ `CycleTimeline vertical` + next-round banner + read-only `currentCycle` grid WITH tabgroup (Kolegovia hand-over ticks stay) + no-order variant „Objednávky sú uzamknuté“ — `18 §UC-PI-007` · model=heavy ⚠ NO ledger write; `paid` admin-only; shipped locked banner/cartbar stay on `/cycle/:id` (PI-T11 verifies); `order-locked.spec.js` pins unchanged on the deep link.
 - [ ] PI-T6  „Moje objednávky“ history view: `hasOrder` rounds newest-first, short badges (Odoslaná / V pražiarni / Balíme / Zabalená / Odovzdaná / Vyzdvihnuté — owned HERE, never shared with 17's long labels), lazy `CartLineList` per round (`rowSeq`, one expanded), empty state, READ-ONLY (PO: no „Otvoriť“ link) — `18 §UC-PI-009` ⚠ NEW `portal-history.spec.js`; `orderHandedOver` from PI-T1 drives „Odovzdaná“.
 - [ ] PI-T7  Money surfaces: debt banner + Zaplatiť on the landing in ALL states (`balance < -0.01`; PO: zero/positive NEVER on landing) + „Zostatok a platby“ view (`FriendBalanceCard` re-purposed, PL-T4's `pay-balance` trigger + mount RELOCATED here — never duplicated; keep „po zaplatení sa zostatok vyrovná do 1–2 dní“) + `FriendTransactionList.vue` lifted verbatim from `FriendTransactionsModal.vue` (deleted) + landing balance card REMOVED — `18 §UC-PI-008,010,019(items 7,9)` ⚠ SANCTIONED: RENAME `portal-transactions-modal.spec.js` → `portal-balance.spec.js` (keep every `tx-*` pin, sign/colour, 320 px test, admin invariance describe; drop the unsatisfiable modal-shell pins); parked `portal-appbar` balance describe lands here. ⚠ `BalanceBadge.vue` untouched (admin-shared).
 - [ ] PI-T8  „Ako to funguje“ view: six phases (static text, live timeline NOT mounted), three delivery ways from `api.getPickupLocations('coffee')` (Packeta fee badge gated on `parcel_enabled`), „Kto sme a odkiaľ je káva“ + `lib/roasters.js` ONE home (Goriffee / Robo prototype drafts — PO polishes), „Ako platím“ (keep „(PayMe)“ — 15 shipped), personal note „— Karol“ (PO draft), keep WhatsApp mention in phase 2 (PO), `asGate` prop for PI-T9 + product-card roaster badge popover (one `NeoModal`, `role=button` only on a match) + `NeoIcon` I2 set — `18 §UC-PI-012,014` ⚠ seam → GL-T4 imports `lib/roasters.js`; admin never imports it. NEW `portal-explainer.spec.js` (content part).
@@ -474,6 +474,75 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 
 ## Log
+
+- 2026-09-20 · PI-T5 · (this commit) · no PR (project convention) · **The LOCKED landing — own-order
+  card, the first VERTICAL timeline on the portal, and the `readonly` flag finally split in two.**
+  New `lib/order-lines.js` (the hoisted `CartLineList` mapping, dependency-free; PI-T6 is its second
+  consumer), the own-order card with pickup row and `Zaplatiť` → `PaymentModal`, „Kde je vaša káva",
+  the next-round banner, a read-only `currentCycle` grid that KEEPS its tabgroup, and the no-order
+  variant reusing PI-T4's `LandingStateModal`.
+  ⚠ **The split:** `isReadonly` now asks ONLY „may a quantity change?"; a new `colleaguesTab` prop
+  feeds `hasTabs` = „may this friend reach the Kolegovia panel?". It HAD to be a prop — both landings
+  hand the component a `locked`/`completed` round with `readonly`, so nothing inside can tell them
+  apart. It only ever ORs, so no value can remove tabs from the deep link or the open landing, and
+  the closed landing is byte-unchanged.
+  ⚠ Money held: `paymentTotal` is the ONE composition (fee is DISPLAY-only), **no `transactions`
+  write anywhere in the diff**, `paid` read-only, VS from the server's block. Backend change is
+  additive and routes the pickup through `helpers/pickup.js` — no second store rule, no `await`.
+  ⚠ **§UC-PI-007 named a prop the shared timeline does not accept** (17 §UC-CS-006: „No other
+  props"); Vue would have rendered it as a stray attribute. Not passed; struck in place.
+  ⚠⚠ **PI-T5 FALSIFIED A RULE I WROTE THREE ROWS AGO, and the correction was itself half-done.**
+  I had recorded that a filter matching nothing is LOUD. True only when EVERY entry misses: in a list
+  where ONE misses and others match, Playwright drops it **silently** and exits 0 — the ordinary
+  shape of a targeted gate. PI-T5 passed `tests/order-flow.spec.js`, which does not exist, and the
+  run said nothing. I fixed CLAUDE.md and **left the falsified sentence standing in
+  `docs/learnings/05-e2e-harness.md`** — the file the checklist tells the next agent to read first.
+  Review caught it. **A correction written to fix an over-broad claim was itself stated more broadly
+  than measured, in the file whose job is to stop that.** Both copies now match the measurement, and
+  the defence is to RECONCILE the files that ran against the files you asked for.
+  ⚠ Also fixed from review: the `readonly` prop doc still listed „no tabgroup" (this row's headline
+  change), a test comment was contradicted by its own commit 100 lines above, and `ownOrder` — handed
+  on as a „published seam" — was coherent only on read-only mounts, so it now returns `null`
+  elsewhere rather than letting PI-T6/T7 inherit a projection whose lines and total describe
+  different carts.
+  Gate: **388 passed / 0 failed** over twelve files (asked-vs-ran reconciled), server log clean.
+  Review: **revise → addressed**, one major + three minors, all documentation.
+- 2026-09-20 · PI-T5 · (this commit) · no PR (project convention) · **The LOCKED landing — the
+  own-order card, the first vertical timeline, and the one term PI-T4 left split in two.** New
+  `lib/order-lines.js` (the `CartLineList` mapping hoisted out of `FriendOrder`; PI-T6's history is its
+  second consumer), `FriendOrder` keeps the server's `items` and exposes an `ownOrder` projection plus
+  `openPaymentModal`, the friend order GET publishes `p.purpose` and a top-level `pickup` block from
+  `helpers/pickup.js pickupOf()`, `NeoIcon pin`, and the whole locked branch in the session (card,
+  „Kde je vaša káva", next-round banner, the no-order `LandingStateModal` variant, the shared caption +
+  read-only grid WITH the tabgroup).
+  ⚠ **The tabgroup term is split by QUESTION, not by taste:** `isReadonly` = „may a quantity change",
+  `hasTabs` (prop `colleaguesTab`) = „may this friend reach Kolegovia". It had to be a PROP — both
+  landings hand the component a `locked`/`completed` round with `readonly`, so only the CALLER can tell
+  them apart. Pinned in both directions on one page object (lock, assert tabs; complete the SAME cycle,
+  assert none), and a collapse either way reds one half.
+  ⚠ **PI-T4's read-only cart fix made the money wrong until it was branched.** `readonly` clears the cart
+  by design, and every figure on the screen derived from it — so the card and the QR would have billed
+  the Packeta fee alone. `paymentTotal` now picks its item source (`isReadonly ? submitted : cart`) and
+  stays ONE computed. ⚠ **No ledger row of any kind**, asserted rather than commented: the friend's own
+  `/transactions/friend/:id` is read before and after the payment modal. `paid` is admin-only and renders
+  read-only; the VS is the server's.
+  ⚠ **The obvious timeline assertion would have measured nothing** (module 17's finding: the portal
+  supplies `--nb-ink` byte-identical to the component's own fallback), so the pins are the step counts and
+  the current label — and the admin then ADVANCES the stage so the „now" step must MOVE. A frozen-cycle
+  mutation passes every count and reds only on the move.
+  ⚠ **One term reds nothing and stays** (`showLockedModal`'s `hasOrder`): the template branch enforces it
+  today, but hoisting the mount — the realistic defect — reds 3. Same shape as PI-T4's M10/M10′.
+  ⚠ **Sanctioned e2e edits, 3 lines in 2 files:** a locked landing with no own order now opens a dialog by
+  itself, so `portal-landing:526` (its `if (state === 'closed')` condition DELETED, not inverted — PI-T4's
+  „no modal until PI-T5" note expired) and `portal-menu` ×2 take `dismissLandingState`. The sweep was
+  `grep -ln friends/cycles` + reading every fixture's `status:`; `portal-menu`'s third locked fixture needed
+  nothing because it lands on a non-`shop` view.
+  ⚠ **Spec conflict resolved in 17's favour and amended in place:** §UC-PI-007 names an `order` prop on
+  `CycleTimeline`; 17 §UC-CS-006 says „No other props" and CS-T2 shipped it that way, so passing one would
+  land as a fallthrough ATTRIBUTE (`order="[object Object]"`). If the last steps should react to
+  `handed_over_at`, that is a change to 17's `timelineSteps()`.
+  Gate: 15 mutations (2 of them the „reds nothing" kind, both recorded), `portal-landing` 37/37 and 574
+  passing across 24 targeted spec files; 0 failed.
 
 - 2026-09-20 · PI-T4 · (this commit) · no PR (project convention) · **The CLOSED landing — and the
   unresolved date decision is now HELD AS A PINNED FACT instead of a loose end.** New

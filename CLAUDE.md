@@ -143,6 +143,17 @@ append the full write-up to the matching learnings file and add at most one line
   `bindValue`; the two DATES do use `bindValue` (unbindable ⇒ skip) but a finite NUMBER passes it and must
   still 400 `Neplatný dátum`. `dates_order` compares the row AS IT WOULD BE; the `not_locked` 409 is
   checked FIRST, so `{status:'open',stage:…}` writes neither.
+- The LOCKED landing's own-order card writes NO ledger row (§UC-PI-007): `paid` renders read-only
+  (admin-only), `paymentTotal` = goods + `delivery_fee` for DISPLAY, the VS is quoted from the server's
+  `payment` block. ⚠ `paymentTotal`'s ITEM source branches on `isReadonly` — `readonly` clears the cart by
+  design, so a locked screen sums the SUBMITTED lines — but it stays ONE computed that the card, the button,
+  the QR and `PaymentModal` all read. The card reads `FriendOrder`'s loaded order through
+  `defineExpose({ownOrder, openPaymentModal})`: no second loader, no second `PaymentModal` (PI-T5).
+- `GET /orders/cycle/:id/friend/:id` publishes a TOP-LEVEL `pickup` block from `helpers/pickup.js pickupOf()`
+  (never spliced into the `SELECT *` order row, like `payment`; never `readPickup()` — the route already holds
+  the `orders` row, which is the store that wins) and `p.purpose` on its items (`CartLineList` groups by it,
+  and PI-T6's history has no catalogue to look it up in). The badge shows exactly one of location name /
+  note / „Packeta · {address}"; the name must come from that block, not from the ACTIVE-only picker feed.
 - Module 16's homes: `helpers/delivery.js` (which TARGET a party is on — read-only, never imports
   `pickup.js`), `helpers/handover.js` (stage vocabulary + hand-over binder), `helpers/outbox.js` (the only
   `notifications` writer), `lib/plural.js` (count-agreeing Slovak forms), `lib/distribution-plan.js` (the
@@ -221,7 +232,11 @@ append the full write-up to the matching learnings file and add at most one line
 - `friends-theme.css` is a byte-for-byte canon port with a numbered adaptation list (ends **A13** — the
   `portal2.css` canon sync, with its two recorded deviations D1/D2). New styling
   goes in `<style scoped>` (or a real canon sync), never ad-hoc theme edits. `line-height` often must be inline.
-- One-home components — extend, never fork: `CartLineList.vue` (every ordered-items list), `GuestProductGrid.vue`
+- One-home components — extend, never fork: `CartLineList.vue` (every ordered-items list — its PRESENTATION;
+  `lib/order-lines.js` is the one home of the MAPPING into it: `lineSize`/`cartLines` (the live cart's
+  already-marked-up `total`) / `orderLines` (a server `order_items` row's SNAPSHOT `price × quantity`, never
+  re-priced from today's catalogue) / `deliveryExtras` (the fee is an EXTRA, never an item). Dependency-free,
+  so a spec can import it with plain `node` — PI-T5), `GuestProductGrid.vue`
   + `lib/guest-cart.js`, `CatScrollArrow.vue`, `ProductImageModal.vue`, `GuestShareDialog.vue`
   (⚠ exactly ONE mount on the friend surface — `FriendOrder.vue`; the session reaches it through
   `defineExpose({openShareDialog})`, never a second instance, and the rule is SOURCE-pinned per file in
@@ -229,10 +244,14 @@ append the full write-up to the matching learnings file and add at most one line
   `FriendOrder.vue` (`mode='route'|'landing'`; the landing mounts it, never a fork — its landing wrapper is
   `display:contents` or `.cartbar`'s sticky clamps inside the subtree; `readonly` is LANDING-ONLY and is the
   ONE read-only catalogue rendering — `.p2-ro` on the CARDS wrapper only so `.cat-tabs` stays browsable, plus
-  disabled steppers, no stock bars, no cartbar, no tabgroup, no status banners — PI-T4). ⚠ „no
-  tabgroup" is NOT a property of `readonly`: §UC-PI-007 KEEPS the tabgroup on the LOCKED read-only landing,
-  so PI-T5 must SPLIT that term out of the single `v-if="!isReadonly"` — read it as „this row's closed
-  landing has none", not as a prohibition,
+  disabled steppers, no stock bars, no cartbar, no status banners — PI-T4). ⚠ ~~„no
+  tabgroup" is NOT a property of `readonly`~~ **SPLIT, PI-T5**: the four tabgroup sites (`.tabgroup`,
+  `#panel-guests`'s `v-if`, `#panel-own`'s `v-show`/`role`/`aria-labelledby`) are on `hasTabs`
+  (`= !isReadonly || props.colleaguesTab`), which asks „may this friend reach Kolegovia?" — the CLOSED
+  catalogue passes nothing and has none, the LOCKED landing passes `colleagues-tab` and keeps them
+  (hand-over ticks happen precisely then). It can only ADD tabs back to a read-only mount; the deep link
+  and the open landing are unaffected. Collapsing the two names reds one landing or the other, and the
+  caller is the only one who can tell them apart,
   `LandingStateModal.vue` (the landing's „Objednávky sú zatvorené/uzamknuté" modal; `title`/`intro`/`lead` are
   PROPS because PI-T5's no-order locked variant is the same modal with three strings — never a second one),
   `PickupLocationPicker.vue` (props `cycleId`+`friendId`, never an order id), `lib/plural.js`,
@@ -370,9 +389,15 @@ Full recipe and env in `e2e/README.md`. Checklist:
 - A bare positional filter is a SUBSTRING match — `playwright test guest-order` also runs
   `guest-order-shell` and `guest-order-recovery`. Report the files that RAN
   (`grep -oE 'tests/[a-z0-9-]+\.spec\.js' <log> | sort | uniq -c`), never the ones you typed; the
-  danger is OVER-collection, which is silent: a filter matching ZERO files is LOUD (`Error: No
-  tests found.`, exit 1 — measured 2026-09-20), so the failure mode is running MORE than you meant
-  and reporting a count nobody reconciles, never running less.
+  danger is OVER-collection — **and UNDER-collection, which my own earlier version of this rule got
+  WRONG.** Measured twice (2026-09-20): a filter list where EVERY entry matches nothing is LOUD
+  (`Error: No tests found.`, exit 1). But a list where ONE entry matches nothing **and the others
+  match is SILENT** — exit 0, the missing entry simply dropped, the rest reported as a clean pass.
+  That is the COMMON case for a targeted gate, and it is how a deleted or mistyped spec file leaves
+  a row's gate while the summary still says „N passed". PI-T5 passed `tests/order-flow.spec.js`,
+  which does not exist, and the run said nothing. **So: reconcile the files that RAN against the
+  files you asked for, every time** — `grep -oE 'tests/[a-z0-9-]+\.spec\.js' <log> | sort -u` and
+  compare with your own list. A count nobody reconciles hides both directions.
 - Never run the full suite per task: targeted spec files per row, full suite at module milestones. Full run
   **~12 min on an IDLE box** (measured repeatedly 2026-09-20: 11.8–11.9 min green; **~14 min is the tell that
   the box is loaded**, and ~17 min meant a corrupt DB). ⚠ ~~on this 4 GB/2-core box~~ — **the hardware claim

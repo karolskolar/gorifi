@@ -64,7 +64,7 @@ import { kgLabel } from '@/lib/kg'
 // 18 §UC-PI-002 — the SHORT date forms. A date standing alone (here: the drawer's
 // „Otvorené do …“ sub-line) comes from `lib/dates.js`; a date inside one of module
 // 17's composed sentences comes from `cycle-stages.js` (PI-T1 §1).
-import { fmtDate, fmtWeekdayDayMonth, weeksUntil } from '@/lib/dates'
+import { fmtDate, fmtDayMonth, fmtWeekdayDayMonth, weeksUntil } from '@/lib/dates'
 // 18 §UC-PI-002 — the ONE home of "which round is this landing about, and in what
 // state". Never re-derive open/locked/closed beside it.
 import { resolveLanding } from '@/lib/portal-state'
@@ -79,6 +79,14 @@ import FriendOrder from '@/views/FriendOrder.vue'
 // lead are props) because PI-T5 mounts the SAME component for §UC-PI-007's
 // „locked, no own order" variant; a second modal would be the defect.
 import LandingStateModal from '@/components/LandingStateModal.vue'
+// 18 §UC-PI-007 — the LOCKED landing's own-order card and „Kde je vaša káva".
+// ⚠ `CartLineList` is THE one home for an ordered-items list (product decision
+// 2026-08-12) and `CycleTimeline` is module 17's ONE rendering of the six steps
+// (17 §UC-CS-006). Both are mounted here, neither is forked, and this view builds
+// no step array of its own — it hands `:cycle` over and 17 decides which step is
+// „now".
+import CartLineList from '@/components/CartLineList.vue'
+import CycleTimeline from '@/components/CycleTimeline.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
@@ -971,7 +979,16 @@ function openMenu() {
 }
 
 // ---------------------------------------------------------------------------
-// 18 §UC-PI-006 — THE CLOSED LANDING'S STATE MODAL (PI-T4).
+// 18 §UC-PI-006 / §UC-PI-007 — THE LANDING'S STATE MODAL (PI-T4; PI-T5 added its
+// second consumer).
+//
+// ⚠ ONE DISMISSAL FLAG FOR BOTH STATES, deliberately. `LandingStateModal.vue` is one
+// parametrised component (PI-T4 built it that way precisely so §UC-PI-007's „locked,
+// NO own order" variant is three different strings, not a second modal), and the
+// flag answers „has this friend already been told why there is nothing to order in
+// this session?". A landing is closed or locked, never both; two flags would differ
+// only when an admin changed a round's status mid-session, and the honest answer
+// there is still „they have been told".
 //
 // ⚠⚠ ONCE PER SESSION, WITH NO PERSISTENCE, AND THE STATE LIVES *HERE*.
 // PO clarification 2026-09-19 (a): „modal once per closed period" IS the spec's
@@ -990,7 +1007,7 @@ function openMenu() {
 //
 // A `ref` in this component is therefore not the lazy option, it is the only one
 // that expires when the session does.
-const closedModalDismissed = ref(false)
+const stateModalDismissed = ref(false)
 
 /**
  * The modal is showing: the closed offer, the `shop` view, not yet dismissed.
@@ -1009,16 +1026,33 @@ const closedModalDismissed = ref(false)
  * change that would otherwise ship a modal over the balance view.
  */
 const showClosedModal = computed(() => (
-  view.value === 'shop' && landing.value.state === 'closed' && !closedModalDismissed.value
+  view.value === 'shop' && landing.value.state === 'closed' && !stateModalDismissed.value
+))
+
+/**
+ * §UC-PI-007's „Locked, NO own order" branch — „the closed-state treatment with the
+ * modal title „Objednávky sú uzamknuté"".
+ *
+ * ⚠ `hasOrder` is the ONE discriminator, and it is the cycles payload's (a SUBMITTED
+ * order, `routes/friends.js`) rather than anything this view derives: a friend who
+ * ordered gets the own-order card and never this modal, and a draft is not an
+ * objednávka. The same `view === 'shop'` defence-in-depth term as above, for the same
+ * measured reason (PI-T4 §4: the mount's template branch is what enforces it today).
+ */
+const showLockedModal = computed(() => (
+  view.value === 'shop'
+  && landing.value.state === 'locked'
+  && !landing.value.currentCycle?.hasOrder
+  && !stateModalDismissed.value
 ))
 
 /** ×, Esc, scrim, „Prezrieť ponuku" and „Ako to funguje" all mean the same thing. */
-function dismissClosedModal() {
-  closedModalDismissed.value = true
+function dismissStateModal() {
+  stateModalDismissed.value = true
 }
 
-function closedModalToExplainer() {
-  dismissClosedModal()
+function stateModalToExplainer() {
+  dismissStateModal()
   router.push('/ako-to-funguje')
 }
 
@@ -1087,6 +1121,76 @@ watch(landingOrder, (instance) => {
   if (!instance || !pendingShare.value) return
   pendingShare.value = false
   instance.openShareDialog()
+})
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-007 — THE LOCKED LANDING'S OWN-ORDER CARD (PI-T5)
+// ---------------------------------------------------------------------------
+
+/**
+ * The `FriendOrder.vue` instance the LOCKED landing mounts (read-only grid, tabs
+ * kept). A SEPARATE ref from `landingOrder`, not a reuse of it.
+ *
+ * ⚠ `landingOrder` means „the OPEN landing's live order surface" and two readers
+ * depend on that meaning: `landingCartTotal` feeds drawer item 1's „ · v košíku …"
+ * clause, and `requestShareDialog()` treats „the instance exists" as „there is a
+ * round to share". A read-only mount has an empty cart by construction and nothing
+ * to share (§UC-PI-011: both share entry points are `state === 'open'` only), so
+ * pointing that ref at one would answer both questions with a mount that cannot mean
+ * them. PI-T4 made the same call for the closed catalogue and mounted it ref-less.
+ */
+const lockedOrder = ref(null)
+
+/**
+ * §UC-PI-007 item 2's data — „renders from FriendOrder's loaded `order` (no second
+ * loader)". `null` until that mount has loaded, which is what the card's `v-if`
+ * waits on.
+ *
+ * ⚠ THE SESSION HOLDS NO COPY. This is a read THROUGH `defineExpose` (a `computed`
+ * travels unwrapped via Vue's `proxyRefs`, so it stays reactive), for the same
+ * reason drawer item 1 reads `cartTotal` rather than modelling a cart: a second home
+ * for „what did this friend order" is the thing the whole surface is built to avoid.
+ */
+const lockedOwnOrder = computed(() => lockedOrder.value?.ownOrder || null)
+
+/**
+ * „Zaplatiť {total}" — it opens `FriendOrder`'s OWN `PaymentModal`, the one that
+ * already carries this order's server-issued variable symbol.
+ *
+ * ⚠ NEVER A SECOND `PaymentModal` MOUNT for the same order (15 §UC-PL-004 D4 and
+ * CLAUDE.md: the balance modal has one home too, and PI-T7 RELOCATES that one rather
+ * than adding another). ⚠ And nothing here writes money: `paid` is the admin's
+ * toggle and this surface posts no `transactions` row at all.
+ */
+function payOwnOrder() {
+  lockedOrder.value?.openPaymentModal?.()
+}
+
+/**
+ * §UC-PI-007 item 4's next-round banner: „<b>Ďalšia objednávka</b> {short} — ponuku
+ * si už môžete prezrieť nižšie."
+ *
+ * ⚠⚠ THE DATE HERE IS THE SHORT FORM, AND THAT IS NOT A CALL-SITE RESOLUTION OF THE
+ * RECORDED PO QUESTION. The conflict (learnings 10 §1, PI-T4 §1) is about ONE
+ * sentence — module 17's „Ďalšia objednávka sa otvorí približne {fmtDay}" — which
+ * this banner is NOT: §UC-PI-007 specifies a different, shorter sentence that
+ * `nextOpeningText()` cannot produce and does not own. The rule PI-T1 wrote for
+ * exactly this case applies unchanged: a date standing alone after a preposition is
+ * SHORT and comes from `lib/dates.js`; only a date INSIDE one of 17's composed
+ * sentences is long. Reformatting 17's sentence here, or importing `fmtDay` for this
+ * one, is what would create the second home.
+ *
+ * ⚠ `nextOpening.date` is the „is `opens_at` usable" predicate (it already encodes
+ * the `2026-02-31` round-trip refusal), exactly as `LandingStateModal.vue` uses it —
+ * what is RENDERED is `fmtDayMonth`.
+ */
+const nextRoundShort = computed(() => {
+  const next = landing.value.nextCycle
+  if (landing.value.nextOpening?.date && next?.opens_at) {
+    return { kind: 'date', date: fmtDayMonth(next.opens_at) }
+  }
+  if (next?.plan_note) return { kind: 'note', note: next.plan_note }
+  return { kind: 'none' }
 })
 
 // ── the balance, fetched ONCE per session ────────────────────────────────────
@@ -1897,8 +2001,8 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
         :next-cycle="landing.nextCycle"
         :next-opening="landing.nextOpening"
         :timeline-cycle="landing.nextCycle || landing.catalogCycle"
-        @close="dismissClosedModal"
-        @explainer="closedModalToExplainer"
+        @close="dismissStateModal"
+        @explainer="stateModalToExplainer"
       />
 
       <!-- 2. …AND AFTER DISMISSAL, THE SLIM BANNER THAT REPLACES IT.
@@ -1963,6 +2067,204 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
         style="text-align:center;padding:24px 0"
         data-testid="landing-empty"
       >Ponuka ešte nie je pripravená.</div>
+    </template>
+
+    <!-- ═══════════════ 18 §UC-PI-007 — THE LANDING, LOCKED STATE (PI-T5) ═══════
+         R1.4: the friend ordered, the round is locked ⇒ „where is my coffee".
+
+         ⚠ THE SHIPPED LOCKED TREATMENT IS REPLACED HERE AND NOWHERE ELSE. 04
+         §UC-FO-014's `.banner.warn` („Objednávky sú uzamknuté. Už nie je možné
+         meniť objednávku.") and the locked cartbar stay on the `/cycle/:id` deep
+         link, byte for byte — §UC-PI-007's business rule says „replaced on the
+         landing only", `order-locked.spec.js` still pins them there, and
+         `FriendOrder`'s own `readonly` switches are what make the difference.
+
+         ⚠ MONEY: nothing in this branch writes a ledger row. `paid` renders
+         read-only (it is the admin's toggle), `paymentTotal` includes
+         `delivery_fee` for DISPLAY only (04 resolved conflict #9) and
+         `transactions` rows still come only from the friend paid toggle and
+         pack/unpack (CLAUDE.md §Money & data). -->
+    <template v-else-if="view === 'shop' && landing.state === 'locked' && landing.currentCycle">
+      <!-- 1. The debt banner is PI-T7's slot (§UC-PI-008) — „above the own-order
+              card in `locked`". Left empty on purpose, as in the other two states. -->
+
+      <template v-if="landing.currentCycle.hasOrder">
+        <!-- 2. THE OWN-ORDER CARD (§UC-PI-007 item 2).
+             ⚠ It renders from the EMBEDDED `FriendOrder`'s loaded order — „no
+             second loader" — reached through that component's `defineExpose`
+             (`lockedOwnOrder`). It is deliberately below the mount in the script
+             and above it in the DOM: the card is the page's headline and the grid
+             is the footnote, while the fetch belongs to the component that already
+             owns this order's payment state, its variable symbol and its modal. -->
+        <div
+          v-if="lockedOwnOrder"
+          class="card hl"
+          style="padding:16px"
+          data-testid="own-order-card"
+        >
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+            <!-- ⚠ `line-height` INLINE — `friends-theme.css` loads after Tailwind and
+                 `:where(.app,.modal-layer) .display` matches at the same specificity
+                 as a utility, so the canon's value survives only as a style attribute
+                 (CLAUDE.md §Frontend; the same remedy `LandingStateModal` uses). -->
+            <span class="display" style="font-size:22px;line-height:.9">Vaša objednávka</span>
+            <!-- The cycles payload's `hasOrder` is a SUBMITTED order (`routes/
+                 friends.js`), so this badge has no second state to carry. -->
+            <span class="badge ok">Odoslaná</span>
+          </div>
+
+          <!-- ⚠ `CartLineList` — THE one home for an ordered-items list. The Packeta
+               fee arrives as an EXTRA, never an item: `orders.delivery_fee` is a
+               field on the order and has never been an `order_items` row. -->
+          <div style="margin-top:12px">
+            <CartLineList
+              :items="lockedOwnOrder.lines"
+              :extras="lockedOwnOrder.extras"
+              :purpose-order="lockedOwnOrder.purposeOrder"
+              line-testid="own-order-line"
+            />
+          </div>
+
+          <!-- ⚠ `paymentTotal`, i.e. goods + `delivery_fee` (04 resolved conflict
+               #9) — the same number the „Zaplatiť" button and `PaymentModal` bill.
+               `EUR` on a total, `€` on the lines above (CLAUDE.md §Frontend). -->
+          <div class="p2-tot">
+            <span class="field-lbl">Spolu</span>
+            <span
+              class="display"
+              style="font-size:22px;line-height:.9"
+              data-testid="own-order-total"
+            >{{ fmtEur(lockedOwnOrder.total) }}</span>
+          </div>
+
+          <!-- The pickup row — EXACTLY ONE of a location name, a free-text note or
+               the Packeta line (`helpers/pickup.js` semantics; the precedence is
+               written out in `FriendOrder`'s `orderPickupText`). Absent entirely
+               when the party has no target yet, rather than an empty badge. -->
+          <div
+            v-if="lockedOwnOrder.pickupText"
+            style="border-top:2px solid rgba(10,10,10,0.12);margin-top:14px;padding-top:12px"
+          >
+            <!-- ⚠ `inline-flex` AT THE CALL SITE: `.badge` is `inline-block` and
+                 Tailwind preflight makes every `svg` `display:block`, which drops
+                 the glyph onto its own line (CLAUDE.md §Frontend). -->
+            <span
+              class="badge"
+              style="display:inline-flex;align-items:center;gap:6px;white-space:normal;overflow-wrap:anywhere;text-align:left"
+              data-testid="own-order-pickup"
+            >
+              <NeoIcon name="pin" />
+              <span style="min-width:0">{{ lockedOwnOrder.pickupText }}</span>
+            </span>
+          </div>
+
+          <!-- The payment row. ⚠ `paid` is READ-ONLY here: writing it is admin-only
+               (CLAUDE.md §Money & data), and „Zaplatiť" opens the ONE `PaymentModal`
+               that `FriendOrder` already mounts for this order — with the SERVER's
+               variable symbol, which no client derives. The button is absent when
+               no payment settings are configured (§UC-PI-007 item 2). -->
+          <div style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span v-if="lockedOwnOrder.paid" class="badge ok" data-testid="own-order-paid">Zaplatené</span>
+            <template v-else>
+              <span class="badge warn" data-testid="own-order-paid">Nezaplatené</span>
+              <button
+                v-if="lockedOwnOrder.canPay"
+                type="button"
+                class="btn sm accent"
+                data-testid="own-order-pay"
+                @click="payOwnOrder"
+              >Zaplatiť {{ fmtEur(lockedOwnOrder.total) }}</button>
+            </template>
+          </div>
+        </div>
+
+        <!-- 3. „KDE JE VAŠA KÁVA" (§UC-PI-007 item 3) — module 17's VERTICAL
+               timeline, the first one on the friend portal.
+               ⚠ `:cycle`, never `:steps`: 17 owns the six steps, their labels and
+               the „now" rule (`stageIndex()` reads `status` before `stage`, which is
+               what keeps three measured stale-`stage` transitions invisible). A
+               consumer that assembled steps would own their `state` field and bring
+               all three back on this one screen.
+               ⚠ §UC-PI-007 also names an `order` input („so 17 can mark hand-over on
+               the last steps"); `CycleTimeline` has no such prop — 17 §UC-CS-006 says
+               „No other props" and CS-T2 shipped it that way. Passing one would land
+               as a stray fallthrough ATTRIBUTE on the root div, so it is not passed;
+               the seam 17 did ship for injected content is `steps`, and using it here
+               would be the fork this comment refuses. -->
+        <div class="card" style="padding:16px 16px 4px" data-testid="where-is-my-coffee">
+          <div class="field-lbl" style="margin-bottom:10px">Kde je vaša káva</div>
+          <CycleTimeline variant="vertical" :cycle="landing.currentCycle" />
+        </div>
+
+        <!-- 4. THE NEXT-ROUND BANNER (§UC-PI-007 item 4). See `nextRoundShort` for
+               why its date is the SHORT form and why that is not a call-site
+               resolution of the recorded PO question: this is module 18's own
+               sentence, not module 17's. `pre-line` because branch 2 is the admin's
+               `plan_note`, verbatim; kept on one source line so the template's
+               indentation cannot become rendered whitespace. -->
+        <div class="banner slim" data-testid="landing-next-round">
+          <span class="dot"></span>
+          <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Ďalšia objednávka</b> <template v-if="nextRoundShort.kind === 'date'">približne <b>{{ nextRoundShort.date }}</b></template><template v-else-if="nextRoundShort.kind === 'note'">{{ nextRoundShort.note }}</template><template v-else>— dáme vedieť</template> — ponuku si už môžete prezrieť nižšie.</div>
+        </div>
+      </template>
+
+      <!-- „Locked, NO own order" (§UC-PI-007) — the CLOSED-state treatment with two
+           different strings. ⚠ The SAME `LandingStateModal`, parametrised by PI-T4
+           for exactly this; a second modal component is the defect that
+           parametrisation exists to prevent.
+           ⚠ `timelineCycle` is `currentCycle` HERE, not `nextCycle ?? catalogCycle`
+           as in the closed state — and that is the question the prop exists to let
+           the caller answer. „Kde sme teraz" on a locked landing is the round in
+           flight; handing it the PLANNED round would print „Pripravujeme ďalšiu
+           objednávku" over a round whose coffee is at the roastery. -->
+      <template v-else>
+        <LandingStateModal
+          v-if="showLockedModal"
+          title="Objednávky sú uzamknuté"
+          intro="Táto objednávka je už uzavretá — káva je objednaná v pražiarni."
+          :next-cycle="landing.nextCycle"
+          :next-opening="landing.nextOpening"
+          :timeline-cycle="landing.currentCycle"
+          @close="dismissStateModal"
+          @explainer="stateModalToExplainer"
+        />
+
+        <!-- ⚠ The same two-format collision the closed banner carries, for the same
+             recorded reason: `landing.nextText` is module 17's composed sentence and
+             must NOT be reformatted at this call site (learnings 10 §1). -->
+        <div v-else class="banner warn slim" data-testid="landing-locked-banner">
+          <span class="dot"></span>
+          <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Objednávky sú uzamknuté.</b> {{ landing.nextText }}</div>
+        </div>
+      </template>
+
+      <!-- 5. THE READ-ONLY GRID of `currentCycle` (§UC-PI-007 item 5) — shared by
+             both variants above, because a host with no own order is exactly the
+             party §UC-PI-007's tabgroup rule is about.
+             ⚠ Caption „Ponuka · {name}", NOT „Minulá ponuka · …": this round is the
+             current one, it is simply no longer orderable. -->
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+        <span class="field-lbl" style="min-width:0;overflow-wrap:anywhere">Ponuka · {{ landing.currentCycle.name }}</span>
+        <span class="sub mono" style="white-space:nowrap;font-size:12px">len na prezretie</span>
+      </div>
+
+      <!-- ⚠ `colleagues-tab` IS THE SPLIT PI-T4 LEFT FOR THIS ROW. `readonly` alone
+           used to carry both „the grid is inert" and „there is no tabgroup"; the
+           locked landing needs the first without the second, because a host's
+           hand-over ticks happen precisely now (05 §UC-KG-004). The closed
+           catalogue passes nothing and keeps PI-T4's behaviour.
+           ⚠ `ref="lockedOrder"` — a SEPARATE ref from the open landing's
+           `landingOrder`, whose two readers (the cart total, the share dialog) mean
+           „the OPEN round's live surface". See its note in the script. -->
+      <FriendOrder
+        ref="lockedOrder"
+        :key="`lk-${landing.currentCycle.id}`"
+        mode="landing"
+        readonly
+        colleagues-tab
+        :cycle-id="landing.currentCycle.id"
+        :friend-id="friendId"
+      />
     </template>
   </div>
 

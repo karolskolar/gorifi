@@ -25,6 +25,10 @@ import { itemsLabel } from '@/lib/plural'
 import { kgLabel as kg } from '@/lib/kg'
 import { fmtEur } from '@/lib/money'
 import CartLineList from '@/components/CartLineList.vue'
+// 18 §UC-PI-007 — the MAPPING into `CartLineList`'s line shape moved out of this
+// file: the locked landing's own-order card and „Moje objednávky" (PI-T6) render
+// ordered lines this view's `cart` cannot describe. See `lib/order-lines.js`.
+import { cartLines as toCartLines, orderLines, deliveryExtras } from '@/lib/order-lines'
 import CatScrollArrow from '@/components/CatScrollArrow.vue'
 import PaymentModal from '@/components/PaymentModal.vue'
 // 15 §UC-PL-004/D6 — THE PAYLOAD AND THE LINK HAVE ONE HOME, shared with
@@ -89,7 +93,12 @@ const props = defineProps({
   //     are guarded as well — see `editingLocked`);
   //   · the stock bars are hidden — a fill measured against a finished round's
   //     `remaining_g` is a number about the past;
-  //   · no `.cartbar`, no tabgroup, no status/ok banners.
+  //   · no `.cartbar`, ~~no tabgroup~~, no status/ok banners. ⚠ **„no tabgroup" is NO
+  //     LONGER a property of `readonly`** — PI-T5 split that question out: `hasTabs`
+  //     (`!isReadonly || colleaguesTab`, declared below) answers „may this friend reach
+  //     the Kolegovia panel?", and §UC-PI-007 KEEPS it on the LOCKED read-only landing
+  //     because hand-over ticks happen precisely then. A read-only mount has no tabs
+  //     unless its CALLER asks for them; the closed landing passes nothing.
   // ⚠ The `.cat-tabs` strip stays INTERACTIVE (§UC-PI-006 resolved conflict 6:
   // „only the CARDS are read-only/faded … every category is browsable"), which is
   // why `.p2-ro` goes on the cards wrapper and not on the panel.
@@ -97,6 +106,24 @@ const props = defineProps({
   // ⚠ Ignored outside `landing` mode: `/cycle/:id` renders a completed round with
   // the shipped locked treatment (04 §UC-FO-014) and §UC-PI-018 keeps it that way.
   readonly: { type: Boolean, default: false },
+  // 18 §UC-PI-007 (PI-T5) — DOES THIS MOUNT STILL OFFER THE „Moja objednávka /
+  // Kolegovia" SWITCH?
+  //
+  // ⚠ IT IS A PROP AND NOT A DERIVATION, AND THAT IS THE WHOLE POINT OF THE SPLIT.
+  // PI-T4 gated the tabgroup on `readonly` alone, and recorded at the time that
+  // „the switch is `readonly` and not „the round is not open"" was this row's
+  // problem: §UC-PI-006's closed catalogue must NOT show it („no tabgroup"), while
+  // §UC-PI-007's locked landing MUST („the tabgroup STAYS — Kolegovia hand-over
+  // ticks happen precisely now", 05 §UC-KG-004). Both are handed a `locked` or
+  // `completed` round with `readonly: true`, so nothing this component can see
+  // tells the two apart — the difference is WHICH LANDING is mounting it, which
+  // only the caller knows.
+  //
+  // ⚠ It can only ever ADD the switch back to a `readonly` mount: `hasTabs` below
+  // is already true everywhere else, so no value of this prop can take the tabs off
+  // a `/cycle/:id` deep link (§UC-PI-018) or off the open landing. `false` by
+  // default, so PI-T4's closed catalogue keeps its behaviour by saying nothing.
+  colleaguesTab: { type: Boolean, default: false },
 })
 
 const isLanding = computed(() => props.mode === 'landing')
@@ -106,6 +133,21 @@ const isLanding = computed(() => props.mode === 'landing')
  * prop's note.
  */
 const isReadonly = computed(() => isLanding.value && props.readonly)
+
+/**
+ * „May this friend still reach the Kolegovia panel from here?" — 18 §UC-PI-006 vs
+ * §UC-PI-007, the term PI-T4 left for this row to split.
+ *
+ * ⚠ IT IS A DIFFERENT QUESTION FROM `isReadonly`, which asks „may any quantity on
+ * this screen change?". They coincided while `readonly` had one consumer; they do
+ * not any more. A host's hand-over ticks happen while the round is LOCKED — i.e.
+ * on exactly the screen whose grid is inert — so a single flag could only be right
+ * for one of the two landings.
+ *
+ * Every non-landing mount (the `/cycle/:id` deep link, §UC-PI-018) keeps the
+ * tabgroup unconditionally, as shipped.
+ */
+const hasTabs = computed(() => !isReadonly.value || props.colleaguesTab)
 
 // ⚠ THE PAGE COLUMN IS THE SECOND (AND LAST) THING `landing` MODE DROPS.
 // `FriendPortalSession.vue` already renders the settled 760px column with its
@@ -129,6 +171,16 @@ const friend = ref(null)
 const cycle = ref(null)
 const products = ref([])
 const order = ref(null)
+// 18 §UC-PI-007 — THE SUBMITTED ORDER'S OWN ITEM ROWS, kept verbatim as the server
+// sent them.
+//
+// ⚠ They used to be consumed and thrown away (`loadOrderData` folded them into
+// `cart` and moved on). The locked landing's own-order card cannot read `cart`: on
+// that screen `readonly` clears it on purpose, and the card's whole job is to show
+// what was ordered. Keeping the rows is also what makes the card's prices the
+// SNAPSHOT ones — a price the admin edited after the round locked must not rewrite
+// what the friend is told they ordered.
+const orderItems = ref([])
 const cart = ref({}) // { productId-variant: quantity }
 const lastSubmittedCart = ref(null) // Snapshot of cart at last submission
 
@@ -448,35 +500,91 @@ const cartItems = computed(() => {
 // list on every screen (product decision 2026-08-12), and the grouping it does
 // reverses 04 resolved conflict #10's flat list.
 //
-// Only the MAPPING is this view's business: `lineSize` is the shipped
-// `variant_label` / 'ks' / raw-variant-key rule (04 §UC-FO-009) and `item.total` is
-// already marked up by `cartItems`.
-const cartLines = computed(() => cartItems.value.map((item) => ({
-  key: item.key,
-  name: item.product_name,
-  purpose: item.purpose,
-  size: lineSize(item),
-  quantity: item.quantity,
-  amount: item.total,
-})))
+// ⚠ HOISTED (18 §UC-PI-007, PI-T5): the mapping and the `lineSize` rule now live in
+// `lib/order-lines.js`, because two screens that are NOT this view's cart render the
+// same lines — the locked landing's own-order card below and „Moje objednávky"
+// (PI-T6). Behaviour is unchanged; the rule simply stopped being private.
+const cartLines = computed(() => toCartLines(cartItems.value))
 
 // `orders.delivery_fee` is a field ON the order and never an `order_items` line
 // (CLAUDE.md 2026-05-01), so it is an EXTRA rather than an item: no purpose header,
 // no quantity, no size — just a name and an amount in the same column.
-const cartExtraLines = computed(() => (
-  order.value?.delivery_fee
-    ? [{ key: 'delivery', name: 'Doručenie Packetou', amount: order.value.delivery_fee }]
-    : []
-))
+const cartExtraLines = computed(() => deliveryExtras(order.value?.delivery_fee))
 
-// The cart line's size label — the shipped logic verbatim (04 §UC-FO-009):
-// `variant_label` when the snapshot carries one (bakery variants), 'ks' for the
-// zero-gram `'unit'` variant, else the raw variant key ('250g', '20pc5g', …),
-// which is what the pre-redesign template printed inline.
-function lineSize(item) {
-  if (item.variant_label) return item.variant_label
-  return item.variant === 'unit' ? 'ks' : item.variant
-}
+// ── 18 §UC-PI-007 — THE SUBMITTED ORDER, AS THE OWN-ORDER CARD READS IT ───────
+//
+// ⚠ ONE LOADER, TWO READINGS. §UC-PI-007's business rule is „`own-order-card`
+// renders from FriendOrder's loaded `order` (no second loader)", so the card is fed
+// from THIS mount through `defineExpose` rather than from a fetch of its own in
+// `FriendPortalSession.vue`. Everything below is a projection of `order` /
+// `orderItems`; nothing here calls the API.
+
+/** The submitted lines, in `CartLineList`'s shape (`lib/order-lines.js`). */
+const submittedLines = computed(() => orderLines(orderItems.value))
+
+/** The submitted lines' sum — goods only, the Packeta fee is added by `paymentTotal`. */
+const submittedItemsTotal = computed(() => submittedLines.value.reduce((sum, line) => sum + line.amount, 0))
+
+/** The server's `pickup` block from the last order GET (`{id, note, name}` or null). */
+const orderPickup = ref(null)
+
+/**
+ * The party's delivery target for the pickup badge — EXACTLY ONE of the three
+ * (CLAUDE.md §Money & data: „exactly one of `pickup_location_id`/
+ * `pickup_location_note`", and both writers clear `packeta_address` when they write
+ * either, while `POST …/submit` clears the pickup columns when it writes Packeta).
+ *
+ * ⚠ The precedence is written out anyway rather than trusted: if the invariant were
+ * ever broken by a data repair, a badge that silently showed two targets — or one
+ * chosen by DOM order — would be worse than one that names a rule. Packeta first
+ * (it is the only one that changes what the friend must pay), then the location's
+ * NAME, then the free-text note.
+ *
+ * ⚠ The name comes from the SERVER's `pickup` block (`helpers/pickup.js pickupOf`),
+ * never from this view's `pickupLocations` list: that list is the public, ACTIVE-only
+ * picker feed, so a location soft-deleted after this order chose it would leave the
+ * badge blank on a party whose pickup is perfectly well defined.
+ */
+const orderPickupText = computed(() => {
+  const row = order.value
+  if (!row) return ''
+  if (row.packeta_address) return `Packeta · ${row.packeta_address}`
+  if (orderPickup.value?.pickup_location_name) return orderPickup.value.pickup_location_name
+  return orderPickup.value?.pickup_location_note || row.pickup_location_note || ''
+})
+
+/**
+ * WHAT THE SESSION MAY RENDER AS „Vaša objednávka" (§UC-PI-007 item 2).
+ *
+ * `null` until the order is loaded and only for a SUBMITTED order — a draft is not
+ * an objednávka (the same rule §UC-PI-009 states for the history list), and the
+ * landing only mounts this branch when the cycles payload already says `hasOrder`.
+ *
+ * ⚠ `paid` IS READ-ONLY HERE. Writing it is the admin's alone (CLAUDE.md Money:
+ * „`delivered` is host-only, `paid` admin-only"), and this whole surface writes NO
+ * `transactions` row of any kind — those come only from the friend paid toggle and
+ * pack/unpack.
+ */
+// ⚠ DEFINED FOR READ-ONLY MOUNTS ONLY, and the guard is deliberate (PI-T5 review).
+// `lines`/`extras` come from the last GET (`orderItems`, refreshed only in
+// `loadOrderData`), while `total` is `paymentTotal`, which on an EDITABLE mount follows
+// the LIVE cart. On the open landing with a submitted order and an unsaved edit those two
+// describe different carts, so the projection would be internally incoherent. Nothing
+// reads it there today — which is exactly why it is closed off now, before PI-T6/PI-T7
+// inherit the mismatch through a „published seam".
+const ownOrder = computed(() => {
+  if (!isReadonly.value) return null
+  if (!order.value || order.value.status !== 'submitted') return null
+  return {
+    lines: submittedLines.value,
+    extras: cartExtraLines.value,
+    purposeOrder: availablePurposes.value,
+    total: paymentTotal.value,
+    paid: !!order.value.paid,
+    pickupText: orderPickupText.value,
+    canPay: hasPaymentSettings.value,
+  }
+})
 
 const cartTotal = computed(() => {
   return cartItems.value.reduce((sum, item) => sum + item.total, 0)
@@ -503,9 +611,20 @@ const cartTotal = computed(() => {
 //
 // Every DISPLAY of this value goes through `.toFixed(2)`, so it is unaffected either
 // way — which is exactly why a real user's banking app was the first to see the bug.
+//
+// ⚠ 18 §UC-PI-007 (PI-T5) — WHICH LINES IT SUMS IS NOW A BRANCH, AND IT HAS TO BE.
+// In `readonly` the cart is deliberately EMPTY (PI-T4's fix: the stored order must
+// not appear in faded, disabled steppers), so `cartTotal` there is `0` and would
+// bill the friend for the delivery fee alone. The submitted order's own lines are
+// what that screen is about — see `submittedLines` below. ONE `paymentTotal` still:
+// the cartbar, the success modal, the QR, `PaymentModal` and the own-order card all
+// read this computed, and a second „what does this order cost" is exactly what the
+// module has spent the week collapsing.
+const payableItemsTotal = computed(() => (isReadonly.value ? submittedItemsTotal.value : cartTotal.value))
+
 const paymentTotal = computed(() => {
   const deliveryFee = order.value?.delivery_fee || 0
-  return cartTotal.value + deliveryFee
+  return payableItemsTotal.value + deliveryFee
 })
 
 const groupedProducts = computed(() => {
@@ -742,6 +861,11 @@ async function loadOrderData() {
     // Get order data
     const orderData = await api.getOrderByFriend(activeCycleId.value, friendId)
     order.value = orderData.order
+    // 18 §UC-PI-007 — the rows are KEPT, not only folded into `cart` below. See the
+    // `orderItems` ref's note: the own-order card reads them on a screen where the
+    // cart is deliberately empty.
+    orderItems.value = Array.isArray(orderData.items) ? orderData.items : []
+    orderPickup.value = orderData.pickup || null
     applyOrderPayment(orderData)
     cycle.value = orderData.cycle
     friend.value = orderData.friend
@@ -1173,10 +1297,21 @@ async function retryOrderData() {
 //   · `cartTotal` — §UC-PI-004 item 1's „ · v košíku {fmtEur(cartTotal)}" clause.
 //     The CART lives here; a second cart model in the drawer would be a second
 //     home for „what is in the basket".
+//   · `ownOrder` / `openPaymentModal` — §UC-PI-007's own-order card, which renders
+//     ABOVE this component in the session's page column and must therefore live
+//     there, while its DATA („FriendOrder's loaded `order`, no second loader") and
+//     its `PaymentModal` mount live here. A second `PaymentModal` for the same
+//     order is the defect this expose prevents; a second GET would be the other one.
 // A `computed` travels through `defineExpose` unwrapped (Vue's `proxyRefs`), so the
 // reader stays reactive without the session storing a value of its own.
 // ---------------------------------------------------------------------------
-defineExpose({ openShareDialog, cartTotal })
+
+/** §UC-PI-007 item 2's „Zaplatiť {total}" — THE one payment surface for this order. */
+function openPaymentModal() {
+  showPaymentModal.value = true
+}
+
+defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
 </script>
 
 <template>
@@ -1390,10 +1525,12 @@ defineExpose({ openShareDialog, cartTotal })
            manages sub-orders of a LIVE round; on a catalogue the friend is only
            browsing there is nothing to manage, and `GuestSubOrders` inside it would
            fire a `GET /guest-links/cycle/:id` for a finished round on every landing.
-           ⚠ PI-T5 keeps it on the LOCKED landing (§UC-PI-007: „the tabgroup STAYS —
-           Kolegovia hand-over ticks happen precisely now"), which is why the switch
-           is `readonly` and not „the round is not open". -->
-      <div v-if="!isReadonly" class="tabgroup" role="tablist" aria-label="Objednávka alebo kolegovia">
+           ⚠ PI-T5 SPLIT THE TERM. The gate is `hasTabs` — „may this friend still
+           reach the Kolegovia panel?" — and NOT `isReadonly`, which asks whether a
+           quantity may change. §UC-PI-007's LOCKED landing keeps the switch on an
+           inert grid („the tabgroup STAYS — Kolegovia hand-over ticks happen
+           precisely now"), and the caller says which landing it is. -->
+      <div v-if="hasTabs" class="tabgroup" role="tablist" aria-label="Objednávka alebo kolegovia">
         <span
           class="tab"
           :class="{ on: mainTab === 'own' }"
@@ -1440,7 +1577,7 @@ defineExpose({ openShareDialog, cartTotal })
            the component boundary. `v-show` writes inline `display:none`, which
            beats the `flex` class — order-shell.spec.js reads that inline value. -->
       <div
-        v-if="!isReadonly"
+        v-if="hasTabs"
         v-show="mainTab === 'guests'"
         id="panel-guests"
         role="tabpanel"
@@ -1530,16 +1667,20 @@ defineExpose({ openShareDialog, cartTotal })
       </div>
 
       <!-- ============ panel: own order ============ -->
-      <!-- ⚠ In `readonly` the tabgroup above is GONE, so this stops being a
-           tabpanel: `role="tabpanel"` + `aria-labelledby="tab-own"` would point at
-           an element that does not exist and announce a tab interface with no
-           tabs. Vue drops a `null` attribute entirely, so the route/open mounts
-           keep the shipped markup byte for byte. -->
+      <!-- ⚠ Where the tabgroup above is GONE (§UC-PI-006's closed catalogue), this
+           stops being a tabpanel: `role="tabpanel"` + `aria-labelledby="tab-own"`
+           would point at an element that does not exist and announce a tab
+           interface with no tabs. Vue drops a `null` attribute entirely, so every
+           mount that KEEPS the tabs — the deep link, the open landing and
+           §UC-PI-007's locked landing — keeps the shipped markup byte for byte.
+           ⚠ Three bindings on `hasTabs`, never on `isReadonly`: the locked landing
+           is read-only AND a tab interface, which is the whole reason PI-T5 split
+           the term. -->
       <div
-        v-show="isReadonly || mainTab === 'own'"
+        v-show="!hasTabs || mainTab === 'own'"
         id="panel-own"
-        :role="isReadonly ? null : 'tabpanel'"
-        :aria-labelledby="isReadonly ? null : 'tab-own'"
+        :role="hasTabs ? 'tabpanel' : null"
+        :aria-labelledby="hasTabs ? 'tab-own' : null"
         class="flex flex-col gap-[14px]"
       >
         <!-- Category strip (UC-FO-004). Purposes are DATA-DERIVED — `availablePurposes`

@@ -1041,3 +1041,253 @@ where 17's vocabulary shows in the DOM, plus computed `font-weight` on the three
 5. ⚠ **`portal-vocabulary.spec.js` (PI-T11) must add `components/LandingStateModal.vue` to
    §UC-PI-017's grep list** — it is a friend surface with Slovak copy and it is in no file
    list today.
+
+---
+
+## PI-T5 — the LOCKED landing: the own-order card, the vertical timeline, and one split term (2026-09-20)
+
+**What shipped.** `lib/order-lines.js` (the hoisted `CartLineList` normaliser:
+`lineSize` / `cartLines` / `orderLines` / `deliveryExtras`); `FriendOrder.vue` gained a
+`colleaguesTab` prop + a `hasTabs` computed (the tabgroup term, split off `isReadonly`),
+a kept `orderItems` ref with `submittedLines` / `submittedItemsTotal`, an `orderPickup`
+ref + `orderPickupText`, an `ownOrder` projection and `openPaymentModal`, both exposed;
+`routes/orders.js`'s friend order GET publishes `p.purpose` on its items and a top-level
+`pickup` block from `helpers/pickup.js pickupOf()`; `NeoIcon` gained `pin`;
+`FriendPortalSession.vue` gained the whole `locked` branch (own-order card, „Kde je vaša
+káva“, the next-round banner, the no-order `LandingStateModal` variant, the shared
+caption + read-only grid) and renamed PI-T4's dismissal flag to `stateModalDismissed`;
+twelve new tests in `portal-landing.spec.js` §6/§6b; three sanctioned one-line edits.
+
+### 1. ⚠⚠ THE SEAM PI-T4 NAMED WAS A TERM WITH TWO QUESTIONS IN IT, AND SPLITTING IT IS THE ROW
+
+PI-T4 gated four template sites on `isReadonly` and wrote down that PI-T5 would have to
+split them, because §UC-PI-006 says the closed catalogue has **no tabgroup** and
+§UC-PI-007 says the locked landing **keeps** it. The two flags now ask different
+questions, and the names say which:
+
+| flag | question | consumers |
+|---|---|---|
+| `isReadonly` | „may any quantity on this screen change?" | `.p2-ro`, disabled steppers, no stock bars, no cartbar, no status banners |
+| `hasTabs` | „may this friend still reach the Kolegovia panel?" | the `.tabgroup`, `#panel-guests`'s `v-if`, and `#panel-own`'s `v-show` / `role` / `aria-labelledby` |
+
+⚠ **It had to be a PROP and not a derivation, and that is the whole finding.** Both
+landings hand the component a `locked`/`completed` round with `readonly: true` — there is
+nothing inside `FriendOrder` that tells the two apart. The difference is *which landing is
+mounting it*, and only the caller knows that. `colleaguesTab` can only ever ADD the tabs
+back to a read-only mount (`hasTabs = !isReadonly || colleaguesTab`), so no value of it can
+take them off the deep link or the open landing.
+
+⚠ **Proved in BOTH directions on one page object**, which is what makes it more than a
+restatement: `portal-landing.spec.js` §6's tabgroup test asserts the tabs on the locked
+round, then PATCHes that very cycle to `completed`, re-stubs and asserts they are gone —
+with the `.p2-ro` grid still there either side, so what changed is the tabgroup and
+nothing else. **M1** (collapse to `!isReadonly`) reds 2; **M2** (collapse to `true`) reds 2,
+one of them PI-T4's. A single flag cannot satisfy both columns, whichever way it is
+collapsed.
+
+### 2. ⚠⚠ PI-T4'S FIX MADE THE CARD NECESSARY, AND IT ALSO BROKE THE MONEY UNTIL IT WAS BRANCHED
+
+`readonly` clears the cart (`if (isReadonly.value) cart.value = {}`, PI-T4's review fix),
+and on a LOCKED landing the friend almost always HAS an order — this is the screen that
+fix was written for. But every money figure in the file was derived from the cart:
+
+```
+paymentTotal = cartTotal + delivery_fee    // cartTotal is 0 in readonly
+```
+
+so the card, the „Zaplatiť“ button and `PaymentModal` would all have billed the delivery
+fee alone. The fix is NOT a second total: `payableItemsTotal` picks the source
+(`isReadonly ? submittedItemsTotal : cartTotal`) and `paymentTotal` stays the ONE computed
+every payment surface on the screen reads. **M3** (drop the branch) reds 3.
+
+⚠ The lines have the same shape of problem and the same shape of answer: the server's
+`items` used to be consumed into `cart` and discarded, so an `orderItems` ref now KEEPS
+them. That is also what makes the card's prices the SNAPSHOT ones — a price the admin
+edited after the round locked must not rewrite what the friend is told they ordered.
+**M4** (`orderItems = []`) reds 3.
+
+⚠ **What the row does NOT do, said out loud because this is the most dangerous money
+surface in the module:** it writes no `transactions` row of any kind. `paid` renders
+read-only (admin-only write), `paymentTotal` includes `delivery_fee` for DISPLAY only, and
+the variable symbol is quoted from the server (`payment.variable_symbol`, a friend order's
+VS *is* its order id). The „no ledger row" claim is an assertion, not a comment: §6 reads
+the friend's own `/api/transactions/friend/:id` before and after opening the payment
+modal. **M15** (`paid: false` hardcoded) reds the admin-marks-paid test alone.
+
+### 3. THE OWN-ORDER CARD IS IN THE SESSION, ITS DATA AND ITS MODAL ARE IN `FriendOrder`
+
+§UC-PI-007's composition forces the split: the card, the timeline and the next-round
+banner sit ABOVE the grid in the page column, so they are the session's; but „renders from
+FriendOrder's loaded `order` (no second loader)" and „one `PaymentModal`" make the data and
+the mount the component's. So the bridge is `defineExpose`, exactly as PI-T3's
+`openShareDialog` / `cartTotal`: the session reads `ownOrder` (a computed, unwrapped by
+`proxyRefs`, so it stays reactive) and calls `openPaymentModal()`. It holds no copy of
+anything and fires no GET of its own — pinned in source, because a second `PaymentModal`
+is invisible in the DOM until the two disagree about an amount.
+
+⚠ `lockedOrder` is a SEPARATE template ref from `landingOrder`, not a reuse. PI-T3's two
+readers of `landingOrder` mean „the OPEN round's live surface": `landingCartTotal` feeds
+drawer item 1's „ · v košíku …" and `requestShareDialog()` treats the instance's existence
+as „there is a round to share". A read-only mount has an empty cart and nothing to share,
+so pointing that ref at one would answer both questions with a mount that cannot mean them.
+
+### 4. ⚠ THE PICKUP BADGE NEEDED A BACKEND FIELD, AND THE ACTIVE-ONLY LIST WAS THE TRAP
+
+The card shows exactly one of a location NAME, a free-text note or „Packeta · {address}".
+The name is the only one the order row does not carry. The obvious client-side source —
+`FriendOrder`'s `pickupLocations`, already loaded — is the PUBLIC picker feed, i.e.
+`active = 1` only, so a point deactivated after this order chose it would leave the badge
+blank on a party whose pickup is perfectly well defined. `helpers/pickup.js pickupOf()`
+already solves exactly that (its no-`active` lookup carries a comment saying so), so the
+route publishes its shape as a **top-level `pickup`**, never spliced into the `SELECT *`
+order row — the same rule `payment` states one function above it.
+
+⚠ It is `pickupOf(order)` and NOT `readPickup(cycleId, friendId)`: that one re-resolves
+WHICH STORE a party's pickup lives in, and this route already holds the `orders` row, which
+is the store that wins whenever it exists. ⚠ And no new SELECT: FUP-T25's grep guard
+(`"pickup_locations WHERE id = ? AND active = 1"` returns ONE hit) is untouched, because
+this path adds no statement at all.
+
+⚠ The test earns its fixture: the `location` variant CREATES a pickup point, submits
+against it and then DEACTIVATES it before the page ever loads — which is simultaneously
+the „soft-deleted point still has a name" pin and the housekeeping that keeps
+`pickup_locations` (a GLOBAL table) free of leftovers for the distribution specs.
+**M6** (`pickup: null`) and **M7** (the Packeta branch dropped) each red the pickup test.
+
+### 5. `p.purpose` WAS MISSING FROM THE ORDER GET, AND `CartLineList` FAILS QUIETLY WITHOUT IT
+
+`CartLineList` groups by purpose with a badge header per group and falls back to
+`'Ostatné'`. The friend order GET selected `oi.*` plus four product columns — and not
+`purpose` — so every line of the card landed under one wrong header. It is a one-word
+additive SELECT change, and the client cannot paper over it: **PI-T6's history view renders
+the lines of rounds whose catalogue it never loads**, so there is no `products` array to
+look the purpose up in. **M5** reds the card test alone.
+
+### 6. `lib/order-lines.js` — the hoist, and why it is a lib rather than a second computed
+
+The mapping into `CartLineList`'s shape (and `lineSize`'s `variant_label` / `'ks'` /
+raw-key ladder) lived inside `FriendOrder.vue` because that view was the only screen with
+an ordered list of its own. It now has two consumers that are not that view and never will
+be: this card (which cannot read `cartItems` — the cart is empty by design) and PI-T6's
+history. The file is dependency-free for the `cycle-stages.js` reason: with no unit runner,
+a plain `node` import from a spec IS the unit test.
+
+⚠ Two mappers, not one with a clever `??`: `cartLines` quotes the cart's already-marked-up
+`total`, `orderLines` computes `price × quantity` from the server's SNAPSHOT price. They
+answer different questions about money and collapsing them would hide that. **M13**
+(`deliveryExtras` returns `[]`) reds the card test.
+
+### 7. ⚠ THE DATE IN THE NEXT-ROUND BANNER IS SHORT — AND THAT IS *NOT* THE PO QUESTION
+
+§1 and PI-T4 §1 of this file forbid resolving the two-format collision at a call site, and
+this row does not. The collision is about ONE sentence, module 17's „Ďalšia objednávka sa
+otvorí približne {fmtDay}". §UC-PI-007's banner is a DIFFERENT sentence — „Ďalšia
+objednávka približne {date} — ponuku si už môžete prezrieť nižšie." — which
+`nextOpeningText()` cannot produce and does not own. PI-T1's rule decides it without a new
+judgement: a date standing alone after a preposition is SHORT (`lib/dates.js`); only a date
+inside one of 17's composed sentences is LONG. The locked-no-order warn banner still prints
+`landing.nextText` verbatim, long form and all, exactly like the closed one.
+
+**M10** (the banner prints 17's long form) reds the banner test, which also carries the
+`expect(short).not.toBe(long)` non-vacuity line PI-T4 introduced.
+
+### 8. ⚠ THE FIRST `variant="vertical"` TIMELINE, AND THE ASSERTION THAT WOULD HAVE BEEN WORTHLESS
+
+Module 17 recorded that a computed-style read of `.mk`'s border proves nothing inside
+`.app`: the portal supplies `--nb-ink` with a value byte-identical to the component's own
+fallback, so the assertion passes whether the fallback exists or not (the real proof lives
+on the admin page, where the token is absent). So §6 pins the **step counts** (6 steps,
+2 done / 1 now / 3 next on a freshly locked round — CS-T1: lock ⇒ `ordered`) and the
+**current step's label**, and then ADVANCES the stage through the admin route so the „now"
+step MOVES. That last half is what a hardcoded render fails: **M12b** (the component handed
+a frozen `{status:'locked', stage:'ordered'}` object) passes every count assertion and reds
+on the move. **M12** (`variant="compact"`) reds the same test.
+
+⚠ `:cycle`, never `:steps`, and no `order` prop at all — 17 §UC-CS-006 says „No other
+props", and Vue would turn an undeclared one into a fallthrough ATTRIBUTE on the root div
+(`order="[object Object]"`). §UC-PI-007 is amended in place to say so.
+
+### 9. ⚠ A TERM THAT REDS NOTHING, AND THE MUTATION THAT SHOWS WHY IT STAYS — PI-T4 §4 AGAIN
+
+`showLockedModal` carries `&& !currentCycle?.hasOrder`. **M8** (drop it) reds **nothing**,
+because the modal is MOUNTED inside the `v-else` of the `hasOrder` branch — the template is
+what enforces it today. The realistic defect is a later row moving that mount, and **M8′**
+(the mount reaches the own-order branch too, term dropped) reds **3**: the scrim covers the
+tabgroup click and the timeline read. Same shape as PI-T4's M10/M10′ and PI-T3's M13 — kept,
+and said out loud in the source rather than quietly deleted.
+
+### 10. ONE DISMISSAL FLAG FOR BOTH STATES, deliberately
+
+`closedModalDismissed` became `stateModalDismissed`. `LandingStateModal` is ONE
+parametrised component (that is why PI-T4 built it), and the flag answers „has this friend
+already been told why there is nothing to order in this session?". A landing is closed or
+locked, never both; two flags would differ only if an admin changed a round's status
+mid-session, and the honest answer there is still „they have been told". Everything PI-T4
+wrote about WHERE the flag lives (a `ref` in the session, never storage, never a plain
+`<script>` block, never the parent) is unchanged and is the reason it is not two.
+
+### 11. The sanctioned e2e edits — and the sweep that found them
+
+A locked landing with **no own order** now opens a `role="dialog"` by itself, whose scrim
+covers the hamburger. That is PI-T4 §6's finding with `closed` replaced by `locked`, and it
+broke three shipped tests whose stub payloads are `hasOrder: false` by default. All three
+take the one-line `dismissLandingState(page)`:
+
+- `portal-landing.spec.js:526` — its `if (state === 'closed')` condition is now GONE, not
+  inverted; PI-T4's note („the LOCKED half has no modal until PI-T5") expired with this row.
+- `portal-menu.spec.js` ×2 (the row-set test, item 1's sub-line).
+
+⚠ The enumeration was `grep -ln "friends/cycles" tests/` then reading every fixture's
+`status:`. **Three UI files stub a locked landing and then click**; `portal-menu`'s third
+locked fixture (`:575`) needed NO edit because it lands on a non-`shop` view, where the
+modal is not mounted at all — which is PI-T4's M10 observation showing up as a passing test.
+`portal-appbar`'s three locked fixtures assert `textContent` only, which a scrim does not
+affect.
+
+⚠ A second consequence of the same stubs, recorded because it looks like a bug and is not:
+`portal-appbar`'s `hasOrder: true` fixtures point at STUB cycle ids with no row behind them,
+so the embedded `FriendOrder` fails its load and the own-order card never appears (its
+`v-if` waits on `lockedOwnOrder`). Those tests measure the appbar, they still pass, and the
+320 px overflow one now exercises the vertical timeline as a bonus.
+
+### 12. Mutation matrix (all reverted from a scratchpad copy, never `git checkout`)
+
+| # | Mutation | Reds |
+|---|---|---|
+| M1 | `hasTabs` collapsed to `!isReadonly` | 2 — the tabgroup test and the no-order one |
+| M2 | `hasTabs` collapsed to `true` | 2 — the tabgroup test and PI-T4's read-only catalogue |
+| M3 | `paymentTotal` always sums the CART | 3 — card, PaymentModal, paid |
+| M4 | `orderItems` thrown away again | 3 — the same three |
+| M5 | `p.purpose` dropped from the items SELECT | 1 — the card's group headers |
+| M6 | the server publishes `pickup: null` | 1 — the pickup test |
+| M7 | the pickup row's Packeta branch deleted | 1 — the pickup test |
+| M8 | `showLockedModal` drops its `hasOrder` term | **0** — the template branch enforces it (§9) |
+| M8′ | …with the mount reaching the own-order branch | 3 — scrim over the tabs and the timeline |
+| M9 | the locked modal's dots read `nextCycle ?? catalogCycle` | 1 — the no-order test's caption |
+| M10 | the next-round banner prints 17's long date | 1 — the banner test |
+| M12 | the timeline mounts `variant="compact"` | 1 — the timeline test |
+| M12b | the timeline handed a FROZEN cycle object | 1 — only on the „now moves" half (§8) |
+| M13 | `deliveryExtras` returns `[]` | 1 — the card's fee assertions |
+| M15 | `ownOrder.paid` hardcoded `false` | 1 — the admin-marks-paid test |
+
+### What PI-T5 LEAVES BEHIND
+
+1. **`lib/order-lines.js` is PI-T6's, ready.** „Moje objednávky" maps its lazily fetched
+   rounds with `orderLines()` + `deliveryExtras()` and feeds `CartLineList` — no second
+   normaliser, and the `p.purpose` column it needs is already on the payload.
+2. **The debt-banner slot (§UC-PI-008) is marked in the LOCKED branch too** — PI-T7's, „above
+   the own-order card". All three landing states now carry the same empty comment.
+3. **`FriendOrder`'s `ownOrder` / `openPaymentModal` are a published seam.** PI-T7 must not
+   mount a second `PaymentModal` for the ORDER; the balance one is `FriendBalanceCard`'s and
+   is RELOCATED, never duplicated.
+4. ⚠ **PI-T11 must add nothing new to §UC-PI-017's grep list from this row** — the locked
+   landing's Slovak lives in `FriendPortalSession.vue` and `LandingStateModal.vue`, both
+   already named (the latter by PI-T4's handoff).
+5. ⚠ **PI-T12 owes `portal-fidelity` the A10 pins for `own-order-card .display` and
+   `.cs-tl .lbl`** — §UC-PI-019 item 13 already lists both; this row shipped the surfaces
+   they describe, at 320 px included (`portal-appbar`'s overflow test now covers the
+   timeline incidentally, which is not the same as a hostile-text pass).
+6. ⚠ **`.p2-lines` in `friends-theme.css` (A13) is still unconsumed and should stay that
+   way.** The A13 note names PI-T5 as its consumer; the one-home rule outranks it —
+   §UC-PI-007 says „lines via `CartLineList`", and that component brings its own styles.
+   PI-T6 will not need it either.

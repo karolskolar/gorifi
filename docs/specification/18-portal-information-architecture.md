@@ -497,9 +497,20 @@ persisted), drawer reachable; tab switch works while cards are inert; no `.cartb
      until module 15 replaces it; `iban`, `revolutUsername` from payment settings). Button
      absent when `!hasPaymentSettings`.
 3. **„Kde je vaša káva“** card (`padding:16px 16px 4px`): `field-lbl` + `CycleTimeline`
-   **vertical variant** (module 17: `cycle = currentCycle`, `order = the friend's order`
-   so 17 can mark hand-over/delivery on the last steps — 17 owns steps, labels and the
+   **vertical variant** (module 17: `cycle = currentCycle`, ~~`order = the friend's order`
+   so 17 can mark hand-over/delivery on the last steps~~ — 17 owns steps, labels and the
    „now“ rule; this module only mounts it).
+   ⚠ **PI-T5 AMENDMENT (2026-09-20) — THERE IS NO `order` PROP, AND ADDING ONE IS NOT
+   THIS MODULE'S CALL.** 17 §UC-CS-006 says in as many words „Props: `cycle`, `variant`,
+   `steps`. **No other props**; no emits", and CS-T2 shipped it that way — `timelineSteps
+   (cycle)` takes one argument. Passing `:order` would not be ignored either: Vue turns an
+   undeclared prop into a FALLTHROUGH ATTRIBUTE, so it would land on the root `div` as
+   `order="[object Object]"`. The mount therefore passes `:cycle` alone. The seam 17 DID
+   ship for a consumer that wants its own per-step content is `steps` — and using it here
+   would hand module 18 ownership of each step's `state`, which is the door 17's three
+   measured stale-`stage` transitions come back through (learnings 09 §10). If the last
+   two steps should react to `handed_over_at`, that is a module-17 change to
+   `timelineSteps()`, not a prop invented at this call site.
 4. **Next-round banner** `div.banner.slim`: **„<b>Ďalšia objednávka</b> {nextText-short} —
    ponuku si už môžete prezrieť nižšie.“** where short = „približne <b>{date}</b>“ /
    plan_note / „— dáme vedieť“. Rendered only when `nextCycle` exists OR `catalogCycle`
@@ -513,6 +524,18 @@ persisted), drawer reachable; tab switch works while cards are inert; no `.cartb
 objednaná v pražiarni.“**, the next-round card, the dots; then the warn banner
 **„<b>Objednávky sú uzamknuté.</b> {nextText}“** and the read-only grid of `currentCycle`.
 Subtitle stays „Aktuálna ponuka“.
+
+⚠ **PI-T5 decisions on this branch, recorded because the paragraph above is silent on
+both (2026-09-20):**
+- **The dots are handed `currentCycle`, NOT §UC-PI-006's `nextCycle ?? catalogCycle`.**
+  „Kde sme teraz“ on a locked landing is the round in flight; the closed rule would print
+  „Pripravujeme ďalšiu objednávku“ over a round whose coffee is at the roastery. This is
+  the question `LandingStateModal`'s `timelineCycle` prop exists to let the caller answer.
+- **The tabgroup STAYS here too**, i.e. item 5's rule is a property of the LOCKED landing
+  and not of „the friend ordered“. A host who ordered nothing themselves while their
+  unregistered colleague did is the exact party `helpers/pickup.js`'s PO decision
+  (2026-09-03) is about, and their hand-over ticks happen precisely now (05 §UC-KG-004).
+  Hiding Kolegovia from them would hide it from the one person who needs it.
 
 **Business rules:** `own-order-card` renders from FriendOrder's loaded `order` (no second
 loader); the shipped locked `.banner.warn` „Objednávky sú uzamknuté. Už nie je možné meniť

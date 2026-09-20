@@ -141,9 +141,10 @@ export const ICONS = {
   // — the v1 set does not, and the difference is real, not an oversight — so
   // they are declared per icon below and `NeoIcon.vue` passes them through.
   //
-  // PI-T2 ports the six the appbar and the drawer need (18 §UC-PI-003/004).
+  // PI-T2 ports the six the appbar and the drawer need (18 §UC-PI-003/004), and
+  // PI-T5 adds `pin` for §UC-PI-007's own-order pickup badge.
   // ⚠ SEAM: PI-T8 (the explainer) and GL-T4 (the guest steps) add `cup`, `box`,
-  // `hand`, `truck`, `pin`, `pause`, `bell` from the same table — to THIS file,
+  // `hand`, `truck`, `pause`, `bell` from the same table — to THIS file,
   // never a second icon module (RD-DS-2).
   menu: {
     size: 20,
@@ -193,6 +194,16 @@ export const ICONS = {
     shapes: [
       { tag: 'path', attrs: { d: 'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2' } },
       { tag: 'circle', attrs: { cx: '12', cy: '7', r: '4' } }
+    ]
+  },
+  // `portal2.jsx` I2.pin — 14px, because it sits INSIDE a `.badge` beside text
+  // (§UC-PI-007's pickup row), not on a 44px control like the drawer's glyphs.
+  pin: {
+    size: 14,
+    strokeWidth: '2.4',
+    shapes: [
+      { tag: 'path', attrs: { d: 'M21 10c0 7-9 12-9 12S3 17 3 10a9 9 0 0 1 18 0z' } },
+      { tag: 'circle', attrs: { cx: '12', cy: '10', r: '3' } }
     ]
   }
 }
