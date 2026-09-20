@@ -185,6 +185,10 @@ append the full write-up to the matching learnings file and add at most one line
   (`AdminInvitations.vue` / `InviteRegister.vue` legitimately label the real `username`.)
   Same rule server-side: `'Meno a priezvisko je povinné'` is ONE string with THREE homes in `routes/friends.js`
   (`POST /`, admin `PATCH /:id`, friend `PATCH /:id/profile`) — grep the string, re-word every hit or none (FUP-T21).
+- A rendered-copy sweep reads the app's OWN copy: `e2e/helpers/copy-sweep.js` (one home, text + `placeholder`/
+  `title`/`aria-label`/`alt`) drops every `[data-user-copy]` subtree, and a view marks the person-typed
+  interpolation — never the app copy beside it. The test template has a friend NAMED `Prihlasovacie.meno`; a
+  sweep that reddens on data is repaired by marking the data render, never by narrowing the regex (FUP-T22).
 - Never `maximum-scale=1` / `user-scalable=no`; iOS zoom is handled by A12 (16px inputs under `pointer: coarse`).
 - Text: `min-w-0` is not `overflow-wrap` (set `overflow-wrap:anywhere` on the container); `€` on item lines,
   `EUR` on totals; kg display `Math.round(g/10)/100` with trailing zeros stripped; ordinary space before `€`.
@@ -205,8 +209,13 @@ Full recipe and env in `e2e/README.md`. Checklist:
 - **`--workers=1`** for any multi-file batch (one global admin token; parallel files clobber it → mass 401s).
 - Gate server: `BASE_URL=http://localhost:3997` (never the IP — CORS/crossorigin → CSS 500), `CORS_ORIGIN`
   including that origin, fresh `DB_PATH` under the scratchpad + `node e2e/seed.mjs`, `GOOGLE_CLIENT_ID=test-client
-  GOOGLE_AUTH_TEST_MODE=1`, and ALL FIVE `RATE_LIMIT_*_MAX` raised (`rate-limit*.spec.js` / `magic-link-rate-
-  limit.spec.js` then self-skip — the documented skips). Build `frontend` first; a missing `backend/public` answers 503.
+  GOOGLE_AUTH_TEST_MODE=1`, and all five limiter maxima raised — **named, because the glob invites a wrong
+  guess**: `RATE_LIMIT_AUTH_MAX`, `RATE_LIMIT_ABUSE_MAX`, `RATE_LIMIT_GUEST_READ_MAX`,
+  `RATE_LIMIT_GUEST_WRITE_MAX`, `RATE_LIMIT_MAGIC_MAX` (⚠ **`_MAGIC_`, not `_MAGIC_LINK_`** — an unread name
+  is silently ignored, leaving the tightest bucket at its default 10, and `magic-link.spec.js` then reds ~5
+  tests with **429** partway through a full run, which reads exactly like a regression; the tell is a 429 on
+  an assertion that expected 400/200). `rate-limit*.spec.js` / `magic-link-rate-limit.spec.js` then self-skip
+  — the documented skips (4 with `forced-change-ui.spec.js`'s `test.fixme`). Build `frontend` first; a missing `backend/public` answers 503.
 - Kill the old server BY THE PID OWNING THE PORT (`ss -lptnH 'sport = :3997'`), confirm the port is free, then
   start — `pkill -f` self-matches and a stale server measures deleted code. Background it with `setsid … </dev/null`.
 - The DB is an INPUT: copy `e2e/fixtures/prod-template.sqlite` to a fresh path PER RUN (`e2e/make-test-db.sh`

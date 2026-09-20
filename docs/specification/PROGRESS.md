@@ -396,7 +396,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] PL-T2  VS + `creditor_name` in every server payload (guest 201/status, friend order `payment:{variable_symbol}`, balance `payment` block „{Meno} / zostatok“, admin unpaid overview + orders tab, mail row „Variabilný symbol“) + CycleDetail „VS …“ on receivables card AND orders tab — `15 §UC-PL-003,008` · model=heavy ⚠ payloads only GROW; `amount/reference/iban/revolut_username` byte-identical; no revolut.me/payme.sk URL in mail (08 one-origin pin); balance „Zaplatiť“ UI is PL-T4.
 - [x] PL-T3  `lib/payment-links.js` (`revolutLink` amount variant behind `REVOLUT_AMOUNT_LINK`, `paymeLink`, `payBySquarePayload` with `variableSymbol` + `beneficiary = creditorName || 'Gorifi'`) + PaymentModal additive props, amount-suffixed Revolut label, PayMe button (`pointer: coarse`, `v-if`), VS `NeoCopyRow`, guest confirmation/status wiring — `15 §UC-PL-004,005,006,007(guest)` · model=heavy ⚠ SANCTIONED edits ONLY in `guest-payment-modal.spec.js` (`independentQr` gains VS/beneficiary, `:366` href → amount variant, new `hasTouch` PayMe + VS-row tests); `money-rounding.spec.js` stays UNMODIFIED here (friend encode site is PL-T4's). D4 discipline: strike the „FROZEN props“ claim in 06 §UC-GX-005, the component header and the spec header. ⚠ PO verification, not a gate: Revolut `?amount=&currency=` on a phone (flag = one-line fallback), PayMe `CN` 70 / `MSG` 140 caps.
 - [x] PL-T4  Friend surfaces: FriendOrder PaymentModal props + success modal re-pointed at the shared helper + NEW balance „Zaplatiť“ trigger (`data-testid="pay-balance"`, `balanceState==='neg'`) + PaymentModal mount on `FriendBalanceCard` + sanctioned `money-rounding.spec.js` `independentQr` edit (`variableSymbol: String(order.id)`, beneficiary stays `'Gorifi'`) + **module-15 closeout (full suite)** — `15 §UC-PL-007(friend, balance),009` · model=heavy ⚠ `FriendTransactionsModal.vue` UNTOUCHED (one-modal rule); `order-modals.spec.js` :877/:881 pass unmodified. ⚠ Module-18 seam: PI-T7 RELOCATES this trigger + mount into „Zostatok a platby“ and the landing debt banner — never a second PaymentModal for the balance. ⚠ Module-21 seam: messages reuse `helpers/payment.js` VS, never re-derive.
-- [ ] FUP-T22  ⚠ **The full suite CANNOT be green against the shipped e2e template — one test fails on DATA, and it blocks every future module closeout.** Found by PL-T4's module-15 closeout run (1841 passed / **1 failed** / 26 skipped). `admin-friends-labels.spec.js:119` sweeps the WHOLE rendered friends list (text + `placeholder`/`title`/`aria-label`/`alt`) and asserts nothing matches `/prihlasovac/i` — the machine-checked half of FUP-T20/T21's "no view that edits `friends.name` may call it a login" rule. GR-T9's production-shaped template (`e2e/fixtures/prod-template.sqlite`, names KEPT by PO decision) contains an **active friend `id 72` whose NAME is literally `Prihlasovacie.meno`**, so the friend's own name trips a guard about the APP'S OWN COPY. ⚠ **Orchestrator-verified as data, not code:** reproduced, then stashed ONLY PL-T4's three view files, rebuilt, reproduced **identically** — and no code change can make it pass while that row renders. ⚠ **Do NOT weaken the sweep** — it is the guard that would have caught the original bug, and any friend could be named anything. ⚠ **Decide the shape before coding.** (a) Scope the sweep to the app's own COPY and exclude friend-SUPPLIED data (a name is data the admin typed; the rule is about what the view CALLS the field) — the correct fix in principle, but `collectCopy()` deliberately walks attributes too, so the exclusion must be precise or it hollows the guard out; (b) rename that ONE row in `e2e/scrub-template.sql` — cheap and preserves the PO's "screens read like the real thing", and this particular value is a UI string masquerading as a name rather than a person's, but it hides a class of false positive that will recur; (c) both. ⚠ Whatever ships, the acceptance criterion is the same: **a full-suite run against a freshly built template is GREEN**, and the guard still fails when a view genuinely calls the name a login (mutation-prove it, do not assume). ⚠ Until this lands, a module closeout must report "1841/1 — the known template/guard conflict", never "green".
+- [x] FUP-T22  ⚠ **The full suite CANNOT be green against the shipped e2e template — one test fails on DATA, and it blocks every future module closeout.** Found by PL-T4's module-15 closeout run (1841 passed / **1 failed** / 26 skipped). `admin-friends-labels.spec.js:119` sweeps the WHOLE rendered friends list (text + `placeholder`/`title`/`aria-label`/`alt`) and asserts nothing matches `/prihlasovac/i` — the machine-checked half of FUP-T20/T21's "no view that edits `friends.name` may call it a login" rule. GR-T9's production-shaped template (`e2e/fixtures/prod-template.sqlite`, names KEPT by PO decision) contains an **active friend `id 72` whose NAME is literally `Prihlasovacie.meno`**, so the friend's own name trips a guard about the APP'S OWN COPY. ⚠ **Orchestrator-verified as data, not code:** reproduced, then stashed ONLY PL-T4's three view files, rebuilt, reproduced **identically** — and no code change can make it pass while that row renders. ⚠ **Do NOT weaken the sweep** — it is the guard that would have caught the original bug, and any friend could be named anything. ⚠ ~~**Decide the shape before coding.**~~ **RESOLVED — (a) shipped, by DOM subtree; the options below are kept as the record of what was weighed.** (a) Scope the sweep to the app's own COPY and exclude friend-SUPPLIED data (a name is data the admin typed; the rule is about what the view CALLS the field) — the correct fix in principle, but `collectCopy()` deliberately walks attributes too, so the exclusion must be precise or it hollows the guard out; (b) rename that ONE row in `e2e/scrub-template.sql` — cheap and preserves the PO's "screens read like the real thing", and this particular value is a UI string masquerading as a name rather than a person's, but it hides a class of false positive that will recur; (c) both. ⚠ Whatever ships, the acceptance criterion is the same: **a full-suite run against a freshly built template is GREEN**, and the guard still fails when a view genuinely calls the name a login (mutation-prove it, do not assume). ~~⚠ Until this lands, a module closeout must report "1841/1 — the known template/guard conflict", never "green".~~ **SUPERSEDED — this landed; the suite is GREEN at 1865/0/4.**
 
 ## 14. Distribution pipeline (16) — delivery types, hand-over stage, board
 
@@ -467,6 +467,49 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 
 ## Log
+
+- 2026-09-20 · FUP-T22 · (this commit) · no PR (project convention) · **The full suite is GREEN again —
+  1865 passed / 0 failed / 4 skipped**, from PL-T4's 1841/1/26. The blocker was DATA: GR-T9's
+  production-shaped template carries an **active friend `id 72` named `Prihlasovacie.meno`**, and
+  `admin-friends-labels.spec.js:119` sweeps the rendered admin page asserting no copy matches
+  `/prihlasovac/i` — the machine-checked half of FUP-T20/T21's rule. A person's NAME tripped a guard about
+  the APP'S OWN COPY. ⚠ **Mechanism: exclude person-supplied data by DOM SUBTREE; the template is
+  UNTOUCHED.** New `e2e/helpers/copy-sweep.js` is the one home for the collector (hides `[data-user-copy]`
+  with an inline style for the read, restores in a `finally`, preserving exact `innerText` semantics — a
+  `textContent` walk would have started sweeping hidden markup and silently changed a second spec's
+  meaning). `AdminFriends.vue` marks 15 interpolated values; every static label, status badge and their
+  `title`/`placeholder` attributes stay swept. ⚠ **Both alternatives were weighed and REJECTED with reasons,
+  both recorded:** string-subtraction masks a genuine defect the moment a person is named exactly like a
+  real mislabel; renaming the row in `scrub-template.sql` would make the SCRUB encode this guard's own
+  regex — the narrow-restatement anti-pattern this row exists to correct. ⚠ **MUTATION-PROVED IN BOTH
+  DIRECTIONS BY THE ORCHESTRATOR, TWICE — once on the first marker shape and again after review moved the
+  markers**, because a marker moved from a cell to a span changes exactly what is excluded, which IS the
+  thing under test. A mislabel injected into static TEXT reds; one injected into a `title` ATTRIBUTE reds
+  (the half `innerText` cannot see); reverted and rebuilt, green. A guard only ever seen passing is not
+  evidence. ⚠ **A SECOND BYTE COPY of the collector already existed** in `portal-profile-modal.spec.js` —
+  the duplication this repo keeps paying for. One home now; that surface's behaviour is byte-identical
+  because nothing on it is marked. ⚠ **Review found the row contradicting its own rule in miniature:** three
+  markers sat on the `<TableCell>` container while the helper's comment says "mark the interpolation, never
+  the cell around it", on the very column the rule is about; and the helper EXPORTED two constants that
+  cannot work, since `page.evaluate` serializes only the function body — a future editor would have edited
+  them, changed nothing, and believed otherwise. Both fixed; a note now enumerates every place the inlined
+  literals move together. ⚠ **Closes the class on the ADMIN side ONLY** — the friend surface has the same
+  latent exposure with nothing marked, safe today only because its spec provisions its own friend instead of
+  reading the template. Marking it belongs to the row that first sweeps a surface rendering template names;
+  **PI-T11's planned `portal-vocabulary.spec.js` is the named next case and must IMPORT the helper, never
+  grow a third copy.** ⚠⚠ **ORCHESTRATOR ERROR WORTH RECORDING, because it cost a 12-minute run and read
+  exactly like a regression:** my first full run showed **5 failed**, all `magic-link.spec.js`, all **429**.
+  The cause was mine, not the repo's — `e2e/README.md` names the variable correctly as
+  **`RATE_LIMIT_MAGIC_MAX`** and I had been setting `RATE_LIMIT_MAGIC_LINK_MAX` all session. An unread name
+  is silently ignored, so the TIGHTEST bucket sat at its default **10** and only bit partway through a long
+  run. `CLAUDE.md` said "ALL FIVE `RATE_LIMIT_*_MAX`" — a **glob**, which is what invited the wrong guess —
+  so this commit **names all five explicitly** with the tell (a 429 on an assertion that expected 400/200).
+  Fourth instance in two days of a rule stated narrower or vaguer than what it protects. Review: 1 round →
+  **approve** (0 blocker, 0 major, 6 minor — 5 the implementer's, 1 mine: this row body still read as an
+  open decision and still issued the now-false "never report green" directive, both struck with pointers).
+  Gate: `vite build` + `node --check` clean; orchestrator's own **full suite 1865/0/4 in 11.9 min**, plus 82
+  passed across the admin-friends surface after the marker move. The 4 skips are the 3 limiter specs
+  (self-skipping BECAUSE the maxima are raised) + 1 `test.fixme`.
 
 - 2026-09-20 · PL-T4 · (this commit) · no PR (project convention) · **MODULE 15 IS COMPLETE.** Friend
   surfaces close it: `FriendOrder`'s modal gains both props via `applyOrderPayment(response)` on GET/PUT/

@@ -146,7 +146,7 @@
 - ~~Invitation → new friend flow: "Vytvoriť" passes `create=1&name=&phone=&email=` query params to `/admin/friends`; AdminFriends `onMounted` prefills the modal~~ **SUPERSEDED (module 07, IA-T4/IA-T5, 2026-08-13).** "Vytvoriť" now opens an **approval dialog in place — no navigation**; the query params and the `onMounted` receiver are both DELETED. See `docs/specification/07-invitation-approval.md`.
 - ~~Modal field mapping in AdminFriends: friendName=Prihlasovacie meno (login)~~ **SUPERSEDED — and this bullet was the bug.** ⚠ `friendName` writes **`friends.name`, a DISPLAY label that never was a login**; the field is now labelled **`Meno a priezvisko *`** (FC-T2, module 11 — was `Meno *` from IA-T5; `admin-friends-labels.spec.js`'s exact-label pins were retargeted with it, case (a)) and `POST /api/friends` still sets no credentials. A friend gets a real login ONLY via `POST /api/invitations/:id/approve` (module 07) or the per-friend "Nastaviť username" / "Resetovať heslo" actions. The rest of the mapping still holds: friendDisplayName=Poznámka (internal admin note), friendPhone=**Mobil** (FC-T2 relabel), friendEmail=Email; the `invitations` table has name/phone/email/username (no user note field). Module 11 (FC-T1/T2) added: server bounds 120/32/160/200 mirrored as `maxlength`, `Kontakt` (amber `Bez e-mailu`) + `Google` (`googleLinked`) columns, the truthful three-state `Prihlásenie` badge (`Neúplné` when password-no-username) + `dočasné heslo` marker, and save errors render in an in-dialog `modalError` Alert (the page Alert is hidden behind the radix overlay — do not "fix" it back). ⚠ **THE GUARD IS NOW TWO FILES:** `grep -i prihlasovac frontend/src/views/AdminFriends.vue frontend/src/views/FriendPortalSession.vue` must stay EMPTY (07 §UC-IA-007) — the one legitimate `Prihlásen*` string in the admin view is the `Prihlásenie` column header, which reports real credential state (`hasCredentials`) and makes no claim about the name field.
 
-⚠⚠ **WHY THE ONE-FILE FORM FAILED — FUP-T20, found by the product owner on staging.** The friend profile modal (`FriendPortalSession.vue`) carried the **identical** `Prihlasovacie meno *` label on the **identical** column: it binds `profileName` → writes `friends.name`, with its own help line one row below saying the opposite ("Toto meno vidí správca a kolegovia."). The real login is the read-only `Užívateľské meno` box above it. So a friend edited "their login name", their login did not change and their display name silently did — module 11 fixed exactly this in the admin view while the friend view shipped it to production, **because the guard named one file**. Any future guard stated as a grep must enumerate **every view that edits the column**, not the view where the bug was found. FUP-T20's fix: label **`Meno a priezvisko *`**, help text **"Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia."** (the PO mapping: `friends.name` is the **Packeta delivery name**, which is why it is required), the read-only **`Jedinečné ID` box REMOVED** (internal identifier, nothing to act on — the `friendUid` prop and `currentFriendUid` computed went with it; the uid still rides in `gorifi_friend_auth` and on the admin's ID column), and `username` stays **read-only** (PO decision — the admin renames, Google auth likely removes the need). Machine-checked by a rendered-copy sweep (text + `placeholder`/`title`/`aria-label`/`alt`, the `admin-friends-labels.spec.js` idiom) in `portal-profile-modal.spec.js`, which owns that modal. ⚠ The substring is **legitimate** in `AdminInvitations.vue` and `InviteRegister.vue`, where it labels a real `friends.username` field — the rule is "no view that edits `friends.name` may call it a login", not "the word is banned".
+⚠⚠ **WHY THE ONE-FILE FORM FAILED — FUP-T20, found by the product owner on staging.** The friend profile modal (`FriendPortalSession.vue`) carried the **identical** `Prihlasovacie meno *` label on the **identical** column: it binds `profileName` → writes `friends.name`, with its own help line one row below saying the opposite ("Toto meno vidí správca a kolegovia."). The real login is the read-only `Užívateľské meno` box above it. So a friend edited "their login name", their login did not change and their display name silently did — module 11 fixed exactly this in the admin view while the friend view shipped it to production, **because the guard named one file**. Any future guard stated as a grep must enumerate **every view that edits the column**, not the view where the bug was found. FUP-T20's fix: label **`Meno a priezvisko *`**, help text **"Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia."** (the PO mapping: `friends.name` is the **Packeta delivery name**, which is why it is required), the read-only **`Jedinečné ID` box REMOVED** (internal identifier, nothing to act on — the `friendUid` prop and `currentFriendUid` computed went with it; the uid still rides in `gorifi_friend_auth` and on the admin's ID column), and `username` stays **read-only** (PO decision — the admin renames, Google auth likely removes the need). Machine-checked by a rendered-copy sweep (text + `placeholder`/`title`/`aria-label`/`alt`, the `admin-friends-labels.spec.js` idiom) in `portal-profile-modal.spec.js`, which owns that modal. ⚠ **FUP-T22 amended that sweep's SCOPE** (and moved the collector into `e2e/helpers/copy-sweep.js`, one home for both files): it reads the app's own copy and drops `[data-user-copy]` subtrees, because the e2e template has a friend NAMED `Prihlasovacie.meno` — see the FUP-T22 section at the end of this file. ⚠ The substring is **legitimate** in `AdminInvitations.vue` and `InviteRegister.vue`, where it labels a real `friends.username` field — the rule is "no view that edits `friends.name` may call it a login", not "the word is banned".
 
 ⚠ **`friends.display_name` (the admin-only Poznámka) was being SENT to the friend's browser, and the fix is route-scoped on purpose (FUP-T20).** `GET /friends/:id/profile` does `SELECT *` and `sanitizeFriend` strips credentials only, so the note travelled to every friend portal; nothing rendered it, but it was one DevTools tab from visible. It is `delete`d **in that route**, never in `sanitizeFriend` — that function has **7 call sites, several admin**, and `AdminFriends.vue` reads `display_name` for its Poznámka column off exactly those, so a central strip would silence the leak and blank the admin's note. Rule: `sanitizeFriend` stays the one home for **credential** stripping (11 §UC-FC-005); **audience-scoped** fields belong to their route. Pinned by a raw-body `not.toMatch(/display_name/)` on the friend route **plus an admin counter-assertion** that `GET /api/friends` and `GET /api/friends/:id/detail` still carry the note value — a removal-only test passes while breaking the admin.
 
@@ -233,3 +233,74 @@ so the honest bar was `node --check` + the three e2e files that own the strings 
   `grep -rni "prihlasovac"` over `e2e/` and `docs/` is what surfaces the copies that never quoted the message. The
   two-file guard
   `grep -i prihlasovac frontend/src/views/AdminFriends.vue frontend/src/views/FriendPortalSession.vue` stays empty.
+
+
+### FUP-T22 — a copy guard must read the app's COPY, not the DATA it renders (2026-09-20)
+
+**The failure.** PL-T4's module-15 closeout measured **1841 passed / 1 failed / 26 skipped**, and the one
+failure was `admin-friends-labels.spec.js`'s whole-page sweep: it asserts no `/prihlasovac/i` anywhere in the
+rendered friends list (text **and** `placeholder`/`title`/`aria-label`/`alt`) — the machine-checked half of
+"no view that edits `friends.name` may call it a login". GR-T9's production-shaped template
+(`e2e/fixtures/prod-template.sqlite`, names KEPT by PO decision) carries an **active friend `id 72` whose NAME
+is literally `Prihlasovacie.meno`** — somebody once typed the mislabelled field's own label into it, so the
+row is the original bug's fossil. A person's NAME was tripping a guard about the application's own WORDING,
+and **no code change could make it pass while that row rendered** (orchestrator-verified by stashing PL-T4's
+three view files and reproducing identically; re-verified here — a single scan of every text column of the
+template finds exactly one match, that name).
+
+**The distinction that fixes it.** A copy sweep asserts what the application CALLS a field. The values it
+renders — a name, an internal note, a contact address, a product title — are strings a PERSON typed, and a
+person may type anything. The guard was stated over "the whole rendered page", which is wider than what it
+protects; this repo has now hit "a rule stated narrower/wider than what it protects" four times in two days,
+and the correction each time was to DERIVE the set rather than restate it.
+
+**What shipped.**
+- `e2e/helpers/copy-sweep.js` — ONE home for the collector (`collectAppCopy` / `collectAllCopy` /
+  `collectMarkedData`). `admin-friends-labels.spec.js` and `portal-profile-modal.spec.js` had **byte copies**
+  of it; both now import. `collectAppCopy()` hides `[data-user-copy]` subtrees with an inline `display:none`
+  for the duration of the read (restored in a `finally`) so it keeps exact `innerText` semantics — a
+  `textContent` walk would have started sweeping hidden markup and changed a second spec's meaning.
+- `AdminFriends.vue` marks the person-typed **interpolations** with `data-user-copy`: uid, name (+ its
+  `onboarding_source` badge), the Poznámka note, e-mail, phone, the username badge, the Google address, and
+  the friend name inside the two credential dialog titles. ⚠ **Mark the interpolation, never the cell around
+  it:** `Bez e-mailu`, `Neúplné`, `dočasné heslo` and every `title=` beside them are the app's OWN copy in the
+  SAME cells and are exactly what the guard exists to read. The edit modal's credential line (`credentialLine`
+  mixes the username with `Neúplné — …`/`Nenastavené`) was split for the same reason.
+
+**Why DOM subtree and not string subtraction.** Fetching the friend list and subtracting the known values
+before matching also makes the suite green, and it needs no view change — but a friend named exactly like a
+real mislabel would then SILENTLY MASK a genuine defect, which is the failure mode the guard exists to
+prevent. Excluding by subtree cannot mask copy, and its failure direction is the safe one: a new data field
+rendered WITHOUT the marker eventually reddens the sweep on some unlucky name — loud, and repaired by marking
+the data render. ⚠ **Narrowing the regex to make such a red go away is the one forbidden repair.**
+
+**Why the template row was NOT renamed** (option (b) in the backlog row; still available, deliberately not
+taken). It is one `UPDATE` in `e2e/scrub-template.sql` plus a re-scrub of the shipped fixture, and it
+preserves the PO's "screens read like the real thing" — but the scrub would have to encode *this guard's
+regex* to know which name to rewrite, which is the narrow-restatement anti-pattern the row is about, and it
+buys nothing the exclusion does not: the next unfortunate name, on any other sweep, is back. (`scrub-template.sql`
+also requires a matching line in `verify-scrub.sql` for every column it touches, and `friends.name` is
+deliberately outside the scrub.) Nothing in this row touches the template.
+
+**MUTATION-PROVEN, in both directions, and now every run.** A guard only ever seen passing is not evidence —
+and this row made the sweep skip part of the page, so "it is green" was precisely the claim needing proof.
+- Reintroduced the mislabel in `AdminFriends.vue` as a `placeholder=` only (the historical PARTIAL fix), rebuilt:
+  **2 failed / 3 passed** — the sweep red on `modalCopy`, i.e. the attribute half still works with data excluded.
+- Reintroduced it as the table header TEXT, rebuilt: **3 failed / 2 passed** — red on `listCopy`.
+- Reverted, rebuilt: **5 passed**.
+- The third test in the file now does this automatically: it injects a mislabel into the header (text) and into
+  a `placeholder`, asserts the sweep reddens on each, then writes the SAME string into a marked data element and
+  asserts it does NOT — plus a non-vacuity gate (the data really is on the page, via `collectAllCopy()`) and,
+  whenever the target actually renders such a row, a pin on the real one. Against the shipped template it logs
+  `[FUP-T22] target renders 1 person-supplied value(s) matching /prihlasovac/i — excluded as data`.
+
+**Seam for module 18.** PI-T11's planned `portal-vocabulary.spec.js` DOM sweep (`/cykl|\bkol(o|a|e|u|om|á|ách)\b/i`
+over the friend surfaces) is the SAME class of guard and will meet the same problem the first time a friend, a
+product or a note is named unfortunately. It should import `e2e/helpers/copy-sweep.js` and mark the
+interpolations on the surfaces it sweeps, rather than grow a third copy of the collector.
+
+⚠ **This row closes the class on the ADMIN side only.** Nothing on the friend surface is marked, so
+`portal-profile-modal.spec.js` reads exactly what it read before — and carries the SAME latent exposure: a
+friend whose own name matched the pattern would redden its sweep. It is safe today only because that spec
+provisions its own friend rather than reading the template. Marking `FriendPortalSession.vue` / the portal
+appbar belongs with the row that first sweeps a surface rendering template-supplied names.

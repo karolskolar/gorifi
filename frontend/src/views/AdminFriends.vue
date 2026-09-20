@@ -350,23 +350,30 @@ async function logout() {
           </TableHeader>
           <TableBody>
             <TableRow v-for="friend in friends" :key="friend.id">
-              <TableCell class="text-muted-foreground font-mono text-sm">{{ friend.uid || '-' }}</TableCell>
+              <TableCell class="text-muted-foreground font-mono text-sm"><span data-user-copy>{{ friend.uid || '-' }}</span></TableCell>
+              <!-- ⚠ `data-user-copy` (FUP-T22) marks a value a PERSON typed, so the
+                   rendered-copy sweeps (`e2e/helpers/copy-sweep.js`) read what this view
+                   CALLS a field and not what a friend happens to be NAMED. It goes on the
+                   INTERPOLATION, never on the cell around it — a cell that holds only data
+                   today is the next place app copy lands, and a marker on it would take
+                   that copy out of the sweep silently. -->
               <TableCell class="font-medium">
-                {{ friend.name }}
+                <span data-user-copy>{{ friend.name }}</span>
                 <Badge
                   v-if="friend.onboarding_source"
                   variant="outline"
                   class="border-gray-400 text-gray-600 bg-gray-50 ml-2 text-xs"
+                  data-user-copy
                 >
                   {{ friend.onboarding_source }}
                 </Badge>
               </TableCell>
-              <TableCell class="text-muted-foreground">{{ friend.display_name || '-' }}</TableCell>
+              <TableCell class="text-muted-foreground"><span data-user-copy>{{ friend.display_name || '-' }}</span></TableCell>
               <!-- Kontakt (11 §UC-FC-002): a missing email blocks module 09's
                    magic-link recovery — the amber badge is the admin's visibility. -->
               <TableCell data-testid="contact-cell">
                 <div class="flex flex-col items-start gap-1">
-                  <span v-if="friend.email" class="text-sm">{{ friend.email }}</span>
+                  <span v-if="friend.email" class="text-sm" data-user-copy>{{ friend.email }}</span>
                   <Badge
                     v-else
                     variant="outline"
@@ -374,7 +381,7 @@ async function logout() {
                   >
                     Bez e-mailu
                   </Badge>
-                  <span v-if="friend.phone" class="text-xs text-muted-foreground">{{ friend.phone }}</span>
+                  <span v-if="friend.phone" class="text-xs text-muted-foreground" data-user-copy>{{ friend.phone }}</span>
                 </div>
               </TableCell>
               <TableCell class="text-right">
@@ -398,7 +405,7 @@ async function logout() {
               <TableCell class="text-center" data-testid="login-cell">
                 <div class="flex flex-col items-center gap-1">
                   <template v-if="credentialState(friend) === 'full'">
-                    <Badge variant="outline" class="border-green-500 text-green-700 text-xs">
+                    <Badge variant="outline" class="border-green-500 text-green-700 text-xs" data-user-copy>
                       {{ friend.username }}
                     </Badge>
                     <span v-if="friend.must_change_password" class="text-xs text-amber-600">dočasné heslo</span>
@@ -418,7 +425,12 @@ async function logout() {
                    not shipped" render identically as a muted '-' by design (graceful
                    pre-module-10 degradation; googleLinked comes from UC-FC-005). -->
               <TableCell class="text-center" data-testid="google-cell">
-                <Badge v-if="friend.googleLinked" variant="outline" class="border-green-500 text-green-700 text-xs">
+                <Badge
+                  v-if="friend.googleLinked"
+                  variant="outline"
+                  class="border-green-500 text-green-700 text-xs"
+                  :data-user-copy="friend.google_email ? '' : null"
+                >
                   {{ friend.google_email || 'Prepojené' }}
                 </Badge>
                 <span v-else class="text-xs text-muted-foreground">-</span>
@@ -521,7 +533,7 @@ async function logout() {
           </Alert>
           <div v-if="editingFriend?.uid" class="space-y-2">
             <Label class="text-muted-foreground">Jedinečné ID</Label>
-            <div class="font-mono text-sm bg-muted px-3 py-2 rounded">{{ editingFriend.uid }}</div>
+            <div class="font-mono text-sm bg-muted px-3 py-2 rounded"><span data-user-copy>{{ editingFriend.uid }}</span></div>
           </div>
           <!-- The 4 writable fields (11 §UC-FC-003); maxlength mirrors the server
                bounds in friends.js (120/200/32/160 — the GSO-T3 mirror convention).
@@ -568,16 +580,25 @@ async function logout() {
           </div>
           <div v-if="editingFriend" class="space-y-1">
             <Label class="text-muted-foreground">Prihlásenie</Label>
-            <div class="text-sm font-medium">{{ credentialLine(editingFriend) }}</div>
+            <!-- ⚠ `credentialLine()` is the ONE home for this line (it returns the
+                 username only in the `full` state, app copy otherwise), so the marker is
+                 BOUND rather than the branch duplicated: `null` omits the attribute. -->
+            <div
+              class="text-sm font-medium"
+              :data-user-copy="credentialState(editingFriend) === 'full' ? '' : null"
+            >{{ credentialLine(editingFriend) }}</div>
             <p class="text-xs text-muted-foreground">Spravuje sa cez akcie Nastaviť username / Resetovať heslo.</p>
           </div>
           <div v-if="editingFriend?.googleLinked" class="space-y-1">
             <Label class="text-muted-foreground">Google</Label>
-            <div class="text-sm font-medium">{{ editingFriend.google_email || 'Prepojené' }}</div>
+            <div
+              class="text-sm font-medium"
+              :data-user-copy="editingFriend.google_email ? '' : null"
+            >{{ editingFriend.google_email || 'Prepojené' }}</div>
           </div>
           <div v-if="editingFriend?.onboarding_source" class="space-y-1">
             <Label class="text-muted-foreground">Pôvod onboardingu</Label>
-            <div class="text-sm font-medium">{{ editingFriend.onboarding_source }}</div>
+            <div class="text-sm font-medium"><span data-user-copy>{{ editingFriend.onboarding_source }}</span></div>
           </div>
         </div>
         <DialogFooter>
@@ -595,7 +616,7 @@ async function logout() {
     <Dialog :open="showResetPasswordModal" @update:open="showResetPasswordModal = $event">
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Resetovať heslo — {{ credentialFriend?.name }}</DialogTitle>
+          <DialogTitle>Resetovať heslo — <span data-user-copy>{{ credentialFriend?.name }}</span></DialogTitle>
         </DialogHeader>
         <div class="space-y-4 py-4">
           <Alert v-if="credentialError" variant="destructive">
@@ -626,7 +647,7 @@ async function logout() {
     <Dialog :open="showSetUsernameModal" @update:open="showSetUsernameModal = $event">
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Nastaviť username — {{ credentialFriend?.name }}</DialogTitle>
+          <DialogTitle>Nastaviť username — <span data-user-copy>{{ credentialFriend?.name }}</span></DialogTitle>
         </DialogHeader>
         <div class="space-y-4 py-4">
           <Alert v-if="credentialError" variant="destructive">

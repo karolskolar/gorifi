@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
+import { collectAppCopy } from '../helpers/copy-sweep.js'
 
 // FUP-T20's source-grep guard needs the checkout's own path (see that test).
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -409,18 +410,13 @@ test.describe('Profile modal — structure on NeoModal (UC-FL-009)', () => {
  * The property is an ABSENCE, because new copy alone would let a revert pass:
  * "Meno a priezvisko *" can be added while "Prihlasovacie meno" stays one row up.
  */
-function collectCopy() {
-  return async () => {
-    const out = [document.body.innerText]
-    for (const el of document.querySelectorAll('*')) {
-      for (const attr of ['placeholder', 'title', 'aria-label', 'alt']) {
-        const v = el.getAttribute(attr)
-        if (v) out.push(v)
-      }
-    }
-    return out.join('\n')
-  }
-}
+// ⚠ FUP-T22 — the collector used to be a byte copy of `admin-friends-labels.spec.js`'s.
+// It now lives in `e2e/helpers/copy-sweep.js` (ONE home), and it drops every
+// `[data-user-copy]` subtree, because a copy sweep asserts what the APP calls a field
+// and a friend may be NAMED anything — the shipped template has a friend literally
+// called `Prihlasovacie.meno`. Nothing on this surface is marked yet, so what this
+// file reads is unchanged; mark the interpolation (never the app copy around it) if a
+// person-supplied value ever lands inside a sweep here.
 
 test.describe('⚠ FUP-T20 — no copy on the friend surface claims the name is a login', () => {
   /**
@@ -462,11 +458,11 @@ test.describe('⚠ FUP-T20 — no copy on the friend surface claims the name is 
     await signIn(page)
     await openPortal(page)
 
-    const portalCopy = await page.evaluate(collectCopy())
+    const portalCopy = await page.evaluate(collectAppCopy())
     expect(portalCopy, 'the portal claims a login somewhere').not.toMatch(/prihlasovac/i)
 
     const dialog = await openProfile(page)
-    const modalCopy = await page.evaluate(collectCopy())
+    const modalCopy = await page.evaluate(collectAppCopy())
     expect(modalCopy, 'the profile modal claims the name is a login').not.toMatch(/prihlasovac/i)
 
     // Non-vacuity: the sweep really does read this modal's copy.
@@ -484,7 +480,7 @@ test.describe('⚠ FUP-T20 — no copy on the friend surface claims the name is 
     // would be legitimate — it must still avoid the guarded substring.
     await dialog.getByRole('button', { name: 'Zmeniť heslo' }).click()
     await expect(dialog.getByLabel('Aktuálne heslo')).toBeVisible()
-    const foldCopy = await page.evaluate(collectCopy())
+    const foldCopy = await page.evaluate(collectAppCopy())
     expect(foldCopy, 'the password fold claims a login').not.toMatch(/prihlasovac/i)
     expect(foldCopy).toMatch(/aktuálne heslo/i)
   })

@@ -411,7 +411,12 @@ exists (01-architecture §Testing) — the bar is Playwright e2e + `node --check
    re-pointed (e2e-immutability case (a); cite this UC in a code comment). The
    properties it protects survive unweakened: the `/Prihlasovacie/i` **absence**
    assertions (header, modal, whole page) and the deliberate-keep `'Prihlásenie'`
-   header assertion stay verbatim.
+   header assertion stay verbatim. ⚠ **AMENDED by FUP-T22:** "whole page" now means the
+   whole page's own **copy** — the sweep (`e2e/helpers/copy-sweep.js`) drops
+   `[data-user-copy]` subtrees, i.e. the values a person typed, because the e2e template
+   contains a friend NAMED `Prihlasovacie.meno`. The view marks the interpolations only;
+   every app string beside them is still swept, and a third test mutation-proves the
+   guard in both directions on every run.
 2. **`api-security.spec.js`:** `ADMIN_ENDPOINTS` += `DELETE /api/friends/:id/google`
    (with UC-FC-006's task, not before the route exists).
 3. **`invitation-approval.spec.js` must pass unchanged** — it creates friends via

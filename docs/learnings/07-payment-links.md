@@ -650,3 +650,8 @@ will be looking.
   with module 15. Left untouched and reported: the guard is right, the fixture is what
   changed under it. Whoever picks it up chooses between scoping the sweep to the page's own
   COPY (excluding friend-authored fields) and scrubbing that one name.
+  ⚠ **RESOLVED by FUP-T22 (2026-09-20)** — the first option, by DOM subtree: the collector
+  moved to `e2e/helpers/copy-sweep.js` and drops `[data-user-copy]` subtrees, `AdminFriends.vue`
+  marks its person-typed interpolations, the template is UNTOUCHED, and the guard is now
+  mutation-proven in both directions on every run. Full write-up in
+  `docs/learnings/01-early-features.md`.

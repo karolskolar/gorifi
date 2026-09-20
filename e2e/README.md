@@ -239,6 +239,19 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   **two views**: `grep -i prihlasovac frontend/src/views/AdminFriends.vue
   frontend/src/views/FriendPortalSession.vue` must stay empty — no view that edits
   `friends.name` may call it a login.
+  ⚠ **FUP-T22 — the sweep reads the app's own COPY, not the DATA it renders.** The
+  collector lives in `e2e/helpers/copy-sweep.js` (ONE home, shared with
+  `portal-profile-modal.spec.js`, which carried a byte copy) and drops every
+  `[data-user-copy]` subtree; `AdminFriends.vue` marks the person-typed
+  interpolations and nothing else, so `Bez e-mailu` / `Neúplné` / `dočasné heslo`
+  and the `title=`s beside them are still swept. The reason is in the template:
+  friend `id 72` is NAMED `Prihlasovacie.meno` (names are KEPT by PO decision), so
+  before this the full suite could not be green — a person's name tripped a guard
+  about the app's own wording. A third test mutation-proves both directions every
+  run (an injected mislabel in text and in a `placeholder=` must redden it; the same
+  string as marked DATA must not). ⚠ A new data field rendered without the marker
+  reddens this file on some unlucky name — mark the data render, never narrow the
+  regex.
 - `tests/self-hosted-fonts.spec.js` — RD-DS-6: the brand webfonts must be
   **self-hosted**, and the CSP hole that hid it. The Podpultovka restyle loaded
   Darker Grotesque / Figtree / Courier Prime from `fonts.googleapis.com`, which
@@ -305,6 +318,18 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   `./tests`, and a file there with no `test()` fails the run. `guest-payment-modal.spec.js`
   and `money-rounding.spec.js` still carry their own older copies of the scanner; new specs
   import this one (PL-T4, 15 §UC-PL-009 item 7).
+- `helpers/copy-sweep.js` — `collectAppCopy()` / `collectAllCopy()` / `collectMarkedData()`:
+  the rendered-COPY sweep ("does this page's own wording say X?"), text **plus**
+  `placeholder`/`title`/`aria-label`/`alt`. Also OUTSIDE `tests/` on purpose, for the same
+  `testDir` reason as the QR helper. ⚠ `collectAppCopy()` drops every `[data-user-copy]`
+  subtree, because a copy sweep asserts what the APP calls a field and a person may be
+  NAMED anything — the e2e template has an active friend called `Prihlasovacie.meno`, which
+  is what made the full suite unable to be green (FUP-T22). Used by
+  `admin-friends-labels.spec.js` and `portal-profile-modal.spec.js`, which used to carry a
+  byte copy each. ⚠ **A new copy sweep imports this — it does not grow a third copy**; the
+  planned `portal-vocabulary.spec.js` (18 §UC-PI-018, `/cykl|kolo/i` over the friend
+  surfaces) is the next case, and it must mark the interpolations on the surfaces it sweeps
+  the way `AdminFriends.vue` does.
 
 ## The database is an INPUT — copy the template, never reuse a working file
 
