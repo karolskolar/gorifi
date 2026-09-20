@@ -42,9 +42,15 @@ import { roundMoney } from './pricing.js';
 // pins that the share dialog's HTML never contains one): UI composes
 // `${origin}/g/o/${order_token}` in JS at click time, never into an attribute.
 
+// ⚠ `handed_over_at` (DP-T1, 16 §UC-DP-002) joins the ONE SHARED LIST for exactly
+// the reason stated above — a per-surface pick is how a column ends up published on
+// the board and missing from the host's view of the same bag. It is ADMIN-written
+// (DP-T3/DP-T4) and read-only everywhere else, and it is NOT `delivered_at`: the
+// host's "delivered" tick keeps its own meaning and its own column.
 const GUEST_ORDER_FIELDS = [
   'id', 'link_id', 'guest_name', 'guest_phone', 'guest_email', 'status', 'total',
-  'paid', 'paid_at', 'delivered', 'delivered_at', 'created_at', 'order_token',
+  'paid', 'paid_at', 'delivered', 'delivered_at', 'handed_over_at', 'created_at',
+  'order_token',
 ];
 
 const GUEST_ORDER_COLUMNS = GUEST_ORDER_FIELDS.join(', ');

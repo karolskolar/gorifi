@@ -400,7 +400,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## 14. Distribution pipeline (16) — delivery types, hand-over stage, board
 
-- [ ] DP-T1  Schema `handed_over_at` (orders + guest_orders, CREATE+ALTER) + `notifications` CREATE (verbatim from 01-architecture, no index, no writer) + `helpers/delivery.js` (`deliveryOf`/`deliveryGroupOrder`/`TARGET_LABELS`, read-only; guest `packeta_address` own-property + type-safe) + `helpers/cycle-stage.js` `markCycleReady()` NO-OP STUB + `GUEST_ORDER_FIELDS += handed_over_at` — `16 §UC-DP-001,002,009` ⚠ `helpers/pickup.js` stays the sole WRITER of pickup/Packeta/fee columns; module 21 adds its columns via its own ALTERs and never re-declares the CREATE; CS-T1 replaces ONLY the stub symbol.
+- [x] DP-T1  Schema `handed_over_at` (orders + guest_orders, CREATE+ALTER) + `notifications` CREATE (verbatim from 01-architecture, no index, no writer) + `helpers/delivery.js` (`deliveryOf`/`deliveryGroupOrder`/`TARGET_LABELS`, read-only; guest `packeta_address` own-property + type-safe) + `helpers/cycle-stage.js` `markCycleReady()` NO-OP STUB + `GUEST_ORDER_FIELDS += handed_over_at` — `16 §UC-DP-001,002,009` ⚠ `helpers/pickup.js` stays the sole WRITER of pickup/Packeta/fee columns; module 21 adds its columns via its own ALTERs and never re-declares the CREATE; CS-T1 replaces ONLY the stub symbol.
 - [ ] DP-T2  `GET /cycles/:id/distribution` grows `phone`, `handed_over_at`, `stage`, `delivery`, `kg` per party + guest; top-level `plan[]` (zero-count active locations included) / `totals` / `locations[]`; **the shipped GET joins `ADMIN_ENDPOINTS`** (verified missing today) — `16 §UC-DP-003,013` · model=heavy ⚠ ADDITIVE shape: `guest-distribution.spec.js` / `order-pickup-edit.spec.js` pass unmodified; guest kg merged in JS (never a second LEFT JOIN); starts `distribution-handover.spec.js`.
 - [ ] DP-T3  `PATCH /orders/:id/handed-over` + `PATCH /guest-orders/:id/handed-over` (admin, explicit boolean, 409 `not_packed`, idempotent, host→`via_host` guest inheritance both ways, cancelled skipped) + outbox ENQUEUE/DEQUEUE inside the transaction (`queued` rows, template keys `pickup|packeta|host`, NONE for `in_person`, `body`/`phone_e164` NULL, `segment_key` `loc<id>|packeta|host:<id>`) + `markCycleReady()` call + `api.js` + `ADMIN_ENDPOINTS` — `16 §UC-DP-004,005,008,013` · model=heavy ⚠ ONE synchronous transaction, literal columns, re-check `packed = 1 AND handed_over_at IS NULL` inside; NO `transactions` row (pin `MAX(id)` filtered to the friend). ⚠ guest-orders is a MIXED router — `requireAdmin` per route; `PATCH …/delivered` stays HOST-only. ⚠ Seam → CS-T1: `cycle_stage` echoes `null` until 17 fills the body; seam → WA-T4: the inline enqueue is later REFACTORED into `helpers/outbox.js` (same rows, plus e-mail/opt-out/skipped rules) — keep the write in one function so the swap is mechanical.
 - [ ] DP-T4  Bulk `POST /cycles/:id/distribution/hand-over` (all-or-nothing 409 naming offenders, 400 `foreign_id`, `already_handed` skip, one timestamp, guest-under-host dedupe) + stage-order gates: un-pack / item-uncheck / guest-item-uncheck on a handed-over bag ⇒ 409 `handed_over` (read+409 before AND predicate inside the tx; `helpers/packing.js` UNTOUCHED) + `api.js` + `ADMIN_ENDPOINTS` — `16 §UC-DP-006,007(backend),013` · model=heavy ⚠ bulk REVERSAL is Phase 2 by spec — not built; `item-packed.spec.js` passes unmodified; FE disabled states are DP-T6's.
@@ -467,6 +467,49 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 
 ## Log
+
+- 2026-09-20 · DP-T1 · (this commit) · no PR (project convention) · **Module 16 opens: schema + read-only
+  helpers + one deliberate stub.** `handed_over_at` on `orders` AND `guest_orders` (CREATE **and** try/catch
+  ALTER each — both tables are in prod); the `notifications` CREATE copied **character-identical** from
+  `01-architecture.md` (16 columns, 3 CHECK lists, **no index, NO WRITER** — review grepped `backend/src`
+  and `frontend/src` and found zero references outside `schema.js`); new `helpers/delivery.js`
+  (`deliveryOf`/`deliveryGroupOrder`/`TARGET_LABELS`, read-only); new `helpers/cycle-stage.js` with
+  `markCycleReady()` a no-op stub naming CS-T1 as its successor; `GUEST_ORDER_FIELDS += handed_over_at`.
+  ⚠ **MIGRATION PROVED ON A PRE-EXISTING DB, not just a fresh CREATE** — the orchestrator confirmed the
+  shipped `prod-template.sqlite` lacks both columns and the table, booted the server against a copy, and
+  watched all three appear with the new table empty. A schema change that only works on a fresh DB is the
+  classic way a migration ships broken. Also pinned in-spec by a strip-and-reboot case that asserts the
+  stripped state FIRST, so it cannot go vacuous when the template is next rebuilt. ⚠ **ONE-HOME BOUNDARY
+  HELD AND VERIFIED:** `delivery.js` contains exactly ONE statement — a read — never calls
+  `pickupTargetFor`/`applyPickup`/`readPickup` and does not import `helpers/pickup.js` at all, so it cannot
+  become a second decider of where a party collects; `pickup.js` stays the sole WRITER and is
+  **comment-only** in this diff. ⚠ **Hostile input fails closed everywhere** (`variantGrams()` discipline):
+  own-property + `typeof`-guarded reads, so a non-string, `''`, `'   '`, an array, a number, a boolean and a
+  PROTOTYPE-only `packeta_address` all classify "no Packeta"; the location id additionally demands
+  `Number.isInteger && > 0`, so `'3'`, `2.5`, `NaN`, `0`, `-3` fail closed; `deliveryOf(null)` returns the
+  in_person shape rather than throwing. ⚠ **REVIEW FOUND A SILENT PERMISSIVE FAILURE, now closed:** the
+  helper cannot tell a guest row from a friend row, so a guest whose host delivery was missing or unusable
+  fell through to its own (non-existent) columns and classified STANDALONE — it would have rendered as its
+  own bag and become independently hand-over-able, which §UC-DP-005 allows only for a module-20 Packeta
+  guest. New `isGuestRow()` reads the own-property `link_id` (in `GUEST_ORDER_FIELDS`, so every guest row
+  carries it; a friend party never does) and parks such a row on `via_host` instead. The module-20 case is
+  still matched first. Spec-sanctioned before, but silent and permissive — and this codebase fails closed
+  everywhere else. ⚠ **Fourth instance in two days of a rule stated narrower than what it protects, and the
+  worst possible place for it:** the forward-blocker comment — whose ONLY job is to warn a later row —
+  named ONE of three things SQLite cannot do by plain ALTER. It now enumerates all three: the `recipient_kind`
+  CHECK widening for `'admin'`; the two columns module 21 declares NOT NULL that this CREATE ships nullable
+  (**`segment_key`, `body`** — deliberately, because module 16 enqueues rows with `body IS NULL` from DP-T3
+  on, so 21 yields or backfills); and the three FKs 21 declares and this omits (an FK also decides CASCADE
+  of outbox history, which is 21's call). `recipient_id` is separated out as the one that stays FK-free
+  permanently — polymorphic across friend/guest/waitlist, NULL for `'admin'`. ⚠ The "look the pickup
+  location up WITHOUT `active = 1`" rule now lives in two read sites (`locationRow()` and `pickupOf()`);
+  reuse was not clean (different shapes), so each now CROSS-REFERENCES the other and names the failure — the
+  board's group title desynchronising from the orders tab's badge for the same party. ⚠ Recorded: the
+  "nothing writes a notifications row" test holds only while no writer exists; DP-T3 must rewrite it as
+  "only those routes write" or it degrades into a tautology. Review: 1 round → **approve** (0 blocker,
+  0 major, 2 minor + 1 note, all fixed). Gate: `node --check` clean; orchestrator's own runs **206 passed /
+  0 failed**, then **203 / 0** after the fixes, with the notifications table still empty after a full
+  traffic burst. Learnings + CLAUDE.md one-liners are deliberately DP-T8's (module-16 closeout), per the row.
 
 - 2026-09-20 · FUP-T22 · (this commit) · no PR (project convention) · **The full suite is GREEN again —
   1865 passed / 0 failed / 4 skipped**, from PL-T4's 1841/1/26. The blocker was DATA: GR-T9's

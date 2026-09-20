@@ -347,6 +347,7 @@ function initDb() {
       paid INTEGER DEFAULT 0,
       total REAL DEFAULT 0,
       submitted_at DATETIME,
+      handed_over_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
       FOREIGN KEY (cycle_id) REFERENCES order_cycles(id) ON DELETE CASCADE
@@ -418,6 +419,21 @@ function initDb() {
 
   try {
     db.run('ALTER TABLE orders ADD COLUMN packed_at DATETIME');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Migration (DP-T1, 16 §UC-DP-002): stage 3 of the distribution pipeline — the
+  // moment the bag physically left the admin's hands. `packed_at` (above) is the
+  // ledger moment; this one is ledger-NEUTRAL by design and writes no
+  // `transactions` row, ever (the hand-over routes are DP-T3/DP-T4's).
+  //
+  // ⚠ CREATE *and* ALTER, the house rule for a column on a table that already
+  // exists in prod/staging, where `CREATE TABLE IF NOT EXISTS orders` is a no-op.
+  // There is deliberately NO `orders.stage` column beside it: the stage is DERIVED
+  // from `packed` + `handed_over_at` (§UC-DP-003), never stored twice.
+  try {
+    db.run('ALTER TABLE orders ADD COLUMN handed_over_at DATETIME');
   } catch (e) {
     // Column already exists, ignore
   }
@@ -973,10 +989,27 @@ function initDb() {
       paid_at DATETIME,
       delivered INTEGER DEFAULT 0,
       delivered_at DATETIME,
+      handed_over_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (link_id) REFERENCES guest_order_links(id) ON DELETE CASCADE
     )
   `);
+
+  // ⚠ AND THE SAME COLUMN AS A MIGRATION — the same deliberate exception to the
+  // GSO-T2 "guest tables never touch migrations" rule that the two
+  // `guest_order_links` pickup columns above are, and for the same reason: this
+  // table already exists in prod and staging, where the CREATE is a no-op
+  // (DP-T1, 16 §UC-DP-002).
+  //
+  // ⚠ `handed_over_at` is NOT `delivered_at`. `delivered` / `delivered_at` stay
+  // HOST-owned and unchanged in meaning (`PATCH /guest-orders/:id/delivered`): a
+  // host may tick "delivered" before the admin records the hand-over. The
+  // hand-over stamp is ADMIN-owned and is the distribution pipeline's stage 3.
+  try {
+    db.run('ALTER TABLE guest_orders ADD COLUMN handed_over_at DATETIME');
+  } catch (e) {
+    // Column already exists, ignore
+  }
 
   // Guest line items. `packed` mirrors order_items.packed — the persisted
   // per-item distribution checkbox.
@@ -1105,6 +1138,79 @@ function initDb() {
   } catch (e) {
     // Column already exists, ignore
   }
+
+  // ===================================================================
+  // The notification OUTBOX (DP-T1, 16 §UC-DP-002). Column list copied
+  // VERBATIM from `docs/specification/01-architecture.md` §Roadmap October 2026
+  // additions — same names, same order, same three CHECK lists.
+  //
+  // ⚠ THIS ROW DECLARES THE TABLE AND NOTHING ELSE. There is no writer yet:
+  // DP-T3 (hand-over) is the first, and `body` / `phone_e164` are NULLABLE
+  // precisely because it writes them as NULL (§UC-DP-008). No index either —
+  // §UC-DP-002 requires none and module 21 may add one on (status, channel).
+  //
+  // ⚠ MODULE 21 (WA-T1) OWNS EVERY LATER COLUMN AND ADDS THEM WITH ITS OWN
+  // try/catch ALTERs — `sent_via`, its indexes, the partial unique
+  // `idx_notifications_queued_once`. It must NOT re-declare this CREATE: this
+  // table will already exist on every deployed database by then, so a second
+  // CREATE would be a silent no-op and the columns would exist only on fresh
+  // files (the exact trap the `handed_over_at` ALTERs above avoid).
+  //
+  // ⚠ AND THREE THINGS THAT ARE *NOT* ALTERs. Module 21's own table definition
+  // (`21-whatsapp-notifications.md` §Data model) differs from this CREATE in
+  // exactly three ways, and SQLite can express NONE of them as a plain
+  // `ALTER TABLE` on an existing column. Each one needs either the
+  // table-RECREATE pattern this file already uses (`order_items`,
+  // `order_cycles` — copy into a `_new` table, rename) or a concession from
+  // module 21. Enumerated here in full, at the point of statement, because a
+  // comment that exists to warn a future row is the worst possible place to
+  // list only one of three:
+  //
+  //   1. CHECK WIDENING — `recipient_kind` gains `'admin'` (the UC-WA-012 test
+  //      message). A CHECK list cannot be extended in place.
+  //   2. TWO COLUMNS MODULE 21 DECLARES **NOT NULL** AND THIS CREATE SHIPS
+  //      NULLABLE: `segment_key` and `body`. ⚠ The nullability is CORRECT and
+  //      spec-mandated, not an oversight: module 16 enqueues rows with
+  //      `body IS NULL` (16 §UC-DP-008 — the API renders nothing and sends
+  //      nothing; module 21's composer fills the text later), and those rows
+  //      exist in the database from DP-T3 onwards. So module 21 either keeps
+  //      them nullable and enforces NOT NULL in its own writer, or rebuilds the
+  //      table AFTER backfilling every module-16 row. A bare
+  //      `ALTER … ADD COLUMN … NOT NULL` does not apply to an existing column
+  //      at all.
+  //   3. THREE FOREIGN KEYS module 21 declares and this CREATE omits:
+  //      `cycle_id → order_cycles`, `order_id → orders`,
+  //      `guest_order_id → guest_orders`. An FK cannot be added to an existing
+  //      column — only a recreate can. They are omitted here deliberately: with
+  //      `foreign_keys = ON` an FK also decides CASCADE behaviour (does deleting
+  //      a cycle delete its outbox history?), which is module 21's call to make,
+  //      not a foundation row's.
+  //
+  // `recipient_id` stays FK-free permanently, and for a different reason from
+  // the three above: it is POLYMORPHIC (`friends.id` / `guest_orders.id` /
+  // `guest_waitlist.id`, and NULL for `'admin'`), so there is no single table it
+  // could point at. Module 21's own table agrees on that one.
+  // ===================================================================
+  db.run(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel TEXT NOT NULL CHECK (channel IN ('whatsapp','email')),
+      template_key TEXT NOT NULL,
+      segment_key TEXT,
+      recipient_kind TEXT NOT NULL CHECK (recipient_kind IN ('friend','guest','waitlist')),
+      recipient_id INTEGER,
+      phone_e164 TEXT,
+      body TEXT,
+      status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','released','sent','failed','skipped')),
+      cycle_id INTEGER,
+      order_id INTEGER,
+      guest_order_id INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      released_at DATETIME,
+      sent_at DATETIME,
+      error TEXT
+    )
+  `);
 
 }
 

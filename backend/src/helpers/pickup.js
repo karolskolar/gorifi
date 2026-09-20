@@ -133,6 +133,12 @@ export function pickupOf(row) {
     // it must still render its name, or the badge would go blank on a party whose
     // pickup is perfectly well defined (`DELETE /api/pickup-locations/:id`
     // deactivates rather than deletes once an order references it).
+    //
+    // ⚠ THE SAME RULE HAS A SECOND HOME: `helpers/delivery.js` `locationRow()`
+    // (DP-T1), which labels the distribution board's groups. Reuse was not clean —
+    // that one answers a different shape — so the two copies must be changed
+    // TOGETHER: drop the rule in one place only and the board's group title
+    // disagrees with this badge for the same party.
     pickup_location_name: location ? location.name : null,
   };
 }
