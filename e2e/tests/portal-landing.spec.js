@@ -1544,7 +1544,19 @@ test.describe('PI-T5 · 18 §UC-PI-007 — one loader, one modal, one normaliser
     expect(mounts(session), 'the session reaches it through `openPaymentModal()` — it mounts none').toBe(0)
 
     // …and the card's DATA is the same component's loaded order, not a second fetch.
-    expect(session, 'no second order GET in the session view').not.toContain('getOrderByFriend')
+    //
+    // ⚠ SANCTIONED EDIT, PI-T6, case (a) of the immutability rule (03 §UC-FL-013):
+    // this line used to read `.not.toContain('getOrderByFriend')`, and 18 §UC-PI-009
+    // made that UNSATISFIABLE — „Moje objednávky" fetches a past round's lines
+    // „lazily on first expand via `api.getOrderByFriend(cycle.id, friendId)`", by
+    // name, in this same component. The protected property is untouched and is now
+    // stated precisely instead of by absence: the LOCKED CARD runs no loader of its
+    // own, and the session's one and only call to that endpoint is the history
+    // view's. A second one — the defect this pin exists for — makes the count 2.
+    expect((session.match(/getOrderByFriend/g) || []).length,
+      'exactly ONE order GET in the session view, and it is the history view\'s').toBe(1)
+    expect(session, 'and it lives inside `loadRoundLines`, not beside the own-order card')
+      .toMatch(/function loadRoundLines\(id\)[\s\S]{0,600}?getOrderByFriend/)
     expect(session).toMatch(/lockedOrder\.value\?\.ownOrder/)
     expect(order).toMatch(/defineExpose\(\{[^}]*ownOrder/)
     expect(order).toMatch(/defineExpose\(\{[^}]*openPaymentModal/)

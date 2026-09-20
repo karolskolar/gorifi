@@ -42,8 +42,19 @@ The board patches a row optimistically and then re-fetches under `loadSeq`. Dele
 patch left the whole file **green**, because the re-fetch produced the same screen a few
 hundred milliseconds later. The fix is to `page.route`-**hold the GET** so the row must read
 `handed` while `plan[]` still shows the old numbers — and the hold must be generous (4.5 s
-here; 2.5 s was inside the noise of this 2-core box, so the mutant could read green again and
-quietly undo the thing the test had just caught). Anything measured against that window — a
+here; 2.5 s was inside the noise of this box, so the mutant could read green again and
+quietly undo the thing the test had just caught).
+
+⚠⚠ **NECESSARY, NOT SUFFICIENT — and this section is where the rule was born, so the missing
+half belongs here** (PI-T6, 2026-09-20). „Generous" was stated against the box's noise and
+silently generalised into a number. But `expect` RETRIES for `expect.timeout` (**10 s**,
+`playwright.config.js`), so an assertion made during a 5 s hold does not test anything: it simply
+waits for the held response, watches the defect repair itself and passes. Measured — a „one shared
+pending flag" mutation went **15/15 green** against a hold that satisfied this section's rule.
+**The hold must OUTLAST the assertion window, or the discriminating assertions must carry an
+explicit shorter `{ timeout }`.** `distribution-group-handover.spec.js:522-527` already does the
+right thing (2 s bounds on the in-window assertions) and is the pattern to copy. See
+`docs/learnings/10-portal-ia.md` §PI-T6 item 3 and CLAUDE.md §Running the e2e suite. Anything measured against that window — a
 toast lifetime, for instance — belongs INSIDE the held window, or it measures "some time
 before the re-fetch landed".
 

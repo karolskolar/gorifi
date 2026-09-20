@@ -57,7 +57,7 @@ import { loadGis } from '../lib/gis'
 // dialog was the last radix consumer on the authenticated friend surface; it now
 // composes on `NeoModal`, so `Input`/`Label`/`Button`/`Alert`/`Dialog*` are gone.
 // UC-DS-004 rule 4 keeps radix ADMIN-only — do not re-introduce one here.
-import { fmtEur } from '@/lib/money'
+import { fmtEur, roundMoney } from '@/lib/money'
 import { VARIANT_GRAMS } from '@/lib/guest-cart'
 import { colleaguesLabel, ordersAccusativeLabel, weeksLabel } from '@/lib/plural'
 import { kgLabel } from '@/lib/kg'
@@ -87,6 +87,14 @@ import LandingStateModal from '@/components/LandingStateModal.vue'
 // „now".
 import CartLineList from '@/components/CartLineList.vue'
 import CycleTimeline from '@/components/CycleTimeline.vue'
+// 18 §UC-PI-009 — „Moje objednávky". `lib/order-lines.js` is the ONE home of the
+// mapping from a server `order_items` row into `CartLineList`'s line shape (PI-T5
+// hoisted it out of `FriendOrder.vue` naming this view as its second consumer);
+// `lib/history-badges.js` is the ONE home of the SHORT badge words — a sanctioned
+// SECOND vocabulary beside module 17's long timeline labels, argued at length in
+// that file's header. Do not replace it with `cycle-stages.js STEPS`.
+import { deliveryExtras, orderLines } from '@/lib/order-lines'
+import { historyBadge } from '@/lib/history-badges'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
@@ -1416,6 +1424,162 @@ function backHome() {
 }
 
 // ---------------------------------------------------------------------------
+// 18 §UC-PI-009 — „MOJE OBJEDNÁVKY", THE HISTORY VIEW (PI-T6).
+//
+// The rounds the friend actually ordered in, newest first, each a card with a short
+// badge and a lazily fetched line list. It REPLACES 03 §UC-FL-008's „Archív" fold
+// (supersession map) and it is READ-ONLY: no „Otvoriť" link into the round (PO
+// decision — §UC-PI-009's `OPEN:` resolved to „omitted"; the deep link `/cycle/:id`
+// still exists, history is a reading surface). Nothing here writes anything at all.
+//
+// ⚠ ALL FOUR PIECES OF STATE BELOW LIVE ON THE SESSION SIDE of the parent's
+// `v-if` + `:key="sessionSeq"` — the boundary rule §UC-PI-001 states and this file's
+// header explains: never `localStorage` (friend A's rounds would greet friend B),
+// never a plain `<script>` block (`<script setup>` has no module scope, so a `let`
+// up there is ONE cache shared by every instance the tab ever mounts — CLAUDE.md
+// §Frontend), never the parent (it outlives the session). A `ref` here expires when
+// the session does, with no list to maintain.
+// ---------------------------------------------------------------------------
+
+/**
+ * The ONE expanded round's cycle id, or `null` (§UC-PI-009: „One round expanded at
+ * a time (prototype toggle)"). A single scalar IS the rule — a per-row boolean set
+ * would let two rows be open and would need a second mechanism to stop it.
+ */
+const expandedRound = ref(null)
+
+/**
+ * The per-round line cache: `cycleId → { lines, extras }`, „cached per round for
+ * the session" (§UC-PI-009). Collapsing and re-expanding a round re-renders from
+ * here and fires no second request.
+ *
+ * ⚠ KEYED BY CYCLE ID, and that is the structural half of „a stale response never
+ * writes into another round": every write lands under the id it was fetched for,
+ * and the template reads `roundLines[expandedRound]`, so a response arriving after
+ * the friend moved on paints nothing. The single `lines` ref this view could have
+ * had instead is exactly the defect that shape prevents.
+ */
+const roundLines = ref({})
+
+/**
+ * Per-row pending and per-row error, both keyed the same way (§UC-PI-009:
+ * „per-row pending + a per-row `rowSeq`"; the repo convention for per-row mutations,
+ * CLAUDE.md §Frontend).
+ *
+ * ⚠ PER ROW, NOT ONE FLAG. With one shared flag a round whose lines are already
+ * cached renders „Načítavam..." over them whenever ANOTHER round's request happens
+ * to be in flight — and an error from round A would paint a red banner inside
+ * round B. Measured: one shared pending flag reds `portal-history.spec.js` §4's
+ * first test (mutation M4).
+ */
+const roundPending = ref({})
+const roundError = ref({})
+
+/**
+ * The per-row sequence counters — `cycleId → seq` (§UC-PI-009's `rowSeq`, the
+ * `loadSeq` rule of GSO-T2 applied per row).
+ *
+ * ⚠ A plain `Map`, deliberately NOT a `ref`: nothing renders from it, and a
+ * reactive counter would re-run every computed that touches this view on each
+ * fetch. It is still session-scoped — it is a `const` inside `<script setup>`, i.e.
+ * per INSTANCE, and the instance dies with the session (the same reason
+ * `guestCountSeq` and `inviteSeq` are plain `let`s above).
+ *
+ * ⚠⚠ SAID PLAINLY, because the alternative is a comment promising a test that does
+ * not exist: ON TODAY'S CODE THIS GUARD REDS NOTHING BY ITSELF. Two things already
+ * make a cross-row paint impossible — the cache is keyed by id (above) and
+ * `toggleRound` refuses to start a second fetch while one is pending for that row —
+ * so there is no reachable path where a stale response has anywhere wrong to go.
+ * MEASURED: deleting every `roundSeq` check leaves `portal-history.spec.js` at
+ * 15/15 green (mutation M5). What reds is the realistic FUTURE defect this guard is
+ * here for — a writer who gives this view one shared `lines`/`pending` pair again,
+ * the shape it would have had without the rule (mutation M5′, measured at **3 red**:
+ * §3's „ONE round is expanded at a time" and both of §4's). Kept and documented
+ * rather than quietly dropped, exactly as PI-T5 kept `showLockedModal`'s `hasOrder`
+ * term (learnings 10 §9).
+ */
+const roundSeq = new Map()
+
+/** Rounds with a submitted order, newest first — the list itself (resolved
+ *  conflict 8: „a round without one is not an objednávka"). `GET /friends/cycles`
+ *  already sorts `created_at DESC`, so this is `orderedCycles` verbatim; the drawer's
+ *  item-2 sub-line counts the SAME list, which is what keeps „{n} objednávky" and the
+ *  number of cards on screen from ever disagreeing. */
+const historyRounds = computed(() => orderedCycles.value)
+
+/**
+ * Toggle one round open (and every other one closed).
+ *
+ * The fetch is LAZY — „fetched lazily on first expand … cached per round for the
+ * session" — so a friend with thirty rounds costs one request per round they
+ * actually open, and none for the rest.
+ */
+function toggleRound(cycle) {
+  const id = cycle?.id
+  if (id == null) return
+  if (expandedRound.value === id) {
+    expandedRound.value = null
+    return
+  }
+  expandedRound.value = id
+  // Already fetched, or its request is still in flight: nothing to start. The
+  // second half is what makes a double click one request rather than two.
+  if (roundLines.value[id] || roundPending.value[id]) return
+  loadRoundLines(id)
+}
+
+/**
+ * Fetch one round's lines through the EXISTING endpoint (`GET /orders/cycle/:id/
+ * friend/:id` — §UC-PI-009 names it; no new route, no new payload).
+ *
+ * ⚠ The mapping is `lib/order-lines.js`'s, never a second normaliser: `orderLines()`
+ * computes `price × quantity` from the SNAPSHOT price the server stored at submit
+ * (a price the admin edited after the round locked must not rewrite what the friend
+ * is told they ordered) and `deliveryExtras()` renders `orders.delivery_fee` as an
+ * EXTRA, never as an item — it has never been an `order_items` row.
+ *
+ * ⚠ NO `purposeOrder`: `CartLineList` groups by purpose and this view never loads
+ * the round's catalogue, so there is no category strip to align the groups with.
+ * The component's documented fallback — first-appearance order, i.e. the server's —
+ * is the right answer here and the only available one.
+ */
+async function loadRoundLines(id) {
+  const seq = (roundSeq.get(id) || 0) + 1
+  roundSeq.set(id, seq)
+  roundPending.value[id] = true
+  delete roundError.value[id]
+  try {
+    const data = await api.getOrderByFriend(id, props.friendId)
+    if (roundSeq.get(id) !== seq) return
+    roundLines.value[id] = {
+      lines: orderLines(data?.items),
+      extras: deliveryExtras(data?.order?.delivery_fee),
+      // ⚠ THE TOTAL IS RE-QUOTED FROM THIS FETCH, and that is a fix, not a
+      // convenience (PI-T6 review). The header's `round.orderTotal` comes from
+      // `cycles`, seeded from the auth handshake and **never reloaded in-session** —
+      // `loadCycles()` was deleted with the gear (see the note above), and
+      // `FriendOrder` emits nothing, so a re-submit on the landing updates no row.
+      // The lines below, by contrast, are fetched live. For the CURRENT OPEN round —
+      // which §UC-PI-009 deliberately lists and highlights, and which `PUT /orders`
+      // still accepts — a friend could edit and re-submit on „/", open „Moje
+      // objednávky", expand that round, and read a stale total above lines that sum
+      // to something else. Quoting the fetch keeps the two halves of one card
+      // describing the same order.
+      total: typeof data?.order?.total === 'number'
+        ? roundMoney(data.order.total + (data.order.delivery_fee || 0))
+        : null,
+    }
+  } catch (e) {
+    if (roundSeq.get(id) !== seq) return
+    // The error surface is INSIDE the card (§UC-PI-009), never the page-level
+    // banner: it is one row's failure, and the other rows are fine.
+    roundError.value[id] = e?.message || 'Objednávku sa nepodarilo načítať.'
+  } finally {
+    if (roundSeq.get(id) === seq) roundPending.value[id] = false
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Profile (UC-FL-009)
 // ---------------------------------------------------------------------------
 
@@ -2266,6 +2430,115 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
         :friend-id="friendId"
       />
     </template>
+
+    <!-- ═══════════════ 18 §UC-PI-009 — „MOJE OBJEDNÁVKY" (PI-T6) ════════════════
+         The rounds the friend ordered in, newest first. It replaces 03 §UC-FL-008's
+         „Archív" fold (supersession map), and the word „Archív" itself is gone —
+         §UC-PI-017's vocabulary rule, pinned in `portal-history.spec.js` §5.
+
+         ⚠ READ-ONLY, AND THE MISSING LINK IS A PRODUCT DECISION, NOT AN OVERSIGHT.
+         §UC-PI-009: „Clicking the card toggles; the card does NOT navigate (03
+         resolved conflict #4 is reversed here: the deep link `/cycle/:id` remains
+         available but history is a reading surface)", and its `OPEN:` for an
+         „Otvoriť" link resolved to omitted. Nothing in this block writes anything.
+
+         ⚠ Its own flex column (`portal2.jsx:201`), because the page column is not
+         one — the landing states space themselves through their children. -->
+    <div v-if="view === 'history'" style="display:flex;flex-direction:column;gap:12px">
+      <!-- 28px on phone / 34px on desktop (§UC-PI-009). `.h-screen .hl` is the
+           theme's own accent-block rule (`friends-theme.css:59`) — the size is the
+           only thing this call site supplies, and it does so through Tailwind
+           because the theme deliberately declares no `font-size` for `.h-screen`. -->
+      <h2 class="h-screen text-[28px] sm:text-[34px]">Moje <span class="hl">objednávky</span></h2>
+
+      <!-- EMPTY STATE. „Lists only rounds with `hasOrder`" (resolved conflict 8), so
+           a friend who has browsed but never submitted sees this rather than a list
+           of rounds they had nothing to do with. -->
+      <div
+        v-if="!historyRounds.length"
+        class="sub"
+        style="text-align:center;padding:24px 0"
+        data-testid="history-empty"
+      >
+        <div>Zatiaľ žiadne objednávky.</div>
+        <router-link to="/" style="font-weight:700;text-decoration:underline">Prezrieť aktuálnu ponuku</router-link>
+      </div>
+
+      <!-- ONE CARD PER ROUND. The current round (`open` or `locked`) carries `.hl`,
+           every past one `.flat` (§UC-PI-009).
+
+           ⚠ `role="button"` + `tabindex` + Enter/Space, the repo's idiom for a
+           clickable non-button (`.p2-mi`, the appbar chips): the whole card is the
+           toggle, as in the prototype, and a keyboard must be able to work it.
+           `aria-expanded` is what makes the state audible. -->
+      <div
+        v-for="round in historyRounds"
+        :key="round.id"
+        class="card"
+        :class="round.status === 'open' || round.status === 'locked' ? 'hl' : 'flat'"
+        style="padding:14px;cursor:pointer"
+        role="button"
+        tabindex="0"
+        :aria-expanded="expandedRound === round.id"
+        data-testid="history-round"
+        @click="toggleRound(round)"
+        @keydown.enter.prevent="toggleRound(round)"
+        @keydown.space.prevent="toggleRound(round)"
+      >
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+          <div style="min-width:0">
+            <!-- ⚠ `line-height` INLINE — `friends-theme.css` loads after Tailwind and
+                 `:where(.app,.modal-layer) .display` matches at the same specificity
+                 as a utility, so the canon's value survives only as a style attribute
+                 (CLAUDE.md §Frontend). `overflow-wrap:anywhere` because a cycle name
+                 is admin free text and `min-w-0` alone is not a wrapping rule. -->
+            <div class="display" style="font-size:20px;line-height:1;overflow-wrap:anywhere">{{ round.name }}</div>
+            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+              <!-- ⚠ THE SHORT VOCABULARY, owned by `lib/history-badges.js` and
+                   deliberately NOT module 17's long timeline labels — see that
+                   file's header before „fixing" the duplication. -->
+              <span
+                class="badge"
+                :class="historyBadge(round).tone"
+                data-testid="history-badge"
+              >{{ historyBadge(round).text }}</span>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+            <!-- `orderTotal` is the server's `total + delivery_fee`, already rounded
+                 (`routes/friends.js`). ⚠ Once the row is EXPANDED the total is re-quoted
+                 from that fetch instead (`roundLines[id].total`), because `cycles` is
+                 seeded at the handshake and never reloaded in-session — see
+                 `loadRoundLines`. Either way the number is the SERVER's; this view still
+                 derives no money. `EUR` on a total, `€` on the lines below. -->
+            <span
+              class="display"
+              style="font-size:18px;line-height:.9"
+              data-testid="history-total"
+            >{{ fmtEur(roundLines[round.id]?.total ?? round.orderTotal) }}</span>
+            <span class="chev" :class="{ open: expandedRound === round.id }"><NeoIcon name="chev" /></span>
+          </div>
+        </div>
+
+        <!-- THE LAZY BODY. Fetched on first expand, cached per round for the
+             session, per-row pending and per-row error (§UC-PI-009). -->
+        <div v-if="expandedRound === round.id" style="margin-top:12px">
+          <div v-if="roundPending[round.id]" class="sub" data-testid="history-loading">Načítavam...</div>
+          <div v-else-if="roundError[round.id]" class="banner danger slim" data-testid="history-error">
+            <span class="dot"></span>
+            <div style="min-width:0">{{ roundError[round.id] }}</div>
+          </div>
+          <!-- ⚠ `CartLineList` — THE one home for an ordered-items list. The Packeta
+               fee arrives as an EXTRA, never an item (`lib/order-lines.js`). -->
+          <CartLineList
+            v-else-if="roundLines[round.id]"
+            :items="roundLines[round.id].lines"
+            :extras="roundLines[round.id].extras"
+            line-testid="history-line"
+          />
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Profile modal (UC-FL-009) — the first CLOSABLE form-bearing NeoModal.

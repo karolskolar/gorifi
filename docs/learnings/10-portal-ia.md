@@ -1291,3 +1291,126 @@ so the embedded `FriendOrder` fails its load and the own-order card never appear
    way.** The A13 note names PI-T5 as its consumer; the one-home rule outranks it —
    §UC-PI-007 says „lines via `CartLineList`", and that component brings its own styles.
    PI-T6 will not need it either.
+
+## PI-T6 — „Moje objednávky": a second status vocabulary, on purpose (2026-09-20)
+
+**Row:** `18 §UC-PI-009` — the history view. Rounds the friend ordered in, newest first,
+each a card with a SHORT status badge and a lazily fetched line list; an empty state;
+read-only. New `frontend/src/lib/history-badges.js`, a `view === 'history'` block in
+`FriendPortalSession.vue`, new `e2e/tests/portal-history.spec.js` (15 tests), one
+sanctioned retarget in `portal-landing.spec.js`.
+
+### 1. ⚠⚠ THE DUPLICATION THAT LOOKS LIKE A DEFECT AND IS THE POINT
+
+The six badges — **Odoslaná · V pražiarni · Balíme · Zabalená · Odovzdaná ·
+Vyzdvihnuté** — are a SECOND status vocabulary beside module 17's
+`lib/cycle-stages.js STEPS` („Objednávky uzavreté, káva objednaná v pražiarni",
+„Zabalené, rozvážame", „Objednávka ukončená"). §UC-PI-009 says so in its own table
+(„⚠ These are the SHORT history forms owned here; the timeline's long labels are module
+17's") and this repo has spent the week collapsing duplicated strings into single homes,
+so the next reader's instinct will be to „fix" it by importing `STEPS`.
+
+The argument, written at the definition rather than left to be re-derived: these are not
+ONE fact rendered twice (a price, a variable symbol, a kg label — the things the one-home
+rule is actually about). They are two registers for two surfaces. 17's labels are read one
+at a time on a screen whose whole job is to explain where the coffee is; these sit in a
+`span.badge` beside a 20px round name and a total, in a list the friend scans. Import
+`STEPS` and every badge grows a comma and a subordinate clause, wrapping to three lines at
+320 px; shorten `STEPS` instead and the timeline stops being a sentence.
+
+⚠ WHAT IS SHARED AND STAYS SHARED: the DATA (`status`/`stage` from 17, `orderHandedOver`
+from 16 via PI-T1's payload) and the STATUS-BEFORE-STAGE reading order — CS-T1's three
+measured stale-`stage` transitions are invisible here for exactly 17's reason, and
+`portal-history.spec.js` §1 pins both directions with `{ status: 'open', stage: 'ready' }`.
+
+⚠ The split is a MEASUREMENT, not a promise: §1 imports both libs with plain `node` and
+asserts no short form is one of 17's six, that 17's really are the comma-carrying ones,
+and that the longest short form is shorter than the shortest long one — with a
+non-vacuity gate on both harvests. **M7** (one badge replaced by the exact `STEPS` label
+an import would give it) reds **4**. A source pin also holds `history-badges.js` free of
+`cycle-stages`/`STEPS` in its EXECUTED code (the header discusses both at length).
+
+### 2. THE PER-ROW GUARDS — AND WHICH HALF ACTUALLY REDS ANYTHING
+
+§UC-PI-009 asks for „per-row pending + a per-row `rowSeq`", one round expanded at a time,
+and a cache per round for the session. Implemented as: `expandedRound` (a scalar — the
+rule IS the data structure), `roundLines`/`roundPending`/`roundError` keyed by cycle id,
+and a plain `Map` of sequence counters (not a `ref`: nothing renders from it).
+
+Measured, each mutation reverted from a scratchpad copy:
+
+| # | Mutation | Reds |
+|---|---|---|
+| M1 | `historyBadge` drops its `orderHandedOver` term | 2 — §1's matrix, §2's badge list |
+| M2 | the list drops the `hasOrder` filter | 3 — the filter test, the drawer-agreement test, the empty state |
+| M3 | the line cache is never consulted (every expand refetches) | 1 — „then exactly once" |
+| M4 | ONE shared pending flag, keyed cache intact | 1 — §4's cached-round test |
+| M5 | every `roundSeq` check deleted | **0** — see below |
+| M5′ | ONE shared `lines`/`pending` pair (the pre-guard shape) | 3 — §3's one-at-a-time, both of §4 |
+| M7 | a badge carries 17's long label | 4 — §1 ×3, §2's badge list |
+| M8 | a SECOND `getOrderByFriend` in the session | 1 — the retargeted PI-T5 source pin |
+
+⚠ **M5 = 0 is the honest part.** The keyed cache and „no second fetch while one is
+pending" already make a stale write unreachable, so the sequence counter is defence in
+depth today — the PI-T5 §9 `showLockedModal` shape. It is KEPT, and both the source and
+the spec say it reds nothing rather than implying a test that does not exist; the
+realistic future defect it guards (the cache collapsing back to one ref) is M5′.
+
+### 3. ⚠⚠ A RETRYING ASSERTION HEALS OVER THE DEFECT IT MEASURES — M4 PASSED AT FIRST
+
+The first version of §4 held one round's response with a `page.route` timer of **5 s**,
+per CLAUDE.md's „≥4 s" rule, and then asserted that the OTHER (cached) round paints its
+own lines. **M4 passed all 15 tests.** The hold satisfies CLAUDE.md and is still useless
+here: `expect` RETRIES for `expect.timeout`, which this repo sets to **10 s**, so the
+assertion simply waited for the held response, watched the shared pending flag clear and
+reported green. The rule CLAUDE.md states is necessary and not sufficient — **the hold
+must outlast the assertion window, or the assertion must be made impatient**. Fixed by an
+8 s hold plus an explicit `{ timeout: 3_000 }` on the two discriminating assertions; M4
+then reds 1. The same trap explains why the count-only version of §3's one-at-a-time test
+was worthless: a single shared cache renders two lines under the wrong round, so that
+test now asserts the lines' CONTENT (which is what makes M5′ red 3 instead of 2).
+
+### 4. THE PI-T5 SOURCE PIN THAT §UC-PI-009 MADE UNSATISFIABLE
+
+`portal-landing.spec.js:1547` asserted `FriendPortalSession.vue` contains no
+`getOrderByFriend` at all („no second order GET in the session view" — PI-T5's rule that
+the locked own-order card reads the embedded `FriendOrder`'s loaded order). §UC-PI-009
+names that exact function as the history view's lazy loader, in this same component, so
+the absence could not survive. Retargeted under case (a): the count is pinned at **1**
+and that one call must sit inside `loadRoundLines`, while the `lockedOrder.value?.ownOrder`
+line stays. **M8** (a second loader added beside it) reds it, so the retarget is not a
+weakening — a second loader still fails exactly as before.
+
+### 5. Smaller things worth not re-deriving
+
+- **`lib/order-lines.js` was ready and needed nothing.** `orderLines()` +
+  `deliveryExtras()` map the server rows; `CartLineList` renders them. **No
+  `purposeOrder` is passed and that is deliberate** — this view never loads a round's
+  catalogue, so there is no category strip to align the groups with, and the component's
+  documented first-appearance fallback is the only available answer. PI-T5's additive
+  `p.purpose` on the order GET is what makes the group headers right at all.
+- **`.p2-lines` stays unconsumed** (PI-T5 §6 handoff): `CartLineList` brings its own
+  styles and is the one home.
+- The card is `role="button" tabindex="0"` with Enter/Space and `aria-expanded` — the
+  `.p2-mi` idiom; the prototype's whole-card click would otherwise be mouse-only.
+- A stub of only COMPLETED rounds makes the LANDING `closed`, so a drawer test that
+  starts on `/` needs `dismissLandingState` (learnings §11). Starting on
+  `/moje-objednavky` avoids it entirely — non-`shop` views never mount the modal.
+- `roundSeq` is a plain `Map`, session-scoped by being a `const` inside `<script setup>`
+  (per INSTANCE, dying with the session) — the `guestCountSeq`/`inviteSeq` precedent.
+  Nothing in this row touches `localStorage`, a plain `<script>` block or the parent.
+
+### What PI-T6 LEAVES BEHIND
+
+1. **`lib/history-badges.js` is a one-home file with a vocabulary argument in its header.**
+   A future row that wants the words changed changes them there; a future row that wants
+   them merged with 17's has to delete §1 of `portal-history.spec.js` to do it.
+2. **PI-T7 owns the landing slot and the balance view; nothing here reads `balance`.**
+   The history tests stub `GET /friends/*/balance` only to keep the fixture quiet.
+3. ⚠ **PI-T11's vocabulary sweep gains no new file from this row** — the history view's
+   Slovak lives in `FriendPortalSession.vue` (already on the list) and in
+   `lib/history-badges.js`, whose six words contain no „kolo"/„cyklus". Its DOM sweep
+   should nonetheless visit `/moje-objednavky` with a round expanded.
+4. ⚠ **PI-T12's `portal-fidelity` A10 list should gain `history-round .display`** — the
+   20px round name and the 18px total both carry inline `line-height`, for the reason
+   every `.display` on this surface does.

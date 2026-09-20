@@ -244,7 +244,11 @@ append the full write-up to the matching learnings file and add at most one line
   `FriendOrder.vue` (`mode='route'|'landing'`; the landing mounts it, never a fork — its landing wrapper is
   `display:contents` or `.cartbar`'s sticky clamps inside the subtree; `readonly` is LANDING-ONLY and is the
   ONE read-only catalogue rendering — `.p2-ro` on the CARDS wrapper only so `.cat-tabs` stays browsable, plus
-  disabled steppers, no stock bars, no cartbar, no status banners — PI-T4). ⚠ ~~„no
+  disabled steppers, no stock bars, no cartbar, no status banners — PI-T4),
+  `lib/history-badges.js` (the SHORT „Moje objednávky" badges — ⚠ a SANCTIONED **second** status
+  vocabulary, never merged with 17's long `cycle-stages.js STEPS`: two registers for two surfaces, not
+  one fact twice; `status` before `stage` like 17; `portal-history.spec.js` §1 reds on a merge — PI-T6).
+  ⚠ ~~„no
   tabgroup" is NOT a property of `readonly`~~ **SPLIT, PI-T5**: the four tabgroup sites (`.tabgroup`,
   `#panel-guests`'s `v-if`, `#panel-own`'s `v-show`/`role`/`aria-labelledby`) are on `hasTabs`
   (`= !isReadonly || props.colleaguesTab`), which asks „may this friend reach Kolegovia?" — the CLOSED
@@ -416,6 +420,10 @@ Full recipe and env in `e2e/README.md`. Checklist:
   NBSP survives regex `toHaveText`; `li` counts must be `li.ln`; UI+API admin tests must adopt the browser's token.
 - A „patch in place, THEN re-fetch" pair is unprovable unless the test HOLDS the second call (`page.route`
   delay ≥4 s on this box) — delete the patch and the re-fetch paints the same screen a moment later, green.
+  ⚠ NECESSARY, NOT SUFFICIENT: `expect` RETRIES for `expect.timeout` (**10 s**, `playwright.config.js`), so an
+  assertion made during a 5 s hold just waits for the response, watches the defect repair itself and passes —
+  measured PI-T6 (a „one shared pending flag" mutation went 15/15 green). The hold must OUTLAST the assertion
+  window, or the discriminating assertions carry an explicit shorter `{ timeout }`.
 - A row-scoped text assertion about MONEY must target the CELL (`row.getByRole('cell').nth(n)`). ⚠ NOT the
   `innerText` rule above: `toContainText`/`toHaveText` resolve from **`textContent`** unless `useInnerText` is
   passed, and Vue condenses away the whitespace node between `</td><td>`, so adjacent cells concatenate with

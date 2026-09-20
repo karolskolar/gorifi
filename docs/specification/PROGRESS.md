@@ -430,7 +430,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] PI-T3  Landing OPEN state: `FriendOrder.vue` `mode='landing'` (props `cycleId/friendId/mode`; no `.app`/BrandChrome inside; `.cartbar` stays a theme class) + cycle list, gear and subscription modal RETIRED (column/endpoint kept) + status line („Objednávky do {closes_at} · Káva príde okolo {expected_date} — Ako to funguje?“) + cartbar share icon + drawer item 4 via `defineExpose({openShareDialog})` + „Späť na ponuku“ + DELETE `portal-cycles.spec.js`/`portal-share-row.spec.js` (protected properties move to `portal-landing`/`portal-menu`) — `18 §UC-PI-005,011,016,019(items 3,6,8,12)` · model=heavy ⚠ riskiest row: FriendOrder is the ONE home — extend, never fork; leave guard fires on drawer `router.push`; exactly ONE `GuestShareDialog` instance. ⚠ landing slot 2 left empty for the debt banner (PI-T7); `FriendBalanceCard` stays on the landing until PI-T7. ⚠ SANCTIONED: `guest-link.spec.js` 255 / 291–380 retargets, `portal-subscription-invite` describes → two pins, `catalog-admin:2419`, `order-cartbar` landing variant; ~~`share-dialog.spec.js` unmodified~~ **— WRONG, and unsatisfiable: its entry point B is the cycle CARD (`portalCard()`), so nine call sites were re-pointed at the landing cartbar icon under case (a); `guest-order-recovery.spec.js` carries the same helper and is in no list. The `heading.click()` retarget is TWENTY files, not two (`helpers/portal.js gotoCycle()` is its one home) — see 18 §UC-PI-019 item 3, amended in place.**
 - [x] PI-T4  Landing CLOSED state: parametrised NeoModal „Objednávky sú zatvorené“ once per SESSION (PO: „once, then banner“ = the spec's session rule, no persistence) + `nextText` card + `CycleTimeline variant="compact"` (own caption row) + `.banner.warn.slim` after dismiss + read-only `catalogCycle` grid (`readonly` landing mode: `.p2-ro`, tabs live, no stock bars/cartbar/tabgroup) + empty „Ponuka ešte nie je pripravená.“ — `18 §UC-PI-006` ⚠ modal title/intro/lead are PROPS so PI-T5 only passes strings for the no-order locked variant.
 - [x] PI-T5  Landing LOCKED state: own-order card (`CartLineList`, hoisted `lib/order-lines.js`, pickup row = exactly one of location/note/„Packeta · …“, Zaplatené/Nezaplatené + Zaplatiť → PaymentModal with `paymentTotal` incl. `delivery_fee`, VS from PL-T2) + „Kde je vaša káva“ `CycleTimeline vertical` + next-round banner + read-only `currentCycle` grid WITH tabgroup (Kolegovia hand-over ticks stay) + no-order variant „Objednávky sú uzamknuté“ — `18 §UC-PI-007` · model=heavy ⚠ NO ledger write; `paid` admin-only; shipped locked banner/cartbar stay on `/cycle/:id` (PI-T11 verifies); `order-locked.spec.js` pins unchanged on the deep link.
-- [ ] PI-T6  „Moje objednávky“ history view: `hasOrder` rounds newest-first, short badges (Odoslaná / V pražiarni / Balíme / Zabalená / Odovzdaná / Vyzdvihnuté — owned HERE, never shared with 17's long labels), lazy `CartLineList` per round (`rowSeq`, one expanded), empty state, READ-ONLY (PO: no „Otvoriť“ link) — `18 §UC-PI-009` ⚠ NEW `portal-history.spec.js`; `orderHandedOver` from PI-T1 drives „Odovzdaná“.
+- [x] PI-T6  „Moje objednávky“ history view: `hasOrder` rounds newest-first, short badges (Odoslaná / V pražiarni / Balíme / Zabalená / Odovzdaná / Vyzdvihnuté — owned HERE, never shared with 17's long labels), lazy `CartLineList` per round (`rowSeq`, one expanded), empty state, READ-ONLY (PO: no „Otvoriť“ link) — `18 §UC-PI-009` ⚠ NEW `portal-history.spec.js`; `orderHandedOver` from PI-T1 drives „Odovzdaná“.
 - [ ] PI-T7  Money surfaces: debt banner + Zaplatiť on the landing in ALL states (`balance < -0.01`; PO: zero/positive NEVER on landing) + „Zostatok a platby“ view (`FriendBalanceCard` re-purposed, PL-T4's `pay-balance` trigger + mount RELOCATED here — never duplicated; keep „po zaplatení sa zostatok vyrovná do 1–2 dní“) + `FriendTransactionList.vue` lifted verbatim from `FriendTransactionsModal.vue` (deleted) + landing balance card REMOVED — `18 §UC-PI-008,010,019(items 7,9)` ⚠ SANCTIONED: RENAME `portal-transactions-modal.spec.js` → `portal-balance.spec.js` (keep every `tx-*` pin, sign/colour, 320 px test, admin invariance describe; drop the unsatisfiable modal-shell pins); parked `portal-appbar` balance describe lands here. ⚠ `BalanceBadge.vue` untouched (admin-shared).
 - [ ] PI-T8  „Ako to funguje“ view: six phases (static text, live timeline NOT mounted), three delivery ways from `api.getPickupLocations('coffee')` (Packeta fee badge gated on `parcel_enabled`), „Kto sme a odkiaľ je káva“ + `lib/roasters.js` ONE home (Goriffee / Robo prototype drafts — PO polishes), „Ako platím“ (keep „(PayMe)“ — 15 shipped), personal note „— Karol“ (PO draft), keep WhatsApp mention in phase 2 (PO), `asGate` prop for PI-T9 + product-card roaster badge popover (one `NeoModal`, `role=button` only on a match) + `NeoIcon` I2 set — `18 §UC-PI-012,014` ⚠ seam → GL-T4 imports `lib/roasters.js`; admin never imports it. NEW `portal-explainer.spec.js` (content part).
 - [ ] PI-T9  First-login explainer gate: `friends.explainer_seen_at` (try/catch ALTER, **NO back-fill — PO: every existing friend sees it once**) + `POST /friends/:id/explainer-seen` (`requireFriendOwner`, idempotent COALESCE; shared-password `friendId:null` ⇒ 401) + field in all four login payloads (friends.js :173/:230/:358, magic-link.js :406; session restore is NOT a login) + `beginSession({explainerPending})` → `router.replace('/ako-to-funguje')` + pre-ticked „Už mi to neukazovať“ / „Rozumiem“ — `18 §UC-PI-013,019(item 16)` ⚠ `FRIEND_IDENTITY_ENDPOINTS += POST /api/friends/1/explainer-seen` (NEVER `ADMIN_ENDPOINTS`). ⚠ SUITE-WIDE: `e2e/seed.mjs` pre-stamps `explainer_seen_at` for every seeded friend except one dedicated fixture (orchestrator clarification (b)) — otherwise every login-then-land spec hits the explainer. Precedence: forced-password > Google prompt > explainer.
@@ -475,6 +475,61 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## Log
 
+- 2026-09-20 · PI-T6 · (this commit) · no PR (project convention) · **„Moje objednávky" — and a
+  harness rule that had been cited all week turned out to be necessary but NOT sufficient.**
+  New `lib/history-badges.js`, the history view (rounds with `hasOrder`, newest first; lazy
+  `CartLineList` per round with per-row pending/error/`rowSeq`; one expanded; empty state;
+  read-only), and `portal-history.spec.js` (15 tests).
+  ⚠ **A SECOND vocabulary, justified rather than merged.** 17's `STEPS` are sentences for a
+  timeline (19–47 chars, 3 commas); these are badges in a scanned list (6–11 chars, none).
+  Importing `STEPS` puts a subordinate clause in every badge at 320 px; shortening `STEPS` kills the
+  timeline. The DATA and 17's status-before-stage order stay shared — only the register differs.
+  Pinned: no short form equals any of 17's six, both harvests non-vacuous, and the file's EXECUTED
+  code never mentions `cycle-stages`.
+  ⚠⚠ **A „one shared pending flag" mutation passed 15/15.** `expect` RETRIES for `expect.timeout`
+  (**10 s**), so an assertion made during a 5 s `page.route` hold just waits for the held response,
+  watches the defect repair itself and goes green. CLAUDE.md's „hold ≥4 s" came from DP-T7's
+  measurement of a ~300 ms slack and was generalised past it. **The hold must OUTLAST the assertion
+  window, or the discriminating assertions carry an explicit shorter `{ timeout }`.**
+  ⚠ **Review found the second exposure I asked it to look for:** `guest-distribution.spec.js:659`
+  held a route for **300 ms** — 13× under the old floor — while testing „the in-flight guard is PER
+  ITEM, not one shared lock", which needs BOTH clicks inside the window. Raised to 5 s. It also
+  found that the rule's ORIGINAL home (`08-distribution-pipeline.md` §1) still carried only the
+  generous-hold half although four other copies had the amendment — the „every copy" rule, again.
+  ⚠ **A user-visible inconsistency, found in review and fixed:** the row header's total came from
+  `cycles`, seeded at the handshake and **never reloaded in-session** (`loadCycles()` was deleted
+  with the gear and `FriendOrder` emits nothing), while the expanded lines are fetched live. For the
+  CURRENT OPEN round a friend could re-submit on „/", open the history, expand, and read a stale
+  total above lines that sum to something else. The loader now re-quotes the total from its own
+  fetch; the header prefers it once expanded.
+  ⚠ `roundSeq` reds nothing today (keyed cache + no-second-fetch-while-pending make a stale write
+  unreachable) and the code SAYS so, with the measurement — the PI-T5 precedent, not a claimed pin.
+  Gate: **170 passed / 0 failed** over nine files, asked-vs-ran reconciled, server log clean.
+  Review: **approve**, three minors, all acted on.
+- 2026-09-20 · PI-T6 · (this commit) · no PR (project convention) · **„Moje objednávky" — and a
+  SECOND status vocabulary, on purpose.** New `lib/history-badges.js` (Odoslaná · V pražiarni · Balíme ·
+  Zabalená · Odovzdaná · Vyzdvihnuté, `status` before `stage` like 17), the `view === 'history'` block in
+  `FriendPortalSession.vue` (rounds with `hasOrder`, newest first, `.hl` on the current one, lazy
+  `CartLineList` per round through PI-T5's `lib/order-lines.js`, empty state, READ-ONLY — no „Otvoriť"),
+  new `portal-history.spec.js` (15 tests).
+  ⚠ **The duplication is the point and is argued at the definition:** 17's `STEPS` are long sentences for
+  a timeline read one step at a time; these are badges in a scanned list. §1 of the spec imports BOTH libs
+  with plain `node` and pins that no short form is one of 17's six (non-vacuity on both harvests), so a
+  future „fix" that merges them reds 4 rather than shipping a badge with a subordinate clause in it.
+  ⚠ **Guards, measured both ways:** per-row pending reds 1 when shared (M4), the keyed cache reds 3 when
+  collapsed to one pair (M5′), the `hasOrder` filter reds 3 (M2), the cache reds 1 (M3) — and the per-row
+  `rowSeq` reds **0** (M5), which the source and the spec both SAY rather than implying a test that does
+  not exist (the PI-T5 §9 precedent).
+  ⚠⚠ **CLAUDE.md's „hold the call ≥4 s" rule is necessary and NOT sufficient, measured here:** `expect`
+  retries for `expect.timeout` (10 s), so the first version of the guard test watched the held response
+  land, saw the defect repair itself and passed the shared-pending mutation 15/15. Fixed with an 8 s hold
+  plus impatient `{ timeout: 3_000 }` assertions; CLAUDE.md amended in place.
+  ⚠ **One sanctioned retarget** (case (a)): `portal-landing.spec.js`'s „no `getOrderByFriend` in the
+  session" became unsatisfiable — §UC-PI-009 names that endpoint as the history loader — so the pin now
+  counts it at exactly 1 and requires it to sit inside `loadRoundLines`. **M8** (a second loader) still reds
+  it, so the property is re-pointed, not weakened.
+  Gate: **170 passed / 0 failed** over nine files (asked-vs-ran reconciled: 9 asked, 9 ran), server log
+  clean. `portal-history` alone: 15/15.
 - 2026-09-20 · PI-T5 · (this commit) · no PR (project convention) · **The LOCKED landing — own-order
   card, the first VERTICAL timeline on the portal, and the `readonly` flag finally split in two.**
   New `lib/order-lines.js` (the hoisted `CartLineList` mapping, dependency-free; PI-T6 is its second
