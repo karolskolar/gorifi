@@ -92,6 +92,17 @@ async function request(endpoint, options = {}) {
     // The workbench create-collision 409 names the existing row so the UI can
     // offer assign instead (12 §UC-PC-006).
     if (error.catalog_id) err.catalogId = error.catalog_id
+    // 16 §UC-DP-006/012 — the bulk hand-over's all-or-nothing 409 NAMES every
+    // offender in THREE lists, and the board highlights exactly those rows. The
+    // message alone cannot say which bag refused, so the lists have to survive the
+    // throw. ⚠ Carried under their wire names' camelCase, like `catalogId` above;
+    // additive, and nothing else reads these fields today.
+    if (error.reason) err.reason = error.reason
+    if (Array.isArray(error.order_ids)) err.orderIds = error.order_ids
+    if (Array.isArray(error.guest_order_ids)) err.guestOrderIds = error.guest_order_ids
+    if (Array.isArray(error.cancelled_guest_order_ids)) {
+      err.cancelledGuestOrderIds = error.cancelled_guest_order_ids
+    }
     throw err
   }
 

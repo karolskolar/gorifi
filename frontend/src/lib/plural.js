@@ -84,6 +84,25 @@ export function handedAdjective(count) {
   return 'odovzdaných'
 }
 
+// The VERB that agrees with `bagsLabel`'s count in the bulk-hand-over confirm
+// subtitle (16 §UC-DP-012): „1 balíček prejde" / „2 balíčky prejdú" /
+// „5 balíčkov prejde" — 2-4 takes the plural, 1 and 5+ take the singular, because
+// the genitive-plural form of 5+ governs a singular verb in Slovak.
+//
+// ⚠ Why this exists at all, and why it is NOT the six-branch mistake
+// `ordersAccusativeLabel` warns about: §UC-DP-012 writes the subtitle as
+// „{ready} balíčkov prejde do stavu Odovzdané." and adds „(plural per bagsLabel)",
+// i.e. it asks for the NOUN to be declined. Declining only the noun produces
+// „2 balíčky prejde" — broken Slovak on an admin screen, which CLAUDE.md's
+// language rule does not allow. Two branches in one home is the smallest thing
+// that fixes it; the alternative (baking the whole sentence into plural.js)
+// would move the copy away from the view that owns it. ⚠ Recorded for the
+// module-16 closeout (DP-T8) as a spec-text line for the PO, not a silent change.
+export function bagsMoveVerb(count) {
+  const n = Number(count) || 0
+  return n >= 2 && n <= 4 ? 'prejdú' : 'prejde'
+}
+
 // 1 položka / 2-4 položky / 5+ položiek — the cart-line count in the `.cartbar`
 // fold's own label. 0 takes the same form as 5+ ("0 položiek"), which is the
 // correct Slovak genitive plural and not a fallback.

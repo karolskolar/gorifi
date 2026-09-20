@@ -408,7 +408,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] DP-T5  Board shell after `ADist` (admin shadcn skin, no `neo/`): title + totals line, plan cards per target (two-tone progress, click-to-focus), group-by doručenie/stav/priateľ, stage filter tabs, group headers (badge, counts, „Štítky“ → placeholder route constant, „Odovzdať zabalené (n)“ disabled at 0), empty states; `lib/plural.js bagsLabel()` — `16 §UC-DP-010` ⚠ rows inside groups keep the SHIPPED per-friend card body as placeholder so `guest-distribution.spec.js` keeps passing; DP-T6 converts card → row. ⚠ NO „Správa skupine“ button (module 21 adds it); „Štítky“ route = PO supplies later (F7 built elsewhere). Starts `distribution-board.spec.js`.
 - [ ] FUP-T24  ⚠ **The kg display rule `Math.round(g/10)/100` has NO one home — FOUR copies now, and CLAUDE.md states it as a rule without naming a home.** Verified: `FriendOrder.vue:458`, `FriendPortalSession.vue:974`, `GuestProductGrid.vue:177`, and `Distribution.vue:452` (DP-T5 added the fourth **deliberately**, with a pointer, rather than refactor three shipped files under a board row — the right call there, the wrong steady state). ⚠ CLAUDE.md §Frontend says "kg display `Math.round(g/10)/100` with trailing zeros stripped" — a RULE with no address, which is exactly the shape this session has been correcting all week (`helpers/payment.js`, `helpers/delivery.js`, `e2e/helpers/copy-sweep.js` all started as two copies of a rule). ⚠ **Not urgent and not a defect:** all four agree today and the two-decimal result is exact for every gram value the app produces. It is a DRIFT SURFACE — four edits, four chances to diverge, and money-adjacent because the same number is what a friend reads as their share. ⚠ Scope: one home in `frontend/src/lib/` (beside `plural.js`), all four call sites converted, CLAUDE.md's bullet given the address, and the trailing-zeros half of the rule verified — **check whether all four actually strip them, since the bullet claims it and `${}` interpolation does it implicitly only for some values.** ⚠ Acceptance: a grep for the expression returns the one home; each converted surface keeps its shipped rendering **byte-identical** (pin the existing e2e text assertions first — `portal-fidelity`, `guest-order`, `order-cartbar` all render kg), and a mutation in the one home reddens all four surfaces.
 - [x] DP-T6  Board rows: Kto / Doručenie-obsah / Platba / Krok 1 Zabalené / Krok 2 Odovzdané; nested `via_host` guest rows READ-ONLY mirrors (PO: no clickable per-guest Odovzdané); Packeta address + phone; synthetic-host Krok 2 via bulk; click-to-expand row holding the shipped item checklist — EXPANDED while `to_pack`, collapsed after (PO); handed-over disabled states („Najprv zrušte odovzdanie“) + snap-back; print rules for the new DOM (`hidden print:flex`, pickers `print:hidden`, badges `print:inline-flex`) — `16 §UC-DP-011,007(frontend)` · model=heavy ⚠ after a pickup change: patch in place THEN re-fetch (loadSeq) — delivery/plan come from the server, never re-derived client-side. ⚠ `PickupLocationPicker` props `cycleId`+`friendId` (never an order id). ⚠ SANCTIONED: `guest-distribution.spec.js` selector retargets ONLY where the Card-per-friend layout is assumed (cite UC-DP-011); `guest-group-toggle/items/summary-<id>` preserved inside the expanded row. ⚠ Module-20 seam: a `packeta` guest party renders as its OWN row under Packeta („hosť · {host}“) — slot reserved here, filled by GP-T6.
-- [ ] DP-T7  Per-group bulk hand-over: „Odovzdať zabalené (n)“ → radix Dialog „Odovzdať zabalené?“ (subtitle + ledger-neutral banner; Zrušiť / Áno, odovzdané) → POST bulk → in-place patch + re-fetch + 3.5 s toast; 409 `not_packed` → Alert + row highlight — `16 §UC-DP-012` ⚠ the WhatsApp sentence in the modal and the „· n správ zaradených“ toast half are module 21's (`queued_notifications` ignored by the UI here).
+- [x] DP-T7  Per-group bulk hand-over: „Odovzdať zabalené (n)“ → radix Dialog „Odovzdať zabalené?“ (subtitle + ledger-neutral banner; Zrušiť / Áno, odovzdané) → POST bulk → in-place patch + re-fetch + 3.5 s toast; 409 `not_packed` → Alert + row highlight — `16 §UC-DP-012` ⚠ the WhatsApp sentence in the modal and the „· n správ zaradených“ toast half are module 21's (`queued_notifications` ignored by the UI here).
 - [ ] DP-T8  Admin cycle header: non-blocking plan line (locked + completed) + „Označiť ako dokončený“ relabelled **„Ukončiť objednávku“** with UX-ONLY gate (all parties handed over; PO: NO server 409 — pin that the API still completes with un-handed bags) on CycleDetail AND the board header; board header „Vytlačiť štítky“ placeholder + „· uzamknuté / · ukončené“ sub + **module-16 closeout (full suite, learnings, CLAUDE.md one-liners)** — `16 §UC-DP-014,010(header),015` ⚠ nothing here writes `order_cycles.stage` (17's) or `status` except the button; module 17's stage controls will share this header.
 
 ## 15. Cycle stages (17) — opens_at / closes_at / stage, timeline component
@@ -469,6 +469,54 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 
 ## Log
+
+- 2026-09-20 · DP-T7 · (this commit) · no PR (project convention) · **The group hand-over is wired** —
+  DP-T5's button gets its handler, behind a radix confirm („Odovzdať zabalené?", subtitle, ledger-neutral
+  banner, Zrušiť / Áno) → bulk POST → **patch in place, re-fetch under `loadSeq`, 3.5 s toast**; a refusal
+  raises a per-GROUP Alert and highlights exactly the rows the server named. No WhatsApp sentence and
+  `queued_notifications` **read and dropped** (module 21's half) — asserted absent. ⚠ **It sends PARTY ids**:
+  every packed party's `order_id`, else a packed synthetic host's live sub-order ids; a friend's nested guest
+  is **never listed** because it inherits inside the route's own transaction — DP-T4's asymmetry (an
+  explicitly listed guest with one unchecked item aborts a batch the same bag sails through when inherited).
+  Asserted on the wire **including the negative**, mutation-proven. Review added two supports: the payload's
+  guest list is already the LIVE set so a cancelled id can never be sent, and a party with only cancelled
+  bags is not emitted at all, so the fallback branch cannot produce an empty batch while the count is > 0.
+  ⚠⚠ **THE FOURTH VACUOUS-ASSERTION CLASS THIS SESSION, and the subtlest: the in-place patch was
+  UNPROVABLE.** Deleting `patchHandedOver` left the file GREEN, because the immediate re-fetch produced the
+  same result a moment later. Fixed by **holding the GET** so the row must read `handed` while `plan[]` still
+  shows the old numbers. **General rule, worth carrying:** *any* "patch then immediately re-fetch" pair is
+  untestable unless the test holds the second call. ⚠ Review then found the fix rested on ~300–500 ms of
+  slack — enough that a slow round on this 2-core box could let the mutant read green **again**, quietly
+  undoing the thing it had just found. Hold raised 2.5 s → **4.5 s**, and the toast-lifetime measurement
+  moved INSIDE the held window so it measures the timer rather than "some time before the re-fetch landed".
+  ⚠ **A disabled attribute does NOT stop a dispatched click reaching the handler** — the review verified this
+  empirically in a throwaway browser (a real `click()` fires nothing; `dispatchEvent` fires twice), so the JS
+  in-flight guard is load-bearing, not decorative. ⚠ **REVIEW FOUND A REFUSAL THAT COULD BECOME
+  UNCLEARABLE** — the same stale-advice failure DP-T6 fixed, one scope up: opening any group's dialog wiped
+  the highlight map GLOBALLY but cleared only that group's message, so another group's Alert stayed with
+  nothing highlighted, and the clearing path then early-returned. With that group's ready count at 0 (exactly
+  the case where the offender was its last packed bag) there was **no path short of a reload**. Fixed by
+  keying the refusal map **per group**, so a message and its highlights share a scope. ⚠ **The implementer
+  closed the other end too, which the keying alone did not:** a refusal naming nothing this board can resolve
+  now goes to the PAGE banner, which every row action already clears — stated as an invariant: **a group
+  Alert always has at least one highlighted row, because those rows are what clear it.** It also flagged that
+  the orchestrator's sketched test assertion paired with the *other* fix option and adapted it rather than
+  silently following it. ⚠ **Recorded, not fixed:** the radix **overlay** lives in the shared
+  `DialogContent.vue` and carries no print rule, so a sheet printed with ANY admin modal open still gets the
+  dim layer — one token in a shipped primitive every admin view consumes, left for DP-T8 rather than changing
+  a shared component under a board row (no spec asserts those class strings). ⚠ **Two paired invariants
+  written down:** the toast counts the SNAPSHOT, not what the server stamped, so a bag handed over elsewhere
+  between open and confirm keeps the sentence true but not wholly this click's; and **the single dialog ref
+  is safe ONLY because the modal is undismissable while its batch is in flight** — `closeHandoverDialog()`
+  refuses while pending and `confirmHandover()` nulls the ref, so a second group's dialog can never be open
+  when the first completes. Relaxing the dismissal rule must key the dialog per group first. ⚠ Deviation,
+  declared, needs a PO line at DP-T8: §UC-DP-012's subtitle pairs a plural noun with a singular verb —
+  „2 balíčky prejde" is ungrammatical. `bagsMoveVerb()` added to `lib/plural.js` (the declared one home for
+  count-agreeing forms, same bare-form shape as `handedAdjective`); review confirmed it agrees with the noun
+  for every n including 0, 22 and the 5+ genitive. **The spec text is what disagrees, not the code.**
+  Review: 1 round → **approve** (0 blocker, 0 major, 2 minor + 1 margin, all addressed). Gate: `vite build`
+  + `node --check` clean; forbidden-token sweep NONE; two shipped specs byte-untouched; orchestrator's own
+  **206 then 224 passed / 0 failed / 0 SKIPPED**.
 
 - 2026-09-20 · DP-T6 · (this commit) · no PR (project convention) · **Board rows — the board becomes the
   admin's working surface.** Five columns per party (`bag-row-<id>`, `data-stage`, dimmed once done); nested

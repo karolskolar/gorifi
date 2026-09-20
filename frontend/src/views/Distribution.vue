@@ -1,14 +1,17 @@
 <script setup>
-import { ref, computed, onMounted, watchEffect } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from '@/components/ui/dialog'
 import BalanceBadge from '@/components/BalanceBadge.vue'
 import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
-import { bagsLabel, packedAdjective, handedAdjective, guestsLabel } from '../lib/plural'
+import { bagsLabel, packedAdjective, handedAdjective, guestsLabel, bagsMoveVerb } from '../lib/plural'
 
 const route = useRoute()
 const router = useRouter()
@@ -157,6 +160,10 @@ async function togglePacked(friend) {
   // `toggleItem()` — the two doors that act on the advice — exactly where the
   // global `error` is cleared.
   setRowError(String(friend.id), '')
+  // ⚠ And so does the GROUP's refusal highlight (DP-T7): „Niektoré balíčky už nie
+  // sú zabalené" points at THIS row, and packing it is the admin taking that
+  // advice — same rule, one line up.
+  clearRefusal(friend.id)
   try {
     await api.togglePacked(friend.order_id)
     await loadData()
@@ -269,6 +276,7 @@ async function toggleItem(friend, group, item) {
   // Same reason as in `togglePacked()`: ticking the item that was holding the
   // gate closed is the admin acting on the row's refusal, so the refusal goes.
   setRowError(String(friend.id), '')
+  clearRefusal(friend.id)
   try {
     const updated = group.kind === 'guest'
       ? await api.toggleGuestItemPacked(item.id)
@@ -712,6 +720,322 @@ async function toggleHandover(friend, event) {
     setPartyPending(key, false)
   }
 }
+
+// ── DP-T7 (16 §UC-DP-012): the group hand-over ──────────────────────────────
+//
+// „Odovzdať zabalené (n)" — rendered and counted by DP-T5, wired here: a radix
+// confirm, ONE bulk POST, an in-place patch, a re-fetch and a 3.5 s toast; a
+// refusal closes the modal, says one sentence on the group that refused, and
+// highlights the rows the SERVER named.
+//
+// ⚠ What is deliberately NOT here:
+//   • the modal's WhatsApp sentence and the „· n správ zaradených" half of the
+//     toast — module 21's (resolved conflict 3). `queued_notifications` IS read
+//     off the response (it has to be, it is in the body) and DROPPED.
+//   • a bulk REVERSAL. Phase 2 by spec; the per-bag route is the only way back.
+
+/**
+ * ⚠⚠ WHICH IDENTIFIERS GO ON THE WIRE — the one decision this row had to make,
+ * and DP-T4 recorded the reason it is not „everything I can see":
+ *
+ *   an EXPLICITLY listed guest with one unchecked item aborts the whole batch,
+ *   while the SAME bag merely INHERITED from its host sails through, because
+ *   §UC-DP-004 puts no pack gate on inheritance.
+ *
+ * So a group sends PARTY identifiers:
+ *   • a friend party  → its `order_id`; its nested `via_host` guests are left to
+ *                       inherit inside the route's own transaction,
+ *   • a SYNTHETIC host → the live ids of its sub-orders, because that IS its bag
+ *                       (there is no `orders` row to stamp).
+ * Sending A's nested guest alongside A's order would buy nothing and could turn a
+ * batch that must succeed into a 409 over a bag that travels inside another one.
+ *
+ * ⚠ Module-20 seam: when GP-T6 emits a Packeta guest as its OWN party, it arrives
+ * here as a party with no `order_id` and its own sub-order in `guest_orders[]` —
+ * i.e. the synthetic-host branch already sends it, with no new case.
+ */
+function groupBatch(group) {
+  const orderIds = []
+  const guestOrderIds = []
+  const partyIds = []
+  for (const party of group.parties) {
+    // `stage === 'packed'` ONLY — the same rule `groupReadyCount()` counts by, so
+    // the button's number and the batch can never disagree. A `handed` party is
+    // done, not ready.
+    if ((party.stage || 'to_pack') !== 'packed') continue
+    partyIds.push(party.id)
+    if (party.order_id) orderIds.push(party.order_id)
+    else guestOrderIds.push(...liveGuestIds(party))
+  }
+  return { orderIds, guestOrderIds, partyIds }
+}
+
+// ⚠ PER GROUP, NEVER ONE GLOBAL FLAG (DP-T5 named this as the trap). Two drops can
+// be recorded from two group buttons in the same breath, and a shared flag would
+// swallow the second — the same discipline `pendingParties` / `pendingItems` keep.
+const pendingGroups = ref({})
+// The refusal's sentence, on the group that refused. Also per group: a banner at
+// the top of the board would blame a drop the admin never touched.
+const groupErrors = ref({})
+// The parties the server NAMED in its 409 — `{ [groupKey]: { [partyId]: true } }`.
+//
+// ⚠⚠ THE MESSAGE AND ITS HIGHLIGHTS SHARE A SCOPE, and that is the whole point.
+// This map used to be FLAT while the sentences were per group, so opening any
+// group's dialog wiped EVERY group's highlights while clearing only its own
+// sentence — leaving another group's Alert standing with nothing to point at. The
+// clearing path then early-returned on the missing highlight, so that sentence
+// became UNCLEARABLE short of a reload, and worst exactly where it hurts: when the
+// offender was that group's last packed bag its button sits at 0 and disabled, so
+// even re-opening the dialog was gone. The same stale-advice failure this code
+// exists to prevent, one scope up. (Review finding, DP-T7.)
+//
+// The invariant it buys, and the one to keep: **a group Alert always has at least
+// one highlighted row** — which is what makes it clearable by packing that bag.
+// `confirmHandover` enforces the other half: a refusal that names nothing this
+// board can resolve falls back to the page-level banner instead of minting a
+// group sentence with no rows under it.
+const refusedParties = ref({})
+
+function isGroupPending(key) {
+  return !!pendingGroups.value[String(key)]
+}
+
+function setGroupPending(key, value) {
+  const next = { ...pendingGroups.value }
+  if (value) next[String(key)] = true
+  else delete next[String(key)]
+  pendingGroups.value = next
+}
+
+function groupError(group) {
+  return groupErrors.value[String(group.key)] || ''
+}
+
+function setGroupError(key, message) {
+  const next = { ...groupErrors.value }
+  if (message) next[String(key)] = message
+  else delete next[String(key)]
+  groupErrors.value = next
+}
+
+function isRefused(friend) {
+  const id = String(friend.id)
+  return Object.values(refusedParties.value).some((named) => named[id])
+}
+
+/** One group's refusal, message and highlights together — never one without the other. */
+function clearGroupRefusal(key) {
+  const k = String(key)
+  if (refusedParties.value[k]) {
+    const next = { ...refusedParties.value }
+    delete next[k]
+    refusedParties.value = next
+  }
+  setGroupError(k, '')
+}
+
+/**
+ * The refusal is ADVICE („some bags are no longer packed"), and the moment the
+ * admin acts on it the sentence is false — DP-T6's stale-refusal lesson, applied
+ * without re-learning it. Packing a named bag drops its highlight, and a group
+ * whose last highlight goes drops its sentence with it: the sentence is only true
+ * while it has rows to point at.
+ *
+ * ⚠ Deliberately NOT cleared in `loadData()`: that runs on the FAILURE path too
+ * (right after the refusal is written) and would wipe the message in the same tick.
+ */
+function clearRefusal(friendId) {
+  const id = String(friendId)
+  const next = {}
+  let touched = false
+  for (const [key, named] of Object.entries(refusedParties.value)) {
+    if (!named[id]) {
+      next[key] = named
+      continue
+    }
+    touched = true
+    const rest = { ...named }
+    delete rest[id]
+    if (Object.keys(rest).length > 0) next[key] = rest
+    else setGroupError(key, '')
+  }
+  if (!touched) return
+  refusedParties.value = next
+}
+
+const HANDOVER_TOAST_MS = 3500
+const handoverToast = ref('')
+// ⚠ A plain `let` inside `<script setup>` is PER INSTANCE, which is what a timer
+// must be — the module-scope note in CLAUDE.md is about singletons, and a toast
+// timer shared between two mounted boards would cancel the wrong one.
+let toastTimer = null
+
+function showHandoverToast(text) {
+  handoverToast.value = text
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    handoverToast.value = ''
+    toastTimer = null
+  }, HANDOVER_TOAST_MS)
+}
+
+onBeforeUnmount(() => {
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = null
+})
+
+// ⚠ A SNAPSHOT, taken when the modal OPENS. The subtitle promises a count, and the
+// confirm must post exactly the bags that count described — §UC-DP-012's own
+// acceptance is the stale case (un-pack one behind the screen's back between open
+// and confirm ⇒ the Alert, and nothing written). Recomputing at confirm time would
+// quietly hand over a different set than the one the admin agreed to.
+//
+// ⚠⚠ ONE REF FOR THE WHOLE BOARD, AND IT IS SAFE ONLY BECAUSE THE MODAL IS
+// UNDISMISSABLE WHILE ITS BATCH IS IN FLIGHT. The two decisions hold each other
+// up: `closeHandoverDialog()` refuses while the group is pending, and
+// `confirmHandover()` ends by setting this ref to `null` — so there can never be
+// a SECOND group's dialog open when the first group's request completes. Let the
+// admin dismiss the modal mid-post and a completing batch would blank the dialog
+// they opened next, cancelling a hand-over they had already agreed to. Anything
+// that relaxes the dismissal rule must key the dialog per group first.
+const handoverDialog = ref(null)
+
+function openHandoverDialog(group) {
+  if (isGroupPending(group.key)) return
+  const ready = groupReadyCount(group)
+  if (ready === 0) return
+  const batch = groupBatch(group)
+  // ⚠ THIS GROUP's refusal only. Wiping every group's highlights here is exactly
+  // the bug the `refusedParties` note above records — another drop's sentence
+  // must survive an unrelated group's dialog, or it survives with nothing under it.
+  clearGroupRefusal(group.key)
+  handoverDialog.value = { key: group.key, title: group.title, ready, ...batch }
+}
+
+function closeHandoverDialog() {
+  // The modal stays up while the batch is in flight: closing it mid-request would
+  // hide the only pending affordance and invite a second click on the group button.
+  if (handoverDialog.value && isGroupPending(handoverDialog.value.key)) return
+  handoverDialog.value = null
+}
+
+const handoverSubtitle = computed(() => {
+  const snapshot = handoverDialog.value
+  if (!snapshot) return ''
+  const n = snapshot.ready
+  return `${snapshot.title} · ${bagsLabel(n)} ${bagsMoveVerb(n)} do stavu Odovzdané.`
+})
+
+/**
+ * PATCH IN PLACE, **THEN RE-FETCH** — the same two halves as `onPickupUpdated()`,
+ * for the same two reasons: the patch keeps the admin's place (a reload would
+ * re-collapse every guest fold in a long picking list), the re-fetch keeps the
+ * board honest (`plan[]`, `totals` and the grouping are the server's).
+ *
+ * ⚠ Only the parties this call actually moved, and only bags with no stamp of
+ * their own: DP-T4's response reports the BATCH stamp, while a colleague who
+ * ordered after their host's bag went out keeps that BAG's older stamp. Painting
+ * the batch stamp over everything would invent a string no row carries — which is
+ * exactly why the re-fetch immediately follows.
+ */
+function patchHandedOver(snapshot, result) {
+  const stamp = result?.handed_over_at
+  if (!stamp) return
+  const ids = new Set(snapshot.partyIds)
+  for (const party of distribution.value) {
+    if (!ids.has(party.id)) continue
+    if (!party.handed_over_at) {
+      party.handed_over_at = stamp
+      party.stage = 'handed'
+    }
+    for (const guest of party.guest_orders || []) {
+      if (guest.handed_over_at) continue
+      guest.handed_over_at = stamp
+      guest.stage = 'handed'
+    }
+  }
+}
+
+/**
+ * The 409 names offenders in THREE lists (`order_ids`, `guest_order_ids`,
+ * `cancelled_guest_order_ids`) — DP-T4 listed cancelled bags separately on
+ * purpose. The board works in PARTIES, so each named id is resolved back to the
+ * row that owns it: an order id to its party, a sub-order id to the party whose
+ * `guest_orders[]` holds it (which covers a synthetic host's own bags and a
+ * nested guest alike).
+ */
+function markRefusedParties(key, err) {
+  const orderIds = new Set((err.orderIds || []).map(Number))
+  const guestIds = new Set([
+    ...(err.guestOrderIds || []),
+    ...(err.cancelledGuestOrderIds || []),
+  ].map(Number))
+  const named = {}
+  let count = 0
+  for (const party of distribution.value) {
+    const hit = (party.order_id && orderIds.has(Number(party.order_id)))
+      || (party.guest_orders || []).some((guest) => guestIds.has(Number(guest.id)))
+    if (!hit) continue
+    named[String(party.id)] = true
+    count += 1
+  }
+  if (count > 0) refusedParties.value = { ...refusedParties.value, [String(key)]: named }
+  // The caller decides where the sentence goes — see the invariant on
+  // `refusedParties`: a group Alert with no rows under it cannot be cleared.
+  return count
+}
+
+// §UC-DP-012 step 4 pins this sentence, and it says something the server cannot
+// know (that the list was refreshed). Any OTHER refusal — a cancelled bag, a
+// `foreign_id` — falls back to the SERVER's own words rather than a guess, the
+// rule the per-row errors already follow.
+function refusalSentence(err) {
+  return err?.reason === 'not_packed'
+    ? 'Niektoré balíčky už nie sú zabalené — zoznam bol obnovený.'
+    : (err?.message || 'Odovzdanie sa nepodarilo')
+}
+
+async function confirmHandover() {
+  const snapshot = handoverDialog.value
+  if (!snapshot) return
+  // ⚠ THE SECOND CLICK. The button is `disabled` while in flight — this is the
+  // layer under it, because a second POST would be a second all-or-nothing batch
+  // over the same bags.
+  if (isGroupPending(snapshot.key)) return
+
+  setGroupPending(snapshot.key, true)
+  clearGroupRefusal(snapshot.key)
+  try {
+    const result = await api.handOverDistributionBatch(cycleId, snapshot.orderIds, snapshot.guestOrderIds)
+    patchHandedOver(snapshot, result)
+    handoverDialog.value = null
+    // ⚠ The unit is the BAG, i.e. the PARTY — the same unit `bagsLabel`,
+    // `plan[].count` and `totals.count` use, so a host and the guest bags inside
+    // their parcel are ONE balíček. `handed_over` in the response counts ROWS
+    // (a synthetic host's three sub-orders are three), which would read as three
+    // balíčky for one drop. ⚠ `result.queued_notifications` is read and dropped:
+    // module 21 owns the „· n správ zaradených" half of this sentence.
+    showHandoverToast(`${bagsLabel(snapshot.ready)} ${handedAdjective(snapshot.ready)}`)
+    await loadData()
+  } catch (e) {
+    handoverDialog.value = null
+    // ⚠ THE INVARIANT: a group sentence only exists while it has rows to point at,
+    // because those rows are what clear it. A refusal this board cannot resolve to
+    // a party (a `foreign_id` on an id that left the cycle between load and
+    // confirm — not reachable from the payload today, since DP-T2 emits only live
+    // in-cycle bags) goes to the PAGE-level banner instead, which every row action
+    // already clears.
+    if (markRefusedParties(snapshot.key, e) > 0) {
+      setGroupError(snapshot.key, refusalSentence(e))
+    } else {
+      error.value = refusalSentence(e)
+    }
+    // The server wrote nothing; the board says what it really holds.
+    await loadData()
+  } finally {
+    setGroupPending(snapshot.key, false)
+  }
+}
 </script>
 
 <template>
@@ -895,17 +1219,31 @@ async function toggleHandover(friend, event) {
               >
                 Štítky
               </Button>
-              <!-- DP-T7 attaches the confirm modal and the bulk POST; here it only
-                   counts and refuses to be clickable at zero. -->
+              <!-- DP-T7: the confirm modal and the bulk POST. Still refuses to be
+                   clickable at zero, and now also while ITS OWN batch is in
+                   flight — never while another group's is. -->
               <Button
                 size="sm"
-                :disabled="groupReadyCount(group) === 0"
+                :disabled="groupReadyCount(group) === 0 || isGroupPending(group.key)"
                 :data-testid="`handover-group-${group.key}`"
+                @click="openHandoverDialog(group)"
               >
                 Odovzdať zabalené ({{ groupReadyCount(group) }})
               </Button>
             </div>
           </div>
+
+          <!-- The group's own refusal, on the group that refused (§UC-DP-012
+               step 4). Not a page-level banner: a drop the admin never touched
+               must not wear another drop's red line. -->
+          <Alert
+            v-if="groupError(group)"
+            variant="destructive"
+            class="print:hidden"
+            :data-testid="`handover-alert-${group.key}`"
+          >
+            <AlertDescription class="text-sm">{{ groupError(group) }}</AlertDescription>
+          </Alert>
 
           <div
             v-if="group.parties.length === 0"
@@ -929,9 +1267,14 @@ async function toggleHandover(friend, event) {
           :key="friend.id"
           :data-testid="`bag-row-${friend.id}`"
           :data-stage="friend.stage || 'to_pack'"
+          :data-refused="isRefused(friend) ? 'true' : 'false'"
           :class="[
             'print:shadow-none print:border print:break-inside-avoid',
-            friend.packed || isHandedOver(friend) ? 'opacity-50' : ''
+            friend.packed || isHandedOver(friend) ? 'opacity-50' : '',
+            // §UC-DP-012 step 4: the rows the SERVER named in its 409, so the
+            // admin knows which bag to go back to. `print:ring-0` — a highlight is
+            // a screen tool, the sheet is the bags.
+            isRefused(friend) ? 'ring-2 ring-destructive print:ring-0' : ''
           ]"
         >
           <CardContent class="p-4">
@@ -1379,7 +1722,77 @@ async function toggleHandover(friend, event) {
         </section>
         </template>
       </div>
+
+      <!-- ── DP-T7 (16 §UC-DP-012): the confirm ─────────────────────────────
+           A radix `Dialog` — the admin skin's overlay primitive, which portals
+           itself to `body`. Never a hand-rolled fixed div (CLAUDE.md §Frontend). -->
+      <Dialog :open="!!handoverDialog" @update:open="$event ? null : closeHandoverDialog()">
+        <!-- `print:hidden` — §UC-DP-011's print list names modals alongside the
+             pickers and the toolbar: a confirmation printed over a picking sheet
+             is a black box across the bags. ⚠ It covers the CONTENT box only; the
+             radix OVERLAY is the shared primitive's own element and carries no
+             print rule (`DialogContent.vue`, `bg-black/80 fixed inset-0`), so a
+             sheet printed with ANY admin modal open still gets the dim layer.
+             Recorded for the module closeout rather than patched here — it is one
+             token in a shipped shared component that every admin view consumes,
+             not a board-row change. -->
+        <DialogContent class="max-w-md print:hidden" data-testid="handover-dialog">
+          <DialogHeader>
+            <DialogTitle>Odovzdať zabalené?</DialogTitle>
+            <DialogDescription data-testid="handover-subtitle">
+              {{ handoverSubtitle }}
+            </DialogDescription>
+          </DialogHeader>
+
+          <!-- ⚠ THE BANNER MAKES A CLAIM ABOUT MONEY, and the claim is true by
+               construction: `helpers/packing.js` is the one ledger moment and a
+               hand-over writes no `transactions` row in either direction
+               (§UC-DP-004/006, pinned from both sides in e2e). ⚠ The prototype's
+               second sentence — the WhatsApp one — is module 21's by resolved
+               conflict 3 and is deliberately absent. -->
+          <div
+            class="rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground"
+            data-testid="handover-ledger-note"
+          >
+            Hostia v balíku hostiteľa sa označia spolu s ním.
+            Peniaze sa nemenia — účtovanie prebehlo pri zabalení.
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              data-testid="handover-cancel"
+              :disabled="handoverDialog ? isGroupPending(handoverDialog.key) : false"
+              @click="closeHandoverDialog"
+            >
+              Zrušiť
+            </Button>
+            <Button
+              data-testid="handover-confirm"
+              :disabled="handoverDialog ? isGroupPending(handoverDialog.key) : false"
+              @click="confirmHandover"
+            >
+              {{ handoverDialog && isGroupPending(handoverDialog.key) ? 'Odovzdávam…' : 'Áno, odovzdané' }}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </main>
+
+    <!-- The toast. `Teleport` rather than a fixed div in the tree: the sanctioned
+         escape hatch (CLAUDE.md §Frontend), so no ancestor's stacking context can
+         park it behind the board. Screen-only, like every other control here. -->
+    <Teleport to="body">
+      <div
+        v-if="handoverToast"
+        data-testid="handover-toast"
+        role="status"
+        aria-live="polite"
+        class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white shadow-lg print:hidden"
+      >
+        {{ handoverToast }}
+      </div>
+    </Teleport>
   </div>
 </template>
 
