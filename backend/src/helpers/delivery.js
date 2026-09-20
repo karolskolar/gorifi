@@ -82,7 +82,9 @@ function locationRow(id, locationsById) {
   // ⚠ Looked up WITHOUT `active = 1`: a location soft-deleted after a party chose
   // it must still name itself, or a perfectly well defined bag goes nameless on
   // the board (`DELETE /api/pickup-locations/:id` deactivates rather than deletes
-  // once an order references it).
+  // once ~~an order~~ **anything** references it — `helpers/pickup.js`
+  // `pickupLocationInUse()`, FUP-T23; it used to count `orders` alone, which is how
+  // a genuinely DANGLING id became reachable through the API at all).
   //
   // ⚠ SECOND HOME OF THAT ONE RULE, ON PURPOSE — `helpers/pickup.js` `pickupOf()`
   // holds the other. Reuse is not clean (it answers the admin badge's

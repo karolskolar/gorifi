@@ -34,13 +34,21 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 //     guests in — that is the cycle-level side of the rule, and it is asserted to
 //     the gram.
 //
-//  4. **A dangling pickup location must not break the board.** `DELETE
+//  4. **A dangling pickup location must not break the board.** `helpers/delivery.js`
+//     (DP-T1) tolerates a `loc<id>` whose row is gone by design; this file pins that
+//     the payload does too, all the way up into `plan[]` (a card with a null label,
+//     never a crash and never a dropped bag).
+//     ⚠ ~~The fixture reaches that state through the API: `DELETE
 //     /api/pickup-locations/:id` only soft-deletes when an `orders` row references
-//     it — a party whose pickup lives on `guest_order_links` (a host with no own
-//     order) is invisible to that check, so the row is really deleted and the party
-//     keeps a `loc<id>` key with NO name. `helpers/delivery.js` (DP-T1) tolerates
-//     that by design; this file pins that the payload does too, all the way up into
-//     `plan[]` (a card with a null label, never a crash and never a dropped bag).
+//     the point, and a party whose pickup lives on `guest_order_links` (a host with
+//     no own order) is invisible to that check.~~ **THAT WAS THE BUG — FIXED by
+//     FUP-T23**, which routes the guard through `helpers/pickup.js
+//     pickupLocationInUse()` (both stores). So the API now soft-deletes that point
+//     too, and section 2 below split in two: the API-reachable half asserts the
+//     RETIRED point still names its group (ungated — it is the regression guard for
+//     the fix), and the genuinely dangling half moved to its own describe behind a
+//     `DB_PATH` skip, because a direct write is the only way left to manufacture a
+//     dangling id at all. `pickup-location-delete.spec.js` owns the delete itself.
 //
 //  5. **Zero-count plan cards.** A location configured and active for this cycle's
 //     type shows „0“ even with nobody on it — otherwise the admin cannot tell „no
@@ -357,8 +365,11 @@ test.describe('DP-T2 · 16 §UC-DP-003 — the distribution payload', () => {
   // orders are scoped to this file's own cycles and do not do that; locations are.
   //
   // Nothing here is needed once the file is done, so it is retired. `DELETE`
-  // soft-deletes the one orders reference and really deletes the two nobody chose —
-  // either way they leave the picker's active list.
+  // soft-deletes the one point a party REFERENCES and really deletes the two nobody
+  // chose — either way they leave the picker's active list. (Still true here, and
+  // still for the same reason; but since FUP-T23 "referenced" means EITHER store,
+  // not `orders` alone — `helpers/pickup.js` `pickupLocationInUse()`. These three
+  // happen to be orders-referenced, which is why the outcomes did not move.)
   test.afterAll(async () => {
     for (const loc of [fx.L, fx.Z, fx.bakeryOnly]) {
       if (!loc) continue
@@ -619,10 +630,17 @@ test.describe('DP-T2 · 16 §UC-DP-003 — the distribution payload', () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. The host with NO own order — the synthetic party. Its pickup lives on
-//    `guest_order_links`, which `DELETE /api/pickup-locations/:id` does not look
-//    at, so the location row is really gone and the key dangles.
+//    `guest_order_links`.
+//
+//    ⚠ REWRITTEN BY FUP-T23. This fixture used to build a DANGLING location by
+//    leaning on the bug that row fixed: `DELETE /api/pickup-locations/:id` counted
+//    `orders` alone, so a point held only by the link store was really deleted.
+//    It now soft-deletes, and that is what this describe pins — a RETIRED point
+//    still names the group it holds. The dangling case is a describe of its own
+//    below, behind a `DB_PATH` skip, because after the fix no API path produces a
+//    dangling id (which is the fix, stated as a fixture).
 // ─────────────────────────────────────────────────────────────────────────────
-test.describe('DP-T2 · the synthetic host: derived hand-over and a dangling location', () => {
+test.describe('DP-T2 · the synthetic host: derived hand-over and a RETIRED location', () => {
   test.describe.configure({ mode: 'serial' })
 
   const fx = {}
@@ -657,9 +675,15 @@ test.describe('DP-T2 · the synthetic host: derived hand-over and a dangling loc
     })
     expect(set.status(), 'pickup set on the link store').toBe(200)
 
-    // …and now the location is deleted outright: the soft-delete check only reads
-    // `orders`, and this party has none.
+    // …and now the admin retires the location. Since FUP-T23 the guard asks
+    // `helpers/pickup.js pickupLocationInUse()`, which sees the LINK store too, so
+    // this SOFT-deletes (`active = 0`) instead of destroying the row.
     expect((await admin(`/api/pickup-locations/${fx.D.id}`, { method: 'delete' })).status()).toBe(204)
+    const all = await admin('/api/pickup-locations/all')
+    expect(all.status()).toBe(200)
+    const row = (await all.json()).find((r) => r.id === fx.D.id)
+    expect(row, 'FUP-T23: the row survives — the link store is a reference').toBeTruthy()
+    expect(row.active, 'retired, not destroyed').toBe(0)
   })
 
   // The witness is a globally visible active location like any other — retire it for
@@ -670,7 +694,7 @@ test.describe('DP-T2 · the synthetic host: derived hand-over and a dangling loc
     expect([204, 404], 'witness location retired').toContain(res.status())
   })
 
-  test('a dangling pickup id keeps its key and loses only its label', async () => {
+  test('a RETIRED pickup point still names the group it holds', async () => {
     const body = await payload(fx.cycle.id)
 
     expect(body.distribution.length, 'exactly the synthetic host').toBe(1)
@@ -680,11 +704,13 @@ test.describe('DP-T2 · the synthetic host: derived hand-over and a dangling loc
     expect(party.order_id).toBe(null)
     expect(party.phone).toBe('0909 999 999')
     expect(party.kg, '2 × 250 g live; the cancelled 2 kg counts nowhere').toBe(500)
+    // ⚠ NAMED, not null: `pickupOf()` / `delivery.js locationRow()` look the row up
+    // WITHOUT `active = 1`, and since FUP-T23 the row is still THERE to look up.
     expect(party.delivery).toEqual({
       type: 'pickup',
       target_key: `loc${fx.D.id}`,
-      target_label: null,
-      target_detail: null,
+      target_label: fx.D.name,
+      target_detail: fx.D.address,
       phone: null,
     })
 
@@ -692,26 +718,36 @@ test.describe('DP-T2 · the synthetic host: derived hand-over and a dangling loc
     expect(guest.delivery).toEqual({
       type: 'via_host',
       target_key: `loc${fx.D.id}`,
-      target_label: null,
+      target_label: fx.D.name,
       target_detail: `cez ${fx.host.name}`,
       phone: '0911 111 111',
     })
 
-    // the plan card renders the same nameless group rather than dropping the bag
+    // the plan card carries the bag under that same named group
     expect(body.plan.length, 'non-vacuity: the plan is not empty').toBeGreaterThan(0)
     const occupied = body.plan.filter((entry) => entry.count > 0)
     expect(occupied.map((e) => e.target_key)).toEqual([`loc${fx.D.id}`])
     expect(occupied[0]).toEqual({
-      target_key: `loc${fx.D.id}`, target_label: null, type: 'pickup',
+      target_key: `loc${fx.D.id}`, target_label: fx.D.name, type: 'pickup',
       count: 1, packed_count: 0, handed_count: 0, kg: 500,
     })
 
-    // and `locations[]` cannot name a row that no longer exists
+    // `locations[]` is REFERENCE-driven, not active-driven, so the retired point is
+    // still published for the board's own lookups…
+    expect(body.locations.some((row) => row.id === fx.D.id), 'the retired row is still named').toBe(true)
     expect(
       body.locations.some((row) => row.id === fx.witness.id),
-      'non-vacuity: a live active point IS listed, so the absence below means something'
+      'non-vacuity: a live active point IS listed too'
     ).toBe(true)
-    expect(body.locations.some((row) => row.id === fx.D.id), 'the deleted row is not listed').toBe(false)
+
+    // …while the EDITABLE picker list has genuinely lost it, which is what a soft
+    // delete is for. (The witness is the non-vacuity gate for that absence — with no
+    // template, `seed.mjs` creates no pickup location at all.)
+    const picker = await ctx.get('/api/pickup-locations?type=coffee', { timeout: TIMEOUT })
+    expect(picker.status()).toBe(200)
+    const listed = await picker.json()
+    expect(listed.some((row) => row.id === fx.witness.id), 'non-vacuity: the picker lists live points').toBe(true)
+    expect(listed.some((row) => row.id === fx.D.id), 'a retired point is off the picker').toBe(false)
   })
 
   test('a synthetic host packs through the guest items and inherits their hand-over', async () => {
@@ -771,6 +807,120 @@ test.describe('DP-T2 · the synthetic host: derived hand-over and a dangling loc
     expect(body.distribution[0].handed_over_at, 'one live bag is back in hand').toBe(null)
     expect(body.distribution[0].stage).toBe('packed')
     expect((await handOverGuest(fx.g1.id, false)).status()).toBe(200)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2b. THE GENUINELY DANGLING ID — a `loc<id>` key whose `pickup_locations` row is
+//     gone outright.
+//
+// ⚠ FUP-T23 RE-ARMED THIS FIXTURE. Up to that row it came for free: the delete
+// counted `orders` alone, so retiring a point held only by `guest_order_links`
+// destroyed the row. That is the bug, and it is fixed — BOTH writers of
+// `pickup_location_id` (`POST …/submit` and `PATCH …/pickup`) also refuse a point
+// that is not `active = 1`, so after the fix there is NO sequence of API calls that
+// leaves a party pointing at a row that does not exist. The fixture therefore has to
+// manufacture the state DIRECTLY, and this describe carries the documented
+// `DB_PATH` skip — the `guest-distribution.spec.js` „own:/guest: key collision"
+// precedent, where the file is needed to BUILD the scenario, not merely to add an
+// assertion.
+//
+// ⚠ IT IS STILL WORTH TESTING, and this is the reason: production databases written
+// before FUP-T23 already contain dangling ids, and the payload's tolerance of them
+// (`cycles.js`: the key is kept, only the label goes null, the bag is never dropped)
+// is a rule the fix does NOT retire. Deleting this describe with the bug would leave
+// that tolerance unpinned.
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('DP-T2 · a dangling pickup id keeps its key and loses only its label', () => {
+  test.describe.configure({ mode: 'serial' })
+  test.skip(!DB_PATH, 'needs DB_PATH: after FUP-T23 no API call can dangle a location')
+
+  const fx = {}
+
+  test.beforeAll(async () => {
+    fx.cycle = await makeCycle('Visiaci')
+    fx.product = await addProduct(fx.cycle.id)
+    fx.E = await makeLocation('Miesto E')
+    // The non-vacuity witness for „the deleted row is not listed", for exactly the
+    // reason the sibling describe records: with no template there may be no other
+    // active pickup point at all, and the absence would pass over an empty list.
+    fx.witness = await makeLocation('Miesto Svedok E')
+
+    const line = (variant, quantity) => [{ product_id: fx.product.id, variant, quantity }]
+
+    fx.host = await makeFriend('Visiaci', '0921 111 111')
+    const link = await shareLink(fx.host, fx.cycle.id)
+    fx.g1 = await submitGuest(link.token, `Visi Jedna ${uniq}`, '0922 222 222', line('250g', 1))
+
+    // The admin sets the party's pickup — no `orders` row, so it lands on the link.
+    const set = await admin(`/api/orders/cycle/${fx.cycle.id}/friend/${fx.host.id}/pickup`, {
+      method: 'patch', data: { pickup_location_id: fx.E.id },
+    })
+    expect(set.status(), 'pickup set on the link store').toBe(200)
+
+    // The API can only RETIRE it now (that is FUP-T23, and `pickup-location-delete
+    // .spec.js` owns that claim) …
+    expect((await admin(`/api/pickup-locations/${fx.E.id}`, { method: 'delete' })).status()).toBe(204)
+
+    // … so the row is destroyed by hand, which is the only door left. Scoped by id
+    // to a row this file created seconds ago via `uniq`; nothing else points at
+    // `pickup_locations.id` by foreign key.
+    const db = new DatabaseSync(DB_PATH)
+    try {
+      db.exec('PRAGMA busy_timeout = 5000')
+      db.prepare('DELETE FROM pickup_locations WHERE id = ?').run(fx.E.id)
+      const left = db.prepare('SELECT COUNT(*) AS n FROM pickup_locations WHERE id = ?').get(fx.E.id)
+      expect(Number(left.n), 'the row really is gone').toBe(0)
+    } finally {
+      db.close()
+    }
+  })
+
+  test.afterAll(async () => {
+    if (!fx.witness) return
+    const res = await admin(`/api/pickup-locations/${fx.witness.id}`, { method: 'delete' })
+    expect([204, 404], 'witness location retired').toContain(res.status())
+  })
+
+  test('the party keeps its key, the plan keeps the bag, and only the label is null', async () => {
+    const body = await payload(fx.cycle.id)
+
+    expect(body.distribution.length, 'exactly the synthetic host').toBe(1)
+    const party = body.distribution[0]
+    expect(party.id).toBe(fx.host.id)
+    expect(party.has_own_order, 'no own order').toBe(false)
+    expect(party.delivery).toEqual({
+      type: 'pickup',
+      target_key: `loc${fx.E.id}`,
+      target_label: null,
+      target_detail: null,
+      phone: null,
+    })
+
+    const guest = party.guest_orders.find((g) => g.id === fx.g1.id)
+    expect(guest.delivery).toEqual({
+      type: 'via_host',
+      target_key: `loc${fx.E.id}`,
+      target_label: null,
+      target_detail: `cez ${fx.host.name}`,
+      phone: '0922 222 222',
+    })
+
+    // the plan card renders the nameless group rather than dropping the bag
+    expect(body.plan.length, 'non-vacuity: the plan is not empty').toBeGreaterThan(0)
+    const occupied = body.plan.filter((entry) => entry.count > 0)
+    expect(occupied.map((e) => e.target_key)).toEqual([`loc${fx.E.id}`])
+    expect(occupied[0]).toEqual({
+      target_key: `loc${fx.E.id}`, target_label: null, type: 'pickup',
+      count: 1, packed_count: 0, handed_count: 0, kg: 250,
+    })
+
+    // and `locations[]` cannot name a row that no longer exists
+    expect(
+      body.locations.some((row) => row.id === fx.witness.id),
+      'non-vacuity: a live active point IS listed, so the absence below means something'
+    ).toBe(true)
+    expect(body.locations.some((row) => row.id === fx.E.id), 'the deleted row is not listed').toBe(false)
   })
 })
 

@@ -790,11 +790,18 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
     if (locId !== null) referencedIds.add(locId);
   }
 
-  // ⚠ A DANGLING id (the `pickup_locations` row is gone outright — reachable today,
-  // because `DELETE /api/pickup-locations/:id` only soft-deletes when an `orders`
-  // row references the point, and a host with no own order stores their pickup on
-  // `guest_order_links`) keeps its key and loses only its label. Dropping such a
-  // party from the plan would hide a real bag, so it is ordered in like any other.
+  // ⚠ A DANGLING id (the `pickup_locations` row is gone outright) keeps its key and
+  // loses only its label. Dropping such a party from the plan would hide a real bag,
+  // so it is ordered in like any other.
+  //
+  // ⚠ ~~Reachable today, because `DELETE /api/pickup-locations/:id` only soft-deletes
+  // when an `orders` row references the point, and a host with no own order stores
+  // their pickup on `guest_order_links`.~~ **FIXED by FUP-T23** — that delete now asks
+  // `helpers/pickup.js pickupLocationInUse()`, which knows BOTH stores, so no API
+  // path produces a dangling id any more. The tolerance STAYS: databases written
+  // before the fix still carry dangling ids, and a bag must never be dropped over a
+  // missing label. (The e2e fixture for it is now a DB_PATH-gated direct write —
+  // `distribution-handover.spec.js`.)
   const planLocationIds = [...new Set([...referencedIds, ...activeIds])];
   const orderedKeys = deliveryGroupOrder(planLocationIds.map((id) => ({ id })));
 

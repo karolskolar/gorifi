@@ -318,6 +318,29 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   `./tests`, and a file there with no `test()` fails the run. `guest-payment-modal.spec.js`
   and `money-rounding.spec.js` still carry their own older copies of the scanner; new specs
   import this one (PL-T4, 15 §UC-PL-009 item 7).
+- `tests/pickup-location-delete.spec.js` — FUP-T23: `DELETE /api/pickup-locations/:id`
+  and the TWO-STORE rule. The route used to guard itself with `SELECT COUNT(*) FROM
+  **orders** WHERE pickup_location_id = ?`, while `helpers/pickup.js` — the one home for
+  *which row stores a party's pickup* — says the store is the `orders` row if one exists
+  (ANY status) and the party's `guest_order_links` row otherwise. So a **host with no own
+  order** was invisible to that count and had their pickup point destroyed under them:
+  a `loc<id>` key with no row behind it. Data loss (the route is `requireAdmin`, so not a
+  security hole), reachable through the public API alone — DP-T2 hit it while building a
+  dangling-label fixture. The file is a **matched pair**: the same party, the same
+  assertions, differing only in which store holds the pickup — (a) a submitted own order,
+  (b) a DRAFT own order (`pickupTargetFor()` has no status filter), (c) a host with no own
+  order. (c) is mutation-proved: reverting `pickupLocationInUse()` to the `orders`-only
+  COUNT reddens exactly the two link-stored tests (`the row SURVIVES the delete`) while
+  (a) and (b) stay green. Every outcome is READ BACK through `GET /api/pickup-locations/all`,
+  because both a soft and a hard delete answer 204 — soft = the row is there with
+  `active: 0` and gone from the public picker list, hard = the row is gone from `/all` and a
+  second DELETE 404s. Two baselines keep "soft delete" from degenerating into "this route
+  deletes nothing" (a point nobody chose, and a point a party chose and then LEFT). One
+  test asserts the consequence the party feels — the distribution payload still NAMES the
+  retired point (`target_label`, the plan card, `locations[]`) — and one reads the route's
+  own source to pin that the reference question is asked in ONE place, since a second
+  hand-written COUNT at the call site is exactly how this bug arrives. No auth test: the
+  route is already in `ADMIN_ENDPOINTS`.
 - `helpers/copy-sweep.js` — `collectAppCopy()` / `collectAllCopy()` / `collectMarkedData()`:
   the rendered-COPY sweep ("does this page's own wording say X?"), text **plus**
   `placeholder`/`title`/`aria-label`/`alt`. Also OUTSIDE `tests/` on purpose, for the same
@@ -463,6 +486,17 @@ BASE_URL=http://localhost:3997 node seed.mjs
 #       • adds one extra assertion in guest-admin-view.spec.js (a GLOBAL
 #         `transactions` row count around the guest paid toggle, which also catches a
 #         row written with a NULL friend_id), and
+#       • un-skips ONE test in distribution-handover.spec.js ("a dangling pickup
+#         id keeps its key and loses only its label"). ⚠ NEW WITH FUP-T23, and it
+#         is a gate of the BUILD-THE-SCENARIO kind, not an extra-assertion one:
+#         `DELETE /api/pickup-locations/:id` now asks `helpers/pickup.js
+#         pickupLocationInUse()` (both stores), and both writers of
+#         `pickup_location_id` refuse a non-active point — so NO sequence of API
+#         calls can leave a party pointing at a row that does not exist. The
+#         fixture destroys the row directly instead. The payload's tolerance of a
+#         dangling id stays worth pinning because databases written BEFORE the fix
+#         still contain them. (`pickup-location-delete.spec.js` owns the delete
+#         itself and needs no DB_PATH at all.)
 #       • ~~un-skips TWO tests in distribution-handover.spec.js ("handed_over_at
 #         moves stage to handed…", "derived handed_over_at: …")~~ — **RETIRED by
 #         DP-T3, 2026-09-20, exactly as that row promised.** Both now drive the real

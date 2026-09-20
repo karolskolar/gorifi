@@ -44,7 +44,8 @@ const props = defineProps({
   locations: { type: Array, default: () => [] },
   locationId: { type: [Number, String], default: null },
   // The joined `pickup_location_name`. Needed as well as the id: a location that was
-  // soft-deleted (`active = 0`, which is what DELETE does once an order references it)
+  // soft-deleted (`active = 0`, which is what DELETE does once ANY party's pickup
+  // references it — `orders` or `guest_order_links`, FUP-T23)
   // is NOT in `locations`, and without its name the pill would silently render some
   // OTHER location's label for this order.
   locationName: { type: String, default: '' },

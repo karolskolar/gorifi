@@ -46,6 +46,44 @@ export function pickupTargetFor(cycleId, friendId) {
   return null;
 }
 
+/**
+ * Is this pickup point referenced by ANY party's pickup, in either store?
+ *
+ * ⚠ FUP-T23 — THE SAME TWO-STORE RULE AS `pickupTargetFor()`, ASKED THE OTHER WAY
+ * ROUND, and it belongs here for exactly the reason that one does.
+ * `DELETE /api/pickup-locations/:id` used to guard itself with a hand-written
+ * `SELECT COUNT(*) FROM orders WHERE pickup_location_id = ?` — `orders` ONLY. A host
+ * with no own order keeps their pickup on `guest_order_links`, so their reference was
+ * invisible to that count and the row was really deleted: the party's pickup point
+ * silently became a dangling id. Data loss, reached through the public API alone
+ * (found by DP-T2 while it was building a dangling-label fixture).
+ *
+ * The fix is not a second `COUNT` at the call site — that would be a THIRD statement
+ * of "where does a party's pickup live", and it would drift the next time the rule
+ * moves (module 20 adds guest Packeta). Callers ask this module; this module answers.
+ *
+ * ⚠ DELIBERATELY BROADER THAN `pickupTargetFor()`: it counts a reference in EITHER
+ * table, not only in the one that is effective today. A friend with an `orders` row
+ * can also carry a stale `guest_order_links.pickup_location_id` that would become the
+ * effective store the moment the order row went away — and a delete guard that is
+ * wrong in the conservative direction only keeps a row nobody can see any more, while
+ * being wrong the other way destroys a reference that is live.
+ */
+export function pickupLocationInUse(rawId) {
+  const id = bindValue(rawId);
+  // Fail CLOSED (the `helpers/stock.js` NaN rule): an id this module cannot bind is
+  // an id whose references it cannot count, and the safe answer for a DELETE guard is
+  // "in use". The route resolves the row first, so this is a backstop, not a path.
+  if (id === undefined) return true;
+
+  const row = db.prepare(`
+    SELECT (SELECT COUNT(*) FROM orders             WHERE pickup_location_id = ?)
+         + (SELECT COUNT(*) FROM guest_order_links  WHERE pickup_location_id = ?) AS count
+  `).get(id, id);
+
+  return (row?.count || 0) > 0;
+}
+
 /** An active pickup location by id, or null — including for an unbindable id. */
 export function activeLocation(rawId) {
   // ⚠ FUP-T15: the caller's presence test stays on the RAW value, so a
@@ -132,7 +170,8 @@ export function pickupOf(row) {
     // ⚠ Looked up WITHOUT `active = 1`: a location soft-deleted after an order chose
     // it must still render its name, or the badge would go blank on a party whose
     // pickup is perfectly well defined (`DELETE /api/pickup-locations/:id`
-    // deactivates rather than deletes once an order references it).
+    // deactivates rather than deletes once ~~an order~~ **anything** references it —
+    // `pickupLocationInUse()` above, FUP-T23; it used to count `orders` alone).
     //
     // ⚠ THE SAME RULE HAS A SECOND HOME: `helpers/delivery.js` `locationRow()`
     // (DP-T1), which labels the distribution board's groups. Reuse was not clean —

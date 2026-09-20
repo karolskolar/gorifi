@@ -140,3 +140,137 @@ template: **35** in that file, **396** across `api-security` / `guest-distributi
 tests (CSV import report, duplicates merge) fail on any DB copy that has already run that
 file once and pass in 3.3 s on a fresh copy — the documented accumulation trap, unrelated.
 
+
+---
+
+### FUP-T23 (2026-09-20) — `DELETE /api/pickup-locations/:id` knew only ONE of the two stores
+
+**The bug.** The delete guarded itself with
+
+```js
+const referenced = db.prepare('SELECT COUNT(*) as count FROM orders WHERE pickup_location_id = ?').get(req.params.id);
+```
+
+— `orders` ONLY. Everything above this entry says a party's pickup lives on the `orders`
+row *if one exists (any status)* and on `guest_order_links` otherwise. So the exact party
+this whole feature was built for — **the host who orders nothing while their unregistered
+colleague does** — kept their pickup where that count could not see it, and their pickup
+point was **really deleted**. `loc<id>` with no row behind it: a silently dangling
+identifier on a party whose pickup is perfectly well defined.
+
+⚠ **Data loss, not a security issue** (the route is `requireAdmin`), and **reachable in
+production**: DP-T2 reached the state through the public API alone, with no direct DB
+write, while building a dangling-label fixture. The distribution payload already tolerated
+it (key kept, `target_label: null`, the bag never dropped) — **that tolerance was the
+symptom, not the fix**, and it is exactly why the bug could sit there looking harmless.
+
+**The fix is an address, not a second query.** `helpers/pickup.js` gains
+`pickupLocationInUse(rawId)` — the same two-store rule as `pickupTargetFor()`, asked the
+other way round — and the route calls it. A hand-written
+`OR EXISTS (SELECT … guest_order_links …)` at the call site would have been a **third**
+statement of "where does a party's pickup live", and it would drift the next time the rule
+moves (module 20 adds guest Packeta). The route now states the rule **zero** times, and
+`pickup-location-delete.spec.js` reads its source to keep it that way.
+
+Two deliberate properties of the helper:
+
+- **Broader than `pickupTargetFor()` on purpose.** It counts a reference in EITHER table,
+  not only in the one that is effective today: a friend with an `orders` row can also
+  carry a stale `guest_order_links.pickup_location_id` that becomes effective the moment
+  the order row goes away. Wrong in the conservative direction only keeps a row nobody can
+  choose any more; wrong the other way destroys a live reference.
+- **Fails closed** on an unbindable id (the `helpers/stock.js` NaN rule) — an id it cannot
+  bind is an id whose references it cannot count. The route resolves the row first, so
+  this is a backstop, not a path.
+
+**The sweep.** `pickup_location_id` has exactly one other "is this referenced?" reader in
+the tree, and it is not one: `cycles.js`'s `locationsById` is a *label* lookup, not a
+reference count. So the sweep found ONE call site, and after the fix there are zero
+hand-written ones. What the sweep DID turn up is an adjacent duplicate left alone
+deliberately: `routes/orders.js`'s submit path inlines
+`SELECT * FROM pickup_locations WHERE id = ? AND active = 1`, a byte copy of
+`activeLocation()` — a different question ("is it choosable?"), pinned by FUP-T15's 400
+tests, and not this row's.
+
+**The e2e seam this row broke, and how it was re-armed.**
+`distribution-handover.spec.js`'s synthetic-host fixture built its dangling location **by
+leaning on this bug**. After the fix that DELETE soft-deletes, so the label resolves and
+the fixture stops dangling. The describe split in two:
+
+- the API-reachable half is now **"a RETIRED pickup point still names the group it
+  holds"** — ungated, and it is itself a regression guard for the fix (it reddens under
+  the mutation with `FUP-T23: the row survives — the link store is a reference`);
+- the genuinely dangling half moved to its own describe behind a **`DB_PATH` skip**, which
+  destroys the row directly. ⚠ That gate is of the *build-the-scenario* kind, not the
+  extra-assertion kind, and **the reason it had to become a gate is the proof the fix is
+  complete**: both writers of `pickup_location_id` (`POST …/submit` and
+  `PATCH …/pickup`) refuse a non-active point, so with the delete guard fixed there is
+  **no sequence of API calls** that leaves a party pointing at a row that does not exist.
+  The tolerance stays pinned because databases written before this row still carry
+  dangling ids. Recorded in `e2e/README.md`'s DB_PATH list — the skip count is the tell.
+
+**Mutation proof** (the row was explicit that a test covering only the already-working
+case proves nothing). Reverting `pickupLocationInUse()` to the shipped `orders`-only COUNT
+and restarting the gate server: `pickup-location-delete.spec.js` → **2 failed / 5 passed /
+0 skipped**, and the two failures are exactly the link-stored cases `(c)`, with `(a)`
+submitted, `(b)` draft and both hard-delete baselines still green. The file is written as
+a matched pair for precisely that reason — same party, same assertions, one variable.
+
+**Telling the two deletes apart without the database file.** Both answer `204`. The only
+API-level discriminator is `GET /api/pickup-locations/all` (admin, includes inactive):
+soft ⇒ the row is there with `active: 0` and has left the public picker list, hard ⇒ the
+row is gone from `/all` and a second DELETE 404s. Every assertion in the new file reads
+the row back that way.
+
+**The review catch worth more than the fix: a comment that ADVERTISED a net that did not
+exist.** The new spec declined to write a 401 test "because the route is already in
+`ADMIN_ENDPOINTS`". It was not. `/api/pickup-locations` is a **mixed mount** with no
+`requireAdmin` on the mount (`index.js:77`), and **none** of its four admin routes — the
+delete, the create, the update, the `/all` list — was in that sweep; the only entry for
+that path was the PUBLIC `GET`, in `PUBLIC_ENDPOINTS`, which is what the original grep hit
+and misread. No live exposure (each handler carries its own guard), but an edit dropping
+one of those four `requireAdmin` arguments would have shipped green, and the comment would
+have told the next reader not to look. **All four joined `ADMIN_ENDPOINTS`** (+4 tests).
+⚠ The general rule this produces: *a comment that claims coverage elsewhere is an
+assertion, and it must be verified like one.* Grepping a path in `api-security.spec.js`
+does not tell you WHICH list it landed in.
+
+**Superseded copies rewritten** (Documentation discipline — grep, do not trust a map).
+Four in code (`pickup.js`, `delivery.js`, `cycles.js`, `PickupLocationPicker.vue`) plus two
+the first sweep missed: `docs/learnings/01-early-features.md` carried the original rule as
+"Delete with existing **orders** = soft-delete", struck with a pointer here; and
+`distribution-handover.spec.js`'s fixture-hygiene comment restated it in its retired form
+(behaviourally still true for those three locations, so reworded rather than changed).
+
+**Filed as its own row: FUP-T25** — `routes/orders.js` submit inlines a byte copy of
+`activeLocation()`. Leaving it out of this row was right (different question), but the
+project's practice for an unowned seam is a backlog row, not a paragraph in a learnings
+file. It is load-bearing for THIS row's claim: "no API path can dangle a location" rests on
+*both* writers refusing an inactive point, and today a mutation in `activeLocation()`
+reddens only one of them.
+
+**Recorded, no action:**
+- Every location this spec creates is retired or deleted before the file ends, so none
+  lengthens the `PickupLocationPicker` options in other files — the global-fixture leak
+  `distribution-handover.spec.js` warns about.
+- `segment_key` freezes `loc<id>` at enqueue (DP-T3), and a re-point + delete can now leave
+  a frozen key naming a row that is genuinely gone — correct behaviour, inert today because
+  nothing reads the key back. A line went on **WA-T5**'s row: when that module groups by it,
+  treat a frozen key the way the distribution payload treats a dangling id.
+- `pickupLocationInUse()` scans both tables without an index — a non-issue at this size on
+  an admin-only delete.
+
+Gate, on a fresh per-run template copy, `DB_PATH` + `SERVER_LOG` set, `--workers=1`:
+**239 passed / 0 failed / 0 SKIPPED, exit 0** —
+`api-security` 80 (was 76; +4 from this row) · `distribution-handover` 43 ·
+`order-pickup-edit` 35 · `guest-host-view` 29 · `distribution-board` 26 ·
+`guest-distribution` 19 · `pickup-location-delete` 7.
+⚠ **RECONCILED — both numbers were right, for different file lists.** The orchestrator's
+246 was an EIGHTH file (`distribution-rows.spec.js`, 11) measured BEFORE this row added the
+four `ADMIN_ENDPOINTS` entries: 239 − 80 = 159 over the six shared files, + 76 (`api-security`
+pre-sweep) + 11 = 246. Re-measured on the final tree: the 7-file list is **239**, the same 8
+files are **250** (239 + 11). ⚠ **The habit that resolved it is the point, and it is the rule
+to keep: the implementer REFUSED to adopt a number it could not reproduce, and said so, rather
+than reconciling on paper.** A count cited as evidence across rows is a measurement; if two
+runs disagree, the file list is the first thing to compare, and the fix is to re-run — never
+to average, adopt, or hand-wave.

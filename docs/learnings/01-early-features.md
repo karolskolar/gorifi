@@ -83,7 +83,7 @@
 - Friend order submit (`POST /orders/cycle/:cycleId/friend/:friendId/submit`) accepts `pickup_location_id` + `pickup_location_note` in body
 - FriendOrder.vue shows pickup modal on submit when locations exist; skips modal if none configured (backward compatible)
 - "Iné" = NULL pickup_location_id + optional note text
-- Delete with existing orders = soft-delete (active=0) instead of hard delete
+- ~~Delete with existing orders = soft-delete (active=0) instead of hard delete~~ — **SUPERSEDED, FUP-T23 (2026-09-20): "existing orders" was the bug.** A party's pickup lives on the `orders` row if one exists (ANY status) and on `guest_order_links` otherwise, so a host with no own order was invisible to that check and their point was really deleted (a dangling `loc<id>`). The guard now asks `helpers/pickup.js` `pickupLocationInUse()`, which knows BOTH stores → **delete with ANY party referencing it = soft-delete**. See `docs/learnings/06-pickup-point.md`.
 - Admin views (CycleDetail orders tab, Distribution) show pickup location as blue badge
 - Deploy script deploys from local files (rsync), no git push needed — but backend restart required for DB migrations
 - Production deploy requires `y` confirmation prompt — pipe `echo "y" |` to auto-confirm

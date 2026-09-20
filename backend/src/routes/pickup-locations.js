@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
+import { pickupLocationInUse } from '../helpers/pickup.js';
 
 const router = Router();
 
@@ -92,13 +93,23 @@ router.delete('/:id', requireAdmin, (req, res) => {
     return res.status(404).json({ error: 'Miesto nebolo nájdené' });
   }
 
-  // Check if any orders reference this location
-  const referenced = db.prepare('SELECT COUNT(*) as count FROM orders WHERE pickup_location_id = ?').get(req.params.id);
-  if (referenced.count > 0) {
-    // Soft-delete: deactivate instead
-    db.prepare('UPDATE pickup_locations SET active = 0 WHERE id = ?').run(req.params.id);
+  // Is anybody's pickup pointed at this place?
+  //
+  // ⚠ FUP-T23 — ASK `helpers/pickup.js`, NEVER COUNT HERE. This line used to read
+  // `SELECT COUNT(*) FROM orders WHERE pickup_location_id = ?` and so knew about only
+  // ONE of the two stores a party's pickup can live in: a host with no own order
+  // keeps theirs on `guest_order_links`, was invisible to that count, and had their
+  // pickup point deleted out from under them (`loc<id>` with no row behind it). The
+  // helper is the one home for the two-store rule in both directions — resolving a
+  // party's store (`pickupTargetFor`) and counting a point's references — so this
+  // route states the rule zero times.
+  if (pickupLocationInUse(location.id)) {
+    // Soft-delete: deactivate instead. `pickupOf()` / `delivery.js locationRow()`
+    // both look names up WITHOUT `active = 1`, so the place keeps naming itself on
+    // every party that already chose it while leaving the pickers' active list.
+    db.prepare('UPDATE pickup_locations SET active = 0 WHERE id = ?').run(location.id);
   } else {
-    db.prepare('DELETE FROM pickup_locations WHERE id = ?').run(req.params.id);
+    db.prepare('DELETE FROM pickup_locations WHERE id = ?').run(location.id);
   }
 
   res.status(204).send();

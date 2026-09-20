@@ -170,6 +170,23 @@ const ADMIN_ENDPOINTS = [
   // already-public products listing that shipped the same bytes inline). Do
   // not "fix" it in; its anonymous-200 pin lives in catalog-images.spec.js.
   { method: 'post', path: '/api/coffee-products/convert-images' },
+  // FUP-T23: the FOUR admin routes of the `/api/pickup-locations` MIXED mount.
+  //
+  // ⚠ NONE of them was in this sweep until now, and the mount carries no
+  // `requireAdmin` of its own (`index.js:77`) — every guard is per handler, which is
+  // exactly the mixed-mount shape the rules flag. There was no live exposure, but a
+  // future edit dropping one of those four `requireAdmin` arguments would have
+  // shipped green. Only the PUBLIC `GET /api/pickup-locations` (the friend/guest
+  // picker list) belongs in `PUBLIC_ENDPOINTS` below — it is there, and it stays.
+  //
+  // ⚠ Found by the FUP-T23 review, correcting that row's own comment, which had
+  // declined to write a local rejection test on the false claim that this sweep
+  // already covered the DELETE. A comment asserting coverage that does not exist is
+  // worse than no comment.
+  { method: 'get', path: '/api/pickup-locations/all' },
+  { method: 'post', path: '/api/pickup-locations', data: { name: 'evil' } },
+  { method: 'patch', path: '/api/pickup-locations/1', data: { name: 'evil' } },
+  { method: 'delete', path: '/api/pickup-locations/1' },
 ]
 
 const PUBLIC_ENDPOINTS = [
