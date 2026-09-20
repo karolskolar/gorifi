@@ -214,3 +214,31 @@ export async function gotoCycle(page, cycleId) {
   await page.goBack()
   await expect(page).toHaveURL(new RegExp(`/cycle/${cycleId}(?:[?#]|$)`))
 }
+
+// ── THE LANDING'S STATE MODAL (PI-T4) ────────────────────────────────────────
+// 18 §UC-PI-006: a CLOSED landing opens a `NeoModal` by itself, once per session.
+// It is a `role="dialog"` on the modal layer, so its scrim covers the appbar — a
+// test that lands closed and then reaches for the hamburger (`openMenu`, `logout`,
+// `openProfile`) must dismiss it FIRST or the click times out on actionability.
+// ⚠ PI-T5 mounts the same modal for §UC-PI-007's „locked, no own order" branch, so
+// these two live here rather than in one spec file.
+
+/** The state modal itself, while it is up. */
+export function landingStateModal(page) {
+  return page.getByTestId('landing-state-modal')
+}
+
+/**
+ * Wait for the state modal and dismiss it through „Prezrieť ponuku" — the same
+ * path a friend takes, and the one that leaves the warn banner behind it.
+ *
+ * ⚠ It ASSERTS the modal is there rather than shrugging if it is not: a helper
+ * that silently does nothing would let „the modal stopped opening" pass every
+ * caller. A state that is not supposed to show one simply does not call this.
+ */
+export async function dismissLandingState(page) {
+  const modal = landingStateModal(page)
+  await expect(modal).toBeVisible()
+  await modal.getByRole('button', { name: 'Prezrieť ponuku' }).click()
+  await expect(modal).toHaveCount(0)
+}

@@ -1,6 +1,8 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
-import { expectLanding, expectNoLanding, drawer, openMenu, menuGo, logout } from '../helpers/portal.js'
+import {
+  expectLanding, expectNoLanding, drawer, openMenu, menuGo, logout, dismissLandingState,
+} from '../helpers/portal.js'
 import { makeAdmin } from '../helpers/admin.js'
 
 // PI-T2 — 18 §UC-PI-004, the hamburger drawer (`NeoDrawer.vue`), and
@@ -270,6 +272,14 @@ test.describe('PI-T2 · 18 §UC-PI-004 — the drawer rows', () => {
     await page.unroute('**/api/friends/cycles*')
     await stubCycles(page, [cycleRow({ n: 10, name: 'PI2 Jediná', status: 'completed', hasOrder: true })])
     await open(page)
+    // ⚠ SANCTIONED EDIT, PI-T4 (18 §UC-PI-006, immutability case (a)): a completed
+    // round alone IS the CLOSED landing, which now opens its state modal by itself,
+    // and the modal's scrim covers the hamburger — `openMenu()` would time out on
+    // actionability instead of measuring the sub-line. The claim (item 2's singular
+    // accusative) is untouched; only the way to the drawer is. ⚠ This is the ONE
+    // fixture in this file that lands `closed`; every other row above is `open` or
+    // `locked`, neither of which shows a modal.
+    await dismissLandingState(page)
     await openMenu(page)
     expect((await rows(page))[1].sub).toBe('1 objednávku · naposledy PI2 Jediná')
   })

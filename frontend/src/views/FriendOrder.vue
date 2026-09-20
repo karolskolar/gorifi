@@ -73,9 +73,39 @@ const props = defineProps({
   // `'route'` (the shipped standalone screen) | `'landing'` (embedded in the
   // session's page column).
   mode: { type: String, default: 'route' },
+  // 18 §UC-PI-006 (PI-T4) — THE READ-ONLY CATALOGUE.
+  //
+  // ⚠ „`FriendOrder` in `landing` mode with `readonly: true` renders the grid this
+  // way … never a second card template." The closed landing shows the PREVIOUS
+  // round's catalogue „len na prezretie", and PI-T5 shows the locked round's the
+  // same way. Both are the same grid, the same cards, the same category strip —
+  // so they are this component with four things switched off, not a copy of it.
+  //
+  // What it switches off, each one a line of §UC-PI-006:
+  //   · the cards wrapper takes `.p2-ro` (opacity .55 + `pointer-events:none`);
+  //   · every stepper is `disabled` (belt AND braces: `pointer-events:none` is a
+  //     paint-level guard, `disabled` is the DOM one, and CLAUDE.md's rule that a
+  //     `disabled` attribute does not stop a DISPATCHED click is why the handlers
+  //     are guarded as well — see `editingLocked`);
+  //   · the stock bars are hidden — a fill measured against a finished round's
+  //     `remaining_g` is a number about the past;
+  //   · no `.cartbar`, no tabgroup, no status/ok banners.
+  // ⚠ The `.cat-tabs` strip stays INTERACTIVE (§UC-PI-006 resolved conflict 6:
+  // „only the CARDS are read-only/faded … every category is browsable"), which is
+  // why `.p2-ro` goes on the cards wrapper and not on the panel.
+  //
+  // ⚠ Ignored outside `landing` mode: `/cycle/:id` renders a completed round with
+  // the shipped locked treatment (04 §UC-FO-014) and §UC-PI-018 keeps it that way.
+  readonly: { type: Boolean, default: false },
 })
 
 const isLanding = computed(() => props.mode === 'landing')
+
+/**
+ * The read-only catalogue (§UC-PI-006). Landing-only by construction — see the
+ * prop's note.
+ */
+const isReadonly = computed(() => isLanding.value && props.readonly)
 
 // ⚠ THE PAGE COLUMN IS THE SECOND (AND LAST) THING `landing` MODE DROPS.
 // `FriendPortalSession.vue` already renders the settled 760px column with its
@@ -300,6 +330,26 @@ const guestSummary = ref({ count: 0, total: 0, pendingDelivery: 0, failed: false
 const activeCycleId = computed(() => (props.cycleId != null && props.cycleId !== '' ? props.cycleId : route.params.cycleId))
 
 const isLocked = computed(() => cycle.value?.status === 'planned' || cycle.value?.status === 'locked' || cycle.value?.status === 'completed')
+
+/**
+ * „no quantity on this screen may change", the JS half.
+ *
+ * ⚠ `isReadonly` is a SUPERSET of nothing and a subset of `isLocked` TODAY — the
+ * closed landing's `catalogCycle` is always `locked`/`completed` (`resolveLanding`)
+ * and PI-T5's is `locked` — so every guard below would already refuse. It is named
+ * anyway, and used anyway, because „today the two coincide" is not a guard: a
+ * future caller that hands this component an OPEN cycle to display read-only (a
+ * preview, an admin impersonation) would otherwise get a live cart on a screen
+ * whose cards are painted at 55 % opacity and whose cartbar does not exist.
+ * CLAUDE.md: a `disabled` attribute does not stop a dispatched click, so the
+ * refusal has to exist in JS regardless of what the DOM says.
+ *
+ * ⚠ MEASURED, and recorded rather than implied: removing `isReadonly` from this
+ * computed reds NOTHING (mutation M12, three spec files) — precisely because of the
+ * coincidence above. It is defence in depth, exactly like the share-count sequence
+ * guard one row earlier; today the `isLocked` half is what carries it.
+ */
+const editingLocked = computed(() => isLocked.value || isReadonly.value)
 const isSubmitted = computed(() => order.value?.status === 'submitted')
 const markupRatio = computed(() => cycle.value?.markup_ratio || 1.0)
 const isBakery = computed(() => cycle.value?.type === 'bakery')
@@ -706,6 +756,16 @@ async function loadOrderData() {
       cart.value[`${item.product_id}-${item.variant}`] = item.quantity
     }
 
+    // ⚠ READ-ONLY IGNORES THE ORDER — §UC-PI-006 says the GET still fires („its `order`
+    // is ignored in `readonly`") and until the PI-T4 review nothing enforced that half.
+    // Consequence if left: a friend who ordered in the CATALOGUE round saw their old
+    // quantities rendered in the faded, disabled steppers of „Minulá ponuka" — a grid that
+    // looks like a cart with items and has no cartbar to act on. ⚠ No test could catch it:
+    // every closed-landing fixture used a FRESH friend with no order on that cycle, so
+    // `cart` was always empty there by accident. It also propagates to PI-T5's locked
+    // read-only grid, where the friend almost always DOES have an order.
+    if (isReadonly.value) cart.value = {}
+
     // If order is already submitted, store snapshot for change detection
     if (orderData.order?.status === 'submitted') {
       lastSubmittedCart.value = { ...cart.value }
@@ -842,7 +902,7 @@ function getQuantity(productId, variant) {
 }
 
 function setQuantity(productId, variant, quantity) {
-  if (isLocked.value) return
+  if (editingLocked.value) return
   const key = getCartKey(productId, variant)
   if (quantity <= 0) {
     delete cart.value[key]
@@ -853,14 +913,14 @@ function setQuantity(productId, variant, quantity) {
 }
 
 function increment(productId, variant) {
-  if (isLocked.value) return
+  if (editingLocked.value) return
   if (!canIncrement(productId, variant)) return
   const current = getQuantity(productId, variant)
   setQuantity(productId, variant, current + 1)
 }
 
 function decrement(productId, variant) {
-  if (isLocked.value) return
+  if (editingLocked.value) return
   const current = getQuantity(productId, variant)
   if (current > 0) {
     setQuantity(productId, variant, current - 1)
@@ -872,7 +932,7 @@ let autoSaveTimeout = null
 const autoSaving = ref(false)
 
 async function saveCart(silent = false) {
-  if (isLocked.value) return
+  if (editingLocked.value) return
   if (!friend.value) return
 
   if (!silent) saving.value = true
@@ -907,7 +967,7 @@ watch(cart, () => {
   // Skip auto-save during initial load, when locked, when order is already submitted,
   // or when there's no existing order (don't auto-create orders, only auto-save existing drafts)
   // New orders are only created when user explicitly submits
-  if (!initialLoadComplete.value || isLocked.value || !friend.value || isSubmitted.value || !order.value) return
+  if (!initialLoadComplete.value || editingLocked.value || !friend.value || isSubmitted.value || !order.value) return
 
   // Clear previous timeout
   if (autoSaveTimeout) clearTimeout(autoSaveTimeout)
@@ -919,7 +979,7 @@ watch(cart, () => {
 }, { deep: true })
 
 function cancelOrder() {
-  if (isLocked.value) return
+  if (editingLocked.value) return
   showCancelModal.value = true
 }
 
@@ -945,7 +1005,7 @@ async function confirmCancelOrder() {
 }
 
 async function submitOrder() {
-  if (isLocked.value) return
+  if (editingLocked.value) return
   if (cartItems.value.length === 0) {
     error.value = 'Košík je prázdny'
     return
@@ -1263,11 +1323,17 @@ defineExpose({ openShareDialog, cartTotal })
            `submitted && !dirty && lines > 0`, whose repo equivalent is
            `hasUnsubmittedChanges`. The cartbar warning carries that state instead
            (RD-FO-3). A handoff UX change, in contract (UC-FO-002). -->
-      <div v-if="isLocked" class="banner warn">
+      <!-- ⚠ NEITHER RENDERS IN `readonly` (18 §UC-PI-006: „no `.cartbar`, no
+           tabgroup, no status/ok banners"). The closed landing already says
+           „Objednávky sú zatvorené." in its own `.banner.warn.slim` above the
+           catalogue, and the friend has no order in a round they are only looking
+           at — a second lock banner would be the same sentence twice and a green
+           „bola odoslaná!" would be about a DIFFERENT round. -->
+      <div v-if="isLocked && !isReadonly" class="banner warn">
         <span class="dot"></span>
         <div style="min-width:0"><b>Objednávky sú uzamknuté.</b> Už nie je možné meniť objednávku.</div>
       </div>
-      <div v-else-if="isSubmitted && cartItems.length > 0 && !hasUnsubmittedChanges" class="banner ok">
+      <div v-else-if="!isReadonly && isSubmitted && cartItems.length > 0 && !hasUnsubmittedChanges" class="banner ok">
         <span class="dot"></span>
         <div style="min-width:0"><b>Vaša objednávka bola odoslaná!</b> Stále ju môžete upraviť až do uzamknutia.</div>
       </div>
@@ -1320,7 +1386,14 @@ defineExpose({ openShareDialog, cartTotal })
            `.tab` globally (the purpose strip must keep its canon metrics) — and it
            cannot be a Tailwind utility: `.tabgroup .tab` is `(0,2,0)` and
            `friends-theme.css` loads after Tailwind, so it needs a scoped block. -->
-      <div class="tabgroup" role="tablist" aria-label="Objednávka alebo kolegovia">
+      <!-- ⚠ ABSENT in `readonly` (§UC-PI-006). The Kolegovia panel is where a host
+           manages sub-orders of a LIVE round; on a catalogue the friend is only
+           browsing there is nothing to manage, and `GuestSubOrders` inside it would
+           fire a `GET /guest-links/cycle/:id` for a finished round on every landing.
+           ⚠ PI-T5 keeps it on the LOCKED landing (§UC-PI-007: „the tabgroup STAYS —
+           Kolegovia hand-over ticks happen precisely now"), which is why the switch
+           is `readonly` and not „the round is not open". -->
+      <div v-if="!isReadonly" class="tabgroup" role="tablist" aria-label="Objednávka alebo kolegovia">
         <span
           class="tab"
           :class="{ on: mainTab === 'own' }"
@@ -1367,6 +1440,7 @@ defineExpose({ openShareDialog, cartTotal })
            the component boundary. `v-show` writes inline `display:none`, which
            beats the `flex` class — order-shell.spec.js reads that inline value. -->
       <div
+        v-if="!isReadonly"
         v-show="mainTab === 'guests'"
         id="panel-guests"
         role="tabpanel"
@@ -1456,11 +1530,16 @@ defineExpose({ openShareDialog, cartTotal })
       </div>
 
       <!-- ============ panel: own order ============ -->
+      <!-- ⚠ In `readonly` the tabgroup above is GONE, so this stops being a
+           tabpanel: `role="tabpanel"` + `aria-labelledby="tab-own"` would point at
+           an element that does not exist and announce a tab interface with no
+           tabs. Vue drops a `null` attribute entirely, so the route/open mounts
+           keep the shipped markup byte for byte. -->
       <div
-        v-show="mainTab === 'own'"
+        v-show="isReadonly || mainTab === 'own'"
         id="panel-own"
-        role="tabpanel"
-        aria-labelledby="tab-own"
+        :role="isReadonly ? null : 'tabpanel'"
+        :aria-labelledby="isReadonly ? null : 'tab-own'"
         class="flex flex-col gap-[14px]"
       >
         <!-- Category strip (UC-FO-004). Purposes are DATA-DERIVED — `availablePurposes`
@@ -1545,7 +1624,12 @@ defineExpose({ openShareDialog, cartTotal })
              needs a call-site `line-height:normal`, and A10's selector list must
              NOT grow for this row — measured against the current build, which
              already carries RD-FL-8b's `.vbox`/`.stepper` additions. -->
-        <div class="flex flex-col gap-4">
+        <!-- ⚠ `.p2-ro` (opacity .55 + `pointer-events:none`, A13's canon port) goes
+             on THIS wrapper and not on the panel: §UC-PI-006 resolved conflict 6 —
+             „only the CARDS are read-only/faded; the category strip stays
+             interactive so every category is browsable". The strip is a SIBLING
+             above, so it keeps its clicks. -->
+        <div class="flex flex-col gap-4" :class="{ 'p2-ro': isReadonly }" data-testid="product-grid">
           <div
             v-for="product in activeProducts"
             :key="product.id"
@@ -1627,7 +1711,7 @@ defineExpose({ openShareDialog, cartTotal })
                   </div>
                   <NeoStepper
                     :model-value="getQuantity(v.id, 'unit')"
-                    :disabled="isLocked"
+                    :disabled="editingLocked"
                     :inc-disabled="!canIncrement(v.id, 'unit')"
                     @update:model-value="(q) => onQty(v.id, 'unit', q)"
                   />
@@ -1726,7 +1810,11 @@ defineExpose({ openShareDialog, cartTotal })
                    sold-out signal is the danger-red "Vypredané" LABEL (repo
                    state, kept), never a bar colour — so the old amber/red bar
                    tinting goes. -->
-              <div v-if="availability[product.id]" class="flex items-center gap-[10px] mt-3" data-testid="stock-bar">
+              <!-- ⚠ HIDDEN in `readonly` (§UC-PI-006: „stock bars hidden,
+                   `[data-testid="stock-bar"]` count 0"): the fill is measured
+                   against `remaining_g` of a round that is over, so it would be a
+                   live-looking number about the past. -->
+              <div v-if="availability[product.id] && !isReadonly" class="flex items-center gap-[10px] mt-3" data-testid="stock-bar">
                 <div style="flex:1;height:10px;border:2px solid var(--nb-ink);border-radius:6px;overflow:hidden;background:#fff">
                   <div
                     data-testid="stock-fill"
@@ -1819,7 +1907,7 @@ defineExpose({ openShareDialog, cartTotal })
                        cannot exceed the limit. Both, not either. -->
                   <NeoStepper
                     :model-value="getQuantity(product.id, v.variant)"
-                    :disabled="isLocked"
+                    :disabled="editingLocked"
                     :inc-disabled="!canIncrement(product.id, v.variant)"
                     @update:model-value="(q) => onQty(product.id, v.variant, q)"
                   />
@@ -1857,7 +1945,10 @@ defineExpose({ openShareDialog, cartTotal })
          Rendered under the SAME condition as the page column (neither loading nor
          the fatal-error branch): a bar with no cycle, no products and no friend has
          nothing to submit and would only add chrome to a spinner. -->
-    <div v-if="!loading && !(error && !friend)" class="cartbar" data-testid="cartbar">
+    <!-- ⚠ NEVER in `readonly` (§UC-PI-006 / §UC-PI-007: „no `.cartbar`"). It is
+         also what removes the share icon from a non-open round, which 05
+         §UC-KG-002 requires and `portal-landing.spec.js` §3 pins. -->
+    <div v-if="!loading && !(error && !friend) && !isReadonly" class="cartbar" data-testid="cartbar">
       <!-- 1. not-yet-submitted notice, and 2. the dirty warning. At most one of the
            two, neither when locked — the shipped `v-if`/`v-else-if` priority,
            unchanged. Both moved INSIDE the bar per the prototype.

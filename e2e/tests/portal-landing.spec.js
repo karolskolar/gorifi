@@ -1,7 +1,10 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
-import { ADMIN_PASSWORD } from '../fixtures.js'
+import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { assertReadable, code, HAS_SRC, NEEDS_SRC } from '../helpers/source-pins.js'
-import { expectLanding, drawer, openMenu, menuGo, gotoCycle } from '../helpers/portal.js'
+import {
+  expectLanding, drawer, openMenu, menuGo, gotoCycle,
+  landingStateModal, dismissLandingState, logout,
+} from '../helpers/portal.js'
 import { makeAdmin } from '../helpers/admin.js'
 
 // PI-T3 — 18 §UC-PI-005 (the landing, OPEN state), §UC-PI-011 (the two new share
@@ -539,6 +542,14 @@ test.describe('PI-T3 · 18 §UC-PI-011 — two entry points, ONE dialog', () => 
       await expect(page.getByTestId('portal-landing'), state)
         .toHaveAttribute('data-landing-state', state === 'locked' ? 'locked' : 'closed')
 
+      // ⚠ SANCTIONED EDIT, PI-T4 (18 §UC-PI-006, immutability case (a)): the CLOSED
+      // landing now opens its state modal by itself, and a NeoModal's scrim covers
+      // the appbar — so `openMenu()` below would time out on actionability rather
+      // than on anything this test is about. The claim („a round that is not open
+      // offers no share affordance") is unchanged; only the step that reaches the
+      // drawer is. The LOCKED half has no modal until PI-T5, hence the condition.
+      if (state === 'closed') await dismissLandingState(page)
+
       await expect(cartbarShare(page), `${state}: no cartbar icon`).toHaveCount(0)
       await expect(page.getByRole('button', { name: 'Zdieľať s kolegami' }),
         `${state}: nothing anywhere on the page`).toHaveCount(0)
@@ -638,5 +649,447 @@ test.describe('PI-T3 · 18 §UC-PI-011 — exactly ONE `GuestShareDialog` mount'
     ]) {
       expect(src, `${gone} must not survive the structure it served`).not.toContain(gone)
     }
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 5. PI-T4 — the landing, CLOSED state (18 §UC-PI-006)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠ READ THIS BEFORE „FIXING" §5.2. The same closed landing prints the SAME date
+// in TWO formats — „3. 12." in the modal's card and „3. decembra" in the warn
+// banner that replaces the modal — and that is a RECORDED, UNRESOLVED PRODUCT-OWNER
+// QUESTION, not a defect anybody here owns. Module 17 §UC-CS-005 ships the sentence
+// („Ďalšia objednávka sa otvorí približne {fmtDay}") and owns it; module 18
+// §UC-PI-002 specifies `fmtDayMonth` for the same words. PI-T1 kept 17's form
+// because the alternative is a SECOND home for one sentence
+// (`docs/learnings/10-portal-ia.md` §1, both options costed). §5.2 pins the state
+// of play in BOTH directions so the collision is visible rather than accidental;
+// when the PO rules, that test is the edit.
+//
+// ⚠ And the thing that is NOT true, because an earlier draft of the note said it
+// and a reader who checked it would have concluded the conflict had evaporated:
+// the two forms are NOT both inside the modal. In the `opens_at === null` branch
+// the modal carries the sentence alone (§5.5) and there is no collision at all.
+
+/** `today + n` as a local ISO date — the shape module 17's columns carry. */
+function isoPlusDays(n) {
+  const d = new Date()
+  d.setHours(12, 0, 0, 0)
+  d.setDate(d.getDate() + n)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// ⚠ Both formatters are RE-DERIVED here rather than imported, and that is the point:
+// an assertion that read the app's own `fmtDayMonth` would pass whatever that
+// function did. These two are independent, so swapping one for the other in the app
+// reds §5.2 — which is the one thing this row must not do quietly.
+const shortForm = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString('sk-SK', { day: 'numeric', month: 'numeric' })
+const longForm = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString('sk-SK', { day: 'numeric', month: 'long' })
+
+const closedBanner = (page) => page.getByTestId('landing-closed-banner')
+
+test.describe('PI-T4 · 18 §UC-PI-006 — the landing, closed state', () => {
+  test('the state modal opens by ITSELF and names the next round', async ({ page }) => {
+    const friend = await makeFriend('Closed')
+    await signIn(page, friend)
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+
+    // +14 days is chosen so the weeks phrase is EXACT and cannot drift with the
+    // date the suite happens to run on: `Math.round(14 / 7) === 2` whatever „today"
+    // is, and 2 takes the 2–4 declension („týždne"), not the 1 or the ≥5 one.
+    const opensAt = isoPlusDays(14)
+    await stubCycles(page, [
+      cycleRow({ n: 20, status: 'completed' }),
+      cycleRow({ n: 21, status: 'planned', opens_at: opensAt }),
+    ])
+    await open(page)
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-landing-state', 'closed')
+
+    // ⚠ Nobody clicked anything: §UC-PI-006 says „shown automatically once per
+    // session", and „the friend has to find it" would be a different feature.
+    const modal = landingStateModal(page)
+    await expect(modal).toBeVisible()
+    await expect(page.getByRole('dialog')).toHaveCount(1)
+    await expect(modal.locator('.m-title')).toHaveText('Objednávky sú zatvorené')
+    await expect(modal).toContainText(
+      'Káva sa objednáva spoločne, v termínoch — pár dní naraz, potom ju nakúpime v pražiarni a rozdáme si ju.',
+    )
+
+    await expect(modal.getByTestId('next-round-card')).toContainText('Ďalšia objednávka sa otvorí približne')
+    await expect(modal.getByTestId('next-round-date')).toHaveText(shortForm(opensAt))
+    await expect(modal.getByTestId('next-round-card'))
+      .toContainText('o 2 týždne · dáme vedieť cez WhatsApp')
+
+    // The two footer buttons, in the prototype's order.
+    await expect(modal.locator('.m-foot .btn')).toHaveText(['Ako to funguje', 'Prezrieť ponuku'])
+  })
+
+  test('⚠ the SHORT form in the card, the LONG form in the banner — the recorded PO question', async ({ page }) => {
+    // ⚠ THIS TEST ASSERTS A CONFLICT, ON PURPOSE. See the block comment above §5.
+    // Neither half may be „fixed" at its call site; when the PO chooses a format,
+    // one of the two expectations below is rewritten and the other one stays.
+    const friend = await makeFriend('TwoForms')
+    await signIn(page, friend)
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+
+    const opensAt = isoPlusDays(14)
+    const short = shortForm(opensAt)   // „3. 12."     — `lib/dates.js fmtDayMonth`
+    const long = longForm(opensAt)     // „3. decembra" — `cycle-stages.js fmtDay`
+    // Non-vacuity: the two really are different strings. If ICU ever collapsed them
+    // this whole test would be measuring nothing, and it would do so silently.
+    expect(short, 'the two formats must actually differ').not.toBe(long)
+
+    await stubCycles(page, [
+      cycleRow({ n: 22, status: 'completed' }),
+      cycleRow({ n: 23, status: 'planned', opens_at: opensAt }),
+    ])
+    await open(page)
+
+    // (a) the card: a date STANDING ALONE in display type is 18's SHORT form.
+    const modal = landingStateModal(page)
+    await expect(modal.getByTestId('next-round-date')).toHaveText(short)
+    await expect(modal.getByTestId('next-round-date')).toHaveText(/^\d{1,2}\. \d{1,2}\.$/)
+    await expect(modal, 'the modal must not compose 17\'s sentence as well').not.toContainText(long)
+
+    // (b) the banner: the date INSIDE module 17's composed sentence is its LONG form,
+    // and the sentence is 17's verbatim — never re-composed here.
+    await dismissLandingState(page)
+    await expect(closedBanner(page)).toContainText('Objednávky sú zatvorené.')
+    await expect(closedBanner(page)).toContainText(`Ďalšia objednávka sa otvorí približne ${long}`)
+    await expect(closedBanner(page)).toContainText(/približne \d{1,2}\. [a-záčďéíĺľňóôŕšťúýž]+a\b/)
+    await expect(closedBanner(page), 'the banner must not be re-formatted at the call site')
+      .not.toContainText(short)
+  })
+
+  test('once per SESSION — dismiss leaves the banner, a reload brings the modal back', async ({ page }) => {
+    const friend = await makeFriend('OnceSession')
+    // ⚠⚠ `signIn()` IS NOT USABLE HERE, AND FINDING THAT OUT IS HALF OF THIS TEST.
+    // Its `addInitScript` calls `localStorage.clear()`, and an init script runs on
+    // EVERY navigation — a reload included. So with `signIn()` the reload below
+    // wipes any persisted flag on its way in, and „the modal comes back" would pass
+    // against an implementation that stored the dismissal in `localStorage`
+    // forever. Measured: mutation M1 (persist it) reddened the cross-session test
+    // and left this one GREEN. This variant seeds the session WITHOUT clearing, so
+    // a flag written by the app survives the reload and the assertion can fail for
+    // the reason it states.
+    await page.addInitScript((value) => {
+      localStorage.setItem('gorifi_friend_auth', value)
+    }, JSON.stringify({
+      friendId: friend.id,
+      friendName: friend.name,
+      token: friend.token,
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+    }))
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+    await stubCycles(page, [cycleRow({ n: 24, status: 'completed' })])
+
+    // ⚠ THE VIEW GATE, MEASURED FIRST — and it has to be first. §UC-PI-006 puts the
+    // modal on the LANDING, not on the session, so „Zostatok a platby" reached by
+    // URL must not open it. After the dismissal below the flag hides the modal
+    // everywhere, and this claim becomes unmeasurable: mutation M10 (drop the
+    // `view === 'shop'` gate) reddened NOTHING until this block existed.
+    await open(page, '/zostatok')
+    await expect(landingStateModal(page), 'the modal belongs to the landing').toHaveCount(0)
+
+    await open(page)
+    await expect(landingStateModal(page), '…and it DOES open on the landing').toBeVisible()
+    // While the modal is up there is NO banner: it REPLACES the modal, it does not
+    // sit behind it (§UC-PI-006 item 2, „after dismissal").
+    await expect(closedBanner(page)).toHaveCount(0)
+
+    await dismissLandingState(page)
+    await expect(closedBanner(page)).toBeVisible()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    // …and it stays dismissed while the session lives: leaving the view and coming
+    // back is not a new session.
+    await menuGo(page, 'Zostatok a platby')
+    await expect(page).toHaveURL(/\/zostatok$/)
+    await expect(landingStateModal(page), 'never over another view').toHaveCount(0)
+    await menuGo(page, 'Aktuálna ponuka')
+    await expect(page).toHaveURL(/\/$/)
+    await expect(landingStateModal(page), 'dismissed for this session').toHaveCount(0)
+    await expect(closedBanner(page)).toBeVisible()
+
+    // ⚠ A RELOAD IS A NEW SESSION AND THE MODAL COMES BACK — PO clarification
+    // 2026-09-19 (a). This is the direction that proves there is no persistence:
+    // a `localStorage` flag would make the modal stay gone here, and the test that
+    // only checks „it disappears when dismissed" passes either way.
+    await open(page)
+    await expect(landingStateModal(page)).toBeVisible()
+    // …and nothing about it was written down anywhere a next session could read.
+    const stored = await page.evaluate(() => {
+      const dump = (s) => Object.keys(s).map((k) => `${k}=${s.getItem(k)}`).join('\n')
+      return `${dump(localStorage)}\n${dump(sessionStorage)}`
+    })
+    expect(stored, 'no dismissal flag is persisted').not.toMatch(/closed|dismiss/i)
+  })
+
+  test('⚠ one friend\'s dismissal never reaches the NEXT friend\'s session', async ({ page }) => {
+    // THE SESSION-BOUNDARY HALF, and the reason the flag may not live in
+    // `localStorage`, in a plain `<script>` block or in `FriendPortal.vue`: all
+    // three outlive the handshake, and friend B would land on a closed offer with
+    // friend A's dismissal already applied. One document, two friends — no reload,
+    // so a fresh page load cannot be what clears it.
+    const a = await makeFriend('DismissA')
+    const b = await makeFriend('DismissB')
+    await signIn(page, a)
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+    await stubCycles(page, [cycleRow({ n: 25, status: 'completed' })])
+
+    await open(page)
+    await dismissLandingState(page)
+    await expect(closedBanner(page)).toBeVisible()
+
+    await logout(page)
+    // ⚠ THE SHARED-PASSWORD CARD, not the username one: the gate database seeds
+    // `auth_mode = 'legacy'` (`seed.mjs`), and `FriendPortal.vue` renders the
+    // username form only in `modern`. Flipping the mode for one test would be a
+    // global settings write the rest of the suite would inherit. Which credential
+    // opens the session is irrelevant here — the claim is about what the SESSION
+    // carries across the handshake.
+    const loginAs = async (friend) => {
+      await page.getByRole('combobox').click()
+      await page.getByRole('option', { name: friend.name, exact: true }).click()
+      await page.getByPlaceholder('Zadajte heslo').fill(FRIENDS_PASSWORD)
+      await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+      await expectLanding(page)
+    }
+    await loginAs(b)
+    await expect(landingStateModal(page), "A's dismissal must not reach B").toBeVisible()
+
+    // …and the other way round, still in the same document: B dismissing must not
+    // leave A's next session silent either.
+    await dismissLandingState(page)
+    await logout(page)
+    await loginAs(a)
+    await expect(landingStateModal(page), 'each handshake owns its own dismissal').toBeVisible()
+  })
+
+  test('no usable `opens_at` ⇒ the card carries `nextText` ALONE', async ({ page }) => {
+    const friend = await makeFriend('NoDate')
+    await signIn(page, friend)
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+
+    // (a) a planned round with only a `plan_note` — rendered VERBATIM (§UC-PI-002).
+    await stubCycles(page, [
+      cycleRow({ n: 26, status: 'completed' }),
+      cycleRow({ n: 27, status: 'planned', opens_at: null, plan_note: 'Otvoríme hneď po Vianociach.' }),
+    ])
+    await open(page)
+    let modal = landingStateModal(page)
+    await expect(modal.getByTestId('next-round-text')).toHaveText('Otvoríme hneď po Vianociach.')
+    await expect(modal.getByTestId('next-round-date'), 'no date ⇒ no display-type date').toHaveCount(0)
+    // ⚠ The lead line goes with the date it introduced: „…sa otvorí približne" with
+    // nothing after it is a sentence with a hole in it.
+    await expect(modal.getByTestId('next-round-card')).not.toContainText('Ďalšia objednávka sa otvorí približne')
+    // …and this is the branch where the modal carries the sentence ALONE — the
+    // collision of §5.2 does not exist here at all.
+    await dismissLandingState(page)
+    await expect(closedBanner(page)).toContainText('Otvoríme hneď po Vianociach.')
+
+    // (b) nothing planned at all ⇒ module 17's fallback, same in both places.
+    await page.unroute('**/api/friends/cycles*')
+    await stubCycles(page, [cycleRow({ n: 28, status: 'completed' })])
+    await open(page)
+    modal = landingStateModal(page)
+    await expect(modal.getByTestId('next-round-text')).toHaveText('O ďalšej objednávke dáme vedieť.')
+    await dismissLandingState(page)
+    await expect(closedBanner(page)).toContainText('O ďalšej objednávke dáme vedieť.')
+  })
+
+  test('„Kde sme teraz" — module 17\'s dots, this module\'s caption row', async ({ page }) => {
+    const friend = await makeFriend('Dots')
+    await signIn(page, friend)
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+
+    // (a) with a PLANNED round the timeline is about IT ⇒ step 1 of 6, „Pauza".
+    await stubCycles(page, [
+      cycleRow({ n: 29, status: 'completed' }),
+      cycleRow({ n: 30, status: 'planned', opens_at: isoPlusDays(21) }),
+    ])
+    await open(page)
+    let modal = landingStateModal(page)
+    await expect(modal).toContainText('Kde sme teraz')
+
+    const dots = modal.getByTestId('cycle-timeline-compact')
+    await expect(dots).toHaveCount(1)
+    await expect(dots.locator('.d')).toHaveCount(6)
+    // ⚠ THE STEP LABEL COMES FROM MODULE 17, and the `aria-label` is where it shows.
+    // This module passes `:cycle` and never `:steps`, so 17 decides both which dot
+    // is „now" and what it is called; a consumer that assembled its own steps could
+    // print any of the six words here.
+    await expect(dots).toHaveAttribute('aria-label', 'Krok 1 z 6: Pripravujeme ďalšiu objednávku')
+
+    // The caption row is THIS module's (§UC-PI-006) — three words under six dots,
+    // and it is not part of the component (17 §UC-CS-006: the dots strip renders
+    // dots only). ⚠ `toHaveText` reads `textContent`, which does NOT apply the
+    // `text-transform:uppercase` the captions are painted with.
+    const captions = modal.getByTestId('timeline-captions').locator('span')
+    await expect(captions).toHaveText(['Pauza', 'Objednávky', 'Doručenie'])
+    const weights = async () => captions.evaluateAll((els) => els.map((el) => getComputedStyle(el).fontWeight))
+    expect(await weights(), 'a planned round ⇒ „Pauza" is where we are').toEqual(['700', '400', '400'])
+
+    // (b) with NOTHING planned the timeline falls back to `catalogCycle` — a
+    // COMPLETED round, step 6 ⇒ the emphasis moves to „Doručenie". Without this
+    // second fixture the weights above would pass against a hardcoded first word.
+    await page.unroute('**/api/friends/cycles*')
+    await stubCycles(page, [cycleRow({ n: 31, status: 'completed' })])
+    await open(page)
+    modal = landingStateModal(page)
+    await expect(modal.getByTestId('cycle-timeline-compact'))
+      .toHaveAttribute('aria-label', 'Krok 6 z 6: Objednávka ukončená')
+    expect(
+      await modal.getByTestId('timeline-captions').locator('span')
+        .evaluateAll((els) => els.map((el) => getComputedStyle(el).fontWeight)),
+      'a finished round ⇒ „Doručenie"',
+    ).toEqual(['400', '400', '700'])
+  })
+
+  test('„Ako to funguje" dismisses AND navigates; the drawer is reachable afterwards', async ({ page }) => {
+    const friend = await makeFriend('ToExplainer')
+    await signIn(page, friend)
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+    await stubCycles(page, [cycleRow({ n: 32, status: 'completed' })])
+    await open(page)
+
+    await landingStateModal(page).getByRole('button', { name: 'Ako to funguje' }).click()
+    await expect(page).toHaveURL(/\/ako-to-funguje$/)
+    await expect(landingStateModal(page), 'it dismissed on the way out').toHaveCount(0)
+
+    // Back on the offer the modal stays dismissed — and the hamburger, which the
+    // modal's scrim covers, is reachable again. „drawer reachable" is §UC-PI-006's
+    // own acceptance criterion.
+    await page.goBack()
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-landing-state', 'closed')
+    await expect(landingStateModal(page)).toHaveCount(0)
+    await expect(closedBanner(page)).toBeVisible()
+    const menu = await openMenu(page)
+    await expect(menu.locator('.p2-mi')).toHaveCount(6)
+    await page.keyboard.press('Escape')
+    await expect(drawer(page)).toHaveCount(0)
+  })
+
+  test('no locked and no completed round ⇒ „Ponuka ešte nie je pripravená."', async ({ page }) => {
+    const friend = await makeFriend('NoCatalog')
+    await signIn(page, friend)
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+    // A planned round only: `catalogCycle` is null — a planned round has no products
+    // a friend may look at, which is why `resolveLanding` does not offer it as one.
+    await stubCycles(page, [cycleRow({ n: 33, status: 'planned', opens_at: isoPlusDays(30) })])
+    await open(page)
+    await dismissLandingState(page)
+
+    await expect(page.getByTestId('landing-empty')).toHaveText('Ponuka ešte nie je pripravená.')
+    await expect(page.getByTestId('product-card')).toHaveCount(0)
+    await expect(page.locator('.app .cartbar')).toHaveCount(0)
+    // Non-vacuity: the closed landing itself really did render.
+    await expect(closedBanner(page)).toBeVisible()
+  })
+
+  test('the READ-ONLY catalogue: faded cards, live tabs, no cartbar, no tabgroup, no stock bars', async ({ page }) => {
+    // ⚠ A REAL cycle: the grid is served by `GET /products` and the availability by
+    // its own call, so a stubbed cycles payload alone produces no cards. The payload
+    // IS stubbed — to nothing but this round — because the gate database carries
+    // ~135 open rounds and completing one does not make the landing closed.
+    const friend = await makeFriend('ROGrid')
+    const cycle = await makeCycle('ROGrid')
+    const espressoName = `PI4 RO Espresso ${uniq}`
+    const filterName = `PI4 RO Filter ${uniq}`
+    await addProduct(cycle.id, { name: espressoName, purpose: 'Espresso', price_250g: 8.5, stock_limit_g: 5000 })
+    await addProduct(cycle.id, { name: filterName, purpose: 'Filter', price_250g: 9.5 })
+
+    // ⚠⚠ THE FRIEND ORDERED IN THIS ROUND — added in the PI-T4 review, and it is the
+    // NON-VACUITY GATE for the read-only cart rule below. Every earlier fixture here used
+    // a FRESH friend with no order on the catalogue cycle, so `cart` was empty BY ACCIDENT
+    // and „read-only shows no quantities" passed without the code doing anything. §UC-PI-006
+    // says the order GET still fires but „its `order` is IGNORED in `readonly`"; before the
+    // review it was not, and a friend saw their old quantities in faded, disabled steppers
+    // of a grid with no cartbar to act on. It matters more for PI-T5, where the friend
+    // almost always DOES have an order on the locked round.
+    const ordered = await addProduct(cycle.id, {
+      name: `PI4 RO Ordered ${uniq}`, purpose: 'Espresso', price_250g: 7.5, stock_limit_g: 5000,
+    })
+    expect((await ctx.put(`/api/orders/cycle/${cycle.id}/friend/${friend.id}`, {
+      headers: { Authorization: `Bearer ${friend.token}` },
+      data: { items: [{ product_id: ordered.id, variant: '250g', quantity: 3 }] },
+      timeout: TIMEOUT,
+    })).status(), 'the friend really has a cart on the catalogue round').toBe(200)
+
+    expect((await admin(`/api/cycles/${cycle.id}`, { method: 'patch', data: { status: 'completed' } })).status()).toBe(200)
+
+    await signIn(page, friend)
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+    await stubCycles(page, [cycleRow({ n: 34, id: cycle.id, name: cycle.name, status: 'completed' })])
+    await open(page)
+    await dismissLandingState(page)
+
+    // The caption row — „Minulá ponuka · {name}" + „len na prezretie".
+    await expect(page.getByTestId('portal-landing')).toContainText(`Minulá ponuka · ${cycle.name}`)
+    await expect(page.getByTestId('portal-landing')).toContainText('len na prezretie')
+
+    // The cards are there and they are the round's real products.
+    const card = page.getByTestId('product-card').filter({ hasText: espressoName })
+    await expect(card).toBeVisible()
+
+    // …and they are INERT: `.p2-ro` is opacity .55 + `pointer-events:none`, and the
+    // steppers are `disabled` as well. CLAUDE.md: a `disabled` attribute does not
+    // stop a DISPATCHED click, and `pointer-events:none` stops nothing a script
+    // dispatches either — which is why the handlers are guarded in JS too, and why
+    // the last assertion in this block DISPATCHES a click and reads the quantity back.
+    const grid = page.getByTestId('product-grid')
+    await expect(grid).toHaveClass(/\bp2-ro\b/)
+    expect(await grid.evaluate((el) => {
+      const cs = getComputedStyle(el)
+      return { opacity: cs.opacity, pointerEvents: cs.pointerEvents }
+    })).toEqual({ opacity: '0.55', pointerEvents: 'none' })
+    await expect(card.getByRole('button', { name: 'viac' }).first()).toBeDisabled()
+
+    // ⚠⚠ THE JS GUARD, PINNED BY BEHAVIOUR — added in the PI-T4 review, which caught
+    // that the comment above PROMISED a cart assertion this block never made. Markup
+    // was the only evidence: `toHaveClass`, a computed style and `toBeDisabled()`.
+    // CLAUDE.md states outright that a `disabled` attribute does NOT stop a dispatched
+    // click, so without this line the pair of JS guards (`FriendOrder`'s `editingLocked`
+    // and `NeoStepper`'s own `if (props.disabled) return`) had no pin at all — delete
+    // both and every assertion above still passes.
+    const plus = card.getByRole('button', { name: 'viac' }).first()
+    await plus.evaluate((el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    await expect(card.locator('.val').first(),
+      'a DISPATCHED click cannot mutate a read-only cart').toHaveText('0')
+
+    // ⚠ AND THE STORED ORDER IS IGNORED: the friend ordered 3 × 250 g of the product
+    // above in this very round, and the read-only grid still renders 0 everywhere.
+    // Without `if (isReadonly.value) cart.value = {}` this reads „3".
+    const orderedCard = page.getByTestId('product-card').filter({ hasText: `PI4 RO Ordered ${uniq}` })
+    await expect(orderedCard).toBeVisible()
+    await expect(orderedCard.locator('.val').first(),
+      'the stored order is IGNORED in readonly (§UC-PI-006)').toHaveText('0')
+
+    // No cartbar, no tabgroup, no stock bars (§UC-PI-006).
+    await expect(page.locator('.app .cartbar')).toHaveCount(0)
+    await expect(page.getByTestId('main-tab-own')).toHaveCount(0)
+    await expect(page.getByTestId('main-tab-guests')).toHaveCount(0)
+    await expect(page.getByTestId('stock-bar')).toHaveCount(0)
+    // …and no lock banner either: the warn banner above the catalogue already says it.
+    await expect(page.getByTestId('portal-landing'))
+      .not.toContainText('Už nie je možné meniť objednávku')
+
+    // ⚠ THE CATEGORY STRIP STAYS INTERACTIVE — resolved conflict 6: „only the CARDS
+    // are read-only/faded … every category is browsable". This is also the
+    // non-vacuity gate for `pointer-events:none` above: if the whole panel were
+    // wrapped, this click would time out.
+    await expect(page.getByTestId('purpose-tabs')).toBeVisible()
+    await page.getByTestId('purpose-tabs').getByRole('tab', { name: 'Filter' }).click()
+    await expect(page.getByTestId('product-card').filter({ hasText: filterName })).toBeVisible()
+    await expect(page.getByTestId('product-card').filter({ hasText: espressoName })).toHaveCount(0)
+
+    // ⚠ NON-VACUITY FOR „no stock bars", AND THE „landing-only" CLAIM IN ONE STEP:
+    // the SAME product on the deep link renders its bar, because `readonly` is a
+    // landing-mode switch and §UC-PI-018 leaves `/cycle/:id` exactly as it shipped.
+    await gotoCycle(page, cycle.id)
+    await expect(page.getByTestId('stock-bar').first()).toBeVisible()
+    await expect(page.locator('.cartbar')).toBeVisible()
+    await expect(page.getByTestId('main-tab-own')).toBeVisible()
   })
 })

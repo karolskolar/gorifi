@@ -227,7 +227,14 @@ append the full write-up to the matching learnings file and add at most one line
   `defineExpose({openShareDialog})`, never a second instance, and the rule is SOURCE-pinned per file in
   `portal-landing.spec.js` because a closed second instance has no DOM signature — PI-T3),
   `FriendOrder.vue` (`mode='route'|'landing'`; the landing mounts it, never a fork — its landing wrapper is
-  `display:contents` or `.cartbar`'s sticky clamps inside the subtree),
+  `display:contents` or `.cartbar`'s sticky clamps inside the subtree; `readonly` is LANDING-ONLY and is the
+  ONE read-only catalogue rendering — `.p2-ro` on the CARDS wrapper only so `.cat-tabs` stays browsable, plus
+  disabled steppers, no stock bars, no cartbar, no tabgroup, no status banners — PI-T4). ⚠ „no
+  tabgroup" is NOT a property of `readonly`: §UC-PI-007 KEEPS the tabgroup on the LOCKED read-only landing,
+  so PI-T5 must SPLIT that term out of the single `v-if="!isReadonly"` — read it as „this row's closed
+  landing has none", not as a prohibition,
+  `LandingStateModal.vue` (the landing's „Objednávky sú zatvorené/uzamknuté" modal; `title`/`intro`/`lead` are
+  PROPS because PI-T5's no-order locked variant is the same modal with three strings — never a second one),
   `PickupLocationPicker.vue` (props `cycleId`+`friendId`, never an order id), `lib/plural.js`,
   `CycleTimeline.vue` (props `cycle`/`variant` `vertical|compact`/`steps`; ONE component for both
   variants, scoped styles with token FALLBACKS and no `.app`/`.modal-layer` ancestor — it renders in
@@ -325,6 +332,10 @@ append the full write-up to the matching learnings file and add at most one line
   number goes straight into a template — `toFixed(2)` at a call site would print „1.00 kg" on that screen alone.
   `CycleDetail`'s „max {limit}" badge is a DIFFERENT rule (unit switches at 1000 g, no rounding) — do not fold it in.
 - Preflight `svg{display:block}` breaks inline icon+text — fix at the call site with `inline-flex`.
+- ⚠ The closed landing prints the SAME date twice, in TWO formats, and that is an open PO question, not a bug:
+  the modal's card is `lib/dates.js fmtDayMonth` („3. 10.") and the warn banner is module 17's composed
+  sentence („približne 3. októbra"). Never reconcile it at a call site; `portal-landing.spec.js` §5 pins both
+  halves, so whichever way the PO rules, exactly one of those expectations is the edit (PI-T1 §1, PI-T4).
 - Guest surface (`GuestOrder.vue`, `GuestOrderStatus.vue`) deliberately lags the friend skin in places; it is
   not the reference when restyling.
 
@@ -370,6 +381,11 @@ Full recipe and env in `e2e/README.md`. Checklist:
   suspicious failure by running its file alone, twice, on a fresh DB — and check the box and the SERVER log
   before blaming the diff** (see the loaded-box rule above; 65 `disk image is malformed` lines once sat unread
   in a server log while a file-ordering theory was built on the test log).
+- A CLOSED landing opens a `role="dialog"` BY ITSELF (the state modal), and its scrim covers the hamburger:
+  a spec whose fixture lands `closed` and then reaches for the drawer calls `dismissLandingState(page)` first,
+  and one that counts dialogs there is counting the modal. ⚠ `signIn()` helpers that `localStorage.clear()` in
+  an `addInitScript` run on EVERY navigation, a RELOAD included — so a test asserting something is NOT
+  persisted may not use them, or it passes whatever the app stores (measured, PI-T4).
 - Spec hygiene: refusal tests read the row back; absence assertions need a non-vacuity gate; Playwright role
   names match as case-insensitive substrings unless `exact: true`; `innerText` applies `text-transform`;
   NBSP survives regex `toHaveText`; `li` counts must be `li.ln`; UI+API admin tests must adopt the browser's token.

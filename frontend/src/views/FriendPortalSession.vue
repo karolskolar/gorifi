@@ -75,6 +75,10 @@ import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
 // instance on the friend surface (§UC-PI-011) — this view used to mount a SECOND one
 // for the cycle card's share row, and that instance is gone with the card.
 import FriendOrder from '@/views/FriendOrder.vue'
+// 18 §UC-PI-006 — the closed landing's state modal. Parametrised (title / intro /
+// lead are props) because PI-T5 mounts the SAME component for §UC-PI-007's
+// „locked, no own order" variant; a second modal would be the defect.
+import LandingStateModal from '@/components/LandingStateModal.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
@@ -967,6 +971,58 @@ function openMenu() {
 }
 
 // ---------------------------------------------------------------------------
+// 18 §UC-PI-006 — THE CLOSED LANDING'S STATE MODAL (PI-T4).
+//
+// ⚠⚠ ONCE PER SESSION, WITH NO PERSISTENCE, AND THE STATE LIVES *HERE*.
+// PO clarification 2026-09-19 (a): „modal once per closed period" IS the spec's
+// per-SESSION rule — a reload shows it again. So:
+//
+//   · NOT `localStorage` / `sessionStorage`. This component is `:key`-ed on the auth
+//     HANDSHAKE and destroyed on logout (`FriendPortal.vue`'s `v-if` + `:key`), which
+//     is the six-leak guard: a stored flag would survive that boundary and friend B
+//     would land on a closed offer with friend A's dismissal already applied. There
+//     is nothing about this flag that is worth reintroducing that class of bug for.
+//   · NOT a plain `<script>` block. `<script setup>` has no module scope (CLAUDE.md
+//     §Frontend), so a `let` hoisted up there is ONE value shared by every instance
+//     the tab ever mounts — the same leak with a shorter fuse.
+//   · NOT the parent. PI-T1's source pin forbids landing state in `FriendPortal.vue`
+//     outright, and for the same reason: the parent outlives the session.
+//
+// A `ref` in this component is therefore not the lazy option, it is the only one
+// that expires when the session does.
+const closedModalDismissed = ref(false)
+
+/**
+ * The modal is showing: the closed offer, the `shop` view, not yet dismissed.
+ *
+ * ⚠ Gated on the VIEW as well as the state. Navigating to „Zostatok a platby" and
+ * back must not put a modal over the balance view on the way — and §UC-PI-006 places
+ * it on the landing, not on the session.
+ *
+ * ⚠ …and that term is DEFENCE IN DEPTH TODAY, said out loud because the alternative
+ * is someone later reading it as the thing that enforces the rule. The enforcer is
+ * the TEMPLATE: the modal is mounted inside the `view === 'shop' && state ===
+ * 'closed'` branch, so dropping this term alone changes nothing observable
+ * (measured — mutation M10 reddened zero tests). It takes hoisting the modal out of
+ * that branch to break it, which is the realistic defect and which `portal-landing`
+ * §5 does pin. The term stays: a later row that moves the mount is exactly the
+ * change that would otherwise ship a modal over the balance view.
+ */
+const showClosedModal = computed(() => (
+  view.value === 'shop' && landing.value.state === 'closed' && !closedModalDismissed.value
+))
+
+/** ×, Esc, scrim, „Prezrieť ponuku" and „Ako to funguje" all mean the same thing. */
+function dismissClosedModal() {
+  closedModalDismissed.value = true
+}
+
+function closedModalToExplainer() {
+  dismissClosedModal()
+  router.push('/ako-to-funguje')
+}
+
+// ---------------------------------------------------------------------------
 // 18 §UC-PI-005/011 — THE EMBEDDED ORDER SURFACE, AND THE ONE SHARE DIALOG
 // ---------------------------------------------------------------------------
 
@@ -1817,6 +1873,96 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
         :cycle-id="landing.currentCycle.id"
         :friend-id="friendId"
       />
+    </template>
+
+    <!-- ═══════════════ 18 §UC-PI-006 — THE LANDING, CLOSED STATE (PI-T4) ═══════
+         R1.3: no open round ⇒ a read-only catalogue behind a dismissible state
+         modal, then a slim banner. `landing.state === 'closed'` means „no `open`
+         and no `locked` round" (`lib/portal-state.js`) — the LOCKED landing is
+         PI-T5's and keeps its own branch. -->
+    <template v-else-if="view === 'shop' && landing.state === 'closed'">
+      <!-- 1. THE STATE MODAL — once per session (see `closedModalDismissed`).
+           ⚠ Its title/intro are passed as PROPS, not baked into the component:
+           §UC-PI-007's no-order LOCKED variant is the same modal with „Objednávky
+           sú uzamknuté" / „Táto objednávka je už uzavretá — káva je objednaná
+           v pražiarni." and PI-T5 must not need a second one.
+
+           ⚠ `timelineCycle` is `nextCycle ?? catalogCycle` (§UC-PI-006) and it is
+           handed to `CycleTimeline` as `:cycle` — module 17 decides which dot is
+           „now". This view never builds a step array. -->
+      <LandingStateModal
+        v-if="showClosedModal"
+        title="Objednávky sú zatvorené"
+        intro="Káva sa objednáva spoločne, v termínoch — pár dní naraz, potom ju nakúpime v pražiarni a rozdáme si ju."
+        :next-cycle="landing.nextCycle"
+        :next-opening="landing.nextOpening"
+        :timeline-cycle="landing.nextCycle || landing.catalogCycle"
+        @close="dismissClosedModal"
+        @explainer="closedModalToExplainer"
+      />
+
+      <!-- 2. …AND AFTER DISMISSAL, THE SLIM BANNER THAT REPLACES IT.
+           ⚠⚠ THIS IS WHERE THE TWO DATE FORMATS MEET, AND IT IS A RECORDED PO
+           QUESTION, NOT A DEFECT WITH AN OWNER. `landing.nextText` is module 17's
+           composed sentence („Ďalšia objednávka sa otvorí približne 3. OKTÓBRA"),
+           while the modal's card sets the same date in display type through 18's
+           `fmtDayMonth` („3. 10."). Both are specified — 17 §UC-CS-005 and 18
+           §UC-PI-002 — for the same sentence, and PI-T1 kept the shipped one
+           because the alternative is a second home for it (learnings 10 §1, both
+           options costed). ⚠ PI-T4 must NOT resolve it at a call site: reformatting
+           either one here is how the second home finally gets created. It is one
+           sentence with one home until the PO rules.
+
+           `white-space:pre-line` because branch 2 of `nextText` is the admin's
+           `plan_note`, verbatim, newlines and all (§UC-PI-002). Kept on ONE source
+           line so the template's own indentation cannot become rendered whitespace. -->
+      <div v-else class="banner warn slim" data-testid="landing-closed-banner">
+        <span class="dot"></span>
+        <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Objednávky sú zatvorené.</b> {{ landing.nextText }}</div>
+      </div>
+
+      <!-- 3. The debt banner is PI-T7's slot (§UC-PI-008), in this state too. -->
+
+      <!-- 4. THE READ-ONLY CATALOGUE of `catalogCycle` — the newest `locked` or
+             `completed` round (`lib/portal-state.js`). ⚠ NOT `currentCycle`, which
+             is `null` here by design: a `planned` round has no products a friend
+             may look at. -->
+      <template v-if="landing.catalogCycle">
+        <!-- The caption row is THIS view's (`portal2.jsx:288-290`), above the grid
+             and outside `.p2-ro` so it keeps full contrast. -->
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+          <span class="field-lbl" style="min-width:0;overflow-wrap:anywhere">Minulá ponuka · {{ landing.catalogCycle.name }}</span>
+          <span class="sub mono" style="white-space:nowrap;font-size:12px">len na prezretie</span>
+        </div>
+
+        <!-- ⚠ THE SAME `FriendOrder`, WITH `readonly` — never a second card
+             template (§UC-PI-006). It brings `.p2-ro` on the cards, disabled
+             steppers, no stock bars, no cartbar, no tabgroup; the `.cat-tabs`
+             strip stays live so every category is browsable.
+
+             ⚠ NO `ref="landingOrder"`: that ref is the OPEN landing's bridge to
+             `openShareDialog()`/`cartTotal`, and a closed round has neither. Drawer
+             item 4 is `state === 'open'` only, so nothing reads it here — and
+             pointing it at a read-only mount would hand the share row a dead
+             instance. -->
+        <FriendOrder
+          :key="`ro-${landing.catalogCycle.id}`"
+          mode="landing"
+          readonly
+          :cycle-id="landing.catalogCycle.id"
+          :friend-id="friendId"
+        />
+      </template>
+
+      <!-- No locked and no completed round has ever existed ⇒ there is no
+           catalogue to show (§UC-PI-006). This one string replaces BOTH of module
+           03's retired empty states, whose wording §UC-PI-017 forbids. -->
+      <div
+        v-else
+        class="sub"
+        style="text-align:center;padding:24px 0"
+        data-testid="landing-empty"
+      >Ponuka ešte nie je pripravená.</div>
     </template>
   </div>
 

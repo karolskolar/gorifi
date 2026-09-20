@@ -846,3 +846,198 @@ silently, because `switchUser` is not a route leave and no spec rule covers it.
 three majors was a claim I had already made correctly SOMEWHERE — in a report, in one spec
 file, in one spec helper — and then failed to carry to every place it applied. Finding a
 rule is the cheap half.
+
+---
+
+## PI-T4 — the CLOSED landing: a parametrised state modal, and a read-only catalogue (2026-09-20)
+
+**What shipped.** `components/LandingStateModal.vue` (the parametrised `NeoModal`:
+`title` / `intro` / `lead` are props because PI-T5 is its second consumer);
+`FriendOrder.vue` gained a `readonly` prop (landing-only) that renders the SAME grid
+inert — `.p2-ro` on the cards wrapper, disabled steppers, no stock bars, no cartbar, no
+tabgroup, no status banners; `FriendPortalSession.vue` gained the whole `closed` branch
+(`closedModalDismissed`, the modal, the `.banner.warn.slim` that replaces it, the
+„Minulá ponuka · {name}" caption row, the read-only `catalogCycle` grid and the
+„Ponuka ešte nie je pripravená." empty state); two helpers in `e2e/helpers/portal.js`;
+nine new tests in `portal-landing.spec.js` §5; two sanctioned one-line edits.
+
+### 1. ⚠⚠ THE DATE CONFLICT IS STILL A PO QUESTION, AND IT IS NOW PINNED AS A FACT
+
+§1 of this file left PI-T4 the job of NOT resolving it, and the row did not. The closed
+landing prints the same date twice, in two formats, and both are specified:
+
+| surface | format | source |
+|---|---|---|
+| the modal's 38 px card | „3. 12." | `lib/dates.js fmtDayMonth` (18 §UC-PI-002) |
+| the warn banner after dismissal | „…približne 3. decembra" | `cycle-stages.js nextOpeningText` (17 §UC-CS-005) |
+
+What changed is that the state of play is now **measurable in both directions**, because
+one test asserts each half AND the absence of the other (`portal-landing.spec.js` §5,
+„the SHORT form in the card, the LONG form in the banner"). Two mutations prove it is not
+decoration:
+
+- **M2** — the card switched to 17's long form (the „obvious fix"): reds 2.
+- **M3** — the banner re-formats 17's sentence with `fmtDayMonth` at the call site
+  (the other „obvious fix"): reds 1.
+
+So neither call-site resolution can ship quietly, and when the PO rules, exactly one of
+those two expectations is the edit. ⚠ The test carries a non-vacuity line nobody would
+think to write: `expect(short).not.toBe(long)` — if ICU ever collapsed the two spellings
+the whole test would measure nothing, silently.
+
+⚠ And the correction §UC-PI-002 already carries is worth repeating once more, because it
+is what makes the conflict findable: the two forms are **not both inside the modal**. In
+the `opens_at === null` branch the modal carries `nextText` alone and there is no
+collision there at all. A reader who checked the older „both forms in one modal" wording
+against the screen would have found it false and could have concluded the whole conflict
+had evaporated.
+
+### 2. ⚠⚠ MY „NO PERSISTENCE" TEST COULD NOT FAIL, AND THE MUTATION IS THE ONLY REASON I KNOW
+
+„Once per SESSION, no persistence" was written as: dismiss, reload, the modal is back.
+**M1 (store the dismissal in `localStorage`) left that test GREEN.** The cause is in the
+spec file's own fixture, not in the app: `signIn()` seeds the session through
+`page.addInitScript(() => { localStorage.clear(); … })`, and **an init script runs on
+every navigation, a reload included** — so the reload wiped the persisted flag on its way
+in and the modal came back for a reason that had nothing to do with the implementation.
+The accompanying „nothing is in storage" dump assertion was vacuous for the same reason.
+
+The fix is a local variant that seeds the session WITHOUT clearing. Re-measured, **M1
+then reds two tests** — the reload one and the cross-friend one. ⚠ The general rule, and
+it bites any spec in this suite that asserts something is NOT persisted: **`signIn()` is
+storage-hostile; a test about storage may not use it.** The cross-session test was the
+only thing standing between M1 and a green run, and it only works because it logs the
+second friend in *in the same document*.
+
+⚠ Second-order: the cross-friend walk had to use the **shared-password** card, not the
+username one. `seed.mjs` leaves the gate DB in `auth_mode = 'legacy'` and
+`FriendPortal.vue` renders the username form only in `modern`; flipping the mode for one
+test is a global settings write every later file would inherit. Which credential opens
+the session is irrelevant to the claim.
+
+### 3. THE READ-ONLY GRID IS `FriendOrder` WITH FOUR SWITCHES, AND `.p2-ro` GOES ON THE CARDS
+
+§UC-PI-006 says „never a second card template", and the prototype disagrees with the spec
+about scope: `portal2.jsx:291` wraps the category strip AND the cards in `.p2-ro`, while
+resolved conflict 6 says only the cards fade. The spec wins, and it is not cosmetic —
+`.p2-ro` is `pointer-events:none`, so the prototype's placement makes every category past
+the first unreachable.
+
+⚠ **Proving that took TWO mutations, and the first one was not evidence.** M4 (move
+`.p2-ro` to the panel) reddened the read-only test — but on the `toHaveClass` assertion,
+which says nothing about interactivity. **M4b** puts `.p2-ro` on BOTH nodes, so the class
+assertion stays green and the only thing left to fail is the category click: it fails,
+with „`<div class=…>` intercepts pointer events". *A mutation that trips the first
+assertion in a test has not exercised the rest of it.*
+
+The other three switches are pinned 1:1 — M5 (stock bars), M6 (cartbar), M9 (tabgroup),
+one test each. ⚠ M6 reddened only the new test and NOT PI-T3's „a round that is not OPEN
+offers no share affordance": that test's closed fixture is a STUB cycle id with no row
+behind it, so the embedded `FriendOrder` fails its load and renders no cartbar whatever
+the `readonly` rule says. The claim survives on the drawer half; the cartbar half of it
+is now carried by §5's read-only test, against a real round.
+
+### 4. ⚠ A GUARD THAT IS DEFENCE IN DEPTH, AND A GATE THAT WAS DEAD CODE — BOTH SAID OUT LOUD
+
+Two mutations reddened **nothing**, and both findings are kept in the source as comments
+rather than quietly removed:
+
+- **M12** — `editingLocked` drops its `isReadonly` term. Nothing reds, because
+  `readonly` is only ever handed a `locked`/`completed` round today (`resolveLanding`
+  guarantees it), so `isLocked` already refuses every edit. It stays: a future caller
+  that renders an OPEN round read-only would otherwise get a live cart under a 55 %-opacity
+  grid with no cartbar. Same shape as PI-T3 §2's M13 and PI-T2 §2's M2.
+- **M10** — `showClosedModal` drops its `view === 'shop'` term. Nothing reds, and here the
+  reason is that the term is genuinely redundant: the modal is MOUNTED inside the
+  `view === 'shop' && state === 'closed'` template branch. ⚠ The realistic defect is
+  hoisting the mount to session level, and **that** (M10′) reds — but only after a test
+  was added that visits `/zostatok` **before** any dismissal. After the dismissal the flag
+  hides the modal everywhere and the gate is unmeasurable, so the assertion's POSITION in
+  the test is load-bearing.
+
+### 5. THE CAPTION ROW IS THE CONSUMER'S, AND IT ASKS MODULE 17 RATHER THAN DECIDING
+
+`CycleTimeline` renders six dots and nothing else (17 §UC-CS-006, and its own template
+says so), so „Pauza · Objednávky · Doručenie" lives in `LandingStateModal.vue`. Which of
+the three is emphasised comes from **`stageIndex()`** — 17's status-first translation —
+never from a locally built step array, and the component is handed `:cycle`, never
+`:steps`. Passing `:steps` would hand this module ownership of each step's `state`, which
+is exactly the door the three measured stale-`stage` transitions (09 §10) come back
+through, on one screen, with nothing going red.
+
+Pinned through the `aria-label` („Krok 1 z 6: Pripravujeme ďalšiu objednávku"), which is
+where 17's vocabulary shows in the DOM, plus computed `font-weight` on the three captions.
+⚠ **Two fixtures, because one could not discriminate:** with a planned round the answer is
+„Pauza" (step 1) and with nothing planned it falls back to `catalogCycle` and becomes
+„Doručenie" (step 6). M7 (hardcode the first caption) and M8 (`catalogCycle` picked before
+`nextCycle`) each red that one test.
+
+### 6. Small things measured rather than assumed
+
+- **A closed landing now opens a `role="dialog"` BY ITSELF, and its scrim covers the
+  hamburger.** Two shipped tests land closed and then reach for the drawer
+  (`portal-landing`'s „no share affordance" closed branch, `portal-menu`'s „1 objednávku"
+  row); both take a one-line `dismissLandingState(page)`, which is the new helper's whole
+  reason for existing. The enumeration was done with `grep -n "friends/cycles"` across
+  `tests/` and then by reading every fixture's `status:` — six UI spec files stub the
+  payload, and exactly two of them produce a `closed` landing followed by a click.
+  `portal-appbar`'s two closed fixtures assert only `textContent`, which a scrim does not
+  affect.
+- **`dismissLandingState()` asserts the modal is there before dismissing it.** A helper
+  that shrugged when it found nothing would let „the modal stopped opening" pass every
+  caller that used it.
+- **The read-only grid needs a REAL round**, so the test creates one, adds two purposes'
+  products, PATCHes it to `completed`, and then stubs `GET /friends/cycles` to contain
+  nothing but that row — the gate DB carries ~135 open rounds, and completing one does not
+  make the landing closed.
+- **The „no stock bars" absence is gated by the deep link.** The same product on
+  `/cycle/:id` (via `gotoCycle()`) still renders its bar, which is simultaneously the
+  non-vacuity gate and the proof that `readonly` is landing-only and §UC-PI-018's screen is
+  untouched.
+- **`panel-own` stops being a `tabpanel` in `readonly`**: the tabgroup is gone, so
+  `role="tabpanel"` + `aria-labelledby="tab-own"` would point at an element that does not
+  exist. Vue drops a `null` attribute entirely, so the other two mounts keep their markup
+  byte for byte.
+- **The `+14 days` fixture is chosen, not arbitrary**: `Math.round(14 / 7) === 2` whatever
+  „today" is, and 2 takes the 2–4 declension („o 2 týždne"), so the exact weeks string is
+  assertable without drifting with the calendar.
+- The banner's `white-space:pre-line` (branch 2 of `nextText` is the admin's `plan_note`,
+  verbatim) forced the whole bold-plus-interpolation to sit on ONE source line: template
+  indentation would otherwise become rendered whitespace.
+
+### 7. The mutation matrix, in full (all reverted from a scratchpad copy, never `git checkout`)
+
+| # | Mutation | Reds |
+|---|---|---|
+| M1 | the dismissal persisted in `localStorage` | **0 at first** (§2); 2 after the fixture was fixed |
+| M2 | the modal's card formats with 17's `fmtDay` | 2 — the modal test and the collision test |
+| M3 | the banner re-formats 17's sentence with `fmtDayMonth` | 1 — the collision test |
+| M4 | `.p2-ro` moved to the panel | 1, but on the CLASS assertion — not evidence (§3) |
+| M4b | `.p2-ro` on the panel AND the cards | 1 — the category click, „intercepts pointer events" |
+| M5 | stock bars not hidden in `readonly` | 1 — the read-only test |
+| M6 | the cartbar renders in `readonly` | 1 — the read-only test (§3 on why not 2) |
+| M7 | the active caption hardcoded to the first word | 1 — the dots test |
+| M8 | the timeline reads `catalogCycle` before `nextCycle` | 1 — the dots test |
+| M9 | the tabgroup renders in `readonly` | 1 — the read-only test |
+| M10 | `showClosedModal` drops its `view` term | **0** — dead code (§4) |
+| M10′ | the modal hoisted OUT of the `shop` branch | 1 — the view-gate assertion (§4) |
+| M11 | `catalogCycle` falls back to `nextCycle` | 1 — the empty-state test |
+| M12 | `editingLocked` drops its `isReadonly` term | **0** — defence in depth (§4) |
+
+### What PI-T4 LEAVES BEHIND
+
+1. **`LandingStateModal.vue` is PI-T5's, ready.** The no-order LOCKED variant passes
+   `title="Objednávky sú uzamknuté"` and the §UC-PI-007 intro and changes nothing else;
+   a second modal component is the defect this parametrisation exists to prevent.
+2. **`FriendOrder`'s `readonly` is PI-T5's too** — but §UC-PI-007 keeps the TABGROUP on the
+   locked landing („Kolegovia hand-over ticks happen precisely now"), so that row needs a
+   third switch rather than a reuse of this one. The `v-if="!isReadonly"` on the tabgroup
+   is the line it will have to split.
+3. **Landing slot 3 (the debt banner) is still empty in the closed branch too** — PI-T7's,
+   and marked in the template where it goes.
+4. ⚠ **PI-T12 owes `portal-fidelity` the A10 pins for the new surfaces** (`.banner.slim`
+   on the closed banner, `.field-lbl` in the caption row, the 38 px `.display` in the
+   modal's card) and a 320 px hostile-text pass over the closed state.
+5. ⚠ **`portal-vocabulary.spec.js` (PI-T11) must add `components/LandingStateModal.vue` to
+   §UC-PI-017's grep list** — it is a friend surface with Slovak copy and it is in no file
+   list today.

@@ -431,8 +431,14 @@ slim banner.
      **„{weeks} · dáme vedieť cez WhatsApp“** — when `opens_at` is null the card body is
      `nextText` (UC-PI-002) in `.display` 22px instead.
    - `field-lbl` **„Kde sme teraz“** + `CycleTimeline` **compact dots variant** (module 17
-     — `variant="dots"`, `cycle = nextCycle ?? catalogCycle`; 17 owns which dot is „now“)
-     + the three mono captions **Pauza · Objednávky · Doručenie**.
+     — ~~`variant="dots"`~~ **`variant="compact"`, the name CS-T2 actually shipped
+     (17 §UC-CS-006 always said `compact`; corrected in place by PI-T4)**,
+     `cycle = nextCycle ?? catalogCycle`; 17 owns which dot is „now“ — the consumer passes
+     `:cycle` and NEVER `:steps`)
+     + the three mono captions **Pauza · Objednávky · Doručenie**, which belong to the
+     CONSUMER: `CycleTimeline` renders dots only, by its own spec. Which caption is
+     emphasised comes from 17's `stageIndex()` (0 ⇒ Pauza, 1 ⇒ Objednávky, 2–5 ⇒ Doručenie),
+     never from a locally assembled step array.
    - Footer: `button.btn` **„Ako to funguje“** → dismiss + `/ako-to-funguje`;
      `button.btn.accent` **„Prezrieť ponuku“** → dismiss. ×/Esc/scrim = dismiss.
 2. After dismissal: `div.banner.warn.slim` + `span.dot`:
@@ -446,6 +452,13 @@ slim banner.
    (`[data-testid="stock-bar"]` count 0); **no `.cartbar`**, **no tabgroup**, no
    status/ok banners. `catalogCycle === null` ⇒ centred `.sub` **„Ponuka ešte nie je
    pripravená.“** in place of the grid.
+
+⚠ **PI-T4 note (2026-09-20) — the two date formats in this state are NOT a defect:**
+the card above prints `fmtDayMonth` („3. 10.“) while item 2's banner prints module 17's
+composed sentence („približne 3. októbra“). Both are specified, by two modules, for the
+same date; see the amendment at §UC-PI-002 and `docs/learnings/10-portal-ia.md` §1 and
+PI-T4 §1. `portal-landing.spec.js` §5 pins BOTH halves, so the PO decision is a
+one-expectation edit — and neither half may be reconciled at a call site.
 
 **Business rules:** `FriendOrder` in `landing` mode with `readonly: true` renders the grid
 this way (extend UC-FO-014's locked rendering with the `.p2-ro` wrapper + hidden stock
@@ -922,8 +935,18 @@ grep -rniE "cykl|\bkol(o|a|e|u|om|á|ách)\b" \
   frontend/src/components/CartLineList.vue frontend/src/components/PickupLocationPicker.vue \
   frontend/src/components/neo/ frontend/src/lib/portal-state.js frontend/src/lib/roasters.js \
   frontend/src/lib/dates.js \
+  frontend/src/components/LandingStateModal.vue \
+  frontend/src/components/CycleTimeline.vue frontend/src/lib/cycle-stages.js \
   | grep -vE ":[0-9]+:\s*(//|\*|<!--|\* )"
 ```
+⚠ **THREE files were missing from this list** and were added in the PI-T4 review:
+`LandingStateModal.vue` is a friend surface carrying Slovak copy and sits OUTSIDE the
+`components/neo/` directory the list already covers (PI-T4); `CycleTimeline.vue` and
+`lib/cycle-stages.js` are module 17's and were never added (pre-existing). All three are
+clean today, so this was a GUARD GAP, not a live violation — which is exactly the shape
+CLAUDE.md §Documentation discipline names: a rule stated as a grep must enumerate EVERY
+file, or it quietly stops covering the thing it was written for.
+
 (the trailing filter drops code comments — English „cycle“ never matches „cykl“ anyway;
 „kolegovia“ is excluded by the word boundary.) A DOM sweep in the new spec asserts
 `/cykl|\bkol(o|a|e|u|om|á|ách)\b/i` is absent from `document.body.innerText` on every

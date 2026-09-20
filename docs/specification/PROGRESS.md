@@ -428,7 +428,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] PI-T1  Portal shell: routes `/moje-objednavky`, `/zostatok`, `/ako-to-funguje` (+ `meta.view`, bodies later) + `lib/portal-state.js` `resolveLanding()` (state/currentCycle/catalogCycle/nextCycle/nextText; two-open `console.warn`) + `lib/dates.js` + `GET /friends/cycles` payload extension (`opens_at/closes_at/stage` from CS-T1, `orderHandedOver` from DP-T1's `handed_over_at`) + `data-testid="portal-landing"` + `e2e/helpers/portal.js` gate retarget across ~27 files — `18 §UC-PI-001,002,019(items 1,2,15)` ⚠ all session state in `FriendPortalSession.vue` (`:key`), never `FriendPortal.vue`/localStorage; `closes_at` date only (PO); subscription filter block stays server-side. ⚠ SANCTIONED: `getByRole('heading',{name:'Objednávkové cykly'})` → `expectLanding(page)` (skip `portal-cycles`/`portal-share-row`, retired in PI-T3); `portal-appbar.spec.js:268`; `self-hosted-fonts` sweep += the three routes.
 - [x] PI-T2  Appbar per state (menu · brand + subtitle · **Pozvať chip stays** · lock chip when not open · three tickers) + `NeoDrawer.vue` via `useModalLayer()` extracted from `NeoModal` (scrim/Esc/focus-trap/scroll-lock ONE home) + A13 `portal2.css` port into `friends-theme.css` + drawer items 1–3/5–7 (item 4 slot left for PI-T3) + ONE session-level balance fetch + badge + logout/profile moved into the drawer + `NeoIcon menu` — `18 §UC-PI-003,004,019(items 4,5,7)` · model=heavy ⚠ drawer = `Teleport` → `.modal-layer` → `aside[role=dialog]`, never a fixed child of `.app` (z-index trap); shipped specs counting dialogs must open it deliberately. ⚠ header = friend `name` only (PO: no uid, no „člen od“). ⚠ SANCTIONED (large): logout control → `logout(page)` in portal-appbar ×6, portal-session-boundary ×3, portal-profile-modal ×2, friends-consolidation:1006, google-auth ×12; `.titles`→profile pins INVERTED; pencil tests → one `profile-pencil` count-0 pin; `portal-appbar` ticker rewrite; balance-card describe PARKED for PI-T7; NEW `portal-menu.spec.js`.
 - [x] PI-T3  Landing OPEN state: `FriendOrder.vue` `mode='landing'` (props `cycleId/friendId/mode`; no `.app`/BrandChrome inside; `.cartbar` stays a theme class) + cycle list, gear and subscription modal RETIRED (column/endpoint kept) + status line („Objednávky do {closes_at} · Káva príde okolo {expected_date} — Ako to funguje?“) + cartbar share icon + drawer item 4 via `defineExpose({openShareDialog})` + „Späť na ponuku“ + DELETE `portal-cycles.spec.js`/`portal-share-row.spec.js` (protected properties move to `portal-landing`/`portal-menu`) — `18 §UC-PI-005,011,016,019(items 3,6,8,12)` · model=heavy ⚠ riskiest row: FriendOrder is the ONE home — extend, never fork; leave guard fires on drawer `router.push`; exactly ONE `GuestShareDialog` instance. ⚠ landing slot 2 left empty for the debt banner (PI-T7); `FriendBalanceCard` stays on the landing until PI-T7. ⚠ SANCTIONED: `guest-link.spec.js` 255 / 291–380 retargets, `portal-subscription-invite` describes → two pins, `catalog-admin:2419`, `order-cartbar` landing variant; ~~`share-dialog.spec.js` unmodified~~ **— WRONG, and unsatisfiable: its entry point B is the cycle CARD (`portalCard()`), so nine call sites were re-pointed at the landing cartbar icon under case (a); `guest-order-recovery.spec.js` carries the same helper and is in no list. The `heading.click()` retarget is TWENTY files, not two (`helpers/portal.js gotoCycle()` is its one home) — see 18 §UC-PI-019 item 3, amended in place.**
-- [ ] PI-T4  Landing CLOSED state: parametrised NeoModal „Objednávky sú zatvorené“ once per SESSION (PO: „once, then banner“ = the spec's session rule, no persistence) + `nextText` card + `CycleTimeline variant="compact"` (own caption row) + `.banner.warn.slim` after dismiss + read-only `catalogCycle` grid (`readonly` landing mode: `.p2-ro`, tabs live, no stock bars/cartbar/tabgroup) + empty „Ponuka ešte nie je pripravená.“ — `18 §UC-PI-006` ⚠ modal title/intro/lead are PROPS so PI-T5 only passes strings for the no-order locked variant.
+- [x] PI-T4  Landing CLOSED state: parametrised NeoModal „Objednávky sú zatvorené“ once per SESSION (PO: „once, then banner“ = the spec's session rule, no persistence) + `nextText` card + `CycleTimeline variant="compact"` (own caption row) + `.banner.warn.slim` after dismiss + read-only `catalogCycle` grid (`readonly` landing mode: `.p2-ro`, tabs live, no stock bars/cartbar/tabgroup) + empty „Ponuka ešte nie je pripravená.“ — `18 §UC-PI-006` ⚠ modal title/intro/lead are PROPS so PI-T5 only passes strings for the no-order locked variant.
 - [ ] PI-T5  Landing LOCKED state: own-order card (`CartLineList`, hoisted `lib/order-lines.js`, pickup row = exactly one of location/note/„Packeta · …“, Zaplatené/Nezaplatené + Zaplatiť → PaymentModal with `paymentTotal` incl. `delivery_fee`, VS from PL-T2) + „Kde je vaša káva“ `CycleTimeline vertical` + next-round banner + read-only `currentCycle` grid WITH tabgroup (Kolegovia hand-over ticks stay) + no-order variant „Objednávky sú uzamknuté“ — `18 §UC-PI-007` · model=heavy ⚠ NO ledger write; `paid` admin-only; shipped locked banner/cartbar stay on `/cycle/:id` (PI-T11 verifies); `order-locked.spec.js` pins unchanged on the deep link.
 - [ ] PI-T6  „Moje objednávky“ history view: `hasOrder` rounds newest-first, short badges (Odoslaná / V pražiarni / Balíme / Zabalená / Odovzdaná / Vyzdvihnuté — owned HERE, never shared with 17's long labels), lazy `CartLineList` per round (`rowSeq`, one expanded), empty state, READ-ONLY (PO: no „Otvoriť“ link) — `18 §UC-PI-009` ⚠ NEW `portal-history.spec.js`; `orderHandedOver` from PI-T1 drives „Odovzdaná“.
 - [ ] PI-T7  Money surfaces: debt banner + Zaplatiť on the landing in ALL states (`balance < -0.01`; PO: zero/positive NEVER on landing) + „Zostatok a platby“ view (`FriendBalanceCard` re-purposed, PL-T4's `pay-balance` trigger + mount RELOCATED here — never duplicated; keep „po zaplatení sa zostatok vyrovná do 1–2 dní“) + `FriendTransactionList.vue` lifted verbatim from `FriendTransactionsModal.vue` (deleted) + landing balance card REMOVED — `18 §UC-PI-008,010,019(items 7,9)` ⚠ SANCTIONED: RENAME `portal-transactions-modal.spec.js` → `portal-balance.spec.js` (keep every `tx-*` pin, sign/colour, 320 px test, admin invariance describe; drop the unsatisfiable modal-shell pins); parked `portal-appbar` balance describe lands here. ⚠ `BalanceBadge.vue` untouched (admin-shared).
@@ -475,6 +475,42 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## Log
 
+- 2026-09-20 · PI-T4 · (this commit) · no PR (project convention) · **The CLOSED landing — and the
+  unresolved date decision is now HELD AS A PINNED FACT instead of a loose end.** New
+  `LandingStateModal.vue` (`title`/`intro`/`lead` are props so PI-T5 passes strings), a modal shown once
+  per SESSION (a `ref` in the session, keyed on the handshake, no persistence), the next-round card, the
+  compact timeline with a consumer-owned caption row, the warn banner after dismissal, a `readonly`
+  catalogue grid on `FriendOrder`, and the empty state.
+  ⚠ **The date collision SHIPS, deliberately.** Two modules specify different renderings of one sentence;
+  the modal card prints the short form and the banner that replaces it prints module 17's long one. Each
+  half is pinned WITH the absence of the other, over expectations re-derived independently (reading the
+  app's own formatter would have been a tautology) and a non-vacuity line asserting the two forms differ.
+  **When the PO rules, exactly one expectation is the edit.**
+  ⚠ **Two assertions that could not fail, found by the IMPLEMENTER's own mutations.** The sharper:
+  `signIn()` seeds through `addInitScript(localStorage.clear())`, and **an init script runs on EVERY
+  navigation including a reload** — so the reload wiped the flag the mutation had written and „nothing is
+  persisted" passed for the wrong reason. Review generalised it correctly: **the hazard is a NAVIGATION
+  between the write and the read, not the reload**; 21 specs use the idiom, only 2 reload, and both fail
+  loudly rather than falsely.
+  ⚠ **A comment promised an assertion the test never made** (review): the read-only claim rested on
+  markup — a class, a computed style, `toBeDisabled()` — while CLAUDE.md states outright that a `disabled`
+  attribute does NOT stop a dispatched click. Both JS guards had NO pin; delete them and everything still
+  passed. Now pinned by behaviour: dispatch a click, read the quantity back. ⚠ **My first mutation of it
+  proved nothing** — `false && a || b` reduces to `b`, which was true on that path, so the guard never
+  turned off. A mutation that does not mutate is not evidence.
+  ⚠ **A real spec-vs-code divergence, invisible to every fixture** (review): `loadOrderData()` populated
+  the cart in `readonly` too, although §UC-PI-006 says the order is IGNORED there — so a friend who ordered
+  in the catalogue round saw their old quantities in faded, disabled steppers with no cartbar. No test
+  could catch it: every closed-landing fixture used a FRESH friend, so the cart was empty by accident.
+  Fixed, and pinned with the missing fixture (a friend who really ordered). It would have bitten PI-T5
+  harder, where the friend almost always HAS an order.
+  ⚠ Two mutations reddened nothing and the code was KEPT with the reason in source — review agreed both
+  are defence-in-depth, not dead code. ⚠ §UC-PI-017's grep guard was missing THREE files
+  (`LandingStateModal.vue`, plus module 17's `CycleTimeline.vue` and `lib/cycle-stages.js`); all clean
+  today, so a guard gap rather than a violation. ⚠ CLAUDE.md's „no tabgroup" now says it is this row's
+  state, not a property of `readonly` — §UC-PI-007 KEEPS it, so PI-T5 splits that term.
+  Gate: **267 passed / 0 failed** over nine files, server log clean. Review: **approve**, four minors, all
+  acted on.
 - 2026-09-20 · FUP-T27 · (this commit) · no PR (project convention) · **The e2e admin path gets ONE home
   and ONE re-authentication — and the acceptance bar was a DETERMINISTIC REPRODUCTION, not a green suite.**
   `e2e/helpers/admin.js` (`makeAdmin`/`loginAdmin`) retries exactly once on a 401 and publishes the fresh
