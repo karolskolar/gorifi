@@ -218,8 +218,12 @@ Prototype copy is final — transcribe it verbatim, don't rewrite it.
 ## Shared services, background jobs, integrations
 
 - No background jobs or schedulers.
-- Integrations: Pay by Square QR via `bysquare` + `qrcode` (inside `PaymentModal.vue`),
-  Revolut payment link, Packeta as a manually-entered address (no API).
+- Integrations: Pay by Square QR via `bysquare` + `qrcode`, Revolut payment link, PayMe.sk
+  deep link, Packeta as a manually-entered address (no API). ⚠ AMENDED by PL-T3/PL-T4
+  (15 §UC-PL-004): the QR/link PAYLOAD and the URL composition live in
+  `frontend/src/lib/payment-links.js` — ~~inside `PaymentModal.vue`~~ — because there are
+  FOUR mount sites and a second encode site (`FriendOrder.vue`'s success modal). Only the
+  two library calls stay in the components, where their error handling is UI.
 - **Outbound e-mail — Mailgun (IA-T6, 07 §UC-IA-009). The backend's first and only
   outbound network call.** `backend/src/helpers/mailer.js` is the one home: Node's global
   `fetch` to `${MAILGUN_BASE_URL}/v3/${MAILGUN_DOMAIN}/messages` (EU region,
@@ -261,9 +265,14 @@ Prototype copy is final — transcribe it verbatim, don't rewrite it.
   Fallback when the bot is down or a recipient has no valid number: the composer's
   wa.me click-to-chat tab (from the admin's own phone) and/or `channel='email'` via the
   existing mailer.
-- **Payment deep links (module 15)** are pure URL composition in `PaymentModal.vue`
-  (`https://revolut.me/<user>?amount=<minor>&currency=EUR`, `https://payme.sk/?V=1&IBAN=…&AM=…&CC=EUR&PI=/VS<vs>/SS/KS&MSG=…&CN=…`) — no outbound call, no dependency. The
-  variable symbol is server-owned like `guestPaymentReference()` (one home).
+- **Payment deep links (module 15)** are pure URL composition — client-side, no outbound
+  call, no dependency — in ~~`PaymentModal.vue`~~ **`frontend/src/lib/payment-links.js`**
+  (PL-T3/PL-T4; "pure URL composition in PaymentModal.vue" always meant client-side, not
+  "inline in that file", and there are now four callers plus `FriendOrder.vue`'s success
+  modal): `https://revolut.me/<user>?amount=<minor>&currency=EUR`,
+  `https://payme.sk/?V=1&IBAN=…&AM=…&CC=EUR&PI=/VS<vs>/SS/KS&MSG=…&CN=…`. The variable
+  symbol is server-owned like `guestPaymentReference()` (one home:
+  `backend/src/helpers/payment.js` — module 21's messages quote it, never re-derive it).
 - **Packeta stays manual** (free-text point); no Packeta API in this roadmap.
 
 ## NFRs

@@ -5,9 +5,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+import { readQrModules, qrMatrix } from '../helpers/qr-pixels.js'
 
-// Module 15 — payment links. Started by PL-T1, grown by PL-T2, and still to be grown by
-// PL-T3/T4 (the client link composition and the friend surfaces).
+// Module 15 — payment links. Started by PL-T1, grown by PL-T2, PL-T3 and PL-T4 — which
+// closes the module.
 //
 // What it pins TODAY, in file order:
 //   1. §UC-PL-001 — the derivation rules of `backend/src/helpers/payment.js`: the three
@@ -19,6 +20,12 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 //      overview and the admin orders tab.
 //   4. §UC-PL-008 (PL-T2) — „VS …" on the admin's receivables card and orders tab, plus
 //      the admin-invariance gate on `CycleDetail.vue`.
+//   5. §UC-PL-004 (PL-T3) — `lib/payment-links.js`, the one CLIENT home: the three
+//      builders driven directly in a throwaway `node`, plus the two one-home sweeps
+//      (no admin view imports it; the component that consumes it really does).
+//   6. §UC-PL-007 (PL-T4) — the FRIEND surfaces: the cart-bar Platba modal's VS, the
+//      success modal's re-pointed QR and Revolut link, and the NEW balance „Zaplatiť“
+//      on `FriendBalanceCard.vue` (trigger, mount, and the ledger that stays untouched).
 // The guest confirmation mail's VS row (§UC-PL-003 item 2) is pinned where the mail
 // harness already lives: `guest-order-recovery.spec.js`'s UC-GR-011 describe.
 //
@@ -1095,6 +1102,8 @@ const MONEY_ENTRY = path.join(FRONTEND_SRC, 'lib/money.js')
 const FRONTEND_NODE_MODULES = path.resolve(E2E_DIR, '../frontend/node_modules')
 const ROUTER_ENTRY = path.join(FRONTEND_SRC, 'router.js')
 const PAYMENT_MODAL = path.join(FRONTEND_SRC, 'components/PaymentModal.vue')
+// The second encode site (PL-T4): the friend success modal's QR + Revolut link.
+const FRIEND_ORDER_VIEW = path.join(FRONTEND_SRC, 'views/FriendOrder.vue')
 // ⚠ The GATE is the frontend SOURCE TREE, never `payment-links.js` itself — "the helper
 // is missing" must be a RED run, not a silent skip (the vacuity trap the `DB_PATH`
 // self-skips have). Against a deployment there is no source beside `e2e/` and the whole
@@ -1440,8 +1449,365 @@ test.describe('PL-T3 §UC-PL-004 — lib/payment-links.js, the one client home',
     })
     expect(offenders, 'lib/money.js is friend/guest-only, and so is everything built on it').toEqual([])
 
-    // The other half: the component that DOES consume it really does (or the sweep above
-    // is a tautology over a module nobody imports).
-    expect(fs.readFileSync(PAYMENT_MODAL, 'utf8')).toContain('payment-links')
+    // The other half: the components that DO consume it really do (or the sweep above is
+    // a tautology over a module nobody imports).
+    //
+    // ⚠ BOTH ENCODE SITES, not just the modal. `FriendOrder.vue`'s success modal is the
+    // SECOND place this app turns an order into a Pay-by-Square payload, and it is the
+    // whole reason `lib/payment-links.js` exists (PL-T4, §UC-PL-004/D6): the two were
+    // hand-written copies and the friend's FIRST QR was the one without the symbol. A
+    // future re-inlined payload that happened to be byte-equal on the fixtures would sail
+    // through every pixel test in this file — so the IMPORT is pinned directly.
+    for (const [label, file] of [['PaymentModal.vue', PAYMENT_MODAL], ['FriendOrder.vue', FRIEND_ORDER_VIEW]]) {
+      expect(fs.existsSync(file), `non-vacuity: ${label} is where this sweep thinks it is`).toBe(true)
+      expect(fs.readFileSync(file, 'utf8'), `${label} composes its payload with the shared builder`)
+        .toContain("from '@/lib/payment-links'")
+    }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. §UC-PL-007 (PL-T4) — the FRIEND surfaces: the order screen and the balance
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// PL-T3 wired the two GUEST callers and left the friend ones alone, because the
+// friend side has a SECOND encode site — `FriendOrder.vue`'s success modal — and
+// re-pointing it at `lib/payment-links.js` is what finally makes the friend's FIRST
+// QR (the one they see the second they submit) carry the same variable symbol as the
+// „Zaplatiť“ one. This block pins both friend encode sites and the new balance
+// surface.
+//
+// ⚠ EVERY QR ASSERTION HERE IS OVER RENDERED PIXELS, against an encode built in this
+// file from first principles (`independentPayload` below) — never against the app's
+// own builder, which would be a tautology. `e2e/helpers/qr-pixels.js` owns the
+// scanning, so this is not a third copy of it (15 §UC-PL-009 item 7).
+
+const PL4_DEBT = -26.19
+const PL4_AMOUNT_CENTS = 2619
+
+let bysquare = null
+let qrcodeLib = null
+
+/**
+ * `bysquare` + `qrcode` are the FRONTEND's own dependencies (the
+ * `money-rounding.spec.js` / `guest-payment-modal.spec.js` precedent: the point of a
+ * QR assertion is that the browser's pixels ARE what these libraries produce, so a
+ * second copy under `e2e/` would let the two drift).
+ *
+ * ⚠ Loaded DYNAMICALLY, unlike in those two files, because this spec also runs against
+ * a deployment where no frontend tree sits beside `e2e/` — a static cross-tree import
+ * would fail the whole FILE to load, taking the API-level sections down with it. The
+ * QR tests `test.skip(!CAN_IMPORT_LINKS)` instead, exactly as PL-T3's section does.
+ */
+async function loadQrLibs() {
+  if (!CAN_IMPORT_LINKS || bysquare) return
+  bysquare = await import(pathToFileURL(path.join(FRONTEND_NODE_MODULES, 'bysquare/lib/index.js')).href)
+  qrcodeLib = (await import(pathToFileURL(path.join(FRONTEND_NODE_MODULES, 'qrcode/lib/index.js')).href)).default
+}
+
+/**
+ * The Pay-by-Square payload as the SPEC describes it (§UC-PL-004), hand-written here
+ * so the comparison is independent of `lib/payment-links.js`.
+ */
+function independentPayload({ amount, iban, variableSymbol, reference, creditorName }) {
+  return {
+    invoiceId: '',
+    payments: [{
+      type: bysquare.PaymentOptions.PaymentOrder,
+      amount,
+      currencyCode: bysquare.CurrencyCode.EUR,
+      paymentDueDate: todayCompact(),
+      variableSymbol,
+      constantSymbol: '',
+      specificSymbol: '',
+      originatorsReferenceInformation: '',
+      paymentNote: reference,
+      bankAccounts: [{ iban: iban.replace(/\s/g, ''), bic: '' }],
+      beneficiary: { name: creditorName, street: '', city: '' },
+    }],
+  }
+}
+
+function independentQrString(fields) {
+  return bysquare.encode(independentPayload(fields), { version: bysquare.Version['1.0.0'] })
+}
+
+/**
+ * Scans the one `.qr img` on screen and asserts it IS the encode of `fields` — with a
+ * non-vacuity gate: `differsFrom` (the same payload as it would have been WITHOUT the
+ * two new fields) must encode to a different grid, or the comparison proves nothing.
+ */
+async function expectScannedQr(page, fields, differsFrom) {
+  const scanned = await readQrModules(page)
+  expect(scanned.error, 'the QR was painted and readable').toBeUndefined()
+
+  const good = qrMatrix(qrcodeLib, independentQrString(fields))
+  const stale = qrMatrix(qrcodeLib, independentQrString(differsFrom))
+  expect(stale.matrix, 'non-vacuity: the pre-PL-T4 payload really is a different code')
+    .not.toBe(good.matrix)
+
+  expect(scanned.size, 'a real QR grid size (21 + 4k)').toBe(good.size)
+  expect((scanned.size - 21) % 4).toBe(0)
+  expect(scanned.matrix, 'the rendered code IS the payload the spec mandates').toBe(good.matrix)
+
+  // And the expectation itself is not nonsense: it decodes back to the two fields
+  // module 15 exists to add.
+  const decoded = bysquare.decode(independentQrString(fields)).payments[0]
+  expect(decoded.variableSymbol).toBe(fields.variableSymbol)
+  expect(decoded.beneficiary.name).toBe(fields.creditorName)
+}
+
+/** Signs the browser in the way "remember me" does (the money-rounding idiom). */
+async function signInAs(page, friend) {
+  await page.addInitScript((value) => {
+    localStorage.clear()
+    localStorage.setItem('gorifi_friend_auth', value)
+  }, JSON.stringify({
+    friendId: friend.id,
+    friendName: friend.name,
+    token: friend.auth.Authorization.replace(/^Bearer /, ''),
+    expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+  }))
+}
+
+async function openPortal(page) {
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+}
+
+/** A cold deep-link to /cycle/:id bounces to `/` — enter through the portal. */
+async function gotoCycle(page, cycle) {
+  await openPortal(page)
+  await page.getByRole('heading', { name: cycle.name, exact: true }).click()
+  await expect(page.locator('.app .cartbar')).toBeVisible()
+}
+
+const balanceCard = (page) => page.locator('.card').filter({ hasText: 'Môj účet' })
+
+async function ledgerRowCount(friendId) {
+  const res = await adminReq(`/api/friends/${friendId}/detail`)
+  expect(res.status(), 'admin friend detail').toBe(200)
+  return (await res.json()).transactions.length
+}
+
+test.describe('PL-T4 §UC-PL-007 item 4 — the balance „Zaplatiť“', () => {
+  let debtor = null
+  let settled = null
+
+  test.beforeAll(async () => {
+    await pl2Fixtures()
+    await loadQrLibs()
+    // ⚠ The §UC-PL-008 block above signs in through the BROWSER, which mints a new
+    // app-wide admin session and kills this context's token (the file header's
+    // ordering note). Everything below provisions over the API, so it re-logs-in.
+    await loginApi()
+
+    debtor = await makeFriend('dlznik4')
+    expect((await adminReq('/api/transactions/adjustment', {
+      method: 'post', data: { friend_id: debtor.id, amount: PL4_DEBT, note: 'PL4 fixture' },
+    })).status(), 'the fixture debt').toBe(201)
+
+    settled = await makeFriend('vyrovnany4')
+  })
+
+  test('a friend in debt is offered „Zaplatiť“, BEFORE „Transakcie“', async ({ page }) => {
+    await signInAs(page, debtor)
+    await openPortal(page)
+
+    const card = balanceCard(page)
+    await expect(card, 'non-vacuity: the balance card is on screen').toBeVisible()
+    await expect(card.locator('.neg.pill')).toHaveText('-26.19 EUR')
+
+    const pay = page.getByTestId('pay-balance')
+    await expect(pay).toBeVisible()
+    // The order is the spec's: paying comes before reading the ledger.
+    await expect(card.locator('button')).toHaveText(['Zaplatiť', 'Transakcie'])
+    await expect(pay).toHaveClass(/\bok\b/)
+    await expect(pay).toHaveClass(/\bsm\b/)
+  })
+
+  test('it opens the SHARED Platba modal, carrying the balance VS and the creditor name', async ({ page }) => {
+    test.skip(!CAN_IMPORT_LINKS, NEEDS_FRONTEND)
+    await signInAs(page, debtor)
+    await openPortal(page)
+
+    await expect(page.getByRole('dialog'), 'nothing is mounted until it is opened').toHaveCount(0)
+    await page.getByTestId('pay-balance').click()
+
+    const d = page.getByRole('dialog')
+    // ⚠ EXACTLY ONE. The balance modal is mounted by the CARD, never a second time
+    // inside `FriendTransactionsModal` (UC-DS-010, and module 18 relocates this one
+    // rather than adding another).
+    await expect(d, 'one modal, not two').toHaveCount(1)
+    await expect(d.locator('.m-title')).toHaveText('Platba')
+    await expect(d).toContainText('26.19 EUR')
+
+    // ⚠ `.val`, not the row: `NeoCopyRow`'s root also carries the copy button's label,
+    // so a text assertion on the testid reads „…Kopírovať“ (the guest spec's idiom).
+    await expect(page.getByTestId('payment-vs').locator('.val')).toHaveText(balanceVs(debtor.id))
+    await expect(page.getByTestId('payment-reference')).toContainText(`${debtor.name} / zostatok`)
+    expect(await d.getByRole('link', { name: 'Zaplatiť cez Revolut' }).getAttribute('href'))
+      .toBe(`https://revolut.me/${PL2_REVOLUT}?amount=${PL4_AMOUNT_CENTS}&currency=EUR`)
+
+    await expect(d.locator('.qr img')).toBeVisible()
+    await expectScannedQr(page, {
+      amount: 26.19,
+      iban: PL2_IBAN,
+      variableSymbol: balanceVs(debtor.id),
+      reference: `${debtor.name} / zostatok`,
+      creditorName: PL2_CREDITOR,
+    }, {
+      // What the same modal would encode with the two PL-T3 props absent.
+      amount: 26.19,
+      iban: PL2_IBAN,
+      variableSymbol: '',
+      reference: `${debtor.name} / zostatok`,
+      creditorName: 'Gorifi',
+    })
+  })
+
+  test('opening and closing it writes NO ledger row and does not re-read the balance', async ({ page }) => {
+    const before = await ledgerRowCount(debtor.id)
+    expect(before, 'non-vacuity: the fixture debt row is actually counted').toBeGreaterThan(0)
+
+    let balanceReads = 0
+    page.on('request', (req) => { if (/\/api\/friends\/\d+\/balance/.test(req.url())) balanceReads++ })
+
+    await signInAs(page, debtor)
+    await openPortal(page)
+    await expect(page.getByTestId('pay-balance')).toBeVisible()
+    expect(balanceReads, 'the card read the balance once, on mount').toBe(1)
+
+    for (let i = 0; i < 3; i++) {
+      await page.getByTestId('pay-balance').click()
+      await expect(page.getByRole('dialog')).toHaveCount(1)
+      await page.getByRole('dialog').getByRole('button', { name: 'Zavrieť' }).click()
+      await expect(page.getByRole('dialog')).toHaveCount(0)
+    }
+
+    // ⚠ `close` does NOT reload: paying through a link changes nothing in the ledger
+    // until the admin records it, and a refreshed-looking balance would say otherwise.
+    expect(balanceReads, 'closing the modal re-read nothing').toBe(1)
+    expect(await ledgerRowCount(debtor.id), 'no transaction row was written').toBe(before)
+  })
+
+  test('a settled friend and a friend in credit are offered nothing at all', async ({ page }) => {
+    await signInAs(page, settled)
+    await openPortal(page)
+
+    const card = balanceCard(page)
+    await expect(card.locator('.zero'), 'non-vacuity: the settled card really rendered').toHaveText('0.00 EUR')
+    await expect(page.getByTestId('pay-balance')).toHaveCount(0)
+    await expect(card.getByRole('button', { name: 'Transakcie' }), 'and the shipped button is untouched').toBeVisible()
+
+    expect((await adminReq('/api/transactions/adjustment', {
+      method: 'post', data: { friend_id: settled.id, amount: 5, note: 'PL4 kredit' },
+    })).status()).toBe(201)
+
+    await openPortal(page)
+    await expect(card.locator('.mono')).toContainText('+5.00 EUR')
+    await expect(page.getByTestId('pay-balance'), 'credit is not a debt').toHaveCount(0)
+  })
+
+  test('a balance payload WITHOUT a payment block renders exactly the shipped card', async ({ page }) => {
+    // ⚠ This is not a hypothetical: `portal-transactions-modal.spec.js` stubs this
+    // endpoint with `{ balance, transactions }` and no payment block at all, and it
+    // must keep passing byte-unmodified. A surface with no payment data offers no
+    // payment control rather than a made-up one (§UC-PL-007 business rules).
+    await page.route('**/api/friends/*/balance', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ balance: -30, transactions: [] }),
+    }))
+    await signInAs(page, debtor)
+    await openPortal(page)
+
+    const card = balanceCard(page)
+    await expect(card.locator('.neg.pill'), 'non-vacuity: the debt is on screen').toHaveText('-30.00 EUR')
+    await expect(page.getByTestId('pay-balance'), 'no block, no button').toHaveCount(0)
+    await expect(card.getByRole('button', { name: 'Transakcie' })).toBeVisible()
+  })
+})
+
+test.describe('PL-T4 §UC-PL-007 item 1 — the friend order screen', () => {
+  let fx = null
+  let submitter = null
+  let submitterOrderId = null
+
+  test.beforeAll(async () => {
+    fx = await pl2Fixtures()
+    await loadQrLibs()
+    await loginApi()
+    submitter = await makeFriend('odosielatel4')
+    const cart = await ctx.put(`/api/orders/cycle/${fx.cycle.id}/friend/${submitter.id}`, {
+      headers: submitter.auth,
+      data: { items: [{ product_id: fx.product.id, variant: '250g', quantity: 2 }] },
+    })
+    expect(cart.status(), 'the cart the success modal will bill').toBe(200)
+    submitterOrderId = (await cart.json()).order.id
+  })
+
+  test('the cart-bar „Zaplatiť“ modal carries the ORDER ID as its VS', async ({ page }) => {
+    await signInAs(page, fx.host)
+    await gotoCycle(page, fx.cycle)
+
+    await page.locator('.app .cartbar').getByRole('button', { name: 'Zaplatiť' }).click()
+    const d = page.getByRole('dialog')
+    await expect(d.locator('.m-title')).toHaveText('Platba')
+
+    await expect(page.getByTestId('payment-vs').locator('.val')).toHaveText(String(fx.friendOrder.id))
+    await expect(page.getByTestId('payment-reference')).toContainText(`${fx.host.name} / ${fx.cycle.name}`)
+    expect(await d.getByRole('link', { name: 'Zaplatiť cez Revolut' }).getAttribute('href'))
+      .toBe(`https://revolut.me/${PL2_REVOLUT}?amount=2000&currency=EUR`)
+  })
+
+  test('the success modal builds ITS QR and ITS Revolut link through the shared helper', async ({ page }) => {
+    test.skip(!CAN_IMPORT_LINKS, NEEDS_FRONTEND)
+    // `[]` is a genuine "no pickup locations configured", which is what decides whether
+    // Odoslať opens the Spôsob prevzatia modal or lands straight on Hotovo!.
+    await page.route('**/api/pickup-locations*', (route) => route.fulfill({
+      status: 200, contentType: 'application/json', body: '[]',
+    }))
+    await signInAs(page, submitter)
+    await gotoCycle(page, fx.cycle)
+
+    await page.locator('.app .cartbar').getByRole('button', { name: 'Odoslať' }).click()
+    const d = page.getByRole('dialog')
+    await expect(d).toContainText('Hotovo!')
+    await expect(d.locator('.banner.ok.slim b.mono')).toHaveText('20.00 EUR')
+
+    // R6.1 — the amount rides in the link AND in the label, from one composed value.
+    const rev = d.getByRole('link', { name: 'Zaplatiť cez Revolut' })
+    expect(await rev.getAttribute('href'))
+      .toBe(`https://revolut.me/${PL2_REVOLUT}?amount=2000&currency=EUR`)
+    await expect(rev.locator('.mono')).toHaveText('(20.00 EUR)')
+
+    // ⚠ THE WHOLE POINT OF PL-T4: the friend's FIRST QR carries the symbol.
+    await expect(d.locator('.qr img')).toBeVisible()
+    await expectScannedQr(page, {
+      amount: 20,
+      iban: PL2_IBAN,
+      variableSymbol: String(submitterOrderId),
+      reference: `${submitter.name} / ${fx.cycle.name}`,
+      creditorName: PL2_CREDITOR,
+    }, {
+      amount: 20,
+      iban: PL2_IBAN,
+      variableSymbol: '',
+      reference: `${submitter.name} / ${fx.cycle.name}`,
+      creditorName: 'Gorifi',
+    })
+
+    // The success modal is a confirmation with a shortcut, not the payment surface:
+    // no VS copy row and no PayMe button (§UC-PL-007 item 1).
+    await expect(d.getByTestId('payment-vs')).toHaveCount(0)
+    await expect(d.getByTestId('payme-link')).toHaveCount(0)
+
+    // Non-vacuity for those two absences: the FULL surface for the same order does
+    // carry the row, one click away.
+    await d.getByRole('button', { name: 'OK', exact: true }).click()
+    await gotoCycle(page, fx.cycle)
+    await page.locator('.app .cartbar').getByRole('button', { name: 'Zaplatiť' }).click()
+    await expect(page.getByTestId('payment-vs').locator('.val')).toHaveText(String(submitterOrderId))
   })
 })

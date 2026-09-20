@@ -20,11 +20,18 @@ import ProductImageModal from '@/components/ProductImageModal.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { snapTab } from '@/lib/snap-tab'
 import { itemsLabel } from '@/lib/plural'
-import { roundMoney } from '@/lib/money'
+import { fmtEur } from '@/lib/money'
 import CartLineList from '@/components/CartLineList.vue'
 import CatScrollArrow from '@/components/CatScrollArrow.vue'
 import PaymentModal from '@/components/PaymentModal.vue'
-import { encode as bysquareEncode, PaymentOptions, CurrencyCode, Version } from 'bysquare'
+// 15 §UC-PL-004/D6 — THE PAYLOAD AND THE LINK HAVE ONE HOME, shared with
+// `PaymentModal.vue`. This screen has TWO payment surfaces for the same order (the
+// success modal below and the cart bar's „Zaplatiť“), and they were two hand-written
+// copies of one payload: the friend's FIRST QR — the one they see the second they
+// submit — was the one WITHOUT the variable symbol. The two library calls stay here,
+// because the error handling around them is this view's UI.
+import { payBySquarePayload, revolutLink } from '@/lib/payment-links'
+import { encode as bysquareEncode, Version } from 'bysquare'
 import QRCode from 'qrcode'
 
 const route = useRoute()
@@ -132,9 +139,36 @@ const pickupOptions = computed(() => [
 // Payment state
 const paymentIban = ref('')
 const paymentRevolutUsername = ref('')
+// The admin's account-holder name (15 §UC-PL-002), read beside the IBAN and the handle
+// from the same public settings call. `''` when unset — `lib/payment-links.js` then
+// falls back to the shipped `Gorifi` beneficiary and offers no PayMe link.
+const paymentCreditorName = ref('')
 const showPaymentModal = ref(false)
 const successQrDataUrl = ref(null)
 const hasPaymentSettings = computed(() => !!(paymentIban.value || paymentRevolutUsername.value))
+
+// 15 §UC-PL-003 item 3 — THE SERVER'S variable symbol, quoted from the last
+// GET/PUT/submit response and never derived here. The scheme (a friend order's VS IS
+// its order id) lives in `backend/src/helpers/payment.js` and nowhere else; a client
+// that recomputed it would be the second home the whole module exists to prevent.
+// `''` while there is no order — the server answers `payment: null` for exactly that
+// state, and a surface with no symbol renders the VS-less modal rather than a made-up
+// one (§UC-PL-007 business rules).
+//
+// ⚠ RECORDED, NOT INTRODUCED HERE (PL-T4 review): this view has NO watch on
+// `route.params.cycleId` — `loadOrderData()` runs from `onMounted` only, so every piece
+// of order state in this file, `order`/`cart`/`lastSubmittedCart` included, assumes the
+// component is re-created per cycle rather than re-pointed. `paymentVs` inherits exactly
+// that pre-existing lifetime assumption and adds no new one. If a route ever navigates
+// between two `/cycle/:id` without a remount, this ref is one of MANY that would need a
+// watch — fix the assumption, not this line.
+const paymentVs = ref('')
+
+/** Quotes the `payment` block off any order response (GET, PUT or submit). */
+function applyOrderPayment(response) {
+  paymentVs.value = response?.payment?.variable_symbol || ''
+}
+
 const paymentReference = computed(() => {
   const friendName = friend.value?.name || ''
   const cycleName = cycle.value?.name || ''
@@ -323,8 +357,11 @@ const cartTotal = computed(() => {
 // Total including delivery fee (for payment).
 //
 // ⚠ THIS SUM IS DELIBERATELY *NOT* ROUNDED HERE, and that is a decision, not an
-// oversight — `roundMoney` is applied at each of the two places the value leaves the
-// app for a bank (`generateSuccessQr` below, and `PaymentModal.generateQr`).
+// oversight — `roundMoney` is applied where the value leaves the app for a bank.
+// ⚠ AMENDED — 15 §UC-PL-004 (PL-T4): that used to be TWO hand-written encode sites
+// (`generateSuccessQr` below and `PaymentModal.generateQr`); both now compose their
+// payload with `lib/payment-links.js payBySquarePayload()`, which owns the round. ONE
+// place instead of two — and still not this computed.
 //
 // Two reasons. (1) LAYERING: this is an ADDITION performed in the browser and it can
 // drift even when the server's columns are perfectly clean — `cartTotal` is the
@@ -522,6 +559,7 @@ onMounted(async () => {
     pickupLocations.value = locations
     paymentIban.value = paymentSettings.paymentIban || ''
     paymentRevolutUsername.value = paymentSettings.paymentRevolutUsername || ''
+    paymentCreditorName.value = paymentSettings.paymentCreditorName || ''
   } catch (e) {
     // Non-critical, proceed without locations/payment
   }
@@ -566,6 +604,7 @@ async function loadOrderData() {
     // Get order data
     const orderData = await api.getOrderByFriend(cycleId.value, friendId)
     order.value = orderData.order
+    applyOrderPayment(orderData)
     cycle.value = orderData.cycle
     friend.value = orderData.friend
 
@@ -738,6 +777,7 @@ async function saveCart(silent = false) {
 
     const result = await api.updateOrderByFriend(cycleId.value, friend.value.id, items)
     order.value = result.order
+    applyOrderPayment(result)
   } catch (e) {
     error.value = e.message
   } finally {
@@ -865,6 +905,7 @@ async function doSubmitOrder() {
         }
     const result = await api.submitOrderByFriend(cycleId.value, friend.value.id, pickupData)
     order.value = result.order
+    applyOrderPayment(result)
     // Store snapshot of submitted cart for change detection
     lastSubmittedCart.value = { ...cart.value }
     showSuccessModal.value = true
@@ -879,38 +920,39 @@ async function doSubmitOrder() {
 async function generateSuccessQr() {
   if (!paymentIban.value) return
   try {
-    const today = new Date()
-    const dateStr = today.getFullYear().toString()
-      + (today.getMonth() + 1).toString().padStart(2, '0')
-      + today.getDate().toString().padStart(2, '0')
-
-    const qrString = bysquareEncode({
-      invoiceId: '',
-      payments: [{
-        type: PaymentOptions.PaymentOrder,
-        // ⚠ Rounded HERE, and this is the only place it happens — `paymentTotal` is
-        // deliberately RAW (see its own comment at :325, and do not "tidy" that), so
-        // this is the last line before money leaves the app for a bank.
-        // `bysquare` serialises the number verbatim (no formatting of any kind), so
-        // this is the single place where float noise becomes `Nesprávna suma` in
-        // someone's banking app. Belt and braces on a payment payload is cheap.
-        amount: roundMoney(paymentTotal.value),
-        currencyCode: CurrencyCode.EUR,
-        paymentDueDate: dateStr,
-        variableSymbol: '',
-        constantSymbol: '',
-        specificSymbol: '',
-        originatorsReferenceInformation: '',
-        paymentNote: paymentReference.value || '',
-        bankAccounts: [{ iban: paymentIban.value.replace(/\s/g, ''), bic: '' }],
-        beneficiary: { name: 'Gorifi', street: '', city: '' }
-      }]
-    }, { version: Version['1.0.0'] })
+    // ⚠ THE PAYLOAD IS THE SHARED BUILDER'S (15 §UC-PL-004). It is the same object
+    // `PaymentModal` encodes for the same order — including the `roundMoney` that used
+    // to live on the line below, which is deliberate: `paymentTotal` stays RAW (see its
+    // own comment, and do not "tidy" that), `bysquare` serialises a number verbatim, and
+    // a real user's bank refused `26.189999999999998` while her screen read `26.19 EUR`.
+    // The rule now sits at the payload, where it holds for every caller.
+    // ⚠ The DATE derivation moved with it (`todayCompact()` in the builder) — same
+    // `YYYYMMDD` string this function composed by hand.
+    const qrString = bysquareEncode(payBySquarePayload({
+      amount: paymentTotal.value,
+      iban: paymentIban.value,
+      variableSymbol: paymentVs.value,
+      reference: paymentReference.value,
+      creditorName: paymentCreditorName.value
+    }), { version: Version['1.0.0'] })
     successQrDataUrl.value = await QRCode.toDataURL(qrString, { errorCorrectionLevel: 'M', width: 256, margin: 2 })
   } catch (e) {
     console.error('QR generation failed:', e)
   }
 }
+
+// The success modal's Revolut shortcut, composed by the SAME builder the Platba modal
+// uses — so the two surfaces of one order can never offer two different links.
+//
+// ⚠ GATED ON THE HREF, not on `paymentRevolutUsername`: `revolutLink()` returns `''` for
+// a whitespace-only handle, and the shipped gate would then have rendered `href=""` —
+// a link to the current URL, which reloads the page. Same one-predicate reasoning as
+// `PaymentModal`'s, and the amount label reads the href for the same reason (the
+// `REVOLUT_AMOUNT_LINK` fallback then needs no second place to remember).
+const successRevolutHref = computed(() => revolutLink(paymentRevolutUsername.value, paymentTotal.value))
+const successRevolutAmountLabel = computed(() =>
+  (successRevolutHref.value.includes('?amount=') ? `(${fmtEur(paymentTotal.value)})` : '')
+)
 
 async function confirmPickupAndSubmit() {
   // Optionally save Packeta address to profile
@@ -1812,11 +1854,16 @@ function applyMarkup(price) {
          needs is in the sentence that survived: the order can still be edited until
          the lock.
 
-         ⚠ NO payment-reference row here. The reference (`Meno / Cyklus`) lives ONLY
-         in the Platba modal (`PaymentModal`, module 06 / RD-GX-2) — README §Screens
-         item 8, applied to the friend side identically. It is deliberately not a
-         copy-row on this screen even though `paymentReference` is computed right
-         above: one home for the string the friend must type into their bank.
+         ⚠ NO payment-reference row here, AND NO VARIABLE-SYMBOL ROW. The reference
+         (`Meno / Cyklus`) lives ONLY in the Platba modal (`PaymentModal`, module 06 /
+         RD-GX-2) — README §Screens item 8, applied to the friend side identically. It
+         is deliberately not a copy-row on this screen even though `paymentReference` is
+         computed right above: one home for the string the friend must type into their
+         bank. ⚠ AMENDED — 15 §UC-PL-007 item 1 (PL-T4): the variable symbol joins that
+         rule rather than breaking it. This modal is a CONFIRMATION with a shortcut (the
+         sum, the Revolut link, the QR that now carries the symbol); the two things a
+         friend TYPES — the reference and the VS — have their one home in the Platba
+         modal, which „Zaplatiť“ in the cart bar opens. No PayMe button here either.
 
          ⚠ CLOSING BY ANY ROUTE NAVIGATES TO THE PORTAL. `@close` is NeoModal's one
          event for ×, scrim and Esc, and the OK button calls the same handler, so all
@@ -1858,15 +1905,20 @@ function applyMarkup(price) {
              navigates off-site, wearing `.btn.block`. `fill:currentColor` + the
              white `color` is what tints the glyph. -->
         <a
-          v-if="paymentRevolutUsername"
+          v-if="successRevolutHref"
           class="btn block"
           style="background:#0075EB;color:#fff;border-color:#0a0a0a"
-          :href="`https://revolut.me/${paymentRevolutUsername}`"
+          :href="successRevolutHref"
           target="_blank"
           rel="noopener noreferrer"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20.1 6.8c-.3-1.2-1-2.2-2-2.9-.9-.7-2.1-1-3.3-1H6.2L4 20.1h4.1l1-5.5h3.7c1.6 0 3-.5 4.1-1.4 1.1-.9 1.9-2.2 2.2-3.8l.5-2.6zM16 9.2l-.2 1c-.2.9-.6 1.5-1.2 2-.6.5-1.4.7-2.3.7H9.1l1-5.5h3.2c.7 0 1.2.2 1.6.6.4.4.5.9.4 1.5l-.3 1.7z"/></svg>
+          <!-- ⚠ The accessible name still STARTS with the shipped string, so every
+               `getByRole('link', { name: 'Zaplatiť cez Revolut' })` (Playwright matches
+               substrings) keeps resolving. The amount is a nested `.mono` span — money
+               renders in Courier Prime (02 §UC-DS-012). -->
           Zaplatiť cez Revolut
+          <span v-if="successRevolutAmountLabel" class="mono">{{ successRevolutAmountLabel }}</span>
         </a>
 
         <!-- The REAL scannable code inside the neo frame (02 §UC-DS-012): `.qr` is
@@ -1889,13 +1941,21 @@ function applyMarkup(price) {
       </template>
     </NeoModal>
 
-    <!-- Payment Modal (for footer button) -->
+    <!-- Payment Modal (for footer button) — THE full payment surface for this order:
+         the Revolut link, the PayMe deep link on a phone, the QR, the reference AND the
+         variable-symbol copy row. The success modal above is a confirmation with a
+         shortcut, which is why it carries neither the VS row nor PayMe (§UC-PL-007
+         item 1).
+         ⚠ `variableSymbol` is the SERVER's, quoted from the last order response; this
+         view derives no symbol of its own. -->
     <PaymentModal
       :open="showPaymentModal"
       :amount="paymentTotal"
       :reference="paymentReference"
       :iban="paymentIban"
       :revolut-username="paymentRevolutUsername"
+      :variable-symbol="paymentVs"
+      :creditor-name="paymentCreditorName"
       @close="showPaymentModal = false"
     />
 

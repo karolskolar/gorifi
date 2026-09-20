@@ -299,6 +299,12 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   settings (IBAN / Revolut username) **only if they are empty**, because guest
   confirmation needs them — a real environment's values are never overwritten.
 - `fixtures.js` — credentials/constants, overridable via env.
+- `helpers/qr-pixels.js` — `readQrModules(page)` + `qrMatrix(QRCode, qrString)`: reading a
+  Pay-by-Square QR back off the RENDERED PIXELS, which is how every money path is pinned
+  (01-architecture §Testing & gate). It lives OUTSIDE `tests/` on purpose — `testDir` is
+  `./tests`, and a file there with no `test()` fails the run. `guest-payment-modal.spec.js`
+  and `money-rounding.spec.js` still carry their own older copies of the scanner; new specs
+  import this one (PL-T4, 15 §UC-PL-009 item 7).
 
 ## The database is an INPUT — copy the template, never reuse a working file
 
@@ -425,7 +431,12 @@ BASE_URL=http://localhost:3997 node seed.mjs
 #     same file the server was started with, guest-admin-view.spec.js adds one extra
 #     assertion (a GLOBAL `transactions` row count around the guest paid toggle,
 #     which also catches a row written with a NULL friend_id).
-DB_PATH="$RUN_DB" BASE_URL=http://localhost:3997 npm test -- --workers=1
+# ⚠ SERVER_LOG is what un-skips the "no stack reaches the log" families (FUP-T7/T10/
+#   T11/T12/T13/T14/T15). Without it, 21 tests self-skip SILENTLY — measured on a full
+#   run (PL-T4, 2026-09-19): 26 skips, of which only 4 are the documented rate-limit
+#   ones plus forced-change-ui. Point it at step 4's log file and they run.
+DB_PATH="$RUN_DB" SERVER_LOG=/tmp/gorifi-e2e-server.log \
+  BASE_URL=http://localhost:3997 npm test -- --workers=1
 ```
 
 Gotchas in that recipe that look like app bugs when you skip them:
@@ -596,6 +607,15 @@ redirect and the stdin redirect. Raise the limits there, in the one runnable blo
 
 ⚠ With all five raised, `rate-limit*.spec.js` and `magic-link-rate-limit.spec.js`
 self-skip — those are the documented skips, not a hole.
+
+⚠ **`RATE_LIMIT_AUTH_MAX=1000` is NOT enough for a full run any more** (measured, PL-T4
+2026-09-19, on a fresh per-run copy). The suite is ~1870 tests and enough of them log in
+that the shared `authLimiter` bucket exhausts around test ~1700: the tail collapses into
+**16 failures and 108 "did not run"**, every one a `429` on an `admin login` in a
+`beforeAll` — which reads as a broad regression and is nothing of the kind. The SAME tree
+re-run with all five maxima at `100000` gave **1841 passed / 1 failed / 26 skipped**.
+Raise them far past the documented defaults for a full run; the three limiter specs
+self-skip either way.
 
 **`backend/public` is git-ignored build output** — the build step in the recipe
 above is mandatory, not a convenience. Production never uses it (nginx serves

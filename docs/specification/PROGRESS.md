@@ -395,7 +395,8 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] PL-T1  `helpers/payment.js` (VS scheme: friend = order id, guest = `9`+id, balance = `8`+friend id; one `paymentSettings()` reader; `guestPaymentBlock()`) + admin setting `payment_creditor_name` (70-char bound, `maxlength`, AdminSettings „Meno príjemcu“, public `payment-settings`) + seed 3b — `15 §UC-PL-001,002` · model=heavy ⚠ no new admin route (settings GET/PUT already listed; `/api/admin/payment-settings` stays PUBLIC); VS derived, never stored; starts `payment-links.spec.js` (settings pins only). ⚠ Module-20 seam: `guestPaymentBlock().amount` is `order.total` until GP-T1 flips that ONE line to `total + delivery_fee` — leave the comment.
 - [x] PL-T2  VS + `creditor_name` in every server payload (guest 201/status, friend order `payment:{variable_symbol}`, balance `payment` block „{Meno} / zostatok“, admin unpaid overview + orders tab, mail row „Variabilný symbol“) + CycleDetail „VS …“ on receivables card AND orders tab — `15 §UC-PL-003,008` · model=heavy ⚠ payloads only GROW; `amount/reference/iban/revolut_username` byte-identical; no revolut.me/payme.sk URL in mail (08 one-origin pin); balance „Zaplatiť“ UI is PL-T4.
 - [x] PL-T3  `lib/payment-links.js` (`revolutLink` amount variant behind `REVOLUT_AMOUNT_LINK`, `paymeLink`, `payBySquarePayload` with `variableSymbol` + `beneficiary = creditorName || 'Gorifi'`) + PaymentModal additive props, amount-suffixed Revolut label, PayMe button (`pointer: coarse`, `v-if`), VS `NeoCopyRow`, guest confirmation/status wiring — `15 §UC-PL-004,005,006,007(guest)` · model=heavy ⚠ SANCTIONED edits ONLY in `guest-payment-modal.spec.js` (`independentQr` gains VS/beneficiary, `:366` href → amount variant, new `hasTouch` PayMe + VS-row tests); `money-rounding.spec.js` stays UNMODIFIED here (friend encode site is PL-T4's). D4 discipline: strike the „FROZEN props“ claim in 06 §UC-GX-005, the component header and the spec header. ⚠ PO verification, not a gate: Revolut `?amount=&currency=` on a phone (flag = one-line fallback), PayMe `CN` 70 / `MSG` 140 caps.
-- [ ] PL-T4  Friend surfaces: FriendOrder PaymentModal props + success modal re-pointed at the shared helper + NEW balance „Zaplatiť“ trigger (`data-testid="pay-balance"`, `balanceState==='neg'`) + PaymentModal mount on `FriendBalanceCard` + sanctioned `money-rounding.spec.js` `independentQr` edit (`variableSymbol: String(order.id)`, beneficiary stays `'Gorifi'`) + **module-15 closeout (full suite)** — `15 §UC-PL-007(friend, balance),009` · model=heavy ⚠ `FriendTransactionsModal.vue` UNTOUCHED (one-modal rule); `order-modals.spec.js` :877/:881 pass unmodified. ⚠ Module-18 seam: PI-T7 RELOCATES this trigger + mount into „Zostatok a platby“ and the landing debt banner — never a second PaymentModal for the balance. ⚠ Module-21 seam: messages reuse `helpers/payment.js` VS, never re-derive.
+- [x] PL-T4  Friend surfaces: FriendOrder PaymentModal props + success modal re-pointed at the shared helper + NEW balance „Zaplatiť“ trigger (`data-testid="pay-balance"`, `balanceState==='neg'`) + PaymentModal mount on `FriendBalanceCard` + sanctioned `money-rounding.spec.js` `independentQr` edit (`variableSymbol: String(order.id)`, beneficiary stays `'Gorifi'`) + **module-15 closeout (full suite)** — `15 §UC-PL-007(friend, balance),009` · model=heavy ⚠ `FriendTransactionsModal.vue` UNTOUCHED (one-modal rule); `order-modals.spec.js` :877/:881 pass unmodified. ⚠ Module-18 seam: PI-T7 RELOCATES this trigger + mount into „Zostatok a platby“ and the landing debt banner — never a second PaymentModal for the balance. ⚠ Module-21 seam: messages reuse `helpers/payment.js` VS, never re-derive.
+- [ ] FUP-T22  ⚠ **The full suite CANNOT be green against the shipped e2e template — one test fails on DATA, and it blocks every future module closeout.** Found by PL-T4's module-15 closeout run (1841 passed / **1 failed** / 26 skipped). `admin-friends-labels.spec.js:119` sweeps the WHOLE rendered friends list (text + `placeholder`/`title`/`aria-label`/`alt`) and asserts nothing matches `/prihlasovac/i` — the machine-checked half of FUP-T20/T21's "no view that edits `friends.name` may call it a login" rule. GR-T9's production-shaped template (`e2e/fixtures/prod-template.sqlite`, names KEPT by PO decision) contains an **active friend `id 72` whose NAME is literally `Prihlasovacie.meno`**, so the friend's own name trips a guard about the APP'S OWN COPY. ⚠ **Orchestrator-verified as data, not code:** reproduced, then stashed ONLY PL-T4's three view files, rebuilt, reproduced **identically** — and no code change can make it pass while that row renders. ⚠ **Do NOT weaken the sweep** — it is the guard that would have caught the original bug, and any friend could be named anything. ⚠ **Decide the shape before coding.** (a) Scope the sweep to the app's own COPY and exclude friend-SUPPLIED data (a name is data the admin typed; the rule is about what the view CALLS the field) — the correct fix in principle, but `collectCopy()` deliberately walks attributes too, so the exclusion must be precise or it hollows the guard out; (b) rename that ONE row in `e2e/scrub-template.sql` — cheap and preserves the PO's "screens read like the real thing", and this particular value is a UI string masquerading as a name rather than a person's, but it hides a class of false positive that will recur; (c) both. ⚠ Whatever ships, the acceptance criterion is the same: **a full-suite run against a freshly built template is GREEN**, and the guard still fails when a view genuinely calls the name a login (mutation-prove it, do not assume). ⚠ Until this lands, a module closeout must report "1841/1 — the known template/guard conflict", never "green".
 
 ## 14. Distribution pipeline (16) — delivery types, hand-over stage, board
 
@@ -466,6 +467,72 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 
 ## Log
+
+- 2026-09-20 · PL-T4 · (this commit) · no PR (project convention) · **MODULE 15 IS COMPLETE.** Friend
+  surfaces close it: `FriendOrder`'s modal gains both props via `applyOrderPayment(response)` on GET/PUT/
+  submit, the success modal is re-pointed at PL-T3's `payBySquarePayload()` + `revolutLink()` (amount label
+  gated on the composed href), and `FriendBalanceCard` gains a „Zaplatiť" trigger
+  (`data-testid="pay-balance"`, `.btn.ok.sm`, before „Transakcie") plus its own `PaymentModal` mount. The
+  balance block is **QUOTED from `GET /friends/:id/balance`, never recomputed** — review confirmed no
+  client derives a symbol anywhere. `FriendTransactionsModal.vue` and `order-modals.spec.js` byte-untouched.
+  The sanctioned `money-rounding.spec.js` edit is exactly `independentQr`'s new `variableSymbol` threaded
+  from `cart()`; beneficiary, mock, drift logic and both non-vacuity gates untouched. New
+  `e2e/helpers/qr-pixels.js` decodes a RENDERED QR from pixels, compared byte-for-byte against an
+  independently hand-written encode (not the app's builder) with a stale-matrix gate. ⚠ **REVIEW CAUGHT AN
+  INVERTED ARCHITECTURE CLAIM — a comment asserting, as the current design, the exact refactor this codebase
+  warns is catastrophic.** The new clear-before-read was justified with "this card's instance survives a
+  session switch (`FriendPortalSession` is kept alive by `v-show`)". `FriendPortalSession.vue:36-41` says the
+  OPPOSITE and calls it load-bearing: the parent uses **`v-if`** (`FriendPortal.vue:1581`, plus
+  `:key="sessionSeq"`), and swapping it for `v-show` **brings all six session leaks back at once**. The CODE
+  was right; the reasoning beside it would have handed a future reader written confirmation that `v-show` is
+  the design. Corrected in all four copies; the module-18 seam comment leaned on the same premise and was
+  rewritten to the real hazard (two components each holding their own copy of the block = two homes for
+  "what does this friend owe"). **Lesson recorded: verify a claim in the file that OWNS it, rather than
+  inferring the mechanism from the symptom you are defending against.** ⚠ The client one-home sweep checked
+  only ONE of the two encode sites; it now loops over both, each with an `existsSync` non-vacuity guard —
+  a re-inlined payload that happened to be byte-equal on the fixtures would otherwise sail through every
+  pixel test. ⚠⚠ **MODULE-15 CLOSEOUT FULL SUITE: 1841 passed / 1 failed / 26 skipped / 11.8 min.** The one
+  failure is **DATA, not code** — see the new **FUP-T22** row: the template carries an active friend whose
+  NAME is the word `admin-friends-labels.spec.js:119` forbids. Orchestrator-verified by stashing only this
+  row's three view files and reproducing it identically. ⚠ **Two harness findings from the run, both now in
+  `e2e/README.md`:** (1) the recipe's recommended `RATE_LIMIT_AUTH_MAX=1000` is **too low for a full suite**
+  — at ~1870 tests the shared `authLimiter` exhausts around test ~1700 and the tail collapses into `429`s on
+  `admin login`, mostly in `beforeAll`, reading as **16 failed + 108 „did not run"**; all five maxima at
+  100000 gives the 1841/1/26 above. A rate-limit cascade is NOT a regression — the tell is a 429 on a
+  FIXTURE call, never on an assertion. (2) 21 of the 26 skips were silent and avoidable: `SERVER_LOG=<backend
+  log>` un-skips the "no stack reaches the log" families. Remaining 5: 3 limiter specs (self-skip BECAUSE the
+  maxima are raised) + 1 `test.fixme` + 1 more log-gated. Review: 1 round → **approve after revise**
+  (1 major + 3 minor, all fixed). Gate: `vite build` + `node --check` clean; orchestrator's own targeted runs
+  **153 passed / 0 failed**, then **127 / 0** after the fixes (incl. `portal-session-boundary.spec.js`, the
+  net for the rule the major touched). Also closed here: PL-T3's recorded item — `01-architecture.md:221`/
+  `:264` now name `lib/payment-links.js`, old reading struck. ⚠ **PO items still open for module 15:** the
+  balance `reference` copy „{Meno} / zostatok" is DRAFT; the `CN` 70 / `MSG` 140 caps are ISO defaults, not
+  verified quotes; and **three items need a real phone** — Revolut `?amount=` prefill, the real caps, and
+  whether a bank app decodes the query or splits it raw (which settles `PI=/VS…/SS/KS`'s bare slashes).
+
+- 2026-09-19 · PL-T4 · (this commit) · **implementer's measurements for the module-15 closeout** (the row's
+  own account is the entry the orchestrator writes; this is only what the runs taught).
+  ⚠ **FULL SUITE: 1841 passed / 1 failed / 26 skipped / 11.8 min**, per-run template copy, rebuilt frontend,
+  `--workers=1`. The one failure is `admin-friends-labels.spec.js:119` and it is **DATA, not code**: the
+  sweep greps the whole rendered friends list for `/prihlasovac/i`, and GR-T9's freshly rebuilt
+  `prod-template.sqlite` carries a real production row `id 72, name 'Prihlasovacie.meno'` (names are KEPT by
+  PO decision), verified against the file. It cannot pass against this template; untouched and reported.
+  ⚠ **THE FIRST FULL RUN MEASURED 16 failed / 108 „did not run“ AND WAS A LIE.** Every failure was a `429`
+  on `admin login`, most inside a `beforeAll` — which is what turns 16 failures into 108 tests that never
+  ran. The suite is ~1870 tests now and the README's recommended `RATE_LIMIT_AUTH_MAX=1000` no longer
+  survives one pass: the shared `authLimiter` exhausted around test ~1700 and the TAIL collapsed, reading as
+  a broad regression in whatever had just changed. Same tree, all five maxima at `100000` → the run above.
+  ⚠ **21 of the 26 skips were silent and avoidable:** the FUP-T7/T10/T11/T12/T13/T14/T15 "no stack reaches
+  the log" families are gated on `SERVER_LOG=<backend log path>`, which the recipe never set (spot-checked
+  with it exported: 53 passed). Both findings are now in `e2e/README.md` — the measurement in §Full-suite
+  runs, `SERVER_LOG` in the step-6 command. Genuine remaining skips: `rate-limit.spec.js`,
+  `rate-limit-isolation.spec.js`, `magic-link-rate-limit.spec.js` (all three self-skip BECAUSE the maxima
+  are raised — the documented trade) and `forced-change-ui.spec.js` (`test.fixme`, its own reason).
+  ⚠ **Review caught an INVERTED architecture claim in `FriendBalanceCard.vue`** (the code was right, the
+  rationale was not): the comment said the session subtree is kept alive by `v-show`, when
+  `FriendPortal.vue:1581` mounts it with `v-if` + `:key` and `FriendPortalSession.vue:36-41` calls that
+  `v-if` the six-leak guard in as many words. The false version described the exact refactor the codebase
+  warns against, next to the rule it would break. Rewritten in all four copies.
 
 - 2026-09-19 · PL-T3 · (this commit) · no PR (project convention) · **The client half: one home for payment
   links.** New `frontend/src/lib/payment-links.js` — `revolutLink` (amount variant behind

@@ -505,3 +505,148 @@ the success modal re-pointed at `payBySquarePayload`/`revolutLink`), the balance
 „Zaplatiť" trigger + mount on `FriendBalanceCard.vue`, and the sanctioned
 `money-rounding.spec.js` `independentQr` edit. ⚠ The success modal gets NO PayMe bar and
 NO VS row (§UC-PL-007 item 1) — the full payment surface is „Zaplatiť“ → `PaymentModal`.
+
+---
+
+## PL-T4 — the friend surfaces, the balance „Zaplatiť“, and the module-15 closeout (2026-09-19)
+
+**What shipped.** No server change at all: every value on screen was already in a payload
+(`friendOrderPayment()` from PL-T2, `balancePaymentBlock()` from PL-T1/T2). This row is
+three client edits and one sanctioned spec edit.
+
+| File | Change |
+|---|---|
+| `frontend/src/views/FriendOrder.vue` | `paymentCreditorName` + `paymentVs` refs; `applyOrderPayment(response)` quotes `payment.variable_symbol` off the GET, the PUT and the submit; the `PaymentModal` mount gains the two props; `generateSuccessQr()` re-pointed at `payBySquarePayload()`; the success modal's Revolut `<a>` re-pointed at `revolutLink()` with the amount-suffixed label |
+| `frontend/src/components/FriendBalanceCard.vue` | `payment` + `showPayment` refs, the `canPayBalance` gate, the „Zaplatiť“ trigger (`data-testid="pay-balance"`, `.btn.ok.sm`, BEFORE „Transakcie“) and the `PaymentModal` mount |
+| `frontend/src/components/PaymentModal.vue` | header only — the fourth caller is real now, and the module-18 "relocated, never duplicated" rule is stated where the component is read |
+| `e2e/helpers/qr-pixels.js` (NEW) | `readQrModules()` / `qrMatrix()` — the pixel-QR technique, lifted out of the specs (§UC-PL-009 item 7) |
+| `e2e/tests/payment-links.spec.js` | +7 tests in two describes (§UC-PL-007 items 1 and 4) |
+| `e2e/tests/money-rounding.spec.js` | THE sanctioned edit (§UC-PL-009 item 2) |
+
+**The sanctioned edit, exactly as scoped.** `independentQr()` takes a `variableSymbol`
+parameter (`String(order.id)` at all three call sites — `cart()` already returned the
+order, the tests simply discarded it) and `beneficiary` STAYS `'Gorifi'`, because
+`primePage()`'s `payment-settings` mock carries no creditor name and D3 makes
+`creditorName || 'Gorifi'` the fallback. That absence is now also what the file proves.
+Nothing about the drifting-vs-rounded amount logic moved. `order-modals.spec.js:877/:881`
+passed unmodified, as the row required: the name lookup matches substrings and
+`^https://revolut\.me/` is compatible with a query string.
+
+**Where the VS comes from on the friend order screen, and why it is a ref and not a
+computed.** The obvious shortcut is `computed(() => String(order.value?.id ?? ''))` — the
+scheme is literally the order id. That would be a SECOND HOME for the derivation, in the
+one module whose entire purpose is that there is one. `applyOrderPayment()` quotes the
+server's `payment` block instead, from whichever response arrived last, so the day the
+scheme changes (a prefix, a padding, a check digit) `helpers/payment.js` is still the only
+file that knows. The `payment: null` case (no order yet, or a PUT that emptied the cart and
+deleted the row) falls out for free as `''` — which renders the VS-less modal rather than
+a made-up symbol.
+
+**⚠ THE BALANCE CARD CLEARS `payment` BEFORE EVERY READ — defence in depth, and the
+rationale has to be stated precisely because the obvious one is BACKWARDS.** The first
+draft of this comment said the card survives a logout because `FriendPortalSession` is
+kept alive by `v-show`. It is the opposite, and the opposite is load-bearing:
+`FriendPortal.vue:1581` mounts the session with `v-else-if="authState === 'authenticated'"`
+plus `:key="sessionSeq"`, and `FriendPortalSession.vue:36-41` says in as many words that
+the parent's `v-if` (NOT `v-show`) is what holds the boundary — "swapping it for `v-show`
+keeps this instance alive across a logout and every one of the six leaks comes back at
+once". So the card is DESTROYED on logout and re-created with `payment` at `null`;
+cross-session leakage is structural, not this clear's job. ⚠ A comment claiming otherwise
+is worse than no comment: it describes the exact refactor the codebase warns against, sat
+next to the rule it would break, where the next reader reaching for `v-show` would read it
+as confirmation. Caught in review — the lesson is the same one this module keeps
+re-learning: **verify the claim in the file that owns it, do not infer the mechanism from
+the symptom you are defending against.**
+
+What the clear actually buys is two narrower things, both real: an IN-PLACE `friendId`
+change (the card's own `watch`, which no path reaches today — the same standing the
+parent's `:key` has) would otherwise re-point the card at a new friend with the previous
+one's symbol, reference and amount still mounted and openable; and a FAILED reload would
+otherwise paint the error banner with a stale block sitting behind a „Zaplatiť“ that still
+opens. `showPayment` is cleared with it: a dialog quoting a debt that is no longer on
+screen has no owner.
+
+**The trigger is gated on the composed block, never on the balance alone.**
+`canPayBalance = balanceState === 'neg' && payment && (payment.iban ||
+payment.revolut_username)`. Three consequences worth keeping: a settled friend or one in
+credit is offered nothing (the server already answers `amount: 0` there); an instance with
+no payment block — which is exactly what `portal-transactions-modal.spec.js` stubs, and
+that file must keep passing byte-unmodified — renders precisely the shipped card; and the
+control and the modal can never disagree, because the modal is opened with the same object
+the gate read.
+
+**No reload on close, deliberately.** Paying through a Revolut/PayMe link or a QR changes
+NOTHING in the ledger until the admin records the transfer (`paid` is admin-only, module
+15 writes no `transactions` row anywhere). A `loadBalance()` on close would redraw the same
+debt and read as "the payment did not go through", or — worse, one day — as "it did". The
+e2e test counts the `/balance` requests around three open/close cycles and pins ONE.
+
+**The success modal is a confirmation with a shortcut, not the payment surface.** It gains
+the symbol INSIDE its QR and an amount-prefilled Revolut link, and it gains neither the VS
+copy row nor the PayMe bar (§UC-PL-007 item 1). The rule 04 already had for the reference —
+"one home for the string the friend must type into their bank" — now covers the variable
+symbol too: both live in the Platba modal that the cart bar's „Zaplatiť“ opens. The
+absence is pinned with a non-vacuity gate: the same test then re-enters the cycle, opens
+„Zaplatiť“ and reads the VS row off the full surface.
+
+**Both friend controls are gated on their own composed href.** `successRevolutHref` repeats
+what PL-T3 did inside `PaymentModal`: the shipped `v-if="paymentRevolutUsername"` over a
+builder-composed href would render `href=""` for a whitespace-only handle — a link to the
+CURRENT URL, i.e. a page reload — and the amount label reads the href rather than the
+amount, so the `REVOLUT_AMOUNT_LINK` fallback has no second place to remember.
+
+**Testing notes that cost time.**
+- `getByTestId('payment-vs')` is `NeoCopyRow`'s ROOT, and its text includes the copy
+  button's label: an assertion reads „240Kopírovať“. Assert on `.locator('.val')` — the
+  idiom `guest-payment-modal.spec.js:904` already uses.
+- `payment-links.spec.js` loads `bysquare`/`qrcode` from the frontend tree DYNAMICALLY,
+  unlike `money-rounding.spec.js`'s static cross-tree import: this file also runs against a
+  deployment, where a static import would fail the WHOLE file to load and take the
+  API-level sections with it. The QR tests `test.skip(!CAN_IMPORT_LINKS)` instead.
+- The PL-T4 fixtures call `loginApi()` first. The §UC-PL-008 block above them signs in
+  through the BROWSER, which mints a new app-wide admin session and kills the API
+  context's token — the file header's ordering note, met in practice.
+- ⚠ The red run is worth the two minutes it costs. Stashing the two `.vue` files and
+  rebuilding gave 8 red / 2 green: the 2 green are the "no button when settled / when the
+  payload carries no block" tests, which SHOULD pass before and after (they pin shipped
+  behaviour), and both carry a non-vacuity gate on the card actually being on screen.
+
+**Recorded, closed.** PL-T3 left `01-architecture.md:221`/`:264` ("Pay by Square QR …
+inside `PaymentModal.vue`", "pure URL composition in `PaymentModal.vue`") for this
+closeout. Both are now struck and rewritten to name `lib/payment-links.js`, with the
+original reading kept as ~~strike~~ + pointer.
+
+**Left open for module 18 (PI-T7), stated in three places (the card, `PaymentModal`'s
+header and the backlog row).** The trigger and the mount RELOCATE into „Zostatok a platby“
+and the landing debt banner. There must never be a SECOND `PaymentModal` for the balance —
+if the banner links to payment, it opens this one.
+
+**Left open for module 21.** Messages quote `helpers/payment.js`'s symbol and never
+re-derive one; the note is on the balance card, where a reader composing a debt message
+will be looking.
+
+**The module-15 closeout run, and the two things it taught about the harness.**
+`1841 passed / 1 failed / 26 skipped / 11.8 min` on a per-run copy of
+`e2e/fixtures/prod-template.sqlite` with a rebuilt frontend in `backend/public`.
+
+- ⚠ **The FIRST full run reported 16 failed and 108 „did not run“, and every one of them
+  was a lie.** All sixteen were `429` on `admin login`, most inside a `beforeAll` — which
+  is what turns 16 failures into 108 tests that never ran. The suite is ~1870 tests now and
+  the README's recommended `RATE_LIMIT_AUTH_MAX=1000` is no longer enough for one pass: the
+  shared `authLimiter` bucket exhausted around test ~1700, so the TAIL of the suite
+  collapsed and read as a broad regression in whatever had just been changed. Re-run with
+  all five maxima at `100000`: the numbers above. The README now carries the measurement.
+- ⚠ **21 of the 26 skips were silent, and avoidable.** The FUP-T7/T10/T11/T12/T13/T14/T15
+  "no stack reaches the log" families are gated on `SERVER_LOG=<backend log path>`, which
+  the recipe never set. Spot-checked with it exported: they run and pass. The README's run
+  command now sets it. The genuine remainder is four: the three limiter specs (which skip
+  BECAUSE the maxima are raised — the documented trade) and `forced-change-ui.spec.js`
+  (`test.fixme`, its own radix-Select reason).
+- ⚠ **The one real failure is DATA, and it is not this row's.**
+  `admin-friends-labels.spec.js:119` sweeps the whole rendered friends list for
+  `/prihlasovac/i`. GR-T9's freshly rebuilt template carries a real production friend row —
+  `id 72, name 'Prihlasovacie.meno'`, and names are KEPT by PO decision — so the sweep can
+  never pass against this template. It reproduces on the file alone and has nothing to do
+  with module 15. Left untouched and reported: the guard is right, the fixture is what
+  changed under it. Whoever picks it up chooses between scoping the sweep to the page's own
+  COPY (excluding friend-authored fields) and scrubbing that one name.

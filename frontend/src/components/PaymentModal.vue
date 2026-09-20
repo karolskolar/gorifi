@@ -4,8 +4,11 @@
 // ⚠ SHARED-CONSUMER CONTRACT, PINNED. Four callers mount this component —
 // `GuestOrder.vue` (the g-confirm screen), `GuestOrderStatus.vue` (the guest's
 // status page), `FriendOrder.vue` (module 04's cart bar) and — from PL-T4 —
-// `FriendBalanceCard.vue` (15 §UC-PL-007 item 4). It emits `close` and nothing
-// else. No admin view consumes it (swept from `router.js` by
+// `FriendBalanceCard.vue` (15 §UC-PL-007 item 4, the whole-balance debt: its own
+// amount, its own reference and its own `8`-prefixed symbol — PL-T4 shipped it).
+// ⚠ That balance mount belongs to the CARD, and module 18 (PI-T7) RELOCATES it
+// rather than adding a second one: there is never more than one `PaymentModal` for
+// the balance. It emits `close` and nothing else. No admin view consumes it (swept from `router.js` by
 // `payment-links.spec.js`).
 //
 // ~~Its props API is FROZEN: `open`, `amount`, `reference`, `iban`,

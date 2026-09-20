@@ -126,6 +126,15 @@ append the full write-up to the matching learnings file and add at most one line
   §Procedure, 20's surface table; `grep -rn frozen` found them, a list did not). The PayMe bar is `v-if` on
   `(pointer: coarse)` — a CSS-hidden `<a>` counts as a second Revolut bar in the `.m-body` order pin. `€` on
   lines / `EUR` on totals applies to the Revolut label's amount suffix too.
+- Every payment SURFACE quotes the server's block; no client derives a symbol. `FriendOrder.vue` reads
+  `payment.variable_symbol` off the last order GET/PUT/submit (`''` when `payment` is `null`), never from
+  `order.id`; `FriendBalanceCard.vue` is the ONE home of the balance trigger + `PaymentModal` mount (module 18
+  RELOCATES it, never a second one; `FriendTransactionsModal.vue` mounts no modal), clears `payment` BEFORE
+  each read (defence in depth for an in-place `friendId` change + the failed-reload gap — CROSS-SESSION is
+  structural: `FriendPortal.vue` mounts `FriendPortalSession` with `v-if` + `:key`, which DESTROYS the
+  subtree on logout, and that `v-if` is the six-leak guard), and does NOT reload on close — module 15
+  writes no ledger row.
+  `FriendOrder`'s success modal shares `payBySquarePayload`/`revolutLink` but carries NO VS row and NO PayMe.
 - VS payloads GROW, never move: guest block 6 keys — `amount`, `reference`, `iban` AND
   `revolut_username` all stay byte-identical (name every one; a rule stated narrower than what it
   protects reads as licence to move the rest) — friend order
