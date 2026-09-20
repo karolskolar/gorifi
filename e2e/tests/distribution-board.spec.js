@@ -4,9 +4,13 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 // DP-T5 — module 16 (distribution pipeline), 16 §UC-DP-010.
 //
 // THE BOARD SHELL: the plan header, the plan cards, the group-by segmented
-// control, the stage filter, and the group headers. Everything INSIDE a group is
-// still the shipped per-friend card (DP-T6 converts card → row), which is why
-// `guest-distribution.spec.js` must keep passing UNMODIFIED alongside this file.
+// control, the stage filter, and the group headers. What is INSIDE a group is
+// ~~still the shipped per-friend card (DP-T6 converts card → row)~~ — **DP-T6
+// shipped the row (16 §UC-DP-011); its five columns, the nested guest mirrors and
+// the expandable body are pinned in `distribution-rows.spec.js`.** This file keeps
+// only the cross-spec guard at the bottom, because `guest-distribution.spec.js`
+// and `item-packed.spec.js` still pass UNMODIFIED and still locate a party by
+// utility class.
 //
 // What carries this file:
 //
@@ -546,18 +550,46 @@ test.describe('DP-T5 · 16 §UC-DP-010 — the distribution board shell', () => 
     await expect(page.getByTestId(`dist-group-loc${fx.L.id}`)).toBeVisible()
   })
 
-  test('the shipped per-friend card body is still the row (DP-T6 converts it)', async ({ page }) => {
+  // ⚠ RETARGETED BY DP-T6 (16 §UC-DP-011): a group's parties are ROWS now, not
+  // per-friend cards, so this pin no longer says "the card body is still the
+  // placeholder". What it guards is unchanged and is the reason DP-T6 did NOT
+  // retarget the two shipped specs that locate a party by utility class:
+  //
+  //   • `div.p-4` containing the friend's heading must resolve to EXACTLY ONE
+  //     element (`guest-distribution.spec.js`, `item-packed.spec.js` — and only the
+  //     FIRST of those two is retargetable at all, so the invariant had to hold);
+  //   • `div.cursor-pointer` inside a party must be the ITEM rows and nothing else
+  //     (`item-packed.spec.js` COUNTS them) — which is why the row's own expand
+  //     affordance is a `<button>` plus a `.row-expand` class, never a third
+  //     `div.cursor-pointer`;
+  //   • the party's name stays an `<h3>`, because every group assertion in this
+  //     file locates a row by `getByRole('heading')`.
+  //
+  // The row's own five columns are pinned in `distribution-rows.spec.js`; this
+  // test is the cross-spec guard, kept here because it is the shape a future
+  // refactor of THIS view would silently break.
+  test('a row keeps the one `p-4` and the item-row class the shipped specs locate it by', async ({ page }) => {
     await loginAsAdminUI(page)
     await page.goto(`/admin/cycle/${fx.cycle.id}/distribution`)
 
-    // The card locator `guest-distribution.spec.js` uses must still resolve to
-    // EXACTLY ONE element — a wrapper that also carried `p-4` would break that
-    // shipped file in strict mode without failing anything here.
+    const row = page.getByTestId(`bag-row-${fx.b.id}`)
+    await expect(row, 'the party is a row now (16 §UC-DP-011)').toBeVisible()
+
     const card = page.locator('div.p-4', { has: page.getByRole('heading', { name: fx.b.name, exact: true }) })
-    await expect(card).toHaveCount(1)
+    await expect(card, 'a second padded wrapper would break two shipped specs').toHaveCount(1)
     await expect(card.getByRole('button', { name: 'Zabaliť' })).toBeVisible()
     await expect(card.locator('[data-owner="own"]')).toHaveCount(1)
+    // ⚠ NON-VACUITY first: the row HAS one item, and that item is the only
+    // `div.cursor-pointer` in it.
+    await expect(card.locator('div.cursor-pointer')).toHaveCount(1)
     await expect(page.getByTestId(`dist-pickup-select-${fx.b.id}`)).toBeVisible()
+
+    // The five columns, by the testids §UC-DP-011 names.
+    await expect(row.getByTestId(`bag-who-${fx.b.id}`)).toBeVisible()
+    await expect(row.getByTestId(`bag-delivery-${fx.b.id}`)).toBeVisible()
+    await expect(row.getByTestId(`bag-pay-${fx.b.id}`)).toBeVisible()
+    await expect(row.getByTestId(`packed-toggle-${fx.b.id}`)).toBeVisible()
+    await expect(row.getByTestId(`handover-toggle-${fx.b.id}`)).toBeVisible()
   })
 })
 
@@ -611,10 +643,12 @@ test.describe('DP-T5 · 16 §UC-DP-010 — an empty cycle', () => {
 // is not empty. Without the guard in `loadData()` the board would sit on the „no
 // match" line with no focused card left to click to release it.
 //
-// ⚠ Not reachable from DP-T5's own screen (nothing here re-fetches after a pickup
-// change); it becomes reachable with DP-T6's patch-in-place-then-re-fetch. Closed
-// here because this row owns the focus. The re-fetch is driven through the ONE
-// door this row already has: „Zabaliť" calls `loadData()`.
+// ⚠ ~~Not reachable from DP-T5's own screen (nothing here re-fetches after a
+// pickup change); it becomes reachable with DP-T6's patch-in-place-then-re-fetch.~~
+// **REACHABLE AS OF DP-T6**, which added exactly that re-fetch — the guard closed
+// here is now load-bearing on the pickup path too (`distribution-rows.spec.js`
+// drives the pickup change). This test keeps driving the re-fetch through
+// „Zabaliť" because that door needs no location change to exercise the guard.
 //
 // ⚠ The API half of this test adopts the BROWSER's admin token rather than minting
 // one — a fresh `/api/admin/login` would invalidate the page's own token and the

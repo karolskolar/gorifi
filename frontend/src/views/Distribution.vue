@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import BalanceBadge from '@/components/BalanceBadge.vue'
 import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
-import { bagsLabel, packedAdjective, handedAdjective } from '../lib/plural'
+import { bagsLabel, packedAdjective, handedAdjective, guestsLabel } from '../lib/plural'
 
 const route = useRoute()
 const router = useRouter()
@@ -59,9 +59,10 @@ async function loadData() {
     // simply not in the next payload. The delivery branch then filters to zero
     // groups while `distribution` is not empty, i.e. a toolbar over nothing with
     // no focused card left to click to release it.
-    // ⚠ Not reachable from this row (nothing here re-fetches after a pickup
-    // change) but it becomes reachable the moment DP-T6 adds that re-fetch, which
-    // is why it is closed here rather than handed over.
+    // ⚠ ~~Not reachable from this row (nothing here re-fetches after a pickup
+    // change) but it becomes reachable the moment DP-T6 adds that re-fetch.~~
+    // **REACHABLE SINCE DP-T6**: `onPickupUpdated()` below re-fetches, so moving
+    // the last party off a point and retiring it now releases the focus here.
     if (focusedTarget.value && !plan.value.some((entry) => entry.target_key === focusedTarget.value)) {
       focusedTarget.value = null
     }
@@ -104,18 +105,30 @@ function canEditPickup() {
   return true
 }
 
-// Patched in place, not via `loadData()`: a full reload here would also re-collapse
-// every guest fold and lose the admin's place in a long picking list.
-function onPickupUpdated(friend, updated) {
+// ⚠ PATCH IN PLACE, **THEN RE-FETCH** (DP-T6, 16 §UC-DP-011). Two halves, and both
+// are load-bearing:
+//
+//  • The patch is what keeps the admin's place. A `location.reload()` here would
+//    re-collapse every guest fold and every row the admin folded away in a long
+//    picking list — which is why this was a patch in the first place.
+//  • The re-fetch is what keeps the board HONEST. A pickup change can move the
+//    party into another GROUP and onto another PLAN CARD, and `delivery` / `plan`
+//    are `helpers/delivery.js`'s answer, not something this screen may re-derive
+//    (one home — the same rule `loadData()` states about `plan` / `totals`). So the
+//    patch paints the picker's own three columns immediately, and `loadData()`
+//    (loadSeq-guarded, so a slow earlier fetch cannot paint over it) brings the
+//    grouping back from the server.
+async function onPickupUpdated(friend, updated) {
   friend.pickup_location_id = updated.pickup_location_id
   friend.pickup_location_note = updated.pickup_location_note
   friend.pickup_location_name = updated.pickup_location_name
-  // Same reason as the orders tab: otherwise the card keeps printing the 📦 address
+  // Same reason as the orders tab: otherwise the row keeps printing the 📦 address
   // and the red badge for a parcel the server just cleared.
   if (updated.cleared_parcel) {
     friend.packeta_address = null
     friend.delivery_fee = 0
   }
+  await loadData()
 }
 
 // Set page title
@@ -129,9 +142,21 @@ async function togglePacked(friend) {
   // second line of defence against PATCHing /api/orders/null/packed.
   if (!friend.order_id) return
   if (packingOrderId.value) return
+  // ⚠ 16 §UC-DP-007, the frontend half: a bag that has already left cannot be
+  // un-packed (un-packing posts the ledger reversal and re-opens the bag). The
+  // button renders disabled with the title, and this is the second line of
+  // defence — the server answers 409 `handed_over` either way.
+  if (isHandedOver(friend)) return
 
   packingOrderId.value = friend.order_id
   error.value = ''
+  // ⚠ AND THE ROW'S OWN REFUSAL GOES WITH IT. „Najprv označte balíček ako
+  // zabalený" is advice about THIS step: the moment the admin takes it, the
+  // sentence is false, and a stale red line under a row that is now packed and
+  // ready to hand over is worse than no line at all. Cleared here and in
+  // `toggleItem()` — the two doors that act on the advice — exactly where the
+  // global `error` is cleared.
+  setRowError(String(friend.id), '')
   try {
     await api.togglePacked(friend.order_id)
     await loadData()
@@ -234,9 +259,16 @@ async function toggleItem(friend, group, item) {
   // checkbox on such a card.
   if (pendingItems.value[key]) return
   if (friend.order_id && packingOrderId.value === friend.order_id) return
+  // §UC-DP-007 again: unchecking an item of a handed-over bag is a 409, and for a
+  // guest bag the gate is EITHER the guest's own hand-over or the host's (the
+  // host's own order would otherwise be un-packed by the guest's uncheck).
+  if (itemLocked(friend, group)) return
 
   setItemPending(key, true)
   error.value = ''
+  // Same reason as in `togglePacked()`: ticking the item that was holding the
+  // gate closed is the admin acting on the row's refusal, so the refusal goes.
+  setRowError(String(friend.id), '')
   try {
     const updated = group.kind === 'guest'
       ? await api.toggleGuestItemPacked(item.id)
@@ -285,9 +317,12 @@ function printDistribution() {
 // only arranges them — see `loadData()` for why nothing here re-derives a target.
 //
 // ⚠ What is deliberately NOT here, so the next rows are not surprised:
-//   • the ROW layout. Inside a group the shipped per-friend Card is still the
-//     placeholder, verbatim — DP-T6 converts card → row, and `guest-distribution
-//     .spec.js` passes unmodified until it does.
+//   • ~~the ROW layout. Inside a group the shipped per-friend Card is still the
+//     placeholder, verbatim — DP-T6 converts card → row.~~ **DONE (DP-T6): see the
+//     row section at the bottom of this script.** `guest-distribution.spec.js` and
+//     `item-packed.spec.js` still pass UNMODIFIED — the conversion kept the one
+//     `div.p-4` and the item rows' `div.cursor-pointer` that both files locate a
+//     party by.
 //   • the bulk hand-over CALL. „Odovzdať zabalené (n)" renders, counts and
 //     disables itself at zero here; DP-T7 attaches the confirm modal and the
 //     `POST /cycles/:id/distribution/hand-over`. ⚠ When it does: send PARTY
@@ -484,6 +519,198 @@ function focusPlan(entry) {
 function setGroupBy(key) {
   groupBy.value = key
   focusedTarget.value = null
+}
+
+// ── DP-T6 (16 §UC-DP-011): the row ──────────────────────────────────────────
+//
+// One bag, one row, five columns — Kto · Doručenie/obsah · Platba · Krok 1 ·
+// Krok 2 — with the shipped packing mechanics (per-item checkboxes, guest folds,
+// the pickup picker) kept verbatim inside a click-to-expand body.
+//
+// ⚠ What is deliberately NOT here:
+//   • the module-20 PACKETA GUEST ROW. A guest carrying its OWN `packeta_address`
+//     becomes its own party under Packeta („Hosť • cez {host}") instead of nesting
+//     under its host. `helpers/delivery.js` already classifies it; nothing EMITS it
+//     as a standalone party yet, so today `friend.guest_orders[]` holds via_host
+//     guests only and the nested-row block below is the whole story. GP-T6 fills
+//     the slot; the seam is that a Packeta guest simply stops arriving in
+//     `guest_orders[]` and starts arriving as a party, which this row renders
+//     without a new branch (the nested block iterates what it is given).
+//   • the per-GROUP „Odovzdať zabalené (n)" CALL — DP-T7's.
+
+/**
+ * A row is expandable only when it HAS a body. The shipped card body is
+ * `v-if="!friend.packed"`: the moment the whole-order flag is set, the checklist
+ * is gone (item-packed.spec.js pins exactly that), so a packed friend row really
+ * is one line and a toggle over nothing would be a lie. A SYNTHETIC host has no
+ * `packed` column at all, so their checklist survives every stage — they are the
+ * party for whom „collapsed once done" is a fold rather than an unmount.
+ */
+function hasRowBody(friend) {
+  return !friend.packed && totalItemCount(friend) > 0
+}
+
+// ⚠ A local OVERRIDE map over a DERIVED default, not a state map seeded on load.
+// The default is „expanded while there is packing to do" (PO, 2026-09-19), and it
+// must keep tracking `stage` as the admin works — a map seeded at load time would
+// freeze a bag open after it was packed, and a re-fetch that reseeded it would
+// throw away the rows the admin expanded by hand. Keyed by party id, so it
+// survives every in-place patch and every `loadData()`.
+const rowExpandOverride = ref({})
+
+function isRowExpanded(friend) {
+  const key = String(friend.id)
+  if (Object.prototype.hasOwnProperty.call(rowExpandOverride.value, key)) {
+    return !!rowExpandOverride.value[key]
+  }
+  return (friend.stage || 'to_pack') === 'to_pack'
+}
+
+function toggleRow(friend) {
+  if (!hasRowBody(friend)) return
+  rowExpandOverride.value = { ...rowExpandOverride.value, [String(friend.id)]: !isRowExpanded(friend) }
+}
+
+// ⚠ PER-ROW, NEVER ONE GLOBAL FLAG. This is a money-adjacent admin screen worked
+// from a phone over a pile of bags: hand-over #2 must not be swallowed because
+// hand-over #1 is still in flight. Same discipline as `pendingItems` above, and
+// the same reason the error is per row too — a shared `error` banner would blame
+// the wrong bag.
+const pendingParties = ref({})
+const rowErrors = ref({})
+
+function isPartyPending(friend) {
+  return !!pendingParties.value[String(friend.id)]
+}
+
+function setPartyPending(key, value) {
+  const next = { ...pendingParties.value }
+  if (value) next[key] = true
+  else delete next[key]
+  pendingParties.value = next
+}
+
+function setRowError(key, message) {
+  const next = { ...rowErrors.value }
+  if (message) next[key] = message
+  else delete next[key]
+  rowErrors.value = next
+}
+
+function rowError(friend) {
+  return rowErrors.value[String(friend.id)] || ''
+}
+
+function isHandedOver(friend) {
+  return !!friend.handed_over_at || friend.stage === 'handed'
+}
+
+function itemLocked(friend, group) {
+  if (isHandedOver(friend)) return true
+  return group.kind === 'guest' && !!group.guest.handed_over_at
+}
+
+function guestCount(friend) {
+  return (friend.guest_orders || []).length
+}
+
+// „odovzdané okrem {n}" — UC-DP-005 case c: the admin took ONE colleague's bag
+// back out of a parcel that has otherwise left. The row says so rather than
+// showing a ticked host over an unticked guest and letting the admin work it out.
+function handedExceptCount(friend) {
+  if (!isHandedOver(friend)) return 0
+  return (friend.guest_orders || []).filter((guest) => !guest.handed_over_at).length
+}
+
+// „{items} pol. · {kg} kg" — the bag's own content line. `friend.kg` is the
+// SERVER's (grams, guests folded in, DP-T2); `kgLabel` is the one copy of the
+// display rule already in this file.
+function contentLine(friend) {
+  return `${totalItemCount(friend)} pol. · ${kgLabel(friend.kg || 0)}`
+}
+
+// Krok 2 is reachable only from „Zabalené" — the prototype's `opacity .4`, and a
+// mirror of the server's 409 `not_packed`.
+function canHandOver(friend) {
+  if (isPartyPending(friend)) return false
+  const stage = friend.stage || 'to_pack'
+  return stage === 'packed' || stage === 'handed'
+}
+
+function handOverTitle(friend) {
+  return canHandOver(friend) || isPartyPending(friend) ? '' : 'Najprv zabaliť'
+}
+
+// A refused change SNAPS THE CONTROL BACK (CLAUDE.md §Frontend). It has to be done
+// on the DOM node by hand: the checkbox is bound with `:checked`, so after a failed
+// click the binding's value is UNCHANGED (still `false`) and Vue's patch — which
+// compares the new vnode prop against the old one — has nothing to write. The user
+// gesture would silently stand on screen while the server holds the opposite.
+function snapBackHandover(friend, event) {
+  const el = event?.target
+  if (el) el.checked = isHandedOver(friend)
+}
+
+/** The live sub-order ids of a party — already filtered by the server. */
+function liveGuestIds(friend) {
+  return (friend.guest_orders || []).map((guest) => guest.id)
+}
+
+/**
+ * Krok 2, for one bag.
+ *
+ * ⚠ TWO ROUTES, and which one is not a style choice. A friend with an own order is
+ * one `PATCH /orders/:id/handed-over` and their guests INHERIT inside that
+ * transaction. A SYNTHETIC host has no `orders` row to stamp, so their bag is the
+ * set of their sub-orders: going out, that is the BULK route (one transaction, one
+ * timestamp across every bag — the stamp module 21 groups its segments by); coming
+ * back, it is the per-guest PATCH in sequence, because a bulk REVERSAL is Phase 2
+ * by spec and deliberately not built.
+ *
+ * ⚠ Patch in place, THEN re-fetch (loadSeq): the response is enough for the row
+ * and its mirrors, but `plan[]`, `totals` and the „Podľa stavu" grouping are the
+ * server's.
+ */
+async function toggleHandover(friend, event) {
+  const wanted = !!event?.target?.checked
+  const key = String(friend.id)
+  if (isPartyPending(friend)) {
+    snapBackHandover(friend, event)
+    return
+  }
+
+  setPartyPending(key, true)
+  setRowError(key, '')
+  try {
+    if (friend.order_id) {
+      const result = await api.setOrderHandedOver(friend.order_id, wanted)
+      friend.handed_over_at = result?.order?.handed_over_at ?? null
+      friend.stage = result?.order?.stage || friend.stage
+      const byId = new Map((result?.guests || []).map((guest) => [guest.id, guest]))
+      for (const guest of friend.guest_orders || []) {
+        const patched = byId.get(guest.id)
+        if (!patched) continue
+        guest.handed_over_at = patched.handed_over_at
+        guest.stage = patched.stage
+      }
+    } else if (wanted) {
+      await api.handOverDistributionBatch(cycleId, [], liveGuestIds(friend))
+    } else {
+      for (const guestId of liveGuestIds(friend)) {
+        await api.setGuestOrderHandedOver(guestId, false)
+      }
+    }
+    await loadData()
+  } catch (e) {
+    // The SERVER's sentence, inline on the row that refused („Najprv označte
+    // balíček ako zabalený" for 409 `not_packed`) — never a client-side guess at
+    // which rule was hit.
+    setRowError(key, e.message)
+    snapBackHandover(friend, event)
+    await loadData()
+  } finally {
+    setPartyPending(key, false)
+  }
 }
 </script>
 
@@ -689,38 +916,112 @@ function setGroupBy(key) {
           </div>
 
           <div v-else class="space-y-4">
+        <!-- ⚠ ONE `div.p-4` PER PARTY, AND IT STAYS. Two shipped specs
+             (`guest-distribution.spec.js`, `item-packed.spec.js`) locate a party
+             as `div.p-4` containing the friend's heading, and `item-packed`
+             additionally counts `div.cursor-pointer` inside it as the ITEM rows.
+             So: `CardContent` keeps `p-4` and is the row's only padded wrapper,
+             the row's own expand affordance is a `<button>` / `.row-expand` (never
+             a second `div.cursor-pointer`), and the name stays an `<h3>` — DP-T5's
+             group assertions locate it by role too. -->
         <Card
           v-for="friend in group.parties"
           :key="friend.id"
+          :data-testid="`bag-row-${friend.id}`"
+          :data-stage="friend.stage || 'to_pack'"
           :class="[
             'print:shadow-none print:border print:break-inside-avoid',
-            friend.packed ? 'opacity-50' : ''
+            friend.packed || isHandedOver(friend) ? 'opacity-50' : ''
           ]"
         >
           <CardContent class="p-4">
-            <div class="flex justify-between items-start mb-3">
-              <div>
-                <h3 class="text-lg font-semibold">{{ friend.name }}</h3>
-                <div class="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
-                  <BalanceBadge :balance="friend.balance || 0" />
-                  <!-- A host with no own order (§Edge Cases) is still the pickup
-                       party, but has nothing of their own to pay for — a red
-                       "Nezaplatené" badge on a 0 EUR non-order would be a lie. -->
-                  <template v-if="friend.has_own_order !== false">
-                    <Badge v-if="friend.paid" variant="default" class="bg-green-600">Zaplatené</Badge>
-                    <Badge v-else variant="destructive">Nezaplatené</Badge>
-                    <span>{{ formatPrice(friend.total) }}</span>
-                  </template>
-                  <Badge
-                    v-else
-                    variant="outline"
-                    class="border-violet-400 text-violet-700 bg-violet-50"
+            <!-- ── the five columns ──────────────────────────────────────── -->
+            <div class="flex flex-wrap items-start gap-x-4 gap-y-2">
+              <!-- Kto -->
+              <div class="flex items-start gap-2 min-w-0 flex-1 basis-48" :data-testid="`bag-who-${friend.id}`">
+                <button
+                  v-if="hasRowBody(friend)"
+                  type="button"
+                  :data-testid="`bag-row-toggle-${friend.id}`"
+                  :aria-expanded="isRowExpanded(friend) ? 'true' : 'false'"
+                  :title="isRowExpanded(friend) ? 'Skryť položky' : 'Zobraziť položky'"
+                  @click="toggleRow(friend)"
+                  class="shrink-0 mt-1 rounded p-0.5 text-muted-foreground hover:bg-muted/60 transition-colors print:hidden"
+                >
+                  <svg
+                    class="w-4 h-4 transition-transform"
+                    :class="{ 'rotate-90': isRowExpanded(friend) }"
+                    fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"
                   >
-                    Bez vlastnej objednávky
-                  </Badge>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+                <!-- The Kto cell itself toggles the row (§UC-DP-011). `.row-expand`
+                     rather than Tailwind's `cursor-pointer`: see the note above. -->
+                <div
+                  class="min-w-0"
+                  :class="hasRowBody(friend) ? 'row-expand select-none' : ''"
+                  style="overflow-wrap: anywhere"
+                  @click="toggleRow(friend)"
+                >
+                  <h3 class="text-lg font-semibold">{{ friend.name }}</h3>
+                  <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
+                    <Badge
+                      v-if="guestCount(friend) > 0"
+                      variant="outline"
+                      class="text-xs border-violet-400 text-violet-700 bg-violet-50"
+                    >
+                      +{{ guestsLabel(guestCount(friend)) }}
+                    </Badge>
+                    <!-- A host with no own order (§Edge Cases) is still the pickup
+                         party, but has nothing of their own to pay for. -->
+                    <Badge
+                      v-if="friend.has_own_order === false"
+                      variant="outline"
+                      class="text-xs border-violet-400 text-violet-700 bg-violet-50"
+                    >
+                      Bez vlastnej objednávky
+                    </Badge>
+                    <span
+                      v-if="handedExceptCount(friend) > 0"
+                      class="text-xs text-amber-700"
+                      :data-testid="`bag-handed-except-${friend.id}`"
+                    >
+                      odovzdané okrem {{ handedExceptCount(friend) }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Doručenie / obsah -->
+              <div class="min-w-0 flex-1 basis-56" :data-testid="`bag-delivery-${friend.id}`">
+                <div
+                  class="text-sm text-muted-foreground"
+                  :class="hasRowBody(friend) ? 'row-expand select-none' : ''"
+                  style="overflow-wrap: anywhere"
+                  @click="toggleRow(friend)"
+                >
+                  <!-- Packeta: the address AND the phone, because both are needed on
+                       the parcel and on the label (§UC-DP-011). -->
+                  <template v-if="friend.delivery?.type === 'packeta'">
+                    📦 {{ friend.delivery.target_detail }}
+                    <template v-if="friend.delivery.phone">
+                      · <span class="font-mono" :data-testid="`bag-phone-${friend.id}`">{{ friend.delivery.phone }}</span>
+                    </template>
+                  </template>
+                  <template v-else-if="friend.delivery?.type === 'in_person' && friend.delivery.target_detail">
+                    {{ friend.delivery.target_detail }}
+                  </template>
+                  <template v-else>{{ contentLine(friend) }}</template>
+                  <span v-if="!friend.packed && totalItemCount(friend) > 0" class="text-xs">
+                    · {{ checkedCount(friend) }}/{{ totalItemCount(friend) }} ✓
+                  </span>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap mt-1">
                   <!-- ⚠ EDITABLE HERE TOO (PO decision, 2026-09-02) — this is the
                        screen the bags are packed from, so it is where a wrong pickup
-                       point costs time. Saves on pick; see the picker's own header.
+                       point costs time. ⚠ `cycleId` + `friendId`, NEVER an order id
+                       (the one-home rule, docs/learnings/06-pickup-point.md).
                        ⚠ AND IT IS `print:hidden` WITH THE BADGE KEPT FOR PRINT: a
                        printed picking sheet must state the place as TEXT, not render a
                        dropdown box (the same rule as the guest folds' `hidden
@@ -757,37 +1058,159 @@ function setGroupBy(key) {
                   >
                     Packeta
                   </Badge>
-                  <span v-if="!friend.packed && totalItemCount(friend) > 0" class="text-xs">· {{ checkedCount(friend) }}/{{ totalItemCount(friend) }} ✓</span>
-                </div>
-                <div v-if="friend.packeta_address" class="text-sm text-muted-foreground mt-1">
-                  📦 {{ friend.packeta_address }}
                 </div>
               </div>
-              <!-- No `orders` row ⇒ nowhere to store a whole-order packed flag, so
-                   no button. Such a host's packing record is the per-bag
-                   checkboxes below. -->
-              <Button
-                v-if="friend.has_own_order !== false"
-                @click="togglePacked(friend)"
-                :variant="friend.packed ? 'default' : 'outline'"
-                :disabled="packingOrderId === friend.order_id || (!friend.packed && !allItemsChecked(friend))"
-                size="sm"
-                :class="[
-                  'print:hidden shrink-0',
-                  friend.packed ? 'bg-green-600 hover:bg-green-700' : ''
-                ]"
+
+              <!-- Platba -->
+              <div
+                class="flex items-center gap-2 flex-wrap shrink-0 text-sm text-muted-foreground"
+                :data-testid="`bag-pay-${friend.id}`"
               >
-                {{ packingOrderId === friend.order_id ? '...' : (friend.packed ? 'Zabalené' : 'Zabaliť') }}
-              </Button>
+                <BalanceBadge :balance="friend.balance || 0" />
+                <!-- A red „Nezapl." on a synthetic host's 0 EUR non-order would be a
+                     lie — the shipped rule, kept. -->
+                <template v-if="friend.has_own_order !== false">
+                  <Badge v-if="friend.paid" variant="default" class="bg-green-600">Zaplat.</Badge>
+                  <Badge v-else variant="destructive">Nezapl.</Badge>
+                  <span>{{ formatPrice(friend.total) }}</span>
+                </template>
+              </div>
+
+              <!-- Krok 1 „Zabalené" -->
+              <div class="flex flex-col gap-1 shrink-0">
+                <span class="text-[11px] uppercase tracking-wide text-muted-foreground print:hidden">Krok 1</span>
+                <!-- No `orders` row ⇒ nowhere to store a whole-order packed flag, so
+                     no button. Such a host's packing record is the per-bag checkboxes
+                     below, and their Krok 1 is the DERIVED stage, read-only. -->
+                <Button
+                  v-if="friend.has_own_order !== false"
+                  @click="togglePacked(friend)"
+                  :variant="friend.packed ? 'default' : 'outline'"
+                  :disabled="packingOrderId === friend.order_id || isHandedOver(friend) || (!friend.packed && !allItemsChecked(friend))"
+                  :title="isHandedOver(friend) ? 'Najprv zrušte odovzdanie' : ''"
+                  size="sm"
+                  :data-testid="`packed-toggle-${friend.id}`"
+                  :class="[
+                    'print:hidden shrink-0',
+                    friend.packed ? 'bg-green-600 hover:bg-green-700' : ''
+                  ]"
+                >
+                  {{ packingOrderId === friend.order_id ? '...' : (friend.packed ? 'Zabalené' : 'Zabaliť') }}
+                </Button>
+                <label v-else class="inline-flex items-center gap-1.5 text-sm text-muted-foreground print:hidden">
+                  <input
+                    type="checkbox"
+                    disabled
+                    :checked="(friend.stage || 'to_pack') !== 'to_pack'"
+                    :data-testid="`packed-mirror-${friend.id}`"
+                    title="Zabalené sa označuje na jednotlivých vreckách"
+                    class="w-4 h-4 accent-green-600"
+                  />
+                  Zabalené
+                </label>
+              </div>
+
+              <!-- Krok 2 „Odovzdané" -->
+              <div class="flex flex-col gap-1 shrink-0 print:hidden">
+                <span class="text-[11px] uppercase tracking-wide text-muted-foreground">Krok 2</span>
+                <label
+                  class="inline-flex items-center gap-1.5 text-sm"
+                  :class="canHandOver(friend) ? '' : 'opacity-40'"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="isHandedOver(friend)"
+                    :disabled="!canHandOver(friend)"
+                    :title="handOverTitle(friend)"
+                    :aria-busy="isPartyPending(friend)"
+                    :data-testid="`handover-toggle-${friend.id}`"
+                    @change="toggleHandover(friend, $event)"
+                    class="w-4 h-4 accent-green-600"
+                  />
+                  Odovzdané
+                </label>
+              </div>
             </div>
 
-            <template v-if="!friend.packed">
-              <div v-if="totalItemCount(friend) === 0" class="text-muted-foreground italic">
-                Žiadne položky
+            <!-- The row's own refusal, on the row that refused. -->
+            <div
+              v-if="rowError(friend)"
+              class="mt-2 text-sm text-destructive print:hidden"
+              :data-testid="`bag-row-error-${friend.id}`"
+            >
+              {{ rowError(friend) }}
+            </div>
+
+            <!-- ── nested `via_host` guest rows — READ-ONLY MIRRORS ────────
+                 PO decision 2026-09-19: the API permits a per-guest correction
+                 (§UC-DP-005), the board does not offer one. Their bag travels
+                 inside the host's, so both steps are inherited state, never a
+                 control: no button, and every checkbox `disabled`.
+                 ⚠ Module-20 seam: a guest with its OWN `packeta_address` will not
+                 arrive here at all — GP-T6 emits it as its own party, which the
+                 row block above renders with no new branch. -->
+            <div v-if="guestCount(friend) > 0" class="mt-2 pl-2 border-l-2 border-violet-200 flex flex-col gap-1">
+              <div
+                v-for="guest in friend.guest_orders"
+                :key="`row-${guest.id}`"
+                :data-testid="`guest-row-${guest.id}`"
+                class="flex items-center gap-x-2.5 gap-y-1 flex-wrap text-sm"
+              >
+                <span class="font-medium min-w-0" style="overflow-wrap: anywhere">{{ guest.guest_name }}</span>
+                <Badge variant="outline" class="text-xs border-violet-400 text-violet-700 bg-violet-50">hosť</Badge>
+                <span class="text-xs text-muted-foreground">
+                  v balíku hostiteľa · {{ (guest.items || []).length }} pol.
+                </span>
+                <Badge
+                  v-if="guest.paid"
+                  variant="outline"
+                  class="text-xs border-green-400 text-green-700 bg-green-50"
+                >
+                  Zaplat.
+                </Badge>
+                <Badge v-else variant="outline" class="text-xs border-amber-400 text-amber-700 bg-amber-50">
+                  Nezapl.
+                </Badge>
+                <label class="inline-flex items-center gap-1 text-xs text-muted-foreground print:hidden">
+                  <input
+                    type="checkbox"
+                    disabled
+                    :checked="(guest.stage || 'to_pack') !== 'to_pack'"
+                    :data-testid="`packed-mirror-guest-${guest.id}`"
+                    title="Zabalené sa označuje na jednotlivých vreckách"
+                    class="w-3.5 h-3.5 accent-green-600"
+                  />
+                  Zabalené
+                </label>
+                <label class="inline-flex items-center gap-1 text-xs text-muted-foreground print:hidden">
+                  <input
+                    type="checkbox"
+                    disabled
+                    :checked="!!guest.handed_over_at"
+                    :data-testid="`handover-toggle-guest-${guest.id}`"
+                    title="Odovzdáva sa spolu s hostiteľom"
+                    class="w-3.5 h-3.5 accent-green-600"
+                  />
+                  Odovzdané
+                </label>
               </div>
+            </div>
+
+            <div v-if="!friend.packed && totalItemCount(friend) === 0" class="text-muted-foreground italic mt-3">
+              Žiadne položky
+            </div>
+            <!-- ── the expandable body: the SHIPPED card body, verbatim ─────
+                 Collapsed is `hidden print:block`, never a `v-if`: every row prints
+                 expanded (CLAUDE.md §Frontend, §UC-DP-011 print rules). -->
+            <div
+              v-if="hasRowBody(friend)"
+              :data-testid="`bag-row-body-${friend.id}`"
+              class="mt-3"
+              :class="isRowExpanded(friend) ? '' : 'hidden print:block'"
+            >
               <!-- One block per group: the host's own items, then one per guest, so
                    the bags can be pre-separated during packing (§UC-GSO-011). -->
-              <div v-else class="flex flex-col gap-3">
+              <div class="flex flex-col gap-3">
                 <div v-for="group in itemGroups(friend)" :key="group.key" class="flex flex-col gap-1.5">
                   <!-- The whole guest header is the collapse control: on a phone,
                        held in one hand over a pile of bags, a 16px chevron is not a
@@ -861,6 +1284,7 @@ function setGroupBy(key) {
                     :data-owner="group.kind"
                     @click="toggleItem(friend, group, item)"
                     :aria-busy="isItemPending(group.kind, item)"
+                    :title="itemLocked(friend, group) ? 'Najprv zrušte odovzdanie' : ''"
                     class="flex items-center gap-2.5 border rounded-lg px-3 py-2.5 cursor-pointer transition-all select-none print:border-gray-300"
                     :class="[
                       isItemChecked(item)
@@ -869,9 +1293,14 @@ function setGroupBy(key) {
                       isItemPending(group.kind, item) ? 'animate-pulse ring-2 ring-primary/40 print:ring-0 print:animate-none' : ''
                     ]"
                   >
+                    <!-- ⚠ `disabled` on a bag that has already left (§UC-DP-007).
+                         The class list above is untouched on purpose: `item-packed
+                         .spec.js` counts these rows as `div.cursor-pointer`, and the
+                         handler refuses the tap anyway. -->
                     <input
                       type="checkbox"
                       :checked="isItemChecked(item)"
+                      :disabled="itemLocked(friend, group)"
                       class="w-5 h-5 accent-green-500 shrink-0 pointer-events-none print:hidden"
                     />
                     <div class="flex-1 min-w-0" :class="isItemChecked(item) ? 'line-through' : ''">
@@ -917,7 +1346,7 @@ function setGroupBy(key) {
                   </div>
                 </div>
               </div>
-            </template>
+            </div>
 
             <!-- Print-only table fallback. The "Pre" column names whose bag each
                  line goes into — a printed sheet is what the bags are separated
@@ -953,6 +1382,22 @@ function setGroupBy(key) {
     </main>
   </div>
 </template>
+
+<style scoped>
+/* ⚠ NOT Tailwind's `cursor-pointer`, and that is the whole point. The board's
+   ITEM rows are located as `div.cursor-pointer` by two shipped specs
+   (`item-packed.spec.js` counts them, `guest-distribution.spec.js` clicks them),
+   so a row's own expand affordance must not join that family — a second `div
+   .cursor-pointer` inside a party would change a count nobody expects to move.
+   Same rule as the `div.p-4` note in the template. */
+.row-expand {
+  cursor: pointer;
+}
+/* ⚠ `select-none` rides ALONGSIDE it in the template (Tailwind's, the same class
+   the item rows carry): without it, clicking a name to expand the row drags a
+   text selection across the cell. It is bound with `.row-expand`, so a row with
+   nothing to expand keeps its name selectable. */
+</style>
 
 <style>
 @media print {

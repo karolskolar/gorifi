@@ -14,6 +14,22 @@ export function colleaguesLabel(count) {
   return `${n} kolegov`
 }
 
+// 1 hosť / 2-4 hostia / 5+ hostí — the nested-guest count on a distribution board
+// row („+2 hostia", 16 §UC-DP-011). Same three-branch shape as `colleaguesLabel`
+// and DELIBERATELY not the same words: „kolega" is what a HOST calls the people
+// ordering through their link, „hosť" is what the ADMIN's board calls the bags
+// travelling inside a host's parcel. One home each, so neither screen drifts into
+// the other's vocabulary.
+//
+// ⚠ The „+" is the CALLER's — the badge reads „+2 hostia" but the same phrase is
+// wanted without a sign wherever it is not a delta.
+export function guestsLabel(count) {
+  const n = Number(count) || 0
+  if (n === 1) return '1 hosť'
+  if (n >= 2 && n <= 4) return `${n} hostia`
+  return `${n} hostí`
+}
+
 // 1 objednávku / 2-4 objednávky / 5+ objednávok — the ACCUSATIVE case, and the case
 // is the point. The one sentence that prints this puts it after "máte"
 // ("Cez tento odkaz už máte 2 objednávky od kolegov" — GuestShareDialog's
