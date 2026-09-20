@@ -307,7 +307,9 @@ CSS is part of the handoff).
 | 1 | Aktuálna ponuka | open: **„Otvorené do {fmtDate(closes_at)}“** (omit „do …“ when `closes_at` null ⇒ „Objednávky sú otvorené“) + **„ · v košíku {fmtEur(cartTotal)}“** when the landing cart total > 0; closed/locked: **„Objednávky sú zatvorené“** | always | `router.push('/')` |
 | 2 | Moje objednávky | **„{n} objednávky · naposledy {cycleName}“** via `ordersAccusativeLabel(n)` (`lib/plural.js`) where n = rounds with `hasOrder`; n = 0 ⇒ **„Zatiaľ žiadne“** | always | `/moje-objednavky` |
 | 3 | Zostatok a platby | trailing badge: `span.badge.danger` `{fmtEur(balance)}` when `balance < -0.01`, else `span.badge.ok` `{fmtEur(balance)}`; while loading no badge | always | `/zostatok` |
-| 4 | Zdieľať s kolegami | **„{colleaguesLabel(count)} · {kg} kg cez váš odkaz“** (03 UC-FL-007 semantics: `totals.count` excludes cancelled; kg with trailing zeros stripped; count 0 ⇒ **„Pošlite odkaz kolegom“**) | `state === 'open'` only | opens `GuestShareDialog` (UC-PI-011) |
+| 4 | Zdieľať s kolegami | **„{colleaguesLabel(count)} · {kg} kg cez váš odkaz“** (03 UC-FL-007 semantics: `totals.count` excludes cancelled; kg via `lib/kg.js kgLabel()`, the one home since FUP-T24 — ⚠ it returns the whole
+  „X kg" string, so the template above reads „{colleaguesLabel(count)} · {kgLabel(g)} cez váš odkaz",
+  NOT „… {kg} kg" (that would render „0.25 kg kg"); count 0 ⇒ **„Pošlite odkaz kolegom“**) | `state === 'open'` only | opens `GuestShareDialog` (UC-PI-011) |
 | 5 | Pozvať priateľa | **„Váš pozývací odkaz“** | always | `openInviteModal()` |
 | 6 | Ako to funguje | — | always | `/ako-to-funguje` |
 | 7 | Profil | **„Meno, telefón, Packeta, heslo“** | always | `openProfileModal()` |

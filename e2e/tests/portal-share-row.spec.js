@@ -231,7 +231,9 @@ test.describe('Share row — the two count states (UC-FL-007)', () => {
 
   test('the count is declined, and trailing zeros are stripped off the kilos', async ({ page }) => {
     // 1 → "1 kolega" with 0.25 kg; 6 → "6 kolegov" with a whole 1.5 kg. The second
-    // is the `formatKilos`/`Math.round(g/10)/100` split: this row prints "1.5 kg",
+    // is the `formatKilos` / `lib/kg.js kgLabel` split (FUP-T24 gave the kg rule
+    // its one home; nothing "strips" — `Number#toString` never emits the zero, and
+    // only because `kgLabel` returns the whole string): this row prints "1.5 kg",
     // not the "1.50 kg" the "Objednané ·" badge above it would.
     await openPortal(page, { counts: { [IDS.openA]: 1, [IDS.openB]: 6 } })
     await expect(countFor(page, NAMES.openA)).toHaveText('1 kolega · 0.25 kg')

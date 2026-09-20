@@ -20,6 +20,9 @@ import ProductImageModal from '@/components/ProductImageModal.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { snapTab } from '@/lib/snap-tab'
 import { itemsLabel } from '@/lib/plural'
+// ⚠ Aliased to `kg` so the two `{{ kg(...) }}` bindings in the stock bar keep
+// their shipped spelling — the rule moved, the template did not (FUP-T24).
+import { kgLabel as kg } from '@/lib/kg'
 import { fmtEur } from '@/lib/money'
 import CartLineList from '@/components/CartLineList.vue'
 import CatScrollArrow from '@/components/CatScrollArrow.vue'
@@ -451,12 +454,8 @@ function coffeeVariants(product) {
 }
 
 // Grams → the prototype's kg copy (04 §UC-FO-006, resolved conflict #6: repo gram
-// MATH, kg DISPLAY). Up to 2 decimals, trailing zeros stripped, dot decimal:
-// 250 → "0.25 kg", 1000 → "1 kg", 1250 → "1.25 kg". `Number#toString` gives the
-// stripping and the dot for free; `toFixed(2)` would render "1.00 kg".
-function kg(grams) {
-  return `${Math.round((grams || 0) / 10) / 100} kg`
-}
+// MATH, kg DISPLAY) — `lib/kg.js kgLabel`, imported as `kg` at the top of this
+// block. It used to be declared here, and in three other files (FUP-T24).
 
 // The bar's fill. Deliberately derived from `getRemainingGrams` — i.e. it INCLUDES
 // the friend's own uncommitted cart, exactly as the shipped bar did — so emptying

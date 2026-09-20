@@ -212,7 +212,8 @@ the three `pickup_location_*`, `delivery_fee`, `packeta_address`, `balance`, `it
 - `kg` — grams of every own item via `variantToKg()` (`helpers/analytics.js`, the only weight
   authority; `unit` variants are zero-gram) summed, plus every live guest item's — the guest
   half merged in JS (never a JOIN onto the friend row; the GSO-T6/T8 rule), rounded for
-  display by the client with `Math.round(g/10)/100`.
+  display by the client with `lib/kg.js kgLabel()` — the ONE home for that expression since
+  FUP-T24 (2026-09-20); do not restate it.
 
 **Additions per GUEST sub-order row (inside `guest_orders[]`):** `handed_over_at`,
 `stage` (`'handed'` if its own `handed_over_at`; else `'packed'` if it has ≥1 item and all
@@ -545,7 +546,8 @@ prototype as drawn.
    icon (truck / pin / hand), `target_label`, big count `count`, a two-tone progress bar
    (handed share, then packed-not-handed share — `handed_count / count` and
    `(packed_count − handed_count) / count`), line „{packed}/{n} zabal. · {handed}/{n} odovzd. ·
-   {kg} kg“ (kg via `Math.round(g/10)/100`, trailing zeros stripped). **Click** = set group-by
+   {kg} kg“ (kg via `lib/kg.js kgLabel()`, the one home since FUP-T24; nothing strips trailing
+   zeros — `Number#toString` never emits them). **Click** = set group-by
    to „Podľa doručenia“ AND focus that one group (card gets the `on` state); click again =
    unfocus. Cards with `count = 0` render (the plan shows empty points).
 4. **Toolbar:** segmented **group-by** „Podľa doručenia“ (default) / „Podľa stavu“ / „Podľa

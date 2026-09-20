@@ -13,6 +13,7 @@ import BalanceBadge from '@/components/BalanceBadge.vue'
 import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
 import { bagsLabel, packedAdjective, handedAdjective, guestsLabel, bagsMoveVerb } from '../lib/plural'
 import { planLineText, allPartiesHandedOver } from '../lib/distribution-plan'
+import { kgLabel } from '../lib/kg'
 
 const route = useRoute()
 const router = useRouter()
@@ -571,13 +572,10 @@ function planIcon(entry) {
   return '🤝'
 }
 
-// The shipped kg rule, `Math.round(g/10)/100` (FriendOrder.vue,
-// GuestProductGrid.vue, FriendPortalSession.vue print the same expression).
-// JavaScript's own number→string drops the trailing zeros, which is the "trailing
-// zeros stripped" half of it — 1500 g reads „1.5 kg", 1000 g reads „1 kg".
-function kgLabel(grams) {
-  return `${Math.round((grams || 0) / 10) / 100} kg`
-}
+// The kg rule now has ONE home — `lib/kg.js`, imported above. DP-T5 added this
+// fourth hand-written copy deliberately rather than refactor three shipped views
+// under a board row; FUP-T24 closed it. Nothing here declines or formats kg any
+// more.
 
 // Click = group by delivery AND show only this target; click again = release.
 function focusPlan(entry) {
@@ -694,8 +692,8 @@ function handedExceptCount(friend) {
 }
 
 // „{items} pol. · {kg} kg" — the bag's own content line. `friend.kg` is the
-// SERVER's (grams, guests folded in, DP-T2); `kgLabel` is the one copy of the
-// display rule already in this file.
+// SERVER's (grams, guests folded in, DP-T2); `kgLabel` is `lib/kg.js`, the ONE
+// home for the display rule (FUP-T24).
 function contentLine(friend) {
   return `${totalItemCount(friend)} pol. · ${kgLabel(friend.kg || 0)}`
 }

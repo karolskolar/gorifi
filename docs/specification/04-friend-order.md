@@ -408,7 +408,9 @@ ceiling — shipped math, prototype look.
   the friend's own uncommitted cart, exactly as today.
 - **Display is kg** (prototype copy): `kg(g) = (g/1000)` formatted with up to 2
   decimals, trailing zeros stripped, dot decimal, suffix `" kg"` — `250 → "0.25 kg"`,
-  `1000 → "1 kg"`, `1250 → "1.25 kg"`. Fill is always accent magenta; the sold-out
+  `1000 → "1 kg"`, `1250 → "1.25 kg"`. ⚠ ONE home since FUP-T24:
+  `frontend/src/lib/kg.js kgLabel(grams)`, grams in and the whole „X kg" string out.
+  Import it; never restate the expression. Fill is always accent magenta; the sold-out
   signal is the **"Vypredané"** label in danger red (repo state, kept), not a bar color.
 - The stepper ceiling stays in the view (02 UC-DS-008 forbids a max in the primitive):
   the `+` path runs the shipped `canIncrement(productId, variant)` — an increment that

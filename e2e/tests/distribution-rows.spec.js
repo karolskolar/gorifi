@@ -222,7 +222,11 @@ test.afterAll(async () => { await ctx?.dispose() })
 // least one of them:
 //
 //   H — friend WITH an own order + 2 nested guests, at pickup point L
-//       (own 1×250 g, guest A 1×250 g, guest B 2×250 g ⇒ 3 lines, 1 kg)
+//       (own 1×250 g, guest A 1×250 g, guest B 3×250 g ⇒ 3 lines, 1.25 kg)
+//       ⚠ guest B carries THREE bags, not two, so the party total is a FRACTIONAL
+//       kilo. A whole kilo is a fixed point of a scale-preserving mutation in
+//       `lib/kg.js` (1000 → 1000), so the kg assertion below could not fail for the
+//       reason it claims — FUP-T24 review, 2026-09-20. Keep this fraction.
 //   P — friend with a PACKETA address and a phone
 //   S — SYNTHETIC host: no own order, 2 guest bags, at pickup point L
 // ─────────────────────────────────────────────────────────────────────────────
@@ -245,7 +249,7 @@ test.describe('DP-T6 · 16 §UC-DP-011 — the board rows', () => {
     fx.guestAName = `Alica ${uniq}`
     fx.guestBName = `Bohus ${uniq}`
     fx.guestA = await submitGuest(hLink.token, line('250g', 1), { guest_name: fx.guestAName, guest_phone: '0901 111 222' })
-    fx.guestB = await submitGuest(hLink.token, line('250g', 2), { guest_name: fx.guestBName, guest_phone: '0901 111 333' })
+    fx.guestB = await submitGuest(hLink.token, line('250g', 3), { guest_name: fx.guestBName, guest_phone: '0901 111 333' })
 
     fx.p = await makeFriend('Packeta')
     fx.pOrder = await ownOrder(fx.p, fx.cycle.id, line('250g', 1), {
@@ -278,7 +282,7 @@ test.describe('DP-T6 · 16 §UC-DP-011 — the board rows', () => {
     const h = partyOf(body, fx.h.id)
     expect(h.stage).toBe('to_pack')
     expect(h.guest_orders).toHaveLength(2)
-    expect(h.kg, 'own 250 + 250 + 2×250').toBe(1000)
+    expect(h.kg, 'own 250 + 250 + 3×250').toBe(1250)
     expect(partyOf(body, fx.p.id).delivery).toMatchObject({ type: 'packeta', target_key: 'packeta' })
     const s = partyOf(body, fx.s.id)
     expect(s.has_own_order).toBe(false)
@@ -299,7 +303,7 @@ test.describe('DP-T6 · 16 §UC-DP-011 — the board rows', () => {
     await expect(row.getByTestId(`bag-who-${fx.h.id}`)).toContainText('+2 hostia')
 
     // Doručenie / obsah — a pickup party reads „{items} pol. · {kg} kg".
-    await expect(row.getByTestId(`bag-delivery-${fx.h.id}`)).toContainText('3 pol. · 1 kg')
+    await expect(row.getByTestId(`bag-delivery-${fx.h.id}`)).toContainText('3 pol. · 1.25 kg')
 
     // Platba — the shipped paid semantics, in the compact column form.
     await expect(row.getByTestId(`bag-pay-${fx.h.id}`)).toContainText('Nezapl.')

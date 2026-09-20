@@ -194,10 +194,12 @@ precisely so a later row can compose them with a count. DP-T8 did the same for t
 `CycleDetail.vue` and `Distribution.vue` render the same header (and module 17's stage
 controls join it next).
 
-The counter-example is still open: **FUP-T24** — the kg display rule `Math.round(g/10)/100`
-has FOUR copies and CLAUDE.md states it **without naming a home**. DP-T5 added the fourth
+~~The counter-example is still open: **FUP-T24** — the kg display rule `Math.round(g/10)/100`
+has FOUR copies and CLAUDE.md states it **without naming a home**.~~ — **CLOSED by FUP-T24,
+2026-09-20.** The rule now lives in `frontend/src/lib/kg.js kgLabel`, which all four surfaces
+import; see `docs/learnings/03-friend-portal-restyle.md` §FUP-T24. DP-T5 added the fourth copy
 deliberately, with a pointer, rather than refactor three shipped files under a board row: the
-right call there, the wrong steady state.
+right call there, the wrong steady state — and the steady state is what this row corrected.
 
 ### 11. Harness traps this module paid for
 

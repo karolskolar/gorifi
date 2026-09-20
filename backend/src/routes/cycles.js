@@ -72,7 +72,8 @@ function matchesRoasteryFilter(roastery, roasteryFilter) {
 // length). Doing it here makes the multiplication impossible by construction.
 //
 // ⚠ The field is called `kg` and it carries GRAMS — §UC-DP-003's wording, and the
-// unit the client's `Math.round(g/10)/100` display rule expects. `variantToKg()`
+// unit the client's kg display rule expects (`frontend/src/lib/kg.js kgLabel`,
+// the one home for it since FUP-T24 — do not re-state the expression). `variantToKg()`
 // (helpers/analytics.js) stays the one weight authority; the ×1000 is rounded per
 // LINE so the binary dust of 0.096 × 3 × 1000 never reaches the payload. A variant
 // the map does not know — a bakery `unit` line, an unknown string, or a prototype

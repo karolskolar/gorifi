@@ -277,6 +277,29 @@ test.describe('RD-GX-1 · the shared neo grid (§UC-GX-002)', () => {
     await expect(boxes.nth(1).locator('.vprice')).toHaveText('37.50 EUR')
   })
 
+  // ⚠ FUP-T24 — THE GUEST GRID'S kg STRING WAS UNPINNED. The kg display rule now
+  // has one home (`frontend/src/lib/kg.js kgLabel`) with four surfaces importing
+  // it, and a mutation in it reddened the friend stock bar
+  // (`order-product-card.spec.js`), the portal share row
+  // (`portal-share-row.spec.js`) and the admin board (`distribution-*.spec.js`) —
+  // but NOT the public guest page, whose only `stock-label` assertion (the ceiling
+  // test below) pins the `Vypredané` branch, which never calls the formatter. The
+  // one surface with no account behind it was the one that could go wrong quietly.
+  test('the kg string on the guest grid: a 500 g limit reads „Zostáva 0.5 kg z 0.5 kg", one bag in „0.25 kg z 0.5 kg"', async ({ page }) => {
+    await gotoGuest(page)
+
+    const card = page.getByTestId(`product-${scarce.id}`)
+    const label = card.getByTestId('stock-label')
+
+    // Trailing zeros are never printed — 500 g is „0.5 kg", never „0.50 kg" —
+    // because the number goes straight into a template literal. Both halves of the
+    // string come from the same formatter (remaining, and the limit).
+    await expect(label).toHaveText('Zostáva 0.5 kg z 0.5 kg')
+
+    await card.getByTestId('inc-250g').click()
+    await expect(label).toHaveText('Zostáva 0.25 kg z 0.5 kg')
+  })
+
   test('⚠ the `+` at the stock ceiling is disabled AND inert — no press physics, no false "added"', async ({ page }) => {
     await gotoGuest(page)
 

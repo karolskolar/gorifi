@@ -5,6 +5,9 @@ import ProductImageModal from '@/components/ProductImageModal.vue'
 import { snapTab } from '@/lib/snap-tab'
 import CatScrollArrow from '@/components/CatScrollArrow.vue'
 import { fmtEur } from '@/lib/money'
+// ⚠ Aliased to `kg` so the two `{{ kg(...) }}` bindings in the stock bar keep
+// their shipped spelling — the rule moved, the template did not (FUP-T24).
+import { kgLabel as kg } from '@/lib/kg'
 import {
   COFFEE_VARIANTS,
   VARIANT_GRAMS,
@@ -170,12 +173,9 @@ function getRemainingGrams(productId) {
   return Math.max(0, avail.remaining_g - cartGramsForProduct(cart.value, productId))
 }
 
-// Grams → the prototype's kg copy, lifted from FriendOrder (04 §UC-FO-006,
-// resolved conflict #6: repo gram MATH, kg DISPLAY). Up to 2 decimals, trailing
-// zeros stripped, dot decimal.
-function kg(grams) {
-  return `${Math.round((grams || 0) / 10) / 100} kg`
-}
+// Grams → the prototype's kg copy (04 §UC-FO-006, resolved conflict #6: repo gram
+// MATH, kg DISPLAY) — this was "lifted from FriendOrder", i.e. the second of four
+// copies. Both now import `lib/kg.js kgLabel` (FUP-T24).
 
 // The bar's fill — derived from `getRemainingGrams`, i.e. it INCLUDES this cart's
 // uncommitted grams, exactly as the shipped bar did, so emptying a variant walks

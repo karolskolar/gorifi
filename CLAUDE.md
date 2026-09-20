@@ -210,7 +210,11 @@ append the full write-up to the matching learnings file and add at most one line
   sweep that reddens on data is repaired by marking the data render, never by narrowing the regex (FUP-T22).
 - Never `maximum-scale=1` / `user-scalable=no`; iOS zoom is handled by A12 (16px inputs under `pointer: coarse`).
 - Text: `min-w-0` is not `overflow-wrap` (set `overflow-wrap:anywhere` on the container); `€` on item lines,
-  `EUR` on totals; kg display `Math.round(g/10)/100` with trailing zeros stripped; ordinary space before `€`.
+  `EUR` on totals; ordinary space before `€`. **kg display = `lib/kg.js kgLabel(grams)` — ONE home, returns the
+  whole „X kg" string** (`FriendOrder`, `GuestProductGrid`, `FriendPortalSession`, `Distribution` all import it;
+  FUP-T24). Nothing strips trailing zeros: `Number#toString` never emits them, and that holds only while the
+  number goes straight into a template — `toFixed(2)` at a call site would print „1.00 kg" on that screen alone.
+  `CycleDetail`'s „max {limit}" badge is a DIFFERENT rule (unit switches at 1000 g, no rounding) — do not fold it in.
 - Preflight `svg{display:block}` breaks inline icon+text — fix at the call site with `inline-flex`.
 - Guest surface (`GuestOrder.vue`, `GuestOrderStatus.vue`) deliberately lags the friend skin in places; it is
   not the reference when restyling.

@@ -147,6 +147,7 @@ Full suite after this work: **367 passed / 3 skipped** (+14, zero pre-existing s
 - ⚠ **The gram math is untouched (04 resolved conflict #6).** `getRemainingGrams` / `canIncrement` /
   `variantGrams` / `loadAvailability(excludeFriendId)` are verbatim; only the DISPLAY became kg.
   `kg(g) = Math.round(g/10)/100 + ' kg'` — up to 2 decimals, trailing zeros stripped, dot decimal
+  (historical: the rule got ONE home in `lib/kg.js kgLabel` in FUP-T24, 2026-09-20 — §FUP-T24 below)
   (250 → "0.25 kg", 1000 → "1 kg", 1250 → "1.25 kg"). A `toFixed(2)` "tidy-up" would render "1.00 kg".
   The fill includes the friend's **own uncommitted cart**, so the bar moves before anything is saved.
   Fill is always accent magenta; the sold-out signal is the danger-red **"Vypredané"** LABEL, never a
@@ -365,7 +366,8 @@ of a redesigned card / cart bar.
   sub-orders count for **neither** figure (the same status predicate every backend guest
   aggregate applies); pinned with a cancelled 1 kg bag that must not reach the screen.
 - ⚠ **Trailing zeros are STRIPPED here ("4 kg", not "4.00 kg")** — the RD-FO-2
-  `Math.round(g/10)/100` rule, deliberately NOT `formatKilos`, which the "Objednané ·"
+  `Math.round(g/10)/100` rule (one home since FUP-T24: `lib/kg.js kgLabel`),
+  deliberately NOT `formatKilos`, which the "Objednané ·"
   badge in the same card still uses. The two are fed different units (kg from the API vs
   grams summed off items) and the design canon for this row prints "4 kg".
 - ⚠ **An empty quantity drops the "· " separator rather than printing "0 kg"**, which
@@ -820,3 +822,103 @@ Verified: 64 passed across `portal-cycles`, `portal-fidelity`, `portal-share-row
   row whose leading is a multiplier moves that pin too.
 
 
+
+### FUP-T24 — the kg display rule gets one home, and "trailing zeros stripped" turns out to be nobody's code (2026-09-20)
+
+`Math.round(g/10)/100` had **four hand-written copies and no home**: `FriendOrder.vue:458`
+(the stock bar's „Zostáva X z Y"), `GuestProductGrid.vue:177` (the same bar on the public
+guest grid and the guest edit page), `FriendPortalSession.vue:974` (the cycle card's
+„N kolegovia · X kg") and `Distribution.vue:579` (the board's plan lines and per-party
+„{n} pol. · X kg"). CLAUDE.md stated the rule **without an address** — the shape corrected
+three times this week (`helpers/payment.js`, `helpers/delivery.js`, `e2e/helpers/copy-sweep.js`).
+DP-T5 added the fourth copy **deliberately, with a pointer**, rather than refactor three
+shipped views under a board row: the right call for that row, the wrong steady state.
+One home now: **`frontend/src/lib/kg.js kgLabel(grams)`**, beside `lib/plural.js`.
+
+- ⚠ **The four were not identical, and the difference was the null guard, not the maths.**
+  Three read `(grams || 0)`; `FriendPortalSession` read `summary.grams` bare, because its
+  caller returns `''` two lines earlier (`if (!summary.grams) return ''` — „ · 0 kg" beside
+  a live colleague count reads as a failure, not as "no weight yet"). The guard stayed at
+  that call site — it is that row's **copy** decision, not part of the rule — and the one
+  home took the fail-closed `|| 0` the three grids always had, so `null`/`undefined`/`NaN`
+  render „0 kg" and never „NaN kg" beside a price.
+- ⚠⚠ **"With trailing zeros stripped" is TRUE and NOTHING STRIPS ANYTHING.** No code in any
+  of the four removed a zero. It is `Number#toString` emitting the shortest representation
+  that round-trips, so a two-decimal value can never come out „1.50" or „1.00". Checked
+  exhaustively over 0–200000 g: no trailing zero, no float artifact (the rounded numerator
+  is an integer, so `/100` is exact to the shortest repr). **The property survives only
+  while the number goes straight into a template literal** — hand the raw number to a call
+  site and one `toFixed(2)` prints „1.00 kg" on that screen alone. That is why `kgLabel`
+  returns the **whole string, unit included**, rather than a number: the invariant is
+  enforced by the signature instead of by four authors remembering it. CLAUDE.md's bullet
+  now says this, with the address.
+- ⚠ **The fifth surface is a DIFFERENT rule and was left alone.** `CycleDetail.vue:1744`'s
+  catalog badge („max {limit}") switches **unit at a threshold**: `>= 1000` divides by 1000
+  with **no rounding**, below it prints raw grams with **no space** („500g"). 1234 g reads
+  „1.234 kg" there and would read „1.23 kg" here — different output, different audience (an
+  admin reading back the limit they typed), different contract. Folding it in would silently
+  change an admin screen. Two rules, two homes — the mistake avoided twice already this week.
+- ⚠ **THE GUEST GRID WAS UNPINNED, and that is the finding, not a detail.** Pinning the four
+  surfaces first showed `order-product-card.spec.js` (friend bar), `portal-share-row.spec.js`
+  (share row) and `distribution-board`/`distribution-rows.spec.js` (board) each assert the
+  rendered kg string — while the **public guest page**, the one surface with no account
+  behind it, had only `guest-order-shell.spec.js`'s `stock-label` → `'Vypredané'`, i.e. the
+  branch that never calls the formatter. A shared formatter with three of four surfaces
+  pinned is a formatter that can go wrong quietly on the surface strangers see. One test
+  added there („Zostáva 0.5 kg z 0.5 kg" → „0.25 kg z 0.5 kg"), which also pins the
+  no-trailing-zero case on that grid.
+- ⚠ **Mutation-proven in both mutations, and the first one taught something.**
+  `/10)/100` → `/100)/10` reddened order-product-card (×3), portal-share-row (×3),
+  distribution-board (`plan-line-packeta` „0.25 kg" → „0.3 kg") and the new guest test —
+  but **distribution-rows:302 passed**, because its fixture is a whole kilo and 1000 g is a
+  **fixed point** of that particular mutation („1 kg" either way). A second mutation
+  (`/5)/100`) reddened it („3 pol. · 2 kg"). A kg assertion written only on a round kilo is
+  half a pin; the interesting values are 250 / 1250 / 1500.
+- Gate: `node --check` + `vite build` clean; targeted **131 passed / 0 failed / 0 skipped,
+  EXIT 0** (`order-product-card`, `portal-share-row`, `distribution-board`,
+  `distribution-rows`, `guest-order`, `portal-fidelity`, `order-cartbar`,
+  `guest-order-shell`) plus `guest-status` 20/0/0 for the grid's second consumer.
+  ⚠ `portal-fidelity.spec.js` and `order-cartbar.spec.js` were named in the row as kg
+  renderers — **neither contains a single kg assertion** (checked, not assumed); the real
+  pins are the four files above.
+
+**Orchestrator verification and review (same day).** Independent gate on a fresh template
+copy, all five limiter maxima at 100000: **155 passed / 0 failed / 0 skipped, EXIT 0** across
+nine specs (the four surfaces' pins plus `portal-cycles`, `colleagues-panel`,
+`guest-status-shell`, `guest-status`). The mutation claim was re-proven from scratch rather
+than taken from the report: `/5)/100` in the one home reddens **all four surfaces** — 12
+failures across 5 files. Review verdict **approve**, four minors, all acted on:
+
+- ⚠⚠ **A spec line was about to order copy #5 — at 1000× the wrong scale.** The
+  expression-grep that found `08-` and `16-distribution-pipeline.md` **misses the specs that
+  state the rule in WORDS**. Three did: `13-coffee-passport.md:568`, `18-portal-information-
+  architecture.md:310`, `04-friend-order.md:410`. 13's line tells a future implementer to
+  format `total_kg` "by the house kg rule … never `toFixed(2)`" — and `total_kg` is in
+  **KILOGRAMS** (`helpers/analytics.js variantToKg()` returns `0.250` for a 250 g bag) while
+  `kgLabel` takes **GRAMS**, so the obedient reading prints a number 1000× too small. 18's
+  drawer row is spelled „… · {kg} kg", which with `kgLabel` renders „0.25 kg kg". All three
+  now carry the address **and** the unit warning. **The lesson is about the sweep, not the
+  specs: a rule can be restated without its expression, so grep the CLAIM as well as the code.**
+- **The half-pin is now closed, not just noted.** `distribution-rows.spec.js` was still the
+  only assertion on `Distribution.vue`'s `contentLine()`, and still on a whole kilo. Guest B
+  now orders 3×250 g, so the party reads **„3 pol. · 1.25 kg"**. Re-proven both ways: green
+  at 11/11 unmutated, and the scale-preserving `/100)/10` — the exact mutation it survived
+  before — now **reds it**. Sweep of every other kg assertion in the suite: `order-product-card`
+  (1.25/1/5/0.25), `portal-share-row` (0.75/0.25/1.5/3), `distribution-board` (0.25/1.5) and
+  the new `guest-order-shell` (0.5/0.25) all carry a non-integer value; no other assertion
+  shares the weakness.
+- **`CycleDetail`'s badge has its own pin** — `catalog-admin.spec.js:3493/:3503` asserts
+  „max 2 kg". So a later attempt to fold the fifth surface into `kgLabel` reddens a test
+  instead of silently changing an admin screen. Two rules, two homes, **both pinned** — which
+  is what makes "leave it alone" a decision rather than an omission.
+- **`FriendPortalSession.formatKilos()` (`toFixed(2)`, the „Objednané ·" badge) stays
+  home-less on purpose** — different contract, one copy, pinned by `portal-cycles.spec.js:479/:488`.
+  It now sits six lines from a `kgLabel` call with only a comment between them; that comment
+  is load-bearing.
+- **My own row text was false and is struck in the row.** The acceptance criteria I wrote
+  named `portal-fidelity`, `guest-order` and `order-cartbar` as kg renderers. **None of the
+  three asserts a kg label** — the first two contain no `kg` substring at all, and
+  `guest-order` has it only in prose and in `variant: '1kg'` API payloads. Second time this
+  session that a premise I wrote into a backlog row went unchecked against the code it named
+  (the first: "one door, not three" on the cancelled-after-hand-over seam, DP-T4). **A premise
+  in a backlog row is a claim, and it inherits none of the verification the row demands.**

@@ -60,6 +60,7 @@ import { loadGis } from '../lib/gis'
 import { fmtEur } from '@/lib/money'
 import { VARIANT_GRAMS } from '@/lib/guest-cart'
 import { colleaguesLabel } from '@/lib/plural'
+import { kgLabel } from '@/lib/kg'
 import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
@@ -971,7 +972,9 @@ function guestQuantityLabel(cycle) {
   if (!summary) return ''
   if (cycle.type === 'bakery') return summary.units > 0 ? `${summary.units} ks` : ''
   if (!summary.grams) return ''
-  return `${Math.round(summary.grams / 10) / 100} kg`
+  // The kg rule itself lives in `lib/kg.js` (FUP-T24). The zero/absent guard above
+  // stays HERE — it is this row's copy decision, not part of the rule.
+  return kgLabel(summary.grams)
 }
 
 // Guest share link straight from the cycle list, so the host does not have to
