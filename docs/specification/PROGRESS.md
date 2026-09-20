@@ -414,7 +414,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## 15. Cycle stages (17) — opens_at / closes_at / stage, timeline component
 
-- [ ] CS-T1  Schema `opens_at`/`closes_at`/`stage` on `order_cycles` (ALTERs placed AFTER the `_check_test` recreate block, schema.js ~177-201) + `helpers/cycle-stage.js` (`CYCLE_STAGES`, `LOCKED_STAGE_DEFAULT`, **`markCycleReady()` BODY replacing DP-T1's stub** — idempotent, forward-only, never touches `status`) + `POST/PATCH /cycles` contract (ISO dates, 400 `Neplatný dátum`/`dates_order`, stage 409 `not_locked`, lock ⇒ `ordered`, unlock ⇒ NULL) + payload publication on friend/public/guest/admin cycle blocks; `PATCH /api/cycles/1` joins `ADMIN_ENDPOINTS` — `17 §UC-CS-001,002,003,004` · model=heavy ⚠ PO O2: `expected_date` = DELIVERY expectation, `closes_at` = deadline — published side by side, unchanged `expected_date`; the cartbar/status-line switch is PI-T1/T3's. ⚠ DP-T3/T4 already call the stub inside their transactions, so the `cycle-stages.spec.js` seam section (hand-over ⇒ `ready`, idempotent, un-hand-over keeps `ready`, `transactions` unmoved) runs LIVE here — no self-skip needed; verify DP's rows echo `cycle_stage:'ready'`.
+- [x] CS-T1  Schema `opens_at`/`closes_at`/`stage` on `order_cycles` (ALTERs placed AFTER the `_check_test` recreate block, schema.js ~177-201) + `helpers/cycle-stage.js` (`CYCLE_STAGES`, `LOCKED_STAGE_DEFAULT`, **`markCycleReady()` BODY replacing DP-T1's stub** — idempotent, forward-only, never touches `status`) + `POST/PATCH /cycles` contract (ISO dates, 400 `Neplatný dátum`/`dates_order`, stage 409 `not_locked`, lock ⇒ `ordered`, unlock ⇒ NULL) + payload publication on friend/public/guest/admin cycle blocks; `PATCH /api/cycles/1` joins `ADMIN_ENDPOINTS` — `17 §UC-CS-001,002,003,004` · model=heavy ⚠ PO O2: `expected_date` = DELIVERY expectation, `closes_at` = deadline — published side by side, unchanged `expected_date`; the cartbar/status-line switch is PI-T1/T3's. ⚠ DP-T3/T4 already call the stub inside their transactions, so the `cycle-stages.spec.js` seam section (hand-over ⇒ `ready`, idempotent, un-hand-over keeps `ready`, `transactions` unmoved) runs LIVE here — no self-skip needed; verify DP's rows echo `cycle_stage:'ready'`.
 - [ ] CS-T2  `lib/cycle-stages.js` (STEPS ×6, `stageIndex`, `fmtDay`, `daysUntil`, `inWeeksText` „o n dní/týždne/týždňov“, `nextOpeningText` three branches, `openUntilText`, `currentCycleFor`) + `lib/plural.js daysLabel/weeksLabel` + `CycleTimeline.vue` ONE component, `vertical` + `compact` variants, scoped styles with token fallbacks, no `.app` dependency — `17 §UC-CS-005,006` ⚠ NO string containing kolo/cyklus anywhere (regex sweep, non-vacuous ≥6 labels); labels are PO staging-review drafts (O1); consumers: PI-T4 (dots + own caption row), PI-T5 (vertical), CS-T4 (guest status), GL-T5 (`nextOpeningText`).
 - [ ] CS-T3  CycleDetail admin controls: `type=date` fields Otvorenie/Uzávierka objednávok (save/clear, 400 snaps back), forward-only stage buttons „Káva dorazila“ / „Zabalené, rozvážame“ (PO O3), stage badge + read-only compact timeline in the header — `17 §UC-CS-007` ⚠ NO date fields in the dashboard create dialog (PO O5); `expected_date`/`plan_note` fields untouched here; shares the header with DP-T8's plan line.
 - [ ] CS-T4  Guest status page mounts the vertical timeline („Kde je vaša káva“ card, all SIX steps — PO O4; hidden in edit mode and on cancelled) + `readOnlyReason` copy retarget (drops „cykle“) + **module-17 closeout (full suite)** — `17 §UC-CS-008,009` ⚠ SANCTIONED: `guest-status-shell.spec.js:356` toHaveText retarget; `nonstring-body-shape.spec.js` gains the three fields; `api-security` += PATCH cycles (from CS-T1). The 3-step LINK-page explainer is GL-T4's.
@@ -471,6 +471,36 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## Log
 
+- 2026-09-20 · CS-T1 · (this commit) · no PR (project convention) · **The cycle stage model ships, and
+  the stub it replaces had recorded the WRONG contract.** `opens_at`/`closes_at`/`stage` on
+  `order_cycles` (CREATE + ALTER, the ALTERs placed AFTER the `_check_test` recreate block, which
+  rebuilds from a hard-coded column list and silently drops anything added before it);
+  `helpers/cycle-stage.js` gains `CYCLE_STAGES`, `LOCKED_STAGE_DEFAULT` and the real
+  `markCycleReady()`; the `POST`/`PATCH /cycles` contract; publication on four cycle payloads;
+  `PATCH /api/cycles/1` joins `ADMIN_ENDPOINTS`.
+  ⚠ **The DP-T1 stub's own header said „set ready only when `stage IN ('ordered','arrived')" — and
+  that was wrong.** `stage IS NULL` is in neither value, and §UC-CS-001 forbids a backfill, so the
+  predicate would have left every locked cycle in production stuck at NULL forever. §UC-CS-003's
+  `(stage IS NULL OR stage <> 'ready')` is what shipped. Struck in all its homes, including
+  `16-distribution-pipeline.md` §UC-DP-009 — the canonical supersession map, which review caught
+  still stating it in the present tense.
+  ⚠ **The helper's return and the published field are DIFFERENT SHAPES.** §UC-CS-003 gives
+  `{ changed: boolean }`; module 16 publishes `cycle_stage: <string|null>`. Shipped as
+  `{ changed, stage }` (additive, the „payloads GROW, never move" posture) with all three hand-over
+  routes reading `.stage`. Handing the object to `res.json` reds two files.
+  ⚠ **Re-locking a COMPLETED cycle walks the friend-facing timeline BACKWARDS** from step 5 to step
+  2, and unlocking one leaves a stale stage. Both measured, neither pinned, both invisible today
+  only because §UC-CS-005 consults `status` before `stage`. Recorded in `09-cycle-stages.md` §10 so
+  CS-T2 inherits the constraint; transition behaviour deliberately unchanged in this row.
+  ⚠ **Recorded, not fixed (pre-existing):** the `_check_test` block's `INSERT ... SELECT` names
+  `type` at schema.js:200 while `ADD COLUMN type` is at :628, inside a `catch` with no inner `try` —
+  a database old enough to fire that block kills the backend at boot. §UC-CS-001 fences it off.
+  ⚠ **An orchestrator premise was false again:** I briefed that three shipped `distribution-handover`
+  assertions pinned the stub and needed real values. They did not — every cycle in that file is
+  OPEN, where the helper is a no-op by design. Only their comments changed.
+  Gate: **736 passed / 0 failed / 0 skipped** over sixteen files (per-file counts read off the log).
+  Review: **revise → addressed**, two majors (both superseded claims left standing, one of them in
+  the edited file's own header) + two minors.
 - 2026-09-20 · FUP-T24 · (this commit) · no PR (project convention) · **The kg display rule gets one
   home — and "trailing zeros stripped" turns out to be nobody's code.** `Math.round(g/10)/100` had
   FOUR hand-written copies and no address; it now lives in `frontend/src/lib/kg.js kgLabel(grams)`,

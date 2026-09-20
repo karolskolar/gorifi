@@ -185,7 +185,7 @@ function findLinkById(linkId) {
 
 function findCycle(cycleId) {
   return db.prepare(
-    'SELECT id, name, status, type, expected_date, plan_note, markup_ratio FROM order_cycles WHERE id = ?'
+    'SELECT id, name, status, type, expected_date, plan_note, markup_ratio, opens_at, closes_at, stage FROM order_cycles WHERE id = ?'
   ).get(cycleId);
 }
 
@@ -434,6 +434,12 @@ function statusPayload(link, cycle, order) {
       type: cycle.type,
       expected_date: cycle.expected_date,
       plan_note: cycle.plan_note,
+      // CS-T1 (17 §UC-CS-004): the three stage-model fields ride the payload the
+      // guest already fetches, so their timeline needs no second request. Read-only
+      // and not sensitive — no admin-only column joins them.
+      opens_at: cycle.opens_at,
+      closes_at: cycle.closes_at,
+      stage: cycle.stage,
     },
     host: { first_name: firstName(link.host_name) },
     order,
@@ -548,6 +554,12 @@ router.get('/:token', guestReadLimiter, (req, res) => {
       type: cycle.type,
       expected_date: cycle.expected_date,
       plan_note: cycle.plan_note,
+      // CS-T1 (17 §UC-CS-004): the three stage-model fields ride the payload the
+      // guest already fetches, so their timeline needs no second request. Read-only
+      // and not sensitive — no admin-only column joins them.
+      opens_at: cycle.opens_at,
+      closes_at: cycle.closes_at,
+      stage: cycle.stage,
     },
     host: { first_name: firstName(link.host_name) },
     products,

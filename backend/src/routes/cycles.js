@@ -17,9 +17,45 @@ import {
   inheritingGuests,
 } from '../helpers/handover.js';
 import { enqueueForHandOver } from '../helpers/outbox.js';
-import { markCycleReady } from '../helpers/cycle-stage.js';
+import { markCycleReady, CYCLE_STAGES, LOCKED_STAGE_DEFAULT } from '../helpers/cycle-stage.js';
 
 const router = Router();
+
+// ─── the two planning dates (CS-T1, 17 §UC-CS-001/002) ──────────────────────
+//
+// `opens_at` (planned opening of ordering) and `closes_at` (the ordering deadline)
+// are stored as ISO `YYYY-MM-DD` TEXT and validated HERE, at the only two routes
+// that write them, so the „o n týždňov" derivation downstream is never fed free
+// text. SQLite has no DATE affinity worth the name (resolved conflict 7), so the
+// column cannot help.
+//
+// ⚠ `expected_date` beside them is a DIFFERENT field and stays FREE TEXT and
+// untouched (PO decision 2026-09-19: `expected_date` = the DELIVERY expectation,
+// `closes_at` = the ordering deadline). They are published side by side; nothing
+// here reads, relabels or migrates `expected_date`.
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// True only for a real calendar date in ISO form. The round-trip is what rejects
+// `2026-13-40` and `2026-02-30`: `new Date('2026-02-30T00:00:00Z')` does not throw,
+// it ROLLS OVER to 2026-03-02, so a format check alone would store a date that is
+// not the one the admin typed. UTC midnight on both sides, so no timezone can shift
+// the day out from under the comparison.
+function isIsoDate(value) {
+  if (typeof value !== 'string' || !ISO_DATE.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+// The shared refusal for both writers. `value` has already been through
+// `bindValue`, so `undefined` means "absent or unbindable ⇒ skip" (the shipped
+// FUP-T13 contract — the stored value survives) and `null`/`''` mean "clear".
+// Anything else must be a real date or the whole request is refused with nothing
+// written.
+function badDate(field, value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (isIsoDate(value)) return null;
+  return { error: 'Neplatný dátum', field };
+}
 
 // The admin's ordering surfaces below (`roastery_breakdown` here, the "Podľa
 // produktu" sheet in GET /:id/summary) count guest bags as well as friend ones
@@ -242,7 +278,7 @@ router.get('/:id', requireAdmin, (req, res) => {
 
 // Get public cycle info (no auth required) - for friend ordering page
 router.get('/:id/public', (req, res) => {
-  const cycle = db.prepare('SELECT id, name, status, markup_ratio, expected_date, type, plan_note, parcel_enabled, parcel_fee FROM order_cycles WHERE id = ?').get(req.params.id);
+  const cycle = db.prepare('SELECT id, name, status, markup_ratio, expected_date, type, plan_note, parcel_enabled, parcel_fee, opens_at, closes_at, stage FROM order_cycles WHERE id = ?').get(req.params.id);
   if (!cycle) {
     return res.status(404).json({ error: 'Cyklus nebol nájdený' });
   }
@@ -305,9 +341,27 @@ router.post('/', requireAdmin, (req, res) => {
   const expected_date = bindValue(req.body.expected_date);
   const type = bindValue(req.body.type);
   const plan_note = bindValue(req.body.plan_note);
+  // CS-T1 (17 §UC-CS-002): the two planning dates are settable at creation too.
+  // ⚠ `stage` in a CREATE body is IGNORED, deliberately and silently: a new cycle is
+  // `open` or `planned`, and stage is meaningless on both. The only ways in are the
+  // lock transition (which writes `ordered`) and the admin's PATCH on a locked cycle.
+  const opens_at = bindValue(req.body.opens_at);
+  const closes_at = bindValue(req.body.closes_at);
   const { bakery_product_ids, coffee_product_ids, status } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Nazov je povinny' });
+  }
+
+  // Validation BEFORE any write — a refusal creates no cycle at all.
+  const badOpens = badDate('opens_at', opens_at);
+  if (badOpens) return res.status(400).json(badOpens);
+  const badCloses = badDate('closes_at', closes_at);
+  if (badCloses) return res.status(400).json(badCloses);
+  if (opens_at && closes_at && closes_at < opens_at) {
+    return res.status(400).json({
+      error: 'Uzávierka nemôže byť pred otvorením',
+      reason: 'dates_order',
+    });
   }
 
   const cycleType = type || 'coffee';
@@ -317,7 +371,7 @@ router.post('/', requireAdmin, (req, res) => {
   const friendsCount = db.prepare('SELECT COUNT(*) as count FROM friends WHERE active = 1').get();
   const totalFriends = friendsCount.count;
 
-  const result = db.prepare('INSERT INTO order_cycles (name, status, total_friends, expected_date, type, plan_note) VALUES (?, ?, ?, ?, ?, ?)').run(name, cycleStatus, totalFriends, expected_date || null, cycleType, plan_note || null);
+  const result = db.prepare('INSERT INTO order_cycles (name, status, total_friends, expected_date, type, plan_note, opens_at, closes_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(name, cycleStatus, totalFriends, expected_date || null, cycleType, plan_note || null, opens_at || null, closes_at || null);
   const cycleId = result.lastInsertRowid;
 
   // For bakery cycles, snapshot selected bakery products into the products table
@@ -405,7 +459,8 @@ router.post('/', requireAdmin, (req, res) => {
   res.status(201).json(cycle);
 });
 
-// Update cycle (lock/unlock/complete/password/markup_ratio/expected_date) (admin)
+// Update cycle (lock/unlock/complete/password/markup_ratio/expected_date/opens_at/
+// closes_at/stage) (admin)
 router.patch('/:id', requireAdmin, (req, res) => {
   // FUP-T13 — same binder hazard as POST, plus the half a status check cannot see:
   // an UPDATE that coerced an unbindable value to NULL would answer 200 while WIPING
@@ -419,7 +474,9 @@ router.patch('/:id', requireAdmin, (req, res) => {
   const expected_date = bindValue(req.body.expected_date);
   const plan_note = bindValue(req.body.plan_note);
   const parcel_fee = bindValue(req.body.parcel_fee);
-  const { status, parcel_enabled } = req.body;
+  const opens_at = bindValue(req.body.opens_at);
+  const closes_at = bindValue(req.body.closes_at);
+  const { status, parcel_enabled, stage } = req.body;
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);
 
   if (!cycle) {
@@ -430,12 +487,76 @@ router.patch('/:id', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Neplatny status' });
   }
 
+  // ─── CS-T1 (17 §UC-CS-002): dates on any status, stage while locked ────────
+  //
+  // ⚠ EVERY CHECK BELOW RUNS BEFORE THE UPDATE IS BUILT. A 400 or a 409 must leave
+  // the row BYTE-IDENTICAL — the refusal tests read it back — so nothing may be
+  // written before all of them have passed.
+  const badOpens = badDate('opens_at', opens_at);
+  if (badOpens) return res.status(400).json(badOpens);
+  const badCloses = badDate('closes_at', closes_at);
+  if (badCloses) return res.status(400).json(badCloses);
+
+  // The ORDER check reads the row AS IT WOULD BE after this body is applied, not
+  // the body alone: editing only the deadline of a cycle that already has an
+  // opening must still be refused when it lands before it. `undefined` = untouched
+  // ⇒ the stored value; `null`/`''` = cleared ⇒ nothing to compare against.
+  const nextOpens = opens_at === undefined ? cycle.opens_at : (opens_at || null);
+  const nextCloses = closes_at === undefined ? cycle.closes_at : (closes_at || null);
+  if (nextOpens && nextCloses && nextCloses < nextOpens) {
+    return res.status(400).json({
+      error: 'Uzávierka nemôže byť pred otvorením',
+      reason: 'dates_order',
+    });
+  }
+
+  // ⚠ `stage` is NOT read through `bindValue`: that helper answers "can SQLite bind
+  // this?", and the question here is the stricter "is this one of the three enum
+  // values?". A non-string shape (`{}`, `true`, `[1]`, `null`) fails the
+  // `includes()` and lands on the SAME 400 as `'packed'` — it must never reach the
+  // CHECK constraint, because a `SQLITE_CONSTRAINT_CHECK` throw is a 500.
+  const stageProvided = stage !== undefined;
+  if (stageProvided && !(typeof stage === 'string' && CYCLE_STAGES.includes(stage))) {
+    return res.status(400).json({ error: 'Neplatná fáza' });
+  }
+  // The EFFECTIVE status — this body's, else the stored one. Checked BEFORE the
+  // unlock coupling below, so `{ status: 'open', stage: 'arrived' }` on a locked
+  // cycle is this 409 and writes nothing at all (neither the status nor the stage).
+  const effectiveStatus = status || cycle.status;
+  if (stageProvided && effectiveStatus !== 'locked') {
+    return res.status(409).json({
+      error: 'Fázu možno meniť len pri uzamknutom cykle',
+      reason: 'not_locked',
+    });
+  }
+
   const updates = [];
   const values = [];
 
   if (status) {
     updates.push('status = ?');
     values.push(status);
+  }
+
+  // The status↔stage coupling, so the admin's shipped Uzamknúť / Odomknúť buttons
+  // need no client change. All three branches write `stage` in the SAME UPDATE as
+  // the status.
+  //
+  // ⚠ `completed` and `planned` leave `stage` ALONE on purpose. On a completed
+  // cycle it is the historical record of where the coffee ended, and the friend-
+  // facing step index derives from `status` FIRST (§UC-CS-005), so a stale value can
+  // never render as current.
+  if (stageProvided) {
+    // Any of the three, in any order, while locked — `ready → arrived` is a legal
+    // admin correction. The API is reversible; the UI offers forward buttons only
+    // (PO O3).
+    updates.push('stage = ?');
+    values.push(stage);
+  } else if (status === 'locked' && cycle.status !== 'locked') {
+    updates.push('stage = ?');
+    values.push(LOCKED_STAGE_DEFAULT);
+  } else if (status === 'open' && cycle.status === 'locked') {
+    updates.push('stage = NULL');
   }
   if (name) {
     updates.push('name = ?');
@@ -456,6 +577,17 @@ router.patch('/:id', requireAdmin, (req, res) => {
   if (plan_note !== undefined) {
     updates.push('plan_note = ?');
     values.push(plan_note || null);
+  }
+  // Writable on EVERY status — planning happens on `planned`, the deadline is
+  // edited while `open`, and corrections come afterwards. `''` clears, exactly as
+  // `expected_date`/`plan_note` beside them.
+  if (opens_at !== undefined) {
+    updates.push('opens_at = ?');
+    values.push(opens_at || null);
+  }
+  if (closes_at !== undefined) {
+    updates.push('closes_at = ?');
+    values.push(closes_at || null);
   }
   if (parcel_enabled !== undefined) {
     updates.push('parcel_enabled = ?');
@@ -1171,9 +1303,11 @@ router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
     // already-handed bag is not an event and mints nothing.
     const queued = enqueueForHandOver(stampedBags);
 
-    // §UC-DP-009 — the module-17 seam, inside the transaction, once per request.
-    // A no-op stub until CS-T1; every response echoes `cycle_stage: null` today.
-    const cycleStage = markCycleReady(cycleId);
+    // §UC-DP-009 — the module-17 seam, inside the transaction, once per request
+    // (never once per row). LIVE since CS-T1: a batch hand-over on a LOCKED cycle
+    // promotes it to `ready`. ⚠ `cycle_stage` is the STAGE STRING (or null), not the
+    // helper's `{ changed }` flag — read `.stage`.
+    const { stage: cycleStage } = markCycleReady(cycleId);
 
     return {
       handedOver,

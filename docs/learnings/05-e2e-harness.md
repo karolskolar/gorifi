@@ -214,3 +214,35 @@ never reached the scrub is the widest version of that gap.
 `makeCycle` figure alone. **24** define at least one (21 `makeCycle`, 16 `makeHost`, 13
 both). The error *understated* the argument it was supporting, which is the easiest kind
 to leave standing. Counted, not estimated, and corrected in both copies.
+
+⚠ **A bare positional filter is a SUBSTRING match, so the file list you TYPED is not the
+file list that RAN** (CS-T1, 2026-09-20 — caught by the orchestrator's count differing
+from mine by exactly 89). `npx playwright test guest-order …` collects
+`guest-order.spec.js` **and** `guest-order-shell.spec.js` **and**
+`guest-order-recovery.spec.js` (28 + 13 + 89 = 130). Both runs were green and both counts
+were right; the gap was one whole spec file I never named. Two consequences, and the
+second is the dangerous one:
+
+- **Report the files that RAN, not the ones you passed.** `grep -oE 'tests/[a-z0-9-]+\.spec\.js'
+  <run log> | sort | uniq -c` is the per-file breakdown, and it is the only honest answer
+  to „which files did you run". A reported list assembled from the command line is a
+  claim about intent, not about measurement — the same class as the DP-T2 false clean
+  (`N passed` with DB_PATH silently empty) that §Running the e2e suite already warns about.
+- ⚠ **The inverse was CLAIMED here and it is FALSE — measured, not reasoned (2026-09-20).**
+  The first draft of this entry said a filter matching no file "collects nothing and Playwright
+  reports that as a clean pass". It does not: `npx playwright test tests/zzz-nonexistent.spec.js`
+  answers `Error: No tests found.` on **exit 1**, both as a run and under `--list`. Under-collection
+  is LOUD. **The asymmetry is the whole lesson: over-collection is the silent one.** A filter that
+  matches more files than you meant runs them, passes them, and inflates a count that nobody
+  reconciles — which is exactly how this 89-test gap was born. Anchor with the `.spec.js` suffix
+  to bound the match, and read the files that RAN off the log rather than off your command line.
+  (The genuinely silent failures in this harness stay the ones §Running the e2e suite already
+  names: a lost `DB_PATH` removing assertions, and a wrapper that greps for „N failed" instead of
+  asserting „N passed" — a wrapper like that would indeed read `No tests found` as success, but
+  Playwright itself never does.)
+
+⚠ Related non-finding, checked and ruled out before blaming the data: `nonstring-body-shape`
+(272) and `api-security` (81) generate their cases from arrays, so a differently-populated
+template or a different `ADMIN_ENDPOINTS` length WOULD move them. Both matched the other
+run byte-for-byte, which is what proved the gap was a file and not fixture state. Compare
+per-file counts before reaching for a data-driven explanation.

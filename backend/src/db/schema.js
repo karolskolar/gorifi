@@ -127,7 +127,10 @@ function initDb() {
       name TEXT NOT NULL,
       status TEXT DEFAULT 'open' CHECK (status IN ('planned', 'open', 'locked', 'completed')),
       shared_password TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      opens_at TEXT,
+      closes_at TEXT,
+      stage TEXT CHECK (stage IN ('ordered', 'arrived', 'ready'))
     )
   `);
 
@@ -198,6 +201,47 @@ function initDb() {
     db.run('DROP TABLE order_cycles');
     db.run('ALTER TABLE order_cycles_new RENAME TO order_cycles');
     db.run('PRAGMA foreign_keys = ON');
+  }
+
+  // Migration (CS-T1, 17 §UC-CS-001): the cycle STAGE model — the two planning
+  // dates (`opens_at` / `closes_at`, ISO `YYYY-MM-DD`, informational, never a
+  // scheduler) and `stage`, where a LOCKED cycle's coffee is.
+  //
+  // ⚠⚠ THESE THREE ALTERS MUST STAY **AFTER** THE `_check_test` RECREATE BLOCK
+  // ABOVE. That block rebuilds `order_cycles` from a HARD-CODED column list and an
+  // `INSERT ... SELECT` naming those same columns, so ANY column added before it is
+  // silently DROPPED on every database where it fires (an old one whose CHECK
+  // constraint still rejects 'planned'). The `CREATE TABLE IF NOT EXISTS` above
+  // carries them too — CLAUDE.md: a column on a table already in prod needs CREATE
+  // **and** ALTER — and on a fresh database the recreate never fires, so the pair is
+  // consistent in both directions.
+  //
+  // ⚠ RECORDED, NOT FIXED HERE: that recreate block also omits `parcel_enabled` /
+  // `parcel_fee`, a pre-existing latent defect on very old databases. It is
+  // explicitly out of this module's scope (17 §UC-CS-001) — do not "fix" it in
+  // passing.
+  //
+  // SQLite accepts a CHECK constraint in ADD COLUMN, so the enum is enforced at the
+  // storage layer too. The route still validates FIRST: a `SQLITE_CONSTRAINT_CHECK`
+  // throw is a 500, never an acceptable answer to a malformed body (§UC-CS-002).
+  // `helpers/cycle-stage.js CYCLE_STAGES` is the one home for the same three values.
+  //
+  // NO BACKFILL: existing locked cycles keep `stage = NULL`, and every reader treats
+  // NULL under `locked` as `ordered`.
+  try {
+    db.run('ALTER TABLE order_cycles ADD COLUMN opens_at TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.run('ALTER TABLE order_cycles ADD COLUMN closes_at TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.run("ALTER TABLE order_cycles ADD COLUMN stage TEXT CHECK (stage IN ('ordered', 'arrived', 'ready'))");
+  } catch (e) {
+    // Column already exists, ignore
   }
 
   db.run(`

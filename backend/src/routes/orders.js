@@ -800,10 +800,15 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
     const queued = enqueueForHandOver(stampedBags);
 
     // §UC-DP-009 — the module-17 seam, called INSIDE the transaction, once per
-    // request. A no-op stub today: there is no `order_cycles.stage` column until
-    // CS-T1, so every response echoes `cycle_stage: null`. ⚠ Nothing in module 16
-    // writes `order_cycles.status` — completion is the admin's button (§UC-DP-014).
-    const cycleStage = markCycleReady(order.cycle_id);
+    // request. LIVE since CS-T1: the first hand-over on a LOCKED cycle promotes it
+    // to `ready` and this response echoes that string; on a cycle that is not
+    // locked it is a no-op and `cycle_stage` is the cycle's unchanged stage (NULL
+    // for an open one). ⚠ The response publishes the STAGE, not the helper's
+    // `changed` flag — `cycle_stage` is a `<string|null>` by 16 §UC-DP-009, so read
+    // `.stage` and never hand the whole return value to `res.json`.
+    // ⚠ Nothing in module 16 writes `order_cycles.status` — completion is the
+    // admin's button (§UC-DP-014), and `markCycleReady()` never touches it either.
+    const { stage: cycleStage } = markCycleReady(order.cycle_id);
 
     return { guestIds: guests.map((guest) => guest.id), queued, dequeued: 0, cycleStage };
   });

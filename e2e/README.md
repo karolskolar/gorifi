@@ -252,6 +252,26 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   string as marked DATA must not). ⚠ A new data field rendered without the marker
   reddens this file on some unlucky name — mark the data render, never narrow the
   regex.
+- `tests/cycle-stages.spec.js` — CS-T1 / 17 §UC-CS-001…004: the BACKEND half of the
+  cycle stage model. The `POST`/`PATCH /api/cycles` contract over `opens_at` /
+  `closes_at` / `stage` (**every refusal reads the row back** — a 400/409 must leave it
+  byte-identical, and `bindValue` answering 200 while NULLing a column is invisible to a
+  status assertion), the status↔stage coupling (lock ⇒ `ordered`, unlock ⇒ NULL,
+  complete leaves the historical value alone, `{status:'open',stage:…}` is the 409 and
+  writes NEITHER), the payload publication on all five cycle blocks, and the module-16
+  seam driven through 16's REAL hand-over routes. ⚠ `stage` is enum-checked before the
+  write because a `SQLITE_CONSTRAINT_CHECK` throw is a **500** — deleting that check reds
+  12 tests with `CHECK constraint failed` in the server log. Two tests are **DB_PATH
+  build-the-scenario gates**, not extra assertions: a locked cycle with `stage IS NULL`
+  (the pre-module row the no-backfill rule creates — unreachable through the API, and
+  precisely the row DP-T1's superseded `stage IN ('ordered','arrived')` would have left
+  stuck) and a global `transactions` count. One test needs no server at all: it builds a
+  pre-'planned' `order_cycles` and runs `db/schema.js` in a child process, because the
+  three ALTERs must survive the `_check_test` recreate — move them above that block and
+  it is the ONLY test in the suite that reds. ⚠ It also has to give the fixture a `type`
+  column: the recreate block's `INSERT ... SELECT` names `type` while the ALTER that adds
+  it is ~430 lines later, so on a genuinely old database that block throws at boot (a
+  pre-existing defect, recorded and deliberately not fixed here).
 - `tests/self-hosted-fonts.spec.js` — RD-DS-6: the brand webfonts must be
   **self-hosted**, and the CSP hole that hid it. The Podpultovka restyle loaded
   Darker Grotesque / Figtree / Courier Prime from `fonts.googleapis.com`, which
@@ -529,6 +549,13 @@ BASE_URL=http://localhost:3997 node seed.mjs
 #         use left is the strictly-EXTRA ledger watermark (an assertion additive to
 #         an API-level one, never a scenario), so losing DB_PATH cannot make it
 #         vanish, and
+#       • un-skips THREE tests in cycle-stages.spec.js (CS-T1) — the storage-layer
+#         CHECK probe, plus two of the BUILD-THE-SCENARIO kind: "a PRE-MODULE locked cycle (`stage IS NULL`) is
+#         promoted to `ready`" manufactures the row the no-backfill rule creates
+#         (locking writes `ordered`, unlocking also opens the cycle, and `stage:
+#         null` is a 400, so NO sequence of API calls produces it), and the global
+#         `transactions` row count. A run without DB_PATH silently loses the one
+#         test that covers the predicate DP-T1's superseded stub got wrong, and
 #       • un-skips ONE test in distribution-foundation.spec.js ("only the hand-over
 #         routes write a notifications row — and these are the rows"). That gate is
 #         permanent and is a DIFFERENT kind: `notifications` has NO API at all in

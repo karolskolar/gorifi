@@ -54,6 +54,7 @@ cd frontend && npm run dev     # :5173
 | Admin sets a party's pickup point (`helpers/pickup.js`, `PickupLocationPicker.vue`) | `docs/learnings/06-pickup-point.md` |
 | Payment links, variable symbol, `payment_creditor_name` (module 15) | `docs/learnings/07-payment-links.md` |
 | Distribution pipeline: hand-over, the board, the outbox enqueue, the cycle header (module 16) | `docs/learnings/08-distribution-pipeline.md` |
+| Cycle stages: the three `order_cycles` columns, `markCycleReady()`, the `POST/PATCH /cycles` contract (module 17) | `docs/learnings/09-cycle-stages.md` |
 
 Specs: `docs/specification/*.md`, `docs/superpowers/specs/*.md`. Spec text that cites "CLAUDE.md GSO-T3" /
 "CLAUDE.md 2026-08-07" etc. now resolves to these files (search by task id or date). When you finish a task,
@@ -122,6 +123,19 @@ append the full write-up to the matching learnings file and add at most one line
   block — `routes/guest.js` composes none of its own (status payload, submit 201 and the confirmation
   mail all quote that one object) — and `balancePaymentBlock()` likewise owns the balance one, sign flip
   and rounding included). No `padStart(6` and no `payment_iban` literal outside it in `backend/src`.
+- Module 17's home: `helpers/cycle-stage.js` — `CYCLE_STAGES` + `LOCKED_STAGE_DEFAULT` (the enum the
+  route, the helper and schema.js's CHECK all read) and `markCycleReady()`, whose predicate is
+  `status='locked' AND (stage IS NULL OR stage <> 'ready')` — ⚠ `stage IS NULL` COUNTS (no backfill, so
+  it is every locked cycle in prod; the DP-T1 stub's `stage IN ('ordered','arrived')` is SUPERSEDED),
+  it writes `stage` and nothing else, ever — never `status`, never a ledger row — and it returns
+  `{ changed, stage }` while the published `cycle_stage` is the STRING: all three hand-over routes read
+  `.stage`. A locked cycle with `stage IS NULL` is unreachable through the API, so its test builds it.
+  `order_cycles` ALTERs go AFTER schema.js's `_check_test` recreate block (it rebuilds from a hard-coded
+  column list; anything added before is dropped — and it would itself crash on a DB old enough to fire it,
+  recorded not fixed). `stage` is enum-checked BEFORE the write (a CHECK throw is a 500), NOT via
+  `bindValue`; the two DATES do use `bindValue` (unbindable ⇒ skip) but a finite NUMBER passes it and must
+  still 400 `Neplatný dátum`. `dates_order` compares the row AS IT WOULD BE; the `not_locked` 409 is
+  checked FIRST, so `{status:'open',stage:…}` writes neither.
 - Module 16's homes: `helpers/delivery.js` (which TARGET a party is on — read-only, never imports
   `pickup.js`), `helpers/handover.js` (stage vocabulary + hand-over binder), `helpers/outbox.js` (the only
   `notifications` writer), `lib/plural.js` (count-agreeing Slovak forms), `lib/distribution-plan.js` (the
@@ -247,6 +261,12 @@ Full recipe and env in `e2e/README.md`. Checklist:
   new server dies with `EADDRINUSE` in its own log, the OLD one keeps serving, and the only tell is `seed.mjs`
   printing `exists` instead of `created` (GR-T9). Readiness-probe `/api/health`; `/api/cycles` is admin and 401s.
 - Pipe output to a FILE, not `| tail`. Check `echo "EXIT: $?"` of the test command itself.
+- A bare positional filter is a SUBSTRING match — `playwright test guest-order` also runs
+  `guest-order-shell` and `guest-order-recovery`. Report the files that RAN
+  (`grep -oE 'tests/[a-z0-9-]+\.spec\.js' <log> | sort | uniq -c`), never the ones you typed; the
+  danger is OVER-collection, which is silent: a filter matching ZERO files is LOUD (`Error: No
+  tests found.`, exit 1 — measured 2026-09-20), so the failure mode is running MORE than you meant
+  and reporting a count nobody reconciles, never running less.
 - Never run the full suite per task: targeted spec files per row, full suite at module milestones. Full run
   ~11 min; on this 4 GB/2-core box Chromium SIGSEGVs (exit 139) non-deterministically — confirm a suspicious
   failure by running its file alone, twice, on a fresh DB.

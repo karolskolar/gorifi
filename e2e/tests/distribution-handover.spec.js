@@ -1116,7 +1116,7 @@ test.describe('DP-T3 · 16 §UC-DP-004/005/008 — the hand-over routes', () => 
     expect(body.order.handed_over_at, 'stamped').toBeTruthy()
     expect(body.order.packed, 'packed is untouched').toBe(1)
     expect(body.order.stage).toBe('handed')
-    expect(body.cycle_stage, 'CS-T1 fills the body; until then the stub answers null').toBe(null)
+    expect(body.cycle_stage, '⚠ CS-T1 SHIPPED and the value is still null — this cycle is OPEN, and `markCycleReady()` is a no-op off `locked` (17 §UC-CS-003). The promotion itself is pinned in cycle-stages.spec.js, on a locked cycle.').toBe(null)
 
     // §UC-DP-008: 1 × pickup for the friend + 1 × host per live guest = 3
     expect(body.queued_notifications, 'friend + two live guests').toBe(3)
@@ -1238,7 +1238,7 @@ test.describe('DP-T3 · 16 §UC-DP-004/005/008 — the hand-over routes', () => 
     expect(body.guest_order.handed_over_at).toBeTruthy()
     expect(body.stage).toBe('handed')
     expect(body.queued_notifications, 'one `host` row for this guest').toBe(1)
-    expect(body.cycle_stage).toBe(null)
+    expect(body.cycle_stage, 'the fixture cycle is OPEN — no stage to promote (17 §UC-CS-003)').toBe(null)
     expect(body.totals, 'the shipped mutationPayload shape survives').toBeTruthy()
 
     const party = partyOf(await payload(fx.cycle.id), fx.host.id)
@@ -1687,7 +1687,7 @@ test.describe('DP-T4 · 16 §UC-DP-006 — the bulk hand-over', () => {
     expect(body.already_handed).toBe(0)
     expect(body.guests_inherited, 'the two LIVE guests; the cancelled one is skipped').toBe(2)
     expect(body.queued_notifications, '2 × pickup + 2 × host').toBe(4)
-    expect(body.cycle_stage, 'CS-T1 fills the body; until then the stub answers null').toBe(null)
+    expect(body.cycle_stage, '⚠ CS-T1 SHIPPED and the value is still null — this cycle is OPEN, and `markCycleReady()` is a no-op off `locked` (17 §UC-CS-003). The promotion itself is pinned in cycle-stages.spec.js, on a locked cycle.').toBe(null)
 
     const after = await payload(fx.cycle.id)
     const host = partyOf(after, fx.host.id)

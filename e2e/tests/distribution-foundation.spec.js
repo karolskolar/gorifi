@@ -34,8 +34,15 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 //      prototype-only property cannot survive JSON. Plus the read-only pin:
 //      `helpers/pickup.js` stays the SOLE WRITER of the pickup / Packeta / fee
 //      columns, so this helper's source may not contain a write at all.
-//   4. **The stub is a no-op.** `markCycleReady()` returns `null`, moves no row, and
-//      is the module's ONLY export — CS-T1 replaces that one symbol.
+//   4. ~~**The stub is a no-op.** `markCycleReady()` returns `null`, moves no row, and
+//      is the module's ONLY export — CS-T1 replaces that one symbol.~~ **SUPERSEDED BY
+//      CS-T1 (2026-09-20), as that sentence promised.** Section 3 below now pins the
+//      SHIPPED seam: three exports (`CYCLE_STAGES`, `LOCKED_STAGE_DEFAULT`,
+//      `markCycleReady`), a first call answering `{ changed: true, stage: 'ready' }`
+//      and a second `{ changed: false, stage: 'ready' }`. What did NOT change is what
+//      the bullet was really protecting and what this file still proves at the SQL:
+//      it moves no row in ANY table, and it touches `stage` and nothing else — the
+//      `SET` clause is read and pinned verbatim.
 //   5. **`GUEST_ORDER_FIELDS` publishes `handed_over_at`** on the surfaces the shared
 //      list feeds (the host's guest-links view and the admin distribution payload).
 //
@@ -479,55 +486,107 @@ test.describe('DP-T1 · 16 §UC-DP-001 helpers/delivery.js', () => {
   })
 })
 
-// ─── 3. helpers/cycle-stage.js — UC-DP-009 stub ──────────────────────────────
+// ─── 3. helpers/cycle-stage.js — the UC-DP-009 seam ──────────────────────────
+//
+// ⚠ ~~This section pinned DP-T1's NO-OP STUB: one export, a `null` return for every
+// argument shape, and not one line of SQL in the file.~~ **SUPERSEDED BY CS-T1
+// (2026-09-20), exactly as all three of its test names promised** („CS-T1 replaces
+// that one symbol", „the body is module 17's"). Module 17 shipped the body, so the
+// stub assertions are retargeted here rather than deleted — a test that pins the
+// ABSENCE of a feature stops being evidence the moment the feature lands, and
+// leaving it red or deleting it silently both lose what it was really protecting.
+//
+// What it was really protecting, and what therefore survives VERBATIM below:
+//   • `order_cycles.status` is NEVER touched by this module (no auto-complete);
+//   • NOT ONE ROW is created or deleted in ANY table — the ledger-neutrality of the
+//     hand-over, asserted where the SQL lives rather than through a route;
+//   • the cycle row changes in `stage` AND NOTHING ELSE.
+// What changes: the export list grows to module 17's three symbols, and the return
+// is `{ changed, stage }` instead of `null`.
+//
+// ⚠ The stub accepted `undefined` / `{}` because it bound nothing. The real helper
+// binds, so those two shapes now THROW — deliberately not guarded: all three call
+// sites pass a `cycle_id` read from a database row, and swallowing a malformed id
+// would silently skip a promotion instead of failing loudly. The probe below keeps
+// the shapes a caller can actually produce (an unknown id, `null`), which must be a
+// safe no-op.
 
-const STUB_PROBE = [
+const SEAM_PROBE = [
   "const db = (await import(process.env.SCHEMA_URL)).default",
   "const mod = await import(process.env.CYCLE_STAGE_URL)",
-  "db.run(\"INSERT INTO order_cycles (name, status) VALUES ('DP-T1 stub', 'locked')\")",
-  "const cycle = db.get(\"SELECT * FROM order_cycles WHERE name = 'DP-T1 stub' ORDER BY id DESC\")",
+  "db.run(\"INSERT INTO order_cycles (name, status) VALUES ('CS-T1 seam', 'locked')\")",
+  "const cycle = db.get(\"SELECT * FROM order_cycles WHERE name = 'CS-T1 seam' ORDER BY id DESC\")",
   "const tables = db.all(\"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'\").map((r) => r.name)",
   "const counts = () => Object.fromEntries(tables.map((t) => [t, db.get('SELECT COUNT(*) AS n FROM \"' + t + '\"').n]))",
   "const before = counts()",
-  "const returned = [mod.markCycleReady(cycle.id), mod.markCycleReady(cycle.id), mod.markCycleReady(), mod.markCycleReady('abc'), mod.markCycleReady(null), mod.markCycleReady({})]",
+  "const first = mod.markCycleReady(cycle.id)",
+  "const second = mod.markCycleReady(cycle.id)",
+  "const unknown = [mod.markCycleReady(987654321), mod.markCycleReady('abc'), mod.markCycleReady(null)]",
   "const after = counts()",
   "const cycleAfter = db.get('SELECT * FROM order_cycles WHERE id = ?', [cycle.id])",
   "process.stdout.write('\\nDP_T1_RESULT:' + JSON.stringify({",
-  "  returned, before, after, cycleBefore: cycle, cycleAfter, exports: Object.keys(mod).sort(),",
+  "  first, second, unknown, before, after, cycleBefore: cycle, cycleAfter,",
+  "  stages: mod.CYCLE_STAGES, lockedDefault: mod.LOCKED_STAGE_DEFAULT,",
+  "  exports: Object.keys(mod).sort(),",
   "}) + '\\n')",
 ]
 
-test.describe('DP-T1 · 16 §UC-DP-009 markCycleReady() stub', () => {
+test.describe('CS-T1 · 17 §UC-CS-003 markCycleReady() — the seam, at the SQL', () => {
   test.skip(!CAN_IMPORT_SOURCE, NEEDS_SOURCE)
 
   let probe = null
 
   test.beforeAll(async () => {
-    const dbPath = tmpDbPath('stub')
+    const dbPath = tmpDbPath('seam')
     try {
-      probe = await runProbe('cycle-stage', STUB_PROBE, dbPath)
+      probe = await runProbe('cycle-stage', SEAM_PROBE, dbPath)
     } finally {
       removeDb(dbPath)
     }
   })
 
-  test('is the module\'s only export — CS-T1 replaces that one symbol', () => {
-    expect(probe.exports).toEqual(['markCycleReady'])
+  test('the module exports the enum, the lock default and the one transition', () => {
+    expect(probe.exports).toEqual(['CYCLE_STAGES', 'LOCKED_STAGE_DEFAULT', 'markCycleReady'])
+    expect(probe.stages, 'the ONE home for the three values').toEqual(['ordered', 'arrived', 'ready'])
+    expect(probe.lockedDefault).toBe('ordered')
   })
 
-  test('returns null for every argument shape and writes nothing', () => {
-    expect(probe.returned, 'every call answers null').toEqual([null, null, null, null, null, null])
+  test('promotes a locked cycle ONCE, and the second call changes nothing', () => {
+    expect(probe.first, 'first hand-over').toEqual({ changed: true, stage: 'ready' })
+    expect(probe.second, 'idempotent — the value, not the change').toEqual({ changed: false, stage: 'ready' })
+  })
+
+  test('an id that resolves to no row is a safe no-op', () => {
+    expect(probe.unknown, 'never a throw, never a write').toEqual([
+      { changed: false, stage: null },
+      { changed: false, stage: null },
+      { changed: false, stage: null },
+    ])
+  })
+
+  test('writes NOT ONE row in any table, and touches nothing but `stage`', () => {
     expect(probe.after, 'no row created or deleted, in any table').toEqual(probe.before)
-    expect(probe.cycleAfter, 'the cycle row is byte-identical').toEqual(probe.cycleBefore)
-    expect(probe.cycleAfter.status, 'status is never touched by this module').toBe('locked')
+    expect(probe.cycleAfter.status, '⚠ status is never touched by this module').toBe('locked')
+    expect(probe.cycleBefore.stage, 'the fixture is the pre-module NULL row').toBe(null)
+    expect(probe.cycleAfter, 'stage, and nothing else')
+      .toEqual({ ...probe.cycleBefore, stage: 'ready' })
   })
 
-  test('contains no SQL at all — the body is module 17\'s (CS-T1)', () => {
+  test('the file contains exactly ONE UPDATE and no INSERT/DELETE', () => {
     const source = fs.readFileSync(CYCLE_STAGE_ENTRY, 'utf8')
     const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
-    expect(code, 'no UPDATE').not.toMatch(/\bUPDATE\s+\w+\s+SET\b/i)
+    expect(code.match(/\bUPDATE\s+\w+/gi) || [], 'one transition, one statement').toHaveLength(1)
     expect(code, 'no INSERT').not.toMatch(/\bINSERT\s+INTO\b/i)
-    expect(source, 'the successor is named at the site').toMatch(/CS-T1|17-cycle-stages/)
+    expect(code, 'no DELETE — hand-over is ledger-neutral').not.toMatch(/\bDELETE\s+FROM\b/i)
+    // ⚠ NOT a `/SET[\s\S]{0,80}status\s*=/` proximity regex — the real statement has
+    // `AND status = 'locked'` in its WHERE, ~30 characters after the SET, so that
+    // form reds on correct code. The claim is about the ASSIGNMENT LIST: read the
+    // whole SET clause and pin it, so `SET stage = 'ready', status = 'completed'`
+    // cannot slip past.
+    const setClauses = code.match(/\bSET\b[\s\S]*?\bWHERE\b/gi) || []
+    expect(setClauses, 'one UPDATE, one SET clause').toHaveLength(1)
+    expect(setClauses[0].replace(/\s+/g, ' ').trim(), '⚠ `stage` is the only column ever assigned')
+      .toBe("SET stage = 'ready' WHERE")
   })
 })
 

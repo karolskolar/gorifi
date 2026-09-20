@@ -433,8 +433,11 @@ router.patch('/:id/handed-over', requireAdmin, (req, res) => {
       // second „odovzdané priateľovi" message for a request that changed nothing.
       queued: stamped ? enqueueForHandOver([bag]) : 0,
       dequeued: 0,
-      // §UC-DP-009, inside the transaction, once per request. A stub until CS-T1.
-      cycleStage: markCycleReady(row.cycle_id),
+      // §UC-DP-009, inside the transaction, once per request. LIVE since CS-T1: a
+      // Packeta guest is their own bag and counts as a first bag, so this promotes a
+      // LOCKED cycle to `ready` too. ⚠ `.stage` — the published `cycle_stage` is the
+      // STAGE STRING (or null), not the helper's `{ changed }` flag.
+      cycleStage: markCycleReady(row.cycle_id).stage,
     };
   });
 

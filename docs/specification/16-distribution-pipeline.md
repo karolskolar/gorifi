@@ -502,22 +502,49 @@ first hand-over, never auto-completes the cycle“) without specifying the stage
 
 **Business rules:**
 
-- `backend/src/helpers/cycle-stage.js` exports `markCycleReady(cycleId)`. This module
+> ⚠⚠ **SUPERSEDED BY CS-T1 (module 17, 2026-09-20) — the body shipped.** Four claims below
+> were written while `markCycleReady()` was a stub and are now FALSE; each is struck in place
+> with its replacement rather than deleted (CLAUDE.md §Documentation discipline). **The live
+> contract is `17-cycle-stages.md` §UC-CS-003 and `backend/src/helpers/cycle-stage.js`.** The
+> one that bites hardest is the PREDICATE: this file's `stage IN ('ordered','arrived')` was
+> wrong and would have left every pre-module locked cycle at NULL forever. Anyone grepping the
+> predicate must land on the shipped one, not on this paragraph.
+
+- ~~`backend/src/helpers/cycle-stage.js` exports `markCycleReady(cycleId)`. This module
   ships it as a **no-op stub** (returns `null`) with a header comment naming module 17
   (`17-cycle-stages.md`, its stage-transition UC) as the owner of the body. Until 17 ships
-  there is no `order_cycles.stage` column to write.
+  there is no `order_cycles.stage` column to write.~~ **CS-T1 shipped the column and the
+  body.** The module now exports `CYCLE_STAGES`, `LOCKED_STAGE_DEFAULT` and
+  `markCycleReady(cycleId) → { changed, stage }` (17 §UC-CS-003).
 - Every `true` hand-over path (UC-DP-004/005/006) calls it INSIDE the transaction after its
-  writes, once per request (the bulk route once, not per bag), and echoes its return as
-  `cycle_stage` in the response.
-- Module 17's contract for the body (recorded here so the seam connects, NOT specified here):
-  set `stage = 'ready'` only when `status = 'locked'` and `stage IN ('ordered','arrived')`;
-  never touch `status`; reversal of a hand-over does NOT demote (a bag came back, the cycle is
-  still in its ready phase — 17 may reconsider).
+  writes, once per request (the bulk route once, not per bag), and ~~echoes its return as
+  `cycle_stage` in the response.~~ **echoes `.stage` — the STAGE STRING — as `cycle_stage`.**
+  ⚠ The published field is `<string|null>`; the helper's return is an OBJECT. Handing the
+  return value itself to `res.json` emits `{"changed":true}` where the contract promises a
+  string, which is the exact defect this sentence used to invite (CS-T1, mutation-proved:
+  it reds both `cycle-stages.spec.js` and `distribution-handover.spec.js`).
+- ~~Module 17's contract for the body (recorded here so the seam connects, NOT specified here):
+  set `stage = 'ready'` only when `status = 'locked'` and `stage IN ('ordered','arrived')`~~
+  — ⚠ **WRONG, and corrected by the spec that owns it.** The shipped predicate is
+  `WHERE id = ? AND status = 'locked' AND (stage IS NULL OR stage <> 'ready')`
+  (17 §UC-CS-003). `stage IS NULL` is in NEITHER of the two enum values named here, and the
+  no-backfill rule (17 §UC-CS-001) means NULL is what every locked cycle in production holds
+  — so the struck version would have refused to promote precisely the rows the feature exists
+  for. The rest of the sentence stands: never touch `status`; reversal of a hand-over does NOT
+  demote (17 confirmed this rather than reconsidering it — the clear path calls the seam not
+  at all, and its response carries `cycle_stage: null` by contract).
 - ⚠ **Nothing in this module writes `order_cycles.status`.** Completion is the admin's button
-  (UC-DP-014) calling the existing `PATCH /cycles/:id { status: 'completed' }`.
+  (UC-DP-014) calling the existing `PATCH /cycles/:id { status: 'completed' }`. **Still true,
+  and now pinned at the SQL** — `distribution-foundation.spec.js` reads the helper's whole
+  `SET` clause and requires it to be exactly `SET stage = 'ready'`.
 
-**Acceptance criteria (this module):** a hand-over on a DB without the `stage` column
-succeeds and answers `cycle_stage: null`; the stub is the only symbol module 17 replaces.
+**Acceptance criteria (this module):** ~~a hand-over on a DB without the `stage` column
+succeeds and answers `cycle_stage: null`; the stub is the only symbol module 17 replaces.~~
+**Superseded by CS-T1.** A hand-over on a LOCKED cycle answers `cycle_stage: 'ready'`; on an
+OPEN cycle it answers `null` (the helper is a no-op off `locked`, which is why every
+`cycle_stage: null` assertion in `distribution-handover.spec.js` still passes — its fixtures
+are open cycles, and those pins were never evidence about the promotion). The three symbols
+module 17 owns are listed above.
 
 ---
 

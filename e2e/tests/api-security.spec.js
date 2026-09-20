@@ -128,6 +128,11 @@ const ADMIN_ENDPOINTS = [
   { method: 'post', path: '/api/admin/google-allowlist', data: { id_token: 'TEST:evil:evil@example.test' } },
   { method: 'delete', path: '/api/admin/google-allowlist', data: { email: 'evil@example.test' } },
   { method: 'post', path: '/api/cycles', data: { name: 'evil' } },
+  // 17 §UC-CS-002 (CS-T1): the cycle PATCH was never listed — it wrote status,
+  // password, markup and the dates, and now it writes `stage` too, which is the
+  // friend-facing „kde je moja káva". 01-architecture §Permissions lists the cycle
+  // stage PATCH as admin. No NEW route: the same `router.patch('/:id', requireAdmin)`.
+  { method: 'patch', path: '/api/cycles/1', data: { stage: 'arrived' } },
   // 12 §UC-PC-011 item 1 (PC-T2): the catalog import trio. The mount is
   // whole-mount `requireAdmin` (`app.use('/api/coffee-products', requireAdmin,
   // …)`), but the sweep still pins each route individually — a later
