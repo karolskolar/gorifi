@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watchEffect } from 'vue'
+import { ref, computed, onMounted, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
 import { Card, CardContent } from '@/components/ui/card'
@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import BalanceBadge from '@/components/BalanceBadge.vue'
 import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
+import { bagsLabel, packedAdjective, handedAdjective } from '../lib/plural'
 
 const route = useRoute()
 const router = useRouter()
@@ -31,19 +32,48 @@ onMounted(async () => {
   await loadData()
 })
 
+// ⚠ `loadSeq` — the board re-fetches from several places (mount, after a whole-order
+// pack, and from DP-T6/T7 after a pickup change or a bulk hand-over), and those
+// responses can land out of order. The LAST request started is the only one allowed
+// to write the refs: a slower earlier fetch resolving afterwards would otherwise
+// paint a stale plan (and stale counts) over a fresh one. Same guard the shared
+// dialogs/loaders carry (CLAUDE.md §Frontend).
+let loadSeq = 0
+
 async function loadData() {
+  const seq = ++loadSeq
   try {
     const data = await api.getCycleDistribution(cycleId)
+    if (seq !== loadSeq) return
     cycle.value = data.cycle
     distribution.value = data.distribution
+    // ⚠ READ, NEVER RECOMPUTED (DP-T2, 16 §UC-DP-003). `plan` / `totals` are the
+    // server's — `helpers/delivery.js` is the one home of the classification, and a
+    // client-side re-derivation is exactly the second copy that drifts.
+    plan.value = Array.isArray(data.plan) ? data.plan : []
+    totals.value = data.totals || { count: 0, packed_count: 0, handed_count: 0 }
+    locations.value = Array.isArray(data.locations) ? data.locations : []
+    // ⚠ A FOCUS OUTLIVES ITS TARGET. The focus is a local `ref` and survives every
+    // re-fetch, but `plan[]` is the server's and the focused key can LEAVE it —
+    // the last party moves off a point and the point is retired, and that key is
+    // simply not in the next payload. The delivery branch then filters to zero
+    // groups while `distribution` is not empty, i.e. a toolbar over nothing with
+    // no focused card left to click to release it.
+    // ⚠ Not reachable from this row (nothing here re-fetches after a pickup
+    // change) but it becomes reachable the moment DP-T6 adds that re-fetch, which
+    // is why it is closed here rather than handed over.
+    if (focusedTarget.value && !plan.value.some((entry) => entry.target_key === focusedTarget.value)) {
+      focusedTarget.value = null
+    }
     // After the cycle is known: the listing is filtered by cycle type. Non-blocking
     // and swallowed into its own inline message — the picking sheet must still render
     // (and stay printable) when only the pickup dropdown fails to load.
     await loadPickupLocations()
   } catch (e) {
+    if (seq !== loadSeq) return
     error.value = e.message
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -247,6 +277,214 @@ function allItemsChecked(friend) {
 function printDistribution() {
   window.print()
 }
+
+// ── DP-T5 (16 §UC-DP-010): the board shell ───────────────────────────────────
+//
+// The header IS the plan: how many bags go to Packeta, to each pickup point, and
+// in person. Everything below reads the server's `plan[]` / `totals` (DP-T2) and
+// only arranges them — see `loadData()` for why nothing here re-derives a target.
+//
+// ⚠ What is deliberately NOT here, so the next rows are not surprised:
+//   • the ROW layout. Inside a group the shipped per-friend Card is still the
+//     placeholder, verbatim — DP-T6 converts card → row, and `guest-distribution
+//     .spec.js` passes unmodified until it does.
+//   • the bulk hand-over CALL. „Odovzdať zabalené (n)" renders, counts and
+//     disables itself at zero here; DP-T7 attaches the confirm modal and the
+//     `POST /cycles/:id/distribution/hand-over`. ⚠ When it does: send PARTY
+//     identifiers (an `order_id`, or a synthetic host's guest ids) — NOT every
+//     nested guest row the group renders. DP-T4 recorded why: an explicitly
+//     listed guest with one unchecked item aborts the whole batch, while the same
+//     bag merely INHERITED from its host goes through.
+//   • „Správa skupine" — module 21's, by resolved conflict 3. Not a slot, not a
+//     disabled button: absent.
+const plan = ref([])
+const totals = ref({ count: 0, packed_count: 0, handed_count: 0 })
+const locations = ref([])
+
+// ⚠ PLACEHOLDER, AND ON PURPOSE ONE CONSTANT. „Štítky" is the entry point of F7
+// (the label sheet), which is built elsewhere and whose route the product owner
+// has not supplied yet. The button therefore renders DISABLED and navigates
+// nowhere: `router.js` has no catch-all, so pushing an unknown admin path renders
+// a blank page, which is strictly worse than a button that says „not yet". The
+// route travels on the DOM (`data-labels-route`) so wiring it later is this line
+// plus a `@click`.
+const LABELS_ROUTE = '/admin/stitky'
+
+const GROUP_BY_OPTIONS = [
+  { key: 'delivery', label: 'Podľa doručenia' },
+  { key: 'stage', label: 'Podľa stavu' },
+  { key: 'friend', label: 'Podľa priateľa' },
+]
+
+const STAGE_FILTERS = [
+  { key: 'all', label: 'Všetko' },
+  { key: 'to_pack', label: 'Na zabalenie' },
+  { key: 'packed', label: 'Zabalené' },
+  { key: 'handed', label: 'Odovzdané' },
+]
+
+// „Podľa stavu" is exactly three groups, in the order the work happens.
+const STAGE_GROUPS = [
+  { key: 'to_pack', title: 'Na zabalenie', sub: '' },
+  { key: 'packed', title: 'Zabalené', sub: '' },
+  { key: 'handed', title: 'Odovzdané', sub: '' },
+]
+
+// The two targets that are not places, and therefore label themselves. A pickup
+// point takes its title from `plan[].target_label` (the server reads it from the
+// party, so a group title can never disagree with the row under it) and its
+// sub-line from `locations[]`.
+const DELIVERY_GROUP_META = {
+  packeta: { title: 'Packeta', sub: 'zásielky odovzdáte na pobočke / Z-BOXe' },
+  in_person: { title: 'Osobné odovzdanie', sub: 'dohodnete individuálne' },
+}
+
+// ⚠ Local `ref`s, not URL state: they survive the in-place row patches DP-T6/T7
+// make, and a re-fetch must not reset the admin's view of the board.
+const groupBy = ref('delivery')
+const stageFilter = ref('all')
+const focusedTarget = ref(null)
+
+const locationsById = computed(() => {
+  const map = {}
+  for (const location of locations.value) map[String(location.id)] = location
+  return map
+})
+
+// `loc<id>` → `<id>`, or null for `packeta` / `in_person`. The server emits no
+// other shape (helpers/delivery.js), so anything else is treated as not-a-point.
+function locIdOf(key) {
+  const match = /^loc([1-9][0-9]*)$/.exec(String(key || ''))
+  return match ? match[1] : null
+}
+
+function sortedByName(parties) {
+  return [...parties].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+}
+
+// ⚠ THE FILTER APPLIES TO PARTIES — host rows. A nested `via_host` guest is never
+// filtered independently of its host: it travels inside the host's bag, so hiding
+// it alone would describe a bag that does not exist.
+const filteredParties = computed(() =>
+  stageFilter.value === 'all'
+    ? distribution.value
+    : distribution.value.filter((party) => party.stage === stageFilter.value)
+)
+
+// Under „Všetko" an empty group still renders („Nič v tejto skupine.") — that is
+// how the admin tells „no bags at that point" from „that point is not set up".
+// Under any other filter an empty group is hidden, or filtering to „Odovzdané"
+// would answer with a page of empty boxes.
+function keepGroup(group) {
+  return stageFilter.value === 'all' || group.parties.length > 0
+}
+
+const groups = computed(() => {
+  const parties = filteredParties.value
+
+  if (groupBy.value === 'friend') {
+    return [{ key: 'all', title: 'Všetci', sub: '', parties: sortedByName(parties) }]
+  }
+
+  if (groupBy.value === 'stage') {
+    return STAGE_GROUPS
+      .map((group) => ({ ...group, parties: sortedByName(parties.filter((p) => p.stage === group.key)) }))
+      .filter((group) => keepGroup(group))
+  }
+
+  // Podľa doručenia — `plan[]` IS the order (Packeta, points by ascending id,
+  // Osobne last) and the set of groups, zero-count active points included.
+  const byDelivery = plan.value.map((entry) => {
+    const locationId = locIdOf(entry.target_key)
+    const meta = DELIVERY_GROUP_META[entry.target_key]
+    const location = locationId ? locationsById.value[locationId] : null
+    return {
+      key: entry.target_key,
+      // A DANGLING point (the `pickup_locations` row is gone outright) keeps its
+      // key and loses only its name — the bag is real and must not vanish.
+      title: meta ? meta.title : (entry.target_label || 'Neznáme miesto'),
+      sub: meta ? meta.sub : (location?.address || ''),
+      parties: sortedByName(parties.filter((party) => party.delivery?.target_key === entry.target_key)),
+    }
+  }).filter((group) => keepGroup(group))
+
+  if (focusedTarget.value) return byDelivery.filter((group) => group.key === focusedTarget.value)
+  return byDelivery
+})
+
+function groupPackedCount(group) {
+  return group.parties.filter((p) => p.stage === 'packed' || p.stage === 'handed').length
+}
+
+function groupHandedCount(group) {
+  return group.parties.filter((p) => p.stage === 'handed').length
+}
+
+// ⚠ `stage === 'packed'` ONLY, never the `packed_count` superset: a bag that is
+// already handed over is DONE, not ready, and counting it would offer to hand
+// over a parcel that has left the building.
+function groupReadyCount(group) {
+  return group.parties.filter((p) => p.stage === 'packed').length
+}
+
+const boardEmpty = computed(() => distribution.value.length === 0)
+
+// ⚠ THERE ARE BAGS, BUT NONE IN THIS VIEW. A focus and a non-default stage filter
+// select independently, so their intersection can be empty (focus „Packeta" +
+// „Na zabalenie" when everything at Packeta has left) — and under any filter but
+// „Všetko" the empty groups are hidden too, so the screen would be a toolbar over
+// nothing. Rather than decide which of the two wins (a semantics call §UC-DP-010
+// does not settle, and DP-T7's confirm modal reads this same list), the board
+// SAYS SO. ⚠ Distinct from `boardEmpty`, which is about the CYCLE.
+const viewEmpty = computed(() => !boardEmpty.value && groups.value.length === 0)
+
+const totalsLine = computed(() => {
+  const count = totals.value?.count || 0
+  const packed = totals.value?.packed_count || 0
+  const handed = totals.value?.handed_count || 0
+  return `${bagsLabel(count)} · ${packed} ${packedAdjective(packed)} · ${handed} ${handedAdjective(handed)}`
+})
+
+// ⚠ The two-tone bar only adds up because DP-T2 made `packed_count` a SUPERSET of
+// `handed_count` (handed implies packed): the first segment is the handed share,
+// the second is what is packed but still here. A second segment drawn from
+// `packed_count / count` would double-count every handed bag and overflow.
+function handedShare(entry) {
+  return entry.count > 0 ? Math.round((entry.handed_count / entry.count) * 1000) / 10 : 0
+}
+
+function packedShare(entry) {
+  return entry.count > 0
+    ? Math.round(((entry.packed_count - entry.handed_count) / entry.count) * 1000) / 10
+    : 0
+}
+
+function planIcon(entry) {
+  if (entry.type === 'packeta') return '🚚'
+  if (entry.type === 'pickup') return '📍'
+  return '🤝'
+}
+
+// The shipped kg rule, `Math.round(g/10)/100` (FriendOrder.vue,
+// GuestProductGrid.vue, FriendPortalSession.vue print the same expression).
+// JavaScript's own number→string drops the trailing zeros, which is the "trailing
+// zeros stripped" half of it — 1500 g reads „1.5 kg", 1000 g reads „1 kg".
+function kgLabel(grams) {
+  return `${Math.round((grams || 0) / 10) / 100} kg`
+}
+
+// Click = group by delivery AND show only this target; click again = release.
+function focusPlan(entry) {
+  groupBy.value = 'delivery'
+  focusedTarget.value = focusedTarget.value === entry.target_key ? null : entry.target_key
+}
+
+// Choosing a grouping clears the card focus (§UC-DP-010) — a focus on a delivery
+// target is meaningless under „Podľa stavu" / „Podľa priateľa".
+function setGroupBy(key) {
+  groupBy.value = key
+  focusedTarget.value = null
+}
 </script>
 
 <template>
@@ -290,9 +528,169 @@ function printDistribution() {
 
       <div v-if="loading" class="text-center py-12 text-muted-foreground">Načítavam...</div>
 
-      <div v-else class="space-y-4">
+      <div v-else class="space-y-6">
+        <!-- ── Title block (16 §UC-DP-010 item 2) ───────────────────────────── -->
+        <div>
+          <h1 class="text-2xl font-bold" data-testid="board-title">
+            Distribúcia <span class="text-primary">plán</span>
+          </h1>
+          <p class="text-sm text-muted-foreground mt-1" data-testid="board-totals">{{ totalsLine }}</p>
+        </div>
+
+        <!-- ── Plan cards, one per plan[] entry, zero-count points included ──
+             `print:hidden`: the plan is a screen tool, the printed sheet is the
+             bags themselves. -->
+        <div v-if="plan.length > 0" class="grid gap-3 grid-cols-2 lg:grid-cols-4 print:hidden">
+          <Card
+            v-for="entry in plan"
+            :key="entry.target_key"
+            :data-testid="`plan-card-${entry.target_key}`"
+            :data-focused="focusedTarget === entry.target_key ? 'true' : 'false'"
+            role="button"
+            tabindex="0"
+            @click="focusPlan(entry)"
+            @keydown.enter.prevent="focusPlan(entry)"
+            @keydown.space.prevent="focusPlan(entry)"
+            :class="[
+              'cursor-pointer transition-all select-none hover:border-muted-foreground/40',
+              focusedTarget === entry.target_key ? 'ring-2 ring-primary border-primary' : ''
+            ]"
+          >
+            <CardContent class="p-3">
+              <div class="flex items-start justify-between gap-2">
+                <div class="min-w-0" style="overflow-wrap: anywhere">
+                  <span class="text-base" aria-hidden="true">{{ planIcon(entry) }}</span>
+                  <span class="text-sm font-semibold ml-1">{{ entry.target_label || 'Neznáme miesto' }}</span>
+                </div>
+                <span class="text-2xl font-bold leading-none shrink-0" :data-testid="`plan-count-${entry.target_key}`">{{ entry.count }}</span>
+              </div>
+              <!-- Two-tone: handed first, then packed-but-still-here. The shares
+                   ride on the DOM so they are assertable, not eyeballed. -->
+              <div class="mt-2 h-2 w-full rounded-full bg-muted overflow-hidden flex">
+                <div
+                  class="h-full bg-green-600"
+                  :data-testid="`plan-bar-handed-${entry.target_key}`"
+                  :data-share="handedShare(entry)"
+                  :style="{ width: `${handedShare(entry)}%` }"
+                ></div>
+                <div
+                  class="h-full bg-amber-400"
+                  :data-testid="`plan-bar-packed-${entry.target_key}`"
+                  :data-share="packedShare(entry)"
+                  :style="{ width: `${packedShare(entry)}%` }"
+                ></div>
+              </div>
+              <div class="mt-1.5 text-xs text-muted-foreground" :data-testid="`plan-line-${entry.target_key}`">
+                {{ entry.packed_count }}/{{ entry.count }} zabal. ·
+                {{ entry.handed_count }}/{{ entry.count }} odovzd. ·
+                {{ kgLabel(entry.kg) }}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <!-- ── Toolbar: group-by + stage filter ─────────────────────────────── -->
+        <div class="flex flex-wrap items-center gap-4 print:hidden">
+          <div class="inline-flex rounded-md border overflow-hidden">
+            <button
+              v-for="option in GROUP_BY_OPTIONS"
+              :key="option.key"
+              type="button"
+              :data-testid="`group-by-${option.key}`"
+              :data-active="groupBy === option.key ? 'true' : 'false'"
+              @click="setGroupBy(option.key)"
+              class="px-3 py-1.5 text-sm transition-colors border-r last:border-r-0"
+              :class="groupBy === option.key ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+          <div class="inline-flex rounded-md border overflow-hidden">
+            <button
+              v-for="option in STAGE_FILTERS"
+              :key="option.key"
+              type="button"
+              :data-testid="`stage-filter-${option.key}`"
+              :data-active="stageFilter === option.key ? 'true' : 'false'"
+              @click="stageFilter = option.key"
+              class="px-3 py-1.5 text-sm transition-colors border-r last:border-r-0"
+              :class="stageFilter === option.key ? 'bg-secondary text-secondary-foreground' : 'bg-background hover:bg-muted'"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Nobody ordered: the plan cards above still show the configured points
+             at 0, and this replaces the groups entirely. -->
+        <div v-if="boardEmpty" class="text-muted-foreground italic py-8" data-testid="board-empty">
+          Zatiaľ nie je čo distribuovať.
+        </div>
+
+        <!-- There ARE bags — just none that the current focus + filter select.
+             A screen that explains itself instead of one that looks broken. -->
+        <div v-else-if="viewEmpty" class="text-muted-foreground italic py-8" data-testid="board-no-match">
+          Tomuto výberu nezodpovedá žiadny balíček. Zmeňte filter alebo zoskupenie.
+        </div>
+
+        <!-- ── Groups ───────────────────────────────────────────────────────── -->
+        <template v-else>
+        <section
+          v-for="group in groups"
+          :key="group.key"
+          :data-testid="`dist-group-${group.key}`"
+          class="space-y-3"
+        >
+          <!-- ⚠ NO `p-4` ON ANY WRAPPER AROUND A PARTY CARD. `guest-distribution
+               .spec.js` locates a card as `div.p-4` containing the friend's
+               heading; a second such ancestor makes that locator strict-mode
+               ambiguous and reddens a shipped file this row must not touch. -->
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-2 border-b pb-2">
+            <div class="min-w-0" style="overflow-wrap: anywhere">
+              <h2 class="text-base font-semibold">{{ group.title }}</h2>
+              <p v-if="group.sub" class="text-xs text-muted-foreground">{{ group.sub }}</p>
+            </div>
+            <Badge variant="outline" :data-testid="`group-badge-${group.key}`">
+              {{ bagsLabel(group.parties.length) }}
+            </Badge>
+            <span class="text-xs text-muted-foreground" :data-testid="`group-counts-${group.key}`">
+              {{ groupPackedCount(group) }} zabal. · {{ groupHandedCount(group) }} odovzd.
+            </span>
+            <div class="ml-auto flex items-center gap-2 print:hidden">
+              <!-- F7's entry point, not yet supplied — see LABELS_ROUTE. -->
+              <Button
+                variant="outline"
+                size="sm"
+                disabled
+                title="Tlač štítkov pripravujeme"
+                :data-testid="`labels-group-${group.key}`"
+                :data-labels-route="LABELS_ROUTE"
+              >
+                Štítky
+              </Button>
+              <!-- DP-T7 attaches the confirm modal and the bulk POST; here it only
+                   counts and refuses to be clickable at zero. -->
+              <Button
+                size="sm"
+                :disabled="groupReadyCount(group) === 0"
+                :data-testid="`handover-group-${group.key}`"
+              >
+                Odovzdať zabalené ({{ groupReadyCount(group) }})
+              </Button>
+            </div>
+          </div>
+
+          <div
+            v-if="group.parties.length === 0"
+            class="text-sm text-muted-foreground italic"
+            :data-testid="`group-empty-${group.key}`"
+          >
+            Nič v tejto skupine.
+          </div>
+
+          <div v-else class="space-y-4">
         <Card
-          v-for="friend in distribution"
+          v-for="friend in group.parties"
           :key="friend.id"
           :class="[
             'print:shadow-none print:border print:break-inside-avoid',
@@ -548,6 +946,9 @@ function printDistribution() {
             </template>
           </CardContent>
         </Card>
+          </div>
+        </section>
+        </template>
       </div>
     </main>
   </div>
