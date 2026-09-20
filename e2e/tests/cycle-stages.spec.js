@@ -39,9 +39,14 @@ import { collectAppCopy } from '../helpers/copy-sweep.js'
 //     `distribution-handover.spec.js` are NOT this evidence — every cycle in that
 //     file is `open`, where the helper is a no-op by design.
 //
-//  4. ⚠ **A LOCKED CYCLE WITH `stage IS NULL` IS UNREACHABLE THROUGH THE API** —
-//     locking writes `ordered`, unlocking writes NULL *and* opens the cycle, and
-//     the PATCH refuses `stage: null`. But it is the state EVERY locked cycle in
+//  4. ⚠ ~~**A LOCKED CYCLE WITH `stage IS NULL` IS UNREACHABLE THROUGH THE API**~~
+//     — **SUPERSEDED by FUP-T26 (2026-09-20):** the lock default now fires from
+//     `open` only, so `PATCH { status: 'locked' }` on a PLANNED cycle reaches
+//     exactly this row (pinned in the FUP-T26 describe). The paragraph's reasoning
+//     below is otherwise unchanged, and so is the test it explains — a
+//     manufactured row is still the honest way to pin the PRE-MODULE state.
+//     Locking from `open` writes `ordered`, unlocking writes NULL *and* opens the
+//     cycle, and the PATCH refuses `stage: null`. But it is the state EVERY locked cycle in
 //     production is in right now (§UC-CS-001 forbids a backfill), and it is the
 //     exact row the stub's superseded contract (`stage IN ('ordered','arrived')`)
 //     would have left stuck at NULL forever. So that one test manufactures the row
@@ -586,6 +591,176 @@ test.describe('CS-T1 · 17 §UC-CS-002 — PATCH stage', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 4b. FUP-T26 · 17 §UC-CS-002 — WHICH transitions may write `stage`
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ⚠ WHY THIS SECTION EXISTS AT ALL. CS-T1 measured three transitions that leave
+// `order_cycles.stage` disagreeing with `status` (docs/learnings/09-cycle-stages.md
+// §10) and NOTHING pinned any of them SERVER-side — the only defence was
+// `lib/cycle-stages.js stageIndex()` reading `status` before `stage`, i.e. the
+// frontend masking the backend. A rendered-step assertion therefore cannot be this
+// evidence: it passes with the defect present. Every test below drives the real
+// `PATCH /api/cycles/:id` and reads the ROW back.
+//
+// ⚠ AND EVERY FIXTURE IS BUILT TO NOT BE A FIXED POINT. The whole class of defect
+// here is „the route wrote `ordered` when it should have written nothing", so a
+// fixture whose stage already IS `ordered` proves nothing whatever the branch does.
+// Each one below starts from a stage that DIFFERS from `LOCKED_STAGE_DEFAULT` and
+// asserts that difference as a precondition — and the outcome assertions say both
+// what the value is and what it must not be.
+//
+// What §UC-CS-002's table actually authorises, read as its own parentheticals scope
+// it: a lock default „(transition INTO locked from `open`)"; a stage clear on
+// „`status: 'open'` WHILE THE CYCLE IS `locked`"; `completed` ⇒ untouched;
+// `locked → locked` ⇒ untouched without an explicit `body.stage`; `planned` ⇒
+// „unchanged from today (no stage semantics)". So:
+//
+//   • C `completed → locked` — the shipped guard (`cycle.status !== 'locked'`) was
+//     WIDER than the only rule that authorises the write. FIXED here.
+//   • A `locked(ready) → planned` and B `completed(ready) → open` — conformant with
+//     the table as written; LEFT ALONE, and pinned as deliberate below so the next
+//     row can tell „looked at and left" from „nobody looked".
+test.describe('FUP-T26 · 17 §UC-CS-002 — the lock default fires from `open` ONLY', () => {
+  // `LOCKED_STAGE_DEFAULT`, re-typed rather than imported: `helpers/cycle-stage.js`
+  // pulls in the backend's db handle, which an e2e worker must never open.
+  const LOCK_DEFAULT = 'ordered'
+
+  /** A round that ran to the end and carries `stage` as its historical record. */
+  async function completedWithStage(label, stage) {
+    expect(stage, 'a fixture equal to the default would be a FIXED POINT').not.toBe(LOCK_DEFAULT)
+    const cycle = await makeCycle(label)
+    expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
+    expect((await patchCycle(cycle.id, { stage })).status()).toBe(200)
+    expect((await patchCycle(cycle.id, { status: 'completed' })).status()).toBe(200)
+    const row = await readCycle(cycle.id)
+    expect(row.status, 'fixture precondition: completed').toBe('completed')
+    expect(row.stage, 'fixture precondition: the stage the coffee ended at').toBe(stage)
+    return cycle
+  }
+
+  test('⚠ C — re-locking a COMPLETED round KEEPS its stage; it never rewinds to `ordered`', async () => {
+    // The admin's recovery path for a mis-completed round. Before FUP-T26 this
+    // answered 200 with `stage: 'ordered'`, i.e. the friend-facing timeline of a
+    // round whose coffee is already handed out walked back from step 5
+    // („Zabalené, rozvážame") to step 2 („Objednávky uzavreté…").
+    const cycle = await completedWithStage('ReLockCompleted', 'ready')
+
+    const res = await patchCycle(cycle.id, { status: 'locked' })
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.status, 'the recovery itself still works').toBe('locked')
+    expect(body.stage, 'the PATCH response carries it too').toBe('ready')
+
+    const after = await readCycle(cycle.id)
+    expect(after.status).toBe('locked')
+    expect(after.stage, 'the coffee did not un-leave the admin\'s hands').toBe('ready')
+    expect(after.stage, '⚠ the defect: the lock default fired from `completed`').not.toBe(LOCK_DEFAULT)
+  })
+
+  test('⚠ C is not a `ready`-only rule — an `arrived` round survives the same re-lock', async () => {
+    const cycle = await completedWithStage('ReLockArrived', 'arrived')
+    expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
+    const after = await readCycle(cycle.id)
+    expect(after.status).toBe('locked')
+    expect(after.stage, 'whatever the history was, it is not overwritten').toBe('arrived')
+    expect(after.stage).not.toBe(LOCK_DEFAULT)
+  })
+
+  test('the deliberate reset is still reachable — EXPLICITLY, in the body', async () => {
+    // Narrowing the implicit default must not remove the admin's ability to ask
+    // for it: `{ status: 'locked', stage: 'ordered' }` takes the `stageProvided`
+    // branch, whose effective status is this body's `locked`, so no 409.
+    const cycle = await completedWithStage('ReLockExplicit', 'ready')
+    const res = await patchCycle(cycle.id, { status: 'locked', stage: LOCK_DEFAULT })
+    expect(res.status()).toBe(200)
+    const after = await readCycle(cycle.id)
+    expect(after.status).toBe('locked')
+    expect(after.stage, 'asked for, so written').toBe(LOCK_DEFAULT)
+  })
+
+  test('⚠ the rule the narrowing must NOT touch: `open → locked` still writes `ordered`, even over a stale stage', async () => {
+    // The counter-pin. `completed(ready) → open` (transition B) leaves `ready`
+    // standing on an OPEN cycle, so this locks a row that already carries a
+    // DIFFERENT stage — if the default had been narrowed away instead of scoped,
+    // this reads `ready` and reds.
+    const cycle = await completedWithStage('OpenThenLock', 'ready')
+    expect((await patchCycle(cycle.id, { status: 'open' })).status()).toBe(200)
+    const reopened = await readCycle(cycle.id)
+    expect(reopened.status).toBe('open')
+    expect(reopened.stage, 'precondition: B left the stale value').toBe('ready')
+
+    expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
+    const after = await readCycle(cycle.id)
+    expect(after.status).toBe('locked')
+    expect(after.stage, '§UC-CS-002: INTO locked from `open` ⇒ LOCKED_STAGE_DEFAULT').toBe(LOCK_DEFAULT)
+  })
+
+  test('A — `locked(ready) → planned` LEAVES the stale stage, deliberately (spec-conformant, not overlooked)', async () => {
+    // §UC-CS-002: „`status: 'planned'` — unchanged from today (no stage
+    // semantics)." Nothing authorises a clear, so nothing clears. Harmless because
+    // `stageIndex()` consults `status` first and a planned round renders at step 0
+    // whatever `stage` holds (pinned in the §UC-CS-005 section of this file).
+    const cycle = await makeCycle('StaleToPlanned')
+    expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
+    expect((await patchCycle(cycle.id, { stage: 'ready' })).status()).toBe(200)
+
+    expect((await patchCycle(cycle.id, { status: 'planned' })).status()).toBe(200)
+    const after = await readCycle(cycle.id)
+    expect(after.status).toBe('planned')
+    expect(after.stage, 'deliberate: `planned` has no stage semantics').toBe('ready')
+  })
+
+  test('B — `completed(ready) → open` LEAVES the stale stage, deliberately (spec-conformant, not overlooked)', async () => {
+    // §UC-CS-002 scopes the clear to „`status: 'open'` WHILE THE CYCLE IS
+    // `locked`". `completed → open` is not that, so the unlock branch does not
+    // fire. Harmless for the same reason as A: an open round renders at step 1.
+    const cycle = await completedWithStage('CompletedToOpen', 'ready')
+    expect((await patchCycle(cycle.id, { status: 'open' })).status()).toBe(200)
+    const after = await readCycle(cycle.id)
+    expect(after.status).toBe('open')
+    expect(after.stage, 'deliberate: the unlock branch is scoped to `locked`').toBe('ready')
+  })
+
+  test('`planned → locked` invents no stage — and `locked` + NULL IS `ordered` to every reader', async () => {
+    // The narrowing's one other consequence, deliberate: locking a PLANNED round
+    // now leaves `stage` as it stood. On a normally-planned round that is NULL,
+    // which §UC-CS-001's no-backfill rule makes a first-class state — `stageIndex`
+    // maps locked+NULL to 2 (`ordered`), the admin's „Káva dorazila" button renders
+    // for NULL, and `markCycleReady()`'s predicate is `stage IS NULL OR stage <>
+    // 'ready'`. So nothing on any screen differs; only the column stops being
+    // written by a transition the table does not name.
+    const cycle = await makeCycle('PlannedLock', { status: 'planned' })
+    expect((await readCycle(cycle.id)).status, 'fixture: planned').toBe('planned')
+
+    expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
+    const after = await readCycle(cycle.id)
+    expect(after.status).toBe('locked')
+    expect(after.stage, 'no rule authorises a write here').toBe(null)
+
+    // …and the hand-over seam still promotes such a row, so it is not a dead end.
+    expect((await patchCycle(cycle.id, { stage: 'arrived' })).status(), 'still steerable by hand').toBe(200)
+    expect((await readCycle(cycle.id)).stage).toBe('arrived')
+  })
+
+  test('…and a planned round carrying A\'s stale `ready` does not rewind when it is locked again', async () => {
+    // The second rewind the narrowing removes: `locked(ready) → planned → locked`
+    // used to land on `ordered` exactly the way C did. A stays unfixed, so this
+    // chain is reachable.
+    const cycle = await makeCycle('PlannedStaleLock')
+    expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
+    expect((await patchCycle(cycle.id, { stage: 'ready' })).status()).toBe(200)
+    expect((await patchCycle(cycle.id, { status: 'planned' })).status()).toBe(200)
+    expect((await readCycle(cycle.id)).stage, 'precondition: A left the stale value').toBe('ready')
+
+    expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
+    const after = await readCycle(cycle.id)
+    expect(after.status).toBe('locked')
+    expect(after.stage).toBe('ready')
+    expect(after.stage, 'the same rewind, one transition removed').not.toBe(LOCK_DEFAULT)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 5. §UC-CS-004 — payload publication
 // ─────────────────────────────────────────────────────────────────────────────
 test.describe('CS-T1 · 17 §UC-CS-004 — the three fields on every cycle payload', () => {
@@ -800,10 +975,14 @@ test.describe('CS-T1 · 17 §UC-CS-003 — the hand-over seam', () => {
 
   // ⚠ THE ROW THE NO-BACKFILL RULE CREATES — and the one the stub's superseded
   // contract (`stage IN ('ordered','arrived')`) would have left at NULL forever.
-  // Unreachable through the API (locking writes `ordered`, unlocking also opens the
-  // cycle, and `stage: null` is a 400), so the fixture writes it directly.
+  // ~~Unreachable through the API~~ (locking writes `ordered`, unlocking also opens
+  // the cycle, and `stage: null` is a 400) — ⚠ SUPERSEDED by FUP-T26 (2026-09-20):
+  // the lock default fires from `open` only, so locking a PLANNED cycle now lands
+  // here. The fixture still writes the row DIRECTLY and keeps its gate on purpose:
+  // it must pin the PRE-MODULE state unconditionally, not by borrowing a second
+  // rule that a later row could narrow again.
   test('a PRE-MODULE locked cycle (`stage IS NULL`) is promoted to `ready`', async () => {
-    test.skip(!DB_PATH, 'needs DB_PATH: a locked cycle with stage IS NULL cannot be built through the API')
+    test.skip(!DB_PATH, 'needs DB_PATH: this manufactures the pre-module row rather than relying on another rule')
     const cycle = await makeCycle('SeamNullStage')
     const product = await addProduct(cycle.id)
     const friend = await makeFriend('SeamNullFriend')
@@ -930,11 +1109,14 @@ test.describe('CS-T2 · 17 §UC-CS-005 — `stageIndex` and the step model', () 
     expect(cs2.stageIndex({ status: 'draft' }), 'an unknown status').toBe(0)
   })
 
-  test('⚠ `status` is consulted BEFORE `stage` — the three stale-stage rows CS-T1 measured stay off the screen', () => {
-    // docs/learnings/09-cycle-stages.md §10. None of these three transitions is
-    // named by §UC-CS-002, so the backend leaves a `stage` that disagrees with its
-    // `status`; all three are invisible ONLY because this function reads `status`
-    // first. Nothing else in the suite pins that ordering, so this test is it.
+  test('⚠ `status` is consulted BEFORE `stage` — the stale-stage rows CS-T1 measured stay off the screen', () => {
+    // docs/learnings/09-cycle-stages.md §10. ⚠ FUP-T26 (2026-09-20) closed the
+    // third of those rows at the SOURCE — `completed → locked` no longer resets
+    // the stage — so what survives here is A and B: two transitions §UC-CS-002
+    // deliberately leaves alone, which therefore still leave a `stage` that
+    // disagrees with its `status`. Both are invisible ONLY because this function
+    // reads `status` first. Nothing else in the suite pins that ordering, so this
+    // test is still it.
     //
     // ⚠ Every row below carries `stage: 'ready'` or `'ordered'`, i.e. a value a
     // stage-first implementation would map to a DIFFERENT index (4 / 2) — the
@@ -943,7 +1125,14 @@ test.describe('CS-T2 · 17 §UC-CS-005 — `stageIndex` and the step model', () 
     // happened to agree with its status would prove nothing at all.
     const A = { status: 'planned', stage: 'ready' }   // locked(ready) → planned
     const B = { status: 'open', stage: 'ready' }      // completed(ready) → open
-    const C = { status: 'locked', stage: 'ordered' }  // completed(ready) → locked
+    // ⚠ FUP-T26 (2026-09-20): row C's PROVENANCE is superseded — ~~`completed(ready)
+    // → locked`~~ no longer produces this row at all; the lock default now fires
+    // from `open` only, so that transition keeps `ready` (pinned server-side in the
+    // FUP-T26 describe above). The row stays because `locked` + `ordered` is still
+    // a real state — reached by `open → locked` — and it is the ordering claim's
+    // FIXED POINT: under `locked` a stage-first read agrees with a status-first one
+    // by construction. A and B are what discriminate; C only documents the step.
+    const C = { status: 'locked', stage: 'ordered' }  // open → locked
 
     expect(cs2.stageIndex(A), 'A: a planned round renders as planned').toBe(0)
     expect(cs2.stageIndex(A), 'A: never as `ready`').not.toBe(4)
@@ -1545,6 +1734,19 @@ test.describe('CS-T3 · 17 §UC-CS-007 — the two planning dates on the setting
     await expect.poll(async () => (await readCycle(cycle.id)).opens_at,
       { message: 'the opening reaches the column' }).toBe('2026-10-05')
 
+    // ⚠ WAIT FOR THE REFETCH BEFORE TOUCHING THE SIBLING FIELD — this is a real race
+    // and it flaked 2 of 6 runs on a loaded box (FUP-T26, 2026-09-20). The poll above
+    // reads the API DIRECTLY, so it goes green the moment the PATCH commits, while the
+    // page's own `loadAll()` is still in flight. CS-T3 moved that refetch into `finally`
+    // (so a REFUSED save snaps the control back), which means it always runs — and when
+    // it lands after the `fill()` below it resets `closesAt` to the stored `''`, so the
+    // next click legitimately sends `closes_at: null` and the read-back is null.
+    // `opensAtSaving` clears only AFTER `await loadAll()`, so the button returning to
+    // enabled is the app's own „refetch finished" signal. Do not replace this with a
+    // timeout.
+    await expect(page.getByTestId('cycle-opens-at-save'),
+      'the opening save settled, including its refetch').toBeEnabled()
+
     await page.getByTestId('cycle-closes-at').fill('2026-10-12')
     await page.getByTestId('cycle-closes-at-save').click()
     await expect.poll(async () => (await readCycle(cycle.id)).closes_at,
@@ -1649,12 +1851,14 @@ test.describe('CS-T3 · 17 §UC-CS-007 — the forward-only stage buttons and th
   })
 
   test('a PRE-MODULE locked round (`stage IS NULL`) offers both buttons and reads as `ordered`', async ({ page }) => {
-    test.skip(!DB_PATH, 'needs DB_PATH: locking always writes `ordered`, so the NULL row is unreachable through the API')
+    test.skip(!DB_PATH, 'needs DB_PATH: this manufactures the pre-module row rather than relying on another rule')
     await adminUI(page)
     const cycle = await makeCycle('T3NullStage')
     expect((await patchCycle(cycle.id, { status: 'locked' })).status()).toBe(200)
     // The state every locked round in production is in — the no-backfill rule
-    // (§UC-CS-001) leaves them at NULL and no API call produces it.
+    // (§UC-CS-001) leaves them at NULL. ⚠ Since FUP-T26 a `planned → locked` PATCH
+    // reaches it too; written directly anyway, so this stays evidence about the
+    // PRE-MODULE row and not about that transition.
     withDb((db) => db.prepare('UPDATE order_cycles SET stage = NULL WHERE id = ?').run(cycle.id))
     expect((await readCycle(cycle.id)).stage, 'the fixture really is NULL').toBe(null)
 

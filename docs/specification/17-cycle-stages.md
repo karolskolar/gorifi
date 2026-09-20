@@ -5,7 +5,10 @@
 > and open states need. Four areas: (a) three new nullable columns on `order_cycles` —
 > `opens_at`, `closes_at` (ISO calendar dates, informational, never a scheduler) and
 > `stage` (`ordered` → `arrived` → `ready`, meaningful only while `status='locked'`,
-> defaulted to `ordered` on lock, cleared on unlock); (b) the `PATCH /cycles/:id`
+> defaulted to `ordered` on lock **from `open`**, cleared on unlock **from `locked`** —
+> ⚠ both scopes are load-bearing, not descriptive: reading them as unqualified is exactly
+> how the shipped `!== 'locked'` guard got written, which rewound a handed-out round's
+> timeline from step 5 to step 2 until FUP-T26); (b) the `PATCH /cycles/:id`
 > extension and the ONE backend helper (`helpers/cycle-stage.js`) that owns the enum and
 > the "first hand-over ⇒ `ready`" transition module 16 calls; (c) the three fields
 > published on every friend, guest and admin cycle payload; (d) `CycleTimeline.vue` — ONE
@@ -170,6 +173,19 @@ a spread of the body:
 | `status: 'completed'` | `stage` untouched — it is the historical record of where the coffee ended; the step index derives from `status` first (UC-CS-005), so the stale value is never shown as current. |
 | `status: 'locked'` when already locked | no stage change unless `body.stage` is present. |
 | `status: 'planned'` | unchanged from today (the route accepts it; no stage semantics). |
+
+> ⚠ **The parentheticals in the two `status: 'locked'` rows are SCOPES, not glosses**
+> (clarified by FUP-T26, 2026-09-20, after the shipped guard read them as descriptive).
+> This table partitions the lock rule by SOURCE status: from `open` (default `ordered`) and
+> from `locked` (no change without an explicit `body.stage`). `completed → locked` and
+> `planned → locked` are named by NEITHER, so neither authorises a stage write — the shipped
+> `cycle.status !== 'locked'` fired from both, and on `completed` it RESET a handed-out
+> round's `ready` to `ordered`, contradicting the `completed` row two lines up. The guard is
+> now `cycle.status === 'open'`. The two fall-throughs the table DOES cover by leaving them
+> alone — `locked → planned` (row: „unchanged from today") and `completed → open` (the
+> unlock rule is scoped „while the cycle is `locked`") — keep their stale `stage`
+> deliberately; `stageIndex()` reads `status` first, so neither reaches a screen. All of it
+> is pinned server-side in `cycle-stages.spec.js` (`FUP-T26 · 17 §UC-CS-002`).
 
 **Business rules:**
 

@@ -552,7 +552,33 @@ router.patch('/:id', requireAdmin, (req, res) => {
     // (PO O3).
     updates.push('stage = ?');
     values.push(stage);
-  } else if (status === 'locked' && cycle.status !== 'locked') {
+  } else if (status === 'locked' && cycle.status === 'open') {
+    // ⚠ FUP-T26 (2026-09-20): `=== 'open'`, NOT the shipped `!== 'locked'`.
+    // §UC-CS-002's table scopes this rule in its own parenthetical — „`status:
+    // 'locked'` **(transition INTO locked from `open`)** ⇒ `stage = body.stage ??
+    // 'ordered'`" — and its sibling row covers `locked → locked`. NOTHING in the
+    // table authorises a stage write when the cycle is `completed` or `planned`,
+    // and `!== 'locked'` fired from both.
+    //
+    // The sharp one was `completed → locked`, the admin's recovery path for a
+    // mis-completed round: it RESET a handed-out round's `stage` from `ready` to
+    // `ordered`, walking the friend-facing timeline BACKWARDS from step 5
+    // („Zabalené, rozvážame") to step 2 („Objednávky uzavreté…"). It also
+    // contradicted the row beside it — „`completed` ⇒ `stage` untouched, it is the
+    // historical record of where the coffee ended" (and §UC-CS-003's „a hand-over
+    // on a completed cycle leaves `stage` as it was").
+    //
+    // ⚠ `planned → locked` narrows with it and that is deliberate: it now leaves
+    // `stage` as it stood (NULL on a normally-planned round), and §UC-CS-001's
+    // no-backfill rule makes `locked` + NULL a first-class state every reader maps
+    // to `ordered` — `stageIndex()`, the admin's two stage buttons and
+    // `markCycleReady()`'s `stage IS NULL OR stage <> 'ready'` predicate all handle
+    // it. So the screen is identical, and a round re-locked after a stale `ready`
+    // (the `locked(ready) → planned` fall-through, left standing as conformant)
+    // no longer rewinds either.
+    //
+    // An admin who WANTS the reset still has it, explicitly: `{ status: 'locked',
+    // stage: 'ordered' }` takes the `stageProvided` branch above.
     updates.push('stage = ?');
     values.push(LOCKED_STAGE_DEFAULT);
   } else if (status === 'open' && cycle.status === 'locked') {

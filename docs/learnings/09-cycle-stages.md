@@ -46,8 +46,10 @@ difference is every locked cycle in production: the no-backfill rule leaves them
 exactly those rounds stuck forever. The spec wins; the superseded sentence was rewritten in
 the file rather than left contradicting the code.
 
-That row is **unreachable through the API** (locking writes `ordered`, unlocking also
-opens the cycle, `stage: null` is a 400), so its test manufactures it with `node:sqlite`
+That row is ~~**unreachable through the API**~~ (locking writes `ordered`, unlocking also
+opens the cycle, `stage: null` is a 400) — ⚠ **SUPERSEDED by FUP-T26, 2026-09-20: the lock
+default fires from `open` only, so `PATCH { status: 'locked' }` on a PLANNED cycle now
+produces exactly this row.** The test still manufactures it with `node:sqlite`
 behind a `DB_PATH` skip — the build-the-scenario kind of gate. Mutation-proved: restore the
 stub's predicate and that one test reds.
 
@@ -127,9 +129,19 @@ transitions the spec never names leave a cycle whose `stage` disagrees with its 
 |---|---|---|---|
 | A | `locked(ready) → planned` | `status=planned`, **`stage=ready`** | §UC-CS-002: „`planned` — unchanged from today, no stage semantics" |
 | B | `completed(ready) → open` | `status=open`, **`stage=ready`** | the unlock branch is gated on `cycle.status === 'locked'`, so it never fires from `completed` |
-| C | `completed(ready) → locked` | `status=locked`, **`stage=ordered`** | the lock branch is `cycle.status !== 'locked'`, so re-locking a finished round for a hand-over correction RESETS it |
+| C | ~~`completed(ready) → locked`~~ | ~~`status=locked`, **`stage=ordered`**~~ | ~~the lock branch is `cycle.status !== 'locked'`~~ |
+| D | `locked(ready) → planned → open` | `status=open`, **`stage=ready`** | ⚠ **COMPOSES FOR FREE out of A, found in the FUP-T26 review.** Neither hop writes `stage`: A leaves it (planned has no stage semantics) and the unlock branch never fires because the cycle is `planned`, not `locked`. Same class as B, equally invisible (`stageIndex` returns 1 off `status`), equally unpinned. **While A stays unfixed this path stays reachable** — so „two stale transitions" is really „two, plus anything they compose into". If A or B is ever revisited, enumerate the COMPOSITIONS, not just the single hops. |
 
-**C is the one that is not merely stale.** A and B leave a value nobody reads; C actively
+⚠ **Row C is FIXED — FUP-T26, 2026-09-20.** The lock branch is now
+`cycle.status === 'open'`, exactly the scope §UC-CS-002's own parenthetical gives it, so
+`completed(ready) → locked` keeps `ready` and the recovery path no longer rewinds anything.
+`planned → locked` narrowed with it and now writes no stage at all (NULL, which every
+reader maps to `ordered`). **A and B are spec-CONFORMANT and were deliberately left
+standing**, and both are now pinned server-side as such. The table below still describes
+A and B; read C as history. Full write-up: §FUP-T26 at the end of this file.
+
+~~**C is the one that is not merely stale.**~~ (FIXED, FUP-T26 — kept because it is why the
+row existed.) A and B leave a value nobody reads; C actively
 walks the friend-facing timeline **backwards from step 5 (`Zabalené, rozvážame`) to step 2
 (`Objednávky uzavreté…`)** on a round whose coffee has already been handed out. The admin's
 recovery path for a mis-completed cycle is exactly `completed → locked`.
@@ -142,14 +154,20 @@ not a stylistic preference, it is the only thing keeping these three out of the 
 `stageIndex()` ever consults `stage` before `status`, all three surface at once ~~and
 **nothing reds** — no test pins any of them, in this row or any other~~ — **the „nothing
 reds" half is SUPERSEDED by CS-T2 (2026-09-20): see §CS-T2 item 1.** Inverting `stageIndex()`
-now reds one purpose-built test. ⚠ The rest of the paragraph stands, and the distinction
+now reds one purpose-built test. ⚠ ~~The rest of the paragraph stands, and the distinction
 matters: the three BACKEND transitions are still unpinned server-side — nothing stops the
-routes from writing the disagreeing value. What CS-T2 pinned is only that the FRONTEND keeps
-reading `status` first. ⚠⚠ And the obvious test does NOT catch it: every row of §UC-CS-005's
+routes from writing the disagreeing value.~~ **SUPERSEDED by FUP-T26 (2026-09-20): all
+three are pinned server-side now** — C as the FIXED behaviour, A and B as deliberate
+fall-throughs (`cycle-stages.spec.js`, the `FUP-T26 · 17 §UC-CS-002` describe, which drives
+the real PATCH and reads the row back). What CS-T2 pinned is only that the FRONTEND keeps
+reading `status` first, and that is still the only thing keeping A and B off a screen.
+⚠⚠ And the obvious test does NOT catch it: every row of §UC-CS-005's
 seven-row acceptance table pairs a stage that agrees with its status, so a stage-first read
 is a fixed point of all seven. Only the dedicated test discriminates.
 
-**Deliberately NOT fixed in CS-T1.** The spec does not name these transitions, and widening
+**Deliberately NOT fixed in CS-T1** (and picked up by FUP-T26, which took option (1)'s
+SECOND half only — see that section for why the first half would have been a spec
+deviation of its own). The spec does not name these transitions, and widening
 a backend contract inside a row whose scope is the columns + the seam is how a contract
 stops matching its spec. The options when someone does pick this up, in preference order:
 (1) clear `stage` on every transition OUT of `locked` rather than on `open` alone, and make
@@ -359,8 +377,10 @@ rather than a deep-equality diff.
 
 `canMarkArrived` is `stage === null || stage === 'ordered'`. Drop the NULL half and
 every locked round **in production** loses its „Káva dorazila" button, because the
-no-backfill rule left them all at NULL — and no sequence of API calls reproduces that
-row (locking writes `ordered`, unlocking also opens the cycle, `stage: null` is a 400).
+no-backfill rule left them all at NULL — ~~and no sequence of API calls reproduces that
+row (locking writes `ordered`, unlocking also opens the cycle, `stage: null` is a 400)~~
+**— FALSIFIED by FUP-T26 (2026-09-20): `planned → locked` now writes no stage, so the API
+reaches that row directly. See §FUP-T26.**
 So the UI test manufactures it with `node:sqlite`, the BUILD-THE-SCENARIO kind of gate,
 and `e2e/README.md`'s DB_PATH inventory went from THREE un-skipped tests in this file
 to FOUR. Mutation-proved: drop the NULL branch and that test alone reds.
@@ -578,3 +598,137 @@ finish, each with an owner, so the chain does not end at „the next row inherit
    ⚠ The lesson generalises past this module: **an acceptance criterion written as „exactly
    N of X and M of Y" tends to get pinned on X and silently dropped on Y.** Grep the
    criterion, not the feature.
+
+---
+
+## FUP-T26 — the lock default fires from `open` only (2026-09-20)
+
+CS-T1 measured three transitions that leave `order_cycles.stage` disagreeing with `status`
+(§10); CS-T2 pinned the frontend ordering that hides them; nobody owned the fix. This row
+is the fix, and it is **one branch** — `backend/src/routes/cycles.js:555`, `cycle.status
+!== 'locked'` → `cycle.status === 'open'`.
+
+### 1. ⚠ The scope of the row IS the reading of the table — and the table answers it
+
+The backlog row came with a reading attached and an instruction to verify it rather than
+take it. Read directly, §UC-CS-002's PATCH table partitions the lock rule **by source
+status**, in the rows' own parentheticals:
+
+| Table row | Scope it states |
+|---|---|
+| „`status: 'locked'` **(transition INTO locked from `open`)**" | from `open` |
+| „`status: 'locked'` **when already locked**" | from `locked` |
+| „`status: 'open'` **while the cycle is `locked`**" (unlock) | from `locked` |
+| „`status: 'completed'` ⇒ `stage` untouched" | the target, any source |
+| „`status: 'planned'` — unchanged from today (no stage semantics)" | the target, any source |
+
+So `completed → locked` and `planned → locked` are **unnamed**, and the shipped guard
+(`!== 'locked'`) fired from both — wider than the only rule that authorises the write. The
+reading holds, with one precision worth keeping: C is not a rule contradicted **verbatim**,
+it is *a write the table never authorises*, made against the principle stated one row below
+it („`completed` ⇒ untouched — it is the historical record of where the coffee ended", and
+§UC-CS-003's „a hand-over on a completed cycle leaves `stage` as it was"). A and B are
+conformant — the unlock rule is scoped to a `locked` cycle, and `planned` is explicitly
+„unchanged" — so they stay, and the fix is one branch, not three.
+
+### 2. ⚠ CS-T1's option (1) had TWO halves and only the second one is in scope
+
+§10 offered „(1) clear `stage` on every transition OUT of `locked` **and** make the lock
+branch `=== 'open'`". The first half is precisely what the table forbids: clearing on
+`locked → planned` contradicts „`planned` — unchanged from today", and clearing on
+`completed → open` widens a rule the table scopes to a locked cycle. Taking a recommendation
+from a learnings file whole, without re-reading the spec it is a recommendation about, would
+have shipped two deviations while fixing one.
+
+### 3. ⚠ `planned → locked` narrows with C, deliberately — and it costs a documented claim
+
+`=== 'open'` also stops `planned → locked` inventing `ordered`. That state is `locked` +
+`stage IS NULL`, which §UC-CS-001's no-backfill rule makes first-class: `stageIndex()` maps
+it to 2, the admin header's „Káva dorazila" button renders for NULL, and `markCycleReady()`'s
+predicate is `stage IS NULL OR stage <> 'ready'`. Every screen is identical. It also removes
+a SECOND rewind, one transition removed from C: `locked(ready) → planned → locked` used to
+land on `ordered` too, and A being left standing is exactly what makes that chain reachable.
+
+⚠ **The cost is that „a locked cycle with `stage IS NULL` is UNREACHABLE through the API" is
+no longer true**, and that claim had ~~two~~ **THREE** copies: `cycle-stages.spec.js`'s
+header (item 4), `e2e/README.md` (the spec entry and the DB_PATH list in the run recipe),
+and **§CS-T3 item 4 of this very file** (`:379`). All rewritten with a strike + pointer.
+⚠⚠ **The „two" was written from memory and was wrong about the file it was being written
+into** — caught in review. That is the same defect this row fixes one layer up: a claim
+taken from a summary instead of a grep. An enumeration of copies is itself a claim, and it
+is the one most likely to be made without checking. The two DB_PATH-gated tests that manufacture the row are left
+exactly as they are: a manufactured row is still the honest way to pin the PRE-MODULE state,
+and retargeting them would trade a build-the-scenario gate for a coincidence.
+
+### 4. ⚠ Every fixture here is built to NOT be a fixed point, and one shipped row was
+
+The defect class is „the route wrote `ordered` where it should have written nothing", so a
+fixture already at `ordered` proves nothing whatever the branch does. Each new test starts
+from a stage that DIFFERS from `LOCKED_STAGE_DEFAULT` and asserts that as a precondition;
+`completedWithStage()` refuses `'ordered'` outright. The `arrived` twin of C exists for the
+same reason — a fix special-cased on `ready` would pass the first test alone.
+
+⚠ The same trap had already bitten the shipped suite: CS-T2's „`status` before `stage`" test
+carries `C = { status: 'locked', stage: 'ordered' }` labelled „completed(ready) → locked".
+That row never discriminated anything — under `locked` a stage-first read and a status-first
+read agree **by construction** — so it was documentation, and after this row its provenance
+comment was simply false. A and B are what carry that test. Comment retargeted, assertions
+untouched.
+
+### 5. What is pinned, and where
+
+`e2e/tests/cycle-stages.spec.js`, describe `FUP-T26 · 17 §UC-CS-002 — the lock default fires
+from `open` ONLY` (8 tests, all API-level: drive the real PATCH, read the row back through
+`GET /api/cycles/:id`). ⚠ **A rendered-step assertion could not be this evidence** — the
+frontend masks all of it, which is the whole reason the defect survived a module closeout.
+
+- C: `completed(ready) → locked` keeps `ready`; the `arrived` twin; the explicit
+  `{status:'locked', stage:'ordered'}` reset still works.
+- The counter-pin: `open → locked` still writes `ordered` **over a stale stage** (the fixture
+  reaches `open` through transition B, so the row carries `ready` going in — a narrowing that
+  removed the default instead of scoping it reds here).
+- A and B, each pinned as DELIBERATE with the spec line that makes it conformant, so the next
+  row can tell „looked at and left" from „nobody looked".
+- `planned → locked` writes no stage; and the `locked(ready) → planned → locked` chain does
+  not rewind.
+
+### 6. Mutations run (both directions), all reverted from a scratchpad copy
+
+1. **Guard restored to the shipped `!== 'locked'`** → exactly **4 red**: the two C tests and
+   the two `planned → locked` ones. The other four stayed green — which is the proof that
+   they pin behaviour this row did not change.
+2. **Unlock branch widened to `status && status !== 'locked'`** (i.e. CS-T1 option (1)'s
+   first half, the one rejected in item 2) → **7 of 8 red**, including the A and B
+   deliberate-behaviour pins. Without this direction those two tests would be indistinguishable
+   from assertions nobody can break.
+
+Both reverted with `cp` from the scratchpad copy, never `git checkout` (which would have taken
+the e2e file's uncommitted work with it).
+
+### 7. ⚠ A pre-existing UI race in CS-T3's date savers, met twice and then not again
+
+`CS-T3 … both dates save through the card and survive a reload` failed on the first two runs
+(`closes_at` read back **null** after a 10 s poll) and passed on the next four, including twice
+in the same file with the same diff, and once with the fix reverted. The mechanism fits the
+code: CS-T3 deliberately moved `loadAll()` into `finally` (the snap-back requirement), so the
+refetch triggered by saving `opens_at` can land BETWEEN the test's `fill()` of the second input
+and its `click()`, resetting `closesAt` to `''` — and the save then legitimately sends `null`.
+It bites only when that refetch is slow, which is why it showed up on a loaded box (23–59 s
+runs) and vanished on quiet ones (12–15 s). ~~**Not caused by this row and not fixed here**~~
+— **the implementer was right that the BACKEND diff cannot touch it, and the orchestrator took
+the TEST-side fix in the same commit rather than banking a known flake.** It is not caused by
+this row: it was introduced by **CS-T3**, which moved `loadAll()` into `finally` so a REFUSED
+save snaps the control back. That was the correct change; the flake is its interaction with a
+test that polls the API directly.
+
+**The fix and its signal.** After the first save, the test now waits for
+`cycle-opens-at-save` to return to ENABLED before filling the sibling field. That is the app's
+own „refetch landed" edge, because `opensAtSaving` clears only after `await loadAll()` in the
+`finally`. ⚠ Deliberately one-sided: a `toBeDisabled()`-then-`toBeEnabled()` pair would itself
+flake on a fast box by missing the disabled window, and a fixed timeout would hide the race
+rather than wait for it. If `loadAll()` ever rejected, the flag would stay `true` and the test
+would time out loudly instead of passing. ⚠ Checked for siblings: every other `fill()`/`click()`
+pair in the file is already safe — the refusal test gates its second fill on `toHaveValue('')`
+(which IS the refetch landing), the clear test reloads instead of touching a sibling, and the
+stage-button tests hold no input state for a refetch to clobber. No other spec drives
+`expected_date`/`plan_note` through the UI, so the older savers have no exposed test today.

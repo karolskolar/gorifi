@@ -134,8 +134,10 @@ spec, so this documents the **existing** system, not a greenfield design.
     `helpers/pickup.js` stays the only writer of the pickup/Packeta columns.
   - `order_cycles.opens_at TEXT`, `closes_at TEXT`, `stage TEXT CHECK (stage IN
     ('ordered','arrived','ready'))` nullable (module 17); `stage` is meaningful only while
-    `status='locked'`, defaults to `ordered` on lock, moves to `ready` on the first
-    hand-over, never auto-completes the cycle.
+    `status='locked'`, defaults to `ordered` **on lock FROM `open` only** (FUP-T26,
+    2026-09-20 — the default does NOT fire from `completed` or `planned`; see
+    `17-cycle-stages.md` §UC-CS-002), moves to `ready` on the first hand-over, never
+    auto-completes the cycle.
   - `friends.explainer_seen_at DATETIME`, `friends.whatsapp_opt_in INTEGER DEFAULT 1`
     (existing friends default on; new registrations off until ticked), `friends.phone_e164
     TEXT`, `friends.guest_link_token TEXT UNIQUE` (modules 18/19/21). `phone` stays as

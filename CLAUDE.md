@@ -129,7 +129,13 @@ append the full write-up to the matching learnings file and add at most one line
   it is every locked cycle in prod; the DP-T1 stub's `stage IN ('ordered','arrived')` is SUPERSEDED),
   it writes `stage` and nothing else, ever — never `status`, never a ledger row — and it returns
   `{ changed, stage }` while the published `cycle_stage` is the STRING: all three hand-over routes read
-  `.stage`. A locked cycle with `stage IS NULL` is unreachable through the API, so its test builds it.
+  `.stage`. ⚠ The lock default (`stage='ordered'`) fires from `open` ONLY — §UC-CS-002's table scopes
+  it „INTO locked from `open`", and the shipped `!== 'locked'` also fired from `completed`, RESETTING a
+  handed-out round from `ready` to `ordered` on the admin's own `completed → locked` recovery path
+  (FUP-T26). `locked → planned` and `completed → open` keep their stale stage DELIBERATELY (the table
+  leaves both alone; `stageIndex()` reads `status` first, so neither reaches a screen) — all three are
+  pinned API-level, and a fixture whose stage already equals the default proves nothing. A locked cycle
+  with `stage IS NULL` is now reachable (`planned → locked`), but its test still builds the row directly.
   `order_cycles` ALTERs go AFTER schema.js's `_check_test` recreate block (it rebuilds from a hard-coded
   column list; anything added before is dropped — and it would itself crash on a DB old enough to fire it,
   recorded not fixed). `stage` is enum-checked BEFORE the write (a CHECK throw is a 500), NOT via

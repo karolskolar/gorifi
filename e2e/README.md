@@ -263,9 +263,21 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   write because a `SQLITE_CONSTRAINT_CHECK` throw is a **500** — deleting that check reds
   12 tests with `CHECK constraint failed` in the server log. Two tests are **DB_PATH
   build-the-scenario gates**, not extra assertions: a locked cycle with `stage IS NULL`
-  (the pre-module row the no-backfill rule creates — unreachable through the API, and
+  (the pre-module row the no-backfill rule creates — ~~unreachable through the API~~, and
   precisely the row DP-T1's superseded `stage IN ('ordered','arrived')` would have left
-  stuck) and a global `transactions` count. One test needs no server at all: it builds a
+  stuck) and a global `transactions` count.
+  ⚠ **FUP-T26 (2026-09-20) superseded that „unreachable" half**: the lock default now fires
+  from `open` ONLY, so `PATCH { status: 'locked' }` on a PLANNED cycle reaches that row. The
+  manufactured fixture stays — it is still the honest way to pin the PRE-MODULE state.
+  It also carries the **`FUP-T26 · 17 §UC-CS-002`** describe: WHICH transitions may write
+  `stage`. `completed → locked` (the admin's recovery path for a mis-completed round) used to
+  RESET a handed-out round from `ready` to `ordered`, rewinding the friend-facing timeline
+  from step 5 to step 2; the two transitions the table leaves alone (`locked → planned`,
+  `completed → open`) are pinned as DELIBERATE beside it. ⚠ All of it is API-level on
+  purpose — `stageIndex()` reads `status` before `stage`, so a rendered-step assertion passes
+  with the defect present, which is how it survived a module closeout. ⚠ Every fixture starts
+  from a stage that DIFFERS from `ordered`: one that already equals the default is a fixed
+  point of the whole defect class. One test needs no server at all: it builds a
   pre-'planned' `order_cycles` and runs `db/schema.js` in a child process, because the
   three ALTERs must survive the `_check_test` recreate — move them above that block and
   it is the ONLY test in the suite that reds. ⚠ It also has to give the fixture a `type`
@@ -562,8 +574,11 @@ BASE_URL=http://localhost:3997 node seed.mjs
 #         the storage-layer
 #         CHECK probe, plus three of the BUILD-THE-SCENARIO kind: "a PRE-MODULE locked cycle (`stage IS NULL`) is
 #         promoted to `ready`" manufactures the row the no-backfill rule creates
-#         (locking writes `ordered`, unlocking also opens the cycle, and `stage:
-#         null` is a 400, so NO sequence of API calls produces it), the global
+#         (~~locking writes `ordered`, unlocking also opens the cycle, and `stage:
+#         null` is a 400, so NO sequence of API calls produces it~~ — ⚠ SUPERSEDED by
+#         FUP-T26, 2026-09-20: the lock default fires from `open` only, so locking a
+#         PLANNED cycle produces it; the manufactured fixture stays because it is
+#         still the honest way to pin the PRE-MODULE state), the global
 #         `transactions` row count, and CS-T3's UI twin of the first one ("a
 #         PRE-MODULE locked round (`stage IS NULL`) offers both buttons and reads as
 #         `ordered`"), which manufactures the SAME unreachable row to prove the admin

@@ -412,7 +412,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] DP-T7  Per-group bulk hand-over: „Odovzdať zabalené (n)“ → radix Dialog „Odovzdať zabalené?“ (subtitle + ledger-neutral banner; Zrušiť / Áno, odovzdané) → POST bulk → in-place patch + re-fetch + 3.5 s toast; 409 `not_packed` → Alert + row highlight — `16 §UC-DP-012` ⚠ the WhatsApp sentence in the modal and the „· n správ zaradených“ toast half are module 21's (`queued_notifications` ignored by the UI here).
 - [x] DP-T8  Admin cycle header: non-blocking plan line (locked + completed) + „Označiť ako dokončený“ relabelled **„Ukončiť objednávku“** with UX-ONLY gate (all parties handed over; PO: NO server 409 — pin that the API still completes with un-handed bags) on CycleDetail AND the board header; board header „Vytlačiť štítky“ placeholder + „· uzamknuté / · ukončené“ sub + **module-16 closeout (full suite, learnings, CLAUDE.md one-liners)** — `16 §UC-DP-014,010(header),015` ⚠ nothing here writes `order_cycles.stage` (17's) or `status` except the button; module 17's stage controls will share this header.
 
-- [ ] FUP-T26  ⚠ **Three cycle transitions leave `order_cycles.stage` disagreeing with `status`, and ONE of them rewinds the friend-facing timeline.** Measured against a running server in CS-T1 and re-confirmed at the module-17 closeout (`docs/learnings/09-cycle-stages.md` §10): **A** `locked(ready) → planned` leaves `stage='ready'`; **B** `completed(ready) → open` leaves `stage='ready'` (the unlock branch is gated on `cycle.status === 'locked'`, so it never fires from `completed`); **C** `completed(ready) → locked` **RESETS** `stage` to `'ordered'` (the lock branch is `cycle.status !== 'locked'`) — and `completed → locked` is precisely the admin's recovery path for a mis-completed round, so a round whose coffee has already been handed out walks back from step 5 („Zabalené, rozvážame") to step 2. ⚠ **All three are invisible TODAY only because `lib/cycle-stages.js stageIndex()` reads `status` before `stage`** — pinned by one purpose-built test (`cycle-stages.spec.js`, „`status` is consulted BEFORE `stage`"), which is the single thing standing between these rows and a friend's screen. ⚠ §UC-CS-005's own seven-row acceptance table is a FIXED POINT of that inversion (every row pairs an agreeing stage/status), so the obvious test cannot catch it — do not rely on it. ⚠ Nothing pins the transitions SERVER-side; the routes may still write the disagreeing value. CS-T1 offered „(1) fix the transitions, or (2) leave and pin"; CS-T2 took (2) and the module closed without an owner for (1). ⚠ Scope if actioned: re-read §UC-CS-002's „`completed` — stage untouched, it is the historical record" FIRST — A and B are that principle leaking one transition too far, while **C contradicts it outright** and is the only one that rewrites rather than strands a value. Decide C at minimum. ⚠ Acceptance: whichever transitions change get a server-side pin that reds on the old behaviour, and §10's table is rewritten in every copy.
+- [x] FUP-T26  ⚠ **Three cycle transitions leave `order_cycles.stage` disagreeing with `status`, and ONE of them rewinds the friend-facing timeline.** Measured against a running server in CS-T1 and re-confirmed at the module-17 closeout (`docs/learnings/09-cycle-stages.md` §10): **A** `locked(ready) → planned` leaves `stage='ready'`; **B** `completed(ready) → open` leaves `stage='ready'` (the unlock branch is gated on `cycle.status === 'locked'`, so it never fires from `completed`); **C** `completed(ready) → locked` **RESETS** `stage` to `'ordered'` (the lock branch is `cycle.status !== 'locked'`) — and `completed → locked` is precisely the admin's recovery path for a mis-completed round, so a round whose coffee has already been handed out walks back from step 5 („Zabalené, rozvážame") to step 2. ⚠ **All three are invisible TODAY only because `lib/cycle-stages.js stageIndex()` reads `status` before `stage`** — pinned by one purpose-built test (`cycle-stages.spec.js`, „`status` is consulted BEFORE `stage`"), which is the single thing standing between these rows and a friend's screen. ⚠ §UC-CS-005's own seven-row acceptance table is a FIXED POINT of that inversion (every row pairs an agreeing stage/status), so the obvious test cannot catch it — do not rely on it. ⚠ Nothing pins the transitions SERVER-side; the routes may still write the disagreeing value. CS-T1 offered „(1) fix the transitions, or (2) leave and pin"; CS-T2 took (2) and the module closed without an owner for (1). ⚠⚠ **SHARPENED 2026-09-20 by reading §UC-CS-002's table directly rather than trusting the summary: C is a SPEC DEVIATION, not an unnamed case.** That table's lock rule is scoped in its own parenthetical — „`status: 'locked'` **(transition INTO locked from `open`)** ⇒ `stage = body.stage ?? 'ordered'`" — and its sibling row („`status: 'locked'` when already locked ⇒ no stage change unless `body.stage` is present") covers locked→locked. Neither authorises `completed → locked`. The shipped guard is `status === 'locked' && cycle.status !== 'locked'`, i.e. it fires from ANY non-locked status, which is WIDER than the rule it implements. **A and B, by contrast, are spec-CONFORMANT and should be left alone:** the unlock rule is scoped „`status: 'open'` while the cycle is `locked`", which `completed → open` is not, and `planned` is „unchanged from today (no stage semantics)". So the fix is ONE branch — narrow the lock guard to `cycle.status === 'open'` — and A/B get a recorded note, not a change. ⚠ Verify that reading against the table yourself before acting; it is the whole scope of the row. ⚠ Acceptance: whichever transitions change get a server-side pin that reds on the old behaviour, and §10's table is rewritten in every copy.
 
 ## 15. Cycle stages (17) — opens_at / closes_at / stage, timeline component
 
@@ -473,6 +473,37 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## Log
 
+- 2026-09-20 · FUP-T26 · (this commit) · no PR (project convention) · **One branch: the lock default
+  now fires from `open` ONLY, and a handed-out round stops rewinding.** `completed(ready) → locked`
+  — the admin's recovery path for a mis-completed round — reset `stage` from `ready` to `ordered`,
+  walking the friend-facing timeline BACKWARDS from step 5 to step 2. The guard was
+  `cycle.status !== 'locked'`; §UC-CS-002's table scopes the rule in its own parenthetical to
+  „transition INTO locked **from `open`**", so the code fired from two statuses the table never
+  authorises. Now `cycle.status === 'open'`.
+  ⚠ **A and B are spec-CONFORMANT and were LEFT ALONE, pinned as deliberate** — the unlock rule is
+  scoped „while the cycle is `locked`" and `planned` is „unchanged from today". Mutation-proved
+  breakable: widening the unlock branch (CS-T1's rejected option) reds 7 of 8, including the A and B
+  pins, so they are falsifiable rather than decorative.
+  ⚠ **A consequence the row did not name up front:** narrowing also stops `planned → locked` writing
+  a stage, leaving NULL. Verified reader by reader — `stageIndex`, both admin stage buttons and
+  `markCycleReady()`'s predicate treat NULL and `'ordered'` identically — and it removes a SECOND
+  rewind (`locked(ready) → planned → locked` used to land on `ordered` exactly like C). It falsifies
+  „a locked cycle with `stage IS NULL` is unreachable through the API", struck in all THREE copies.
+  ⚠ **Row D, found in review:** `locked(ready) → planned → open` composes out of A for free and
+  strands `ready` on an OPEN cycle. Recorded in §10 — while A stays unfixed, „two stale transitions"
+  is really „two, plus anything they compose into".
+  ⚠ **A flake introduced by CS-T3 was fixed here rather than banked.** The date test polls the API
+  directly, so it goes green while the page's own `loadAll()` is still in flight; when that refetch
+  lands after the sibling `fill()` it resets the field and the next save legitimately stores NULL.
+  Measured 2 failures in 6 runs on a loaded box. The test now waits for the save button to return to
+  ENABLED — the app's own „refetch landed" edge, since the pending flag clears only after
+  `await loadAll()`. One-sided on purpose: a disabled-then-enabled pair would itself flake on a fast
+  box.
+  ⚠ **The review caught an enumeration that was wrong about its own file:** the write-up said the
+  falsified claim „had two copies" while a third sat unstruck in that same document. An enumeration
+  of copies is itself a claim, and it is the one most likely to be made from memory.
+  Gate: **596 passed / 0 failed / 0 skipped** over seven files; restoring the old guard reds exactly
+  four tests and leaves the other four green. Review: **revise → addressed**, three majors + one minor.
 - 2026-09-20 · CS-T4 · (this commit) · no PR (project convention) · **Module 17 closed — and the
   closeout earned its keep by catching what four green rows had not.** The guest status page mounts
   the vertical timeline („Kde je vaša káva", hidden on cancelled and in edit mode), the read-only
