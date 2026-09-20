@@ -519,6 +519,19 @@ router.patch('/:id/packed', requireAdmin, (req, res) => {
 
   const newPackedStatus = order.packed ? 0 : 1;
 
+  // ⚠ STAGE ORDER (DP-T4, 16 §UC-DP-007): `handed` IMPLIES `packed`, so a bag that
+  // already left the admin's hands cannot be un-packed. Un-packing posts the LEDGER
+  // REVERSAL and re-opens the bag for changes — neither may happen to something the
+  // friend is already holding, without the admin first taking the hand-over back
+  // (resolved conflict 4). Packing (0 → 1) is unaffected: it cannot contradict a
+  // hand-over, it can only catch up with one.
+  if (newPackedStatus === 0 && order.handed_over_at) {
+    return res.status(409).json({
+      error: 'Balíček je už odovzdaný — najprv zrušte odovzdanie.',
+      reason: 'handed_over',
+    });
+  }
+
   // Gate: an order may only be marked packed once every one of its items has
   // been individually checked off in the Distribution view (persisted
   // order_items.packed). This makes the "Zabaliť" button a deliberate final
@@ -550,12 +563,32 @@ router.patch('/:id/packed', requireAdmin, (req, res) => {
   const togglePacked = db.transaction(() => {
     if (newPackedStatus === 1) {
       packOrder(order);
-    } else {
-      unpackOrder(order);
+      return { ok: true };
     }
+    // ⚠ THE §UC-DP-007 GATE, REPEATED AS A PREDICATE INSIDE THE TRANSACTION. On the
+    // other two doors it rides on the route's own UPDATE; here the only write is
+    // `unpackOrder()`, and `helpers/packing.js` is deliberately OUT OF SCOPE (its
+    // two ledger writes are the one home for the packing moment and must not learn
+    // about hand-overs). So the predicate is asserted as its own statement, FIRST
+    // and before any write, and the abort leaves the transaction with nothing to
+    // roll back. Redundant with the pre-check under `instances: 1`, and kept for the
+    // same reason every other check-then-write here keeps its inner half: it is the
+    // layer that survives PM2 cluster mode and the day an `await` lands between them.
+    const still = db.prepare(
+      'SELECT id FROM orders WHERE id = ? AND handed_over_at IS NULL'
+    ).get(order.id);
+    if (!still) return { conflict: 'handed_over' };
+    unpackOrder(order);
+    return { ok: true };
   });
 
-  togglePacked();
+  const toggled = togglePacked();
+  if (toggled.conflict === 'handed_over') {
+    return res.status(409).json({
+      error: 'Balíček je už odovzdaný — najprv zrušte odovzdanie.',
+      reason: 'handed_over',
+    });
+  }
 
   const updated = db.prepare(`
     SELECT o.*, f.name as friend_name

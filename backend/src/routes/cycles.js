@@ -2,14 +2,22 @@ import { Router } from 'express';
 import db from '../db/schema.js';
 import { variantToKg } from '../helpers/analytics.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
-import { cycleSubOrdersByHost, guestOrderStatus } from '../helpers/guest-orders.js';
+import { cycleSubOrdersByHost, guestOrderStatus, loadSubOrder } from '../helpers/guest-orders.js';
 import { guestCycleItems } from '../helpers/guest-aggregation.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { roundMoney } from '../helpers/pricing.js';
 import { readPickup } from '../helpers/pickup.js';
 import { packingItemStats } from '../helpers/packing.js';
 import { deliveryOf, deliveryGroupOrder, TARGET_LABELS } from '../helpers/delivery.js';
-import { orderStage, guestOrderStage } from '../helpers/handover.js';
+import {
+  orderStage,
+  guestOrderStage,
+  readHandOverBatch,
+  partyDelivery,
+  inheritingGuests,
+} from '../helpers/handover.js';
+import { enqueueForHandOver } from '../helpers/outbox.js';
+import { markCycleReady } from '../helpers/cycle-stage.js';
 
 const router = Router();
 
@@ -838,6 +846,366 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
     .map((row) => ({ id: row.id, name: row.name, address: row.address }));
 
   res.json({ cycle, distribution, plan, totals, locations });
+});
+
+// Admin: STAGE 3 IN BULK — „Odovzdať zabalené (n)" for a whole group
+// (DP-T4, 16 §UC-DP-006). ONE transaction, all-or-nothing.
+//
+// It is the per-group button behind the board's plan cards: every bag at one
+// pickup point, or every Packeta parcel, leaves in one action. The per-bag routes
+// (`PATCH /orders/:id/handed-over`, `PATCH /guest-orders/:id/handed-over`, DP-T3)
+// stay the unit of CORRECTION; this is the unit of WORK.
+//
+// ⚠ **ALL-OR-NOTHING, AND THE 409 NAMES THE OFFENDERS.** The admin confirmed
+// „n balíčkov prejde" against a SNAPSHOT the board fetched seconds ago. If another
+// device un-packed one of them in between, a partial success would leave the toast
+// count wrong and one bag silently behind — with no screen anywhere that says which.
+// So the whole batch aborts, the response lists exactly the ids that blocked it, and
+// the admin reloads and decides. Every refusal below is reached BEFORE the first
+// write, and the writes themselves abort by THROWING, so the transaction rolls back
+// rather than relying on the order of the statements staying as it is today.
+//
+// ⚠ **ONE TIMESTAMP FOR THE WHOLE BATCH**, read once and bound to every UPDATE. The
+// plan card's „odovzdané" bar and module 21's segments group by it, and two bags
+// that left together must not land a second apart in the record.
+//
+// ⚠ **ALREADY-HANDED IDS ARE SKIPPED, NOT ERRORS** — re-running a group after
+// adding one bag to it is the normal way this button is used. A skipped bag is
+// counted in `already_handed` and **mints nothing**: `enqueueForHandOver` only ever
+// sees the bags this call actually STAMPED. That is DP-T3's lesson applied here —
+// the dedupe on a `queued` row holds only until module 21 moves one to `released`,
+// after which an enqueue for a no-op would be a duplicate „your coffee is at X"
+// message to a real person, for a request that changed nothing.
+//
+// ⚠ **NO `transactions` ROW, EVER, AND NO `await`.** Stage 2 (`packed`) is the
+// ledger moment (`helpers/packing.js`); stage 3 is ledger-neutral by construction,
+// in bulk exactly as per bag. The handler is fully synchronous, which is what keeps
+// the check-then-write atomic under `instances: 1` (CLAUDE.md, GA-T8).
+//
+// ⚠ **REVERSAL IS NOT BULK.** Un-hand-over stays per bag (§UC-DP-004/005); a bulk
+// reversal is a Phase 2 item and is deliberately NOT implemented here.
+//
+// ⚠ RECORDED FOR THE BOARD ROWS (DP-T5/T6/T7), because it decides WHICH ids the
+// group button should send:
+//   • A guest listed EXPLICITLY in `guest_order_ids` with an unchecked item aborts
+//     the whole batch — while the same bag merely INHERITED from its host in the
+//     same batch goes through, because inheritance has no pack gate (§UC-DP-004).
+//     That asymmetry is literally what §UC-DP-005/006 mandate, and it is narrow,
+//     but it means „send every id I can see" is NOT equivalent to „send the hosts".
+//     The group button should send the party ids (orders, plus the guest ids of
+//     synthetic hosts) rather than every nested guest row it happens to render.
+//   • The work here is LINEAR in the number of ids and fully synchronous — a few
+//     indexed statements per bag inside one transaction that blocks every other
+//     request under `instances: 1`. `HAND_OVER_BATCH_MAX` is what bounds it.
+//
+// Status codes:
+//   400 — the body is not `{ order_ids: int[], guest_order_ids: int[] }` with at
+//         least one id, or an id belongs to another cycle / does not exist
+//         (`reason: 'foreign_id'`, both lists echoed)
+//   404 — unknown cycle
+//   409 — `not_packed` (an unpacked or non-submitted order, or a guest bag with no
+//         items or an unchecked one) / `cancelled` (a called-off guest bag, listed
+//         separately), naming every offender; NOTHING is written
+//   200 — `{ handed_over, already_handed, guests_inherited, queued_notifications,
+//         cycle_stage, handed_over_at }`
+router.post('/:id/distribution/hand-over', requireAdmin, (req, res) => {
+  const batch = readHandOverBatch(req.body);
+  if (!batch) {
+    return res.status(400).json({
+      error: 'Zadajte, ktoré balíčky sa odovzdávajú',
+      reason: 'invalid_ids',
+    });
+  }
+
+  const cycle = db.prepare('SELECT id FROM order_cycles WHERE id = ?').get(req.params.id);
+  if (!cycle) {
+    return res.status(404).json({ error: 'Cyklus nebol nájdený' });
+  }
+  const cycleId = cycle.id;
+
+  // ⚠ THE ABORT IS A THROW, NOT A RETURN. better-sqlite3 commits a transaction that
+  // returns normally, so a refusal discovered after the first UPDATE would COMMIT
+  // the bags written before it — the partial success this route exists to prevent.
+  // Throwing rolls the whole thing back whatever the statement order, which makes
+  // all-or-nothing structural instead of a property of how this function is written.
+  class BatchRefusal extends Error {
+    constructor(status, body) {
+      super('hand-over batch refused');
+      this.status = status;
+      this.body = body;
+    }
+  }
+
+  const apply = db.transaction(() => {
+    // ── 1. resolve every id, and refuse a FOREIGN one before anything else ────
+    // „Foreign" covers an id from another cycle AND one that does not exist: both
+    // answer the same 400, so the endpoint is not an existence oracle for rows in
+    // cycles the caller did not name.
+    const readOrder = db.prepare(`
+      SELECT id, friend_id, cycle_id, status, packed, handed_over_at
+        FROM orders WHERE id = ?
+    `);
+    const readGuest = db.prepare(`
+      SELECT gord.id, gord.link_id, gord.status, gord.handed_over_at,
+             glink.host_friend_id, glink.cycle_id
+        FROM guest_orders gord
+        JOIN guest_order_links glink ON glink.id = gord.link_id
+       WHERE gord.id = ?
+    `);
+
+    const orderRows = new Map();
+    const guestRows = new Map();
+    const foreignOrderIds = [];
+    const foreignGuestIds = [];
+
+    for (const id of batch.orderIds) {
+      const row = readOrder.get(id);
+      if (!row || row.cycle_id !== cycleId) foreignOrderIds.push(id);
+      else orderRows.set(id, row);
+    }
+    for (const id of batch.guestOrderIds) {
+      const row = readGuest.get(id);
+      if (!row || row.cycle_id !== cycleId) foreignGuestIds.push(id);
+      else guestRows.set(id, row);
+    }
+    if (foreignOrderIds.length > 0 || foreignGuestIds.length > 0) {
+      throw new BatchRefusal(400, {
+        error: 'Niektoré balíčky nepatria do tohto cyklu',
+        reason: 'foreign_id',
+        order_ids: foreignOrderIds,
+        guest_order_ids: foreignGuestIds,
+      });
+    }
+
+    // ── 2. the OFFENDERS, all of them, before the first write ─────────────────
+    // An already-handed bag is checked FIRST and skipped: it has demonstrably left,
+    // so re-asking „is it packed?" would refuse a re-run of a group over something
+    // that is already done. (It also covers the recorded seam where a bag was
+    // cancelled AFTER it was handed over — see the note at the end of this handler.)
+    const notPackedOrderIds = [];
+    const notPackedGuestIds = [];
+    const cancelledGuestIds = [];
+
+    for (const id of batch.orderIds) {
+      const row = orderRows.get(id);
+      if (row.handed_over_at) continue;
+      // A non-submitted order cannot be packed at all, so it is an offender for the
+      // same reason and with the same reason string (§UC-DP-006).
+      if (row.status !== 'submitted' || !row.packed) notPackedOrderIds.push(id);
+    }
+    for (const id of batch.guestOrderIds) {
+      const row = guestRows.get(id);
+      if (row.handed_over_at) continue;
+      if (guestOrderStatus(row) === 'cancelled') { cancelledGuestIds.push(id); continue; }
+      // The pack gate, asked of the SHARED stage rule (helpers/handover.js) rather
+      // than re-derived here: a bag is packable only when it HAS items and every one
+      // is checked off. The same rule is re-asserted as the UPDATE's own predicate
+      // below — this half is what produces the NAMED offender.
+      if (guestOrderStage(loadSubOrder(id)) === 'to_pack') notPackedGuestIds.push(id);
+    }
+
+    if (notPackedOrderIds.length > 0 || notPackedGuestIds.length > 0 || cancelledGuestIds.length > 0) {
+      const onlyCancelled =
+        notPackedOrderIds.length === 0 && notPackedGuestIds.length === 0;
+      throw new BatchRefusal(409, {
+        error: onlyCancelled
+          ? 'Zrušené objednávky kolegov sa nedajú odovzdať.'
+          : 'Najprv označte všetky balíčky ako zabalené',
+        reason: onlyCancelled ? 'cancelled' : 'not_packed',
+        order_ids: notPackedOrderIds,
+        guest_order_ids: notPackedGuestIds,
+        // Listed SEPARATELY (§UC-DP-006): „not packed yet" is a thing the admin
+        // fixes by packing, „cancelled" is a bag that will never be handed to
+        // anybody. The board highlights them differently.
+        cancelled_guest_order_ids: cancelledGuestIds,
+      });
+    }
+
+    // ── 3. the writes ─────────────────────────────────────────────────────────
+    // ONE timestamp, read once. `CURRENT_TIMESTAMP` is the same expression the
+    // per-bag routes stamp with, so the two writers produce byte-identical strings.
+    const stamp = db.prepare('SELECT CURRENT_TIMESTAMP AS stamp').get().stamp;
+
+    const stampOrder = db.prepare(`
+      UPDATE orders SET handed_over_at = ?
+       WHERE id = ? AND status = 'submitted' AND packed = 1 AND handed_over_at IS NULL
+    `);
+    const stampInheritedGuest = db.prepare(
+      'UPDATE guest_orders SET handed_over_at = ? WHERE id = ? AND handed_over_at IS NULL'
+    );
+    // The per-bag gate of §UC-DP-005, as the UPDATE's OWN predicate — the same
+    // statement `PATCH /guest-orders/:id/handed-over` runs. ⚠ `COALESCE(packed, 0)`
+    // because the column is nullable: a bare `packed = 0` drops NULL rows in SQL's
+    // three-valued logic, which is the dangerous direction (it would hand over a bag
+    // nobody checked).
+    const stampOwnGuest = db.prepare(`
+      UPDATE guest_orders SET handed_over_at = ?
+       WHERE id = ?
+         AND handed_over_at IS NULL
+         AND COALESCE(status, 'submitted') <> 'cancelled'
+         AND NOT EXISTS (
+           SELECT 1 FROM guest_order_items WHERE guest_order_id = ? AND COALESCE(packed, 0) = 0
+         )
+         AND EXISTS (SELECT 1 FROM guest_order_items WHERE guest_order_id = ?)
+    `);
+
+    const stampedBags = [];
+    const inheritedGuestIds = new Set();
+    let handedOver = 0;
+    let alreadyHanded = 0;
+    let guestsInherited = 0;
+    // Whether anything actually took the batch's own timestamp. A call that only
+    // stamped a LATE colleague onto an already-handed bag wrote that bag's original
+    // stamp instead, so reporting the batch one would name a string no row carries.
+    let usedBatchStamp = false;
+
+    // ORDERS FIRST, and that order is load-bearing: a guest whose host is in the
+    // same batch must be stamped by the HOST's write (inherited once, stamped once,
+    // enqueued once — §UC-DP-006), so the explicit pass below can skip it.
+    for (const id of batch.orderIds) {
+      const row = orderRows.get(id);
+
+      if (row.handed_over_at) {
+        alreadyHanded += 1;
+      } else {
+        const written = stampOrder.run(stamp, id);
+        if (written.changes === 0) {
+          // Unreachable under `instances: 1` (the offender pass above ran in this same
+          // synchronous transaction), and kept because it is the layer that survives
+          // PM2 cluster mode and the day this handler gains an `await`.
+          throw new BatchRefusal(409, {
+            error: 'Najprv označte všetky balíčky ako zabalené',
+            reason: 'not_packed',
+            order_ids: [id],
+            guest_order_ids: [],
+            cancelled_guest_order_ids: [],
+          });
+        }
+        handedOver += 1;
+        usedBatchStamp = true;
+      }
+
+      // ⚠ THE INHERITANCE PASS RUNS FOR AN ALREADY-HANDED ORDER TOO — the skip above
+      // skips the ORDER, never its bag. A colleague whose sub-order arrived AFTER the
+      // host's bag went out has no stamp of its own, and the per-bag route
+      // (`PATCH /orders/:id/handed-over`, §UC-DP-004) deliberately stamps exactly
+      // that case on a repeat call. Skipping the whole party here would make the two
+      // writers of this column disagree, in the open-cycle window where a late
+      // sub-order is reachable — and the bag left behind would be invisible from the
+      // group button that is supposed to be the unit of work.
+      //
+      // ⚠ THE STAMP BOUND HERE IS THE **BAG'S**, not always the batch's: the host's
+      // own `handed_over_at` when it already had one, the batch stamp when this call
+      // wrote it. Same rule as the per-bag route (which reads the column back and
+      // binds it), and it is what keeps a host and their colleagues carrying the
+      // identical string. `handed_over_at` in the response reports the batch stamp
+      // only when something actually took it.
+      const bagStamp = row.handed_over_at || stamp;
+
+      // The FULL §UC-DP-004 write for this bag: its delivery through the one home,
+      // its live `via_host` guests, the same stamp on every one of them. ⚠ No pack
+      // gate on inheritance, exactly as per bag — the colleague's bag travels inside
+      // the host's, so it left when the host's did.
+      const delivery = partyDelivery(cycleId, row.friend_id);
+      if (!row.handed_over_at) {
+        stampedBags.push({
+          kind: 'friend', cycleId, orderId: id, friendId: row.friend_id, delivery,
+        });
+      }
+
+      for (const guest of inheritingGuests(row.friend_id, cycleId, delivery)) {
+        // An already-handed guest keeps its own first record — the predicate says so
+        // — and is therefore not counted and not enqueued again. On an already-handed
+        // order this is what makes the pass a no-op for everyone but the late arrival.
+        if (stampInheritedGuest.run(bagStamp, guest.id).changes === 0) continue;
+        guestsInherited += 1;
+        inheritedGuestIds.add(guest.id);
+        stampedBags.push({
+          kind: 'guest', cycleId, guestOrderId: guest.id,
+          hostFriendId: row.friend_id, delivery: guest.delivery,
+        });
+      }
+    }
+
+    for (const id of batch.guestOrderIds) {
+      // ⚠ THE DEDUPE. This bag was just inherited from its host in this same batch:
+      // it is stamped, counted (in `guests_inherited`) and enqueued already. Without
+      // this skip its UPDATE would report `changes === 0` — indistinguishable from
+      // the pack gate refusing — and turn a perfectly good batch into a 409.
+      if (inheritedGuestIds.has(id)) continue;
+
+      const row = guestRows.get(id);
+      if (row.handed_over_at) { alreadyHanded += 1; continue; }
+
+      if (stampOwnGuest.run(stamp, id, id, id).changes === 0) {
+        throw new BatchRefusal(409, {
+          error: 'Najprv označte všetky položky ako zabalené',
+          reason: 'not_packed',
+          order_ids: [],
+          guest_order_ids: [id],
+          cancelled_guest_order_ids: [],
+        });
+      }
+      handedOver += 1;
+      usedBatchStamp = true;
+
+      // A guest bag is classified WITH ITS HOST's delivery (the DP-T1 call-site
+      // contract): the row itself carries no pickup, and a host with no own order
+      // keeps theirs on the link.
+      const hostDelivery = partyDelivery(cycleId, row.host_friend_id);
+      stampedBags.push({
+        kind: 'guest', cycleId, guestOrderId: id, hostFriendId: row.host_friend_id,
+        delivery: deliveryOf(loadSubOrder(id), { host: hostDelivery }),
+      });
+    }
+
+    // ⚠ ONLY THE BAGS THIS CALL ACTUALLY STAMPED (the DP-T3 rule). A skipped
+    // already-handed bag is not an event and mints nothing.
+    const queued = enqueueForHandOver(stampedBags);
+
+    // §UC-DP-009 — the module-17 seam, inside the transaction, once per request.
+    // A no-op stub until CS-T1; every response echoes `cycle_stage: null` today.
+    const cycleStage = markCycleReady(cycleId);
+
+    return {
+      handedOver,
+      alreadyHanded,
+      guestsInherited,
+      queued,
+      cycleStage,
+      stamp: usedBatchStamp ? stamp : null,
+    };
+  });
+
+  let applied;
+  try {
+    applied = apply();
+  } catch (err) {
+    if (err instanceof BatchRefusal) return res.status(err.status).json(err.body);
+    throw err;
+  }
+
+  // ⚠ RECORDED, NOT FIXED (DP-T3 review, 2026-09-20; see the DP-T4 and WA-T5 rows of
+  // PROGRESS.md). A sub-order CANCELLED AFTER it was handed over stays stamped and
+  // keeps its `queued` message. This route only ever SKIPS such a bag (the
+  // already-handed branch above) — it grows no cancel path of its own, so it is not
+  // the place the seam closes. ⚠ And the „one door" premise recorded on the row does
+  // not hold: no hand-over route has a cycle-status gate, so a bag CAN be handed over
+  // while the cycle is still open, which is exactly when the host's DELETE and the
+  // guest's own empty cart are allowed. All THREE cancel doors are reachable after a
+  // hand-over, so the fix belongs either at `softCancelGuestOrder()` (the one home
+  // all three share) or at module 21's release, never at the admin cancel alone.
+  res.json({
+    handed_over: applied.handedOver,
+    already_handed: applied.alreadyHanded,
+    guests_inherited: applied.guestsInherited,
+    queued_notifications: applied.queued,
+    cycle_stage: applied.cycleStage,
+    // Additive to §UC-DP-006's response: the one stamp the batch wrote (null when
+    // it stamped nothing), so DP-T7 can patch the board's rows in place without
+    // guessing which of them moved.
+    handed_over_at: applied.stamp,
+  });
 });
 
 // Reconcile which CATALOG products a cycle offers — the picker from cycle

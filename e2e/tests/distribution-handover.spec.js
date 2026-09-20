@@ -101,6 +101,22 @@ async function handOverGuest(guestOrderId, handedOver) {
   })
 }
 
+/** The BULK hand-over of a whole group, DP-T4 / §UC-DP-006. Both arrays required. */
+async function handOverBatch(cycleId, orderIds, guestOrderIds) {
+  return admin(`/api/cycles/${cycleId}/distribution/hand-over`, {
+    method: 'post', data: { order_ids: orderIds, guest_order_ids: guestOrderIds },
+  })
+}
+
+/** The same route with a RAW body, for the shapes JSON can express and a binder must refuse. */
+async function handOverBatchRaw(cycleId, raw) {
+  return ctx.post(`/api/cycles/${cycleId}/distribution/hand-over`, {
+    headers: { 'X-Admin-Token': adminToken, 'Content-Type': 'application/json' },
+    data: raw,
+    timeout: TIMEOUT,
+  })
+}
+
 // ── the LEDGER WATERMARK (strictly extra, the guest-distribution.spec.js idiom) ──
 // Stage 3 is ledger-neutral by construction: `helpers/packing.js` is and stays the
 // only ledger moment. A GLOBAL count would be a value claim over rows this file does
@@ -1228,5 +1244,593 @@ test.describe('DP-T3 · 16 §UC-DP-004/005/008 — the hand-over routes', () => 
     expect(await ledgerSnapshot(fx.host.id), 'stage 3 is ledger-neutral by construction').toEqual(before)
     const rows = ledgerRowsSince(mark, fx.host.id, fx.hostOrder.id)
     if (rows !== null) expect(rows, `the flow wrote a ledger row: ${JSON.stringify(rows)}`).toEqual([])
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. DP-T4 — `POST /api/cycles/:id/distribution/hand-over`, the BULK route
+//    (§UC-DP-006), plus §UC-DP-013 item 3 (it joins the admin sweep).
+//
+// What carries this section, in the order of how badly each one bites:
+//
+//  1. ⚠ **ALL-OR-NOTHING, AND THE 409 NAMES THE OFFENDERS.** The confirm dialog
+//     promised „n balíčkov prejde" on a SNAPSHOT. If another device un-packed one
+//     in between, a partial success would leave the toast count wrong and one bag
+//     silently behind — so the whole batch aborts and the admin is told exactly
+//     which id blocked it. The refusal is read back on EVERY row in the batch,
+//     including the ones that were perfectly packed.
+//  2. ⚠ **A REFUSED BATCH MINTS NO NOTIFICATION.** A `queued` row is not visible
+//     through any API in module 16, so the proof is behavioural: hand the SAME bag
+//     over afterwards through the per-bag route and require `queued_notifications:
+//     1`. `enqueueForHandOver` dedupes on a `queued` row, so a row left behind by
+//     the refused batch would turn that 1 into a 0. (DP-T3's lesson: a row minted
+//     for something that did not happen is invisible until module 21 sends it.)
+//  3. **ONE timestamp for the whole batch** — two different parties and their
+//     guests all carry the identical string, because the plan card's „odovzdané"
+//     bar and module 21's segments group by it.
+//  4. **Already-handed ids are SKIPPED, never errors** (an idempotent re-run of a
+//     group) and mint nothing.
+//  5. **A guest whose host is in the same batch is stamped ONCE** — inherited by
+//     the host's write, not stamped a second time by its own id, and counted once.
+//  6. **No `transactions` row, ever** — the same two-sided pin as section 4.
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('DP-T4 · 16 §UC-DP-006 — the bulk hand-over', () => {
+  test.describe.configure({ mode: 'serial' })
+
+  const fx = {}
+
+  test.beforeAll(async () => {
+    fx.cycle = await makeCycle('Hromadne')
+    fx.product = await addProduct(fx.cycle.id)
+    fx.Q = await makeLocation('Miesto Q')
+
+    const p = fx.product.id
+    const line = (variant, quantity) => [{ product_id: p, variant, quantity }]
+
+    // the host: own order + two live guests + one cancelled
+    fx.host = await makeFriend('Hromada Hostitel', '0931 111 111')
+    fx.hostOrder = await ownOrder(fx.host, fx.cycle.id, line('250g', 1), { pickup_location_id: fx.Q.id })
+    const link = await shareLink(fx.host, fx.cycle.id)
+    fx.g1 = await submitGuest(link.token, `Hromada Jedna ${uniq}`, '0932 222 222', line('250g', 1))
+    fx.g2 = await submitGuest(link.token, `Hromada Dva ${uniq}`, '0933 333 333', line('250g', 1))
+    fx.gX = await submitGuest(link.token, `Hromada Zruseny ${uniq}`, '0934 444 444', line('1kg', 1))
+    expect((await admin(`/api/guest-orders/${fx.gX.id}/cancel`, { method: 'post' })).status()).toBe(200)
+
+    // a second packed party at the same point — the batch is a GROUP, not one bag
+    fx.mate = await makeFriend('Hromada Druhy', '0935 555 555')
+    fx.mateOrder = await ownOrder(fx.mate, fx.cycle.id, line('250g', 1), { pickup_location_id: fx.Q.id })
+
+    // the offender: submitted, items checked, but the whole-order gate never taken
+    fx.loose = await makeFriend('Hromada Nezabaleny', '0936 666 666')
+    fx.looseOrder = await ownOrder(fx.loose, fx.cycle.id, line('250g', 1), { pickup_location_id: fx.Q.id })
+
+    // §UC-DP-005 case (b): a host with NO own order — their party IS their guest bags
+    fx.solo = await makeFriend('Hromada Bez Vlastnej', '0937 777 777')
+    const soloLink = await shareLink(fx.solo, fx.cycle.id)
+    fx.sg1 = await submitGuest(soloLink.token, `Hromada Solo ${uniq}`, '0938 888 888', line('250g', 1))
+    expect((await admin(`/api/orders/cycle/${fx.cycle.id}/friend/${fx.solo.id}/pickup`, {
+      method: 'patch', data: { pickup_location_id: fx.Q.id },
+    })).status()).toBe(200)
+
+    // ANOTHER cycle, for the foreign-id refusal
+    fx.foreignCycle = await makeCycle('Hromada Cudzi')
+    fx.foreignProduct = await addProduct(fx.foreignCycle.id)
+    fx.foreigner = await makeFriend('Hromada Cudzinec', '0939 999 999')
+    fx.foreignOrder = await ownOrder(
+      fx.foreigner, fx.foreignCycle.id,
+      [{ product_id: fx.foreignProduct.id, variant: '250g', quantity: 1 }],
+      { pickup_location_note: 'Inde' },
+    )
+    const foreignLink = await shareLink(fx.foreigner, fx.foreignCycle.id)
+    fx.foreignGuest = await submitGuest(
+      foreignLink.token, `Hromada Cudzi Host ${uniq}`, '0940 000 000',
+      [{ product_id: fx.foreignProduct.id, variant: '250g', quantity: 1 }],
+    )
+
+    // pack: the host (own + both live guest bags), the mate, and the solo guest.
+    // `loose` gets its ITEMS checked but never the whole-order gate.
+    await packGuestItems(fx.cycle.id, fx.host.id, fx.g1.id)
+    await packGuestItems(fx.cycle.id, fx.host.id, fx.g2.id)
+    await packOrderItems(fx.hostOrder.id, fx.cycle.id, fx.host.id)
+    await packOrderItems(fx.mateOrder.id, fx.cycle.id, fx.mate.id)
+    await packOrderItems(null, fx.cycle.id, fx.loose.id)
+    await packGuestItems(fx.cycle.id, fx.solo.id, fx.sg1.id)
+  })
+
+  test.afterAll(async () => {
+    if (!fx.Q) return
+    const res = await admin(`/api/pickup-locations/${fx.Q.id}`, { method: 'delete' })
+    expect([204, 404], 'fixture location retired').toContain(res.status())
+  })
+
+  // ── the body contract ─────────────────────────────────────────────────────
+  test('malformed bodies are 400, never 500 — and write nothing', async () => {
+    const raws = [
+      '{}',                                        // both arrays are REQUIRED
+      `{"order_ids":[${fx.hostOrder.id}]}`,        // …both of them
+      '{"guest_order_ids":[]}',
+      '{"order_ids":[],"guest_order_ids":[]}',     // at least ONE id overall
+      'true', '"abc"', 'null', '[]',               // not an object at all
+      `[${fx.hostOrder.id}]`,                      // ⚠ a bare array body
+      `{"order_ids":${fx.hostOrder.id},"guest_order_ids":[]}`,      // not an array
+      `{"order_ids":{"0":${fx.hostOrder.id}},"guest_order_ids":[]}`, // nor an array-ish object
+      `{"order_ids":["${fx.hostOrder.id}"],"guest_order_ids":[]}`,  // a STRING id
+      '{"order_ids":[1.5],"guest_order_ids":[]}',
+      '{"order_ids":[0],"guest_order_ids":[]}',
+      '{"order_ids":[-1],"guest_order_ids":[]}',
+      '{"order_ids":[null],"guest_order_ids":[]}',
+      '{"order_ids":[true],"guest_order_ids":[]}',
+      '{"order_ids":[[1]],"guest_order_ids":[]}',
+      `{"order_ids":[${fx.hostOrder.id},null],"guest_order_ids":[]}`, // one bad element poisons it
+      '{"order_ids":[],"guest_order_ids":["x"]}',
+    ]
+
+    // ⚠ The three JSON values body-parser's strict mode refuses before the handler
+    // ever runs answer with ITS error shape, so only the status is asserted for
+    // them. Everything else reaches the binder and must carry ITS reason — without
+    // that, a 400 raised for some unrelated cause (a foreign id, say) would pass as
+    // evidence about the binder.
+    const strictRefused = new Set(['true', '"abc"', 'null'])
+
+    for (const raw of raws) {
+      const res = await handOverBatchRaw(fx.cycle.id, raw)
+      expect(res.status(), `body ${raw} must be 400`).toBe(400)
+      const text = await res.text()
+      expect(text, 'no internals leak').not.toMatch(/TypeError|RangeError|node_modules|at .*\.js/)
+      if (!strictRefused.has(raw)) {
+        expect(JSON.parse(text).reason, `body ${raw} is refused by the BINDER`).toBe('invalid_ids')
+      }
+    }
+
+    // …and the 501st id is refused as a whole (≤ 500 per array).
+    // ⚠ NON-VACUITY: the list is one REAL id of this cycle repeated, not a range of
+    // ids that happen to be foreign. With the cap deleted the binder would dedupe it
+    // to a single valid id and the route would answer 409 `not_packed` (that order is
+    // deliberately unpacked) — so this test fails the moment the cap stops working.
+    // A range like [1..501] would have kept passing on `foreign_id` and proved
+    // nothing about the cap at all.
+    const tooMany = Array.from({ length: 501 }, () => fx.looseOrder.id)
+    const big = await handOverBatchRaw(
+      fx.cycle.id, JSON.stringify({ order_ids: tooMany, guest_order_ids: [] })
+    )
+    expect(big.status(), '≤ 500 elements per array').toBe(400)
+    expect((await big.json()).reason, 'refused for its LENGTH, not for its contents').toBe('invalid_ids')
+
+    // ⚠ refusal tests read the rows back
+    const body = await payload(fx.cycle.id)
+    for (const friend of [fx.host, fx.mate, fx.loose]) {
+      expect(partyOf(body, friend.id).handed_over_at, 'not one malformed body wrote anything').toBe(null)
+    }
+    expect(partyOf(body, fx.host.id).guest_orders.every((g) => g.handed_over_at === null)).toBe(true)
+  })
+
+  test('an unknown cycle is 404, and the route is 401 to everyone but the admin', async () => {
+    const missing = await handOverBatch(99999999, [fx.hostOrder.id], [])
+    expect(missing.status()).toBe(404)
+
+    const path = `/api/cycles/${fx.cycle.id}/distribution/hand-over`
+    const data = { order_ids: [fx.hostOrder.id], guest_order_ids: [] }
+
+    const anon = await ctx.post(path, { data, timeout: TIMEOUT })
+    expect(anon.status(), 'a bulk hand-over is not public').toBe(401)
+
+    const friend = await ctx.post(path, { headers: fx.host.auth, data, timeout: TIMEOUT })
+    expect(friend.status(), 'a friend Bearer is not admin identity').toBe(401)
+
+    const wrong = await ctx.post(path, {
+      headers: { 'X-Admin-Token': 'not-a-real-token' }, data, timeout: TIMEOUT,
+    })
+    expect(wrong.status()).toBe(401)
+
+    // non-vacuity: nothing above moved
+    expect(partyOf(await payload(fx.cycle.id), fx.host.id).handed_over_at).toBe(null)
+  })
+
+  // ── the refusals, and the proof that they wrote nothing ───────────────────
+  test('an id from ANOTHER cycle ⇒ 400 foreign_id naming it, and nothing is written', async () => {
+    const res = await handOverBatch(
+      fx.cycle.id, [fx.hostOrder.id, fx.foreignOrder.id], [fx.g1.id, fx.foreignGuest.id]
+    )
+    expect(res.status(), 'a batch is scoped to ONE cycle').toBe(400)
+    const body = await res.json()
+    expect(body.reason).toBe('foreign_id')
+    expect(body.order_ids, 'the foreign order is named').toEqual([fx.foreignOrder.id])
+    expect(body.guest_order_ids, 'and the foreign guest').toEqual([fx.foreignGuest.id])
+
+    // an id that does not exist at all answers the same way — never an oracle
+    const ghost = await handOverBatch(fx.cycle.id, [99999999], [])
+    expect(ghost.status()).toBe(400)
+    expect((await ghost.json()).reason).toBe('foreign_id')
+
+    const body2 = await payload(fx.cycle.id)
+    expect(partyOf(body2, fx.host.id).handed_over_at, 'the VALID half of the batch is untouched').toBe(null)
+    expect(partyOf(body2, fx.host.id).guest_orders.every((g) => g.handed_over_at === null)).toBe(true)
+  })
+
+  test('one unpacked bag aborts the WHOLE batch ⇒ 409 naming it, nothing written, nothing queued', async () => {
+    const before = await ledgerSnapshot(fx.host.id)
+    const mark = ledgerWatermark()
+
+    const res = await handOverBatch(fx.cycle.id, [fx.hostOrder.id, fx.mateOrder.id, fx.looseOrder.id], [])
+    expect(res.status(), 'a partial success would leave one bag silently behind').toBe(409)
+    const body = await res.json()
+    expect(body.reason).toBe('not_packed')
+    expect(body.order_ids, 'exactly the offender, so the admin can reload that row').toEqual([fx.looseOrder.id])
+    expect(body.guest_order_ids).toEqual([])
+    expect(body.error, 'the copy names the fix').toMatch(/zabalen/i)
+
+    // ⚠ ALL THREE rows read back, not just the offender
+    const after = await payload(fx.cycle.id)
+    for (const friend of [fx.host, fx.mate, fx.loose]) {
+      expect(partyOf(after, friend.id).handed_over_at, `${friend.name} must be untouched`).toBe(null)
+    }
+    expect(partyOf(after, fx.host.id).guest_orders.every((g) => g.handed_over_at === null),
+      'nor did the host\'s guests inherit anything').toBe(true)
+    expect(partyOf(after, fx.mate.id).packed, 'and the packed flag is not collateral').toBe(1)
+
+    expect(await ledgerSnapshot(fx.host.id), 'a refusal is not a ledger event').toEqual(before)
+    const rows = ledgerRowsSince(mark, fx.host.id, fx.hostOrder.id)
+    if (rows !== null) expect(rows, `the refused batch wrote a ledger row: ${JSON.stringify(rows)}`).toEqual([])
+
+    // ⚠ AND IT QUEUED NOTHING. `enqueueForHandOver` dedupes on a `queued` row, so a
+    // row minted by the aborted batch would make this per-bag hand-over answer 0.
+    const solo = await handOverOrder(fx.mateOrder.id, true)
+    expect(solo.status()).toBe(200)
+    expect((await solo.json()).queued_notifications,
+      'the aborted batch left no queued row behind').toBe(1)
+    const back = await handOverOrder(fx.mateOrder.id, false)
+    expect(back.status()).toBe(200)
+    expect((await back.json()).dequeued_notifications).toBe(1)
+  })
+
+  test('a DRAFT order in the batch is an offender too — it cannot be packed at all', async () => {
+    const drafter = await makeFriend('Hromada Rozpisany', '0946 666 666')
+    const put = await ctx.put(`/api/orders/cycle/${fx.cycle.id}/friend/${drafter.id}`, {
+      headers: drafter.auth,
+      data: { items: [{ product_id: fx.product.id, variant: '250g', quantity: 1 }] },
+      timeout: TIMEOUT,
+    })
+    expect(put.status()).toBe(200)
+    const draft = (await put.json()).order
+    expect(draft.status, 'non-vacuity: it really is a draft').toBe('draft')
+
+    const res = await handOverBatch(fx.cycle.id, [fx.hostOrder.id, draft.id], [])
+    expect(res.status()).toBe(409)
+    const body = await res.json()
+    expect(body.reason).toBe('not_packed')
+    expect(body.order_ids).toEqual([draft.id])
+
+    expect(partyOf(await payload(fx.cycle.id), fx.host.id).handed_over_at,
+      'and the packed bag beside it is untouched').toBe(null)
+  })
+
+  test('a cancelled guest in the batch is an offender, listed SEPARATELY', async () => {
+    const only = await handOverBatch(fx.cycle.id, [], [fx.gX.id])
+    expect(only.status(), 'there is nothing to give').toBe(409)
+    const onlyBody = await only.json()
+    expect(onlyBody.reason).toBe('cancelled')
+    expect(onlyBody.cancelled_guest_order_ids).toEqual([fx.gX.id])
+    expect(onlyBody.guest_order_ids, 'a called-off bag is not an unpacked one').toEqual([])
+
+    // mixed with a genuinely unpacked bag: both lists, and the pack reason wins
+    const mixed = await handOverBatch(fx.cycle.id, [fx.looseOrder.id], [fx.gX.id])
+    expect(mixed.status()).toBe(409)
+    const mixedBody = await mixed.json()
+    expect(mixedBody.reason).toBe('not_packed')
+    expect(mixedBody.order_ids).toEqual([fx.looseOrder.id])
+    expect(mixedBody.cancelled_guest_order_ids).toEqual([fx.gX.id])
+
+    const after = await payload(fx.cycle.id)
+    expect(partyOf(after, fx.loose.id).handed_over_at).toBe(null)
+    expect(partyOf(after, fx.host.id).handed_over_at).toBe(null)
+  })
+
+  // ── the happy path ────────────────────────────────────────────────────────
+  test('two packed parties ⇒ ONE timestamp across every bag, guests inherited once', async () => {
+    const before = await ledgerSnapshot(fx.host.id)
+    const mark = ledgerWatermark()
+
+    const res = await handOverBatch(fx.cycle.id, [fx.hostOrder.id, fx.mateOrder.id], [])
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.handed_over, 'two orders').toBe(2)
+    expect(body.already_handed).toBe(0)
+    expect(body.guests_inherited, 'the two LIVE guests; the cancelled one is skipped').toBe(2)
+    expect(body.queued_notifications, '2 × pickup + 2 × host').toBe(4)
+    expect(body.cycle_stage, 'CS-T1 fills the body; until then the stub answers null').toBe(null)
+
+    const after = await payload(fx.cycle.id)
+    const host = partyOf(after, fx.host.id)
+    const mate = partyOf(after, fx.mate.id)
+    expect(host.handed_over_at).toBeTruthy()
+    expect(host.stage).toBe('handed')
+    expect(mate.stage).toBe('handed')
+    expect(mate.handed_over_at, 'ONE timestamp, read once and bound to every UPDATE')
+      .toBe(host.handed_over_at)
+    for (const guest of host.guest_orders) {
+      expect(guest.handed_over_at, 'the guests carry the identical string').toBe(host.handed_over_at)
+    }
+    expect(partyOf(after, fx.loose.id).handed_over_at, 'nobody outside the batch moved').toBe(null)
+    expect(partyOf(after, fx.solo.id).handed_over_at).toBe(null)
+
+    expect(await ledgerSnapshot(fx.host.id), 'stage 3 is ledger-neutral in bulk too').toEqual(before)
+    const rows = ledgerRowsSince(mark, fx.host.id, fx.hostOrder.id)
+    if (rows !== null) expect(rows, `the bulk hand-over wrote a ledger row: ${JSON.stringify(rows)}`).toEqual([])
+  })
+
+  test('re-sending the same batch: already_handed, and NOT one new message', async () => {
+    const stamp = partyOf(await payload(fx.cycle.id), fx.host.id).handed_over_at
+    expect(stamp, 'non-vacuity: the group really is out').toBeTruthy()
+
+    const res = await handOverBatch(fx.cycle.id, [fx.hostOrder.id, fx.mateOrder.id], [])
+    expect(res.status(), 'an idempotent re-run of a group, not a refusal').toBe(200)
+    const body = await res.json()
+    expect(body.handed_over).toBe(0)
+    expect(body.already_handed).toBe(2)
+    expect(body.guests_inherited).toBe(0)
+    expect(body.queued_notifications, 'a no-op mints nothing — DP-T3\'s lesson, in bulk').toBe(0)
+
+    const after = await payload(fx.cycle.id)
+    expect(partyOf(after, fx.host.id).handed_over_at, 'the FIRST hand-over time is the record').toBe(stamp)
+    expect(partyOf(after, fx.host.id).guest_orders.every((g) => g.handed_over_at === stamp)).toBe(true)
+  })
+
+  // ⚠ REVIEW FINDING (DP-T4): the already-handed SKIP skips the ORDER, never its
+  // bag. A colleague whose sub-order arrives AFTER their host's bag went out is
+  // exactly the case `PATCH /orders/:id/handed-over` stamps on a repeat call — so a
+  // bulk re-run of the group must stamp it too, or the two writers of this column
+  // disagree and the group button silently leaves a bag behind with nothing on
+  // screen to say so. Reachable because NO hand-over route has a cycle-status gate:
+  // a bag can be handed over while the cycle is still open and taking orders.
+  test('a re-run stamps a colleague who arrived AFTER the host bag went out', async () => {
+    const mateBefore = partyOf(await payload(fx.cycle.id), fx.mate.id)
+    expect(mateBefore.handed_over_at, 'non-vacuity: the mate is already handed over').toBeTruthy()
+    expect(mateBefore.guest_orders.length, 'and had no colleagues at the time').toBe(0)
+
+    const mateLink = await shareLink(fx.mate, fx.cycle.id)
+    const late = await submitGuest(mateLink.token, `Hromada Neskoro ${uniq}`, '0947 777 777',
+      [{ product_id: fx.product.id, variant: '250g', quantity: 1 }])
+
+    const res = await handOverBatch(fx.cycle.id, [fx.mateOrder.id], [])
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.handed_over, 'the order itself was already out').toBe(0)
+    expect(body.already_handed).toBe(1)
+    expect(body.guests_inherited, 'the late bag is stamped by the SAME re-run').toBe(1)
+    expect(body.queued_notifications, 'and it is the only thing that mints a message').toBe(1)
+    expect(body.handed_over_at, 'nothing took the batch stamp — the bag kept its own').toBe(null)
+
+    const mate = partyOf(await payload(fx.cycle.id), fx.mate.id)
+    const lateRow = mate.guest_orders.find((g) => g.id === late.id)
+    // ⚠ This is also the one NON-FLAKY proof that the stamp is BOUND rather than
+    // re-evaluated per statement: an inline `CURRENT_TIMESTAMP` here would write the
+    // current second, which is minutes away from the host bag's original one. The
+    // „one timestamp across the batch" assertion above cannot make that distinction,
+    // because same-batch writes normally land inside the same second anyway.
+    expect(lateRow.handed_over_at, 'the colleague carries the HOST bag\'s original stamp')
+      .toBe(mateBefore.handed_over_at)
+    expect(mate.handed_over_at, 'and the host\'s own stamp is untouched').toBe(mateBefore.handed_over_at)
+    expect(lateRow.items.every((i) => !i.packed), 'inheritance has no pack gate, exactly as per bag').toBe(true)
+
+    // the per-bag route agrees — a second re-run through EITHER writer is a no-op now
+    const perBag = await handOverOrder(fx.mateOrder.id, true)
+    expect(perBag.status()).toBe(200)
+    expect((await perBag.json()).queued_notifications, 'nothing left to stamp').toBe(0)
+  })
+
+  test('a guest under a host in the SAME batch is stamped, counted and queued exactly once', async () => {
+    // take the host's party back — the guests come with it (inheritance is symmetric)
+    const reset = await handOverOrder(fx.hostOrder.id, false)
+    expect(reset.status()).toBe(200)
+    expect((await reset.json()).dequeued_notifications, 'friend + two guests').toBe(3)
+
+    // ⚠ every id sent TWICE as well: a double-click on the board must not count,
+    // stamp or enqueue anything twice either.
+    const res = await handOverBatch(
+      fx.cycle.id, [fx.hostOrder.id, fx.hostOrder.id], [fx.g1.id, fx.g1.id]
+    )
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.handed_over, 'the order — the explicitly-listed guest is NOT a second unit').toBe(1)
+    expect(body.guests_inherited, 'both live guests, each once').toBe(2)
+    expect(body.already_handed, 'the deduped guest is not "already handed" either').toBe(0)
+    expect(body.queued_notifications, 'friend + two guests — never four').toBe(3)
+
+    const host = partyOf(await payload(fx.cycle.id), fx.host.id)
+    const g1 = host.guest_orders.find((g) => g.id === fx.g1.id)
+    expect(g1.handed_over_at, 'inherited once, with the host\'s stamp').toBe(host.handed_over_at)
+    expect(host.guest_orders.find((g) => g.id === fx.g2.id).handed_over_at).toBe(host.handed_over_at)
+  })
+
+  test('a host with NO own order hands over through their guest ids alone', async () => {
+    const soloBefore = partyOf(await payload(fx.cycle.id), fx.solo.id)
+    expect(soloBefore.has_own_order, 'non-vacuity: there is no orders row to PATCH').toBe(false)
+    expect(soloBefore.stage).toBe('packed')
+
+    const res = await handOverBatch(fx.cycle.id, [], [fx.sg1.id])
+    expect(res.status()).toBe(200)
+    const body = await res.json()
+    expect(body.handed_over, 'the bag IS the unit here').toBe(1)
+    expect(body.guests_inherited).toBe(0)
+    expect(body.queued_notifications, 'one `host` row for the guest').toBe(1)
+
+    const solo = partyOf(await payload(fx.cycle.id), fx.solo.id)
+    expect(solo.stage, 'every live sub-order carries a stamp ⇒ the party is handed').toBe('handed')
+    expect(solo.guest_orders.find((g) => g.id === fx.sg1.id).handed_over_at).toBeTruthy()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. DP-T4 — §UC-DP-007: a handed-over bag cannot be un-packed or item-unchecked.
+//
+// Stage order is real: `handed` IMPLIES `packed`. Un-packing posts the LEDGER
+// REVERSAL and re-opens the bag for changes — neither may happen to a bag that
+// already left the admin's hands without the admin first taking the hand-over back
+// (resolved conflict 4). Three doors reach `unpackOrder()` and all three are gated:
+//
+//   • `PATCH /api/orders/:id/packed`            — the whole-order toggle
+//   • `PATCH /api/order-items/:id/packed`       — auto-unpack at order-items.js:40
+//   • `PATCH /api/guest-order-items/:id/packed` — auto-unpack of the HOST's order
+//
+// ⚠ The tell that the gate is real and not cosmetic is the LEDGER: an un-pack that
+// slipped through writes a `Stornované` charge. Every refusal below pins the row
+// back AND the ledger, and the last test proves the normal un-pack still posts that
+// row once the hand-over is taken back — the gate is a gate, not a wall.
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('DP-T4 · 16 §UC-DP-007 — stage order: handed implies packed', () => {
+  test.describe.configure({ mode: 'serial' })
+
+  const fx = {}
+
+  test.beforeAll(async () => {
+    fx.cycle = await makeCycle('Poradie')
+    fx.product = await addProduct(fx.cycle.id)
+    fx.R = await makeLocation('Miesto R')
+
+    const p = fx.product.id
+    const line = (variant, quantity) => [{ product_id: p, variant, quantity }]
+
+    fx.host = await makeFriend('Poradie Hostitel', '0941 111 111')
+    fx.hostOrder = await ownOrder(fx.host, fx.cycle.id, line('250g', 2), { pickup_location_id: fx.R.id })
+    fx.link = await shareLink(fx.host, fx.cycle.id)
+    fx.gA = await submitGuest(fx.link.token, `Poradie Jedna ${uniq}`, '0942 222 222', line('250g', 1))
+
+    // §UC-DP-005 case (b) again, because the guest-item gate has TWO predicates and
+    // this party isolates the first: a guest handed over under a host with NO own
+    // order has its own stamp and no `orders` row anywhere near it.
+    fx.solo = await makeFriend('Poradie Bez Vlastnej', '0943 333 333')
+    const soloLink = await shareLink(fx.solo, fx.cycle.id)
+    fx.gB = await submitGuest(soloLink.token, `Poradie Solo ${uniq}`, '0944 444 444', line('250g', 1))
+
+    await packGuestItems(fx.cycle.id, fx.host.id, fx.gA.id)
+    await packOrderItems(fx.hostOrder.id, fx.cycle.id, fx.host.id)
+    await packGuestItems(fx.cycle.id, fx.solo.id, fx.gB.id)
+
+    // hand the host's party over THROUGH THE BULK ROUTE, and the solo bag on its own
+    const bulk = await handOverBatch(fx.cycle.id, [fx.hostOrder.id], [fx.gB.id])
+    expect(bulk.status(), 'fixture hand-over').toBe(200)
+    expect((await bulk.json()).guests_inherited).toBe(1)
+  })
+
+  test.afterAll(async () => {
+    if (!fx.R) return
+    const res = await admin(`/api/pickup-locations/${fx.R.id}`, { method: 'delete' })
+    expect([204, 404], 'fixture location retired').toContain(res.status())
+  })
+
+  test('un-packing a handed-over order ⇒ 409 handed_over, packed still 1, ledger unmoved', async () => {
+    const before = await ledgerSnapshot(fx.host.id)
+    const mark = ledgerWatermark()
+
+    const res = await admin(`/api/orders/${fx.hostOrder.id}/packed`, { method: 'patch' })
+    expect(res.status(), 'un-packing would post the reversal on a bag that is gone').toBe(409)
+    const body = await res.json()
+    expect(body.reason).toBe('handed_over')
+    expect(body.error, 'the copy names the fix').toMatch(/zrušte odovzdanie/i)
+
+    const party = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(party.packed, 'the row is read back').toBe(1)
+    expect(party.stage).toBe('handed')
+    expect(party.handed_over_at).toBeTruthy()
+
+    expect(await ledgerSnapshot(fx.host.id), 'no `Stornované` charge slipped through').toEqual(before)
+    const rows = ledgerRowsSince(mark, fx.host.id, fx.hostOrder.id)
+    if (rows !== null) expect(rows, `a refused un-pack wrote a ledger row: ${JSON.stringify(rows)}`).toEqual([])
+  })
+
+  test('un-checking an ITEM of a handed-over order ⇒ 409, and the auto-unpack is never reached', async () => {
+    const before = await ledgerSnapshot(fx.host.id)
+    const mark = ledgerWatermark()
+
+    const party = partyOf(await payload(fx.cycle.id), fx.host.id)
+    const item = party.items[0]
+    expect(item.packed, 'non-vacuity: the item is checked').toBe(1)
+
+    const res = await admin(`/api/order-items/${item.id}/packed`, { method: 'patch' })
+    expect(res.status()).toBe(409)
+    expect((await res.json()).reason).toBe('handed_over')
+
+    const after = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(after.items.find((i) => i.id === item.id).packed, 'the item stays checked').toBe(1)
+    expect(after.packed, 'and the order was not auto-unpacked').toBe(1)
+    expect(after.stage).toBe('handed')
+
+    expect(await ledgerSnapshot(fx.host.id), 'order-items.js:40 never ran').toEqual(before)
+    const rows = ledgerRowsSince(mark, fx.host.id, fx.hostOrder.id)
+    if (rows !== null) expect(rows, `a refused item uncheck wrote a ledger row: ${JSON.stringify(rows)}`).toEqual([])
+  })
+
+  test('un-checking a GUEST item ⇒ 409 on the guest\'s OWN stamp (a host with no own order)', async () => {
+    const solo = partyOf(await payload(fx.cycle.id), fx.solo.id)
+    expect(solo.has_own_order, 'non-vacuity: there is no host order to look at').toBe(false)
+    const guest = solo.guest_orders.find((g) => g.id === fx.gB.id)
+    expect(guest.handed_over_at, 'the bag carries its own stamp').toBeTruthy()
+
+    const item = guest.items[0]
+    expect(item.packed).toBe(1)
+    const res = await admin(`/api/guest-order-items/${item.id}/packed`, { method: 'patch' })
+    expect(res.status()).toBe(409)
+    expect((await res.json()).reason).toBe('handed_over')
+
+    const after = partyOf(await payload(fx.cycle.id), fx.solo.id)
+      .guest_orders.find((g) => g.id === fx.gB.id)
+    expect(after.items.find((i) => i.id === item.id).packed, 'the item stays checked').toBe(1)
+  })
+
+  test('un-checking a guest item ⇒ 409 on the HOST\'s stamp, while CHECKING stays allowed', async () => {
+    const before = await ledgerSnapshot(fx.host.id)
+    const mark = ledgerWatermark()
+
+    // a colleague who arrives AFTER the host's bag went out: the sub-order has NO
+    // stamp of its own, and un-checking it would un-pack the HOST's handed-over
+    // order (guest-order-items.js:61-67) — which is the second predicate.
+    const late = await submitGuest(fx.link.token, `Poradie Neskoro ${uniq}`, '0945 555 555',
+      [{ product_id: fx.product.id, variant: '250g', quantity: 1 }])
+
+    let guest = partyOf(await payload(fx.cycle.id), fx.host.id).guest_orders.find((g) => g.id === late.id)
+    expect(guest.handed_over_at, 'non-vacuity: THIS bag was never handed over').toBe(null)
+    const item = guest.items[0]
+    expect(item.packed).toBe(0)
+
+    const check = await admin(`/api/guest-order-items/${item.id}/packed`, { method: 'patch' })
+    expect(check.status(), 'CHECKING an item is unaffected by the host being handed over').toBe(200)
+
+    const uncheck = await admin(`/api/guest-order-items/${item.id}/packed`, { method: 'patch' })
+    expect(uncheck.status(), 'un-checking would un-pack the host\'s handed-over order').toBe(409)
+    expect((await uncheck.json()).reason).toBe('handed_over')
+
+    const after = partyOf(await payload(fx.cycle.id), fx.host.id)
+    guest = after.guest_orders.find((g) => g.id === late.id)
+    expect(guest.items.find((i) => i.id === item.id).packed, 'the tick survives the refusal').toBe(1)
+    expect(after.packed, 'and the host is still packed').toBe(1)
+    expect(after.stage).toBe('handed')
+
+    expect(await ledgerSnapshot(fx.host.id), 'the host\'s balance never moved').toEqual(before)
+    const rows = ledgerRowsSince(mark, fx.host.id, fx.hostOrder.id)
+    if (rows !== null) expect(rows, `a refused guest uncheck wrote a ledger row: ${JSON.stringify(rows)}`).toEqual([])
+  })
+
+  test('after the hand-over is taken back, the un-pack works exactly as before — reversal row and all', async () => {
+    const before = await ledgerSnapshot(fx.host.id)
+
+    const back = await handOverOrder(fx.hostOrder.id, false)
+    expect(back.status()).toBe(200)
+    expect((await back.json()).order.handed_over_at).toBe(null)
+
+    const res = await admin(`/api/orders/${fx.hostOrder.id}/packed`, { method: 'patch' })
+    expect(res.status(), 'the gate is a gate, not a wall').toBe(200)
+
+    const party = partyOf(await payload(fx.cycle.id), fx.host.id)
+    expect(party.packed).toBe(0)
+    expect(party.stage).toBe('to_pack')
+
+    const after = await ledgerSnapshot(fx.host.id)
+    expect(after.count, 'the `Stornované` reversal is posted, exactly as today').toBe(before.count + 1)
+
+    // …and the item toggle is open again too
+    const item = party.items[0]
+    const uncheck = await admin(`/api/order-items/${item.id}/packed`, { method: 'patch' })
+    expect(uncheck.status()).toBe(200)
+    expect((await uncheck.json()).packed).toBe(0)
   })
 })

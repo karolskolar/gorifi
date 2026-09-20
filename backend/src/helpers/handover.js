@@ -74,6 +74,69 @@ export function readHandedOverFlag(body) {
   return typeof value === 'boolean' ? value : undefined;
 }
 
+// The per-array cap of the bulk route (§UC-DP-006). A group on the board is a
+// pickup point's worth of bags, so 500 is far above anything real and low enough
+// that a malicious body cannot make the server walk a million ids inside a
+// transaction that blocks every other request (`instances: 1`).
+export const HAND_OVER_BATCH_MAX = 500;
+
+/**
+ * One id LIST out of a bulk body, or `undefined` for anything unusable.
+ *
+ * The field is REQUIRED even when empty — `{ order_ids: [], guest_order_ids: [3] }`
+ * is the guest-only batch of a host with no own order, and leaving the array out
+ * has to be refused rather than read as „none", so a typo in a field name cannot
+ * silently hand over half of what the admin confirmed.
+ *
+ * ⚠ WHAT THE TRAP IS FOR **THIS** SHAPE. On the per-bag routes the one-element
+ * array is the trap (`[id]` spreads into a single-slot statement and reads as a
+ * value). Here a one-element array is the NORMAL input — a batch of one bag — so
+ * the trap moves inside it: an ELEMENT that is not an integer. `'7'`, `7.5`,
+ * `true`, `null`, `[7]` and `{}` all reach a bind slot, and `'7'` would even
+ * COMPARE correctly against an INTEGER column through SQLite's affinity rules —
+ * so the refusal has to be made on the type, not discovered at the binder. One
+ * bad element poisons the whole list: a batch is all-or-nothing, and „we ignored
+ * the ids we could not read" is exactly the partial success this route exists to
+ * prevent.
+ */
+function readIdList(body, field) {
+  if (!Object.prototype.hasOwnProperty.call(body, field)) return undefined;
+  const value = body[field];
+  if (!Array.isArray(value)) return undefined;
+  if (value.length > HAND_OVER_BATCH_MAX) return undefined;
+
+  // Deduplicated, ORDER PRESERVED: the same id twice is a UI double-click, not a
+  // reason to refuse, and it must not be counted twice in the response either.
+  const ids = new Set();
+  for (const element of value) {
+    if (typeof element !== 'number' || !Number.isInteger(element) || element <= 0) return undefined;
+    ids.add(element);
+  }
+  return [...ids];
+}
+
+/**
+ * Bind `{ order_ids: int[], guest_order_ids: int[] }` out of a bulk request body,
+ * or `undefined` (§UC-DP-006).
+ *
+ * Both arrays are required, every element is a positive integer, each array holds
+ * at most `HAND_OVER_BATCH_MAX`, and AT LEAST ONE id overall — an empty batch is a
+ * button that should not have been clickable, and answering 200 `handed_over: 0`
+ * to it would tell the admin a group went out when nothing did.
+ *
+ * Non-objects (`true`, `'abc'`, `null`) and a bare ARRAY body are refused here
+ * rather than relied upon to die in body-parser's strict mode, exactly as
+ * `readHandedOverFlag()` does.
+ */
+export function readHandOverBatch(body) {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return undefined;
+  const orderIds = readIdList(body, 'order_ids');
+  const guestOrderIds = readIdList(body, 'guest_order_ids');
+  if (!orderIds || !guestOrderIds) return undefined;
+  if (orderIds.length + guestOrderIds.length === 0) return undefined;
+  return { orderIds, guestOrderIds };
+}
+
 /**
  * The delivery of the PARTY (cycle, friend) — Packeta, a pickup point or in person.
  *

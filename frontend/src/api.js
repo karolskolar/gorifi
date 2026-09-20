@@ -198,6 +198,25 @@ export const api = {
   deleteCycle: (id) => request(`/cycles/${id}`, { method: 'DELETE' }),
   getCycleSummary: (id, roastery) => request(`/cycles/${id}/summary${roastery ? `?roastery=${encodeURIComponent(roastery)}` : ''}`),
   getCycleDistribution: (id) => request(`/cycles/${id}/distribution`),
+  // 16 §UC-DP-006/013 — „Odovzdať zabalené (n)": a whole group in ONE all-or-nothing
+  // transaction. BOTH arrays are required (an empty one is fine, but at least one id
+  // overall), every element a positive integer, ≤ 500 each. A guest whose host is in
+  // the same batch is deduplicated server-side — send both ids without thinking.
+  // Answers `{ handed_over, already_handed, guests_inherited, queued_notifications,
+  // cycle_stage, handed_over_at }` — `handed_over_at` is the stamp the bags handed
+  // over BY THIS CALL took (null when it stamped none). ⚠ A colleague who ordered
+  // after their host's bag went out inherits that BAG's original stamp instead, so
+  // re-fetch rather than painting this one onto every row. 409 `reason:
+  // 'not_packed'` / `'cancelled'` NAMES
+  // the offenders in `order_ids` / `guest_order_ids` / `cancelled_guest_order_ids`
+  // and writes NOTHING, so the board highlights those rows and re-fetches.
+  // ⚠ Ledger-neutral, like the per-bag routes. ⚠ There is NO bulk reversal (Phase 2)
+  // — take a hand-over back one bag at a time with `setOrderHandedOver`.
+  handOverDistributionBatch: (cycleId, orderIds = [], guestOrderIds = []) =>
+    request(`/cycles/${cycleId}/distribution/hand-over`, {
+      method: 'POST',
+      body: { order_ids: orderIds, guest_order_ids: guestOrderIds },
+    }),
 
   // Cycle public endpoints (for friend ordering - legacy)
   getCyclePublic: (id) => request(`/cycles/${id}/public`),

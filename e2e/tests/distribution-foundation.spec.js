@@ -838,5 +838,44 @@ test.describe('DP-T1 · handed_over_at is published, notifications stays empty',
     const finalRows = notificationRows(cycleId)
     expect(finalRows.length, 'history survives the dequeue').toBe(3)
     expect(finalRows.every((row) => row.status === 'sent')).toBe(true)
+
+    // 9. ⚠ DP-T4 (§UC-DP-006): the BULK route is the SECOND writer of this table,
+    //    and it inherits the review finding above rather than re-learning it. The
+    //    dedupe on a `queued` row cannot prove the rule — with the old rows still
+    //    `queued` an over-eager enqueue answers 0 anyway — so the pin is the same
+    //    one: flip everything to `sent`, then re-send the SAME batch. Every id in it
+    //    is already handed over, the call stamps nothing, and therefore it must mint
+    //    nothing. This is the shape that reaches real people the day module 21 sends.
+    const bulkPath = `/api/cycles/${cycleId}/distribution/hand-over`
+    const bulkBody = { order_ids: [fixture.order.id], guest_order_ids: [] }
+
+    const bulk = await admin('post', bulkPath, bulkBody)
+    expect(bulk.status()).toBe(200)
+    const bulkJson = await bulk.json()
+    expect(bulkJson.handed_over, 'a genuine bulk hand-over of one party').toBe(1)
+    expect(bulkJson.guests_inherited, 'its two live colleagues come with it').toBe(2)
+    expect(bulkJson.queued_notifications, 'friend + two guests, as per bag').toBe(3)
+    expect(notificationRows(cycleId).length, 'three sent plus the fresh three').toBe(6)
+
+    const flipBulk = new DatabaseSync(DB_PATH)
+    try {
+      flipBulk.prepare("UPDATE notifications SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE cycle_id = ? AND status = 'queued'")
+        .run(cycleId)
+    } finally {
+      flipBulk.close()
+    }
+    expect(notificationRows(cycleId).filter((row) => row.status === 'queued').length, 'nothing is queued now').toBe(0)
+
+    const bulkRepeat = await admin('post', bulkPath, bulkBody)
+    expect(bulkRepeat.status(), 'an idempotent re-run of a group is not a refusal').toBe(200)
+    const repeatJson = await bulkRepeat.json()
+    expect(repeatJson.handed_over).toBe(0)
+    expect(repeatJson.already_handed, 'the bag is skipped, not refused').toBe(1)
+    expect(repeatJson.guests_inherited).toBe(0)
+    expect(
+      repeatJson.queued_notifications,
+      'a batch that stamps nothing queues nothing — even with nothing left to dedupe against'
+    ).toBe(0)
+    expect(notificationRows(cycleId).length, 'not one duplicate message was minted').toBe(6)
   })
 })

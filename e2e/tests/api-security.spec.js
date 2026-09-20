@@ -54,6 +54,15 @@ const ADMIN_ENDPOINTS = [
   // on the same prefix stay HOST-identity routes in FRIEND_IDENTITY_ENDPOINTS below.
   // Only this one joins the admin sweep.
   { method: 'patch', path: '/api/guest-orders/1/handed-over', data: { handed_over: true } },
+  // 16 §UC-DP-006 / §UC-DP-013 (DP-T4): the BULK hand-over. Strictly more powerful
+  // than the two per-bag writers above — one anonymous call could stamp every bag of
+  // a whole pickup group as handed over and fill module 21's outbox with „your coffee
+  // is at X" messages for deliveries that never happened.
+  {
+    method: 'post',
+    path: '/api/cycles/1/distribution/hand-over',
+    data: { order_ids: [1], guest_order_ids: [] },
+  },
   // GSO-T6: the admin half of the MIXED-auth /api/guest-orders router (the host
   // half is gated by friend identity instead — see guest-host-view.spec.js).
   { method: 'patch', path: '/api/guest-orders/1/paid', data: { paid: true } },
