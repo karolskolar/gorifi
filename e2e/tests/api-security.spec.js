@@ -33,6 +33,15 @@ const ADMIN_ENDPOINTS = [
   { method: 'patch', path: '/api/orders/cycle/1/friend/1/pickup', data: { pickup_location_id: 1 } },
   // GSO-T7: the guest half of the per-item Distribution checkbox.
   { method: 'patch', path: '/api/guest-order-items/1/packed' },
+  // 16 §UC-DP-003 / §UC-DP-013 item 2 (DP-T2): the distribution read. ⚠ It has
+  // ALWAYS been `requireAdmin` (routes/cycles.js, the `/:id/distribution` handler) —
+  // what was missing until this row is the REGRESSION NET, not the guard. It is the
+  // single richest admin payload in the app: every party's name and phone number,
+  // every friend's balance, and every guest sub-order INCLUDING its `order_token`
+  // (published through the shared `GUEST_ORDER_FIELDS` since GR-T1). A future edit
+  // that dropped the guard would hand an anonymous caller a working guest credential
+  // for every bag in the cycle, so it belongs in this sweep permanently.
+  { method: 'get', path: '/api/cycles/1/distribution' },
   // GSO-T6: the admin half of the MIXED-auth /api/guest-orders router (the host
   // half is gated by friend identity instead — see guest-host-view.spec.js).
   { method: 'patch', path: '/api/guest-orders/1/paid', data: { paid: true } },

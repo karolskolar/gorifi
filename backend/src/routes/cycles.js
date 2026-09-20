@@ -7,6 +7,8 @@ import { guestCycleItems } from '../helpers/guest-aggregation.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { roundMoney } from '../helpers/pricing.js';
 import { readPickup } from '../helpers/pickup.js';
+import { packingItemStats } from '../helpers/packing.js';
+import { deliveryOf, deliveryGroupOrder, TARGET_LABELS } from '../helpers/delivery.js';
 
 const router = Router();
 
@@ -46,6 +48,91 @@ function matchesRoasteryFilter(roastery, roasteryFilter) {
   if (!roasteryFilter) return true;
   if (roasteryFilter === '_default') return roastery === null || roastery === undefined || roastery === '';
   return roastery === roasteryFilter;
+}
+
+// ─── the distribution payload's derived fields (DP-T2, 16 §UC-DP-003) ────────
+//
+// ⚠ EVERYTHING BELOW IS COMPUTED IN JAVASCRIPT OVER ROWS THE EXISTING QUERIES
+// ALREADY RETURN. That is the whole point: the guest half of a party's weight and
+// of the cycle's plan comes from the sub-orders `cycleSubOrdersByHost()` already
+// nested under their host, never from a second `LEFT JOIN` onto `orders`. A join
+// would multiply each friend row by that host's sub-order count — one host would
+// become three parties, `totals.count` and every plan card would inflate, and the
+// host's OWN grams would be counted once per colleague (CLAUDE.md §Money & data,
+// the GSO-T6/T8 trap, and the same rule the roastery breakdown above states at
+// length). Doing it here makes the multiplication impossible by construction.
+//
+// ⚠ The field is called `kg` and it carries GRAMS — §UC-DP-003's wording, and the
+// unit the client's `Math.round(g/10)/100` display rule expects. `variantToKg()`
+// (helpers/analytics.js) stays the one weight authority; the ×1000 is rounded per
+// LINE so the binary dust of 0.096 × 3 × 1000 never reaches the payload. A variant
+// the map does not know — a bakery `unit` line, an unknown string, or a prototype
+// key like `'constructor'`, which makes that lookup yield a FUNCTION and the
+// product NaN — scores 0 g, the `variantGrams()` fail-closed posture.
+function lineGrams(variant, quantity) {
+  const kg = variantToKg(variant, quantity);
+  return Number.isFinite(kg) ? Math.round(kg * 1000) : 0;
+}
+
+function itemsGrams(items) {
+  let grams = 0;
+  for (const item of Array.isArray(items) ? items : []) {
+    grams += lineGrams(item?.variant, item?.quantity);
+  }
+  return grams;
+}
+
+const LOC_KEY = /^loc([1-9][0-9]*)$/;
+
+/** `loc<id>` → the integer id, anything else → null. */
+function locIdOf(targetKey) {
+  const hit = LOC_KEY.exec(targetKey);
+  return hit ? Number(hit[1]) : null;
+}
+
+/**
+ * A guest sub-order's stage. Its own `handed_over_at` wins; otherwise it is packed
+ * only when it HAS items and every one of them is checked off — an empty bag is
+ * `to_pack`, not a free pass (`[].every()` is `true`, which is exactly the bug the
+ * length test prevents; the same shape as the pack gate's `total > 0`).
+ */
+function guestStage(subOrder) {
+  if (subOrder.handed_over_at) return 'handed';
+  const items = Array.isArray(subOrder.items) ? subOrder.items : [];
+  return items.length > 0 && items.every((item) => !!item.packed) ? 'packed' : 'to_pack';
+}
+
+/**
+ * The synthetic host's hand-over, DERIVED: they have no `orders` row to stamp, so
+ * their bag has left only when every LIVE sub-order in it has (the cancelled ones
+ * are already filtered out of `guest_orders[]`). Timestamps are SQLite
+ * `YYYY-MM-DD HH:MM:SS`, which sorts lexicographically, so no Date parsing.
+ */
+function derivedHandedOver(subOrders) {
+  if (!Array.isArray(subOrders) || subOrders.length === 0) return null;
+  let max = null;
+  for (const sub of subOrders) {
+    if (!sub.handed_over_at) return null;
+    if (max === null || String(sub.handed_over_at) > String(max)) max = sub.handed_over_at;
+  }
+  return max;
+}
+
+/**
+ * A party's stage. `handed` wins over `packed` (it implies it), and the two kinds of
+ * party read DIFFERENT sources on purpose: a friend with an own order reads
+ * `orders.packed` — the column the ledger moment writes (helpers/packing.js) — while
+ * a synthetic host has no such column and is measured by `packingItemStats()`, the
+ * SAME union `PATCH /orders/:id/packed` gates on. Re-deriving either here would be a
+ * second home for the pack rule.
+ */
+function partyStage(party, cycleId) {
+  if (party.handed_over_at) return 'handed';
+  if (party.has_own_order) return party.packed ? 'packed' : 'to_pack';
+  const stats = packingItemStats({ orderId: null, friendId: party.id, cycleId });
+  const total = Number(stats?.total || 0);
+  const packedCount = Number(stats?.packed_count || 0);
+  return total > 0 && packedCount === total ? 'packed' : 'to_pack';
 }
 
 // Get all order cycles (admin)
@@ -528,7 +615,8 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
   // Get friends who have submitted orders for this cycle (global friends)
   // Include packed status and balance
   const friendsWithOrders = db.prepare(`
-    SELECT f.id, f.name, o.id as order_id, o.status, o.paid, o.total, o.packed, o.packed_at,
+    SELECT f.id, f.name, f.phone, o.id as order_id, o.status, o.paid, o.total, o.packed, o.packed_at,
+           o.handed_over_at,
            o.pickup_location_id, o.pickup_location_note, pl.name as pickup_location_name,
            o.delivery_fee, o.packeta_address,
            COALESCE((SELECT SUM(amount) FROM transactions WHERE friend_id = f.id), 0) as balance
@@ -588,13 +676,19 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
     // Only cancelled bags left ⇒ nothing to hand over, so not a pickup party.
     if (subOrders.length === 0) continue;
 
-    const balance = db.prepare(
-      'SELECT COALESCE(SUM(amount), 0) as balance FROM transactions WHERE friend_id = ?'
-    ).get(hostFriendId);
+    // ⚠ `phone` rides along with the balance rather than in a second query: this
+    // branch is already per-host, and the Packeta row and the label sheet both need
+    // the number (§UC-DP-003).
+    const balance = db.prepare(`
+      SELECT f.phone AS phone,
+             COALESCE((SELECT SUM(amount) FROM transactions WHERE friend_id = f.id), 0) AS balance
+        FROM friends f WHERE f.id = ?
+    `).get(hostFriendId);
 
     distribution.push({
       id: hostFriendId,
       name: subOrders[0].host_name,
+      phone: balance ? balance.phone : null,
       order_id: null,
       has_own_order: false,
       status: 'none',
@@ -602,6 +696,10 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
       total: 0,
       packed: 0,
       packed_at: null,
+      // ⚠ NOT a column on this party — there is no `orders` row to stamp. It is
+      // DERIVED below from the live sub-orders (§UC-DP-003), and declared here only
+      // so the key exists in the same position as on a friend party.
+      handed_over_at: null,
       // ⚠ THE EFFECTIVE PICKUP, not a hardcoded null (PO decision, 2026-09-03). This
       // party collects their colleagues' bags, so the picking sheet has to say where
       // — the reported bug was this row showing no pickup point at all.
@@ -622,7 +720,128 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
 
   distribution.sort((a, b) => a.name.localeCompare(b.name));
 
-  res.json({ cycle, distribution });
+  // ── DP-T2 (§UC-DP-003): delivery, stage, weight, and the cycle's plan ───────
+  //
+  // Everything from here down is ADDITIVE. Not one key above is renamed, retyped or
+  // dropped — `guest-distribution.spec.js` and `order-pickup-edit.spec.js` read this
+  // payload and must keep passing untouched.
+
+  // ⚠ ONE query for the whole (small) table, not one lookup per party. It is both
+  // the N+1 escape `helpers/delivery.js` documents (`locationsById`) and the source
+  // of `locations[]`, and it is deliberately UNFILTERED: a point that was
+  // soft-deleted after a party chose it must still name itself, exactly as
+  // `pickupOf()` and `delivery.js locationRow()` both do.
+  const locationRows = db.prepare('SELECT id, name, address, active, for_coffee, for_bakery FROM pickup_locations').all();
+  const locationsById = new Map(locationRows.map((row) => [row.id, row]));
+
+  // "Active for this cycle's type" — the same filter the friend's picker applies
+  // (`GET /api/pickup-locations?type=…`). These are the points that get a plan card
+  // even with nobody on them, so the admin can tell "no bags there" apart from
+  // "that point is not set up".
+  const isBakery = (cycle.type || 'coffee') === 'bakery';
+  const activeIds = new Set(
+    locationRows.filter((row) => row.active && (isBakery ? row.for_bakery : row.for_coffee)).map((row) => row.id)
+  );
+
+  for (const party of distribution) {
+    // The pickup columns on the row are the ones `helpers/pickup.js` already
+    // resolved (the SELECT for a friend, `readPickup()` for a synthetic host), so
+    // this only NAMES what is there — `delivery.js` is read-only by contract.
+    party.delivery = deliveryOf(party, { locationsById });
+
+    let guestGrams = 0;
+    for (const sub of party.guest_orders) {
+      // ⚠ `{ host: party.delivery }` IS THE CALL-SITE CONTRACT (DP-T1). A guest bag
+      // without its own Packeta address travels inside the host's bag, so it must
+      // inherit the host's group — never be classified standalone, which is what
+      // would make it tickable on its own on the board. The helper fails closed if
+      // this is omitted; that backstop is not a licence to omit it.
+      sub.delivery = deliveryOf(sub, { host: party.delivery, locationsById });
+      sub.kg = itemsGrams(sub.items);
+      sub.stage = guestStage(sub);
+      guestGrams += sub.kg;
+    }
+
+    // ⚠ CYCLE-LEVEL weight includes guests — this is the bag the admin carries, and
+    // `guest_orders` here is already the LIVE set (cancelled bags filtered out
+    // above), so a called-off order weighs nothing. Per-FRIEND aggregates elsewhere
+    // (cycle progress, analytics, rewards) still must not fold guests in.
+    party.kg = itemsGrams(party.items) + guestGrams;
+
+    if (!party.has_own_order) {
+      party.handed_over_at = derivedHandedOver(party.guest_orders);
+    }
+    party.stage = partyStage(party, cycle.id);
+  }
+
+  // ── plan / totals / locations ───────────────────────────────────────────────
+  // Counts are over PARTIES: a host with nested `via_host` guests is ONE bag.
+  const partiesByKey = new Map();
+  const referencedIds = new Set();
+  for (const party of distribution) {
+    const key = party.delivery.target_key;
+    if (!partiesByKey.has(key)) partiesByKey.set(key, []);
+    partiesByKey.get(key).push(party);
+    const locId = locIdOf(key);
+    if (locId !== null) referencedIds.add(locId);
+  }
+
+  // ⚠ A DANGLING id (the `pickup_locations` row is gone outright — reachable today,
+  // because `DELETE /api/pickup-locations/:id` only soft-deletes when an `orders`
+  // row references the point, and a host with no own order stores their pickup on
+  // `guest_order_links`) keeps its key and loses only its label. Dropping such a
+  // party from the plan would hide a real bag, so it is ordered in like any other.
+  const planLocationIds = [...new Set([...referencedIds, ...activeIds])];
+  const orderedKeys = deliveryGroupOrder(planLocationIds.map((id) => ({ id })));
+
+  const plan = [];
+  for (const key of orderedKeys) {
+    const parties = partiesByKey.get(key) || [];
+    const locId = locIdOf(key);
+    // Packeta and "Osobne" are not configurable places: they appear only when a bag
+    // is actually going that way. A pickup point appears when it is active for this
+    // cycle's type, even at zero.
+    if (parties.length === 0 && !(locId !== null && activeIds.has(locId))) continue;
+
+    let label;
+    if (parties.length > 0) {
+      // Taken from the party so a group title can never disagree with the row under it.
+      label = parties[0].delivery.target_label;
+    } else {
+      label = locId !== null ? (locationsById.get(locId)?.name ?? null) : TARGET_LABELS[key];
+    }
+
+    plan.push({
+      target_key: key,
+      target_label: label ?? null,
+      type: locId !== null ? 'pickup' : key,
+      count: parties.length,
+      // ⚠ `packed_count` INCLUDES the handed-over parties (handed implies packed):
+      // the board's two-tone bar is `handed / count` plus `(packed − handed) / count`
+      // (§UC-DP-010), which only adds up while this is a superset.
+      packed_count: parties.filter((party) => party.stage === 'packed' || party.stage === 'handed').length,
+      handed_count: parties.filter((party) => party.stage === 'handed').length,
+      kg: parties.reduce((sum, party) => sum + party.kg, 0),
+    });
+  }
+
+  const totals = {
+    count: distribution.length,
+    packed_count: distribution.filter((party) => party.stage === 'packed' || party.stage === 'handed').length,
+    handed_count: distribution.filter((party) => party.stage === 'handed').length,
+  };
+
+  // The names behind the `loc<id>` keys, so the board needs no second call. A
+  // dangling id has no row and simply is not here — the plan card above already
+  // renders it label-less. The picker keeps its own `GET /api/pickup-locations`
+  // call: that one is the EDITABLE list and is filtered to active points.
+  const locations = planLocationIds
+    .map((id) => locationsById.get(id))
+    .filter(Boolean)
+    .sort((a, b) => a.id - b.id)
+    .map((row) => ({ id: row.id, name: row.name, address: row.address }));
+
+  res.json({ cycle, distribution, plan, totals, locations });
 });
 
 // Reconcile which CATALOG products a cycle offers — the picker from cycle

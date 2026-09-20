@@ -452,10 +452,21 @@ BASE_URL=http://localhost:3997 node seed.mjs
 # ⚠ It must say `cycle: created` / `friend: created`. `exists` means you are talking
 #   to a server that is NOT on your fresh copy — stop and read the gotcha below.
 
-# 6 — run. DB_PATH is optional: no spec requires it any more. When it points at the
-#     same file the server was started with, guest-admin-view.spec.js adds one extra
-#     assertion (a GLOBAL `transactions` row count around the guest paid toggle,
-#     which also catches a row written with a NULL friend_id).
+# 6 — run. ⚠ DB_PATH is optional only in the sense that nothing ERRORS without it —
+#     it SILENTLY REMOVES assertions, so pass it. Pointed at the same file the server
+#     was started with it:
+#       • adds one extra assertion in guest-admin-view.spec.js (a GLOBAL
+#         `transactions` row count around the guest paid toggle, which also catches a
+#         row written with a NULL friend_id), and
+#       • un-skips TWO tests in distribution-handover.spec.js ("handed_over_at moves
+#         stage to handed…", "derived handed_over_at: only when EVERY live sub-order
+#         carries one") — they stamp `handed_over_at` directly because DP-T2 shipped
+#         before any writer existed. DP-T3 retires both the stamping and this skip.
+# ⚠ THE TELL IS THE SKIP COUNT, NOT THE FAILURE COUNT. A run that loses DB_PATH is
+#   still green. This bit once already (DP-T2, 2026-09-20): `RUN_DB=$(mktemp) && … &`
+#   backgrounds the WHOLE `&&` list, so the variable never exists in the foreground
+#   shell, DB_PATH reached Playwright empty, and the run reported "39 passed, 2
+#   skipped, EXIT 0" — a false clean. Read the skip list every time.
 # ⚠ SERVER_LOG is what un-skips the "no stack reaches the log" families (FUP-T7/T10/
 #   T11/T12/T13/T14/T15). Without it, 21 tests self-skip SILENTLY — measured on a full
 #   run (PL-T4, 2026-09-19): 26 skips, of which only 4 are the documented rate-limit

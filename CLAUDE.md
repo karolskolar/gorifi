@@ -229,5 +229,11 @@ Full recipe and env in `e2e/README.md`. Checklist:
 - Spec hygiene: refusal tests read the row back; absence assertions need a non-vacuity gate; Playwright role
   names match as case-insensitive substrings unless `exact: true`; `innerText` applies `text-transform`;
   NBSP survives regex `toHaveText`; `li` counts must be `li.ln`; UI+API admin tests must adopt the browser's token.
+- A row-scoped text assertion about MONEY must target the CELL (`row.getByRole('cell').nth(n)`). ⚠ NOT the
+  `innerText` rule above: `toContainText`/`toHaveText` resolve from **`textContent`** unless `useInnerText` is
+  passed, and Vue condenses away the whitespace node between `</td><td>`, so adjacent cells concatenate with
+  NOTHING between them. (Chromium's real `innerText` inserts a TAB there and does NOT reproduce this — check it
+  that way and you will wrongly conclude the rule is bogus.) The VS is a bare `orders.id`, so „VS 243"+„0.00 EUR"
+  reads as „30.00 EUR" — a 1-in-10 flake steered by whichever spec created orders first (DP-T2, 2026-09-20).
 - `node:sqlite` (test helpers) and better-sqlite3 (routes) report DIFFERENT constraint error codes — verify a
   constraint guard against the driver the route loads.
