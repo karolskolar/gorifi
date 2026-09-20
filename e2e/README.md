@@ -431,11 +431,16 @@ cp e2e/fixtures/prod-template.sqlite "$RUN_DB"   # no template? omit this line:
                                                  # cycle) — still per-run.
 
 # 4 — start the backend on that copy
+# ⚠ ALL FIVE MAXIMA AT 100000 — see "the shared auth-limiter budget" below. The
+#   values this block used to carry (1000 / 2000 / 5000) are the ones that section
+#   MEASURED as too small for a full run, so the one runnable block contradicted its
+#   own warning; DP-T8 paid 9 minutes and 30 fake failures for that (2026-09-20).
+#   The three limiter specs self-skip either way — that is the documented skip.
 DB_PATH="$RUN_DB" PORT=3997 CORS_ORIGIN=http://localhost:3997 \
   GOOGLE_CLIENT_ID=test-client GOOGLE_AUTH_TEST_MODE=1 \
-  RATE_LIMIT_AUTH_MAX=1000 RATE_LIMIT_ABUSE_MAX=2000 \
-  RATE_LIMIT_GUEST_READ_MAX=5000 RATE_LIMIT_GUEST_WRITE_MAX=5000 \
-  RATE_LIMIT_MAGIC_MAX=5000 \
+  RATE_LIMIT_AUTH_MAX=100000 RATE_LIMIT_ABUSE_MAX=100000 \
+  RATE_LIMIT_GUEST_READ_MAX=100000 RATE_LIMIT_GUEST_WRITE_MAX=100000 \
+  RATE_LIMIT_MAGIC_MAX=100000 \
   setsid node backend/src/index.js > /tmp/gorifi-e2e-server.log 2>&1 </dev/null &
 # ⚠ /api/health, NOT /api/cycles — `cycles` is requireAdmin and answers 401, so
 #   `curl -sf` there NEVER succeeds and the wait degrades into a silent 15 s sleep.
@@ -621,10 +626,11 @@ Mitigations:
 - Prefer a **fresh** DB + freshly-started server per full-suite run (matches
   the recipe above) rather than re-running against a server that has already
   served many earlier runs.
-- If you must re-run repeatedly against the same long-lived server, start it
-  with a generous budget, e.g. `RATE_LIMIT_AUTH_MAX=1000`, to get a true
-  pass/fail signal (`rate-limit.spec.js` still self-skips above 10, so this
-  doesn't weaken that check).
+- ~~If you must re-run repeatedly against the same long-lived server, start it
+  with a generous budget, e.g. `RATE_LIMIT_AUTH_MAX=1000`~~ — **`1000` is not enough
+  for even ONE full run** (see the measured paragraph at the end of this section, and
+  step 4, which now carries `100000` for all five). Use `100000`; `rate-limit.spec.js`
+  still self-skips above 10, so this does not weaken that check.
 
 The same applies to the other limiters, each of which is its **own** bucket:
 
@@ -663,6 +669,14 @@ that the shared `authLimiter` bucket exhausts around test ~1700: the tail collap
 re-run with all five maxima at `100000` gave **1841 passed / 1 failed / 26 skipped**.
 Raise them far past the documented defaults for a full run; the three limiter specs
 self-skip either way.
+⚠ **Measured again, worse, DP-T8 2026-09-20:** with step 4's OLD values
+(`AUTH=1000`) a full run collapsed at test **~1292** — **30 failed / 631 did not run**,
+every failure a `429` on an `admin login` in a `beforeAll`, reading exactly like a mass
+regression in whatever you just changed. The failure point depends on how many logins the
+tree's specs make, so it MOVES; do not treat "it got further last time" as evidence.
+**Step 4 now carries `100000` for all five — that block and this paragraph must never
+disagree again** (CLAUDE.md §Documentation discipline: a superseded claim gets rewritten
+in every copy, and a runnable block that contradicts its own warning is the worst copy).
 
 **`backend/public` is git-ignored build output** — the build step in the recipe
 above is mandatory, not a convenience. Production never uses it (nginx serves

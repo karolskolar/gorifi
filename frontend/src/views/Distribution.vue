@@ -12,6 +12,7 @@ import {
 import BalanceBadge from '@/components/BalanceBadge.vue'
 import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
 import { bagsLabel, packedAdjective, handedAdjective, guestsLabel, bagsMoveVerb } from '../lib/plural'
+import { planLineText, allPartiesHandedOver } from '../lib/distribution-plan'
 
 const route = useRoute()
 const router = useRouter()
@@ -481,6 +482,60 @@ const boardEmpty = computed(() => distribution.value.length === 0)
 // SAYS SO. ⚠ Distinct from `boardEmpty`, which is about the CYCLE.
 const viewEmpty = computed(() => !boardEmpty.value && groups.value.length === 0)
 
+// ── DP-T8 (16 §UC-DP-014 + §UC-DP-010 item 1) — the shared cycle header ──────
+//
+// The board and `CycleDetail.vue` render the SAME header: the plan sentence, and
+// the one button that completes a round. Both rules live in
+// `lib/distribution-plan.js` (one home — module 17's stage controls join this
+// header next), and the payload behind them is already loaded here.
+//
+// ⚠ THIS BUTTON IS THE ONLY WAY A CYCLE BECOMES `completed` — stated as the VALUE,
+// not as the column: `CycleDetail.vue` writes `order_cycles.status` three other
+// times (open for ordering / lock / unlock), so "the only writer of `status`" would
+// be a rule that claims more than it holds. What IS true: no hand-over path writes
+// `status` at all (§UC-DP-009: the stage promotion is a stage INSIDE `locked`, not
+// a completion), and nothing here writes `stage` — that is module 17's.
+const statusSub = computed(() => {
+  if (cycle.value?.status === 'locked') return '· uzamknuté'
+  if (cycle.value?.status === 'completed') return '· ukončené'
+  return ''
+})
+
+// ⚠ LOCKED / COMPLETED ONLY, the same window `CycleDetail.vue` uses (§UC-DP-014).
+// While the cycle is still open the parties and their pickup points are moving, so
+// a „plan" would be a snapshot of an argument in progress — the plan CARDS below
+// are the working surface for that, and this line is the summary of a decided round.
+const planLine = computed(() =>
+  statusSub.value ? planLineText(plan.value, totals.value) : ''
+)
+const allHandedOver = computed(() => allPartiesHandedOver(totals.value))
+const completing = ref(false)
+
+async function finishCycle() {
+  // ⚠ The in-flight guard is load-bearing, not decoration: a `disabled` attribute
+  // does NOT stop a dispatched click reaching the handler (measured, DP-T7), and
+  // the gate itself is UX-only — the server accepts the completion either way, so
+  // a double fire has to be refused HERE.
+  if (completing.value || !allHandedOver.value) return
+  completing.value = true
+  // ⚠ CLEAR THE BANNER BEFORE TRYING — `loadData()` never clears it on success
+  // (deliberately: it also runs on the failure path after a snap-back), so without
+  // this a failed completion followed by a successful one leaves a red Alert over a
+  // completed cycle. Same rule the row handlers above follow.
+  error.value = ''
+  try {
+    await api.updateCycle(cycleId, { status: 'completed' })
+    // Re-fetch rather than patch `cycle.status` by hand: the header's sub, the
+    // button and the plan line all read the payload, and `loadData()` carries the
+    // `loadSeq` guard.
+    await loadData()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    completing.value = false
+  }
+}
+
 const totalsLine = computed(() => {
   const count = totals.value?.count || 0
   const packed = totals.value?.packed_count || 0
@@ -496,9 +551,17 @@ function handedShare(entry) {
   return entry.count > 0 ? Math.round((entry.handed_count / entry.count) * 1000) / 10 : 0
 }
 
+// ⚠ CLAMPED AT ZERO (DP-T8), and the clamp is fail-closed rather than cosmetic: the
+// subtraction is only ever non-negative because `packed_count` is a SUPERSET of
+// `handed_count` — a SERVER invariant. If it ever broke, a negative width would be
+// dropped silently by CSS and the bar would simply show the handed share with no
+// sign that the payload disagreed with itself. Both sides assert the invariant; this
+// makes the view degrade to "nothing extra is packed" instead of to undefined
+// behaviour. (CLAUDE.md §Money & data: `!(a + b <= limit)` — NaN and nonsense fail
+// closed.)
 function packedShare(entry) {
   return entry.count > 0
-    ? Math.round(((entry.packed_count - entry.handed_count) / entry.count) * 1000) / 10
+    ? Math.max(0, Math.round(((entry.packed_count - entry.handed_count) / entry.count) * 1000) / 10)
     : 0
 }
 
@@ -1050,10 +1113,48 @@ async function confirmHandover() {
             </svg>
           </Button>
           <h1 class="text-xl font-bold">Distribúcia - {{ cycle?.name || 'Načítavam...' }}</h1>
+          <!-- 16 §UC-DP-010 item 1: the appbar sub says which half of the round
+               this is. Its own element so the shipped title stays byte-stable. -->
+          <span
+            v-if="statusSub"
+            class="text-sm text-primary-foreground/70"
+            data-testid="board-appbar-sub"
+          >{{ statusSub }}</span>
         </div>
-        <Button variant="secondary" @click="printDistribution">
-          Tlačiť
-        </Button>
+        <div class="flex flex-wrap items-center gap-2">
+          <!-- F7's entry point, the same placeholder constant the group headers'
+               „Štítky" carries: DISABLED rather than navigating, because
+               `router.js` has no catch-all and pushing an unsupplied route renders
+               a blank SPA (DP-T5). One `@click` from being wired. -->
+          <Button
+            variant="secondary"
+            disabled
+            :data-labels-route="LABELS_ROUTE"
+            title="Štítky zatiaľ nie sú k dispozícii"
+          >
+            Vytlačiť štítky
+          </Button>
+          <Button variant="secondary" @click="printDistribution">
+            Tlačiť
+          </Button>
+          <!-- The SHARED header button (16 §UC-DP-014): same label, same gate, same
+               single write as on the cycle page. -->
+          <Button
+            v-if="cycle?.status === 'locked'"
+            variant="secondary"
+            :disabled="!allHandedOver || completing"
+            :title="allHandedOver ? undefined : 'Až keď je všetko odovzdané'"
+            @click="finishCycle"
+            class="bg-green-600 hover:bg-green-700 text-white"
+          >
+            Ukončiť objednávku
+          </Button>
+        </div>
+      </div>
+      <!-- The plan line, the same sentence the cycle header carries — one home,
+           `lib/distribution-plan.js`. -->
+      <div v-if="planLine" class="max-w-7xl mx-auto px-4 pb-3 -mt-2">
+        <p class="text-sm text-primary-foreground/80" data-testid="cycle-plan-line">{{ planLine }}</p>
       </div>
     </header>
 
@@ -1727,16 +1828,18 @@ async function confirmHandover() {
            A radix `Dialog` — the admin skin's overlay primitive, which portals
            itself to `body`. Never a hand-rolled fixed div (CLAUDE.md §Frontend). -->
       <Dialog :open="!!handoverDialog" @update:open="$event ? null : closeHandoverDialog()">
-        <!-- `print:hidden` — §UC-DP-011's print list names modals alongside the
-             pickers and the toolbar: a confirmation printed over a picking sheet
-             is a black box across the bags. ⚠ It covers the CONTENT box only; the
-             radix OVERLAY is the shared primitive's own element and carries no
-             print rule (`DialogContent.vue`, `bg-black/80 fixed inset-0`), so a
-             sheet printed with ANY admin modal open still gets the dim layer.
-             Recorded for the module closeout rather than patched here — it is one
-             token in a shipped shared component that every admin view consumes,
-             not a board-row change. -->
-        <DialogContent class="max-w-md print:hidden" data-testid="handover-dialog">
+        <!-- ⚠ NO `print:hidden` HERE ANY MORE, AND THAT IS THE POINT.
+             ~~`print:hidden` on the content box; the radix OVERLAY is the shared
+             primitive's own element and carries no print rule, so a sheet printed
+             with ANY admin modal open still gets the dim layer. Recorded for the
+             module closeout rather than patched here.~~ **DONE (DP-T8, the
+             closeout): `DialogContent.vue` now carries `print:hidden` on BOTH the
+             overlay and the box**, so every admin dialog in the app folds away on
+             a print sheet and no call site has to remember it — which is exactly
+             what a call-site copy would quietly undo (it would keep this dialog
+             green while the primitive's rule rotted). A dialog that really must
+             print overrides it through `class` — `cn()` is tailwind-merge. -->
+        <DialogContent class="max-w-md" data-testid="handover-dialog">
           <DialogHeader>
             <DialogTitle>Odovzdať zabalené?</DialogTitle>
             <DialogDescription data-testid="handover-subtitle">

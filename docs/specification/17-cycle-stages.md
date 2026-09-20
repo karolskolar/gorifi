@@ -77,8 +77,10 @@
 3. **§11 „pipeline feeds the F3.1 stage automatically … offers Ukončiť kolo when every bag
    is at stage 3“ vs §16 Q8.c „no auto-complete“.** Both survive in their halves: the first
    hand-over DOES set `stage='ready'` (UC-CS-003); NOTHING ever sets `status='completed'`
-   but the admin's existing „Označiť ako dokončený“ / the board's manual „Ukončiť
-   objednávku“ (module 16). The "every bag handed over" hint is 16's board UI.
+   but the admin's manual ~~„Označiť ako dokončený“~~ **„Ukončiť objednávku“** (relabelled
+   by DP-T8, 2026-09-20 — the SAME button on BOTH headers now, `CycleDetail.vue` and the
+   board, and it carries a UI-only gate: enabled once every party is handed over, while the
+   API still completes on request). The "every bag handed over" hint is 16's board UI.
 4. **„Horizontal on desktop / vertical on mobile“ (§3.2) vs the prototype**, which is
    vertical at every width (the portal is one 760 px-max column) and uses the compact
    6-dot strip where a horizontal read is wanted. Prototype wins: variants are
@@ -445,8 +447,13 @@ admin skin (shadcn, no `neo/` classes, no theme tokens outside the mounted compo
 - After `ready`: badge only, no stage buttons (forward-only UI; corrections via the API
   — §OPEN O3).
 - Each button disables while its own request is pending; `loadAll()` after; errors to
-  `error.value`. Uzamknúť/Odomknúť/„Označiť ako dokončený“ (:855-866) send exactly what
-  they send today — the server couples stage to status (UC-CS-002).
+  `error.value`. Uzamknúť/Odomknúť/~~„Označiť ako dokončený“ (:855-866)~~ **„Ukončiť
+  objednávku“ (`markCompleted()`, `CycleDetail.vue` ~:926 / the button ~:1519 after DP-T8 —
+  the line numbers MOVED, search the symbol, not the line)** send exactly what they send
+  today — the server couples stage to status (UC-CS-002). ⚠ **This row SHARES that header
+  with DP-T8's plan line** (`cycle-plan-line`, `lib/distribution-plan.js`, rendered for
+  `locked`/`completed`): add the stage badge and timeline beside it, do not replace it, and
+  do not re-derive its numbers — they are the server's `plan[]`/`totals`.
 
 **Read-only timeline in the header (all statuses):** `<CycleTimeline :cycle="cycle"
 variant="compact" />` inside the header block, followed by a muted line with the current

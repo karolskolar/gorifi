@@ -720,3 +720,375 @@ test.describe('DP-T5 · 16 §UC-DP-010 — a focused target that leaves the plan
     await expect(nGroup.getByRole('heading', { name: fx.y.name, exact: true })).toBeVisible()
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DP-T8 — 16 §UC-DP-014 (+ §UC-DP-010 item 1): the admin cycle header.
+//
+// Three things, and the third is the one that distinguishes a UX gate from a rule:
+//
+//  1. ⚠ **THE PLAN LINE IS NON-BLOCKING AND SUMMARY-SHAPED.** It renders on
+//     `CycleDetail` for a `locked` OR `completed` cycle from the same
+//     `GET /cycles/:id/distribution` the board reads, and — unlike the plan CARDS —
+//     it OMITS zero-count targets. An active point nobody is on is information on
+//     the board (where the admin plans) and noise in a one-line summary. The test
+//     gates that absence on the payload actually carrying the zero-count entry, so
+//     a selector typo cannot prove it for free.
+//
+//  2. ⚠ **THE GATE IS THE INTERFACE'S, NOT THE SERVER'S** (PO decision 2026-09-19,
+//     §UC-DP-014). „Ukončiť objednávku" is disabled until `totals.count > 0` and
+//     every party is handed over — and the API keeps accepting
+//     `PATCH /cycles/:id { status: 'completed' }` with un-handed bags, because a bag
+//     that will never be collected must not be able to freeze a cycle open. Both
+//     halves are asserted; asserting only the button would leave the escape hatch
+//     free to be "fixed" into a 409 by the next reader of this module.
+//
+//  3. ⚠ **THE BUTTON IS THE ONLY WRITER OF `status`.** No hand-over path writes it
+//     (pinned in `distribution-handover.spec.js`), so completing a round is an
+//     explicit human act on either header. And it is ledger-neutral: the snapshot
+//     around the click is per-friend (`/friends/:id/detail`), never a global count.
+// ─────────────────────────────────────────────────────────────────────────────
+async function ledgerSnapshot(friendIds) {
+  const out = {}
+  for (const id of friendIds) {
+    const res = await admin(`/api/friends/${id}/detail`)
+    expect(res.status(), 'friend detail').toBe(200)
+    const body = await res.json()
+    out[id] = { count: (body.transactions || []).length, balance: body.balance }
+  }
+  return out
+}
+
+async function lockCycle(cycleId) {
+  const res = await admin(`/api/cycles/${cycleId}`, { method: 'patch', data: { status: 'locked' } })
+  expect(res.status(), 'cycle lock').toBe(200)
+}
+
+test.describe('DP-T8 · 16 §UC-DP-014 — the cycle header: plan line + „Ukončiť objednávku"', () => {
+  test.describe.configure({ mode: 'serial' })
+
+  const fx = {}
+
+  test.beforeAll(async () => {
+    await refreshAdminToken()
+    fx.cycle = await makeCycle('Hlavicka')
+    fx.product = await addProduct(fx.cycle.id)
+    fx.H = await makeLocation('Miesto H')
+    // Active for this cycle's type and nobody on it: a zero-count plan CARD that
+    // must NOT reach the one-line summary.
+    fx.Q = await makeLocation('Miesto Q')
+
+    const line = [{ product_id: fx.product.id, variant: '250g', quantity: 1 }]
+    fx.h1 = await makeFriend('Hana')
+    fx.h1Order = await ownOrder(fx.h1, fx.cycle.id, line, { pickup_location_id: fx.H.id })
+    fx.h2 = await makeFriend('Hugo')
+    fx.h2Order = await ownOrder(fx.h2, fx.cycle.id, line, { pickup_location_note: 'Osobne' })
+
+    // Both packed, neither handed over — the „3 z 5" state the use case describes.
+    await packParty(fx.cycle.id, fx.h1.id, fx.h1Order.id)
+    await packParty(fx.cycle.id, fx.h2.id, fx.h2Order.id)
+    await lockCycle(fx.cycle.id)
+
+    // A second, single-party cycle for the BOARD's copy of the button (the shared
+    // header: the same gate, the same write, a different view).
+    fx.solo = await makeCycle('Hlavicka Board')
+    fx.soloProduct = await addProduct(fx.solo.id)
+    fx.s1 = await makeFriend('Sona')
+    fx.s1Order = await ownOrder(fx.s1, fx.solo.id, [
+      { product_id: fx.soloProduct.id, variant: '250g', quantity: 1 },
+    ], { pickup_location_id: fx.H.id })
+    await packParty(fx.solo.id, fx.s1.id, fx.s1Order.id)
+    await handOverOrder(fx.s1Order.id)
+    await lockCycle(fx.solo.id)
+
+    // An empty locked cycle: `totals.count === 0` must keep the button shut.
+    fx.empty = await makeCycle('Hlavicka Prazdna')
+    await lockCycle(fx.empty.id)
+  })
+
+  test.afterAll(async () => {
+    await refreshAdminToken()
+    for (const loc of [fx.H, fx.Q]) {
+      if (!loc) continue
+      const res = await admin(`/api/pickup-locations/${loc.id}`, { method: 'delete' })
+      expect([204, 404], 'fixture location retired').toContain(res.status())
+    }
+  })
+
+  test('the locked cycle header carries the plan line; zero-count targets are omitted', async ({ page }) => {
+    // NON-VACUITY: the omission below only means something because the payload
+    // really does carry the empty point as a plan entry.
+    const body = await payload(fx.cycle.id)
+    const zero = body.plan.find((entry) => entry.target_key === `loc${fx.Q.id}`)
+    expect(zero, 'the empty point IS in plan[]').toMatchObject({ count: 0 })
+    expect(body.totals).toEqual({ count: 2, packed_count: 2, handed_count: 0 })
+
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${fx.cycle.id}`)
+
+    const planLine = page.getByTestId('cycle-plan-line')
+    await expect(planLine).toBeVisible()
+    await expect(planLine).toHaveText(`${fx.H.name} 1 · Osobne 1 — 0/2 odovzdaných`)
+    await expect(planLine, 'a point nobody is on is not in the summary')
+      .not.toContainText(fx.Q.name)
+  })
+
+  test('„Označiť ako dokončený" is gone; „Ukončiť objednávku" is disabled while a bag is out', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${fx.cycle.id}`)
+
+    await expect(page.getByRole('button', { name: 'Označiť ako dokončený' })).toHaveCount(0)
+    const finish = page.getByRole('button', { name: 'Ukončiť objednávku', exact: true })
+    await expect(finish).toBeVisible()
+    await expect(finish).toBeDisabled()
+    await expect(finish).toHaveAttribute('title', 'Až keď je všetko odovzdané')
+  })
+
+  test('an empty locked cycle keeps the button shut and shows no plan line', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${fx.empty.id}`)
+
+    await expect(page.getByRole('button', { name: 'Ukončiť objednávku', exact: true })).toBeDisabled()
+    await expect(page.getByTestId('cycle-plan-line'), 'nothing to plan, nothing to say')
+      .toHaveCount(0)
+  })
+
+  test('the board header: the status sub, the labels placeholder, the same disabled gate', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${fx.cycle.id}/distribution`)
+
+    await expect(page.getByTestId('board-appbar-sub')).toHaveText('· uzamknuté')
+    const labels = page.getByRole('button', { name: 'Vytlačiť štítky', exact: true })
+    await expect(labels).toBeVisible()
+    await expect(labels, 'F7 is built elsewhere; the route is a placeholder').toBeDisabled()
+    await expect(labels).toHaveAttribute('data-labels-route', '/admin/stitky')
+
+    const finish = page.getByRole('button', { name: 'Ukončiť objednávku', exact: true })
+    await expect(finish).toBeDisabled()
+    await expect(finish).toHaveAttribute('title', 'Až keď je všetko odovzdané')
+
+    // The same plan line as the cycle header, from the same `plan[]`.
+    await expect(page.getByTestId('cycle-plan-line'))
+      .toHaveText(`${fx.H.name} 1 · Osobne 1 — 0/2 odovzdaných`)
+  })
+
+  // ⚠ RECORDED BY DP-T7, FIXED HERE (it is one token in a SHARED primitive, which
+  // that row rightly declined to touch under a board row). `DialogContent.vue` is
+  // what every admin modal renders through, and it carried no print rule at all —
+  // so a packing sheet printed with any dialog open came out under the `bg-black/80`
+  // dim layer, with the modal stamped across page one. The board is the right place
+  // to pin it: this page IS the print sheet.
+  test('an open dialog never reaches the printed sheet — neither its dim layer nor its box', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await adoptBrowserToken(page)
+    await page.goto(`/admin/cycle/${fx.cycle.id}/distribution`)
+
+    await page.getByTestId(`handover-group-loc${fx.H.id}`).click()
+    const dialog = page.getByTestId('handover-dialog')
+    const overlay = page.locator('div.fixed.inset-0.bg-black\\/80')
+    // NON-VACUITY: on screen both really are there. Without this the print
+    // assertions below would pass against a typo'd selector.
+    await expect(dialog).toBeVisible()
+    await expect(overlay).toBeVisible()
+
+    await page.emulateMedia({ media: 'print' })
+    await expect(overlay, 'the dim layer would grey the whole sheet').toBeHidden()
+    await expect(dialog, 'and the box would land on page one').toBeHidden()
+    await page.emulateMedia({ media: 'screen' })
+
+    // Leave the fixture exactly as the next test needs it: nothing handed over.
+    await expect(dialog).toBeVisible()
+    await page.getByTestId('handover-cancel').click()
+    await expect(dialog).toBeHidden()
+    expect((await payload(fx.cycle.id)).totals.handed_count, 'the dialog was cancelled').toBe(0)
+  })
+
+  // ⚠ FAIL-CLOSED, on a bar nobody would notice was lying (recorded by DP-T5). The
+  // packed-not-handed segment is `packed_count − handed_count`, which is only ever
+  // non-negative because the SERVER guarantees `packed_count` is a superset. The
+  // payload is therefore forged here — there is no way to reach this state through
+  // the API, and that is the point: if the invariant ever broke, an unclamped width
+  // would be dropped silently by CSS and the bar would look merely "less packed".
+  test('a payload that breaks the packed⊇handed invariant cannot produce a negative bar', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await adoptBrowserToken(page)
+
+    await page.route(`**/api/cycles/${fx.cycle.id}/distribution`, async (route) => {
+      const response = await route.fetch()
+      const body = await response.json()
+      for (const entry of body.plan) {
+        if (entry.target_key !== `loc${fx.H.id}`) continue
+        entry.count = 2
+        entry.packed_count = 0   // ← the impossible half
+        entry.handed_count = 1
+      }
+      await route.fulfill({ response, json: body })
+    })
+
+    await page.goto(`/admin/cycle/${fx.cycle.id}/distribution`)
+    const packed = page.getByTestId(`plan-bar-packed-loc${fx.H.id}`)
+    await expect(packed).toHaveAttribute('data-share', '0')
+    // The honest half still renders, so the clamp is not hiding the whole bar.
+    await expect(page.getByTestId(`plan-bar-handed-loc${fx.H.id}`)).toHaveAttribute('data-share', '50')
+    await page.unroute(`**/api/cycles/${fx.cycle.id}/distribution`)
+  })
+
+  test('every bag handed over enables the button; the click completes the cycle, ledger untouched', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await adoptBrowserToken(page)
+    await page.goto(`/admin/cycle/${fx.cycle.id}`)
+    await expect(page.getByRole('button', { name: 'Ukončiť objednávku', exact: true })).toBeDisabled()
+
+    await handOverOrder(fx.h1Order.id)
+    await handOverOrder(fx.h2Order.id)
+
+    const before = await ledgerSnapshot([fx.h1.id, fx.h2.id])
+
+    await page.reload()
+    const finish = page.getByRole('button', { name: 'Ukončiť objednávku', exact: true })
+    await expect(finish, 'the gate opens on the last hand-over').toBeEnabled()
+    await finish.click()
+
+    // The cycle really is completed — read back from the API, not from the badge.
+    await expect(page.getByText('Dokončený', { exact: true }).first()).toBeVisible()
+    const after = await admin(`/api/cycles/${fx.cycle.id}`)
+    expect(after.status()).toBe(200)
+    expect((await after.json()).status).toBe('completed')
+
+    // The plan line survives the completion — the round stays readable afterwards.
+    await expect(page.getByTestId('cycle-plan-line'))
+      .toHaveText(`${fx.H.name} 1 · Osobne 1 — 2/2 odovzdaných`)
+    // …and the button is gone: `completed` is not a state you complete again.
+    await expect(page.getByRole('button', { name: 'Ukončiť objednávku', exact: true })).toHaveCount(0)
+
+    // Stage 3 is ledger-neutral, and so is the completion itself.
+    expect(await ledgerSnapshot([fx.h1.id, fx.h2.id])).toEqual(before)
+  })
+
+  test('the board header sub reads „· ukončené" once the cycle is completed', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${fx.cycle.id}/distribution`)
+    await expect(page.getByTestId('board-appbar-sub')).toHaveText('· ukončené')
+    await expect(page.getByTestId('cycle-plan-line'))
+      .toHaveText(`${fx.H.name} 1 · Osobne 1 — 2/2 odovzdaných`)
+  })
+
+  test('the board carries the same writer: enabled there, and the click completes', async ({ page }) => {
+    await loginAsAdminUI(page)
+    await adoptBrowserToken(page)
+    await page.goto(`/admin/cycle/${fx.solo.id}/distribution`)
+
+    const finish = page.getByRole('button', { name: 'Ukončiť objednávku', exact: true })
+    await expect(finish, 'its one bag is already handed over').toBeEnabled()
+    await finish.click()
+
+    await expect(page.getByTestId('board-appbar-sub')).toHaveText('· ukončené')
+    const after = await admin(`/api/cycles/${fx.solo.id}`)
+    expect((await after.json()).status).toBe('completed')
+  })
+
+  // ⚠ THE STALE-MESSAGE CLASS, ONE SCOPE UP (review finding, DP-T8). `loadAll()` /
+  // `loadData()` deliberately do NOT clear the page banner on success — they also
+  // run on failure paths — so a completion handler that does not clear it before
+  // trying leaves a red Alert standing over a cycle that IS now completed. Both
+  // handlers clear it; this pins the CycleDetail one.
+  test('a failed completion does not leave its banner over the successful retry', async ({ page }) => {
+    await refreshAdminToken()
+    const cycle = await makeCycle('Hlavicka Banner')
+    const product = await addProduct(cycle.id)
+    const friend = await makeFriend('Zita')
+    const order = await ownOrder(friend, cycle.id, [
+      { product_id: product.id, variant: '250g', quantity: 1 },
+    ], { pickup_location_note: 'Osobne' })
+    await packParty(cycle.id, friend.id, order.id)
+    await handOverOrder(order.id)
+    await lockCycle(cycle.id)
+
+    await loginAsAdminUI(page)
+    await adoptBrowserToken(page)
+    await page.goto(`/admin/cycle/${cycle.id}`)
+
+    // Exactly ONE refusal, then the real server again.
+    let refuseOnce = true
+    await page.route(`**/api/cycles/${cycle.id}`, async (route) => {
+      if (route.request().method() === 'PATCH' && refuseOnce) {
+        refuseOnce = false
+        return route.fulfill({
+          status: 500, contentType: 'application/json',
+          body: JSON.stringify({ error: 'Servris spadol' }),
+        })
+      }
+      await route.continue()
+    })
+
+    const finish = page.getByRole('button', { name: 'Ukončiť objednávku', exact: true })
+    await expect(finish, 'its one bag is handed over').toBeEnabled()
+    await finish.click()
+    // NON-VACUITY: the banner really is there before the retry clears it.
+    await expect(page.getByRole('alert')).toContainText('Servris spadol')
+
+    await finish.click()
+    const after = await admin(`/api/cycles/${cycle.id}`)
+    expect((await after.json()).status, 'the retry went through').toBe('completed')
+    await expect(page.getByRole('alert'), 'no red line over a completed cycle').toHaveCount(0)
+    await page.unroute(`**/api/cycles/${cycle.id}`)
+  })
+
+  // ⚠ THE PLAN LINE IS THE SERVER'S GROUPING, NOT LOCAL KNOWLEDGE. The orders tab
+  // patches a pickup change into its row in place (the 33-row table is not reloaded),
+  // which is right for the row and wrong for the header: the party has just moved
+  // between targets. Deleting the re-fetch leaves the line naming the target the
+  // party left — so this test reads the line BEFORE and AFTER, with no reload.
+  test('a pickup change on the orders tab moves the plan line without a reload', async ({ page }) => {
+    await refreshAdminToken()
+    const cycle = await makeCycle('Hlavicka Presun')
+    const product = await addProduct(cycle.id)
+    const line = [{ product_id: product.id, variant: '250g', quantity: 1 }]
+    const stays = await makeFriend('Petra')
+    await ownOrder(stays, cycle.id, line, { pickup_location_id: fx.H.id })
+    const moves = await makeFriend('Radka')
+    await ownOrder(moves, cycle.id, line, { pickup_location_note: 'Osobne' })
+    await lockCycle(cycle.id)
+
+    await loginAsAdminUI(page)
+    await page.goto(`/admin/cycle/${cycle.id}`)
+    await expect(page.getByTestId('cycle-plan-line'))
+      .toHaveText(`${fx.H.name} 1 · Osobne 1 — 0/2 odovzdaných`)
+
+    await page.getByRole('tab', { name: 'Objednávky' }).click()
+    await page.getByTestId(`pickup-select-${moves.id}`).selectOption(String(fx.H.id))
+
+    await expect(page.getByTestId('cycle-plan-line'), 'the header followed the party')
+      .toHaveText(`${fx.H.name} 2 — 0/2 odovzdaných`)
+  })
+
+  // ⚠⚠ THE PO'S DECISION, AND THE ONLY ASSERTION THAT SEPARATES A UX GATE FROM A
+  // RULE (§UC-DP-014, PO 2026-09-19: „Server-side completion gate = NONE"). If a
+  // later reader adds the 409 that looks so obviously right, this test — not a
+  // comment — is what says no.
+  test('the API still completes a cycle with un-handed bags (the escape hatch)', async () => {
+    await refreshAdminToken()
+    const cycle = await makeCycle('Hlavicka Escape')
+    const product = await addProduct(cycle.id)
+    const friend = await makeFriend('Eva')
+    await ownOrder(friend, cycle.id, [
+      { product_id: product.id, variant: '250g', quantity: 1 },
+    ], { pickup_location_note: 'Osobne' })
+    await lockCycle(cycle.id)
+
+    const before = await payload(cycle.id)
+    expect(before.totals, 'nothing is handed over').toMatchObject({ count: 1, handed_count: 0 })
+
+    const res = await admin(`/api/cycles/${cycle.id}`, { method: 'patch', data: { status: 'completed' } })
+    expect(res.status(), 'no server-side hand-over gate').toBe(200)
+    expect((await res.json()).status).toBe('completed')
+
+    // Read the row back (the refusal-test idiom, applied to a NON-refusal): the
+    // cycle is completed and the bag is still out, which is exactly the state the
+    // escape hatch exists to allow.
+    const readBack = await admin(`/api/cycles/${cycle.id}`)
+    expect((await readBack.json()).status).toBe('completed')
+    const after = await payload(cycle.id)
+    expect(after.totals).toMatchObject({ count: 1, handed_count: 0 })
+    expect(after.distribution.find((p) => p.id === friend.id).handed_over_at).toBeNull()
+  })
+})

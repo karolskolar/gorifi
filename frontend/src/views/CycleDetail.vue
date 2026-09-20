@@ -14,6 +14,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import BalanceBadge from '@/components/BalanceBadge.vue'
 import GuestLinkRowControls from '@/components/GuestLinkRowControls.vue'
 import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
+import { planLineText, allPartiesHandedOver } from '../lib/distribution-plan'
 
 const route = useRoute()
 const router = useRouter()
@@ -373,6 +374,11 @@ async function loadAll() {
     // Non-blocking: the orders tab still renders (with the nested sub-orders that
     // came with `ordersData`) if only the money overview fails.
     await loadGuestUnpaid()
+    // Same contract again (DP-T8, 16 §UC-DP-014): the plan line is a summary of a
+    // round already under way, never a precondition for the page. It also has to run
+    // AFTER `cycle.value` is set, because only a `locked` / `completed` cycle has a
+    // plan to summarise.
+    await loadDistributionPlan()
     // Same contract, same reason (§UC-GR-008): a failed link listing must not stop
     // the orders tab rendering. Both helpers swallow their own errors into an inline
     // message, so neither can reject and land in the catch below.
@@ -441,6 +447,12 @@ function onPickupUpdated(order, updated) {
     order.packeta_address = null
     order.delivery_fee = 0
   }
+  // ⚠ PATCH IN PLACE, THEN RE-FETCH THE PLAN (DP-T6's rule, DP-T8's consumer). The
+  // row above is local knowledge; the header's plan line is the SERVER's grouping,
+  // and moving a party between Packeta / a pickup point / in person changes it. It
+  // is cheap, non-blocking and `loadSeq`-guarded, and it no-ops while the cycle is
+  // open — without it the line would keep naming the target the party just left.
+  loadDistributionPlan()
 }
 
 // Guest sub-orders, admin side (§UC-GSO-009..010) ----------------------------
@@ -477,6 +489,56 @@ async function loadGuestUnpaid() {
     guestUnpaidError.value = e.message
   }
 }
+
+// ── DP-T8 (16 §UC-DP-014) — the plan line and the manual „Ukončiť objednávku" ──
+//
+// ⚠ NON-BLOCKING, exactly like `loadGuestUnpaid()` above: a failed distribution
+// fetch HIDES the line and nothing else. The tab must still render — this is a
+// summary of where the bags are going, not a precondition for editing a cycle.
+//
+// ⚠ SEQUENCE GUARD (`loadSeq`): `loadAll()` runs on mount and after every cycle
+// mutation (lock, unlock, completion), so two fetches can be in flight and resolve
+// out of order. The stale one would paint an older „{handed}/{total} odovzdaných"
+// over a newer one — on the very line the admin reads to decide whether the round
+// is done.
+//
+// ⚠ NOTHING HERE IS RE-DERIVED. `plan[]` and `totals` are the server's
+// (`helpers/delivery.js` is the one home of the classification, DP-T1/DP-T2); this
+// only joins them into a sentence.
+const distributionPlan = ref([])
+const distributionTotals = ref(null)
+let distributionSeq = 0
+
+async function loadDistributionPlan() {
+  // Only a locked or completed cycle HAS a distribution plan; while it is still
+  // open the parties and their pickup points are still moving.
+  if (!['locked', 'completed'].includes(cycle.value?.status)) {
+    distributionPlan.value = []
+    distributionTotals.value = null
+    return
+  }
+  const seq = ++distributionSeq
+  try {
+    const data = await api.getCycleDistribution(cycleId.value)
+    if (seq !== distributionSeq) return
+    distributionPlan.value = Array.isArray(data.plan) ? data.plan : []
+    distributionTotals.value = data.totals || null
+  } catch (e) {
+    if (seq !== distributionSeq) return
+    // Swallowed on purpose (and never into `error`, which would put a red Alert
+    // over a working tab): no line is the honest rendering of "we do not know".
+    distributionPlan.value = []
+    distributionTotals.value = null
+  }
+}
+
+// ⚠ BOTH RULES LIVE IN `lib/distribution-plan.js`, NOT HERE. The board renders the
+// same header from the same payload (and module 17's stage controls will share it),
+// so the sentence and the gate have exactly one home — see that file for why the
+// line omits zero-count targets and why the gate is the interface's only.
+const planLine = computed(() => planLineText(distributionPlan.value, distributionTotals.value))
+const allHandedOver = computed(() => allPartiesHandedOver(distributionTotals.value))
+const completingCycle = ref(false)
 
 // The first name of the host who invited this guest — what the nested badge says
 // ("Hosť • pozval Peťo"), so a sub-order is never mistaken for the host's own.
@@ -862,8 +924,26 @@ async function toggleLock() {
 }
 
 async function markCompleted() {
-  await api.updateCycle(cycleId.value, { status: 'completed' })
-  await loadAll()
+  // ⚠ THE `disabled` ATTRIBUTE IS NOT THE GUARD (DP-T7 measured it: a dispatched
+  // click reaches the handler anyway). The gate is UX, but it should not be
+  // bypassable by accident either, so it is stated here too — and the API keeps
+  // accepting the completion on purpose, which is why this refuses instead of
+  // asking the server to.
+  if (completingCycle.value || !allHandedOver.value) return
+  completingCycle.value = true
+  // ⚠ CLEAR THE BANNER BEFORE TRYING — the view's own idiom (`saveMarkup()` and the
+  // three handlers beside it), and `loadAll()` does NOT clear it on success, so a
+  // failed completion followed by a successful one would leave a red Alert standing
+  // over a cycle that is now completed. The stale-advice class, one scope up.
+  error.value = ''
+  try {
+    await api.updateCycle(cycleId.value, { status: 'completed' })
+    await loadAll()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    completingCycle.value = false
+  }
 }
 
 function startEditingCycleName() {
@@ -1407,6 +1487,14 @@ function getStatusVariant(status) {
             <Badge v-if="cycle" :variant="getStatusVariant(cycle.status)" class="mt-1 text-primary-foreground bg-primary-foreground/20 border-primary-foreground/30">
               {{ cycle.status === 'planned' ? 'Plánovaný' : cycle.status === 'open' ? 'Otvorený' : cycle.status === 'locked' ? 'Uzamknutý' : 'Dokončený' }}
             </Badge>
+            <!-- The plan without opening the board (16 §UC-DP-014). Absent while the
+                 cycle is open, absent when the fetch failed, absent when there is
+                 nothing to distribute — never a half-line. -->
+            <p
+              v-if="planLine"
+              class="mt-1 text-sm text-primary-foreground/80"
+              data-testid="cycle-plan-line"
+            >{{ planLine }}</p>
           </div>
         </div>
         <div class="flex flex-wrap gap-2">
@@ -1431,10 +1519,12 @@ function getStatusVariant(status) {
             v-if="cycle?.status === 'locked'"
             variant="secondary"
             size="sm"
+            :disabled="!allHandedOver || completingCycle"
+            :title="allHandedOver ? undefined : 'Až keď je všetko odovzdané'"
             @click="markCompleted"
             class="bg-green-600 hover:bg-green-700 text-white"
           >
-            Označiť ako dokončený
+            Ukončiť objednávku
           </Button>
           <Button
             variant="secondary"

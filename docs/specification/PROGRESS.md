@@ -409,7 +409,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [ ] FUP-T24  ⚠ **The kg display rule `Math.round(g/10)/100` has NO one home — FOUR copies now, and CLAUDE.md states it as a rule without naming a home.** Verified: `FriendOrder.vue:458`, `FriendPortalSession.vue:974`, `GuestProductGrid.vue:177`, and `Distribution.vue:452` (DP-T5 added the fourth **deliberately**, with a pointer, rather than refactor three shipped files under a board row — the right call there, the wrong steady state). ⚠ CLAUDE.md §Frontend says "kg display `Math.round(g/10)/100` with trailing zeros stripped" — a RULE with no address, which is exactly the shape this session has been correcting all week (`helpers/payment.js`, `helpers/delivery.js`, `e2e/helpers/copy-sweep.js` all started as two copies of a rule). ⚠ **Not urgent and not a defect:** all four agree today and the two-decimal result is exact for every gram value the app produces. It is a DRIFT SURFACE — four edits, four chances to diverge, and money-adjacent because the same number is what a friend reads as their share. ⚠ Scope: one home in `frontend/src/lib/` (beside `plural.js`), all four call sites converted, CLAUDE.md's bullet given the address, and the trailing-zeros half of the rule verified — **check whether all four actually strip them, since the bullet claims it and `${}` interpolation does it implicitly only for some values.** ⚠ Acceptance: a grep for the expression returns the one home; each converted surface keeps its shipped rendering **byte-identical** (pin the existing e2e text assertions first — `portal-fidelity`, `guest-order`, `order-cartbar` all render kg), and a mutation in the one home reddens all four surfaces.
 - [x] DP-T6  Board rows: Kto / Doručenie-obsah / Platba / Krok 1 Zabalené / Krok 2 Odovzdané; nested `via_host` guest rows READ-ONLY mirrors (PO: no clickable per-guest Odovzdané); Packeta address + phone; synthetic-host Krok 2 via bulk; click-to-expand row holding the shipped item checklist — EXPANDED while `to_pack`, collapsed after (PO); handed-over disabled states („Najprv zrušte odovzdanie“) + snap-back; print rules for the new DOM (`hidden print:flex`, pickers `print:hidden`, badges `print:inline-flex`) — `16 §UC-DP-011,007(frontend)` · model=heavy ⚠ after a pickup change: patch in place THEN re-fetch (loadSeq) — delivery/plan come from the server, never re-derived client-side. ⚠ `PickupLocationPicker` props `cycleId`+`friendId` (never an order id). ⚠ SANCTIONED: `guest-distribution.spec.js` selector retargets ONLY where the Card-per-friend layout is assumed (cite UC-DP-011); `guest-group-toggle/items/summary-<id>` preserved inside the expanded row. ⚠ Module-20 seam: a `packeta` guest party renders as its OWN row under Packeta („hosť · {host}“) — slot reserved here, filled by GP-T6.
 - [x] DP-T7  Per-group bulk hand-over: „Odovzdať zabalené (n)“ → radix Dialog „Odovzdať zabalené?“ (subtitle + ledger-neutral banner; Zrušiť / Áno, odovzdané) → POST bulk → in-place patch + re-fetch + 3.5 s toast; 409 `not_packed` → Alert + row highlight — `16 §UC-DP-012` ⚠ the WhatsApp sentence in the modal and the „· n správ zaradených“ toast half are module 21's (`queued_notifications` ignored by the UI here).
-- [ ] DP-T8  Admin cycle header: non-blocking plan line (locked + completed) + „Označiť ako dokončený“ relabelled **„Ukončiť objednávku“** with UX-ONLY gate (all parties handed over; PO: NO server 409 — pin that the API still completes with un-handed bags) on CycleDetail AND the board header; board header „Vytlačiť štítky“ placeholder + „· uzamknuté / · ukončené“ sub + **module-16 closeout (full suite, learnings, CLAUDE.md one-liners)** — `16 §UC-DP-014,010(header),015` ⚠ nothing here writes `order_cycles.stage` (17's) or `status` except the button; module 17's stage controls will share this header.
+- [x] DP-T8  Admin cycle header: non-blocking plan line (locked + completed) + „Označiť ako dokončený“ relabelled **„Ukončiť objednávku“** with UX-ONLY gate (all parties handed over; PO: NO server 409 — pin that the API still completes with un-handed bags) on CycleDetail AND the board header; board header „Vytlačiť štítky“ placeholder + „· uzamknuté / · ukončené“ sub + **module-16 closeout (full suite, learnings, CLAUDE.md one-liners)** — `16 §UC-DP-014,010(header),015` ⚠ nothing here writes `order_cycles.stage` (17's) or `status` except the button; module 17's stage controls will share this header.
 
 ## 15. Cycle stages (17) — opens_at / closes_at / stage, timeline component
 
@@ -469,6 +469,110 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 
 ## Log
+
+- 2026-09-20 · DP-T8 · (this commit) · no PR (project convention) · **MODULE 16 IS COMPLETE.** Cycle header:
+  a non-blocking `cycle-plan-line` on `CycleDetail` AND the board (locked + completed only, zero-count
+  targets omitted, own seq guard, a failed fetch shows NO line and never touches `error`); „Označiť ako
+  dokončený" → **„Ukončiť objednávku"** on both headers with a **UI-ONLY** gate; board sub „· uzamknuté /
+  · ukončené" and a disabled „Vytlačiť štítky" carrying `data-labels-route` (DP-T5's no-catch-all reasoning).
+  New `lib/distribution-plan.js` is the one home for the sentence and the gate (two consumers now, module
+  17's stage controls join this header). ⚠ **The PO decision is the whole point of the row, so the suite
+  proves the OPPOSITE of what the screen implies:** „the API still completes a cycle with un-handed bags"
+  asserts `count: 1, handed_count: 0` first, then reads back through two separate GETs that `status` is
+  `completed` while `handed_over_at` is still NULL. It reds the moment anyone adds a 409. **A UX gate that
+  nothing pins is indistinguishable from a rule.** ⚠⚠ **FULL SUITE (module-16 milestone): 1971 passed /
+  0 failed / 4 skipped, 12.6 min — orchestrator ran it independently and got the same numbers.** The 4 are
+  the documented ones (3 limiter specs self-skipping BECAUSE the budgets are raised + 1 `test.fixme`).
+  ⚠⚠ **A NINE-MINUTE FALSE RED, and the cause is this session's recurring shape:** the first full run gave
+  **30 failed / 631 did not run**, every failure a 429 on an `admin login` inside a `beforeAll` — reading
+  exactly like a mass regression in the diff under test. `e2e/README.md`'s **runnable step 4** carried
+  `RATE_LIMIT_AUTH_MAX=1000` while its own later prose says in bold that 1000 is measurably too small,
+  **measured and written down by PL-T4 — into the prose only.** The block people PASTE was never updated.
+  Fixed in the runnable block, struck with a pointer in the prose, and the value named in CLAUDE.md's gate
+  bullet; review swept and confirmed step 4 is the only runnable server block in the file. ⚠⚠ **AND THEN
+  THE ROW DID IT AGAIN, which is why it is recorded rather than quietly fixed:** DP-T7 had left a comment
+  saying the shared `DialogContent.vue` overlay has no print rule, *"recorded for the module closeout"* —
+  **this row IS that closeout and patched exactly that**, then left the comment standing, in the file module
+  17 opens first. Review caught it. **General rule now in the learnings: a rule moved into a shared home
+  must be DELETED FROM THE CALL SITE in the same commit, or the call site becomes the thing that hides its
+  removal.** ⚠ That deletion also repaired the test: the print assertion's box half passed even with the
+  token removed from the primitive, because the one dialog it opened carried its own copy — the implementer
+  then **verified the repair by mutation** (primitive's box token removed ⇒ the test now fails, where before
+  it passed). ⚠ **An over-broad rule, narrowed:** CLAUDE.md claimed the button is the only writer of
+  `order_cycles.status`; lock, unlock and publish write it too. Now stated as the only way a cycle becomes
+  **`completed`** — corrected in all FOUR copies, not just the flagged one. ⚠ The superseded button label
+  survived in module **17**'s spec ×2 (the copy most likely to be implemented from, since 17 shares this
+  header) **and ×2 more in module 16's own file**, plus two dead line citations — all struck, and the
+  citations replaced with "search the symbol, not the line". 17 also gained the seam it needed: **add the
+  stage badge beside `cycle-plan-line`, do not replace it and do not re-derive its numbers.**
+  ⚠ **Two fixes beyond the brief:** `onPickupUpdated()` in `CycleDetail.vue` patched the row with **no
+  re-fetch**, so the new plan line kept naming a target the party had just left — DP-T6's rule met a
+  consumer that POSTDATES it (mutation-proven); and `markCompleted()` had **no error handling**, so a failed
+  PATCH was an unhandled rejection with nothing on screen. Neither completion handler cleared the page
+  banner either, so a failed completion followed by a successful one left a red Alert over a completed
+  cycle — fixed in both, pinned with a forged 500 + retry, mutation-proven. ⚠ **The six collected items,
+  each decided:** the shared-overlay print rule and the negative-width clamp **FIXED** (the clamp pinned
+  with a `page.route`-forged payload, since the invariant break is unreachable through the API — which is
+  the point of a clamp); the grammar deviation **already fixed by DP-T7**, struck in the spec so nobody
+  "fixes" the code back to the ungrammatical sentence; **three routed to the PO** (a packed row printing no
+  item list, the counter's location, and „Osobne" vs „Osobné odovzdanie") because making the spec true would
+  move markup `item-packed.spec.js` and `guest-distribution.spec.js` locate parties by — the exact thing
+  DP-T6 refused to disturb, and the in-person label is a backend constant published in the payload; the two
+  `h1`s **recorded, not fixed** (no locator ambiguous; demoting a shipped appbar title is not a closeout's
+  business). ⚠ Review verified the shared change is admin-only, print-media only, and that the box's
+  override path is real while the overlay's is not (it is not `cn()`-merged) — harmless, but the comment's
+  claim is true of the box only. Review: 1 round → **revise → approve** (1 major + 5 minor, all fixed).
+  Gate: `vite build` clean, admin invariance zero tokens, four shipped specs byte-untouched; orchestrator's
+  own **full suite 1971/0/4** plus **283 passed / 0 failed / 0 SKIPPED** after the fixes.
+  ⚠ **MODULE 16 CLOSED. Open for the PO:** the three spec-vs-behaviour questions above, recorded in
+  `16-distribution-pipeline.md`'s new PO section. **Still unowned:** the guest-cancelled-after-hand-over
+  seam (FUP-T23 / WA-T5 carry it, with the three complete fixes named).
+
+- 2026-09-20 · DP-T8 · (this commit) · no PR (project convention) · **The cycle header, and the module-16
+  closeout.** A non-blocking plan line („{label} {n} · … — {handed}/{total} odovzdaných", `cycle-plan-line`)
+  on a `locked` OR `completed` cycle, on `CycleDetail.vue` AND the board; „Označiť ako dokončený" relabelled
+  **„Ukončiť objednávku"**, gated `totals.count > 0 && handed_count === count` with
+  `title="Až keď je všetko odovzdané"`; board appbar sub „· uzamknuté" / „· ukončené" and the
+  „Vytlačiť štítky" placeholder (DISABLED, `data-labels-route` — DP-T5's decision, `router.js` has no
+  catch-all). ⚠ **BOTH RULES HAVE ONE HOME**, `frontend/src/lib/distribution-plan.js` — two views render the
+  same header and module 17's stage controls join it next; this is the FUP-T24 shape corrected before it
+  became a second copy. The fetch follows `loadGuestUnpaid()`'s contract exactly (own seq guard, failure
+  swallowed into „no line", never into `error`, never blocking the tab) and no-ops while the cycle is open.
+  ⚠⚠ **THE PO'S DECISION IS THE ONLY THING DISTINGUISHING A UX GATE FROM A RULE, so it is an ASSERTION, not
+  a comment:** `PATCH /cycles/:id { status: 'completed' }` still completes a cycle with un-handed bags (read
+  back, with `handed_over_at` still NULL) — nothing server-side changed, and the button stays the only way a cycle
+  becomes **`completed`** (stated as the VALUE — lock / unlock / open-for-ordering write the column too). Ledger pinned unmoved across the click (`/friends/:id/detail`, per friend).
+  ⚠ **FOUND, NOT LISTED: `onPickupUpdated()` patched the row in place with no re-fetch**, so moving a party
+  between targets left the new header naming the target they had just left — DP-T6's rule, a consumer it
+  predates. Fixed and **mutation-proven** (delete the call ⇒ the line keeps the old grouping). `markCompleted()`
+  also had no error handling at all: a failed PATCH was an unhandled rejection with nothing on screen.
+  ⚠ **The six collected items, each decided:** (1) the shared `DialogContent.vue` had NO print rule — fixed,
+  `print:hidden` on the overlay AND the box (a dialog is chrome; a sheet printed with any modal open came out
+  dimmed with the box on page one), pinned screen-visible → print-hidden; (2) `packedShare()` could emit a
+  negative width — clamped, pinned with a `page.route`-FORGED payload, since the state is unreachable through
+  the API; (3+4) the two spec-vs-code mismatches (a packed friend row prints no item list; the packing
+  counter's place) and (5) „Osobne" vs „Osobné odovzdanie" are **PO questions, not code changes** — all three
+  are recorded in a new „Open items raised at the module-16 closeout" section of the spec, because fixing any
+  of them moves markup two byte-untouched shipped specs locate parties by; (6) the two top-level `h1`s on the
+  board are **recorded and not fixed** — no locator is ambiguous (every heading assertion matches by name) and
+  demoting a shipped appbar title no use case mentions is not a closeout's business. DP-T7's grammar
+  deviation (`bagsMoveVerb()`) is struck in the same section: the code agrees, the spec sentence does not.
+  ⚠⚠ **A HARNESS DEFECT THAT COST A 9-MINUTE FALSE RED, and it was the documentation discipline rule again:**
+  `e2e/README.md`'s RUNNABLE step 4 carried `RATE_LIMIT_AUTH_MAX=1000` while a later section of the SAME file
+  says in bold that 1000 is measurably too small for one full run. Following the runnable block gave **30
+  failed / 631 did not run**, every failure a `429` on an `admin login` in a `beforeAll` — indistinguishable
+  from a mass regression in the diff under test. Step 4 now carries `100000` for all five, the superseded
+  sentence is struck, and CLAUDE.md's gate bullet names the value. **A runnable block that contradicts its own
+  warning is the worst copy of a rule, because it is the one a reader executes.** ⚠ Learnings:
+  `docs/learnings/08-distribution-pipeline.md` (organised by LESSON, not by row — the six deferred write-ups);
+  CLAUDE.md gained the index row and five one-liners (hand-over is ledger-neutral + the sole `status` writer;
+  module 16's homes; the dialog print rule; `disabled` is not a guard + refusal scope; hold the second call to
+  prove a patch-then-re-fetch). Gate: `vite build` + `node --check` clean, admin-skin sweep NONE
+  (`pp-*`/`neo/`/`friends-theme`/`.app`); `guest-distribution.spec.js`, `item-packed.spec.js`,
+  `order-pickup-edit.spec.js` still byte-untouched and green. Targeted 98 passed / 0 skipped; three new
+  invariants mutation-proven in both directions. **FULL SUITE (the module milestone): 1971 passed / 0 failed /
+  4 SKIPPED in 12.6 min, EXIT 0** — the four are exactly the documented ones (`forced-change-ui` `test.fixme`
+  + `rate-limit`, `rate-limit-isolation`, `magic-link-rate-limit`, which self-skip with the budgets raised).
 
 - 2026-09-20 · DP-T7 · (this commit) · no PR (project convention) · **The group hand-over is wired** —
   DP-T5's button gets its handler, behind a radix confirm („Odovzdať zabalené?", subtitle, ledger-neutral

@@ -24,17 +24,27 @@ const delegatedProps = computed(() => {
 })
 
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
+
+// ⚠ `print:hidden` ON BOTH THE OVERLAY AND THE BOX (DP-T8, recorded by DP-T7).
+// Every admin print sheet in this app is a WORKING DOCUMENT — the packing/
+// distribution sheet — and a dialog is chrome, exactly like the pickers and badges
+// the sheets already fold away (CLAUDE.md §Frontend print rules). Without the rule
+// on the overlay, a sheet printed with ANY modal open comes out under a black/80
+// dim layer; without it on the box, the modal is stamped across page one. It is one
+// token each in the primitive every admin view consumes, so a view cannot forget
+// it. A dialog that really is meant to be printed can still override it through
+// `props.class` — `cn()` is tailwind-merge, so a later `print:block` wins.
 </script>
 
 <template>
   <DialogPortal>
     <DialogOverlay
-      class="fixed inset-0 z-50 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0"
+      class="fixed inset-0 z-50 bg-black/80 print:hidden data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0"
     />
     <DialogContent
       v-bind="{ ...forwarded, ...$attrs }"
       :class="cn(
-        'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg',
+        'fixed left-1/2 top-1/2 z-50 print:hidden grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg',
         props.class,
       )"
     >

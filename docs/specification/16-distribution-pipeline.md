@@ -94,8 +94,9 @@
    mirrors its own `handed_over_at`, which the host's hand-over stamps (UC-DP-005, UC-DP-011).
 6. **Wording.** §16 R1.3 („objednávka“, never „kolo“/„cyklus“) binds friend/guest copy; the
    glossary lets the admin UI keep „cyklus“. The prototype's admin button reads
-   „Ukončiť objednávku“; the shipped admin header reads „Označiť ako dokončený“. Default =
-   prototype label (UC-DP-014, `OPEN:` for the PO).
+   „Ukončiť objednávku“; the shipped admin header ~~reads „Označiť ako dokončený“~~ **reads
+   „Ukončiť objednávku“ since DP-T8 (2026-09-20), on BOTH headers**. Default = prototype
+   label (UC-DP-014; the PO signed it on 2026-09-19).
 
 ---
 
@@ -731,7 +732,9 @@ when everything is out (roadmap §11 „Admin cycle header“, §16 Q8.c: NO aut
   joined by „ · “ in plan order, e.g. „Packeta 3 · Kaviareň Ruža 5 · Coworking Nivy 2 · Osobne
   4“, followed by „ — {handed}/{total} odovzdaných“ (`data-testid="cycle-plan-line"`).
   Zero-count targets are omitted from this line (it is a summary, unlike the cards).
-- The existing „Označiť ako dokončený“ button (CycleDetail.vue ~:1432, `markCompleted()` →
+- The existing ~~„Označiť ako dokončený“~~ button (**shipped as „Ukončiť objednávku“ since
+  DP-T8**; `CycleDetail.vue` ~~~:1432~~ — `markCompleted()` ~:926 and its button ~:1519 now,
+  so search the symbol rather than the line; `markCompleted()` →
   `PATCH /cycles/:id { status: 'completed' }`) is **relabelled „Ukončiť objednávku“**
   (`OPEN:` exact admin label — default the prototype's; „Ukončiť cyklus“ acceptable per the
   glossary's admin exemption) and gains the gate: **enabled only when `totals.count > 0` and
@@ -834,3 +837,37 @@ module milestone (project memory: e2e gate frequency).
 - **„Ukončiť“ label** = „Ukončiť objednávku“.
 - **Server-side completion gate** = NONE (UX gate only; API completes on request — escape hatch for a bag that will never be handed over).
 - **„Štítky“ / „Vytlačiť štítky“ target** = wired to a placeholder route constant; PO supplies the labels feature's route later.
+
+## Open items raised at the module-16 closeout (DP-T8, 2026-09-20) — for the PO
+
+> Four places where the SHIPPED behaviour and this document disagree. In each case the code
+> was judged right (or the change was judged too expensive to make under a closeout row) and
+> the spec text is what needs a decision. **None of these is a defect report** — every one of
+> them is a sentence in this file that a reader would implement differently from what runs.
+> Collected by the rows that found them (DP-T5, DP-T6, DP-T7) and carried here, as their
+> backlog rows specified.
+
+- `OPEN:` **A packed friend row prints no item list** (§UC-DP-011, the print paragraph:
+  „every row prints expanded"). The shipped party card has no body at all once
+  `friend.packed` is true — `v-if="!friend.packed"`, pinned by `item-packed.spec.js`, which
+  DP-T6 kept byte-untouched. Consequence: "collapsed after packed, click to expand" is a real
+  fold only for **synthetic hosts**; a packed friend row is simply one line with no expand
+  control, and the printed sheet lists items only for bags still to pack. ⚠ Deciding "the
+  print paragraph is right" is not a text change — it means giving a packed row a body,
+  which moves markup two shipped specs locate parties by. Default: **amend the paragraph**.
+- `OPEN:` **The „{checked}/{total} ✓" packing counter sits on the row's summary line**, not
+  where §UC-DP-011 places it. Same shape of mismatch, same origin (the shipped card body was
+  preserved deliberately). Default: **amend the text to describe the summary line**.
+- `OPEN:` **The in-person target is named twice, differently**: „Osobne" on its plan card
+  (`TARGET_LABELS.in_person`, §UC-DP-010 item 3 / §UC-DP-003) and „Osobné odovzdanie" on its
+  group header (§UC-DP-010 grouping rules). **Both are literally what this document says**,
+  and they sit on the same screen a few centimetres apart. The plan LINE of §UC-DP-014 uses
+  the card's label, so the header reads „… · Osobne 4". Default: **keep both** (the card is a
+  chip, the group header is a sentence) — but if one name is wanted, say which, and note that
+  the short one is a backend constant shared with the payload.
+- ~~`OPEN:`~~ **§UC-DP-012's confirm subtitle is ungrammatical at some counts** — it pairs a
+  plural noun with a singular verb („2 balíčky prejde"). **Resolved in code, not in the
+  document** (DP-T7): `bagsMoveVerb()` in `lib/plural.js` — the declared one home for
+  count-agreeing Slovak forms — makes the verb agree with the noun for every n including 0,
+  22 and the 5+ genitive. The spec sentence is what disagrees; recorded here so the next
+  reader does not "fix" the code back to it.

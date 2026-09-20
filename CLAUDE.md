@@ -53,6 +53,7 @@ cd frontend && npm run dev     # :5173
 | E2E harness traps (wrong cwd, reporter glyphs) | `docs/learnings/05-e2e-harness.md` |
 | Admin sets a party's pickup point (`helpers/pickup.js`, `PickupLocationPicker.vue`) | `docs/learnings/06-pickup-point.md` |
 | Payment links, variable symbol, `payment_creditor_name` (module 15) | `docs/learnings/07-payment-links.md` |
+| Distribution pipeline: hand-over, the board, the outbox enqueue, the cycle header (module 16) | `docs/learnings/08-distribution-pipeline.md` |
 
 Specs: `docs/specification/*.md`, `docs/superpowers/specs/*.md`. Spec text that cites "CLAUDE.md GSO-T3" /
 "CLAUDE.md 2026-08-07" etc. now resolves to these files (search by task id or date). When you finish a task,
@@ -99,6 +100,10 @@ append the full write-up to the matching learnings file and add at most one line
 ### Money & data
 - `transactions` rows come ONLY from the friend paid toggle and pack/unpack (`orders.total`, never
   `delivery_fee`). Guests have no balance: guest paid toggle, pickup PATCH, friend creation write NO ledger row.
+- Hand-over (`handed_over_at`, stage 3) is LEDGER-NEUTRAL — `packed` is the money moment — and writes no
+  `order_cycles.status`: the admin's „Ukončiť objednávku" button is the only way a cycle becomes
+  **`completed`** (lock / unlock / open-for-ordering write the other values), gated in the UI only
+  (PO 2026-09-19: the API still completes a cycle with un-handed bags — an escape hatch, pinned by e2e).
 - ONE HOME each — never re-inline: `helpers/stock.js` (stock UNION own+guest), `helpers/pricing.js` (variant→price;
   unknown variant is DROPPED, never fallback-priced; `unit` is priceable but zero-gram), `helpers/packing.js`
   (packed gate), `helpers/guest-aggregation.js` (guest UNION for aggregates), `rewards.js` (reward volume),
@@ -111,6 +116,10 @@ append the full write-up to the matching learnings file and add at most one line
   block — `routes/guest.js` composes none of its own (status payload, submit 201 and the confirmation
   mail all quote that one object) — and `balancePaymentBlock()` likewise owns the balance one, sign flip
   and rounding included). No `padStart(6` and no `payment_iban` literal outside it in `backend/src`.
+- Module 16's homes: `helpers/delivery.js` (which TARGET a party is on — read-only, never imports
+  `pickup.js`), `helpers/handover.js` (stage vocabulary + hand-over binder), `helpers/outbox.js` (the only
+  `notifications` writer), `lib/plural.js` (count-agreeing Slovak forms), `lib/distribution-plan.js` (the
+  cycle header's plan sentence + the completion gate, shared by `CycleDetail.vue` and the board).
 - CLIENT payment links have ONE home too: `frontend/src/lib/payment-links.js` (`revolutLink` amount variant
   behind `REVOLUT_AMOUNT_LINK`, `paymeLink`, `payBySquarePayload` = the shipped bysquare object with EXACTLY
   `variableSymbol` + `beneficiary.name = creditorName || 'Gorifi'` changed; relative `./money.js` import so
@@ -179,7 +188,11 @@ append the full write-up to the matching learnings file and add at most one line
 - A dialog/loader reused across entities needs a `loadSeq` guard; per-row mutations need per-id pending state;
   friend-authenticated children of `FriendOrder` need the `ready` gate; its two panels stay `v-show`.
 - `v-model` on `<select>` (never `:value`); a refused change snaps the control back.
-- Print sheets: fold with `hidden print:flex`, never `v-if`; pickers `print:hidden`, badges `hidden print:inline-flex`.
+- Print sheets: fold with `hidden print:flex`, never `v-if`; pickers `print:hidden`, badges `hidden print:inline-flex`;
+  a dialog is chrome — `DialogContent.vue`'s overlay AND box are `print:hidden` (override via `props.class`).
+- A `disabled` attribute does NOT stop a dispatched click reaching the handler — every gated action needs a JS
+  guard too. A refusal message and the rows it highlights share a scope, and it is cleared in the doors that
+  ACT on its advice, never in the loader's success path (which also runs after a snap-back).
 - **No view that edits `friends.name` may call it a login.** `grep -i prihlasovac frontend/src/views/AdminFriends.vue
   frontend/src/views/FriendPortalSession.vue` must stay empty; `friends.name` is the Packeta delivery name.
   (`AdminInvitations.vue` / `InviteRegister.vue` legitimately label the real `username`.)
@@ -209,8 +222,9 @@ Full recipe and env in `e2e/README.md`. Checklist:
 - **`--workers=1`** for any multi-file batch (one global admin token; parallel files clobber it → mass 401s).
 - Gate server: `BASE_URL=http://localhost:3997` (never the IP — CORS/crossorigin → CSS 500), `CORS_ORIGIN`
   including that origin, fresh `DB_PATH` under the scratchpad + `node e2e/seed.mjs`, `GOOGLE_CLIENT_ID=test-client
-  GOOGLE_AUTH_TEST_MODE=1`, and all five limiter maxima raised — **named, because the glob invites a wrong
-  guess**: `RATE_LIMIT_AUTH_MAX`, `RATE_LIMIT_ABUSE_MAX`, `RATE_LIMIT_GUEST_READ_MAX`,
+  GOOGLE_AUTH_TEST_MODE=1`, and all five limiter maxima raised **to `100000` for a full run** (`1000` is
+  measurably too small: the shared `authLimiter` exhausts mid-run and the tail collapses into 429s on
+  `admin login` that read as a mass regression) — **named, because the glob invites a wrong guess**: `RATE_LIMIT_AUTH_MAX`, `RATE_LIMIT_ABUSE_MAX`, `RATE_LIMIT_GUEST_READ_MAX`,
   `RATE_LIMIT_GUEST_WRITE_MAX`, `RATE_LIMIT_MAGIC_MAX` (⚠ **`_MAGIC_`, not `_MAGIC_LINK_`** — an unread name
   is silently ignored, leaving the tightest bucket at its default 10, and `magic-link.spec.js` then reds ~5
   tests with **429** partway through a full run, which reads exactly like a regression; the tell is a 429 on
@@ -229,6 +243,8 @@ Full recipe and env in `e2e/README.md`. Checklist:
 - Spec hygiene: refusal tests read the row back; absence assertions need a non-vacuity gate; Playwright role
   names match as case-insensitive substrings unless `exact: true`; `innerText` applies `text-transform`;
   NBSP survives regex `toHaveText`; `li` counts must be `li.ln`; UI+API admin tests must adopt the browser's token.
+- A „patch in place, THEN re-fetch" pair is unprovable unless the test HOLDS the second call (`page.route`
+  delay ≥4 s on this box) — delete the patch and the re-fetch paints the same screen a moment later, green.
 - A row-scoped text assertion about MONEY must target the CELL (`row.getByRole('cell').nth(n)`). ⚠ NOT the
   `innerText` rule above: `toContainText`/`toHaveText` resolve from **`textContent`** unless `useInnerText` is
   passed, and Vue condenses away the whitespace node between `</td><td>`, so adjacent cells concatenate with
