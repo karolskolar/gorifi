@@ -341,6 +341,30 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   own source to pin that the reference question is asked in ONE place, since a second
   hand-written COUNT at the call site is exactly how this bug arrives. No auth test: the
   route is already in `ADMIN_ENDPOINTS`.
+- `tests/pickup-active-gate.spec.js` — FUP-T25: the OTHER pickup question, "is this point
+  **choosable**?" (`active = 1`), asked of both writers of `pickup_location_id` at once.
+  `POST …/submit` (the friend chooses) and `PATCH …/pickup` (the admin corrects) are the
+  only two, and the submit used to carry a byte copy of `helpers/pickup.js`
+  `activeLocation()` while the PATCH already called it. Never a defect — both copies
+  agreed — but FUP-T23's claim that *no sequence of API calls can leave a party pointing at
+  a row that does not exist* rests on BOTH refusing a retired point, and with two copies a
+  mutation in the helper reddened only one of them. ⚠ **Every gate test is generated from
+  one `WRITERS` table, and each writer carries both halves** — the refusal AND the
+  non-vacuity acceptance — so the mutation lands on both symmetrically: dropping the active
+  flag from the helper reddens both "refuses a DEACTIVATED point" tests, and making the
+  helper answer `null` for everything reddens both "NOTHING TIGHTENED" ones. ⚠ The fixture
+  retires its point through the plain admin `PATCH /api/pickup-locations/:id`, i.e. through
+  NEITHER writer, on purpose: an earlier draft reached that state by submitting an order and
+  letting FUP-T23's soft-delete retire the point, which made `beforeAll` depend on the gate
+  under test — the null-mutation then killed the fixture and the file reported ONE failure
+  with 16 "did not run", telling you nothing about which writer broke. The soft-delete
+  lifecycle is still pinned, as a test of its own (usable today → referenced, so DELETE
+  deactivates → refused by both writers tomorrow). The two refusals share a sentence and
+  NOT an envelope — the submit answers `{ error }` alone, the PATCH adds
+  `field: 'pickup_location_id'` — and both shapes are pinned so the shared gate cannot
+  quietly align them. One test greps `backend/src` for the statement, the structural half of
+  the same claim. No auth test: submit is friend-authenticated and the PATCH is already in
+  `ADMIN_ENDPOINTS`.
 - `helpers/copy-sweep.js` — `collectAppCopy()` / `collectAllCopy()` / `collectMarkedData()`:
   the rendered-COPY sweep ("does this page's own wording say X?"), text **plus**
   `placeholder`/`title`/`aria-label`/`alt`. Also OUTSIDE `tests/` on purpose, for the same

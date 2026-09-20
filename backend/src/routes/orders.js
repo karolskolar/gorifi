@@ -395,8 +395,31 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
     // "absent" would submit the order with no pickup location and a 200.
     const pickupLocationId = bindValue(pickup_location_id);
     if (pickup_location_id !== undefined && pickup_location_id !== null) {
-      const location = db.prepare('SELECT * FROM pickup_locations WHERE id = ? AND active = 1').get(pickupLocationId);
-      if (!location) {
+      // ⚠ FUP-T25 — ASK `helpers/pickup.js`, and for the same reason FUP-T23 made the
+      // DELETE guard ask it. This line used to be a BYTE COPY of `activeLocation()` —
+      // the same SELECT on id plus the active flag, refused the same way with the
+      // same sentence — while the sibling `PATCH …/pickup` already called the helper
+      // for this exact gate. (The statement itself is NOT repeated here, not even in
+      // a comment: FUP-T25's acceptance is a grep that must return exactly one hit.)
+      //
+      // It was never a defect — both copies agreed — but this route and that PATCH
+      // are the ONLY writers of `pickup_location_id`, and FUP-T23's claim that "no
+      // sequence of API calls can leave a party pointing at a row that does not
+      // exist" rests on BOTH of them refusing a non-active point. With two copies, a
+      // mutation in the helper reddened only one of them; with one home it reddens
+      // both, which is the property that makes that claim testable at all.
+      //
+      // ⚠ A DIFFERENT QUESTION FROM `pickupLocationInUse()`, and they must not be
+      // merged: that one asks "is this point REFERENCED?" and fails CLOSED (broad,
+      // both stores, unbindable ⇒ "in use"); this one asks "is it CHOOSABLE?" and
+      // fails to `null` (narrow, `active = 1`, unbindable ⇒ the caller's own 400).
+      //
+      // ⚠ BEHAVIOUR-IDENTICAL, including the FUP-T15 bind semantics: the helper runs
+      // the SAME `bindValue()` internally, so an unbindable id still lands here as a
+      // 400 rather than as "absent". The presence test above stays on the RAW value.
+      // The refusal keeps NO `field` marker — the PATCH's envelope carries one
+      // because its body has two candidate fields; this one never has.
+      if (!activeLocation(pickup_location_id)) {
         return res.status(400).json({ error: 'Vybrané miesto vyzdvihnutia neexistuje alebo nie je aktívne' });
       }
     }

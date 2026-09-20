@@ -274,3 +274,112 @@ to keep: the implementer REFUSED to adopt a number it could not reproduce, and s
 than reconciling on paper.** A count cited as evidence across rows is a measurement; if two
 runs disagree, the file list is the first thing to compare, and the fix is to re-run — never
 to average, adopt, or hand-wave.
+
+---
+
+## FUP-T25 — the SECOND pickup rule with two statements of itself (2026-09-20)
+
+Filed by FUP-T23 and deliberately left out of it. FUP-T23 fixed "is this point
+**referenced**?" (`DELETE /api/pickup-locations/:id` counted `orders` alone instead of
+asking `pickupLocationInUse()`). This row fixes "is this point **choosable**?" —
+`POST /orders/cycle/:cycleId/friend/:friendId/submit` ran
+`db.prepare('SELECT * FROM pickup_locations WHERE id = ? AND active = 1').get(…)` inline,
+a byte copy of `helpers/pickup.js activeLocation()`, while the sibling
+`PATCH /orders/cycle/:cycleId/friend/:friendId/pickup` already called the helper for the
+same gate with the same sentence.
+
+**⚠ The two questions were NOT merged, and the temptation was real** — same table, same
+column, adjacent lines in the same helper. They move in opposite directions on every axis:
+`pickupLocationInUse()` is deliberately BROAD (both stores, effective or stale) and fails
+**closed** (an unbindable id answers "in use", because a delete guard that is wrong
+conservatively only keeps a row nobody can see); `activeLocation()` is deliberately NARROW
+(`active = 1` only) and fails to **`null`**, so the caller's own 400 answers. One function
+would have to be wrong for one of its two callers. The comment at each site now says so,
+in both directions, so the next reader does not re-open it.
+
+**The diff is three lines of code.** The gate became
+`if (!activeLocation(pickup_location_id)) { … }`. `const pickupLocationId =
+bindValue(pickup_location_id)` STAYS — the UPDATE below still binds it — and the presence
+test stays on the RAW value (FUP-T15), which is safe because the helper runs the same
+`bindValue()` internally.
+
+**Were the two copies actually identical? Verified, not assumed** — the row said any
+difference is the interesting part.
+- **The gate: yes, byte-for-byte in behaviour.** Probed against better-sqlite3 directly for
+  every shape the routes can be handed: `true` → `TypeError`, `{}` → `RangeError`, `[1]` →
+  SPREADS and matches the row, `undefined` → binds as NULL, no throw, no row. Both copies
+  route all of them through `bindValue()` first, so all four reach the same 400. The one
+  shape worth naming is `undefined`: it does NOT throw in the binder, so the inline copy's
+  `.get(pickupLocationId)` on an unbindable id was already a clean "no row", and the
+  helper's explicit `if (id === undefined) return null` is the same answer stated earlier.
+- **ONE REAL DIFFERENCE, OUTSIDE THE GATE, LEFT ALONE ON PURPOSE.** The PATCH writes
+  `location.id` — the row's own INTEGER, "never the bound request value: it can then not
+  land in the column as the text `'3'`". The submit writes `pickupLocationId`, the bound
+  REQUEST value, so `{"pickup_location_id": "3"}` stores the *string* `'3'` in
+  `orders.pickup_location_id` — or so it looks. **Measured, because "looks like" is not
+  evidence:** submitted `{"pickup_location_id": "109"}` against the gate server and read the
+  column back with `typeof()` — `{"pickup_location_id":109,"t":"integer"}`. The column is
+  `INTEGER`-affinity, so a numeric string is CONVERTED on the way in, and a NON-numeric
+  string can never reach the write at all (it matches no row, so the gate 400s it first).
+  The difference is therefore provably inert, not merely unobserved. The row asked for a
+  behaviour-identical refactor, so the write site was not touched. ⚠ **Recorded rather than
+  fixed**, because it is the kind of thing a later row wants to know: the two writers of
+  this column agree on what they REFUSE and differ in what they BIND, and the affinity is
+  the only reason that costs nothing. A column that ever loses `INTEGER` affinity, or a
+  second store whose column does not have it, turns this back into a real divergence.
+- **The refusal envelopes differ, and that is correct.** The submit answers `{ error }`
+  with no `field` marker; the PATCH answers `{ error, field: 'pickup_location_id' }`,
+  because its body has two candidate fields and the UI marks the offending control. Both
+  shapes are now pinned (exact key sets), so the shared gate cannot align them by accident.
+  The sentence itself is identical and unchanged.
+
+**The acceptance was the mutation, and it was run in BOTH directions, BEFORE and AFTER.**
+
+| mutation in `activeLocation()` | before the refactor | after |
+|---|---|---|
+| drop `AND active = 1` | PATCH's "refuses a DEACTIVATED point" alone — **the submit stayed green off its own copy** | BOTH writers' refusal tests |
+| `return null` for everything | (not run — same shape) | BOTH writers' "NOTHING TIGHTENED" tests |
+
+The first row is the hole. ⚠ **The count first written here — "3 failed / 14 passed" — was
+STALE (it sums to 17, and the shipped file has 18); it came from the 17-test draft.** Review
+reproduced the state independently, in an isolated copy of `backend/src` on its own port,
+without touching the repo: **3 failed / 15 passed, and EVERY failure on the PATCH side — the
+submit's „refuses a DEACTIVATED point" stayed GREEN off its own copy.** ⚠ Against a genuine
+pre-refactor tree it is **4 failed / 14 passed**, because the one-home grep test reds on two
+hits as well. That is exactly the state in which FUP-T23's "no API path can dangle a location"
+claim would have gone quietly false. ⚠⚠ **And the stale number is the lesson from two
+paragraphs above, committed again in the same file: a cited count is a MEASUREMENT.** It was
+caught only because review re-ran it instead of reading it. If a number appears in a
+write-up, it must come from the run the write-up describes — not from an earlier draft of it.
+
+**⚠ THE TEST-DESIGN LESSON, and it cost a run to learn: a fixture must not depend on the
+gate under test.** The first draft of `pickup-active-gate.spec.js` built its retired point
+the pretty way — submit an order with it, then let FUP-T23's soft-delete retire it, which
+also tied the two rows together in one fixture. Under the null-mutation that `beforeAll`
+died on its own first assertion, and Playwright reported **1 failed, 16 did not run**: the
+two writers' halves never executed, so the mutation proof could not tell them apart at all.
+Rewritten to retire the point through the plain admin `PATCH /api/pickup-locations/:id`,
+i.e. through NEITHER writer, the same mutation reports 3 failed / 15 passed and NAMES both
+writers. The lifecycle the first draft was reaching for is still pinned — as a *test*
+(usable today → referenced, so DELETE deactivates → refused by both writers tomorrow),
+where its failure costs one test instead of the file. **Generalised: a `beforeAll` that
+exercises the behaviour under test converts every interesting failure into the same
+uninformative one.**
+
+**⚠ A comment can break a grep-stated rule.** The acceptance is "a grep for
+`pickup_locations WHERE id = ? AND active = 1` returns the ONE home". The first version of
+the new comment quoted the old statement verbatim to explain what it replaced — and the
+grep returned two hits again, one of them prose. The comment now describes the statement
+instead of reproducing it, and says why. The same trap waits for any rule the project
+states as a grep.
+
+**Files:** `backend/src/routes/orders.js` (the gate + its comment),
+`e2e/tests/pickup-active-gate.spec.js` (new, 18 tests), `e2e/README.md` (layout entry),
+`CLAUDE.md` (one line). `helpers/pickup.js` UNCHANGED — the helper already said it right.
+
+**Gate**, fresh per-run template copy, `DB_PATH` + `SERVER_LOG` set, `--workers=1`, each
+file run on its own, **every one exit 0 with ZERO skips**: `pickup-active-gate` 18 ·
+`order-pickup-edit` 35 · `pickup-location-delete` 7 · `distribution-handover` 43 ·
+`nonstring-body-shape` 272 · `malformed-body` 19 · `api-security` 80 = **474 passed / 0
+failed / 0 skipped**. `order-pickup-edit` and the two body-shape files ran UNMODIFIED, as
+the row required — they are what pins the refusal's status and sentence, and neither moved.

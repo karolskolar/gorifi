@@ -109,7 +109,11 @@ append the full write-up to the matching learnings file and add at most one line
   (packed gate), `helpers/guest-aggregation.js` (guest UNION for aggregates), `rewards.js` (reward volume),
   `helpers/pickup.js` (which row stores a party's pickup — and `pickupLocationInUse()`, the same
   two-store rule asked as "is this point referenced?"; `DELETE /api/pickup-locations/:id` soft-deletes
-  off THAT answer and never counts `orders` alone — FUP-T23), `guestPaymentReference()` (stays in
+  off THAT answer and never counts `orders` alone — FUP-T23; plus `activeLocation()`, the SEPARATE
+  question "is this point choosable?" (`active = 1`) — the two are NEVER merged: one is broad and fails
+  CLOSED, the other narrow and fails to `null`. BOTH writers of `pickup_location_id` — `POST …/submit`
+  and `PATCH …/pickup`, the only two — call `activeLocation()`; a grep for that SELECT returns one hit,
+  comments included, and a mutation in it must redden both — FUP-T25), `guestPaymentReference()` (stays in
   `helpers/guest-orders.js`), `helpers/payment.js` (variable symbol — friend = order id, guest = `9`+6-digit
   id, balance = `8`+6-digit id, DERIVED never stored; anything but an integer `0 < id < 1e6` — a float, a
   numeric STRING, `0`, a negative, a missing argument — yields `''`, never a guessed VS; the ONE
