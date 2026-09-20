@@ -432,7 +432,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] PI-T5  Landing LOCKED state: own-order card (`CartLineList`, hoisted `lib/order-lines.js`, pickup row = exactly one of location/note/„Packeta · …“, Zaplatené/Nezaplatené + Zaplatiť → PaymentModal with `paymentTotal` incl. `delivery_fee`, VS from PL-T2) + „Kde je vaša káva“ `CycleTimeline vertical` + next-round banner + read-only `currentCycle` grid WITH tabgroup (Kolegovia hand-over ticks stay) + no-order variant „Objednávky sú uzamknuté“ — `18 §UC-PI-007` · model=heavy ⚠ NO ledger write; `paid` admin-only; shipped locked banner/cartbar stay on `/cycle/:id` (PI-T11 verifies); `order-locked.spec.js` pins unchanged on the deep link.
 - [x] PI-T6  „Moje objednávky“ history view: `hasOrder` rounds newest-first, short badges (Odoslaná / V pražiarni / Balíme / Zabalená / Odovzdaná / Vyzdvihnuté — owned HERE, never shared with 17's long labels), lazy `CartLineList` per round (`rowSeq`, one expanded), empty state, READ-ONLY (PO: no „Otvoriť“ link) — `18 §UC-PI-009` ⚠ NEW `portal-history.spec.js`; `orderHandedOver` from PI-T1 drives „Odovzdaná“.
 - [x] PI-T7  Money surfaces: debt banner + Zaplatiť on the landing in ALL states (`balance < -0.01`; PO: zero/positive NEVER on landing) + „Zostatok a platby“ view (`FriendBalanceCard` re-purposed, PL-T4's `pay-balance` trigger + mount RELOCATED here — never duplicated; keep „po zaplatení sa zostatok vyrovná do 1–2 dní“) + `FriendTransactionList.vue` lifted verbatim from `FriendTransactionsModal.vue` (deleted) + landing balance card REMOVED — `18 §UC-PI-008,010,019(items 7,9)` ⚠ SANCTIONED: RENAME `portal-transactions-modal.spec.js` → `portal-balance.spec.js` (keep every `tx-*` pin, sign/colour, 320 px test, admin invariance describe; drop the unsatisfiable modal-shell pins); parked `portal-appbar` balance describe lands here. ⚠ `BalanceBadge.vue` untouched (admin-shared).
-- [ ] PI-T8  „Ako to funguje“ view: six phases (static text, live timeline NOT mounted), three delivery ways from `api.getPickupLocations('coffee')` (Packeta fee badge gated on `parcel_enabled`), „Kto sme a odkiaľ je káva“ + `lib/roasters.js` ONE home (Goriffee / Robo prototype drafts — PO polishes), „Ako platím“ (keep „(PayMe)“ — 15 shipped), personal note „— Karol“ (PO draft), keep WhatsApp mention in phase 2 (PO), `asGate` prop for PI-T9 + product-card roaster badge popover (one `NeoModal`, `role=button` only on a match) + `NeoIcon` I2 set — `18 §UC-PI-012,014` ⚠ seam → GL-T4 imports `lib/roasters.js`; admin never imports it. NEW `portal-explainer.spec.js` (content part).
+- [x] PI-T8  „Ako to funguje“ view: six phases (static text, live timeline NOT mounted), three delivery ways from `api.getPickupLocations('coffee')` (Packeta fee badge gated on `parcel_enabled`), „Kto sme a odkiaľ je káva“ + `lib/roasters.js` ONE home (Goriffee / Robo prototype drafts — PO polishes), „Ako platím“ (keep „(PayMe)“ — 15 shipped), personal note „— Karol“ (PO draft), keep WhatsApp mention in phase 2 (PO), `asGate` prop for PI-T9 + product-card roaster badge popover (one `NeoModal`, `role=button` only on a match) + `NeoIcon` I2 set — `18 §UC-PI-012,014` ⚠ seam → GL-T4 imports `lib/roasters.js`; admin never imports it. NEW `portal-explainer.spec.js` (content part).
 - [ ] PI-T9  First-login explainer gate: `friends.explainer_seen_at` (try/catch ALTER, **NO back-fill — PO: every existing friend sees it once**) + `POST /friends/:id/explainer-seen` (`requireFriendOwner`, idempotent COALESCE; shared-password `friendId:null` ⇒ 401) + field in all four login payloads (friends.js :173/:230/:358, magic-link.js :406; session restore is NOT a login) + `beginSession({explainerPending})` → `router.replace('/ako-to-funguje')` + pre-ticked „Už mi to neukazovať“ / „Rozumiem“ — `18 §UC-PI-013,019(item 16)` ⚠ `FRIEND_IDENTITY_ENDPOINTS += POST /api/friends/1/explainer-seen` (NEVER `ADMIN_ENDPOINTS`). ⚠ SUITE-WIDE: `e2e/seed.mjs` pre-stamps `explainer_seen_at` for every seeded friend except one dedicated fixture (orchestrator clarification (b)) — otherwise every login-then-land spec hits the explainer. Precedence: forced-password > Google prompt > explainer.
 - [ ] PI-T10 Profile modal per roadmap §19: **Login** read-only row (help avoids the adjective — `grep -i prihlasovac` guard stays EMPTY) · **Meno a priezvisko *** · **Mobil *** (NEW required on the self-edit route only: blank ⇒ 400 `{field:'phone'}`) · **E-mail** (help: Packeta + recovery) · Adresa Packeta (server bound 160 + `maxlength`) · password fold + Google untouched · NO uid; auto-open until Mobil filled (PO; after the gates of PI-T9, dismissible per session, re-opens next login) — `18 §UC-PI-015,019(items 10,11)` ⚠ marked SLOT under Mobil for module 21's `whatsapp_opt_in` checkbox (renders nothing here). ⚠ „E-mail required when Packeta chosen“ lives in the delivery-choice modal — module 20 (GP-T3) for guests, friend side stays as today. ⚠ SANCTIONED: `portal-profile-modal.spec.js` label/help-order/maxlength pins; `friends-consolidation.spec.js` 14 help-text pins → §19 E-mail help; FUP-T20 grep test verbatim.
 - [ ] PI-T11 Vocabulary rule + deep links: friend-surface copy edits (FriendOrder :1025/:1833, voucher copy-only, GuestShareDialog:182) + friend-facing SERVER 4xx sweep (orders.js / vouchers.js / guest-links.js / products.js — messages only, status codes kept; `cycles.js` admin strings untouched; `guest.js`/`guest-orders.js` strings → GL/GP rows) + Node grep guard + DOM sweep `portal-vocabulary.spec.js` (`/cykl|\bkol(o|a|e|u|om|á|ách)\b/i`) + `/cycle/:id` `mode='route'` regression net (standalone chrome, back → `/`, „Späť na ponuku“) — `18 §UC-PI-017,018` ⚠ any pinned server string changed is re-pointed in its e2e — grep `e2e/` per message; guard file list widens to guest files when GL lands.
@@ -475,6 +475,38 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## Log
 
+- 2026-09-20 · PI-T8 · (this commit) · no PR (project convention) · **„Ako to funguje" — and the
+  boundary guard that named the rule was weaker than the rule.** New `lib/roasters.js` (one home,
+  one NAMED non-consumer: no admin file, ever), `PortalExplainer.vue` (six phases as STATIC text,
+  three delivery ways, the origin section, „Ako platím", the „— Karol" note, an `asGate` prop for
+  PI-T9), the roaster badge popover on product cards, the six remaining `I2` glyphs, and
+  `portal-explainer.spec.js` (24 tests).
+  ⚠⚠ **THE SWEEP THAT „MEASURED" THE BOUNDARY MISSED THIS REPO'S OWN HOUSE STYLE.** It matched
+  only `from '…/lib/roasters'` — not `from '@/lib/roasters.js'` and not `await import(…)`. And
+  `views/CycleDetail.vue:25`, an ADMIN view, already imports `'../lib/cycle-stages.js'` WITH the
+  extension, so an admin import written the way this codebase actually writes them would have
+  walked past the guard; the mutation that „proved" it only reddened because it happened to be
+  typed without one. Widened, and **re-proved with an extension-style admin import**. ⚠ The
+  boundary half was also a DENY-list (`views/Admin*`, `components/(ui|analytics)/`) that misses
+  `CycleDetail` and `Distribution` — named by §UC-PI-019 item 18 — so it is now an ALLOW-list that
+  fails closed.
+  ⚠ **§UC-PI-012's acceptance criterion could never pass**, and the row measured it: the heading is
+  `Káva pod<br /><span class="p2-hl">pultom</span>, spolu.`, `.p2-hl` is `display:inline-block`, and
+  a non-`inline` display makes the accname computation pad EVERY boundary — so the real name has a
+  space BEFORE the comma. Orchestrator amended the spec; review then found the FALSIFIED claim
+  still standing in the component's own template comment, whose likely „repair" is the forbidden
+  one (rewrite the markup to suit the regex). Struck there too, with the mechanism and a „do not
+  change the markup" line beside it.
+  ⚠ Timeline deliberately NOT mounted (pinned absent in source AND DOM, both variants, with a
+  non-vacuity step). PO copy verbatim, „(PayMe)" and the WhatsApp sentence kept. The gate's LIVE
+  behaviour is deliberately untested — nothing mounts it yet — and „the session passes no gate flag
+  today" is ASSERTED rather than assumed, which is what makes the menu-mode claim a property of the
+  app and not of a default.
+  ⚠ Also fixed from review: two self-references named the wrong spec section (a pointer to a
+  section that does not hold the guard is how a reader concludes there is none), and `04-friend-
+  order.md` still carried the superseded unconditional badge class in two places.
+  Gate: **168 passed / 0 failed** over seven files, asked-vs-ran reconciled with a pre-flight
+  existence check, server log clean. Review: **revise → addressed**, two majors + four minors.
 - 2026-09-20 · PI-T7 · (this commit) · no PR (project convention) · **The money surfaces — and a
   „one home" claim that was false in four documents at once.** New `DebtBanner.vue` +
   `FriendTransactionList.vue`; `FriendTransactionsModal.vue` DELETED (222 lines);

@@ -784,7 +784,15 @@ self-hosted, no external request.
 **Business rules:** impersonal vy-form throughout (no participle addresses the reader —
 „dozviete“, „naklikáte“ are finite verbs, allowed); no external assets; the page is a
 friend surface behind login (Q3.b: no public page). `getByRole('heading', { name: /Káva pod
-pultom, spolu\./ })` resolves (the `<br>`/span concatenate). 320 px: zero horizontal
+pultom, spolu\./ })` resolves (the `<br>`/span concatenate). ⚠ **THAT REGEX DOES NOT
+RESOLVE — measured in PI-T8 and corrected here.** The heading is
+`Káva pod<br /><span class="p2-hl">pultom</span>, spolu.`, and Chromium's accessible-name
+computation inserts a space at EVERY inline boundary — including between `</span>` and the
+comma — so the real name is „Káva pod pultom **,** spolu." with a space BEFORE the comma.
+The criterion is therefore `/Káva\s*pod\s*pultom\s*,\s*spolu\./`, which is what
+`portal-explainer.spec.js` pins, alongside a `.p2-hl` assertion so the highlight span is not
+silently dropped to make the name tidy. ⚠ The markup is NOT to be changed to satisfy the
+old pattern: the `<br>` and the highlight are the prototype's. 320 px: zero horizontal
 overflow with a 120-char pickup-location name.
 
 ---

@@ -1567,3 +1567,172 @@ opposite of what it looks like.
    {suma}" + „Zaplatiť", no „kolo") and `FriendTransactionList.vue`. The prototype's
    „z minulého kola" is dropped by 18 resolved conflict 1 — which is also why the
    sweep finds nothing there.
+
+---
+
+## PI-T8 — the explainer, the roasters library, and a badge that had to stop lying (2026-09-20)
+
+**What shipped.** `frontend/src/lib/roasters.js` (ONE home, two roasters, `roasterFor()`);
+`frontend/src/components/PortalExplainer.vue` (the whole `/ako-to-funguje` view, with the
+`asGate` prop PI-T9 flips); six `I2` glyphs (`pause`/`bell`/`cup`/`truck`/`box`/`hand`) in
+`components/neo/icons.js`; the product card's roastery badge turned into a popover trigger
+in `FriendOrder.vue` (one `NeoModal`, `v-if`); the mount + `explainerParcelEnabled/Fee` in
+`FriendPortalSession.vue`; `e2e/tests/portal-explainer.spec.js` (24 tests) and ONE
+sanctioned retarget in `order-product-card.spec.js`.
+
+### 1. ⚠⚠ THE LIVE TIMELINE IS NOT MOUNTED HERE, AND IT WILL KEEP LOOKING LIKE A BUG
+
+`CycleTimeline.vue` renders the same six steps with the same words. Every reader's first
+instinct — mine included — is that the explainer „should" show it. §UC-PI-012 item 3
+forbids it, and the reason is worth writing down because the spec only states it:
+
+> the explainer describes the PROCESS in general; the timeline reports where ONE
+> particular round is now.
+
+Phase 1 is literally „Väčšinu času sa neobjednáva", i.e. the page's most common reader has
+no round in flight at all, and a timeline would be wrong on exactly those visits. So the
+six phases are STATIC TEXT owned by `PortalExplainer.vue`.
+
+Because „someone will later fix this", §1 of the spec makes it a red run **in both
+directions**: a source pin (`PortalExplainer.vue` contains no `cycle-stages`,
+no `CycleTimeline`, no `timelineSteps`) and a DOM pin that is NON-VACUOUS — the same test
+first visits a LOCKED landing and asserts `data-testid="cycle-timeline"` VISIBLE, then
+navigates to the explainer and asserts it absent. ⚠ The non-vacuity half needs
+`hasOrder: true` in the stubbed cycle row: a locked landing with no own order gets
+§UC-PI-007's state MODAL and no timeline, so my first version failed on its own fixture and
+would have „passed" as an absence test for entirely the wrong reason had I written the
+absence alone. Mutation M8 (mounting `CycleTimeline` beside the explainer) reds it.
+
+### 2. `lib/roasters.js` — a one home whose interesting half is the NON-consumer
+
+Two entries, `roasterFor(name)`, dependency-free plain ESM so a Playwright worker imports
+it directly (the `history-badges` / `cycle-stages` / `payment-links` precedent — this repo
+has no unit runner and that import IS the unit test).
+
+⚠ **The boundary is MEASURED, not asked for.** „Admin surfaces never import it"
+(§UC-PI-014) is the kind of claim this repo has shipped wrong three times in a week — PI-T7
+declared a single home in four documents while the rule lived in three files, and the
+copies with no boundary fixture were the ones that drifted. So §7 of the spec walks
+`frontend/src`, collects every file matching `from '…lib/roasters'`, asserts the importer
+SET equals `{PortalExplainer.vue, FriendOrder.vue}` **and** asserts the boundary shape
+(no `views/Admin*`, no `components/ui|analytics`) so GL-T4 can add `GuestRoastersLine.vue`
+to the set without weakening the rule. Non-vacuity: the walk is asserted to have found
+`views/AdminFriends.vue`. Mutation M11 (an import added to `AdminCatalog.vue`) reds it.
+
+⚠ `roasterFor` is TYPE-SAFE rather than the spec's literal `String(name).trim()`:
+`products.roastery` is nullable, so `null`/`undefined` arrive on most products, and
+`String()` throws on a `Symbol`. Everything a real roastery value can be behaves
+identically. The regexes are ANCHORED (`/^robo$/i` — „Robo Coffee" is somebody else) and
+NOT global (a `/g/` flag carries `lastIndex` between `.test()` calls, so the second Robo
+card in a grid would silently lose its popover; pinned as the behaviour AND as the flag).
+
+### 3. ⚠ THE BADGE CHANGE BROKE A SHIPPED PIN, AND THAT WAS THE POINT
+
+`order-product-card.spec.js` asserted „the roastery badge is always `acc-o`". §UC-PI-014
+splits that: Goriffee PLAIN, Robo `acc-o`, an **unknown** roastery keeps today's `acc-o`.
+One sanctioned edit, made in place with the supersession recorded, plus a strengthening
+(`role="button"`). All three cases live in `portal-explainer.spec.js` §6.
+
+⚠ `role="button" tabindex="0"` go on the badge **only on a match**. An element that
+announces itself as a button and does nothing is worse than a plain `span` — and the admin
+types `products.roastery` as free text, so an unrecognised roastery is the ORDINARY case,
+not an error. Both halves are pinned because they fail independently: M5 (unconditional
+`role`) and M6 (dropping the JS guard in `openRoaster()` so a DISPATCHED click opens an
+empty modal) red the same test for two different reasons. A `disabled`/absent `role` never
+stops a dispatched click reaching a handler — CLAUDE.md's standing rule, and the reason the
+guard is in JS as well as in the binding.
+
+### 4. `asGate` — the seam, and what PI-T9 must NOT have to touch
+
+The gate is not a second screen; it is this page with a checkbox. `asGate` (default
+`false`) changes exactly two things: the pre-ticked „Už mi to neukazovať" row appears, and
+the one button's label becomes „Rozumiem, idem na ponuku" instead of „Späť na ponuku". The
+component EMITS `done` with `{ hide }` and navigates nowhere — routing stays in
+`FriendPortalSession.vue`, where every other `router.push` on the authenticated surface
+already lives, and PI-T9's `markExplainerSeen()` goes in `onExplainerDone()`.
+
+⚠ **PI-T9 edits `FriendPortalSession.vue` only.** It must not have to touch
+`PortalExplainer.vue` or `lib/roasters.js`.
+
+⚠ The gate's LIVE behaviour is deliberately NOT tested here: nothing mounts the component
+with `as-gate` yet, so a test asserting the checkbox is on screen would be asserting a
+screen no route reaches. What IS pinned is the seam's SHAPE (prop default, the pre-tick,
+both labels on one button, the emit payload) plus the fact that the session passes NO
+`as-gate` today — which is what makes the „from the menu there is no checkbox" assertion a
+property of the app rather than of a default. M9 (`default: true`) reds both.
+
+### 5. Measured, and easy to get wrong
+
+- ⚠ **§UC-PI-012's own acceptance criterion is slightly wrong and the spec is not.**
+  `getByRole('heading', { name: /Káva pod pultom, spolu\./ })` does NOT resolve: Chromium's
+  accessible-name computation inserts a space at each inline element boundary, so the real
+  name is „Káva pod pultom **, ** spolu." — a space BEFORE the comma. The claim the
+  criterion is making (one heading, not three sibling elements) is true and is what the
+  spec pins, with `\s*` tolerance and a `.p2-hl` assertion beside it. Recorded rather than
+  „fixed" at the markup.
+- ⚠ **The Packeta fee reads `currentCycle ?? catalogCycle`, and the `??` is load-bearing.**
+  `resolveLanding().currentCycle` is NULL under `closed` (PI-T1 §2) — and a friend with
+  nothing to order is exactly the one reading how it works, so `currentCycle` alone hides
+  the fee on the majority of visits to this page. M7 reds it. Badge OFF means NO badge at
+  all: Packeta being unavailable is not a price of zero (M4 reds the both-directions test).
+- ⚠ **`api.getPickupLocations('coffee')` — the ARGUMENT is the point.** Without it the
+  endpoint answers every active point, bakery-only ones included, i.e. places no coffee
+  round ever offers. The spec stub RECORDS the URL it was asked for; M3 reds it.
+  It is the CHOOSABLE feed (`active = 1`), never `helpers/pickup.js pickupOf()`'s
+  „where is THIS party's bag going" — the two questions are the FUP-T25 pair.
+- A failed pickup feed is INDISTINGUISHABLE from an empty one (both render „Odberné miesto
+  si vyberáte pri objednávke."), and no page banner appears. An explainer is no place for
+  an error surface.
+- The three-zone checkbox row (`@click.self` on the label, `@click` on the span, the box's
+  own handler) was COPIED from `FriendPortal.vue:1248`, not re-derived: a `<label>` only
+  forwards clicks to labelable elements and `NeoCheckbox` is a `span[role=checkbox]`.
+- The six glyphs went into `components/neo/icons.js` with the prototype's per-icon
+  `linecap`/`linejoin` — which is NOT uniform (`pause` caps but does not join, `truck`/`box`
+  join but do not cap). An unknown `NeoIcon` name renders NOTHING and is silent in
+  production, so each phase's `.ico svg` is asserted present (M12, deleting `cup`, reds it).
+
+### 6. The gate, and the twelve mutations
+
+`portal-explainer.spec.js` (24) · `order-product-card` · `portal-shell` · `portal-menu` ·
+`portal-appbar` · `portal-landing` · `portal-fidelity` · `cat-scroll-arrow` ·
+`portal-subscription-invite` · `order-modals` · `product-photo-lightbox` ·
+`self-hosted-fonts` — **12 asked, 12 ran, 236 passed, 0 failed, exit 0**, reconciled with
+`grep -oE 'tests/[a-z0-9-]+\.spec\.js'`. Server log read first: 0 error lines.
+
+| mutation | reds |
+|---|---|
+| M1 Goriffee `badgeClass: 'acc-o'` | lib labels + the Goriffee card test + `order-product-card` |
+| M2 anchors dropped from both regexes | `roasterFor()` matrix |
+| M3 `getPickupLocations()` without `'coffee'` | the pickup row test |
+| M4 Packeta badge ungated | the both-directions gate test |
+| M5 `role="button"` unconditional | unknown-roastery |
+| M6 `openRoaster()`'s guard removed | unknown-roastery (a DISPATCHED click) |
+| M7 `catalogCycle` fallback dropped | the closed-landing fee test |
+| M8 `CycleTimeline` mounted on the explainer | §1's absence test |
+| M9 `asGate` default `true` | the menu-mode test + the seam source pin |
+| M10 one PO text re-worded | the byte-for-byte text pin |
+| M11 `AdminCatalog.vue` imports the lib | the admin-invariance sweep |
+| M12 the `cup` glyph deleted | the six-phases glyph test + the icon-module pin |
+
+⚠ Each mutation was applied from a scratchpad backup, **verified to have changed the file**
+(the harness `cmp`s and aborts otherwise), rebuilt into `backend/public`, run, and
+reverted — a mutation that never reaches the served bundle proves the opposite of what it
+looks like.
+
+### What PI-T8 LEAVES BEHIND
+
+1. **PI-T9 (`§UC-PI-013`) edits `FriendPortalSession.vue` and nothing else on this side:**
+   pass `:as-gate="explainerPending"` at the ONE `<PortalExplainer>` mount and read
+   `@done`'s `{ hide }` in `onExplainerDone()`. The seam's shape is source-pinned, so
+   moving it is a red run.
+2. **GL-T4 (module 19) imports `lib/roasters.js`** for `GuestRoastersLine.vue` and adds
+   `cup`/`box`/`hand` mounts — the glyphs are already in `icons.js`, so it adds NO icons.
+   It will need to extend the §7 importer-set assertion by one entry; the boundary half of
+   that test is written so it does not have to be weakened.
+3. **PI-T11's vocabulary sweep gains `PortalExplainer.vue`** — its copy contains no
+   „kolo"/„cyklus" (checked with the `/\bkol[oáa]|cykl/iu` regex) and the personal note is
+   APP copy, deliberately NOT `[data-user-copy]`.
+4. ⚠ **Four `OPEN:`s in §UC-PI-012/014 are now SHIPPED as their defaults**, all of them the
+   PO's to polish later and none of them a call-site decision: the WhatsApp mention in
+   phase 2, „(PayMe)" in §Ako platím, the „— Karol" note, and both roaster texts. Reproduce,
+   never improve — a reader who „tidies" one of them is editing the product owner's voice.

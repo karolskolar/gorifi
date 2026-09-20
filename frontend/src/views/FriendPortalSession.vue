@@ -110,6 +110,13 @@ import CycleTimeline from '@/components/CycleTimeline.vue'
 // that file's header. Do not replace it with `cycle-stages.js STEPS`.
 import { deliveryExtras, orderLines } from '@/lib/order-lines'
 import { historyBadge } from '@/lib/history-badges'
+// 18 §UC-PI-012 — „Ako to funguje". The whole view is ONE component with an
+// `asGate` prop, because PI-T9 (§UC-PI-013) reuses this exact page as the
+// first-login gate and a second copy with a checkbox on it is the defect that row
+// would otherwise create. ⚠ It deliberately does NOT mount `CycleTimeline`: the
+// explainer describes the process in general, the timeline reports where ONE round
+// is now (argued in that component's header).
+import PortalExplainer from '@/components/PortalExplainer.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
@@ -1520,6 +1527,48 @@ function backHome() {
 }
 
 // ---------------------------------------------------------------------------
+// 18 §UC-PI-012 — „AKO TO FUNGUJE", THE EXPLAINER (PI-T8).
+//
+// The view itself is `components/PortalExplainer.vue`; everything this file owns
+// is the ONE thing the component cannot know — whether the round a friend is
+// looking at charges for Packeta — and where „Späť na ponuku" goes.
+// ---------------------------------------------------------------------------
+
+/**
+ * §UC-PI-012 item 4: the Packeta badge is gated on
+ * `(currentCycle ?? catalogCycle)?.parcel_enabled`.
+ *
+ * ⚠ THE `??` IS RESOLVED HERE, not in the component, because `landing` is THIS
+ * file's shape (`lib/portal-state.js`). And it is not `currentCycle` alone:
+ * `currentCycle` is NULL under `closed` (PI-T1 §2), which is the state the
+ * explainer is most likely to be READ in — a friend with nothing to order is
+ * exactly the one reading how it works. Dropping `catalogCycle` would silently
+ * hide the fee for the majority of visits to this page.
+ *
+ * ⚠ `parcel_enabled` arrives from SQLite as 0/1, so it is coerced here: the
+ * component's prop is a real `Boolean` and `0` would be `true` to a truthiness
+ * test written at the call site later.
+ */
+const explainerCycle = computed(() => landing.value.currentCycle ?? landing.value.catalogCycle ?? null)
+const explainerParcelEnabled = computed(() => !!explainerCycle.value?.parcel_enabled)
+const explainerParcelFee = computed(() => Number(explainerCycle.value?.parcel_fee) || 0)
+
+/**
+ * The explainer's one action (§UC-PI-012 item 8). From the menu it is „Späť na
+ * ponuku" and means exactly the back chevron.
+ *
+ * ⚠ SEAM FOR PI-T9 (§UC-PI-013): the payload's `hide` flag is already here and is
+ * IGNORED today, on purpose — nothing may be written from a menu-opened explainer
+ * („Opening the explainer from the menu never writes anything"). PI-T9 passes
+ * `:as-gate` at the mount below and reads `hide` here to decide whether
+ * `markExplainerSeen()` fires, fire-and-forget. It does not have to touch
+ * `PortalExplainer.vue` or `lib/roasters.js` to do it.
+ */
+function onExplainerDone() {
+  backHome()
+}
+
+// ---------------------------------------------------------------------------
 // 18 §UC-PI-009 — „MOJE OBJEDNÁVKY", THE HISTORY VIEW (PI-T6).
 //
 // The rounds the friend actually ordered in, newest first, each a card with a short
@@ -2681,6 +2730,28 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
               prototype's `.p2-tx` row and its frame are the thing not adopted. -->
       <FriendTransactionList :friend-id="friendId" />
     </div>
+
+    <!-- ═══════════════ 18 §UC-PI-012 — „AKO TO FUNGUJE" (PI-T8) ════════════════
+         ⚠ THE WHOLE VIEW IS ONE COMPONENT, and that is the shape PI-T9 needs
+         (§UC-PI-013): the first-login gate is THIS page with `as-gate` true, not a
+         second screen with the same six paragraphs on it. That row passes the flag
+         here and reads `@done`'s `{ hide }`; it edits neither the component nor
+         `lib/roasters.js`.
+
+         ⚠ NO `CycleTimeline` — deliberately, and it is the one thing about this
+         view that will read as an omission. The six phases below ARE module 17's
+         six steps, but as an explanation of the process rather than a report on one
+         round; §UC-PI-012 item 3 says the live timeline is not mounted here and the
+         component's header argues why. `portal-explainer.spec.js` §1 reds on an
+         import of `lib/cycle-stages.js` into either file.
+
+         ⚠ Its own column: the component declares one, like the two views above. -->
+    <PortalExplainer
+      v-if="view === 'explainer'"
+      :parcel-enabled="explainerParcelEnabled"
+      :parcel-fee="explainerParcelFee"
+      @done="onExplainerDone"
+    />
   </div>
 
   <!-- ⚠⚠ THE ONE BALANCE `PaymentModal` IN THE TREE (§UC-PI-008 / §UC-PI-010; 15

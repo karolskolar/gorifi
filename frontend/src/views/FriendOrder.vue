@@ -30,6 +30,11 @@ import CartLineList from '@/components/CartLineList.vue'
 // ordered lines this view's `cart` cannot describe. See `lib/order-lines.js`.
 import { cartLines as toCartLines, orderLines, deliveryExtras } from '@/lib/order-lines'
 import CatScrollArrow from '@/components/CatScrollArrow.vue'
+// 18 §UC-PI-014 — the two coffee sources have ONE home, shared with the explainer
+// (`components/PortalExplainer.vue`) and, from module 19, with the guest link
+// (`GuestRoastersLine.vue`). This view reads the badge CLASS and the popover's
+// label/text off it; it types neither.
+import { roasterFor } from '@/lib/roasters'
 import PaymentModal from '@/components/PaymentModal.vue'
 // 15 §UC-PL-004/D6 — THE PAYLOAD AND THE LINK HAVE ONE HOME, shared with
 // `PaymentModal.vue`. This screen has TWO payment surfaces for the same order (the
@@ -343,6 +348,44 @@ function openShareDialog() {
 // shared (`components/ProductImageModal.vue`); this is only the open/close state,
 // which each screen owns because each owns its own product list.
 const photoProduct = ref(null)
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-014 — THE ROASTERY BADGE'S POPOVER (PI-T8).
+//
+// „Káva pochádza z dvoch zdrojov, podľa značky na karte produktu" — the explainer
+// says that, and this is where a friend can ask the card itself. Holds the ROASTER
+// ENTRY (`lib/roasters.js`), not a boolean and not the product: the modal needs the
+// label and the text, and one ref keeps „which roaster" and „is it open" from ever
+// disagreeing (the `photoProduct` precedent directly above).
+//
+// ⚠ ONE INSTANCE, `v-if`-MOUNTED, at the bottom of this template — never one per
+// card. A grid of twelve products would otherwise mount twelve dialogs, and the
+// standing rule on this shell is that an always-mounted modal's scrim swallows
+// clicks and its „Zavrieť" matches the unscoped locators three shipped guest specs
+// use.
+const roasterModal = ref(null)
+
+/**
+ * The card badge's click/Enter/Space target — and the ONLY thing that opens the
+ * popover.
+ *
+ * ⚠ IT IS A NO-OP FOR AN UNKNOWN ROASTERY, and the badge does not offer the
+ * affordance at all in that case (`role`/`tabindex` are bound to the same
+ * `roasterFor()` answer in the template). §UC-PI-014: „Unknown roastery ⇒ inert
+ * badge as today." An element that announces itself as a button and then does
+ * nothing is worse than a plain `span` — the admin types `products.roastery` as
+ * free text, so a roastery this library has never heard of is an ordinary case,
+ * not an error.
+ *
+ * ⚠ The guard here is not belt-and-braces over the template's: `disabled` (and, by
+ * the same token, an absent `role`) does NOT stop a dispatched click reaching a
+ * handler (CLAUDE.md §Frontend), so a gated action needs its JS guard too.
+ */
+function openRoaster(roastery) {
+  const roaster = roasterFor(roastery)
+  if (!roaster) return
+  roasterModal.value = roaster
+}
 
 // ---- top-level view switch: own order vs colleagues ---------------------------
 //
@@ -1917,7 +1960,32 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
                   <h3 class="display text-[19px] sm:text-[21px]" style="line-height:.95">{{ product.name }}</h3>
                   <div v-if="product.roast_type || product.roastery" class="flex flex-wrap gap-[6px] mt-2">
                     <span v-if="product.roast_type" class="badge" style="font-size:11px;padding:2px 7px">{{ product.roast_type }}</span>
-                    <span v-if="product.roastery" class="badge acc-o" style="font-size:11px;padding:2px 7px">{{ product.roastery }}</span>
+                    <!-- 18 §UC-PI-014 — the roastery badge, now a POPOVER TRIGGER
+                         when (and only when) `lib/roasters.js` recognises the name.
+                         · class: the library's `badgeClass` (Goriffee plain, Robo
+                           `acc-o`); an UNKNOWN roastery keeps today's `acc-o`, so
+                           nothing about the shipped grid changes for it.
+                         · `role="button" tabindex="0"` ONLY on a match — an element
+                           that announces itself as a button and does nothing is
+                           worse than a plain `span`, and a free-text roastery the
+                           admin invented is an ordinary case.
+                         ⚠ The handler is bound unconditionally and guards itself
+                         (`openRoaster`): a missing `role` does not stop a
+                         dispatched click, so the JS guard is the real one.
+                         ⚠ `.prevent` on Space keeps the key from scrolling the
+                         grid, the NeoCheckbox/NeoModal `×` idiom. -->
+                    <span
+                      v-if="product.roastery"
+                      class="badge"
+                      :class="roasterFor(product.roastery)?.badgeClass ?? 'acc-o'"
+                      style="font-size:11px;padding:2px 7px"
+                      :style="roasterFor(product.roastery) ? 'cursor:pointer' : null"
+                      :role="roasterFor(product.roastery) ? 'button' : null"
+                      :tabindex="roasterFor(product.roastery) ? 0 : null"
+                      @click="openRoaster(product.roastery)"
+                      @keydown.enter.prevent="openRoaster(product.roastery)"
+                      @keydown.space.prevent="openRoaster(product.roastery)"
+                    >{{ product.roastery }}</span>
                   </div>
                   <!-- Fixed field mapping (04 §UC-FO-005): `description1` is the
                        spec line, `description2` the tasting notes. The old
@@ -2694,6 +2762,26 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
       :name="photoProduct.name"
       @close="photoProduct = null"
     />
+
+    <!-- 18 §UC-PI-014 — THE ONE ROASTER POPOVER. Title = the roaster's label,
+         body = its text, footer = „Zavrieť" (the shell's standing footer label).
+         Both strings come from `lib/roasters.js`; nothing is typed here, so the
+         card and the explainer's „Kto sme a odkiaľ je káva" cards cannot drift
+         apart — `portal-explainer.spec.js` §3 asserts them EQUAL against the
+         module's own exports.
+
+         ⚠ `v-if` on the mount, like every modal on this shell. -->
+    <NeoModal
+      v-if="roasterModal"
+      :title="roasterModal.label"
+      data-testid="roaster-modal"
+      @close="roasterModal = null"
+    >
+      <div class="sub" style="font-size:14px;line-height:1.45">{{ roasterModal.text }}</div>
+      <template #footer>
+        <button type="button" class="btn" @click="roasterModal = null">Zavrieť</button>
+      </template>
+    </NeoModal>
   </div>
 </template>
 

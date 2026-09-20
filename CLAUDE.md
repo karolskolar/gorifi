@@ -54,7 +54,7 @@ cd frontend && npm run dev     # :5173
 | Admin sets a party's pickup point (`helpers/pickup.js`, `PickupLocationPicker.vue`) | `docs/learnings/06-pickup-point.md` |
 | Payment links, variable symbol, `payment_creditor_name` (module 15) | `docs/learnings/07-payment-links.md` |
 | Distribution pipeline: hand-over, the board, the outbox enqueue, the cycle header (module 16) | `docs/learnings/08-distribution-pipeline.md` |
-| Portal IA: the four friend routes, `resolveLanding`, `lib/dates.js`, the `portal-landing` gate, the appbar per state + the drawer / `useModalLayer()` (module 18) | `docs/learnings/10-portal-ia.md` |
+| Portal IA: the four friend routes, `resolveLanding`, `lib/dates.js`, the `portal-landing` gate, the appbar per state + the drawer / `useModalLayer()`, the „Ako to funguje" explainer + `lib/roasters.js` (module 18) | `docs/learnings/10-portal-ia.md` |
 | Cycle stages: the three `order_cycles` columns, `markCycleReady()`, the `POST/PATCH /cycles` contract, `lib/cycle-stages.js` + `CycleTimeline.vue`, the admin date/stage controls, the guest „Kde je vaša káva" card (module 17) | `docs/learnings/09-cycle-stages.md` |
 
 Specs: `docs/specification/*.md`, `docs/superpowers/specs/*.md`. Spec text that cites "CLAUDE.md GSO-T3" /
@@ -266,6 +266,20 @@ append the full write-up to the matching learnings file and add at most one line
   (hand-over ticks happen precisely then). It can only ADD tabs back to a read-only mount; the deep link
   and the open landing are unaffected. Collapsing the two names reds one landing or the other, and the
   caller is the only one who can tell them apart,
+  `lib/roasters.js` (18 §UC-PI-014 — the TWO roaster descriptions + `roasterFor()`; dependency-free
+  so a spec imports it. Consumers: `PortalExplainer.vue`, `FriendOrder.vue`, and GL-T4's
+  `GuestRoastersLine.vue`. ⚠ NO ADMIN FILE EVER — roastery admin keeps its own data; the importer
+  SET **and** the boundary are swept in `portal-explainer.spec.js` §7. Badge class: Goriffee plain,
+  Robo `acc-o`, an UNKNOWN roastery keeps today's `acc-o` — and `role="button"`/`tabindex` go on the
+  card badge ONLY on a match, with the JS guard in `openRoaster()` too, since a dispatched click
+  ignores a missing role — PI-T8),
+  `PortalExplainer.vue` (the WHOLE „Ako to funguje" view, `asGate` = PI-T9's first-login gate, never
+  a second screen; it EMITS `done {hide}` and routes nothing. ⚠ `CycleTimeline` is NOT mounted here
+  and that is §UC-PI-012 item 3, not an omission: an explainer describes the process, the timeline
+  reports one round — `portal-explainer.spec.js` §1 reds both the import and the DOM. Packeta badge
+  = `currentCycle ?? catalogCycle` (`currentCycle` is NULL under `closed`), ways from
+  `api.getPickupLocations('coffee')` — the argument is load-bearing. The WhatsApp mention, „(PayMe)",
+  „— Karol" and both roaster texts are PO copy: reproduce, never improve — PI-T8),
   `LandingStateModal.vue` (the landing's „Objednávky sú zatvorené/uzamknuté" modal; `title`/`intro`/`lead` are
   PROPS because PI-T5's no-order locked variant is the same modal with three strings — never a second one),
   `PickupLocationPicker.vue` (props `cycleId`+`friendId`, never an order id), `lib/plural.js`,

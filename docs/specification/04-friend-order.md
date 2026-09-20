@@ -329,6 +329,10 @@ mono tasting notes, variant boxes.
       <div class="flex flex-wrap gap-[6px] mt-2">
         <span v-if="product.roast_type" class="badge" style="font-size:11px;padding:2px 7px">{{ product.roast_type }}</span>
         <span v-if="product.roastery" class="badge acc-o" style="font-size:11px;padding:2px 7px">{{ product.roastery }}</span>
+        <!-- ⚠ SUPERSEDED by 18 §UC-PI-014 (PI-T8, 2026-09-20): the class is no longer
+             unconditional. A roastery `lib/roasters.js` knows renders PLAIN and becomes a
+             popover trigger (`role="button"` only on a match); an unknown one keeps
+             `acc-o`. The 11px/2px-7px geometry and the badge ORDER are unchanged. -->
       </div>
       <div v-if="product.description1" class="sub" style="margin-top:7px;font-size:13px">{{ product.description1 }}</div>
       <div v-if="product.description2" class="mono" style="font-size:12.5px;color:var(--ink-faint);margin-top:2px">{{ product.description2 }}</div>
@@ -375,7 +379,9 @@ border, `3px 3px 0` magenta shadow, magenta price — theme-provided).
   (README §Interactions); persistence policy is UC-FO-008's.
 
 **Acceptance criteria:** card matches `03-shot.png` — display-caps name, two small
-badges (plain + highlight `acc-o`), gray spec line, mono notes, two `.vbox`es side by
+badges (plain + highlight `acc-o` — ⚠ the roastery badge's class is CONDITIONAL since
+18 §UC-PI-014 / PI-T8; see the note in the structure block above), gray spec line, mono
+notes, two `.vbox`es side by
 side; adding qty flips the box to `.sel` with magenta shadow and price; the `.pimg`
 frame's height tracks the text block (items-stretch), 2px ink border, radius 8.
 

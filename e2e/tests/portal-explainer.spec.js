@@ -1,0 +1,753 @@
+import { test, expect, request as playwrightRequest } from '@playwright/test'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { dirname, join, relative, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { ADMIN_PASSWORD } from '../fixtures.js'
+import { assertReadable, code, HAS_SRC, NEEDS_SRC } from '../helpers/source-pins.js'
+import { expectLanding, menuGo } from '../helpers/portal.js'
+import { makeAdmin } from '../helpers/admin.js'
+
+// PI-T8 — 18 §UC-PI-012 („Ako to funguje") and §UC-PI-014 (`lib/roasters.js` + the
+// product card's roaster popover). §UC-PI-019 item 17's `portal-explainer.spec.js`,
+// content half.
+//
+// ⚠⚠ THE PROPERTY THIS FILE EXISTS TO PROTECT FIRST: the explainer's six phases are
+// STATIC TEXT and the LIVE TIMELINE IS NOT MOUNTED HERE. `CycleTimeline.vue` renders
+// the same six steps, the copy lines up, and every reader's instinct will be that the
+// explainer „should" show it — §UC-PI-012 item 3 says otherwise in as many words. The
+// two answer different questions: this page explains the process to a friend who may
+// have no round in flight at all (phase 1 is „Väčšinu času sa neobjednáva"), the
+// timeline reports where ONE round is now. §1 makes mounting it a RED run rather than
+// a judgement call, in both directions — the import is forbidden AND the six static
+// phases are pinned.
+//
+// ⚠ THE SECOND PROPERTY: `lib/roasters.js` is a ONE HOME with a NAMED NON-CONSUMER.
+// The explainer's two cards, the product badge's popover and (module 19, GL-T4) the
+// guest line all read the same two strings; the ADMIN skin imports none of it. §3
+// asserts the explainer's rendered text EQUAL to the module's exports, and §7 sweeps
+// `frontend/src` for importers — an unmeasured boundary is the one that drifts.
+//
+// ⚠ HERMETIC, per the RD-FL-2 idiom: every test provisions its own friend. The
+// PICKUP feed and the cycles payload are stubbed where their CONTENT is under test
+// (a shared DB cannot be made to hold „exactly two coffee points" for one file), and
+// REAL where the product cards are (a stub cannot make a roastery badge interesting).
+
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3997'
+const TIMEOUT = 20_000
+const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
+
+let ctx = null
+let adminToken = ''
+
+// FUP-T27 — ONE home for the admin request path: it re-authenticates ONCE on a 401
+// instead of trusting a token the next `POST /api/admin/login` anywhere in the suite
+// silently rotates out. See `helpers/admin.js`.
+const admin = makeAdmin({
+  ctx: () => ctx,
+  token: () => adminToken,
+  adopt: (t) => { adminToken = t },
+  timeout: TIMEOUT,
+})
+
+test.beforeAll(async () => {
+  ctx = await playwrightRequest.newContext({ baseURL: BASE_URL })
+  const login = await ctx.post('/api/admin/login', { data: { password: ADMIN_PASSWORD }, timeout: TIMEOUT })
+  expect(login.status(), 'admin login').toBe(200)
+  adminToken = (await login.json()).token
+})
+
+test.afterAll(async () => { await ctx?.dispose() })
+
+let friendSeq = 0
+async function makeFriend(label) {
+  const suffix = `_${uniq}${++friendSeq}`
+  const username = `pi8_${String(label).toLowerCase().replace(/[^a-z0-9]/g, '')}`.slice(0, 30 - suffix.length) + suffix
+  const name = `PI8 ${label} ${uniq}`
+  const created = await admin('/api/friends', { method: 'post', data: { name, phone: '0900 000 000' } })
+  expect(created.status(), 'friend create').toBe(201)
+  const row = await created.json()
+
+  expect((await admin(`/api/friends/${row.id}/admin-username`, { method: 'put', data: { username } })).status()).toBe(200)
+  expect((await admin(`/api/friends/${row.id}/reset-password`, { method: 'put', data: { password: 'initPass1' } })).status()).toBe(200)
+
+  const auth = await ctx.post('/api/friends/auth', { data: { username, password: 'initPass1' }, timeout: TIMEOUT })
+  expect(auth.status(), 'friend login').toBe(200)
+  const body = await auth.json()
+  const changed = await ctx.put(`/api/friends/${row.id}/change-password`, {
+    headers: { Authorization: `Bearer ${body.token}` },
+    data: { currentPassword: 'initPass1', newPassword: 'ownPass12' },
+    timeout: TIMEOUT,
+  })
+  expect(changed.status(), 'forced change').toBe(200)
+  const token = (await changed.json()).token || body.token
+  return { id: row.id, name, username, token }
+}
+
+async function makeCycle(label, data = {}) {
+  const name = `PI8 Round ${label} ${uniq}`
+  const res = await admin('/api/cycles', {
+    method: 'post',
+    data: { name, type: 'coffee', status: 'open', ...data },
+  })
+  expect(res.status(), 'cycle create').toBe(201)
+  return { ...(await res.json()), name }
+}
+
+async function addProduct(cycleId, data) {
+  const res = await admin('/api/products', { method: 'post', data: { cycle_id: cycleId, ...data } })
+  expect(res.status(), 'product create').toBe(201)
+  return res.json()
+}
+
+async function signIn(page, friend) {
+  await page.addInitScript((value) => {
+    localStorage.clear()
+    localStorage.setItem('gorifi_friend_auth', value)
+  }, JSON.stringify({
+    friendId: friend.id,
+    friendName: friend.name,
+    token: friend.token,
+    expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+  }))
+}
+
+/** A cycle row shaped like `GET /friends/cycles` publishes one. */
+const cycleRow = (over) => ({
+  id: 88_000 + (over.n || 0), name: `PI8 Stub ${over.n || 0}`, status: 'planned',
+  created_at: over.created_at || `2026-09-0${(over.n || 1) % 9 + 1} 10:00:00`,
+  total_friends: 0, expected_date: null, type: 'coffee', plan_note: null,
+  opens_at: null, closes_at: null, stage: null, parcel_enabled: 0, parcel_fee: 0,
+  hasOrder: false, orderTotal: 0, orderStatus: null, orderKilos: 0, orderItemCount: 0,
+  orderPickupName: null, orderPacketa: false, orderPaid: false, orderHandedOver: false,
+  ...over,
+})
+
+async function stubCycles(page, cycles) {
+  await page.route('**/api/friends/cycles*', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(cycles),
+  }))
+}
+
+/** The balance is PI-T7's surface; keep its request out of every fixture here. */
+async function stubBalance(page) {
+  await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+}
+
+/**
+ * The public pickup feed, stubbed — and it RECORDS THE URL it was asked for, because
+ * §UC-PI-012 item 4 names the endpoint WITH its argument („`api.getPickupLocations
+ * ('coffee')`") and the type filter is the load-bearing half: without it the friend
+ * reads a list that includes bakery-only points they can never choose.
+ */
+function stubPickup(page, rows) {
+  const seen = []
+  page.route('**/api/pickup-locations*', (route) => {
+    seen.push(route.request().url())
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(rows) })
+  })
+  return seen
+}
+
+/**
+ * Land on a portal route with the cycles response already in.
+ *
+ * ⚠ It WAITS for `GET /friends/cycles`: `cycles` starts EMPTY on a restore, so the
+ * resolver answers `closed` before the payload lands and the Packeta badge would be
+ * read off the wrong round (PI-T1 §9).
+ */
+async function open(page, path = '/ako-to-funguje') {
+  const served = page.waitForResponse((r) => r.url().includes('/api/friends/cycles'), { timeout: TIMEOUT })
+  await page.goto(path)
+  await served
+  await expectLanding(page)
+}
+
+const explainer = (page) => page.getByTestId('portal-explainer')
+const phases = (page) => page.getByTestId('explainer-phase')
+const ways = (page) => page.getByTestId('explainer-way')
+const roasterCards = (page) => page.getByTestId('explainer-roaster')
+
+// The six phases, exactly as §UC-PI-012 item 3 writes them. Typed HERE as well as in
+// the component on purpose: a spec that harvested them from the source it is testing
+// would pass against any copy at all.
+const PHASE_TITLES = ['Pauza', 'Ohlásenie objednávky', 'Objednávanie', 'Čakáme na pražiareň', 'Balíme', 'Odovzdanie']
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const SRC = resolve(HERE, '../../frontend/src')
+const ROASTERS_LIB = join(SRC, 'lib/roasters.js')
+const HAS_LIB = existsSync(SRC)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 1. ⚠⚠ THE SIX PHASES ARE STATIC TEXT — THE LIVE TIMELINE IS NOT MOUNTED
+// ═════════════════════════════════════════════════════════════════════════════
+test.describe('PI-T8 · 18 §UC-PI-012 item 3 — static phases, no CycleTimeline', () => {
+  test('all six phases render, numbered 1–6, in the spec\'s order', async ({ page }) => {
+    const friend = await makeFriend('Phases')
+    await signIn(page, friend)
+    await stubBalance(page)
+    await stubPickup(page, [])
+    await stubCycles(page, [cycleRow({ n: 1 })])
+    await open(page)
+
+    await expect(explainer(page)).toBeVisible()
+    await expect(phases(page)).toHaveCount(6)
+    for (let i = 0; i < 6; i++) {
+      const phase = phases(page).nth(i)
+      await expect(phase.locator('.n'), `phase ${i + 1} is numbered`).toHaveText(String(i + 1))
+      await expect(phase.locator('.display')).toHaveText(PHASE_TITLES[i])
+      // Each phase carries ITS OWN glyph — the `I2` set PI-T8 added to `icons.js`.
+      // An unknown `NeoIcon` name renders NOTHING (it is silent in production), so
+      // a mistyped icon key would be invisible without this.
+      await expect(phase.locator('.ico svg'), `phase ${i + 1} has a glyph`).toHaveCount(1)
+    }
+
+    // The WhatsApp mention in phase 2 is a PO decision (§UC-PI-012 item 3's `OPEN:`
+    // resolved to „keep" — the PO already messages friends personally; module 21
+    // automates it). It reads like an implementation detail and is not.
+    await expect(phases(page).nth(1)).toContainText('V appke aj cez WhatsApp.')
+    await expect(phases(page).nth(0)).toContainText('košík je zamknutý')
+    await expect(phases(page).nth(4)).toContainText('Vtedy je čas zaplatiť.')
+  })
+
+  test('⚠⚠ NO live timeline on this page — in the DOM and in the source', async ({ page }) => {
+    const friend = await makeFriend('NoTimeline')
+    await signIn(page, friend)
+    await stubBalance(page)
+    await stubPickup(page, [])
+    // A LOCKED round the friend ORDERED in: the state in which `CycleTimeline` would
+    // have the most to say (§UC-PI-007 item 3's „Kde je vaša káva"), and therefore
+    // the state in which mounting it here is most tempting.
+    // ⚠ `hasOrder: true` is load-bearing — a locked landing with NO own order gets
+    // the state MODAL instead of the own-order card, and with it no timeline at all.
+    // ⚠ NON-VACUITY: the absence assertion below is worthless unless the timeline
+    // CAN render in this session — so the locked landing is visited first and its
+    // timeline asserted PRESENT, then the explainer's absence means something.
+    await stubCycles(page, [cycleRow({ n: 2, status: 'locked', stage: 'arrived', hasOrder: true })])
+    await open(page, '/')
+    await expect(page.getByTestId('cycle-timeline'), 'non-vacuity: the timeline does render in this app')
+      .toBeVisible()
+
+    await menuGo(page, 'Ako to funguje')
+    await expect(explainer(page)).toBeVisible()
+    await expect(page.getByTestId('cycle-timeline'), 'no timeline on the explainer').toHaveCount(0)
+    // …and not its dots variant either — `CycleTimeline` renders one or the other.
+    await expect(page.locator('.cs-dots'), 'nor the compact variant').toHaveCount(0)
+  })
+
+  test('source pin: neither the view nor the lib imports module 17\'s timeline', () => {
+    test.skip(!HAS_SRC, NEEDS_SRC)
+    const view = assertReadable('components/PortalExplainer.vue', ['PHASES', 'Odovzdanie', 'roasters'])
+    expect(view, 'the phases are typed here, never derived from 17\'s STEPS')
+      .not.toContain('cycle-stages')
+    expect(view).not.toContain('CycleTimeline')
+    expect(view).not.toContain('timelineSteps')
+
+    const lib = assertReadable('lib/roasters.js', ['ROASTERS', 'roasterFor', 'Goriffee'])
+    // ⚠ DEPENDENCY-FREE: a Playwright worker imports this file directly (§2 below),
+    // which is this repo's substitute for a unit test. One `@/` alias or one Vue
+    // import and that import throws — loudly, but only after someone has to work out
+    // why. `import` with no following `.meta` is the shape that matters.
+    expect(lib.match(/\bimport\s/g), 'lib/roasters.js imports nothing at all').toBeNull()
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 2. `lib/roasters.js` AS A UNIT (18 §UC-PI-014)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Dependency-free plain ESM, so a worker imports it directly — the
+// `lib/history-badges.js` / `lib/cycle-stages.js` / `lib/payment-links.js`
+// precedent. The gate is the frontend SOURCE TREE, never the lib file itself: „the
+// module is missing" must be a red run, not a silent skip.
+test.describe('PI-T8 · 18 §UC-PI-014 — the roasters library', () => {
+  test.skip(!HAS_LIB, NEEDS_SRC)
+
+  let lib = null
+  test.beforeAll(async () => { lib = await import(pathToFileURL(ROASTERS_LIB).href) })
+
+  test('two roasters, in order, with §UC-PI-014\'s exact labels and badge classes', () => {
+    expect(lib.ROASTERS.map((r) => [r.key, r.label, r.badgeClass]))
+      .toEqual([
+        ['goriffee', 'Goriffee', ''],
+        ['robo', 'Robo', 'acc-o'],
+      ])
+    // Q13.a, recorded: the badge stays „Robo" — there is no „domáce praženie" variant
+    // of it, however much the text below describes home roasting.
+    expect(lib.ROASTERS.map((r) => r.label)).not.toContain('Domáce praženie')
+  })
+
+  test('the two texts are the PO\'s drafts, byte for byte', () => {
+    const [goriffee, robo] = lib.ROASTERS
+    expect(goriffee.text).toBe(
+      'Pražiareň — stály základ ponuky. Espresso aj filter, čerstvo pražené na objednávku.')
+    expect(robo.text).toBe(
+      'Domáci pražič. Hľadá zelenú kávu s vysokým hodnotením SCA (Specialty Coffee Association) '
+      + 'a praží ju sám, v malých dávkach — všetko pod jeho značkou je ručne pražené doma.')
+  })
+
+  test('roasterFor() — the matrix, both directions', () => {
+    const key = (name) => lib.roasterFor(name)?.key ?? null
+
+    expect(key('Goriffee')).toBe('goriffee')
+    expect(key('Robo')).toBe('robo')
+    // Case-insensitive and trimmed: `products.roastery` is free admin text.
+    expect(key('goriffee')).toBe('goriffee')
+    expect(key('GORIFFEE')).toBe('goriffee')
+    expect(key('  Robo  ')).toBe('robo')
+
+    // ⚠ ANCHORED. „Robo Coffee" is somebody else, and a substring match would put
+    // this library's description of one man's kitchen on their product.
+    expect(key('Robo Coffee')).toBeNull()
+    expect(key('Not Goriffee')).toBeNull()
+    expect(key('Goriffee s.r.o.')).toBeNull()
+
+    // The unknown roastery — the ORDINARY case, not an error (the admin types the
+    // column as free text). `null`, and the CALLER supplies today's `acc-o`.
+    expect(key('Foo')).toBeNull()
+    expect(key('')).toBeNull()
+    expect(key('   ')).toBeNull()
+
+    // Type-safe: `products.roastery` is nullable, so these arrive on every product
+    // that has none. Nothing may throw and nothing may match.
+    expect(key(null)).toBeNull()
+    expect(key(undefined)).toBeNull()
+    expect(key(42)).toBeNull()
+    expect(key({})).toBeNull()
+    expect(key([])).toBeNull()
+    expect(() => lib.roasterFor(Symbol('robo')), 'a Symbol must not take a product grid down')
+      .not.toThrow()
+  })
+
+  test('⚠ the match regexes are STATELESS — a `/g/` flag would answer differently every other call', () => {
+    // A global regex carries `lastIndex` between `.test()` calls, so the SECOND card
+    // in a grid of Robo products would get no popover. Asserted as the behaviour, not
+    // as the flag, plus the flag itself so the cause is named.
+    for (const r of lib.ROASTERS) expect(r.match.global, `${r.key} is not global`).toBe(false)
+    expect(lib.roasterFor('Robo')?.key).toBe('robo')
+    expect(lib.roasterFor('Robo')?.key, 'and again, from the same regex object').toBe('robo')
+    expect(lib.roasterFor('Robo')?.key).toBe('robo')
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 3. „KTO SME A ODKIAĽ JE KÁVA" — the cards ARE the library (§UC-PI-012 item 5)
+// ═════════════════════════════════════════════════════════════════════════════
+test.describe('PI-T8 · 18 §UC-PI-012 item 5 — who we are', () => {
+  test('the two cards carry the library\'s labels, classes and texts', async ({ page }) => {
+    test.skip(!HAS_LIB, NEEDS_SRC)
+    const lib = await import(pathToFileURL(ROASTERS_LIB).href)
+
+    const friend = await makeFriend('Roasters')
+    await signIn(page, friend)
+    await stubBalance(page)
+    await stubPickup(page, [])
+    await stubCycles(page, [cycleRow({ n: 3 })])
+    await open(page)
+
+    await expect(roasterCards(page)).toHaveCount(lib.ROASTERS.length)
+    for (const [i, roaster] of lib.ROASTERS.entries()) {
+      const card = roasterCards(page).nth(i)
+      await expect(card.locator('.badge')).toHaveText(roaster.label)
+      // ⚠ EQUAL to the module's own export — not „contains something about roasting".
+      // The whole point of §UC-PI-014 is that this page and the product badge cannot
+      // drift, and only an equality can say so.
+      await expect(card.locator('.sub')).toHaveText(roaster.text)
+      const cls = (await card.locator('.badge').getAttribute('class')).split(/\s+/)
+      expect(cls.includes('acc-o'), `${roaster.label} badge class`).toBe(roaster.badgeClass === 'acc-o')
+    }
+
+    // The origin paragraph above them (§UC-PI-012 item 5's prototype placeholder).
+    await expect(explainer(page)).toContainText('Nie je to obchod — je to okruh známych a známych ich známych, len na pozvánku.')
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 4. „AKO SA KU KÁVE DOSTANETE" (§UC-PI-012 item 4)
+// ═════════════════════════════════════════════════════════════════════════════
+test.describe('PI-T8 · 18 §UC-PI-012 item 4 — the three ways', () => {
+  test('the pickup row is composed from `getPickupLocations(\'coffee\')`', async ({ page }) => {
+    const friend = await makeFriend('Ways')
+    await signIn(page, friend)
+    await stubBalance(page)
+    const asked = stubPickup(page, [
+      { id: 1, name: 'Tesla', address: 'Ilkovičova 3', active: 1 },
+      // ⚠ address `null` ⇒ the parentheses are OMITTED, not printed empty.
+      { id: 2, name: 'Fontána', address: null, active: 1 },
+    ])
+    await stubCycles(page, [cycleRow({ n: 4 })])
+    await open(page)
+
+    await expect(ways(page)).toHaveCount(3)
+    await expect(ways(page).nth(0)).toContainText('Odberné miesto v Bratislave')
+    await expect(ways(page).nth(0).locator('.sub'))
+      .toHaveText('Tesla (Ilkovičova 3) · Fontána. Vyberáte pri objednávke.')
+    await expect(ways(page).nth(0).locator('.badge')).toHaveText('zdarma')
+    await expect(ways(page).nth(1)).toContainText('Objednávate cez odkaz od priateľa? Kávu prevezme on/ona a odovzdá vám ju.')
+    await expect(ways(page).nth(1).locator('.badge')).toHaveText('zdarma')
+    await expect(ways(page).nth(2)).toContainText('na ľubovoľný Z-BOX alebo výdajné miesto.')
+
+    // ⚠ THE ARGUMENT IS THE POINT. Without `?type=coffee` the endpoint answers every
+    // active point, bakery-only ones included — places no coffee round ever offers.
+    expect(asked.length, 'the feed was asked for exactly once').toBe(1)
+    expect(asked[0], 'asked with the coffee filter').toContain('type=coffee')
+  })
+
+  test('an empty (or failed) feed falls back to the sentence that is true either way', async ({ page }) => {
+    const friend = await makeFriend('NoPoints')
+    await signIn(page, friend)
+    await stubBalance(page)
+    await stubPickup(page, [])
+    await stubCycles(page, [cycleRow({ n: 5 })])
+    await open(page)
+
+    await expect(ways(page).nth(0).locator('.sub'))
+      .toHaveText('Odberné miesto si vyberáte pri objednávke.')
+    // Non-vacuity: the OTHER two rows still carry their own copy, so the fallback is
+    // the pickup row's and not „the section failed to render".
+    await expect(ways(page)).toHaveCount(3)
+  })
+
+  test('a 500 from the feed renders the same fallback and no error surface', async ({ page }) => {
+    const friend = await makeFriend('FeedDown')
+    await signIn(page, friend)
+    await stubBalance(page)
+    await page.route('**/api/pickup-locations*', (r) => r.fulfill({ status: 500, json: { error: 'boom' } }))
+    await stubCycles(page, [cycleRow({ n: 6 })])
+    await open(page)
+
+    await expect(ways(page).nth(0).locator('.sub'))
+      .toHaveText('Odberné miesto si vyberáte pri objednávke.')
+    // §UC-PI-012 has no error state: there is nothing the friend could do about it
+    // and the page's job is to reassure. The page-level banner must stay away.
+    await expect(page.locator('.app .banner.danger')).toHaveCount(0)
+  })
+
+  test('⚠ the Packeta badge is gated on `parcel_enabled` — BOTH directions', async ({ page }) => {
+    const friend = await makeFriend('Parcel')
+    await signIn(page, friend)
+    await stubBalance(page)
+    await stubPickup(page, [])
+
+    // OFF: no badge at all — not „zdarma", not „+0.00 EUR". Packeta being unavailable
+    // is not a price of zero.
+    await stubCycles(page, [cycleRow({ n: 7, status: 'open', parcel_enabled: 0, parcel_fee: 3.5 })])
+    await open(page)
+    await expect(ways(page).nth(2)).toContainText('Packeta')
+    await expect(page.getByTestId('explainer-parcel-fee')).toHaveCount(0)
+
+    // ON: the fee, formatted by `lib/money.js fmtEur`.
+    await page.unroute('**/api/friends/cycles*')
+    await stubCycles(page, [cycleRow({ n: 8, status: 'open', parcel_enabled: 1, parcel_fee: 3.5 })])
+    await open(page)
+    await expect(page.getByTestId('explainer-parcel-fee')).toHaveText('+3.50 EUR')
+  })
+
+  test('⚠ the fee is read off `catalogCycle` when there is no current round', async ({ page }) => {
+    // `resolveLanding().currentCycle` is NULL under `closed` (PI-T1 §2) — and a
+    // friend with nothing to order is exactly the one reading how it works, so
+    // `currentCycle` alone would hide the fee on the majority of visits.
+    const friend = await makeFriend('Catalog')
+    await signIn(page, friend)
+    await stubBalance(page)
+    await stubPickup(page, [])
+    await stubCycles(page, [cycleRow({ n: 9, status: 'completed', parcel_enabled: 1, parcel_fee: 4.2 })])
+    await open(page)
+
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-landing-state', 'closed')
+    await expect(page.getByTestId('explainer-parcel-fee')).toHaveText('+4.20 EUR')
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 5. THE REST OF THE PAGE, AND THE `asGate` SEAM (§UC-PI-012 items 1/2/6/7/8)
+// ═════════════════════════════════════════════════════════════════════════════
+test.describe('PI-T8 · 18 §UC-PI-012 — heading, payment, the note, the actions', () => {
+  test.beforeEach(async ({ page }) => {
+    await stubBalance(page)
+    await stubPickup(page, [])
+  })
+
+  test('the heading resolves as ONE name across its `<br>` and `<span>`', async ({ page }) => {
+    const friend = await makeFriend('Head')
+    await signIn(page, friend)
+    await stubCycles(page, [cycleRow({ n: 10 })])
+    await open(page)
+
+    // §UC-PI-012's own acceptance criterion: the `<br>` and the `.p2-hl` span
+    // belong to ONE heading, so one role query resolves it; a title split into
+    // three sibling elements would not.
+    //
+    // ⚠ RECORDED SPEC DISCREPANCY, MEASURED (PI-T8). §UC-PI-012 writes the
+    // criterion as `name: /Káva pod pultom, spolu\./`, i.e. as if the parts
+    // concatenated cleanly. Chromium's accessible-name computation inserts a space
+    // at each inline element boundary, so the real name is
+    // „Káva pod pultom , spolu." — note the space BEFORE the comma. The claim the
+    // spec is making is about the heading being one element, and that is what this
+    // pins; the whitespace tolerance is the correction, not a weakening (the
+    // `.p2-hl` assertion below is the part a rewritten heading would break).
+    await expect(page.getByRole('heading', { name: /Káva\s*pod\s*pultom\s*,\s*spolu\./ })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1 }).locator('.p2-hl')).toHaveText('pultom')
+    await expect(explainer(page)).toContainText(
+      'Podpultovka je spoločná objednávka výberovej kávy pre okruh priateľov.')
+  })
+
+  test('⚠ „(PayMe)" STAYS in „Ako platím" — 15 shipped it deliberately', async ({ page }) => {
+    const friend = await makeFriend('Pay')
+    await signIn(page, friend)
+    await stubCycles(page, [cycleRow({ n: 11 })])
+    await open(page)
+
+    // It reads redundant beside „bankovú appku" and is not: PayMe.sk is the named
+    // scheme module 15 built a dedicated bar for (`lib/payment-links.js paymeLink`).
+    // §UC-PI-012 item 6's `OPEN:` („hide it until 15 ships") resolved to KEEP.
+    await expect(explainer(page)).toContainText(
+      'Zaplatíte jedným klepnutím cez Revolut alebo bankovú appku (PayMe), alebo prevodom na účet. Bez hotovosti.')
+    // The two emphasised scheme names really are `<b>`, not prose.
+    await expect(explainer(page).locator('b', { hasText: 'Revolut' })).toHaveCount(1)
+  })
+
+  test('the personal note is signed „— Karol" and is hardcoded, not a setting', async ({ page }) => {
+    const friend = await makeFriend('Note')
+    await signIn(page, friend)
+    await stubCycles(page, [cycleRow({ n: 12 })])
+    await open(page)
+
+    const note = page.getByTestId('explainer-note')
+    await expect(note).toContainText(
+      '„Podpultovku robím vo voľnom čase pre kamarátov a kamarátov kamarátov. Ak čokoľvek nesedí, napíšte mi na WhatsApp.“')
+    await expect(note.locator('b')).toHaveText('— Karol')
+    // ⚠ NOT the signed-in friend's name, and not an admin setting: the voice is the
+    // PO's own. A fixture friend called „PI8 Note …" is on screen elsewhere, so this
+    // absence is not vacuous.
+    await expect(note).not.toContainText(friend.name)
+  })
+
+  test('from the MENU the action is „Späť na ponuku", with no checkbox, and it goes home', async ({ page }) => {
+    const friend = await makeFriend('Back')
+    await signIn(page, friend)
+    await stubCycles(page, [cycleRow({ n: 13, status: 'open' })])
+    await open(page, '/')
+    await menuGo(page, 'Ako to funguje')
+    await expect(page).toHaveURL(/\/ako-to-funguje$/)
+
+    // §UC-PI-012 item 8: „When opened from the menu or the closed modal: the button
+    // only". The gate's checkbox is PI-T9's, and offering it here would ask a friend
+    // browsing the help page to suppress something they navigated to on purpose.
+    await expect(page.getByTestId('explainer-done')).toHaveText('Späť na ponuku')
+    await expect(explainer(page).getByRole('checkbox')).toHaveCount(0)
+
+    await page.getByTestId('explainer-done').click()
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-view', 'shop')
+  })
+
+  test('⚠ the SEAM: `asGate` exists, defaults false, and PI-T9 flips it at the mount', () => {
+    test.skip(!HAS_SRC, NEEDS_SRC)
+    // The GATE's live behaviour belongs to PI-T9 (§UC-PI-013) — nothing mounts this
+    // component with `as-gate` yet, and a test that asserted the checkbox is on
+    // screen would be asserting a screen no route reaches. What IS this row's claim,
+    // and what PI-T9 must not have to rewrite, is the SHAPE of the seam.
+    const view = assertReadable('components/PortalExplainer.vue',
+      ['asGate', 'Rozumiem, idem na ponuku', 'Späť na ponuku', 'done'])
+    expect(view, 'the prop exists and defaults to false')
+      .toMatch(/asGate:\s*\{\s*type:\s*Boolean,\s*default:\s*false\s*\}/)
+    expect(view, 'the checkbox is pre-ticked (18 resolved conflict 3)').toMatch(/hide\s*=\s*ref\(true\)/)
+    expect(view, 'both labels live on the one button').toContain("asGate ? 'Rozumiem, idem na ponuku' : 'Späť na ponuku'")
+    expect(view, 'the gate\'s decision leaves as a payload, not as a second ref').toContain("emit('done', { hide: hide.value })")
+
+    // …and the session passes no `as-gate` TODAY, which is what makes the menu
+    // assertion above a property of the app rather than of a default.
+    const session = assertReadable('views/FriendPortalSession.vue',
+      ['PortalExplainer', 'explainerParcelEnabled', 'onExplainerDone'])
+    expect(session.match(/<PortalExplainer\b/g), 'exactly ONE mount').toHaveLength(1)
+    expect(session, 'no gate flag yet — PI-T9 adds it here').not.toContain('as-gate')
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 6. THE ROASTER POPOVER ON A PRODUCT CARD (§UC-PI-014)
+// ═════════════════════════════════════════════════════════════════════════════
+test.describe('PI-T8 · 18 §UC-PI-014 — the product card badge', () => {
+  let friend = null
+  let cycle = null
+
+  test.beforeAll(async () => {
+    friend = await makeFriend('Badge')
+    cycle = await makeCycle('Badge')
+    await addProduct(cycle.id, { name: `PI8 Robo Bean ${uniq}`, purpose: 'Espresso', price_250g: 9, roastery: 'Robo' })
+    await addProduct(cycle.id, { name: `PI8 Gori Bean ${uniq}`, purpose: 'Espresso', price_250g: 8, roastery: 'Goriffee' })
+    await addProduct(cycle.id, { name: `PI8 Foo Bean ${uniq}`, purpose: 'Espresso', price_250g: 7, roastery: 'Foo Roasters' })
+  })
+
+  /** The landing IS the order screen (§UC-PI-005), so `/` mounts the real grid. */
+  async function grid(page) {
+    await signIn(page, friend)
+    await stubBalance(page)
+    const served = page.waitForResponse((r) => r.url().includes('/api/friends/cycles'), { timeout: TIMEOUT })
+    await page.goto('/')
+    await served
+    await expectLanding(page)
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-landing-state', 'open')
+  }
+
+  const cardFor = (page, name) => page.getByTestId('product-card').filter({ hasText: name })
+  const roasteryBadge = (page, name) => cardFor(page, name).locator('.badge').last()
+
+  test('„Robo" ⇒ `acc-o`, a button, and the library\'s text in ONE modal', async ({ page }) => {
+    test.skip(!HAS_LIB, NEEDS_SRC)
+    const lib = await import(pathToFileURL(ROASTERS_LIB).href)
+    await grid(page)
+
+    const badge = roasteryBadge(page, `PI8 Robo Bean ${uniq}`)
+    await expect(badge).toHaveText('Robo')
+    expect((await badge.getAttribute('class')).split(/\s+/)).toContain('acc-o')
+    await expect(badge).toHaveAttribute('role', 'button')
+    await expect(badge).toHaveAttribute('tabindex', '0')
+
+    await badge.click()
+    const modal = page.getByTestId('roaster-modal')
+    await expect(modal.locator('.m-title')).toHaveText('Robo')
+    await expect(modal.locator('.m-body')).toHaveText(lib.ROASTERS[1].text)
+    // ⚠ ONE instance, `v-if`-mounted: a modal per card would mean one dialog per
+    // product and a scrim swallowing every click on the grid.
+    await expect(page.getByTestId('roaster-modal')).toHaveCount(1)
+
+    await modal.getByRole('button', { name: 'Zavrieť' }).click()
+    await expect(page.getByTestId('roaster-modal')).toHaveCount(0)
+  })
+
+  test('„Goriffee" ⇒ PLAIN badge, still a button, its own text', async ({ page }) => {
+    test.skip(!HAS_LIB, NEEDS_SRC)
+    const lib = await import(pathToFileURL(ROASTERS_LIB).href)
+    await grid(page)
+
+    const badge = roasteryBadge(page, `PI8 Gori Bean ${uniq}`)
+    await expect(badge).toHaveText('Goriffee')
+    // ⚠ SUPERSEDES the shipped „the roastery badge is always `acc-o`" claim
+    // (`order-product-card.spec.js`, retargeted in this commit): §UC-PI-014 gives
+    // Goriffee the plain badge and keeps `acc-o` for Robo and for the unknowns.
+    expect((await badge.getAttribute('class')).split(/\s+/)).not.toContain('acc-o')
+    await expect(badge).toHaveAttribute('role', 'button')
+
+    // Keyboard too — the affordance it announces has to work.
+    await badge.focus()
+    await page.keyboard.press('Enter')
+    await expect(page.getByTestId('roaster-modal').locator('.m-title')).toHaveText('Goriffee')
+    await expect(page.getByTestId('roaster-modal').locator('.m-body')).toHaveText(lib.ROASTERS[0].text)
+  })
+
+  test('⚠ an UNKNOWN roastery keeps today\'s `acc-o` and announces NOTHING', async ({ page }) => {
+    await grid(page)
+
+    const badge = roasteryBadge(page, `PI8 Foo Bean ${uniq}`)
+    await expect(badge).toHaveText('Foo Roasters')
+    // The admin types `products.roastery` as free text, so this is the ORDINARY case.
+    expect((await badge.getAttribute('class')).split(/\s+/)).toContain('acc-o')
+    await expect(badge).not.toHaveAttribute('role', 'button')
+    await expect(badge).not.toHaveAttribute('tabindex', '0')
+
+    // ⚠ AND THE HANDLER REFUSES IT TOO. A missing `role` does not stop a DISPATCHED
+    // click reaching the handler (CLAUDE.md §Frontend), so the JS guard is the real
+    // one — a badge that announced itself as a button and did nothing would be worse
+    // than a plain span, and one that opened an EMPTY modal worse still.
+    await badge.dispatchEvent('click')
+    await expect(page.getByTestId('roaster-modal')).toHaveCount(0)
+    // Non-vacuity: a sibling card's badge still opens one on the same page.
+    await roasteryBadge(page, `PI8 Robo Bean ${uniq}`).click()
+    await expect(page.getByTestId('roaster-modal')).toHaveCount(1)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 7. ⚠ THE NAMED NON-CONSUMER — admin invariance, MEASURED
+// ═════════════════════════════════════════════════════════════════════════════
+test.describe('PI-T8 · 18 §UC-PI-014 — `lib/roasters.js` has one home and one boundary', () => {
+  test.skip(!HAS_SRC, NEEDS_SRC)
+
+  /** Every `.vue`/`.js`/`.ts` file under `frontend/src`, relative paths. */
+  function sourceFiles(dir = SRC, out = []) {
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry)
+      if (statSync(full).isDirectory()) sourceFiles(full, out)
+      else if (/\.(vue|js|ts)$/.test(entry)) out.push(relative(SRC, full))
+    }
+    return out
+  }
+
+  test('the importer set is exactly the friend surfaces — no admin file reads it', () => {
+    const files = sourceFiles()
+    // Non-vacuity first: a sweep that found nothing would pass every claim below.
+    expect(files.length, 'the source tree was walked').toBeGreaterThan(40)
+    expect(files, 'and the admin skin really is in it').toContain(join('views', 'AdminFriends.vue'))
+
+    // ⚠⚠ THE EXTENSION AND `import()` FORMS ARE THE POINT, not pedantry — widened at the
+    // PI-T8 review. The first version matched only `from '…/lib/roasters'`, so
+    // `from '@/lib/roasters.js'` and `await import('…/lib/roasters')` walked straight past
+    // it. That is not hypothetical: `views/CycleDetail.vue:25` — an ADMIN view — already
+    // imports `'../lib/cycle-stages.js'` WITH the extension, so an admin import written in
+    // this repo's own prevailing style would have evaded the guard entirely, and the
+    // mutation that „proved" it only reddened because it happened to be typed without one.
+    // A boundary guard that misses the house style is not a guard.
+    const IMPORTS_ROASTERS = /(?:from|import\()\s*['"][^'"]*lib\/roasters(?:\.js)?['"]/
+    const importers = files.filter((rel) => IMPORTS_ROASTERS.test(readFileSync(join(SRC, rel), 'utf8')))
+    expect(importers.sort(), 'the two consumers PI-T8 ships; GL-T4 adds GuestRoastersLine.vue')
+      .toEqual([join('components', 'PortalExplainer.vue'), join('views', 'FriendOrder.vue')].sort())
+
+    // …stated as the BOUNDARY as well as the list, so a third friend-surface consumer
+    // (GL-T4's guest line) does not have to weaken the rule to land: no admin file,
+    // ever. Roastery administration keeps its own data — the admin must go on being
+    // able to name a roastery this library has never heard of.
+    // ⚠ ALLOW-LIST, not a deny-list — inverted at the PI-T8 review. Recognising admin as
+    // „`views/Admin*` or `components/(ui|analytics)/`" misses the admin surfaces that do not
+    // start with `Admin`: §UC-PI-019 item 18 names `CycleDetail.vue` and `Distribution.vue`
+    // outright, and `LiveCycleDashboard`, `CoffeeAnalytics`, `BakeryAnalytics` and
+    // `FriendDetail` are admin too. A deny-list has to be kept complete forever; an
+    // allow-list fails closed the first time an unexpected file imports the lib, which is
+    // exactly the scenario this loop exists for. (Today the set-equality above already
+    // covers it — this half only becomes load-bearing when GL-T4 extends the list.)
+    const PERMITTED = /^(components\/PortalExplainer\.vue|views\/FriendOrder\.vue|components\/Guest[A-Za-z]*\.vue|views\/Guest[A-Za-z]*\.vue)$/
+    for (const rel of importers) {
+      expect(rel, `${rel} is not on the permitted friend/guest list — no admin file may import lib/roasters.js`)
+        .toMatch(PERMITTED)
+    }
+  })
+
+  test('the six new glyphs live in the ONE icon module', () => {
+    const icons = assertReadable('components/neo/icons.js', ['ICONS', 'pause', 'bell', 'cup', 'truck', 'box', 'hand'])
+    for (const name of ['pause', 'bell', 'cup', 'truck', 'box', 'hand']) {
+      expect(icons, `${name} is declared in icons.js`).toMatch(new RegExp(`\\n\\s{2}${name}:\\s*\\{`))
+    }
+    // ⚠ ONE icon source for friend/guest surfaces (RD-DS-2): no second module, no
+    // icon font, no package. The component renders `NeoIcon`, never an inline `<svg>`.
+    const view = code('components/PortalExplainer.vue')
+    expect(view, 'the explainer draws no SVG of its own').not.toContain('<svg')
+    expect(view).toContain('NeoIcon')
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 8. 320 px — zero horizontal overflow with a 120-character pickup name
+// ═════════════════════════════════════════════════════════════════════════════
+test.describe('PI-T8 · 18 §UC-PI-012 — the phone floor', () => {
+  test('a 120-char location name does not scroll the document sideways', async ({ page }) => {
+    const friend = await makeFriend('Narrow')
+    await signIn(page, friend)
+    await stubBalance(page)
+    // 120 characters, and DELIBERATELY UNBREAKABLE: `min-w-0` alone lets a flex item
+    // shrink but an unbreakable token still paints outside it, so this is what makes
+    // `overflow-wrap:anywhere` load-bearing rather than cosmetic.
+    const long = 'Z'.repeat(120)
+    await stubPickup(page, [{ id: 1, name: long, address: null, active: 1 }])
+    await stubCycles(page, [cycleRow({ n: 14, status: 'open', parcel_enabled: 1, parcel_fee: 3.5 })])
+    await page.setViewportSize({ width: 320, height: 720 })
+    await open(page)
+
+    await expect(ways(page).nth(0).locator('.sub')).toContainText(long)
+    const overflow = await page.evaluate(() => ({
+      doc: document.documentElement.scrollWidth,
+      win: window.innerWidth,
+    }))
+    expect(overflow.doc, `no horizontal overflow at 320px (${JSON.stringify(overflow)})`)
+      .toBeLessThanOrEqual(overflow.win)
+  })
+})

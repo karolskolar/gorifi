@@ -275,13 +275,22 @@ test.describe('UC-FO-005 — coffee product card', () => {
     // which loads after Tailwind and would otherwise win at equal specificity.
     expect(nameStyle.lh).toBe('18.05px')
 
-    // Two SMALL badges: plain, then the highlighted `acc-o` roastery.
+    // Two SMALL badges: the roast type, then the roastery.
     const badges = card.locator('.badge')
     await expect(badges).toHaveCount(2)
     await expect(badges.nth(0)).toHaveText('Medium roast')
     await expect(badges.nth(1)).toHaveText('Goriffee')
     expect((await badges.nth(0).getAttribute('class')).split(/\s+/)).not.toContain('acc-o')
-    expect((await badges.nth(1).getAttribute('class')).split(/\s+/)).toContain('acc-o')
+    // ⚠ RETARGETED BY PI-T8 — SANCTIONED, 18 §UC-PI-014. „The roastery badge is
+    // always `acc-o`" was this file's shipped claim and it is SUPERSEDED, not
+    // dropped: the class now comes from `frontend/src/lib/roasters.js`'s
+    // `badgeClass` — Goriffee PLAIN, Robo `acc-o`, an UNKNOWN roastery keeps
+    // today's `acc-o` (so nothing about a free-text roastery changed). The badge
+    // is also a popover trigger on a match, which is why `role` is asserted here
+    // too. All three cases, both directions, live in `portal-explainer.spec.js`
+    // §6; what stays here is this card's own composition claim.
+    expect((await badges.nth(1).getAttribute('class')).split(/\s+/)).not.toContain('acc-o')
+    await expect(badges.nth(1)).toHaveAttribute('role', 'button')
     expect(await badges.nth(0).evaluate((el) => getComputedStyle(el).fontSize)).toBe('11px')
 
     // ⚠ RETARGETED 2026-08-13 (Noto Sans Condensed) and again 2026-08-18: the

@@ -143,9 +143,10 @@ export const ICONS = {
   //
   // PI-T2 ports the six the appbar and the drawer need (18 §UC-PI-003/004), and
   // PI-T5 adds `pin` for §UC-PI-007's own-order pickup badge.
-  // ⚠ SEAM: PI-T8 (the explainer) and GL-T4 (the guest steps) add `cup`, `box`,
-  // `hand`, `truck`, `pause`, `bell` from the same table — to THIS file,
-  // never a second icon module (RD-DS-2).
+  // ⚠ ~~SEAM: PI-T8 (the explainer) and GL-T4 (the guest steps) add `cup`, `box`,
+  // `hand`, `truck`, `pause`, `bell`~~ — **CLOSED by PI-T8**: all six are below,
+  // in THIS file, never a second icon module (RD-DS-2). GL-T4 mounts `cup`, `box`
+  // and `hand` on the guest surface and adds nothing.
   menu: {
     size: 20,
     strokeWidth: '2.6',
@@ -204,6 +205,77 @@ export const ICONS = {
     shapes: [
       { tag: 'path', attrs: { d: 'M21 10c0 7-9 12-9 12S3 17 3 10a9 9 0 0 1 18 0z' } },
       { tag: 'circle', attrs: { cx: '12', cy: '10', r: '3' } }
+    ]
+  },
+  // ── the explainer's six phase glyphs (PI-T8, 18 §UC-PI-012) ────────────────
+  // `portal2.jsx:15-20`, transcribed on the rules above: same shapes in the same
+  // order, same `d`/`cx`/`r` values, the prototype's 22px default size and its
+  // 2.2 stroke, and `linecap`/`linejoin` ONLY where the prototype sets them —
+  // which is per icon and not uniform (`pause` caps but does not join, `truck`
+  // and `box` join but do not cap, `bell` and `hand` do both). Copying one
+  // icon's pair onto its neighbour would be a silent visual edit.
+  //
+  // ⚠ They render at 22px inside `.p2-step .ico` (a 48px bordered box) and the
+  // „Packeta" way row asks `truck` for 18px through `NeoIcon`'s `size` prop, as
+  // `portal2.jsx:160` does — the table's default is the phase size.
+  pause: {
+    size: 22,
+    strokeWidth: '2.2',
+    linecap: 'round',
+    shapes: [
+      { tag: 'circle', attrs: { cx: '12', cy: '12', r: '10' } },
+      { tag: 'path', attrs: { d: 'M10 9v6M14 9v6' } }
+    ]
+  },
+  bell: {
+    size: 22,
+    strokeWidth: '2.2',
+    linecap: 'round',
+    linejoin: 'round',
+    shapes: [
+      { tag: 'path', attrs: { d: 'M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9' } },
+      { tag: 'path', attrs: { d: 'M13.7 21a2 2 0 0 1-3.4 0' } }
+    ]
+  },
+  cup: {
+    size: 22,
+    strokeWidth: '2.2',
+    linecap: 'round',
+    shapes: [
+      { tag: 'path', attrs: { d: 'M4 8h12v6a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5z' } },
+      { tag: 'path', attrs: { d: 'M16 10h2a2 2 0 0 1 0 4h-2' } },
+      { tag: 'path', attrs: { d: 'M8 3v2M11 3v2' } }
+    ]
+  },
+  truck: {
+    size: 22,
+    strokeWidth: '2.2',
+    linejoin: 'round',
+    shapes: [
+      { tag: 'path', attrs: { d: 'M1 3h13v13H1z' } },
+      { tag: 'path', attrs: { d: 'M14 8h5l3 3v5h-8z' } },
+      { tag: 'circle', attrs: { cx: '5.5', cy: '18.5', r: '2.5' } },
+      { tag: 'circle', attrs: { cx: '18.5', cy: '18.5', r: '2.5' } }
+    ]
+  },
+  box: {
+    size: 22,
+    strokeWidth: '2.2',
+    linejoin: 'round',
+    shapes: [
+      { tag: 'path', attrs: { d: 'M21 8l-9-5-9 5v8l9 5 9-5z' } },
+      { tag: 'path', attrs: { d: 'M3 8l9 5 9-5M12 13v8' } }
+    ]
+  },
+  hand: {
+    size: 22,
+    strokeWidth: '2.2',
+    linecap: 'round',
+    linejoin: 'round',
+    shapes: [
+      { tag: 'path', attrs: { d: 'M8 13V5a2 2 0 0 1 4 0v6' } },
+      { tag: 'path', attrs: { d: 'M12 11V4a2 2 0 0 1 4 0v7' } },
+      { tag: 'path', attrs: { d: 'M16 11V6a2 2 0 0 1 4 0v8a7 7 0 0 1-7 7h-1a7 7 0 0 1-6-3.3L3.5 14a2 2 0 0 1 3.3-2.2L8 13' } }
     ]
   }
 }
