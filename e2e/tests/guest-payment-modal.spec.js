@@ -1,5 +1,7 @@
 import { test, expect, devices, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
+// PI-T3 · 18 §UC-PI-019 item 3 — one home for portal → order navigation.
+import { gotoCycle } from '../helpers/portal.js'
 // ⚠ CROSS-TREE IMPORT, DELIBERATE. `bysquare` and `qrcode` are the frontend's own
 // dependencies — the very packages `PaymentModal.vue` generates the code with — and
 // this file must encode INDEPENDENTLY of the app to be worth anything. Adding a
@@ -534,8 +536,9 @@ test.describe('RD-GX-2 · module 04 inherits the restyle (§UC-GX-005 shared-con
     await page.route('**/api/pickup-locations*', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
 
-    await page.goto('/')
-    await page.getByRole('heading', { name: cycle.name, exact: true }).click()
+    // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005);
+    // `helpers/portal.js gotoCycle()` is the one home of portal → order navigation.
+    await gotoCycle(page, cycle.id)
     await expect(page.locator('.app .cartbar')).toBeVisible()
 
     // (B) from the friend side: `FriendOrder.vue` mounts `<PaymentModal>`

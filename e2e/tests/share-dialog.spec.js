@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding } from '../helpers/portal.js'
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
 // RD-KG-2 — 05 §UC-KG-006/007: `GuestShareDialog.vue` recomposed onto
@@ -146,13 +146,27 @@ async function gotoPortal(page) {
 
 // A hard load of /cycle/:id bounces to the portal, so a real host arrives through it.
 async function gotoCycle(page, cycle) {
-  await gotoPortal(page)
-  await page.getByRole('heading', { name: cycle.name, exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
+  // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005), so
+  // `goto('/')` + a heading click is no longer a route to an order screen.
+  // `portalGotoCycle` (helpers/portal.js) is the ONE home of that navigation; it
+  // still enters cold and still proves state came back from the server.
+  await portalGotoCycle(page, cycle.id)
 }
 
-const portalCard = (page, name) =>
-  page.locator('div.card.p-4', { has: page.getByRole('heading', { name, exact: true }) })
+// ⚠ PI-T3 · 18 §UC-PI-005/011 — `portalCard()` IS GONE. It located module 03's cycle
+// CARD (`div.card.p-4` + the cycle's `<h3>`), whose share ROW was entry point B into
+// this dialog. The card is retired with the cycle list; the landing IS the current
+// open round's order screen, and its share affordance is the `.cartbar` icon, whose
+// accessible name §UC-PI-011 fixes to the SAME „Zdieľať s kolegami" the card's button
+// carried. So the locator moved and the accessible-name contract did not.
+//
+// ⚠ It only resolves for the CURRENT OPEN round (`lib/portal-state.js`), which every
+// caller below satisfies by creating its cycle immediately before navigating — the
+// newest open cycle is the landing's. A test that needs a DIFFERENT cycle's dialog
+// goes through `/cycle/:id` and module 05's Kolegovia card instead (see the
+// „reopening for another cycle" test).
+const landingShare = (page) =>
+  page.locator('.app .cartbar').getByRole('button', { name: 'Zdieľať s kolegami' })
 
 // Entry point A — the "Kolegovia" panel in FriendOrder (module 05's own).
 async function openFromOrderPage(page, host, cycle, { width = 378 } = {}) {
@@ -166,12 +180,13 @@ async function openFromOrderPage(page, host, cycle, { width = 378 } = {}) {
   return dialog
 }
 
-// Entry point B — the portal cycle card's share row (module 03's, same dialog).
+// Entry point B — the LANDING's cartbar share icon (18 §UC-PI-011; was module 03's
+// cycle-card share row until PI-T3 retired the card). Same dialog, same name.
 async function openFromPortal(page, host, cycle, { width = 378 } = {}) {
   await page.setViewportSize({ width, height: 900 })
   await signInAsHost(page, host)
   await gotoPortal(page)
-  await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+  await landingShare(page).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()
   return dialog
@@ -222,13 +237,13 @@ test.describe('UC-KG-006 — the NeoModal shell', () => {
 
     // Reopen: Escape closes too, and the count goes to 0 (guest-link.spec.js's
     // race test depends on exactly this).
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
     await expect(page.getByRole('dialog')).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
     // And the ×, whose accessible name must NOT contain "Zavrieť" (02 §UC-DS-010).
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
     await page.getByRole('button', { name: 'Zatvoriť dialóg' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
   })
@@ -282,7 +297,7 @@ test.describe('UC-KG-006 — body states', () => {
     })
 
     await gotoPortal(page)
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
 
     const dialog = page.getByRole('dialog')
     const loading = dialog.locator('.m-body > .sub')
@@ -313,7 +328,7 @@ test.describe('UC-KG-006 — body states', () => {
     })
 
     await gotoPortal(page)
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
 
     const dialog = page.getByRole('dialog')
     const banner = dialog.locator('.banner.danger.slim')
@@ -508,7 +523,7 @@ test.describe('UC-KG-006 — native share', () => {
     })
 
     await gotoPortal(page)
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
     const dialog = page.getByRole('dialog')
 
     const share = dialog.getByRole('button', { name: 'Zdieľať odkaz' })
@@ -588,16 +603,30 @@ test.describe('UC-KG-007 — mount seam and invariants', () => {
 
     await page.setViewportSize({ width: 378, height: 900 })
     await signInAsHost(page, host)
-    await gotoPortal(page)
 
-    await portalCard(page, cycleA.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    // ⚠ PI-T3 · 18 §UC-PI-005 — TWO cycles cannot both be on one screen any more: the
+    // landing resolves exactly ONE round (the newest open — here `cycleB`). So A is
+    // opened through its DEEP LINK and module 05's Kolegovia card, and B through the
+    // landing's cartbar icon. Three entry points, one dialog (§UC-PI-011), which is
+    // precisely what makes this the right pair for the reset claim.
+    //
+    // ⚠ The hop between them is the appbar chevron, NOT a second `page.goto`: this
+    // test is about the dialog's `open` watcher clearing state WITHIN one document,
+    // and a fresh document load would satisfy it vacuously. „Späť" is a client-side
+    // `router.push('/')`.
+    await portalGotoCycle(page, cycleA.id)
+    await page.getByTestId('main-tab-guests').click()
+    await page.getByRole('button', { name: /Zdieľať/ }).click()
     await expect(page.getByTestId('guest-link-url')).toContainText(`/g/${linkA.token}`)
     await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
+    await page.getByRole('button', { name: 'Späť', exact: true }).click()
+    await expectLanding(page)
+
     // Cycle B has no link at all — so a leaked `link.value` would show up as
     // cycle A's URL where the "not created yet" sentence belongs.
-    await portalCard(page, cycleB.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toContainText(cycleB.name)
     await expect(dialog.locator('p.sub')).toHaveText('Odkaz ešte nie je vytvorený.')
@@ -645,7 +674,7 @@ test.describe('UC-KG-007 — mount seam and invariants', () => {
       Object.defineProperty(navigator, 'share', { configurable: true, value: () => Promise.resolve() })
     })
     await gotoPortal(page)
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog.locator('.copyrow')).toHaveCount(1)
 

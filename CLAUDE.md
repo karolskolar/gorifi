@@ -222,7 +222,12 @@ append the full write-up to the matching learnings file and add at most one line
   `portal2.css` canon sync, with its two recorded deviations D1/D2). New styling
   goes in `<style scoped>` (or a real canon sync), never ad-hoc theme edits. `line-height` often must be inline.
 - One-home components — extend, never fork: `CartLineList.vue` (every ordered-items list), `GuestProductGrid.vue`
-  + `lib/guest-cart.js`, `CatScrollArrow.vue`, `ProductImageModal.vue`, `GuestShareDialog.vue`,
+  + `lib/guest-cart.js`, `CatScrollArrow.vue`, `ProductImageModal.vue`, `GuestShareDialog.vue`
+  (⚠ exactly ONE mount on the friend surface — `FriendOrder.vue`; the session reaches it through
+  `defineExpose({openShareDialog})`, never a second instance, and the rule is SOURCE-pinned per file in
+  `portal-landing.spec.js` because a closed second instance has no DOM signature — PI-T3),
+  `FriendOrder.vue` (`mode='route'|'landing'`; the landing mounts it, never a fork — its landing wrapper is
+  `display:contents` or `.cartbar`'s sticky clamps inside the subtree),
   `PickupLocationPicker.vue` (props `cycleId`+`friendId`, never an order id), `lib/plural.js`,
   `CycleTimeline.vue` (props `cycle`/`variant` `vertical|compact`/`steps`; ONE component for both
   variants, scoped styles with token FALLBACKS and no `.app`/`.modal-layer` ancestor — it renders in
@@ -280,6 +285,34 @@ append the full write-up to the matching learnings file and add at most one line
   (`AdminInvitations.vue` / `InviteRegister.vue` legitimately label the real `username`.)
   Same rule server-side: `'Meno a priezvisko je povinné'` is ONE string with THREE homes in `routes/friends.js`
   (`POST /`, admin `PATCH /:id`, friend `PATCH /:id/profile`) — grep the string, re-word every hit or none (FUP-T21).
+- ⚠ ONE global `admin_token` row: EVERY `POST /api/admin/login` replaces it, so a login that
+  lands after its test timed out still rotates it and every CACHED token minted earlier 401s.
+  Files mitigate by convention („re-log-in before each fixture block") and the convention has
+  gaps — a red full suite with admin 401s on `POST /api/friends`/`/api/cycles` is this, not
+  file order. Mid-run the row is only ROTATED: no 401→logout path exists (all four `logout()`
+  callers are button handlers), so it is never deleted.
+  ⚠⚠ **AND THE USUAL CAUSE IS A LOADED BOX, SO CHECK THE BOX BEFORE BLAMING THE DIFF.** The
+  first failure in that cascade is a **10 s TIMEOUT on the admin login redirect**, not a 401 —
+  the 401s are downstream. Measured 2026-09-20 on PI-T3, one tree, three runs: **115 failed**
+  (17.4 min — and that one was measuring a CORRUPT DB: 65 `disk image is malformed` in its
+  server log, so read the SERVER log before reading the test log), **33 failed** (14.2 min,
+  clean DB, loaded box), **0 failed** (11.9 min, idle box). A full run that takes ~14 min where
+  it usually takes ~12 is already telling you. Confirm with a HEAD baseline AND a clean-box
+  re-run before calling a regression; one red run is not evidence.
+- ⚠ **A wait-loop that polls `pgrep -f "playwright test"` MATCHES ITSELF and never exits.** Its
+  own `bash -c` command line contains the pattern, so the loop spins forever, survives the run
+  it was watching, and quietly loads the box for every later run. This is the `pkill -f`
+  self-match rule above with a worse ending — `pkill` fails loudly, this one is silent. Four of
+  them were found still spinning hours later and are the measured cause of the flaky runs in the
+  rule above. Poll the LOG for a summary line instead, or match on something the watcher cannot
+  contain (`pgrep -f "[p]laywright test"`).
+- Portal → order navigation has ONE home: `e2e/helpers/portal.js gotoCycle()`. A cold
+  `page.goto('/cycle/:id')` BOUNCES to `/` (the Bearer token is in memory; `FriendPortal.vue` owns the
+  restore), so it goes in through that bounce and `goBack()`s — which makes `/cycle/:id` the bottom
+  history entry, so a test wanting the leave guard on a traversal uses `goForward()`, never `goBack()`.
+- A spec that greps `.vue` SOURCE must strip `//` comments BEFORE `/* */`: `@/components/ui/*` in a line
+  comment opens a fake block comment that swallowed 16 709 chars and turned a source pin green (PI-T3).
+  Every absence pin needs a readability gate (stripped length vs raw) beside it.
 - A rendered-copy sweep reads the app's OWN copy: `e2e/helpers/copy-sweep.js` (one home, text + `placeholder`/
   `title`/`aria-label`/`alt`) drops every `[data-user-copy]` subtree, and a view marks the person-typed
   interpolation — never the app copy beside it. The test template has a friend NAMED `Prihlasovacie.meno`; a

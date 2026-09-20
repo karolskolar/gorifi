@@ -36,6 +36,39 @@
 
 ---
 
+## ⚠⚠ SUPERSEDED IN PART BY MODULE 18 — READ THIS BEFORE ANY UC BELOW
+
+> **Shipped 2026-09-20 (PI-T3, 18 §UC-PI-005/011/016).** The authenticated portal is no
+> longer a CYCLE LIST: `/` renders the current round's product grid directly
+> (`FriendOrder.vue` in `mode='landing'`). The structures the UCs below specify are
+> **GONE FROM THE CODE**, and the e2e files that pinned them
+> (`portal-cycles.spec.js`, `portal-share-row.spec.js`) are **deleted**. Nothing here is
+> a live contract unless module 18 says so; this file is kept for the behaviour that
+> survived and for the history of what was removed.
+>
+> | UC here | Status | Where it lives now |
+> |---|---|---|
+> | UC-FL-006 cycle list — heading „Objednávkové cykly", gear, `div.card.p-4` cards, badge matrix, empty states | **RETIRED** | 18 §UC-PI-005 (landing = the order screen); gear + subscription modal → §UC-PI-016 (column and both routes KEPT) |
+> | UC-FL-007 share row + colleague-count fan-out | **RETIRED** | 18 §UC-PI-011 — the `.cartbar` share icon (landing only) + drawer item 4; the count is ONE `GET /guest-links/cycle/:id`, not a capped fan-out |
+> | UC-FL-008 archive fold | **RETIRED** | 18 §UC-PI-009 „Moje objednávky" (PI-T6) |
+> | UC-FL-010 subscription modal | **RETIRED** | 18 §UC-PI-016 — UI only; `friend_subscriptions`, `GET/PUT /api/subscriptions/friend/:id` and the server-side filter are untouched |
+> | UC-FL-005 balance card | still mounted on the landing | 18 §UC-PI-008/010 RELOCATE it (PI-T7) |
+> | UC-FL-001/002/003/009/011/012 | **STAY** | unchanged |
+>
+> ⚠ **The `p-4` prohibition (UC-FL-006 below) is historical.** It existed so
+> `guest-link.spec.js`'s `cardFor()` locator could not also match the page column. There
+> is no cycle card and no `cardFor()` any more — but the page column is STILL written as
+> `px-4 sm:px-7 py-4 sm:py-7` rather than `p-4`, and there is no reason to change it.
+>
+> ⚠ **UC-FL-013's pin table names assertions that no longer exist** (rows 5 and 9:
+> `div.p-4` + `<h3>` + share button; the cycle-name click navigating). The IMMUTABILITY
+> RULE itself stays; those two rows are case (a) retargets whose new homes are
+> `portal-landing.spec.js` (the share dialog's entry contract, „not open ⇒ no share
+> affordance") and `e2e/helpers/portal.js gotoCycle()` (portal → order navigation, one
+> home, twenty call sites).
+
+---
+
 ## Resolved conflicts (recency / canonicity)
 
 1. **Portal delivery-method badge dropped.** The current cycle card shows a red Packeta /
@@ -308,7 +341,7 @@ transactions modal; admin screens using `BalanceBadge` are pixel-unchanged.
 
 ---
 
-## UC-FL-006 Cycle list — heading, gear, cycle cards (Friend)
+## ~~UC-FL-006 Cycle list — heading, gear, cycle cards (Friend)~~ — **RETIRED by 18 §UC-PI-005/016 (PI-T3, 2026-09-20)**
 
 **Goal:** the portal's main content: section header + active cycle cards.
 
@@ -404,7 +437,7 @@ planned card dimmed and inert; tapping an open/locked card navigates to
 
 ---
 
-## UC-FL-007 Share row + colleague count — GuestShareDialog entry point (Friend, host)
+## ~~UC-FL-007 Share row + colleague count — GuestShareDialog entry point (Friend, host)~~ — **RETIRED by 18 §UC-PI-011 (PI-T3, 2026-09-20)**
 
 **Goal:** the open-cycle card's footer row: colleague-count context + the share entry
 point into the (module 05) dialog.
@@ -467,7 +500,7 @@ share tap opens the dialog titled with that cycle's name and does not navigate;
 
 ---
 
-## UC-FL-008 Archive fold (Friend)
+## ~~UC-FL-008 Archive fold (Friend)~~ — **RETIRED by 18 §UC-PI-009 (PI-T3 removed it; PI-T6 builds its replacement)**
 
 **Goal:** completed cycles behind a fold, per the prototype.
 
@@ -572,7 +605,7 @@ server error inside the fold.
 
 ---
 
-## UC-FL-010 Subscription modal (Friend)
+## ~~UC-FL-010 Subscription modal (Friend)~~ — **RETIRED by 18 §UC-PI-016 (PI-T3, 2026-09-20). UI ONLY: the table, both routes and the server-side filter are untouched.**
 
 **Goal:** "Nastavenia odberu" via `NeoModal`, gear-triggered (UC-FL-006).
 
@@ -683,7 +716,7 @@ and cannot be dismissed by Esc/scrim; setting a valid password lands on the cycl
 | `getByText('Prihlásenie')` on anonymous `/` | `public-flow.spec.js:11`, `friend-login-list.spec.js:42` | legacy branch untouched (UC-FL-003); e2e seed is legacy |
 | `getByRole('combobox')` + populated options | `friend-login-list.spec.js:44-48` | legacy branch untouched |
 | ~~`getByRole('heading', { name: 'Objednávkové cykly' })`~~ **RETIRED — PI-T1, 18 §UC-PI-019 item 1; now `expectLanding()` / `portal-landing`. None of the named sites still asserts it.** | ~~`guest-link.spec.js` ×3, `guest-host-view.spec.js:667`~~ | `<h2 class="h-screen">` (UC-FL-006) |
-| `div.p-4` card wrapper + `heading` exact cycle name + share button inside it | `guest-link.spec.js:301-320` | `div.card.p-4` + `<h3>` + button (UC-FL-006/007) |
+| ~~`div.p-4` card wrapper + `heading` exact cycle name + share button inside it~~ **RETIRED — PI-T3** | ~~`guest-link.spec.js:301-320`~~ | `portal-landing.spec.js` §3 — the entry contract, and „not open ⇒ no share affordance" |
 | button accessible name `'Zdieľať s kolegami'`, absent on locked cards, `@click.stop` (URL stays `/`) | `guest-link.spec.js:287-322` | `aria-label` + open-only row (UC-FL-007) |
 | one share-dialog instance, Escape closes (`role="dialog"` count 0), race-guarded | `guest-link.spec.js:325+` | UC-FL-007 entry contract + module 05 |
 | `localStorage['gorifi_friend_auth']` restore shape | `guest-host-view.spec.js:649`, `guest-link.spec.js:236`, `mobile-no-h-overflow.spec.js:65` | UC-FL-001 session rules |
@@ -749,11 +782,11 @@ re-run). All 10 hold; three table entries are inaccurate and are corrected here:
 | 2 | `getByText('Prihlásenie')` — `public-flow.spec.js:11`, `friend-login-list.spec.js:42` | ✅ lines exact; legacy `CardTitle` untouched |
 | 3 | `getByRole('combobox')` — `friend-login-list.spec.js:44-48` | ✅ lines exact; shadcn `SelectTrigger` untouched |
 | 4 | ~~heading "Objednávkové cykly"~~ **RETIRED by PI-T1 (2026-09-20)** — the gate is now `expectLanding()` (`portal-landing`), and NONE of the sites enumerated here still asserts the heading. ⚠ The under-count note below was itself an enumeration written from a grep of the assertion SHAPE, which is exactly what missed `google-auth`'s 18 call sites behind a `PORTAL_HEADING` constant. | ~~✅ but **UNDER-COUNTED**: `guest-link.spec.js` 252/299/349 + `guest-host-view.spec.js:667` **+ `forced-change-ui.spec.js:50`** — FIVE pre-existing sites, not four |
-| 5 | `div.p-4` + exact `<h3>` + share button — `guest-link.spec.js:301-320` | ✅ `cardFor()` on 301; card is `class="card p-4"`, column is `px-4 sm:px-7 py-6` (never `p-4`) |
+| 5 | ~~`div.p-4` + exact `<h3>` + share button — `guest-link.spec.js:301-320`~~ | **RETIRED by PI-T3** — no card, no `cardFor()`; the claim moved to `portal-landing.spec.js` §3 |
 | 6 | `'Zdieľať s kolegami'`, absent on locked, `@click.stop` — `:287-322` | ✅ lines exact; `aria-label` + open-only `v-if` + `.stop` all present |
 | 7 | one dialog, Escape closes, race-guarded — `guest-link.spec.js:325+` | ✅ but the test starts at **324**, not 325 |
 | 8 | `gorifi_friend_auth` restore shape | ✅ all three lines exact. Note `guest-host-view.spec.js:649` writes **no `friendUid`** — the restore path only requires `friendId` + `token`, and `currentFriendUid` falls back to `''` |
-| 9 | cycle-name click navigates — `mobile-no-h-overflow.spec.js:73` | ✅ line exact; card-level `@click` still on `div.card.p-4` |
+| 9 | ~~cycle-name click navigates — `mobile-no-h-overflow.spec.js:73`~~ | **RETIRED by PI-T3** — the name is no longer a navigation affordance; `e2e/helpers/portal.js gotoCycle()` is the one home of portal → order navigation |
 | 10 | `data-testid="forced-password-change"` + field labels | ⚠ `forced-change-ui.spec.js` is `test.fixme` — **it has never executed**. Its `getByText(/resetoval vaše heslo/)` does not match the shipped copy "Administrátor vám resetoval **heslo**" — **pre-existing** (identical at `7c3f85e`), not a redesign regression. The redesign *improved* the other half: pre-redesign `<Label>`/`<Input>` had no `for`/`id`, so `getByLabel` could not have resolved; the NeoModal gate now pairs them. The gate is in fact covered by a RUNNING spec — `modern-login.spec.js` §"Forced password change" (testid, `role`, `aria-modal`, copy, no ×, Esc, scrim, scroll lock, focus trap) |
 
 **Fidelity (378 px + 1180 px, canon prototype over HTTP, fonts force-loaded, port

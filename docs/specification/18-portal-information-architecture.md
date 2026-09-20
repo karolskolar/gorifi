@@ -653,7 +653,23 @@ cartbar icon + the drawer item. The dialog itself is module 05's (UC-KG-006), un
 
 **Acceptance criteria:** open round ⇒ cartbar icon + drawer item present; both open the
 dialog titled with the current cycle's name; URL stays `/`; locked ⇒ neither exists;
-`share-dialog.spec.js` passes unmodified.
+~~`share-dialog.spec.js` passes unmodified~~ **— SUPERSEDED by PI-T3 (2026-09-20). It
+could not: that file's entry point B is `openFromPortal()`, built on `portalCard()` =
+`div.card.p-4` + the cycle's `<h3>`, i.e. the CARD this UC retires. NINE call sites were
+re-pointed at the landing's `.cartbar` icon, under case (a) — the accessible name
+(„Zdieľať s kolegami") is unchanged, so what moved is the locator, not the contract.
+`guest-order-recovery.spec.js` carries the SAME helper and is named in no list at all
+(a `grep "div\.p-4"` misses it — it writes `div.card.p-4`). The surviving claim: the
+dialog's own behaviour is untouched, and both files pass with only their entry point
+re-pointed.**
+
+⚠ One consequence of the retarget, recorded because it decided a design question: the
+cartbar icon is **landing-only**. `guest-host-view.spec.js:890,929` and
+`share-dialog.spec.js`'s mount-seam test assert an UNSCOPED
+`getByRole('button', { name: /Zdieľať/ })` on `/cycle/:id` — count 0 on „Moja
+objednávka", count 1 on „Kolegovia". An always-visible icon makes those 1 and 2;
+mutation-measured at 10 reds across the two files. The deep link keeps module 05's
+Kolegovia card as its entry point.
 
 ---
 
@@ -1004,10 +1020,34 @@ Where the heading's `toHaveCount(0)` proved a logout (`portal-appbar.spec.js:268
 Re-enumerate before editing: `grep -ln "Objednávkové cykly" e2e/tests/*.spec.js`.
 
 **3. Portal → cycle navigation by clicking the card heading (UC-PI-018):**
-`guest-link.spec.js:255`, `catalog-admin.spec.js:2419`, and any hit of
+~~`guest-link.spec.js:255`, `catalog-admin.spec.js:2419`~~ **— the enumeration was
+STALE, like item 2's before it. Measured by PI-T3: the grep below hits TWENTY spec
+files**, because `page.goto('/')` + the heading click was the ONLY in-app route to an
+order screen and every order-surface spec used it — `cat-scroll-arrow`,
+`colleagues-panel`, `guest-host-view`, `guest-link`, `guest-order-recovery`,
+`guest-payment-modal`, `catalog-admin`, `money-rounding`, `order-cartbar`,
+`order-fidelity`, `order-locked`, `order-modals` (×4), `order-product-card`,
+`order-shell`, `payment-links`, `product-desc-font`, `product-photo-lightbox`,
+`share-dialog`, `mobile-no-h-overflow`. **Re-enumerate before editing; never trust the
+list.** The grep:
 `grep -nE "heading', \{ name: [A-Za-z_.]+, exact: true \}\)\.click\(\)|getByText\((CYCLE_NAME|cycleName)\)\.click" e2e/tests/*.spec.js`
-run after `page.goto('/')` → replace with `page.goto('/cycle/${id}')` + the shipped URL
-assertion (this makes them the deep-link regression net).
+
+~~replace with `page.goto('/cycle/${id}')` + the shipped URL assertion~~ **— SUPERSEDED:
+that does not work, and PI-T3 measured it.** The friend's Bearer token lives in MEMORY
+only (`api.js setFriendsToken`); `FriendPortal.vue` is its single owner, so a COLD
+document load of `/cycle/:id` finds no credential and `FriendOrder.onMounted` bounces to
+`/` by design — which is why all twenty files went in through the portal to begin with.
+The replacement is **`e2e/helpers/portal.js gotoCycle()`**, one home, which uses that
+bounce instead of fighting it: `goto('/cycle/:id')` → the app's own `router.push('/')`
+(a same-document `pushState`) → wait for the portal (the session restores the token) →
+`goBack()`, a same-document traversal vue-router handles client-side. ⚠ Its one cost:
+`/cycle/:id` becomes the BOTTOM history entry, so a test asserting the leave guard on a
+history traversal uses `goForward()` — `goBack()` now leaves the document entirely
+(measured: `about:blank`). `order-locked.spec.js` and `order-modals.spec.js` carry that
+edit. ⚠ The underlying bounce contradicts §UC-PI-018's own acceptance criterion
+(„`page.goto('/cycle/<open id>')` with a stored session ⇒ the order screen") — shipped
+behaviour, untouched by PI-T3; **PI-T11 owns the decision**, and fixing it would let
+`gotoCycle()` collapse back to a plain `goto`.
 
 **4. Logout control (UC-PI-003/004):** `.appbar span[aria-label="Odhlásiť sa"]`
 (`portal-appbar` ×6, `portal-session-boundary` ×3, `portal-profile-modal` ×2,

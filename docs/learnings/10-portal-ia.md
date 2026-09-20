@@ -458,3 +458,391 @@ combined mutation is only evidence when it reds disjoint tests (as M11–M14 did
 5. **`icons.js` grew two optional keys** (`linecap`, `linejoin`) because the `I2` glyphs set
    them and the original fourteen do not. PI-T8 and GL-T4 add the remaining I2 glyphs to THAT
    file — `cup`, `box`, `hand`, `truck`, `pin`, `pause`, `bell` — never a second icon module.
+
+---
+
+## PI-T3 — the landing IS the order screen; two spec files deleted (2026-09-20)
+
+**What shipped.** `FriendOrder.vue` extended with `mode='landing'` (props `cycleId` /
+`friendId` / `mode`, `defineExpose({ openShareDialog, cartTotal })`, the cartbar share
+icon, „Späť na ponuku" / „Skúsiť znova"); `FriendPortalSession.vue` mounts it on `/` in
+the OPEN state under a new status line, and RETIRED the cycle list, the gear, the
+subscription modal, the archive fold, the share row and its own `GuestShareDialog`;
+`FriendPortal.vue` dropped the handshake's `subscriptions` fetch; drawer item 4 and item
+1's „ · v košíku" clause; `helpers/portal.js gotoCycle()`; NEW `portal-landing.spec.js`;
+**`portal-cycles.spec.js` and `portal-share-row.spec.js` DELETED.**
+
+### 1. ⚠⚠ THE MIGRATION TABLE — 32 tests deleted, and where each property went
+
+Written before a line was deleted, and it is the deliverable of this row.
+
+| Describe (file) | Verdict | New home |
+|---|---|---|
+| heading `<h2>` + magenta highlight (cycles) | retires | the „portal is ready" gate moved to `expectLanding()` in PI-T1 |
+| the gear opens the subscription modal (cycles) | retires | its ABSENCE is pinned — `portal-subscription-invite` pin 1 |
+| both empty states (cycles) | retires | landing empty copy is PI-T4's „Ponuka ešte nie je pripravená." |
+| one `div.p-4` per cycle · share button inside it · `.card.hl` · fonts · order total · navigation (cycles ×6) | retire | — the card is gone; navigation became `helpers/portal.js gotoCycle()` |
+| badge matrix ×3 (cycles) | retires | PI-T6 owns history's OWN badge vocabulary (§UC-PI-009 — deliberately not shared) |
+| archive fold ×4 (cycles) | retires | PI-T6's „Moje objednávky" |
+| list geometry ×2 (cycles) | retires | `portal-fidelity`'s document-level 320px claim; PI-T12 adds landing equivalents |
+| „N kolegovia · X kg" + declension + trailing zeros + no-item-rows + zero/failed (share-row ×4) | **SURVIVE** | `portal-menu` §1b — item 4's sub-line, four tests |
+| the count fetch hits OPEN cycles only (share-row) | **SURVIVES, stronger** | `portal-menu` §1b — ONE request, for the current round, with 40 open rounds |
+| row geometry at 378px · 320px overflow (share-row ×2) | retire | the row is gone |
+| locked/planned ⇒ no share affordance (share-row) | **SURVIVES** | `portal-landing` §3 — no cartbar icon, no drawer row, both states |
+| `@click.stop` opens the dialog without navigating (share-row) | **SURVIVES** | `portal-landing` §3 — the cartbar icon, URL stays `/` |
+| the count is context only — gates nothing (share-row) | **SURVIVES** | `portal-landing` §3 — a failed count still leaves row + dialog working |
+| counts do not survive a logout (share-row) | **SURVIVES** | `portal-menu` §1b |
+| a response deferred past a LOGOUT is dropped (share-row) | **SURVIVES** | `portal-menu` §1b |
+| a response deferred past a SECOND `loadCycles` (share-row) | ⚠ **NO NEW HOME — a finding** | see §2 |
+| the fan-out is BOUNDED, cap 3 + ordering (share-row) | **SURVIVES, stronger** | `portal-menu` §1b — ONE, plus the ordering half verbatim |
+
+**Delta: 2186 → 2169 tests, 89 → 88 files** (measured with `npx playwright test --list`
+before and after, per file — a total alone would let a loss hide behind a gain):
+
+| file | before | after |
+|---|---|---|
+| `portal-cycles.spec.js` | 18 | **deleted** |
+| `portal-share-row.spec.js` | 14 | **deleted** |
+| `portal-landing.spec.js` | — | **14** (new) |
+| `portal-menu.spec.js` | 19 | 28 (+9, §1b) |
+| `portal-subscription-invite.spec.js` | 14 | 7 (−9 subscription describes, +2 replacement pins) |
+| `portal-fidelity.spec.js` | 11 | 9 (−2, §UC-PI-019 item 13) |
+| `order-cartbar.spec.js` | 14 | 15 (+1, the landing variant) |
+
+−32 −9 −2 +14 +9 +1 +2 = **−17**. Every other edited file kept its count exactly.
+
+### 2. ⚠ THE ONE PROPERTY WITH NO NEW HOME, SAID OUT LOUD
+
+„A count response deferred past a SECOND `loadCycles` in the SAME session is dropped."
+Its only trigger was `saveSubscriptions()`, which was `loadCycles()`'s only caller, and
+§UC-PI-016 retires the gear that reached it. `cycles` is loaded once per session now, so
+there is **no second batch to supersede and nothing can red that branch**. The counter and
+its guard are KEPT in `FriendPortalSession.vue` with a comment saying exactly this, so the
+next in-session reloader (PI-T6's history, a post-submit `hasOrder` refresh) inherits the
+protection rather than re-discovering the race.
+
+⚠ And the related measurement is worth more than the finding: **M13 — deleting the
+`if (seq !== guestCountSeq) return` guard entirely — reds NOTHING**, because the parent's
+`v-if` + `:key` destroys the instance and a late write lands on a dead ref. It takes
+M12 (`colleagues` hoisted to module scope **and** the guard removed) to red the two
+session-scoping tests. The guard and the component boundary are genuine defence in depth;
+today only the boundary is load-bearing. Same shape as PI-T2 §2's M2.
+
+### 3. ⚠⚠ THE ENUMERATION WAS WRONG FOR THE FOURTH ROW RUNNING — AND THIS TIME BY 20 FILES
+
+§UC-PI-019 item 3 names „`guest-link.spec.js:255`, `catalog-admin.spec.js:2419`, and any
+hit of \[a grep]". The backlog row copied the two names. **Measured: the grep hits TWENTY
+spec files**, because `page.goto('/')` + `getByRole('heading', { name: cycle.name, exact:
+true }).click()` was the ONLY in-app route to an order screen, and every order-surface spec
+used it: `cat-scroll-arrow`, `colleagues-panel`, `guest-host-view`, `guest-link`,
+`guest-order-recovery`, `guest-payment-modal`, `catalog-admin`, `money-rounding`,
+`order-cartbar`, `order-fidelity`, `order-locked`, `order-modals` (×4), `order-product-card`,
+`order-shell`, `payment-links`, `product-desc-font`, `product-photo-lightbox`,
+`share-dialog`, `mobile-no-h-overflow`.
+
+⚠ **And the backlog's „`share-dialog.spec.js` unmodified" was not merely optimistic — it
+was unsatisfiable.** That file's entry point B is `portalCard()` = the cycle card. So is
+`guest-order-recovery.spec.js`'s, which **NO list names at all** and which a
+`grep "div\.p-4"` MISSES because it writes `div.card.p-4`. Two enumeration misses in one
+row, from two different grep shapes. The rule, restated for the fifth time: **re-enumerate
+with the WIDEST pattern, then read the hits.**
+
+### 4. ⚠⚠ `page.goto('/cycle/:id')` DOES NOT WORK, AND §UC-PI-019 ITEM 3 SAYS TO USE IT
+
+Item 3's prescribed replacement is „`page.goto('/cycle/${id}')` + the shipped URL
+assertion". It cannot work: the friend's Bearer token lives in **memory only**
+(`api.js setFriendsToken`), `FriendPortal.vue` is its single owner, and `FriendOrder.vue`'s
+`onMounted` therefore BOUNCES a cold deep link to `/` — which is exactly why all twenty
+files went in through the portal in the first place.
+
+`helpers/portal.js gotoCycle()` uses that bounce instead of fighting it:
+
+1. `goto('/cycle/:id')` — the app bounces with `router.push('/')`, a same-document
+   `pushState`, so history is `[/cycle/:id, /]`;
+2. wait for the portal — that is the session restoring the token into memory;
+3. `goBack()` — a same-document traversal back to entry 1, handled by vue-router as a
+   client-side navigation. `FriendOrder` mounts with the credential already in memory and
+   does not bounce.
+
+No app change, no new auth path. ⚠ **Its one cost, and it bit two tests:** `/cycle/:id` is
+now the BOTTOM entry of its document, so `page.goBack()` from the order screen leaves the
+document (`about:blank`) instead of popping to `/`. `order-locked` and `order-modals` both
+tested „a history traversal the chevron does not own runs through `onBeforeRouteLeave`";
+both now use **`goForward()`**, which is the same router navigation, the same guard and the
+same assertions. `goBack()` there would prove nothing.
+
+### 5. ⚠ THE CARTBAR SHARE ICON IS LANDING-ONLY, AND TWO IMMUTABLE SPECS DECIDED IT
+
+§UC-PI-005 introduces the icon under „Landing composition" and §UC-PI-011 calls the two
+triggers „the cartbar icon + the drawer item"; neither says what `/cycle/:id` does. The
+answer is forced: `guest-host-view.spec.js:890,929` and `share-dialog.spec.js`'s mount-seam
+test both assert an **unscoped** `getByRole('button', { name: /Zdieľať/ })` on the deep
+link — `toHaveCount(0)` on „Moja objednávka", `toHaveCount(1)` on „Kolegovia". An
+always-visible icon named „Zdieľať s kolegami" makes those 1 and 2. **Mutation M11 (drop
+the `v-if="isLanding"`) reds 10 tests across both files**, which is the evidence.
+
+### 6. ⚠⚠ A REAL DEFECT THE SANCTIONED `order-cartbar` LANDING VARIANT CAUGHT
+
+`.cartbar` is `position:sticky; bottom:0`, and **a sticky element may never be shifted
+above its containing block's top edge.** Mounted inside a real wrapper `<div>`, the bar's
+containing block began at the embedded subtree (y=281 at 378×420), so it clamped at **435
+against a 420px fold** — the landing silently lost the sticky footer that `/cycle/:id` has,
+on short screens only. The fix is `display:contents` on the landing-mode wrapper: no box,
+so the containing block is the session's page column (y=124) and the bar reaches the
+viewport bottom exactly as on the deep link. Measured 420 in all four positions
+(first paint, scrolled, back at top, after a reload); M6 (revert it) reds the test alone.
+
+⚠ The shipped test above it pins `parentIsApp === true`, which is the DEEP LINK's shape and
+is precisely what this row moves away from on `/` — so it could not have caught this. A
+geometry rule restated as a Tailwind utility (or moved into `FriendOrder`'s
+`<style scoped>`) would keep working on `/cycle/:id` and un-stick the screen a friend now
+lands on.
+
+### 7. ⚠⚠ THE „ONE `GuestShareDialog`" RULE HAS NO DOM SIGNATURE — IT NEEDED A SOURCE PIN
+
+M1 mounts a SECOND `GuestShareDialog` in the session and points the drawer at it. It reds
+**one** behavioural test (the from-another-view one, which needs the exposed opener) and
+**none** in `share-dialog.spec.js`: the dialog is `v-if="open"`, so the extra instance is
+invisible while closed, and when the drawer opens ITS copy the screen shows one dialog with
+the right title and the right cycle name. The defect the rule exists for — one instance
+silently stopping receiving updates — has no observable signature until the two disagree,
+which is a state a test cannot reach on purpose.
+
+So it is pinned in the SOURCE, per FILE (`FriendOrder` 1, `FriendPortalSession` 0,
+`FriendPortal` 0 — a total would let „moved from A to B" pass), plus the bridge itself
+(`defineExpose({ openShareDialog })` ↔ `landingOrder.value.openShareDialog()`).
+
+⚠ **And the source-pin helper lifted from `portal-shell.spec.js` was BROKEN on a `.vue`
+file.** It strips `/* */` before `//`, and `FriendPortalSession.vue:56` carries the line
+comment „No `@/components/ui/*` import remains in this file" — whose `/*` opens a block
+comment the strip then closes **16 709 characters later**, swallowing a third of the file.
+M1's mount landed in that hole and the pin stayed green. Line comments now go FIRST, and
+every absence pin sits behind an `assertReadable()` gate (stripped length > 30 % of raw,
+plus named tokens) so the next such hole is loud. **Any spec that greps `.vue` source
+inherits this trap.**
+
+### 8. Small things measured rather than assumed
+
+- **`GuestSubOrders.vue` makes its OWN `GET /guest-links/cycle/:id`,** and it is mounted on
+  the landing (the Kolegovia panel is `v-show`). So „exactly ONE count request" can only be
+  measured on a view where the embedded `FriendOrder` is NOT mounted — every test in
+  `portal-menu` §1b runs on `/zostatok` for that reason, and it is written at the top of the
+  block. The same fact is why `portal-landing`'s „a failed count gates nothing" test does
+  **not** assert „no banner anywhere": that stub fails module 05's fetch too.
+- **The ONE-request test asserts the SET of ids requested, not the count.** A re-introduced
+  fan-out asks for 40 ids; a cap of 3 still asks for 40. (First draft wrapped `created_at`
+  at `i % 28`, so row 27 was newest and the test „failed" on a perfectly correct single
+  request — `resolveLanding` sorts `created_at DESC, id DESC`, never by id.)
+- **Slovak declension is a real assertion, not a formatting detail:** „4 kolegovia" but
+  „5 kolegov" (genitive plural from five up), and „do **piatku**" — `fmtWeekdayDayMonth`
+  returns the weekday ALREADY declined. Two of my first drafts were wrong in exactly these
+  two places, which is the argument for fixtures at 1, 4 and 5.
+- **Drawer item 4's condition is the landing STATE, not the VIEW,** so the row is offered on
+  `/zostatok` too — where the one dialog is not mounted. `requestShareDialog()` therefore
+  sets a pending flag, `router.push('/')`, and a `watch(landingOrder)` opens it once the
+  instance exists. Pinned from `/zostatok`; the alternative (a second dialog in the session)
+  is what §UC-PI-011 forbids.
+- **`FriendOrder` is keyed on the cycle id on the landing.** It loads its order from
+  `onMounted` only and has no watch on its cycle (a lifetime assumption recorded in its own
+  header, PL-T4); re-pointing one instance at another round would keep the previous
+  `order`/`cart`/`paymentVs`.
+- **The handshake lost a request:** `beginSession()` no longer fetches `subscriptions`
+  (§UC-PI-016 — the modal it prefilled is gone). The table, both routes and the SERVER-side
+  filter are untouched, and the surviving endpoint is round-tripped in
+  `portal-subscription-invite`'s replacement pin.
+- `portal-appbar`'s voucher-geometry test located the page column as „the `.app` child
+  holding an `<h2>`" — i.e. by the retired heading. Re-pointed at PI-T1's
+  `[data-testid="portal-landing"]`, which is the one handle for that column and cannot be
+  retired by a copy change.
+
+### 9. The mutation matrix, in full (all reverted from a scratchpad copy, never `git checkout`)
+
+| # | Mutation | Reds |
+|---|---|---|
+| M1 | the drawer mounts a SECOND `GuestShareDialog` | 2 — the from-another-view test + the SOURCE pin (see §7: the pin was needed) |
+| M2 | the colleague-count fan-out restored (one GET per open round) | 1 — „ONE request for the CURRENT round" |
+| M3 | `colleagues` hoisted into module scope (the six-leak shape) | 1 — „a count does NOT survive a logout" |
+| M4 | the cartbar share icon navigates before opening | 3 — all three dialog-entry tests |
+| M5 | the leave guard never fires | 1 — „the leave guard fires on the DRAWER's `router.push`" |
+| M6 | `display:contents` reverted on the landing wrapper | 1 — „THE LANDING VARIANT" (§6) |
+| M7 | item 4 renders on every landing state | 3 — the row-set test, the no-open-round test, „no share affordance" |
+| M8 | cancelled sub-orders counted in the kilos | 1 — „a cancelled sub-order reaches neither figure" |
+| M9 | the landing renders its own `.app` root | 1 — „ONE `.app` root and ONE chrome" |
+| M10 | the sub-line always appends the kilos | 1 — „drops the „· " separator instead of printing „0 kg"" |
+| M11 | the cartbar icon renders on the DEEP LINK too | **10** — `share-dialog` ×9 + `guest-host-view` ×1 (§5) |
+| M12 | M3 **+** the seq guard removed | 2 — both session-scoping tests |
+| M13 | the seq guard removed ALONE | **0** — the component boundary covers it (§2) |
+
+### What PI-T3 LEAVES BEHIND
+
+1. **The CLOSED and LOCKED landings render chrome, the balance card and nothing else** until
+   PI-T4/T5. That is the planned increment, not an omission, and it is stated in the
+   template where the branch is.
+2. ⚠ **`portal-fidelity.spec.js` is two tests lighter** (§UC-PI-019 item 13): the cycle-card
+   A10 block and the archive plain-text test retired with their structures. PI-T12 owes the
+   landing equivalents — `.banner.slim`, `.badge`, `own-order-card .display`, `.cs-tl .lbl`
+   — and they need PI-T4/T5 to exist first.
+3. ⚠ **`portal-session-boundary.spec.js`'s walk lost two stops** (archive fold, subscription
+   modal) because both surfaces are gone. §UC-PI-019 item 14's drawer-based rewrite (history,
+   balance, explainer) is still PI-T12's.
+4. **`helpers/portal.js gotoCycle()` is the one home of portal → order navigation** (§4).
+   PI-T11's `/cycle/:id` regression net builds on it; a spec that hand-rolls the bounce is
+   re-creating the problem.
+5. ⚠ **The deep link still bounces cold** (`FriendOrder.onMounted` → `router.push('/')`),
+   which contradicts §UC-PI-018's acceptance criterion („`page.goto('/cycle/<open id>')` with
+   a stored session ⇒ the order screen"). Shipped behaviour, untouched here; **PI-T11 owns
+   the decision** — fixing it would also let `gotoCycle()` collapse to a plain `goto`.
+6. **`FriendBalanceCard` is still on the landing and still makes its own balance request**
+   (PI-T2's finding, unchanged): PI-T7 relocates it.
+
+### 10. ⚠ THE FULL-SUITE SCARE, AND WHY IT IS NOT THIS ROW
+
+TWO coordinator full runs with this work went red — **115 failed** and then **33 failed** —
+against **2181 / 1** at HEAD, with the failures showing as admin **401**s on fixture setup
+(`POST /api/friends`, `POST /api/cycles`) in fifteen files this row never touched. The
+leading hypothesis was that deleting two spec files re-ordered the suite and exposed a
+token dependency. It was not that, and it was not this row.
+
+**Measured five ways, and it does not reproduce:**
+
+| run | DB | box | result |
+|---|---|---|---|
+| coordinator, HEAD | clean | loaded | 2181 passed / 1 failed / 4 skipped · 14.5 min |
+| coordinator, this row (1st) | **CORRUPT** | loaded | 1408 passed / **115 failed** / 642 did not run · 17.4 min |
+| coordinator, this row (2nd) | clean | loaded | 2061 passed / **33 failed** / 70 did not run · 14.2 min |
+| **this row, clean box** | clean | **idle** | **2165 passed / 0 failed / 4 skipped · 11.8 min** |
+| coordinator re-run, this row | clean | **idle** | **2165 passed / 0 failed / 4 skipped · 11.9 min** |
+
+Plus the first five files in suite order (95 tests, 8.1 s) and `admin-auth` +
+`admin-friends-labels` alone (9 tests) — both green.
+
+**⚠ A CORRECTION I OWE THIS FILE, because the wrong version of it was written here first.**
+The original write-up argued „file order is not the mechanism, because the first failure
+sits at test index 8 in BOTH red runs". **That is false and I had not earned it:** I had
+read ONE of the two red logs. The first failure is at index **234** in the first red run
+and at index **8** in the second — and the first run's server log carries **65
+`disk image is malformed`** errors, so it was measuring a corrupted database rather than
+any code at all. ⚠ This is the SAME enumeration failure §3 of this very write-up documents
+twice (the spec's 2-file list that was really 20; the `div\.p-4` grep that missed
+`div.card.p-4`) — **third instance in one row, and this one I committed myself, in the file
+whose job is to stop it.** An enumeration is a measurement: read every input or do not
+write the word „both".
+
+**What actually carries the conclusion** (verified, and the only argument that should be
+quoted): the first failure in the clean-DB red run is a **10 s timeout on the admin login
+REDIRECT** (`toHaveURL(/admin\/dashboard/)` never fires), not a rejection. The backend
+keeps ONE `admin_token` row and **every** `POST /api/admin/login` replaces it, so a login
+whose response lands after its test gave up still rotates the row — and every spec file
+that cached a token earlier then 401s on its next fixture. The suite mitigates this by
+CONVENTION, per file (`colleagues-panel.spec.js`: „Every fixture-building block re-logs-in
+first"), and the convention has gaps. Under load the gaps open.
+
+**⚠⚠ THE ROOT CAUSE, found by the coordinator and worth more than the rest of this section.**
+Four stale `bash` wait-loops from earlier rounds of this row were still spinning: they poll
+`pgrep -f "playwright test"`, and a watcher's own `bash -c` command line CONTAINS that
+string, so each one matched itself and never exited. They had been loading a two-core box
+for hours. It is the `pkill -f` self-match rule this repo already documents, with a worse
+ending — `pkill` fails loudly, this fails SILENTLY and degrades every later run. Kill them
+and the suite goes green. Poll the LOG for a summary line, or use a bracket class the
+watcher cannot contain (`pgrep -f "[p]laywright test"`). Recorded in `CLAUDE.md`.
+**The generalisation: a full run that takes ~14 min where it usually takes ~12 is already
+telling you the box is the variable. Check the box before blaming the diff — and read the
+SERVER log before the test log, which is where `disk image is malformed` was sitting in
+plain sight.**
+
+⚠ The amplifier that was suspected — a 401 driving the admin SPA to call
+`POST /api/admin/logout` and DELETE the row — **does not exist**: all four `logout()`
+callers are „Odhlásiť sa" button handlers. Mid-run the row is only ever rotated, never
+deleted. Checked, so the next person does not re-derive it.
+
+Every loaded-box run took 14.2–17.4 min; both idle-box runs took 11.8 and 11.9 — i.e. the
+extra requests the landing issues (`FriendOrder` + `GuestSubOrders` now load on every `/`)
+did **not** slow the suite down, which is the other thing worth having measured.
+
+**Conclusion: environmental, and the fragility it exposed is pre-existing — not this row.** The fix is a harness one and belongs
+in its own row — an admin helper that re-authenticates once on a 401 instead of trusting a
+cached token. Two constraints for whoever takes it: `api-security.spec.js` tests token
+staleness ON PURPOSE and must be excluded, and `google-auth.spec.js` already re-auths on a
+401 and is the shape to lift. It must ship with a DETERMINISTIC reproduction (rotate the
+row mid-file, show the helper recovers) — a harness change made against a failure nobody
+can reproduce is the unfalsifiable kind this file keeps warning about.
+
+### 11. ⚠ THE REVIEW: three majors, and two of them were my own findings left half-applied
+
+`revise`, and the reviewer re-derived the migration table from the deleted files at HEAD
+rather than from my report, ran five mutations of its own, and confirmed every surviving
+property reds. What it found that I had not:
+
+**Major 1 — a real user-facing defect the new leave-guard test could not see.**
+`handleSuccessModalClose()` and `confirmCancelOrder()` set `leaveConfirmed = true` (a
+ONE-SHOT guard bypass that only `onBeforeRouteLeave` disarms) and then `router.push('/')`.
+On `/cycle/:id` that push really leaves, the guard runs and consumes the flag. **On the
+landing the push is a NO-OP** — same route, no unmount, guard never runs — so the flag
+stayed ARMED and silently swallowed the NEXT navigation's prompt. Measured on the built
+app: submit → close → step a product → drawer ⇒ zero dialogs, URL changed, cart gone.
+My `portal-landing.spec.js` leave-guard test passed throughout because it only ever
+exercises the NEVER-SUBMITTED path, which never arms the flag.
+
+Fixed with `leaveToOffer()` — ONE home for „go to `/` and do not ask" — which arms the
+bypass **only when it is actually going somewhere** (`if (route.path === '/') return`).
+*A guard armed by something that did not navigate is armed for the wrong departure.*
+M14 (arm unconditionally) reds the new post-submit test alone.
+
+**Major 2 — I rewrote the superseded claims in ONE copy and left three.** The
+documentation-discipline rule („a superseded claim must be rewritten in EVERY copy") is
+one I quoted in this very file and then broke. Amended in place, with strikes and
+pointers: `18 §UC-PI-011` („`share-dialog.spec.js` passes unmodified" — it could not,
+nine call sites moved), `18 §UC-PI-019 item 3` (both the 2-file enumeration that measured
+20 AND the `page.goto('/cycle/:id')` prescription I proved cannot work), `PROGRESS.md:430`,
+and `03-friend-login-portal.md` — which still documented the card, the `p-4` prohibition,
+the gear, the archive fold and the subscription modal as LIVE, with a pin table naming two
+assertions this row deleted. That file now opens with a supersession banner and a
+UC-by-UC table.
+
+**Major 3 — my own stripper finding, applied to one file out of two.** I diagnosed the
+`ui/*`-in-a-line-comment hole, fixed it in `portal-landing.spec.js`, wrote the CLAUDE.md
+rule — and left `portal-shell.spec.js:596` with the broken copy, pointed at the same two
+`.vue` files. The reviewer measured it: a `localStorage.setItem` at line 200 of
+`FriendPortalSession.vue` survived unseen, so that file's „no plain `<script>` block" and
+„nothing persisted" pins were vacuous across lines 56–347.
+
+Hoisted into `e2e/helpers/source-pins.js` (`read` / `code` / `assertReadable`), and both
+specs re-pointed. ⚠ **Fixing the stripper was not enough, and that is the part worth
+keeping:** the persisted-state pin also read
+`session.split('resolveLanding')[0]` — and the FIRST `resolveLanding` in that file is its
+IMPORT on line 70, so the slice being searched was lines 1–70 of a 2 600-line component.
+M15 passed even with the stripper repaired. The correct scope is the WHOLE FILE, and it is
+not a widening: every one of the ten `localStorage` mentions there is in a comment, so
+after stripping the honest assertion is that the token does not occur at all. M15 now reds
+at line 200 AND at line 2300 (the second hole, opened by the comment at `:2277`).
+
+⚠ **And `assertReadable`'s gate had to be re-based on MEASUREMENT, not taste.** My first
+version used a 0.3 length ratio; it red-lined `lib/portal-state.js` on a perfectly good
+strip. Measured surviving fractions vary fourfold because this repo comments heavily —
+`portal-state.js` 0.166, `dates.js` 0.290, the three big `.vue` files ~0.36, `router.js`
+0.562 — so no ratio is both safe for `portal-state.js` and tight enough to catch a
+16 709-character hole. The ratio is a CATASTROPHE backstop (0.05); the discriminating gate
+is `mustContain`, tokens picked from the REGION the pins care about, and a caller that
+passes none is refused.
+
+**Minors.** (4) `pendingShare` is now disarmed on every path that does not reach the
+instance — with the honest note that two of the three exits have no reachable trigger
+today, and the reachable half (return to `/` must not re-open the dialog) is pinned.
+(5) `portal-fidelity`'s hostile-text claim is RESTORED rather than retired: `expected_date`
+is admin free text the landing renders verbatim, so the fixture weaponises it and the test
+asserts `overflow-wrap:anywhere` on the status line plus the document claim — M16 (drop
+the property) reds 3 tests. (6) The orphan em dash is gone — the dash belongs to the „Káva
+príde" clause, and ⚠ moving it exposed that Vue CONDENSES the whitespace between a `v-if`
+template and its next sibling, fusing „otvorené.Ako to funguje?"; the fix is an explicit
+`{{ ' ' }}` node, and both branches are now whole-string pinned so a PO copy change is a
+deliberate edit.
+
+**Not mine, recorded so they are not lost:** the landing issues the guest-links fetch
+twice (session + `GuestSubOrders`) plus pickup/payment settings on every `/` → fold into
+PI-T7's one-fetch work; and logging out from the drawer with an unsaved cart discards it
+silently, because `switchUser` is not a route leave and no spec rule covers it.
+
+**The meta-lesson, and it is the third time this row has produced it:** every one of the
+three majors was a claim I had already made correctly SOMEWHERE — in a report, in one spec
+file, in one spec helper — and then failed to carry to every place it applied. Finding a
+rule is the cheap half.

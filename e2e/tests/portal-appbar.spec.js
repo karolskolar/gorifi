@@ -755,7 +755,11 @@ test.describe('Voucher banner geometry (RD-FL-1 residual)', () => {
 
     const geometry = await page.evaluate(() => {
       const bannerWrap = document.querySelector('.app > div.mt-4')
-      const column = Array.from(document.querySelectorAll('.app > div')).find((d) => d.querySelector('h2'))
+      // ⚠ PI-T3 · 18 §UC-PI-005 — the column used to be found by „the `.app` child
+      // holding an `<h2>`", i.e. by the retired „Objednávkové cykly" heading. The
+      // column itself is unchanged; it is located by PI-T1's marker now, which is
+      // the ONE handle for it and cannot be retired by a copy change.
+      const column = document.querySelector('.app > [data-testid="portal-landing"]')
       const b = bannerWrap.getBoundingClientRect()
       const c = column.getBoundingClientRect()
       return { bannerLeft: b.left, bannerWidth: b.width, columnLeft: c.left, columnWidth: c.width }

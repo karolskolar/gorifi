@@ -1,17 +1,15 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
-import { expectLanding, expectNoLanding, drawer, openMenu, menuGo } from '../helpers/portal.js'
+import { expectLanding, expectNoLanding, drawer, openMenu, menuGo, logout } from '../helpers/portal.js'
 
 // PI-T2 — 18 §UC-PI-004, the hamburger drawer (`NeoDrawer.vue`), and
 // §UC-PI-019 item 17's `portal-menu.spec.js`.
 //
 // ⚠ WHAT IS DELIBERATELY NOT HERE, so nobody reads a gap as a decision:
-//   · ITEM 4 („Zdieľať s kolegami", `state === 'open'` only) is PI-T3's — it opens
-//     `GuestShareDialog`, which that row re-points at the landing. Its colleague
-//     count and the `loadSeq` guard §UC-PI-019 item 6 moves here land with it. The
-//     slot between „Zostatok a platby" and „Pozvať priateľa" is pinned EMPTY below,
-//     so PI-T3 filling it is a visible change rather than a silent one.
-//   · Item 1's „ · v košíku {suma}" clause needs a landing CART, which PI-T3 mounts.
+//   · ~~ITEM 4 and item 1's „ · v košíku {suma}" clause~~ — **LANDED WITH PI-T3**,
+//     in section 1b below. That section is also where §UC-PI-019 item 6 moves the
+//     surviving properties of the deleted `portal-share-row.spec.js`: the colleague
+//     count's copy states, the sequence guard, and the bound on the count fetch.
 //
 // ⚠ HERMETIC, per the RD-FL-2 idiom: this file provisions its own friends over the
 // admin API and signs the browser in by seeding a REAL session token. The cycles
@@ -65,6 +63,27 @@ async function makeFriend(label) {
   expect(changed.status(), 'forced change').toBe(200)
   const token = (await changed.json()).token || body.token
   return { id: row.id, name, username, token }
+}
+
+/**
+ * A REAL open cycle with real products — needed by the „ · v košíku" test, which
+ * measures the landing's own cart and therefore cannot run against a stubbed
+ * `GET /friends/cycles` (the embedded `FriendOrder` loads its order from the API).
+ * Created last ⇒ the newest open round ⇒ the landing's round.
+ */
+async function makeRealCycle(label) {
+  const res = await admin('/api/cycles', {
+    method: 'post',
+    data: { name: `PI3 Menu ${label} ${uniq}`, type: 'coffee', status: 'open' },
+  })
+  expect(res.status(), 'cycle create').toBe(201)
+  return res.json()
+}
+
+async function addProduct(cycleId, data) {
+  const res = await admin('/api/products', { method: 'post', data: { cycle_id: cycleId, ...data } })
+  expect(res.status(), 'product create').toBe(201)
+  return res.json()
 }
 
 async function signIn(page, friend) {
@@ -131,7 +150,13 @@ async function rows(page) {
 // 1. The rows: order, labels, sub-lines, the conditional slot
 // ═════════════════════════════════════════════════════════════════════════════
 test.describe('PI-T2 · 18 §UC-PI-004 — the drawer rows', () => {
-  test('six rows in the spec\'s order, with the spec\'s labels', async ({ page }) => {
+  test('seven rows on an OPEN round, six otherwise — item 4 is the only conditional one', async ({ page }) => {
+    // ⚠ PI-T3 FILLED THE SLOT PI-T2 PINNED EMPTY, and this is the assertion that
+    // records it. §UC-PI-004's table makes item 4 („Zdieľať s kolegami") conditional
+    // on `state === 'open'` — 05 §UC-KG-002's rule that a locked or closed round
+    // offers no share affordance at all — so the row set has exactly two shapes and
+    // both are pinned here. A one-payload test would pass against a component that
+    // rendered the row unconditionally.
     const friend = await makeFriend('Rows')
     await signIn(page, friend)
     await stubBalance(page, -12.5)
@@ -139,8 +164,21 @@ test.describe('PI-T2 · 18 §UC-PI-004 — the drawer rows', () => {
     await open(page)
 
     await openMenu(page)
-    const seen = await rows(page)
-    expect(seen.map((r) => r.label)).toEqual([
+    expect((await rows(page)).map((r) => r.label)).toEqual([
+      'Aktuálna ponuka',
+      'Moje objednávky',
+      'Zostatok a platby',
+      'Zdieľať s kolegami',
+      'Pozvať priateľa',
+      'Ako to funguje',
+      'Profil',
+    ])
+
+    // The same friend, a round that is not open: the row is GONE, not disabled.
+    await stubCycles(page, [cycleRow({ n: 2, status: 'locked' })])
+    await open(page)
+    await openMenu(page)
+    expect((await rows(page)).map((r) => r.label)).toEqual([
       'Aktuálna ponuka',
       'Moje objednávky',
       'Zostatok a platby',
@@ -148,10 +186,6 @@ test.describe('PI-T2 · 18 §UC-PI-004 — the drawer rows', () => {
       'Ako to funguje',
       'Profil',
     ])
-    // ⚠ PI-T3's SLOT, pinned empty: item 4 („Zdieľať s kolegami") belongs between
-    // „Zostatok a platby" and „Pozvať priateľa" and is not built yet. When PI-T3
-    // lands, THIS assertion is the one that must be updated — deliberately, in a
-    // row that says so.
     await expect(drawer(page).getByText('Zdieľať s kolegami')).toHaveCount(0)
   })
 
@@ -313,6 +347,343 @@ test.describe('PI-T2 · 18 §UC-PI-004 — the drawer rows', () => {
       await expect(drawer(page).locator('.badge')).toHaveCount(1)
     }
     expect(balanceCalls, 'opening the menu must not refetch the balance').toBe(afterFirst)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 1b. ITEM 4 — „Zdieľať s kolegami" (PI-T3)
+//
+// ⚠⚠ THIS SECTION IS WHERE `portal-share-row.spec.js` WENT. That file (14 tests)
+// was deleted with the cycle card it tested (18 §UC-PI-005 / §UC-PI-019 item 6).
+// Most of it died with the card — the 378px row geometry, the 2px rule, the
+// card-scoped locators. What did NOT die is here, re-pinned on the surfaces that
+// replaced it (the other half, the dialog ENTRY contract, is in
+// `portal-landing.spec.js`):
+//
+//   · the four COPY states of the colleague count (declined phrase, kilos,
+//     cancelled sub-orders excluded, the zero/failed fallback) → the sub-line;
+//   · „the count is CONTEXT ONLY — it gates nothing" → a failed count still leaves
+//     the row present and the dialog working;
+//   · „the fan-out is BOUNDED" (a 3-at-a-time cap over every open cycle) → the
+//     STRONGER form §UC-PI-004 specifies: exactly ONE request, for the current open
+//     round, whatever the payload's size;
+//   · the SESSION SCOPING half of the `loadSeq` rule (a count must not cross a
+//     logout, settled or in flight).
+//
+// ⚠ ONE PROPERTY HAS NO NEW HOME, AND IT IS A FINDING RATHER THAN AN OVERSIGHT:
+// „a response deferred past a SECOND `loadCycles` (same session) is dropped". Its
+// only trigger was `saveSubscriptions()`, the last caller of `loadCycles()`, retired
+// with the gear (§UC-PI-016). `cycles` is loaded once per session now, so there is
+// no second batch to supersede and NO test can red on that branch. The counter and
+// its guard are kept in `FriendPortalSession.vue`, with a comment saying exactly
+// this, so the next in-session reloader inherits the protection instead of
+// re-discovering the race.
+// ═════════════════════════════════════════════════════════════════════════════
+test.describe('PI-T3 · 18 §UC-PI-004 item 4 — the colleague count', () => {
+  /**
+   * The `{ link, guest_orders, totals }` payload of `GET /guest-links/cycle/:id`,
+   * trimmed to what the sub-line reads (the shape `helpers/guest-orders.js` serves).
+   *
+   * One 250 g bag per colleague ⇒ grams = count × 250. `cancelled: true` appends a
+   * sub-order carrying a 1 kg bag that must NOT reach the screen — the client applies
+   * the same status predicate every guest aggregate in the backend does, and 1 kg is
+   * large enough that a leak is unmissable rather than a rounding argument.
+   */
+  const linkPayload = (count, { cancelled = false, variant = '250g' } = {}) => ({
+    link: { id: 1, token: 'E2EPI3TOKEN0', host_friend_id: 0, cycle_id: 0, active: 1 },
+    guest_orders: [
+      ...Array.from({ length: count }, (_, i) => ({
+        id: i + 1,
+        status: 'submitted',
+        total: 4.2,
+        items: [{ id: i + 1, product_id: 1, variant, quantity: 1 }],
+      })),
+      ...(cancelled ? [{
+        id: 900, status: 'cancelled', total: 0,
+        items: [{ id: 900, product_id: 1, variant: '1kg', quantity: 1 }],
+      }] : []),
+    ],
+    totals: { count, total: count * 4.2 },
+  })
+
+  /** A cycle id absent from `counts` is answered 500 — the „failed fetch" half. */
+  async function stubCounts(page, counts) {
+    await page.route('**/api/guest-links/cycle/*', (route) => {
+      const id = Number(route.request().url().split('/').pop())
+      if (!(id in counts)) return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
+      const spec = typeof counts[id] === 'number' ? { count: counts[id] } : counts[id]
+      return route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify(linkPayload(spec.count, spec)),
+      })
+    })
+  }
+
+  /** Item 4's sub-line, read off the OPEN drawer. */
+  async function shareSub(page) {
+    const seen = await rows(page)
+    const row = seen.find((r) => r.label === 'Zdieľať s kolegami')
+    return row ? row.sub : null
+  }
+
+  // ⚠ EVERY TEST IN THIS BLOCK RUNS ON `/zostatok`, NOT ON `/`, AND THAT IS THE
+  // POINT. `GuestSubOrders.vue` (the Kolegovia panel inside `FriendOrder`) makes its
+  // OWN `GET /guest-links/cycle/:id` and is mounted on the landing — so counting
+  // requests there measures two components at once. On any other view the embedded
+  // `FriendOrder` is not mounted, the session's fetch is the only one, and „exactly
+  // one" is a claim about the code under test. The drawer is identical on all four
+  // views: item 4's condition is the landing STATE, never the view.
+  const AT = '/zostatok'
+
+  test('the sub-line declines the count, prints the kilos, and drops trailing zeros', async ({ page }) => {
+    const friend = await makeFriend('Count')
+    await signIn(page, friend)
+    await stubBalance(page, 0)
+    await stubCycles(page, [cycleRow({ n: 30, status: 'open' })])
+    await stubCounts(page, { 70030: 4 })
+    await open(page, AT)
+
+    await openMenu(page)
+    // 4 × 250 g = 1000 g. `lib/kg.js kgLabel()` returns the WHOLE „1 kg" string —
+    // „1.00 kg" would mean someone reformatted at the call site (FUP-T24).
+    await expect.poll(() => shareSub(page)).toBe('4 kolegovia · 1 kg cez váš odkaz')
+  })
+
+  test('the count is DECLINED, and a cancelled sub-order reaches neither figure', async ({ page }) => {
+    const friend = await makeFriend('Decl')
+    await signIn(page, friend)
+    await stubBalance(page, 0)
+    await stubCycles(page, [cycleRow({ n: 31, status: 'open' })])
+    // `totals.count` is 1 — the SERVER's cancelled-excluding figure — while the
+    // payload also carries a cancelled 1 kg bag. If the client summed blindly the
+    // kilos would read „1.25 kg", which is why the bag is 1 kg and not 250 g.
+    await stubCounts(page, { 70031: { count: 1, cancelled: true } })
+    await open(page, AT)
+
+    await openMenu(page)
+    await expect.poll(() => shareSub(page)).toBe('1 kolega · 0.25 kg cez váš odkaz')
+  })
+
+  test('a count with no item rows drops the „· " separator instead of printing „0 kg"', async ({ page }) => {
+    const friend = await makeFriend('NoKg')
+    await signIn(page, friend)
+    await stubBalance(page, 0)
+    await stubCycles(page, [cycleRow({ n: 32, status: 'open' })])
+    // `unit` is priceable but ZERO-GRAM (CLAUDE.md, `helpers/pricing.js`), so this is
+    // a real payload rather than a contrived one.
+    await stubCounts(page, { 70032: { count: 3, variant: 'unit' } })
+    await open(page, AT)
+
+    await openMenu(page)
+    await expect.poll(() => shareSub(page)).toBe('3 kolegovia cez váš odkaz')
+    expect(await shareSub(page), '„· 0 kg" reads as a failure, not as „no weight yet"')
+      .not.toContain('0 kg')
+  })
+
+  test('zero colleagues AND a failed fetch are the same sub-line — never an error', async ({ page }) => {
+    const friend = await makeFriend('Zero')
+    await signIn(page, friend)
+    await stubBalance(page, 0)
+    await stubCycles(page, [cycleRow({ n: 33, status: 'open' })])
+    await stubCounts(page, { 70033: 0 })
+    await open(page, AT)
+    await openMenu(page)
+    await expect.poll(() => shareSub(page), { message: 'count 0' }).toBe('Pošlite odkaz kolegom')
+    await page.keyboard.press('Escape')
+    await expect(drawer(page)).toHaveCount(0)
+
+    // The 500 branch — indistinguishable by design (§UC-PI-004: „failure ⇒ the
+    // „Pošlite odkaz kolegom" sub, never an error").
+    await stubCounts(page, {})
+    await open(page, AT)
+    await openMenu(page)
+    await expect.poll(() => shareSub(page), { message: 'failed fetch' }).toBe('Pošlite odkaz kolegom')
+    // …and the failure produced no banner anywhere on the page.
+    await expect(page.locator('.banner.danger')).toHaveCount(0)
+  })
+
+  test('⚠ the fetch is ONE request for the CURRENT round — never one per open round', async ({ page }) => {
+    // THE RETARGET OF „the colleague-count fan-out is BOUNDED" (RD-FL-8a item 3).
+    // Module 03 issued one GET per OPEN cycle behind a 3-at-a-time cap, because this
+    // database reaches 135 open rounds and an unbounded `Promise.all` queued behind
+    // the browser's 6-connection limit together with the portal's own requests.
+    // §UC-PI-004 replaces the cap with a stronger bound — ONE — and this asserts it
+    // as the SET of cycle ids requested, which is what makes it immune to the old
+    // shape: a re-introduced fan-out asks for 40 ids, and a cap of 3 still asks 40.
+    const friend = await makeFriend('One')
+    await signIn(page, friend)
+    await stubBalance(page, 0)
+
+    const MANY = 40
+    // ⚠ `created_at` must be STRICTLY ascending with the index, so the LAST row is
+    // unambiguously the newest ⇒ the landing's round. (A first attempt wrapped the
+    // day at `i % 28` and row 27 came out newest — the test then „failed" on a
+    // perfectly correct single request. `resolveLanding` sorts `created_at DESC,
+    // id DESC`, not by id.) Two months carry 40 days.
+    const bulk = Array.from({ length: MANY }, (_, i) => cycleRow({
+      n: 400 + i,
+      status: 'open',
+      created_at: `2026-${String(9 + Math.floor(i / 28)).padStart(2, '0')}-${String((i % 28) + 1).padStart(2, '0')} 10:00:00`,
+    }))
+    const current = bulk[MANY - 1]
+    await stubCycles(page, bulk)
+
+    const asked = []
+    const order = []
+    await page.route('**/api/guest-links/cycle/*', (route) => {
+      asked.push(Number(route.request().url().split('/').pop()))
+      order.push('count')
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(linkPayload(2)) })
+    })
+    await page.route('**/api/vouchers/pending*', (route) => {
+      order.push('vouchers')
+      return route.fulfill({ json: [] })
+    })
+
+    await open(page, AT)
+    await openMenu(page)
+    // Wait for the sub-line, so the count really landed before anything is counted —
+    // otherwise „one request" would also be satisfied by „none yet".
+    await expect.poll(() => shareSub(page)).toBe('2 kolegovia · 0.5 kg cez váš odkaz')
+    await page.waitForTimeout(500)
+
+    expect(asked, `${MANY} open rounds must still produce ONE count request`).toEqual([current.id])
+
+    // The ORDERING half, also inherited: decoration is never issued ahead of the
+    // fetch that decides what the screen shows.
+    expect(order.indexOf('vouchers'), 'the voucher check precedes the count')
+      .toBeLessThan(order.indexOf('count'))
+  })
+
+  test('no open round ⇒ no count request at all, and no row to put it on', async ({ page }) => {
+    const friend = await makeFriend('Closed')
+    await signIn(page, friend)
+    await stubBalance(page, 0)
+    await stubCycles(page, [cycleRow({ n: 34, status: 'locked' }), cycleRow({ n: 35, status: 'completed' })])
+    const asked = []
+    await page.route('**/api/guest-links/cycle/*', (route) => {
+      asked.push(route.request().url())
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(linkPayload(3)) })
+    })
+    await open(page, AT)
+    await openMenu(page)
+    // Non-vacuity: the drawer really rendered — it just has no item 4.
+    expect((await rows(page)).length).toBe(6)
+    await page.waitForTimeout(500)
+    expect(asked, 'a closed/locked landing asks nobody about colleagues').toEqual([])
+  })
+
+  test('⚠ a count does NOT survive a logout into the next session', async ({ page }) => {
+    // A stale count is not a cosmetic leak: it is the PREVIOUS host's colleague data,
+    // on a device the two of them share. The parent's `v-if` + `:key` is what makes
+    // this structural — the session component, and every ref in it, is destroyed.
+    const friend = await makeFriend('Leak')
+    await page.route('**/friends/auth-mode', (route) => route.fulfill({ json: { authMode: 'modern' } }))
+    await signIn(page, friend)
+    await stubBalance(page, 0)
+    await stubCycles(page, [cycleRow({ n: 36, status: 'open' })])
+
+    let serve = true
+    await page.route('**/api/guest-links/cycle/*', (route) => (serve
+      ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(linkPayload(5)) })
+      : route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })))
+
+    await open(page, AT)
+    await openMenu(page)
+    // ⚠ „5 kolegov", not „5 kolegovia": Slovak takes the genitive plural from five up.
+    // `lib/plural.js colleaguesLabel()` owns that rule; the fixture is deliberately at
+    // 5 so a naive „{n} kolegovia" would red here.
+    await expect.poll(() => shareSub(page)).toBe('5 kolegov · 1.25 kg cez váš odkaz')
+    await page.keyboard.press('Escape')
+    await expect(drawer(page)).toHaveCount(0)
+
+    // The NEXT session's own fetch fails, so a number on screen can only be the
+    // previous session's.
+    serve = false
+    await logout(page)
+    await page.getByLabel(/^užívateľské meno$/i).fill(friend.username)
+    await page.getByLabel(/^heslo$/i).fill('ownPass12')
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+    await expectLanding(page)
+
+    await openMenu(page)
+    expect(await shareSub(page)).toBe('Pošlite odkaz kolegom')
+  })
+
+  test('⚠ a response deferred past a LOGOUT is dropped, not written', async ({ page }) => {
+    // Demonstrated, not argued: the first request is HELD until after the session has
+    // ended and a new one has begun, so the response really does land on a screen it
+    // was not fetched for.
+    const friend = await makeFriend('Defer')
+    await page.route('**/friends/auth-mode', (route) => route.fulfill({ json: { authMode: 'modern' } }))
+    await signIn(page, friend)
+    await stubBalance(page, 0)
+    await stubCycles(page, [cycleRow({ n: 37, status: 'open' })])
+
+    let calls = 0
+    let held = false
+    let resolveLanded
+    const landed = new Promise((resolve) => { resolveLanded = resolve })
+    await page.route('**/api/guest-links/cycle/*', async (route) => {
+      calls += 1
+      if (!held) {
+        held = true
+        await new Promise((r) => setTimeout(r, 2500))
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(linkPayload(7)) })
+        resolveLanded()
+        return
+      }
+      // Every LATER fetch yields nothing, so a „7" on screen can only be the
+      // deferred one.
+      return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
+    })
+
+    await open(page, AT)
+    await openMenu(page)
+    expect(await shareSub(page), 'still in flight ⇒ the fallback, not a figure').toBe('Pošlite odkaz kolegom')
+    await page.keyboard.press('Escape')
+    await expect(drawer(page)).toHaveCount(0)
+
+    await logout(page)
+    await page.getByLabel(/^užívateľské meno$/i).fill(friend.username)
+    await page.getByLabel(/^heslo$/i).fill('ownPass12')
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+    await expectLanding(page)
+
+    await landed
+    await page.waitForTimeout(500)
+    await openMenu(page)
+    expect(await shareSub(page), "a stale response must not write another session's count")
+      .toBe('Pošlite odkaz kolegom')
+    expect(calls, 'the second session did fetch — it just got nothing').toBeGreaterThan(1)
+  })
+
+  test('item 1 appends „ · v košíku {suma}" once the LANDING cart is non-empty', async ({ page }) => {
+    // §UC-PI-004 item 1's second clause, which needed a landing cart and therefore
+    // waited for this row. The cart has ONE home (`FriendOrder.vue`); the drawer
+    // reads it through `defineExpose`, so this also pins that the bridge is live.
+    const friend = await makeFriend('Cart')
+    const cycle = await makeRealCycle('Cart')
+    await addProduct(cycle.id, { name: `PI3 Cart Bean ${uniq}`, purpose: 'Espresso', price_250g: 7.5 })
+
+    await signIn(page, friend)
+    await stubBalance(page, 0)
+    await open(page, '/')
+
+    // Empty basket ⇒ no clause at all.
+    await openMenu(page)
+    let shop = (await rows(page)).find((r) => r.label === 'Aktuálna ponuka')
+    expect(shop.sub, 'an empty basket adds nothing').not.toContain('v košíku')
+    await page.keyboard.press('Escape')
+    await expect(drawer(page)).toHaveCount(0)
+
+    await page.getByTestId('product-card').first()
+      .getByRole('button', { name: 'viac' }).first().click()
+    await expect(page.locator('.app .cartbar .sum')).toContainText('7.50 EUR')
+
+    await openMenu(page)
+    shop = (await rows(page)).find((r) => r.label === 'Aktuálna ponuka')
+    expect(shop.sub).toContain('· v košíku 7.50 EUR')
   })
 })
 

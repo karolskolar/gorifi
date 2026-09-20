@@ -255,14 +255,15 @@ async function walkAuthenticated(page, { fill, snaps = [], label = '' } = {}) {
   const record = async (tag) => { if (!fill) snaps.push(await snapshot(page, `${label}:${tag}`)) }
 
   await expectLanding(page)
-  await record('cycle-list')
+  await record('landing')
 
-  // Disclosure: the archive fold (UC-FL-008).
-  const archive = page.locator('.app').getByText(/^Archív \(\d+\)$/)
-  if (await archive.count()) {
-    await archive.first().click()
-    await record('archive-open')
-  }
+  // ⚠ PI-T3 · 18 §UC-PI-005/016 — TWO STOPS ARE GONE FROM THIS WALK, because the
+  // surfaces are: the UC-FL-008 archive fold (`showArchive`) and the „Nastavenia
+  // odberu" modal (`subCoffee`/`subBakery`/`subSaving`/`subError`). Both were named
+  // in the six-leak history this file exists for, and both are now UNREACHABLE rather
+  // than unwatched — their refs were deleted with the controls, so there is no state
+  // left to carry over. §UC-PI-019 item 14 gives PI-T12 the drawer-based rewrite that
+  // adds the NEW stops (history, balance, explainer) once those views exist.
 
   // Modal: profile, appbar `.titles` (UC-FL-004/009) — plus its password fold.
   await openProfile(page)
@@ -290,17 +291,9 @@ async function walkAuthenticated(page, { fill, snaps = [], label = '' } = {}) {
   await dialog.getByRole('button', { name: 'Zavrieť' }).click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
 
-  // Modal: subscription, the gear (UC-FL-006/010).
-  await page.locator('.app [aria-label="Nastavenia odberu"]').click()
-  dialog = page.getByRole('dialog')
-  await expect(dialog.locator('.m-title')).toHaveText('Nastavenia odberu')
-  if (fill) await fillEverything(dialog)
-  await record('subscription')
-  await dialog.getByRole('button', { name: 'Zrušiť' }).click()
-  await expect(page.getByRole('dialog')).toHaveCount(0)
-
-  // Modal: the guest share dialog off a cycle card (UC-FL-007). Present only
-  // when an OPEN cycle is listed, hence the guard.
+  // Modal: the guest share dialog, off the landing's cartbar icon (18 §UC-PI-011;
+  // it hung off a cycle card until PI-T3). Present only when the landing's round is
+  // OPEN, hence the guard — the same condition the card's row carried.
   const share = page.getByRole('button', { name: 'Zdieľať s kolegami' })
   if (await share.count()) {
     await share.first().click()

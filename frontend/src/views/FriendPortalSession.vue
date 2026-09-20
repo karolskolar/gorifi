@@ -48,7 +48,7 @@
 // `switchUser()`.
 // =============================================================================
 
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api, { getFriendsAuthInfo } from '../api'
 // 10 §UC-GA-012 — the ONE home for the GIS script. Never a second injector.
@@ -64,14 +64,18 @@ import { kgLabel } from '@/lib/kg'
 // 18 §UC-PI-002 — the SHORT date forms. A date standing alone (here: the drawer's
 // „Otvorené do …“ sub-line) comes from `lib/dates.js`; a date inside one of module
 // 17's composed sentences comes from `cycle-stages.js` (PI-T1 §1).
-import { fmtDate, weeksUntil } from '@/lib/dates'
+import { fmtDate, fmtWeekdayDayMonth, weeksUntil } from '@/lib/dates'
 // 18 §UC-PI-002 — the ONE home of "which round is this landing about, and in what
 // state". Never re-derive open/locked/closed beside it.
 import { resolveLanding } from '@/lib/portal-state'
 import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
-import GuestShareDialog from '@/components/GuestShareDialog.vue'
+// 18 §UC-PI-005 — the landing IS the order screen. `FriendOrder.vue` is the ONE home
+// of that surface and is mounted here in `mode="landing"`; it is never forked, and no
+// slice of it is copied into this file. It also owns the only `GuestShareDialog`
+// instance on the friend surface (§UC-PI-011) — this view used to mount a SECOND one
+// for the cycle card's share row, and that instance is gone with the card.
+import FriendOrder from '@/views/FriendOrder.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
-import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
 import NeoDrawer from '@/components/neo/NeoDrawer.vue'
@@ -144,37 +148,42 @@ const emit = defineEmits([
 // Seeded from the handshake, so the first paint needs no request of its own.
 const cycles = ref(Array.isArray(props.entry?.cycles) ? props.entry.cycles : [])
 
-// Archive fold (UC-FL-008): plain UI state, not persisted, not in the URL,
-// default closed. It used to need an explicit reset in `switchUser` so the next
-// session on a shared device also opened closed — the initializer is that reset
-// now.
-const showArchive = ref(false)
+// ⚠ RETIRED BY PI-T3 (18 §UC-PI-005/016), listed so nothing reads the gap as an
+// oversight: `showArchive` (the UC-FL-008 fold), `subscriptions` (the gear's seed —
+// the COLUMN and `GET/PUT /api/subscriptions/friend/:id` are KEPT, only the UI is
+// gone, §UC-PI-016) and `guestSummaries` (the per-card colleague MAP). The landing
+// has one round, so there is one count, below.
 
-// The type filter behind that list, also seeded from the handshake — the gear
-// must never be openable before it has landed, or the modal prefills "show
-// everything" and "Uložiť" writes that over the friend's real preferences.
-const subscriptions = ref(Array.isArray(props.entry?.subscriptions) ? props.entry.subscriptions : []) // ['coffee', 'bakery']
-
-// Colleague aggregates for the UC-FL-007 share row, keyed by cycle id:
-// `{ count, grams, units }`. CONTEXT ONLY — nothing on this screen is gated on
-// them; a missing entry simply renders the "Objednávate aj pre kolegov?"
-// fallback, which is also the failure surface (the fetch is non-blocking and
-// error-swallowing, never the `error` banner).
+// The colleagues who ordered through this friend's link IN THE CURRENT OPEN ROUND —
+// `{ count, grams }`, or `null` for "not loaded, still loading, or failed".
 //
-// It carries the QUANTITY as well as the count because the host's real question
-// on this card is how much coffee they are collecting for other people — the
-// count alone says nothing about whether that is one 250g bag or 4 kg.
-const guestSummaries = ref({})
-
-// ⚠ Sequence guard for that batch — the GSO-T2 `loadSeq` rule. It is NOT the
-// cosmetic case: a count is another friend's colleague data. `loadCycles` bumps
-// it so a refetch's results win over an older in-flight batch.
+// ⚠ 18 §UC-PI-004 item 4: „ONE `GET /guest-links/cycle/:id` for the current open
+// cycle". Module 03 fanned this out over EVERY open cycle behind a 3-at-a-time
+// concurrency cap, because the e2e database reaches 135 open rounds and an
+// unbounded `Promise.all` starved the portal's own requests behind the browser's
+// 6-connection limit. The landing resolves exactly one round, so the fan-out — and
+// the cap that bounded it — are gone: the bound is now ONE, which is the stronger
+// form of the same property and is pinned as such in `portal-menu.spec.js`.
 //
-// ⚠ The CROSS-SESSION half of RD-FL-5's guarantee is now structural: a response
-// still in flight when the session ends lands on a DESTROYED component, so it
-// can write nothing. This counter is what still covers the IN-SESSION half
-// (saving subscriptions re-runs `loadCycles`). Both halves stay mutation-tested
-// in `portal-share-row.spec.js`; do not fold them into one.
+// CONTEXT ONLY: nothing is gated on it. A failure renders the „Pošlite odkaz
+// kolegom" sub-line, which is also the not-yet-loaded copy — never an error banner.
+const colleagues = ref(null)
+
+// ⚠ Sequence guard for that fetch — the GSO-T2 `loadSeq` rule, KEPT although the
+// fan-out it was written for is gone. A count is another friend's colleague data.
+//
+// ⚠ TWO HALVES, AND ONLY ONE OF THEM IS REACHABLE TODAY — said out loud rather
+// than left to be discovered:
+//   · CROSS-SESSION is structural: the parent's `v-if` + `:key` DESTROYS this
+//     component on logout, so a response still in flight lands on a dead instance
+//     and can write nothing. `portal-menu.spec.js` pins it in both directions.
+//   · IN-SESSION was reachable through `loadCycles()`, whose ONLY caller was
+//     `saveSubscriptions()` — retired here with the gear (§UC-PI-016). With one
+//     cycles load per session there is no second batch to supersede, so this
+//     counter's live job is the `onBeforeUnmount` bump alone. It stays because the
+//     next in-session reloader (a post-submit `hasOrder` refresh, PI-T6's history)
+//     would otherwise reintroduce the race silently; nothing can red it today, and
+//     no test pretends otherwise.
 let guestCountSeq = 0
 
 // ---------------------------------------------------------------------------
@@ -220,15 +229,10 @@ const profilePacketaOriginal = ref('')
 const profileSaving = ref(false)
 const profileError = ref('')
 
-const showSubscriptionModal = ref(false)
-const subCoffee = ref(true)
-const subBakery = ref(true)
-const subSaving = ref(false)
-// ⚠ Not cosmetic. A failed `saveSubscriptions()` leaves this modal OPEN, and the
-// page banner then renders BEHIND the scrim with its dismiss unreachable — the
-// user sees a dialog that simply "did nothing". (Measured; not a regression —
-// radix behaved identically before the NeoModal port.)
-const subError = ref('')
+// ⚠ The subscription modal's five refs are RETIRED (§UC-PI-016): bakery is retiring,
+// so the cycle-type filter has nothing left to filter. The table, the two routes and
+// `GET /friends/cycles`'s SERVER-side filter all stay — no schema change, no route
+// removal, no data deleted.
 
 // Vouchers
 const pendingVouchers = ref([])
@@ -757,8 +761,9 @@ const inviteError = ref('')
 // covers re-entrancy within one session.
 let inviteSeq = 0
 
-// Guest share dialog — the cycle whose link is being shared (null = closed)
-const shareCycle = ref(null)
+// ⚠ `shareCycle` is GONE with the card that fed it (§UC-PI-011): this view mounts no
+// `GuestShareDialog` any more. The ONE instance lives in `FriendOrder.vue` and the
+// drawer reaches it through `requestShareDialog()` below.
 
 // ---------------------------------------------------------------------------
 // Loading
@@ -773,11 +778,12 @@ onMounted(async () => {
   // issued BEFORE the `await` below rather than after, so the one request it
   // makes is already in flight while the voucher check settles.
   loadBalance()
-  // `cycles` and `subscriptions` are already seeded from the handshake, so the
-  // only fetch the first render still owes is the voucher check.
+  // `cycles` is already seeded from the handshake, so the only fetch the first
+  // render still owes is the voucher check. (`subscriptions` no longer rides along:
+  // §UC-PI-016 retired the modal it prefilled, and with it one request per login.)
   await checkPendingVouchers()
-  // ⚠ Issued LAST, deliberately — see `loadGuestCounts`.
-  loadGuestCounts(seq, cycles.value)
+  // ⚠ Issued LAST, deliberately — see `loadColleagueCount`.
+  loadColleagueCount(seq)
 })
 
 onBeforeUnmount(() => {
@@ -786,98 +792,56 @@ onBeforeUnmount(() => {
   // does not stop work already in flight from being ISSUED.
   //
   //   · a pending `setTimeout` — `switchUser` used to cancel it; ours now.
-  //   · the two sequence counters. `loadGuestCounts`'s worker loop has exactly
+  //   · the two sequence counters. `loadGuestCounts`'s worker loop had exactly
   //     one exit, `if (seq !== guestCountSeq) return`, and nothing bumped it on
   //     unmount — so after a logout the capped queue kept DISPATCHING. Against
-  //     the e2e database's 135 open cycles that is ~132 further
+  //     the e2e database's 135 open cycles that was ~132 further
   //     `GET /api/guest-links/cycle/:id`, now token-less (`clearFriendsPassword()`
   //     has already run), each 401ing into the empty catch while competing for
-  //     connections with the NEXT login's own requests. The concurrency cap
-  //     holds it to 3 sockets, which is the only reason it was survivable —
-  //     the cap was masking this, not fixing it. Bumping both counters makes
-  //     the loop exit before its next dispatch.
+  //     connections with the NEXT login's own requests.
+  //     ⚠ PI-T3: the queue is one request now (§UC-PI-004), so the dispatch half of
+  //     that story is historical — but the WRITE half is not, and the bump is what
+  //     still stops a response that lands after the unmount from being applied.
   if (usernameCheckTimeout) clearTimeout(usernameCheckTimeout)
   usernameCheckTimeout = null
   guestCountSeq++
   inviteSeq++
 })
 
-async function loadSubscriptions() {
+// ⚠ `loadSubscriptions()` and `loadCycles()` are DELETED, not merely unused.
+// `loadCycles()` had exactly ONE caller — `saveSubscriptions()` — and the gear that
+// reached it is retired (§UC-PI-016). `cycles` is seeded from the handshake and is
+// not refetched within a session; the next row that needs a refresh adds the caller
+// back beside the `guestCountSeq` bump, which is why that counter stays.
+
+/**
+ * The colleague count behind drawer item 4 — ONE `GET /guest-links/cycle/:id`, for
+ * the CURRENT OPEN round only (18 §UC-PI-004).
+ *
+ * ⚠ Issued after the voucher check has settled (see `onMounted`), the ordering rule
+ * module 03 established: decoration must never be ahead of the two calls that decide
+ * what the screen shows. And issued at most ONCE per session load whatever the
+ * payload contains — with 40 open rounds in `cycles` this still fires one request,
+ * which is the bound that replaces RD-FL-8a's 3-at-a-time cap.
+ *
+ * Non-blocking and error-swallowing: `colleagues` stays `null`, and `null` renders
+ * the same „Pošlite odkaz kolegom" copy as a genuine zero (§UC-PI-004 item 4:
+ * „failure ⇒ the „Pošlite odkaz kolegom" sub, never an error").
+ */
+async function loadColleagueCount(seq) {
+  const cycle = landing.value.state === 'open' ? landing.value.currentCycle : null
+  if (!cycle) return
   try {
-    const subs = await api.getSubscriptions(props.friendId)
-    subscriptions.value = subs.types || []
-  } catch (e) {
-    // Non-critical: it only prefills the subscription modal.
+    const data = await api.getGuestLink(cycle.id)
+    if (seq !== guestCountSeq) return
+    colleagues.value = summariseSubOrders(data)
+  } catch {
+    // Swallowed: no link yet, a 404, or an offline blip all render the same sub-line.
   }
-}
-
-// Re-fetch the list. Only invalidated by a subscription change today — the first
-// render is seeded from the handshake.
-async function loadCycles() {
-  // Bumped BEFORE the awaits: an older count batch must never outlive the list
-  // it was fetched for.
-  const seq = ++guestCountSeq
-  cycles.value = await api.getFriendsCycles(props.friendId)
-  await loadSubscriptions()
-  loadGuestCounts(seq, cycles.value)
-}
-
-// ⚠ The concurrency cap is the point of this function (RD-FL-8a item 3).
-//
-// It used to `Promise.all` one `GET /api/guest-links/cycle/:id` per OPEN cycle in
-// a single tick, on the assumption — written into the code — that there would be
-// "typically 1–2" of them. Cycles are never auto-closed, so that assumption
-// decays silently with age: the e2e database reaches 135 open cycles, and 135
-// XHRs issued at once queue behind the browser's 6-connection-per-host limit
-// with the portal's OWN requests stuck behind them. That really happened; it
-// flaked `portal-session-boundary.spec.js` until `muteGuestCounts` was added to
-// paper over it.
-//
-// Two bounds, both required:
-//   · at most GUEST_COUNT_CONCURRENCY in flight, leaving at least half the
-//     connection budget for the balance card, the order pages and navigation;
-//   · the batch is issued only AFTER the subscription and voucher fetches have
-//     settled (see `onMounted`), so decoration can never be ahead of the two
-//     calls that decide what the screen shows.
-// The sequence guard is re-checked before each DISPATCH as well as before each
-// write, so a superseded batch stops issuing rather than merely stops writing.
-const GUEST_COUNT_CONCURRENCY = 3
-
-async function loadGuestCounts(seq, list) {
-  const queue = list.filter(c => c.status === 'open')
-  let next = 0
-
-  const worker = async () => {
-    while (next < queue.length) {
-      if (seq !== guestCountSeq) return
-      const cycle = queue[next++]
-      try {
-        const data = await api.getGuestLink(cycle.id)
-        if (seq !== guestCountSeq) return
-        // Written even when the count is 0, so a colleague cancelling is
-        // reflected on the next load instead of leaving a stale figure standing.
-        //
-        // ⚠ That self-healing is SUCCESS-PATH ONLY. `guestSummaries` is a merge
-        // map that is never reset per batch, so a refetch that FAILS leaves the
-        // previous entry standing rather than falling back to the "Objednávate
-        // aj pre kolegov?" copy — showing last-known-good is the better UX, but
-        // do not read this as "the map heals on error". It is not a
-        // cross-session leak: the map dies with this component.
-        guestSummaries.value = { ...guestSummaries.value, [cycle.id]: summariseSubOrders(data) }
-      } catch {
-        // Swallowed: no link yet, a 404 on a stale cycle id, or an offline blip
-        // all render the "Objednávate aj pre kolegov?" fallback.
-      }
-    }
-  }
-
-  await Promise.all(
-    Array.from({ length: Math.min(GUEST_COUNT_CONCURRENCY, queue.length) }, worker)
-  )
 }
 
 // One cycle's colleague aggregate, out of the GSO-T2 `{ link, guest_orders,
-// totals }` payload the batch above already fetches. No new request and no new
+// totals }` payload the fetch above already returns. No new request and no new
 // endpoint: `guest_orders` carries its `items` (helpers/guest-orders.js
 // `attachItems`), so the quantity is derivable from what is on the wire.
 //
@@ -890,16 +854,14 @@ function summariseSubOrders(data) {
   const count = Number(data?.totals?.count)
   const orders = Array.isArray(data?.guest_orders) ? data.guest_orders : []
   let grams = 0
-  let units = 0
   for (const order of orders) {
     if ((order?.status || 'submitted') === 'cancelled') continue
     for (const item of order?.items || []) {
       const quantity = Number(item?.quantity) || 0
       grams += (VARIANT_GRAMS[item?.variant] || 0) * quantity
-      units += quantity
     }
   }
-  return { count: Number.isFinite(count) ? count : 0, grams, units }
+  return { count: Number.isFinite(count) ? count : 0, grams }
 }
 
 // ---------------------------------------------------------------------------
@@ -948,16 +910,10 @@ async function resolveVoucher(action) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Cycle card helpers
-// ---------------------------------------------------------------------------
-
-function goToCycle(cycleId) {
-  router.push(`/cycle/${cycleId}`)
-}
-
-const activeCycles = computed(() => cycles.value.filter(c => c.status !== 'completed'))
-const archivedCycles = computed(() => cycles.value.filter(c => c.status === 'completed'))
+// ⚠ RETIRED BY PI-T3 (§UC-PI-005): `goToCycle()`, `activeCycles`, `archivedCycles`,
+// `getCycleTypeLabel()`, `formatKilos()` and `orderQuantityLabel()` were the cycle
+// LIST's helpers and died with it. `/cycle/:id` is still a live route (§UC-PI-018) —
+// it is simply no longer reachable from a card on this screen.
 
 // ---------------------------------------------------------------------------
 // 18 §UC-PI-001/002 — WHICH VIEW, and WHICH ROUND (PI-T1; the four view BODIES
@@ -1009,6 +965,73 @@ const menuOpen = ref(false)
 function openMenu() {
   menuOpen.value = true
 }
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-005/011 — THE EMBEDDED ORDER SURFACE, AND THE ONE SHARE DIALOG
+// ---------------------------------------------------------------------------
+
+/**
+ * The `FriendOrder.vue` instance this view mounts in `mode="landing"` (open state
+ * only). `null` on every other view and state, which is exactly what the two
+ * readers below are written to cope with.
+ */
+const landingOrder = ref(null)
+
+/**
+ * The landing cart's total, read through `FriendOrder`'s `defineExpose` — drawer
+ * item 1's „ · v košíku …" clause. `0` while the component is not mounted.
+ */
+const landingCartTotal = computed(() => Number(landingOrder.value?.cartTotal) || 0)
+
+/**
+ * Drawer item 4's action (§UC-PI-011): open THE share dialog — the one instance,
+ * which lives in `FriendOrder.vue`.
+ *
+ * ⚠ THE PENDING FLAG IS NOT DEFENSIVE PADDING. Item 4's condition is the landing
+ * STATE (`open`), not the current VIEW, so the row is offered on „Moje objednávky"
+ * and „Zostatok a platby" too — where the embedded `FriendOrder` is not mounted and
+ * `landingOrder` is `null`. Navigating to `/` and opening the dialog once the
+ * instance exists is what makes the row mean the same thing from every view; the
+ * alternative (a second `GuestShareDialog` mounted here) is precisely what
+ * §UC-PI-011 forbids.
+ *
+ * ⚠⚠ IT IS ALSO DISARMED ON EVERY PATH THAT DOES NOT REACH THE INSTANCE, and that
+ * is the half a first version got wrong (PI-T3 review). A flag that is set and never
+ * cleared is a dialog that opens UNBIDDEN later: the friend arrives on the offer
+ * minutes afterwards and a share dialog they never asked for is waiting. Three exits:
+ * the instance is already here (open now), we are on `/` with no instance at all (the
+ * round is not open — nothing to share), or the push was REFUSED (drop it).
+ *
+ * ⚠ SAID PLAINLY, as with `guestCountSeq` above: the second and third exits have NO
+ * REACHABLE TRIGGER TODAY and no test can red them. Item 4 renders only when the round
+ * is open, and no guard currently refuses a push INTO `/` (the landing's own leave
+ * guard fires on the way OUT). They are here because the cost is two lines and the
+ * failure they prevent is silent and user-visible; what IS pinned — in
+ * `portal-landing.spec.js` §3 — is the reachable half: after the row has opened the
+ * dialog from another view, returning to `/` must not re-open it.
+ */
+const pendingShare = ref(false)
+
+async function requestShareDialog() {
+  if (landingOrder.value?.openShareDialog) {
+    landingOrder.value.openShareDialog()
+    return
+  }
+  // Already on the offer with no instance ⇒ the round is not open, so there is
+  // nothing to share and nothing to wait for.
+  if (route.path === '/') return
+  pendingShare.value = true
+  // `router.push` RESOLVES WITH a NavigationFailure rather than rejecting when a
+  // guard cancels or redirects it — so the falsy check is the success case.
+  const failure = await router.push('/')
+  if (failure) pendingShare.value = false
+}
+
+watch(landingOrder, (instance) => {
+  if (!instance || !pendingShare.value) return
+  pendingShare.value = false
+  instance.openShareDialog()
+})
 
 // ── the balance, fetched ONCE per session ────────────────────────────────────
 //
@@ -1113,18 +1136,41 @@ const orderedCycles = computed(() => cycles.value.filter((c) => c && c.hasOrder)
  * „Objednávky sú otvorené“ when no deadline is stored; closed/locked ⇒
  * „Objednávky sú zatvorené“.
  *
- * ⚠ PI-T3 SEAM — the „ · v košíku {fmtEur(total)}“ clause §UC-PI-004 appends when
- * the landing cart is non-empty is NOT here, deliberately. There IS no landing
- * cart yet: PI-T3 mounts `FriendOrder.vue` in `mode='landing'` and it owns the
- * cart. Writing the clause now would mean shipping a branch nothing can reach and
- * no test can red — the same „dead helper" reasoning that kept `openMenu`/`logout`
- * out of `e2e/helpers/portal.js` until this row (PI-T1 §4). PI-T3 appends it here.
+ * ⚠ The „ · v košíku {fmtEur(cartTotal)}" clause reads the LANDING's cart, and it
+ * reads it off the embedded `FriendOrder` through `defineExpose` rather than keeping
+ * a copy: the cart model has one home (§UC-PI-005), and a drawer that summed its own
+ * would be the second. `> 0` is the spec's gate, so an empty basket adds nothing.
+ * `landingCartTotal` is `0` whenever the component is not mounted (closed/locked, or
+ * another view), which collapses to the same thing.
  */
 const shopSub = computed(() => {
   const l = landing.value
   if (l.state !== 'open') return 'Objednávky sú zatvorené'
   const closes = fmtDate(l.currentCycle?.closes_at)
-  return closes ? `Otvorené do ${closes}` : 'Objednávky sú otvorené'
+  const head = closes ? `Otvorené do ${closes}` : 'Objednávky sú otvorené'
+  const cart = landingCartTotal.value
+  return cart > 0 ? `${head} · v košíku ${fmtEur(cart)}` : head
+})
+
+/**
+ * §UC-PI-004 item 4's sub-line: „{colleaguesLabel(count)} · {kgLabel(grams)} cez váš
+ * odkaz", and „Pošlite odkaz kolegom" for a zero count, a failure or a load still in
+ * flight — the three are DELIBERATELY indistinguishable (a missing count costs the
+ * host nothing, and a menu is no place for an error surface).
+ *
+ * ⚠ `kgLabel()` returns the WHOLE „X kg" string (FUP-T24, and §UC-PI-004 says so in
+ * its own footnote) — „… {kg} kg" would render „0.25 kg kg".
+ *
+ * ⚠ The zero-GRAMS guard drops the „· " separator rather than printing „· 0 kg",
+ * which is module 03's copy decision carried over: „3 kolegovia · 0 kg" reads as a
+ * failure, „3 kolegovia cez váš odkaz" reads as what it is (the real case being a
+ * count that arrived without item rows).
+ */
+const shareSub = computed(() => {
+  const c = colleagues.value
+  if (!c || !c.count) return 'Pošlite odkaz kolegom'
+  const qty = c.grams ? ` · ${kgLabel(c.grams)}` : ''
+  return `${colleaguesLabel(c.count)}${qty} cez váš odkaz`
 })
 
 /** Item 2's sub-line: „{n} objednávky · naposledy {cycleName}“, or „Zatiaľ žiadne“. */
@@ -1147,11 +1193,10 @@ const historySub = computed(() => {
  * the general rule is the one written as a rule. Implemented as the general rule;
  * the parenthetical reads as a miscount.
  *
- * ⚠ PI-T3 SEAM — item 4 („Zdieľať s kolegami“, `state === 'open'` only, opening
- * `GuestShareDialog`) is deliberately ABSENT. Its sub-line is one
- * `GET /guest-links/cycle/:id` for the current open cycle behind the `loadSeq`
- * rule, and its action is the share dialog PI-T3 re-points at the landing. The
- * slot is between `balance` and `invite`.
+ * ⚠ Item 4 („Zdieľať s kolegami") is CONDITIONAL on `state === 'open'` — 05
+ * §UC-KG-002's rule that a locked or closed round offers no share affordance at all.
+ * It is the only row that opens a dialog belonging to another component; see
+ * `requestShareDialog()`.
  */
 const menuItems = computed(() => {
   const rows = [
@@ -1169,6 +1214,9 @@ const menuItems = computed(() => {
         ? null
         : { text: fmtEur(balance.value), tone: balance.value < -0.01 ? 'danger' : 'ok' },
     },
+    ...(landing.value.state === 'open'
+      ? [{ key: 'share', icon: 'share', label: 'Zdieľať s kolegami', sub: shareSub.value }]
+      : []),
     { key: 'invite', icon: 'invite', label: 'Pozvať priateľa', sub: 'Váš pozývací odkaz' },
     { key: 'explainer', view: 'explainer', icon: 'help', label: 'Ako to funguje' },
     { key: 'profile', icon: 'user', label: 'Profil', sub: 'Meno, telefón, Packeta, heslo' },
@@ -1185,6 +1233,7 @@ function onMenuSelect(key) {
   menuOpen.value = false
   if (key === 'invite') return openInviteModal()
   if (key === 'profile') return openProfileModal()
+  if (key === 'share') return requestShareDialog()
   const path = key === 'history' ? '/moje-objednavky' : key === 'balance' ? '/zostatok' : key === 'explainer' ? '/ako-to-funguje' : '/'
   if (route.path !== path) router.push(path)
 }
@@ -1204,51 +1253,6 @@ function onMenuLogout() {
  */
 function backHome() {
   if (route.path !== '/') router.push('/')
-}
-
-function getCycleTypeLabel(type) {
-  if (type === 'bakery') return 'Pekáreň'
-  return 'Káva'
-}
-
-function formatKilos(kilos) {
-  if (!kilos || kilos === 0) return '0 kg'
-  return `${kilos.toFixed(2)} kg`
-}
-
-// The quantity that FOLDS INTO the "Objednané ·" badge (03 resolved conflict #6:
-// the separate "☕ 0.25 kg" line is dropped). Bakery counts pieces, coffee counts
-// weight — the same split the dropped line used.
-function orderQuantityLabel(cycle) {
-  if (cycle.type === 'bakery') return `${cycle.orderItemCount} ks`
-  return formatKilos(cycle.orderKilos)
-}
-
-// The colleagues' quantity on the share row — the same bakery/coffee split the
-// badge above uses, but fed by `guestSummaries` rather than by the cycle row.
-//
-// ⚠ Trailing zeros are STRIPPED here ("4 kg", not "4.00 kg"), which is the
-// RD-FO-2 rule from FriendOrder's stock bar and NOT `formatKilos`. The two are
-// fed from different units — `cycle.orderKilos` arrives as kilos from the API,
-// this one is summed in GRAMS off the sub-order items — and the design canon for
-// this row prints "4 kg". Empty string when there is nothing to show: the
-// template appends this after a "· " separator, and " · 0 kg" next to a live
-// colleague count would read as a failure rather than as "no weight yet" (the
-// real case being a bakery-only cycle, or the count arriving without items).
-function guestQuantityLabel(cycle) {
-  const summary = guestSummaries.value[cycle.id]
-  if (!summary) return ''
-  if (cycle.type === 'bakery') return summary.units > 0 ? `${summary.units} ks` : ''
-  if (!summary.grams) return ''
-  // The kg rule itself lives in `lib/kg.js` (FUP-T24). The zero/absent guard above
-  // stays HERE — it is this row's copy decision, not part of the rule.
-  return kgLabel(summary.grams)
-}
-
-// Guest share link straight from the cycle list, so the host does not have to
-// open a cycle first. Same dialog (and logic) as FriendOrder.vue.
-function openShareDialog(cycle) {
-  shareCycle.value = cycle
 }
 
 // ---------------------------------------------------------------------------
@@ -1433,36 +1437,10 @@ async function submitFirstPassword() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Subscriptions (UC-FL-010)
-// ---------------------------------------------------------------------------
-
-function openSubscriptionModal() {
-  subError.value = ''
-  subCoffee.value = subscriptions.value.length === 0 || subscriptions.value.includes('coffee')
-  subBakery.value = subscriptions.value.length === 0 || subscriptions.value.includes('bakery')
-  showSubscriptionModal.value = true
-}
-
-async function saveSubscriptions() {
-  subSaving.value = true
-  // A retry must not leave the previous attempt's banner standing (RD-FL-3).
-  subError.value = ''
-  try {
-    const types = []
-    if (subCoffee.value) types.push('coffee')
-    if (subBakery.value) types.push('bakery')
-    await api.updateSubscriptions(props.friendId, types)
-    subscriptions.value = types
-    showSubscriptionModal.value = false
-    // Reload cycles with new filter
-    await loadCycles()
-  } catch (e) {
-    subError.value = e.message
-  } finally {
-    subSaving.value = false
-  }
-}
+// ⚠ Subscriptions (UC-FL-010) — the modal, `openSubscriptionModal()` and
+// `saveSubscriptions()` are RETIRED (18 §UC-PI-016). `api.updateSubscriptions` and
+// `PUT /api/subscriptions/friend/:id` are untouched and still answer 200; the
+// server-side filter in `GET /friends/cycles` is untouched too. Only the UI is gone.
 
 // ---------------------------------------------------------------------------
 // Credential setup (transition mode)
@@ -1761,349 +1739,86 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
     <!-- Balance Card -->
     <FriendBalanceCard :friend-id="friendId" />
 
-    <!-- Section header (UC-FL-006).
+    <!-- ═══════════════ 18 §UC-PI-005 — THE LANDING, OPEN STATE (PI-T3) ═══════════
+         ⚠ WHAT WAS HERE AND IS GONE: module 03's cycle LIST — the „Objednávkové
+         cykly" heading, the „Nastavenia odberu" gear, the `div.p-4` cards with their
+         badge matrix, the UC-FL-007 share row and the UC-FL-008 „Archív" fold
+         (§UC-PI-005/011/016; the two spec files that pinned them,
+         `portal-cycles.spec.js` and `portal-share-row.spec.js`, are deleted in the
+         same commit and their surviving properties moved to `portal-landing.spec.js`
+         / `portal-menu.spec.js`). Nothing gated on the heading any more — PI-T1 moved
+         that gate onto `data-testid="portal-landing"` above, which is why this
+         deletion is safe rather than merely sanctioned.
 
-         ⚠ ~~PINNED: `<h2>` with the accessible name "Objednávkové cykly" —
-         FIVE e2e specs locate it with `getByRole('heading', { name:
-         'Objednávkové cykly' })`.~~ **SUPERSEDED by PI-T1 (18 §UC-PI-019 item 1,
-         2026-09-20): NOTHING gates on this heading any more.** The „portal is
-         ready" gate is `expectLanding()` in `e2e/helpers/portal.js`, asserting
-         `data-testid="portal-landing"` on the page column below. The only two
-         remaining locators live in `portal-cycles.spec.js` and
-         `portal-share-row.spec.js`, both of which PI-T3 deletes with the cards —
-         so PI-T3 may remove this heading without hesitating over a pin. The name concatenates across the `.hl`
-         span, so the highlight costs nothing; the space before the span is
-         load-bearing. `h-screen` is the theme's DISPLAY-HEADING class inside
-         `.app` (UC-DS-001), not Tailwind's height utility — it is blocklisted
-         as a Tailwind candidate in `tailwind.config.js` for exactly this. -->
-    <div class="flex justify-between items-center" style="margin-bottom:14px">
-      <h2 class="h-screen text-[28px] sm:text-[34px]">Objednávkové <span class="hl">cykly</span></h2>
-      <!-- The gear is the ONLY route to the subscription modal, so it takes
-           the house zero-pixel ARIA layer (role + tabindex + Enter/Space) —
-           the same enhancement NeoCheckbox, NeoModal's `.m-x` and the login
-           eye toggle make, and the same rule that kept it OFF the appbar
-           pencil (which merely duplicates `.titles`). The prototype's bare
-           span would be unreachable without a mouse. -->
-      <span
-        role="button"
-        tabindex="0"
-        aria-label="Nastavenia odberu"
-        title="Nastavenia odberu"
-        style="color:var(--ink-dim);cursor:pointer;display:flex"
-        @click="openSubscriptionModal"
-        @keydown.enter.prevent="openSubscriptionModal"
-        @keydown.space.prevent="openSubscriptionModal"
-      >
-        <NeoIcon name="gear" />
-      </span>
-    </div>
+         ⚠ The CLOSED and LOCKED landings are PI-T4's and PI-T5's. Until they land,
+         those two states render the chrome, the balance card and nothing else —
+         that is the planned increment, not an omission. -->
 
-    <div v-if="cycles.length === 0" class="sub" style="text-align:center;padding:48px 0">
-      Žiadne dostupné cykly
-    </div>
+    <template v-if="view === 'shop' && landing.state === 'open' && landing.currentCycle">
+      <!-- 1. THE STATUS LINE (§UC-PI-005 item 1).
+           „<b>Objednávky do {fmtWeekdayDayMonth(closes_at)}</b> Káva príde okolo
+           {expected_date} — <a>Ako to funguje?</a>"
 
-    <template v-else>
-      <!-- Active cycles — `status !== 'completed'`, so PLANNED, OPEN and
-           LOCKED all render here, in the order the API returns them. -->
-      <div v-if="activeCycles.length === 0" class="sub" style="text-align:center;padding:32px 0">
-        Žiadne aktívne cykly
-      </div>
-      <div v-else style="display:flex;flex-direction:column;gap:16px">
-        <!-- ⚠ PINNED: the card root is a `div` carrying the LITERAL class
-             `p-4` (= the prototype's 16px padding). `guest-link.spec.js`'s
-             `cardFor()` is
-               page.locator('div.p-4', { has: getByRole('heading', { name, exact: true }) })
-             so this element must hold BOTH the `<h3>` cycle name and the
-             share button. Consequences that must survive future edits:
-               · nothing else in this view may carry `p-4` while containing a
-                 cycle-name heading — notably the page column above, which is
-                 deliberately `px-4 sm:px-7 py-4 sm:py-7` and NOT `p-4`, or the
-                 locator would match column AND card and trip strict mode;
-               · `p-4` is a Tailwind utility here, not theme CSS. `.card`
-                 itself declares no padding, so it is also the real padding.
+           · `closes_at` null ⇒ the bare „<b>Objednávky sú otvorené.</b>";
+           · `expected_date` null ⇒ the „Káva príde …" clause is omitted. It is ADMIN
+             FREE TEXT and is rendered VERBATIM (PI-T1: `lib/dates.js` formats the
+             ISO columns, never this one);
+           · the „Ako to funguje?" link renders in BOTH branches — it is the way into
+             the explainer, not a decoration on the deadline sentence.
 
-             `.card.hl` (open only) is the white card with the 6px magenta
-             shadow; planned cards are inert per UC-FL-006. -->
-        <div
-          v-for="cycle in activeCycles"
-          :key="cycle.id"
-          class="card p-4"
-          :class="{ hl: cycle.status === 'open' }"
-          :style="{
-            cursor: cycle.status === 'planned' ? 'default' : 'pointer',
-            opacity: cycle.status === 'planned' ? 0.85 : 1
-          }"
-          @click="cycle.status !== 'planned' && goToCycle(cycle.id)"
-        >
-          <!-- Header row: name + date on the left, order total + chevron on
-               the right (non-planned only — a planned cycle leads nowhere and
-               has no order). -->
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
-            <div style="min-width:0">
-              <!-- ⚠ PINNED: an `<h3>` whose text content is EXACTLY the cycle
-                   name — no nested spans, no icon, no whitespace-bearing
-                   children. `guest-link.spec.js` matches it with
-                   `{ exact: true }`, and `mobile-no-h-overflow.spec.js:73`
-                   clicks the name text to navigate (the card-level click).
-                   `.display` uppercases via CSS only, so `textContent` and the
-                   accessible name are untouched. -->
-              <h3 class="display" style="font-size:22px;line-height:1;overflow-wrap:anywhere">{{ cycle.name }}</h3>
-              <!-- ⚠ Figtree BOLD (the body face — product decision 2026-08-18,
-                   matching the order screen's status banner; this replaced the
-                   2026-08-13 Noto Sans Condensed pass), not `.mono`. `.mono` is
-                   REMOVED rather than overridden: other specs read `.mono` as
-                   "this is the mono face". `.sub` stays — it carries the colour,
-                   and it is what keeps A10's `line-height:normal` reaching this
-                   row now that `.mono` is gone. `data-testid` exists because the
-                   shipped locators were `.mono.sub` / `.mono` nth(1), which the
-                   2026-08-13 change retired. No font-family here: the body face
-                   is inherited. -->
-              <div
-                v-if="cycle.expected_date"
-                class="sub"
-                data-testid="cycle-date"
-                style="font-weight:700;font-size:14px;margin-top:7px;display:flex;align-items:center;gap:6px"
-              >
-                <NeoIcon name="cal" /> {{ cycle.expected_date }}
-              </div>
-            </div>
-            <div
-              v-if="cycle.status !== 'planned'"
-              style="display:flex;align-items:center;gap:8px;flex-shrink:0"
-            >
-              <!-- `orderTotal` ALREADY includes the delivery fee (the backend
-                   sums `total + delivery_fee`) — never re-add it here. -->
-              <span v-if="cycle.hasOrder" class="display" style="font-size:18px">{{ fmtEur(cycle.orderTotal) }}</span>
-              <span style="color:var(--accent);display:flex"><NeoIcon name="chev" /></span>
-            </div>
-          </div>
-
-          <!-- Plan block — the admin's multiline `plan_note`, one line per row
-               via `white-space:pre-line` (the prototype renders an array).
-               ⚠ `overflow-wrap:anywhere` is REQUIRED, not cosmetic, and does a
-               different job from `pre-line`: pre-line keeps one line per row
-               but will not break a long unbreakable token. `plan_note` is free
-               admin text, so a pasted Google Docs/Sheets URL is the obvious
-               real case — without this the whole DOCUMENT scrolled sideways on
-               a phone (531px against a 320px viewport). Neither `.card` nor the
-               page column clips, so the wrap has to happen here. UC-DS-005:
-               minimum supported width 320px with zero horizontal overflow. -->
-          <!-- ⚠ Figtree REGULAR (inherited body face, weight 400 by default —
-               product decision 2026-08-18, same as the date row above), not
-               `.mono`. The inline `line-height:1.7` is unchanged and still the
-               only thing declaring it, so the A9/A10 invariant
-               `portal-fidelity.spec.js` pins (13.5px × 1.7 = 22.95px) survives. -->
-          <div
-            v-if="cycle.plan_note"
-            data-testid="cycle-plan"
-            style="font-size:13.5px;color:var(--ink-faint);margin-top:10px;line-height:1.7;white-space:pre-line;overflow-wrap:anywhere"
-          >{{ cycle.plan_note }}</div>
-
-          <!-- Badge row: type × status × order.
-               ⚠ resolved conflict #1 — NO delivery-method badge (Packeta /
-               pickup) on the portal card any more; it lives on the order
-               screen (module 04) only.
-               ⚠ resolved conflict #6 — the ordered quantity FOLDS INTO the ok
-               badge ("Objednané · 0.25 kg" / "Objednané · 3 ks"); the separate
-               "☕ 0.25 kg" line is dropped.
-               A locked cycle without an order gets NO third badge. -->
-          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">
-            <span class="badge" :class="cycle.type === 'bakery' ? 'acc-o' : 'solid'">{{ getCycleTypeLabel(cycle.type) }}</span>
-            <span v-if="cycle.status === 'planned'" class="badge muted">Plánovaný</span>
-            <span v-else-if="cycle.status === 'open'" class="badge acc">Otvorený</span>
-            <span v-else class="badge">Uzamknutý</span>
-            <span v-if="cycle.hasOrder" class="badge ok">Objednané · {{ orderQuantityLabel(cycle) }}</span>
-            <span v-else-if="cycle.status === 'open'" class="badge warn">Neobjednané</span>
-          </div>
-
-          <!-- Share row (UC-FL-007) — OPEN cycles only: a locked cycle offers
-               no share affordance at all (pinned `toHaveCount(0)` in
-               `guest-link.spec.js`), and a planned one has nothing to order
-               into yet. It stays the card's LAST child, directly under the
-               badge row, and keeps the whole affordance inside `div.p-4`.
-
-               ⚠ resolved conflict #2 — the VISIBLE label is the prototype's
-               "Zdieľať", while `aria-label="Zdieľať s kolegami"` carries the
-               accessible name `guest-link.spec.js` locates the button by. Both
-               contracts hold with zero spec edits; neither may be dropped in
-               favour of the other.
-
-               ⚠ `@click.stop` is mandatory, not stylistic: the card root
-               navigates on click, so without it the share tap would leave the
-               portal before the dialog could be seen (pinned — after the click
-               the URL stays `/`).
-
-               The left half is context only. `guestSummaries` is filled by a
-               non-blocking, concurrency-capped batch; while it is in flight,
-               has failed, or the host simply has no colleagues yet, the row
-               reads "Objednávate aj pre kolegov?" — there is deliberately no
-               loading or error state, because a missing count costs the host
-               nothing.
-
-               ⚠ The count is a DECLINED phrase plus the quantity ("3 kolegovia
-               · 4 kg") on its own emphasised line, with "objednali cez váš
-               odkaz" underneath — it replaces the `.tabbadge` chip and the
-               single "N | kolegovia cez váš odkaz" line. The host's question
-               here is how much coffee they are collecting for other people, and
-               a bare count answers it only if every colleague buys one bag.
-               `guestQuantityLabel` yields an empty string rather than "0 kg"
-               when there is no weight to show (see it for why), so the "· "
-               separator is conditional on the label, not on the count. -->
-          <div
-            v-if="cycle.status === 'open'"
-            data-testid="share-row"
-            style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px;border-top:2px solid rgba(10,10,10,0.12);padding-top:12px"
-          >
-            <span class="sub" style="display:flex;flex-direction:column;gap:1px;min-width:0">
-              <template v-if="guestSummaries[cycle.id]?.count > 0">
-                <span
-                  data-testid="share-row-count"
-                  style="font-weight:700;font-size:15px;color:var(--ink);overflow-wrap:anywhere"
-                >{{ colleaguesLabel(guestSummaries[cycle.id].count) }}<template v-if="guestQuantityLabel(cycle)"> · {{ guestQuantityLabel(cycle) }}</template></span>
-                <span style="overflow-wrap:anywhere">objednali cez váš odkaz</span>
-              </template>
-              <span v-else style="overflow-wrap:anywhere">Objednávate aj pre kolegov?</span>
-            </span>
-            <button
-              type="button"
-              class="btn sm"
-              aria-label="Zdieľať s kolegami"
-              style="flex-shrink:0"
-              @click.stop="openShareDialog(cycle)"
-            >
-              <NeoIcon name="share" /> Zdieľať
-            </button>
-          </div>
+           ⚠ The date is `fmtWeekdayDayMonth` from `lib/dates.js` — a date standing
+           alone after a preposition is SHORT (PI-T1 §1); `cycle-stages.js` owns the
+           long form only inside module 17's composed sentences. -->
+      <div class="banner slim" data-testid="landing-status">
+        <span class="dot"></span>
+        <div style="min-width:0;overflow-wrap:anywhere">
+          <template v-if="landing.currentCycle.closes_at">
+            <b>Objednávky do {{ fmtWeekdayDayMonth(landing.currentCycle.closes_at) }}</b>
+          </template>
+          <template v-else><b>Objednávky sú otvorené.</b></template>
+          <!-- ⚠ THE EM DASH BELONGS TO THE „Káva príde" CLAUSE, NOT TO THE LINK.
+               §UC-PI-005 writes the sentence as „… Káva príde okolo {expected_date} —
+               <a>Ako to funguje?</a>", and the spec drops only the „Káva príde …" half
+               when `expected_date` is null. Rendering the dash unconditionally left
+               „Objednávky sú otvorené. — Ako to funguje?" — an orphan dash introducing
+               nothing. The LINK survives both branches (it is the way into the
+               explainer, not a decoration on the deadline); only its separator is
+               conditional. ⚠ PO: if a separator is wanted in the bare branch it is a
+               copy decision, not a template one — both branches are pinned in
+               `portal-landing.spec.js`, so changing either is a deliberate edit. -->
+          <template v-if="landing.currentCycle.expected_date">Káva príde okolo {{ landing.currentCycle.expected_date }} —</template>
+          <!-- ⚠ `{{ ' ' }}`, NOT TEMPLATE WHITESPACE. Vue's compiler condenses the
+               whitespace between a `v-if` template and its next sibling, so when the
+               clause above is dropped the link fused onto the sentence:
+               „Objednávky sú otvorené.Ako to funguje?" (measured). An explicit space
+               text node renders in BOTH branches and is what the fallback test's
+               whole-string pin holds. -->
+          {{ ' ' }}<router-link to="/ako-to-funguje" style="font-weight:700">Ako to funguje?</router-link>
         </div>
       </div>
 
-      <!-- Archive fold (UC-FL-008). Plain UI state: not persisted, not in the
-           URL, default closed — and re-created closed for the next session,
-           because this whole component is. -->
-      <div v-if="archivedCycles.length > 0">
-        <!-- `.chev.open` is the theme's own rotate-90 + accent transition, so
-             the rotation and the colour come from one class, not from
-             Tailwind. Keyboard layer as on the gear: this toggle is the only
-             route to the archived cycles.
+      <!-- 2. The debt banner is PI-T7's slot (§UC-PI-008). Left empty on purpose;
+              `FriendBalanceCard` above stays until that row relocates it. -->
 
-             ⚠ `line-height:normal` is not in the prototype and is not
-             decoration — this row and the archive row's name below are PLAIN
-             TEXT with no theme class, so A10's class list cannot reach them and
-             Tailwind preflight's `html{line-height:1.5}` applies. Measured
-             canon-vs-port at 378 and 1180 px: this row 21 px against the canon's
-             16, the row name 22.5 against 18. See friends-theme.css §A10,
-             "WHAT THIS RULE STILL CANNOT REACH". -->
-        <div
-          role="button"
-          tabindex="0"
-          :aria-expanded="showArchive ? 'true' : 'false'"
-          data-testid="archive-toggle"
-          style="display:flex;align-items:center;gap:8px;margin-top:18px;cursor:pointer;font-weight:600;font-size:14px;line-height:normal;color:var(--ink-dim)"
-          @click="showArchive = !showArchive"
-          @keydown.enter.prevent="showArchive = !showArchive"
-          @keydown.space.prevent="showArchive = !showArchive"
-        >
-          <span class="chev" :class="{ open: showArchive }"><NeoIcon name="chev" /></span>
-          <span>Archív ({{ archivedCycles.length }})</span>
-        </div>
+      <!-- 3./4. THE ORDER SURFACE AND ITS `.cartbar` (§UC-PI-005 items 3 and 4).
+           ⚠ ONE HOME, EXTENDED — never forked, never partially copied. The `ref` is
+           how the drawer reaches `openShareDialog()` and `cartTotal` (§UC-PI-011,
+           §UC-PI-004 item 1) without this view holding either.
 
-        <div v-if="showArchive" style="display:flex;flex-direction:column;gap:12px;margin-top:12px">
-          <!-- Flat 2px-border rows. ⚠ resolved conflict #4: the prototype's
-               archive rows are inert, the repo navigates — repo is canonical
-               for behaviour, so they keep calling `goToCycle`.
-               The name is a plain bold div, NOT a heading: `guest-link.spec.js`
-               matches cycle cards by `div.p-4` + heading, and an archived row
-               must never be able to answer that locator. -->
-          <div
-            v-for="cycle in archivedCycles"
-            :key="cycle.id"
-            class="card flat"
-            style="padding:14px;display:flex;justify-content:space-between;align-items:center;gap:10px;opacity:.85;cursor:pointer"
-            @click="goToCycle(cycle.id)"
-          >
-            <div style="min-width:0">
-              <div style="font-weight:700;font-size:15px;line-height:normal;overflow-wrap:anywhere">{{ cycle.name }}</div>
-              <div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap">
-                <span class="badge" style="font-size:10.5px;padding:2px 7px">{{ getCycleTypeLabel(cycle.type) }}</span>
-                <span class="badge muted" style="font-size:10.5px;padding:2px 7px">Dokončený</span>
-              </div>
-            </div>
-            <span
-              v-if="cycle.hasOrder"
-              class="mono"
-              style="font-size:13px;flex-shrink:0"
-            >{{ fmtEur(cycle.orderTotal) }}</span>
-          </div>
-        </div>
-      </div>
+           ⚠ `:key` on the cycle id: `FriendOrder` loads its order from `onMounted`
+           only and has no watch on its cycle (a lifetime assumption recorded in its
+           own header), so re-pointing the same instance at a different round would
+           leave `order`/`cart`/`paymentVs` from the previous one. The key re-creates
+           it instead, which is the assumption this file must not quietly break. -->
+      <FriendOrder
+        ref="landingOrder"
+        :key="landing.currentCycle.id"
+        mode="landing"
+        :cycle-id="landing.currentCycle.id"
+        :friend-id="friendId"
+      />
     </template>
   </div>
-
-  <!-- Subscription modal (UC-FL-010) — `portal.jsx:149-159` node for node.
-       `.m-body` is already `flex-direction:column; gap:12px`, so the children
-       need no wrapper and no spacing of their own. -->
-  <NeoModal
-    v-if="showSubscriptionModal"
-    title="Nastavenia odberu"
-    @close="showSubscriptionModal = false"
-  >
-    <!-- ⚠ This modal's OWN failure surface (RD-FL-8a item 4), and it is not
-         cosmetic. `saveSubscriptions()` leaves the dialog OPEN on failure, so
-         before this the message went to the page banner — which renders BEHIND
-         the scrim, with its dismiss × unreachable. The user saw a modal that had
-         simply "did nothing". Same `.banner.danger.slim` grammar the profile
-         modal and the modern login card use (02 §UC-DS-013). -->
-    <div v-if="subError" class="banner danger slim">
-      <span class="dot"></span>
-      <div style="min-width:0">{{ subError }}</div>
-    </div>
-
-    <div class="sub">Vyberte, ktoré typy objednávok chcete vidieť:</div>
-
-    <!-- ⚠ Three click zones, one toggle each — RD-FL-2's remember-me pattern,
-         and the reason it exists: a `<label>` only forwards clicks to LABELABLE
-         elements, and `NeoCheckbox` is a `span[role=checkbox]`, so the wrapper
-         forwards nothing by itself. UC-FL-010 requires the whole label surface
-         to toggle, so each zone gets its own mechanism, and exactly once:
-           · the box     → NeoCheckbox's own handler;
-           · the text    → the `@click` on the span;
-           · the padding → `@click.self` on the label, which fires ONLY when the
-             and gap       label itself is the event target. Without `.self` the
-                           label would also catch the two clicks above and
-                           double-toggle them straight back.
-         The label cannot name the checkbox either (same non-labelable reason),
-         hence `aria-label` on the control — otherwise the box announces as an
-         unnamed checkbox.
-         Default magenta, NOT `ok`: green is reserved for hand-over semantics
-         (UC-DS-009). -->
-    <label
-      class="card flat"
-      style="padding:12px 14px;display:flex;align-items:center;gap:12px;cursor:pointer"
-      @click.self="subCoffee = !subCoffee"
-    >
-      <NeoCheckbox v-model="subCoffee" aria-label="Káva" />
-      <span style="font-weight:700" @click="subCoffee = !subCoffee">Káva</span>
-    </label>
-    <label
-      class="card flat"
-      style="padding:12px 14px;display:flex;align-items:center;gap:12px;cursor:pointer"
-      @click.self="subBakery = !subBakery"
-    >
-      <NeoCheckbox v-model="subBakery" aria-label="Pekáreň" />
-      <span style="font-weight:700" @click="subBakery = !subBakery">Pekáreň</span>
-    </label>
-
-    <div class="field-help">Ak nevyberiete nič, zobrazia sa všetky cykly.</div>
-
-    <template #footer>
-      <button type="button" class="btn" :disabled="subSaving" @click="showSubscriptionModal = false">
-        Zrušiť
-      </button>
-      <button type="button" class="btn accent" :disabled="subSaving" @click="saveSubscriptions">
-        {{ subSaving ? 'Ukladám...' : 'Uložiť' }}
-      </button>
-    </template>
-  </NeoModal>
 
   <!-- Profile modal (UC-FL-009) — the first CLOSABLE form-bearing NeoModal.
        Composed from `portal.jsx:176-199`: same nodes, same inline styles.
@@ -2857,13 +2572,12 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
     @close="menuOpen = false"
   />
 
-  <!-- Share with colleagues (guest link) — shared with FriendOrder -->
-  <GuestShareDialog
-    :open="!!shareCycle"
-    :cycle-id="shareCycle?.id"
-    :cycle-name="shareCycle?.name || ''"
-    @update:open="val => !val && (shareCycle = null)"
-  />
+  <!-- ⚠ THE SECOND `GuestShareDialog` THAT USED TO MOUNT HERE IS GONE (18
+       §UC-PI-011). It served the cycle card's share row; the card is retired, and the
+       dialog now has exactly ONE instance on the friend surface, inside
+       `FriendOrder.vue`. The drawer's „Zdieľať s kolegami" row reaches it through
+       `requestShareDialog()` → the `defineExpose`d `openShareDialog()`. Two instances
+       is how one of them stops receiving updates. -->
 
   <!-- Voucher modal — markup deliberately untouched (out of scope, 00-overview).
        It only needs the teleport: `.app>*{position:relative;z-index:1}`

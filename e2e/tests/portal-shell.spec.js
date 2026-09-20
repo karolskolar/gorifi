@@ -1,5 +1,8 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
+// PI-T3 review · the ONE home of source reading + comment stripping. See its header:
+// the obvious stripper is WRONG on a `.vue` file and made these pins vacuous.
+import { assertReadable, code as sharedCode } from '../helpers/source-pins.js'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ADMIN_PASSWORD } from '../fixtures.js'
@@ -592,14 +595,19 @@ test.describe('PI-T1 · one home — no second copy of module 17, no state in th
   test.skip(!HAS_SRC, NEEDS_SRC)
 
   const read = (p) => readFileSync(join(FRONTEND_SRC, p), 'utf8')
-  /** Source with comments stripped — a rule about CODE must not read prose. */
-  const code = (p) => read(p)
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .split('\n').map((l) => l.replace(/(^|\s)\/\/.*$/, '$1')).join('\n')
+  // ⚠⚠ PI-T3 review — THIS HELPER USED TO BE DEFINED HERE AND IT WAS WRONG. It
+  // stripped BLOCK comments before LINE comments, so `FriendPortalSession.vue:56`'s
+  // „No `@/components/ui/*` import remains in this file" opened a fake block comment
+  // that swallowed **16 709 characters** (a second one sits at `:2277`). Measured by
+  // the reviewer: a `localStorage.setItem(...)` injected at line 200 of that file
+  // survived the strip unseen, so the „nothing persisted" and „no plain `<script>`
+  // block" pins below were VACUOUS across lines 56–347 — of the very file they exist
+  // to guard. `helpers/source-pins.js` is the one home now; it strips line comments
+  // first and carries `assertReadable()`, which fails loudly when a strip eats a file.
+  const code = sharedCode
 
   test('`portal-state.js` formats no date and sorts no cycle of its own', () => {
-    const src = code('lib/portal-state.js')
-    expect(src.length, 'the file was read').toBeGreaterThan(200)
+    const src = assertReadable('lib/portal-state.js', ['export function resolveLanding'])
     // The sentence and its date form are 17's; the „newest" sort is 17's.
     for (const forbidden of ['fmtDay', 'toLocaleDateString', 'created_at', 'Ďalšia objednávka', 'približne', 'sort(']) {
       expect(src, `\`${forbidden}\` must not appear in portal-state.js`).not.toContain(forbidden)
@@ -613,19 +621,38 @@ test.describe('PI-T1 · one home — no second copy of module 17, no state in th
     // The session-boundary hard rule, at source level. `FriendPortal.vue` owns
     // the auth handshake and outlives the session; anything module 18 adds there
     // would survive a logout and greet the next friend.
-    const parent = code('views/FriendPortal.vue')
-    expect(parent.length, 'the parent was read').toBeGreaterThan(1000)
+    const parent = assertReadable('views/FriendPortal.vue', ['beginSession', 'authState'])
     for (const forbidden of ['resolveLanding', 'portal-state', 'portal-landing', 'route.meta']) {
       expect(parent, `\`${forbidden}\` must not appear in FriendPortal.vue`).not.toContain(forbidden)
     }
-    const session = code('views/FriendPortalSession.vue')
+    // ⚠ The tokens are chosen from the REGION the pins below care about — the
+    // session's own body, not line 1 — because that is the region the broken stripper
+    // was deleting. `menuItems` sits past the old hole's end; `landingOrder` inside it.
+    const session = assertReadable('views/FriendPortalSession.vue',
+      ['const menuItems = computed(', 'landingOrder', 'requestShareDialog'])
     expect(session).toContain('resolveLanding')
     expect(session).toContain('portal-landing')
     // ⚠ `<script setup>` has NO module scope (CLAUDE.md): a plain `<script>` block
     // is exactly where a singleton/cache would outlive the `:key` remount.
     expect(session, 'no plain <script> block may appear here').not.toMatch(/<script(?!\s+setup)[^>]*>/)
-    // …and nothing this row adds may be persisted.
-    expect(session.split('resolveLanding')[0]).not.toContain('localStorage.setItem')
+
+    // ⚠⚠ PI-T3 review — THE SCOPE OF THIS PIN WAS THE SECOND HOLE, and fixing the
+    // stripper alone did not close it. It read
+    //
+    //     expect(session.split('resolveLanding')[0]).not.toContain('localStorage.setItem')
+    //
+    // and the FIRST `resolveLanding` in this file is its IMPORT, on line 70 — so the
+    // slice being searched was lines 1–70 of a 2 600-line component. A
+    // `localStorage.setItem(...)` injected at line 200 passed it even with the
+    // stripper repaired (measured, both before and after).
+    //
+    // The correct scope is the WHOLE FILE, and it is not a widening of the claim —
+    // it is the claim this component's own header already makes („the parent is the
+    // single owner of localStorage, and this component must never touch it", :135).
+    // Every one of the ten `localStorage` mentions in the file is in a COMMENT, so
+    // after stripping the honest assertion is that the token does not occur at all.
+    expect(session, 'the session component must never touch localStorage — the parent owns it')
+      .not.toContain('localStorage')
   })
 
   test('the four routes all mount `FriendPortal.vue`, each with its own `meta.view`', () => {

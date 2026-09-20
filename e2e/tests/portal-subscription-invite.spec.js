@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding } from '../helpers/portal.js'
+import { expectLanding, openMenu } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
 // RD-FL-7 — the subscription modal (03 §UC-FL-010) and the invite modal
@@ -165,211 +165,79 @@ async function setTypes(types) {
   expect(res.status(), `set subscriptions ${JSON.stringify(types)}`).toBe(200)
 }
 
-const openSubs = async (page) => {
-  await page.locator('.app [aria-label="Nastavenia odberu"]').click()
-  const d = page.getByRole('dialog')
-  await expect(d.locator('.m-title')).toHaveText('Nastavenia odberu')
-  return d
-}
-
-const boxFor = (dialog, label) => dialog.getByRole('checkbox', { name: label })
+// ⚠ `openSubs()` / `boxFor()` are GONE with the modal they drove (18 §UC-PI-016).
 
 // ---------------------------------------------------------------------------
 
-test.describe('Subscription modal — the prototype shell (UC-FL-010)', () => {
-  test('title, intro, two card rows, help text, footer — on NeoModal, not radix', async ({ page }) => {
+test.describe('PI-T3 · 18 §UC-PI-016 — the subscription filter is RETIRED from the UI', () => {
+  // ⚠ WHAT WAS HERE. Two describes, NINE tests, on the „Nastavenia odberu" modal:
+  // its NeoModal shell, the preset matrix, the three label click-zones, the in-place
+  // re-filter, the empty save, the saving state, 320px, and its own failure surface.
+  // §UC-PI-016 retires the modal and the gear that opened it — bakery is retiring, so
+  // the cycle-type filter has nothing left to filter — and §UC-PI-019 item 8 replaces
+  // all nine with the TWO claims that outlive them.
+  //
+  // The retired tests are not silently lost: every one of them was about a control
+  // this row deletes. What is NOT deleted is the column, the two routes and the
+  // SERVER-side filter in `GET /friends/cycles`, and that is what pin 2 measures.
+
+  test('no „Nastavenia odberu" control on ANY of the four views, or in the drawer', async ({ page }) => {
     await openPortal(page)
-    const d = await openSubs(page)
 
-    await expect(d).toHaveClass(/\bmodal\b/)
-    await expect(d).toHaveAttribute('aria-modal', 'true')
-    await expect(page.locator('.modal-layer')).toHaveCount(1)
+    for (const path of ['/', '/moje-objednavky', '/zostatok', '/ako-to-funguje']) {
+      if (page.url().replace(/^https?:\/\/[^/]+/, '') !== path) {
+        await page.goto(path)
+      }
+      await expectLanding(page)
+      // Non-vacuity: the app really rendered this view before the absences are read.
+      await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-view', /.+/)
 
-    await expect(d.locator('.m-body > .sub')).toHaveText('Vyberte, ktoré typy objednávok chcete vidieť:')
-    await expect(d.locator('.field-help')).toHaveText('Ak nevyberiete nič, zobrazia sa všetky cykly.')
-
-    // One `<label class="card flat">` per type, prototype geometry
-    // (`portal.jsx:153`): 12px 14px padding, flex, 12px gap, cursor pointer.
-    const rows = d.locator('label.card.flat')
-    await expect(rows).toHaveCount(2)
-    for (const [i, text] of [[0, 'Káva'], [1, 'Pekáreň']]) {
-      const row = rows.nth(i)
-      // The bold label span — `portal.jsx:155` renders `fontWeight: 700`.
-      const lbl = row.locator('> span').last()
-      await expect(lbl).toHaveText(text)
-      expect(await lbl.evaluate((el) => getComputedStyle(el).fontWeight), `${text} is bold`).toBe('700')
-      const box = await row.evaluate((el) => {
-        const s = getComputedStyle(el)
-        return { display: s.display, gap: s.columnGap, pad: s.padding, cursor: s.cursor }
-      })
-      expect(box, JSON.stringify(box)).toEqual({
-        display: 'flex', gap: '12px', pad: '12px 14px', cursor: 'pointer',
-      })
-      // The house checkbox, NOT a native input.
-      await expect(row.locator('.cbox[role=checkbox]')).toHaveCount(1)
-      await expect(row.locator('input')).toHaveCount(0)
+      await expect(page.locator('[aria-label="Nastavenia odberu"]'),
+        `gear on ${path}`).toHaveCount(0)
+      await expect(page.getByText('Nastavenia odberu'),
+        `label on ${path}`).toHaveCount(0)
+      await expect(page.locator('body'),
+        `the retired help copy on ${path}`).not.toContainText('zobrazia sa všetky cykly')
     }
 
-    // ⚠ Default MAGENTA. The green `ok` variant is reserved for hand-over
-    // semantics (02 §UC-DS-009) and must not appear here.
-    await expect(d.locator('.cbox.ok')).toHaveCount(0)
-    const fill = await boxFor(d, 'Káva').evaluate((el) => getComputedStyle(el).backgroundColor)
-    expect(fill, 'checked fill is --accent magenta').toBe('rgb(255, 45, 135)')
-
-    await expect(d.locator('.m-foot button')).toHaveText(['Zrušiť', 'Uložiť'])
+    // …and not hidden inside the drawer either — the one surface that can hold a
+    // control without it being on the page at rest.
+    await page.goto('/')
+    await expectLanding(page)
+    const menu = await openMenu(page)
+    await expect(menu.getByText('Nastavenia odberu')).toHaveCount(0)
+    await expect(menu.locator('.p2-mi'), 'non-vacuity: the drawer really rendered rows')
+      .not.toHaveCount(0)
   })
 
-  test('preset matrix: an empty list checks BOTH; stored types check per type', async ({ page }) => {
-    // Empty ⇒ both (the backend rule "no filter" rendered as "everything on").
-    await setTypes([])
-    let state = await openPortal(page)
-    let d = await openSubs(page)
-    await expect(boxFor(d, 'Káva')).toHaveAttribute('aria-checked', 'true')
-    await expect(boxFor(d, 'Pekáreň')).toHaveAttribute('aria-checked', 'true')
-    await d.getByRole('button', { name: 'Zrušiť' }).click()
-
-    // Stored ['coffee'] ⇒ coffee on, bakery off.
-    await setTypes(['coffee'])
-    state = await openPortal(page, { types: ['coffee'] })
-    d = await openSubs(page)
-    await expect(boxFor(d, 'Káva')).toHaveAttribute('aria-checked', 'true')
-    await expect(boxFor(d, 'Pekáreň')).toHaveAttribute('aria-checked', 'false')
-    await d.getByRole('button', { name: 'Zrušiť' }).click()
-
-    // Stored ['bakery'] ⇒ the mirror image.
-    await setTypes(['bakery'])
-    await openPortal(page, { types: ['bakery'] })
-    d = await openSubs(page)
-    await expect(boxFor(d, 'Káva')).toHaveAttribute('aria-checked', 'false')
-    await expect(boxFor(d, 'Pekáreň')).toHaveAttribute('aria-checked', 'true')
-    expect(state.saved, 'nothing was written by merely looking').toBeNull()
-  })
-
-  test('⚠ the WHOLE label surface toggles — box, text and padding — exactly once each', async ({ page }) => {
-    // The acceptance criterion, and the one thing that cannot be assumed: a
-    // `<label>` forwards clicks only to LABELABLE elements, and NeoCheckbox is a
-    // `span[role=checkbox]`. Each zone therefore has its own handler, and the
-    // failure mode of getting that wrong is a DOUBLE toggle (the label catching
-    // the click the box already handled), which looks like "nothing happens".
-    await setTypes([])
-    await openPortal(page)
-    const d = await openSubs(page)
-    const box = boxFor(d, 'Káva')
-    const row = d.locator('label.card.flat').first()
-
-    const checked = () => box.getAttribute('aria-checked')
-    expect(await checked()).toBe('true')
-
-    // 1. the box itself
-    await box.click()
-    expect(await checked(), 'clicking the box toggles once').toBe('false')
-
-    // 2. the bold text
-    await row.getByText('Káva').click()
-    expect(await checked(), 'clicking the text toggles once, not twice').toBe('true')
-
-    // 3. the padding / gap — the label element itself. Clicked near its right
-    //    edge, which is label surface and nothing else.
-    const w = (await row.boundingBox()).width
-    await row.click({ position: { x: w - 6, y: 22 } })
-    expect(await checked(), 'clicking the padding toggles once').toBe('false')
-
-    // Keyboard still works (the ARIA layer, 02 §UC-DS-009).
-    await box.press(' ')
-    expect(await checked(), 'Space toggles').toBe('true')
-  })
-
-  test('saving re-filters the cycle list IN PLACE — no reload, no navigation', async ({ page }) => {
-    await setTypes([])
-    const state = await openPortal(page)
-    // A marker on the window object: it survives a re-render, never a reload.
-    await page.evaluate(() => { window.__rdfl7 = 'alive' })
-
-    await expect(page.getByText(COFFEE)).toBeVisible()
-    await expect(page.getByText(BAKERY)).toBeVisible()
-    const before = state.listCalls
-
-    const d = await openSubs(page)
-    await boxFor(d, 'Pekáreň').click()
-    await d.getByRole('button', { name: 'Uložiť' }).click()
-
-    await expect(page.getByRole('dialog')).toHaveCount(0)
-    await expect(page.getByText(BAKERY), 'the bakery cycle is filtered out').toHaveCount(0)
-    await expect(page.getByText(COFFEE)).toBeVisible()
-
-    expect(state.saved, 'the two booleans became `types`').toEqual(['coffee'])
-    expect(state.listCalls, 'saveSubscriptions re-ran loadCycles()').toBeGreaterThan(before)
-    expect(await page.evaluate(() => window.__rdfl7), 'the page never reloaded').toBe('alive')
-
-    // Persisted for real, and the modal presets from the persisted value on the
-    // next visit (fresh mount, real `GET /api/subscriptions/friend/:id`).
+  test('the endpoint SURVIVES: PUT/GET /api/subscriptions/friend/:id still answer 200', async () => {
+    // §UC-PI-016: „No schema change, no route removal, no data deleted." The UI is
+    // the only thing that went. A round trip through the real API, with a real friend
+    // Bearer — and the value is read BACK, so a route that 200s and writes nothing
+    // would still red.
     const auth = await ctx.post('/api/friends/auth', {
       data: { username: friend.username, password: 'ownPass12' }, timeout: TIMEOUT,
     })
-    const stored = await ctx.get(`/api/subscriptions/friend/${friend.id}`, {
-      headers: { Authorization: `Bearer ${(await auth.json()).token}` },
-      timeout: TIMEOUT,
+    expect(auth.status(), 'friend login').toBe(200)
+    const token = (await auth.json()).token
+    const headers = { Authorization: `Bearer ${token}` }
+
+    const put = await ctx.put(`/api/subscriptions/friend/${friend.id}`, {
+      headers, data: { types: ['coffee'] }, timeout: TIMEOUT,
     })
-    expect((await stored.json()).types).toEqual(['coffee'])
+    expect(put.status(), 'PUT /api/subscriptions/friend/:id').toBe(200)
 
-    await page.reload()
-    await expectLanding(page)
-    const reopened = await openSubs(page)
-    await expect(boxFor(reopened, 'Káva')).toHaveAttribute('aria-checked', 'true')
-    await expect(boxFor(reopened, 'Pekáreň')).toHaveAttribute('aria-checked', 'false')
-  })
+    const get = await ctx.get(`/api/subscriptions/friend/${friend.id}`, { headers, timeout: TIMEOUT })
+    expect(get.status(), 'GET /api/subscriptions/friend/:id').toBe(200)
+    expect((await get.json()).types).toEqual(['coffee'])
 
-  test('unchecking BOTH saves [] and every cycle comes back', async ({ page }) => {
-    await setTypes(['coffee'])
-    const state = await openPortal(page, { types: ['coffee'] })
-    await expect(page.getByText(BAKERY)).toHaveCount(0)
-
-    const d = await openSubs(page)
-    await boxFor(d, 'Káva').click()
-    await d.getByRole('button', { name: 'Uložiť' }).click()
-    await expect(page.getByRole('dialog')).toHaveCount(0)
-
-    expect(state.saved, 'neither box ⇒ an EMPTY list, not a missing field').toEqual([])
-    await expect(page.getByText(COFFEE)).toBeVisible()
-    await expect(page.getByText(BAKERY), 'no filter ⇒ everything shows').toBeVisible()
-  })
-
-  test('while saving: "Ukladám..." and both footer buttons disabled', async ({ page }) => {
-    await setTypes([])
-    await openPortal(page)
-    // Hold the write open so the in-flight state is observable.
-    let release = null
-    await page.route('**/api/subscriptions/friend/*', async (route) => {
-      if (route.request().method() !== 'PUT') return route.continue()
-      await new Promise((r) => { release = r })
-      await route.fulfill({ json: { types: ['coffee'] } })
-    })
-
-    const d = await openSubs(page)
-    await boxFor(d, 'Pekáreň').click()
-    await d.getByRole('button', { name: 'Uložiť' }).click()
-
-    const foot = d.locator('.m-foot button')
-    await expect(foot.nth(1)).toHaveText('Ukladám...')
-    await expect(foot.nth(0)).toBeDisabled()
-    await expect(foot.nth(1)).toBeDisabled()
-    release()
-    await expect(page.getByRole('dialog')).toHaveCount(0)
-  })
-
-  test('no horizontal overflow at 320px', async ({ page }) => {
-    await page.setViewportSize({ width: 320, height: 720 })
-    await setTypes([])
-    await openPortal(page)
-    await openSubs(page)
-    const over = await page.evaluate(() =>
-      document.documentElement.scrollWidth - document.documentElement.clientWidth
-    )
-    expect(over, 'document must not scroll sideways').toBeLessThanOrEqual(0)
+    // Put it back, so the file leaves no global state behind (the RD-FL-2 idiom).
+    expect((await ctx.put(`/api/subscriptions/friend/${friend.id}`, {
+      headers, data: { types: [] }, timeout: TIMEOUT,
+    })).status()).toBe(200)
   })
 })
 
-// ---------------------------------------------------------------------------
 
 test.describe('Invite modal — NeoModal + NeoCopyRow (UC-FL-011)', () => {
   const openInvite = async (page) => {
@@ -471,67 +339,5 @@ test.describe('Invite modal — NeoModal + NeoCopyRow (UC-FL-011)', () => {
       document.documentElement.scrollWidth - document.documentElement.clientWidth
     )
     expect(over, 'document must not scroll sideways').toBeLessThanOrEqual(0)
-  })
-})
-
-// ---------------------------------------------------------------------------
-
-test.describe('⚠ Subscription modal — its OWN failure surface (RD-FL-8a item 4)', () => {
-  // Before RD-FL-8a this modal had NO error surface of its own: a failed
-  // `saveSubscriptions()` wrote the shared page-level `error`, and since the
-  // save leaves the dialog OPEN, the message rendered BEHIND the scrim with its
-  // dismiss × unreachable. The user pressed "Uložiť" and saw a dialog that had
-  // simply "did nothing" — measured, and not a regression (radix behaved the
-  // same way before the NeoModal port). The row converged the view's three
-  // error strategies onto one: every action owns its ref.
-
-  async function failTheSave(page) {
-    await page.route('**/api/subscriptions/friend/*', (route) => {
-      if (route.request().method() !== 'PUT') return route.continue()
-      return route.fulfill({
-        status: 500,
-        contentType: 'application/json',
-        body: JSON.stringify({ error: 'Odber sa nepodarilo uložiť' }),
-      })
-    })
-  }
-
-  test('a failed save renders .banner.danger.slim INSIDE the dialog, which stays open', async ({ page }) => {
-    await setTypes([])
-    await openPortal(page)
-    await failTheSave(page)
-
-    const d = await openSubs(page)
-    await boxFor(d, 'Pekáreň').click()
-    await d.getByRole('button', { name: 'Uložiť' }).click()
-
-    // The message is where the user is looking, not behind the scrim.
-    await expect(d.locator('.banner.danger.slim')).toHaveText('Odber sa nepodarilo uložiť')
-    await expect(d).toBeVisible()
-    // ONE surface: nothing renders the same message underneath.
-    await expect(page.locator('.banner.danger')).toHaveCount(1)
-    // The footer is usable again, so the user can retry or cancel.
-    await expect(d.getByRole('button', { name: 'Uložiť' })).toBeEnabled()
-    await expect(d.getByRole('button', { name: 'Zrušiť' })).toBeEnabled()
-  })
-
-  test('it is the MODAL\'s ref: it dies with the dialog and a re-open starts clean', async ({ page }) => {
-    await setTypes([])
-    await openPortal(page)
-    await failTheSave(page)
-
-    let d = await openSubs(page)
-    await d.getByRole('button', { name: 'Uložiť' }).click()
-    await expect(d.locator('.banner.danger.slim')).toHaveText('Odber sa nepodarilo uložiť')
-
-    await d.getByRole('button', { name: 'Zrušiť' }).click()
-    await expect(page.getByRole('dialog')).toHaveCount(0)
-    // ⚠ It can never reach the page banner — whose only remaining writer after
-    // the convergence is `resolveVoucher`.
-    await expect(page.locator('.banner.danger')).toHaveCount(0)
-    await expect(page.locator('.app')).not.toContainText('Odber sa nepodarilo uložiť')
-
-    d = await openSubs(page)
-    await expect(d.locator('.banner.danger.slim')).toHaveCount(0)
   })
 })

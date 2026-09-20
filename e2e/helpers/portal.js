@@ -177,3 +177,40 @@ export async function openInvite(page) {
   await page.locator('.appbar .chip.acc').click()
   await expect(page.getByRole('dialog').locator('.m-title')).toHaveText('Pozvi priateľa')
 }
+
+/**
+ * Open a cycle's own order screen (`/cycle/:id`, `FriendOrder` in `mode='route'`) —
+ * 18 §UC-PI-019 item 3.
+ *
+ * ⚠ THE RETARGET OF `page.goto('/')` + `getByRole('heading', { name: cycle.name,
+ * exact: true }).click()`. That pair was how TWENTY spec files reached an order
+ * screen, because a cycle card on the portal was the only in-app route to one.
+ * PI-T3 retires the cards (§UC-PI-005), so the navigation moved here — one home, the
+ * same argument as `expectLanding` itself.
+ *
+ * ⚠ AND IT IS NOT A PLAIN `page.goto('/cycle/:id')`, although §UC-PI-019 item 3
+ * writes it that way. The friend's Bearer token lives in MEMORY only
+ * (`api.js setFriendsToken`); `localStorage` holds the stored session, and
+ * `FriendPortal.vue` is the single owner that restores one. So a cold document load
+ * of `/cycle/:id` finds no credential and bounces to `/` by design — the shipped
+ * behaviour every one of those twenty files was working around.
+ *
+ * What this does instead uses that bounce rather than fighting it:
+ *   1. `goto('/cycle/:id')` — the app bounces with `router.push('/')`, which is a
+ *      same-document `pushState`, so the history is now [/cycle/:id, /];
+ *   2. wait for the portal — that is the session restoring the token into memory;
+ *   3. `goBack()` — a same-document traversal back to entry 1, handled by
+ *      vue-router as a client-side navigation. `FriendOrder` mounts with the
+ *      credential already in memory and does not bounce.
+ * No app change, no new auth path, and the URL assertion is the shipped one.
+ *
+ * ⚠ It needs a STORED session (`localStorage.gorifi_friend_auth`) — every caller
+ * seeds one in an `addInitScript`. Without it step 2 fails on the login card, which
+ * is the honest failure.
+ */
+export async function gotoCycle(page, cycleId) {
+  await page.goto(`/cycle/${cycleId}`)
+  await expectLanding(page)
+  await page.goBack()
+  await expect(page).toHaveURL(new RegExp(`/cycle/${cycleId}(?:[?#]|$)`))
+}

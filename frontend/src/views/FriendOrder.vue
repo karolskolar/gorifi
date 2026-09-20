@@ -40,6 +40,60 @@ import QRCode from 'qrcode'
 const route = useRoute()
 const router = useRouter()
 
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-005 — THE TWO MOUNTS OF THIS ONE COMPONENT (PI-T3).
+//
+// ⚠ THIS FILE IS THE ONE HOME OF THE ORDER SURFACE AND IS EXTENDED, NEVER FORKED.
+// The friend portal's landing IS the order screen now, so `FriendPortalSession.vue`
+// mounts this component inside its page column; `/cycle/:id` still mounts it as a
+// standalone route (§UC-PI-018). Copying any slice of it into a "landing" component
+// would be the second home the whole module exists to prevent — at 2400 lines it is
+// also the repo's biggest instance of that rule.
+//
+// The ONLY differences between the two mounts are the ones §UC-PI-005 enumerates:
+//   · `route` — `landing` takes its cycle and friend from PROPS, because the session
+//     already resolved both (`lib/portal-state.js`) and `/` carries no `:cycleId`;
+//   · CHROME — `landing` renders no `.app` root, no `BrandChrome` and no page column
+//     of its own: the session supplies all three. ⚠ `.cartbar` stays a THEME class
+//     (`:where(.app,.modal-layer) .cartbar`, a DESCENDANT selector), so it keeps its
+//     sticky footer nested inside the session's column. Moving it into this file's
+//     `<style scoped>` would break it silently — CLAUDE.md §Frontend;
+//   · the FATAL-ERROR button — „Skúsiť znova" (re-load) on the landing, where there
+//     is no list to go back to; „Späť na ponuku" on the deep link (§UC-PI-017).
+// Everything else — cart model, auto-save, dirty tracking, the four modals, the
+// leave guard, the tabgroup, the cartbar — is byte-identical in behaviour.
+// ---------------------------------------------------------------------------
+const props = defineProps({
+  // Overrides `route.params.cycleId`. The landing passes the resolver's
+  // `currentCycle.id`; the deep link passes nothing and the route wins.
+  cycleId: { type: [String, Number], default: null },
+  // Overrides the localStorage/in-memory restore below. The session already knows
+  // who is signed in, so the landing hands it over rather than re-deriving it.
+  friendId: { type: [String, Number], default: null },
+  // `'route'` (the shipped standalone screen) | `'landing'` (embedded in the
+  // session's page column).
+  mode: { type: String, default: 'route' },
+})
+
+const isLanding = computed(() => props.mode === 'landing')
+
+// ⚠ THE PAGE COLUMN IS THE SECOND (AND LAST) THING `landing` MODE DROPS.
+// `FriendPortalSession.vue` already renders the settled 760px column with its
+// 16/28px gutters (02 §UC-DS-005) and carries `data-testid="portal-landing"` on it;
+// a second column inside it would double the horizontal padding and put a 760px box
+// inside a 760px box. The three branches below therefore keep their FLEX layout and
+// lose only the geometry — one element tree, one `v-if` chain, no forked template.
+//
+// The strings are literal here so Tailwind's content scan still sees every utility.
+const FO_COLUMN = 'mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7'
+const loadingColumnClass = computed(() => (isLanding.value ? '' : FO_COLUMN))
+const errorColumnClass = computed(() => (isLanding.value
+  ? 'flex flex-col gap-[14px]'
+  : `${FO_COLUMN} flex flex-col gap-[14px]`))
+const bodyColumnClass = computed(() => (isLanding.value
+  ? 'flex flex-col gap-[14px]'
+  : `${FO_COLUMN} pb-2 sm:pb-2 flex flex-col gap-[14px] flex-1`))
+
 // Cycle/friend data
 const friend = ref(null)
 const cycle = ref(null)
@@ -178,9 +232,27 @@ const paymentReference = computed(() => {
   return `${friendName} / ${cycleName}`
 })
 
-// Guest share link — all state/logic lives in GuestShareDialog, shared with
-// FriendPortal's cycle list so both entry points behave identically.
+// Guest share link — all state/logic lives in GuestShareDialog.
+//
+// ⚠ 18 §UC-PI-011: THIS IS THE ONE `GuestShareDialog` INSTANCE ON THE FRIEND
+// SURFACE, and „one" is the rule, not an observation. Module 03's cycle card
+// mounted a second one in `FriendPortalSession.vue`; PI-T3 retired the card, and
+// the drawer's „Zdieľať s kolegami" row now reaches THIS instance through the
+// `defineExpose`d `openShareDialog()` at the end of this file. Mounting a second
+// one beside it is how one of the two stops receiving updates (the dialog holds
+// its own `loadSeq`-guarded link state — 05 §UC-KG-006).
+//
+// Three triggers, one dialog: the Kolegovia panel's card (module 05), the
+// cartbar icon (§UC-PI-011), and the drawer row.
 const showShareModal = ref(false)
+
+/**
+ * §UC-PI-011 — the drawer's entry point into the one dialog. Exposed at the end of
+ * this file; the cartbar icon sets the same flag.
+ */
+function openShareDialog() {
+  showShareModal.value = true
+}
 
 // The product-photo lightbox (product decision 2026-08-20). Holds the PRODUCT,
 // not a boolean: the modal needs both the image and the name, and one ref keeps
@@ -222,7 +294,10 @@ const mainTab = ref('own')
 // before the child's `watchEffect` has emitted.
 const guestSummary = ref({ count: 0, total: 0, pendingDelivery: 0, failed: false, rows: 0 })
 
-const cycleId = computed(() => route.params.cycleId)
+// The cycle this mount is about. The PROP wins (landing), else the route param
+// (deep link) — §UC-PI-005. Named `activeCycleId` rather than `cycleId` so that the
+// prop of that name and the resolved value can never be confused at a call site.
+const activeCycleId = computed(() => (props.cycleId != null && props.cycleId !== '' ? props.cycleId : route.params.cycleId))
 
 const isLocked = computed(() => cycle.value?.status === 'planned' || cycle.value?.status === 'locked' || cycle.value?.status === 'completed')
 const isSubmitted = computed(() => order.value?.status === 'submitted')
@@ -524,8 +599,12 @@ watch(availablePurposes, (purposes) => {
 const STORAGE_KEY = 'gorifi_friend_auth'
 
 onMounted(async () => {
-  // Check if authenticated (token or password)
-  if (!getFriendsToken() && !getFriendsPassword()) {
+  // ⚠ The auth-restore bounce is a DEEP-LINK concern only (§UC-PI-018: „a deep link
+  // is opened cold"). On the landing this component is a child of
+  // `FriendPortalSession.vue`, which the parent mounts only in the `authenticated`
+  // state — so the credential store is populated by construction, and a `router.push('/')`
+  // from here would be a navigation to the page we are already on.
+  if (!isLanding.value && !getFriendsToken() && !getFriendsPassword()) {
     // Try to restore from localStorage
     const stored = localStorage.getItem(STORAGE_KEY)
     if (!stored) {
@@ -564,8 +643,12 @@ onMounted(async () => {
   }
 })
 
-// Set page title
+// Set page title.
+// ⚠ ROUTE MODE ONLY. `document.title` belongs to the SCREEN, and on the landing the
+// screen is the portal (03 §UC-FL-001 owns that title) — an embedded component that
+// rewrote it would make „/" announce itself as a cycle name.
 watchEffect(() => {
+  if (isLanding.value) return
   document.title = cycle.value?.name ? `${cycle.value.name} - Objednávka` : 'Objednávka'
 })
 
@@ -576,8 +659,14 @@ async function loadOrderData() {
   try {
     // Get friend info from localStorage or in-memory auth
     let friendId = null
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored) {
+    // §UC-PI-005: on the landing the SESSION already knows who is signed in and hands
+    // the id over, so this view never has to re-derive an identity the component tree
+    // above it is keyed on. The restore below stays the deep link's path, untouched.
+    if (props.friendId != null && props.friendId !== '') friendId = props.friendId
+    const stored = friendId ? null : localStorage.getItem(STORAGE_KEY)
+    if (friendId) {
+      // Handed over by the session — nothing to restore.
+    } else if (stored) {
       const parsed = JSON.parse(stored)
       friendId = parsed.friendId
     } else {
@@ -601,14 +690,14 @@ async function loadOrderData() {
     }
 
     // Get order data
-    const orderData = await api.getOrderByFriend(cycleId.value, friendId)
+    const orderData = await api.getOrderByFriend(activeCycleId.value, friendId)
     order.value = orderData.order
     applyOrderPayment(orderData)
     cycle.value = orderData.cycle
     friend.value = orderData.friend
 
     // Get products and availability
-    products.value = await api.getProducts(cycleId.value)
+    products.value = await api.getProducts(activeCycleId.value)
     await loadAvailability(friendId)
 
     // Populate cart from existing order items
@@ -642,7 +731,7 @@ async function loadOrderData() {
 
 async function loadAvailability(friendId) {
   try {
-    const data = await api.getProductAvailability(cycleId.value, friendId)
+    const data = await api.getProductAvailability(activeCycleId.value, friendId)
     const map = {}
     for (const item of data) {
       map[item.product_id] = item
@@ -704,6 +793,30 @@ function confirmLeave() {
 function cancelLeave() {
   showLeaveModal.value = false
   pendingNavigation.value = null
+}
+
+/**
+ * „I am finished here — go to `/`, and do not ask about unsaved changes."
+ * The ONE home of that act: the success modal's close and the cancel confirm both
+ * mean it, and both used to write `leaveConfirmed = true` inline.
+ *
+ * ⚠⚠ THE ARMING IS CONDITIONAL, AND ON THE LANDING THAT IS THE WHOLE POINT.
+ * `leaveConfirmed` is a ONE-SHOT bypass that only `onBeforeRouteLeave` disarms. On
+ * `/cycle/:id` the push below really leaves the route, the guard runs and consumes
+ * it. On the LANDING we are already at `/`, so `router.push('/')` is a no-op: the
+ * component never unmounts, the guard never runs, and the flag would stay ARMED —
+ * silently disarming the NEXT navigation. Measured before the fix: submit → close
+ * the modal → step a product → open the drawer ⇒ the cart was discarded with no
+ * „Neuložené zmeny" prompt at all, which is exactly what §UC-PI-005's „the drawer's
+ * `router.push` is a route leave" forbids.
+ *
+ * So the bypass is armed only when this call is actually going somewhere. A guard
+ * that is armed by something that did not navigate is armed for the wrong departure.
+ */
+function leaveToOffer() {
+  if (route.path === '/') return
+  leaveConfirmed.value = true // consumed by `onBeforeRouteLeave` below
+  router.push('/')
 }
 
 // Navigation guard - warn when leaving with unsaved changes
@@ -774,7 +887,7 @@ async function saveCart(silent = false) {
       quantity: item.quantity
     }))
 
-    const result = await api.updateOrderByFriend(cycleId.value, friend.value.id, items)
+    const result = await api.updateOrderByFriend(activeCycleId.value, friend.value.id, items)
     order.value = result.order
     applyOrderPayment(result)
   } catch (e) {
@@ -826,11 +939,9 @@ async function confirmCancelOrder() {
   // This prevents the "unsaved changes" warning from showing
   lastSubmittedCart.value = {}
 
-  // Mark as confirmed to bypass navigation guard
-  leaveConfirmed.value = true
-
-  // Redirect back to cycle list
-  router.push('/')
+  // Bypass the navigation guard and go back to the offer — but only if that is a
+  // real departure (see `leaveToOffer`: on the landing it is not).
+  leaveToOffer()
 }
 
 async function submitOrder() {
@@ -902,7 +1013,7 @@ async function doSubmitOrder() {
           pickup_location_id: selectedPickupLocationId.value || null,
           pickup_location_note: selectedPickupLocationId.value ? null : (pickupLocationNote.value || null)
         }
-    const result = await api.submitOrderByFriend(cycleId.value, friend.value.id, pickupData)
+    const result = await api.submitOrderByFriend(activeCycleId.value, friend.value.id, pickupData)
     order.value = result.order
     applyOrderPayment(result)
     // Store snapshot of submitted cart for change detection
@@ -970,8 +1081,7 @@ async function confirmPickupAndSubmit() {
 
 function handleSuccessModalClose() {
   showSuccessModal.value = false
-  leaveConfirmed.value = true // Bypass navigation guard
-  router.push('/')
+  leaveToOffer()
 }
 
 function formatPrice(price) {
@@ -982,6 +1092,31 @@ function applyMarkup(price) {
   if (!price) return null
   return Math.round(price * markupRatio.value * 100) / 100
 }
+
+/**
+ * §UC-PI-005 — the landing's fatal-error recovery. On `/cycle/:id` the button is
+ * „Späť na ponuku" (there IS somewhere to go); on the landing there is no list to
+ * return to, so the same button re-runs the load it failed.
+ */
+async function retryOrderData() {
+  await loadOrderData()
+}
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-005/011 — what the SESSION may reach on the embedded instance.
+//
+// ⚠ Two entries, and both exist so that the session does NOT hold a copy of
+// something this component owns:
+//   · `openShareDialog` — §UC-PI-011's „the session view opens it through a
+//     `defineExpose`d `openShareDialog()`". The alternative (a second
+//     `GuestShareDialog` in the session) is the two-instance bug that rule names.
+//   · `cartTotal` — §UC-PI-004 item 1's „ · v košíku {fmtEur(cartTotal)}" clause.
+//     The CART lives here; a second cart model in the drawer would be a second
+//     home for „what is in the basket".
+// A `computed` travels through `defineExpose` unwrapped (Vue's `proxyRefs`), so the
+// reader stays reactive without the session storing a value of its own.
+// ---------------------------------------------------------------------------
+defineExpose({ openShareDialog, cartTotal })
 </script>
 
 <template>
@@ -1003,8 +1138,33 @@ function applyMarkup(price) {
        the long note on the bar itself, near the end of this template.
 
        `flex flex-col` + the theme's `min-height:100vh` is the prototype's root
-       layout, and it is what lets the page column take `flex-1`. -->
-  <div class="app flex flex-col">
+       layout, and it is what lets the page column take `flex-1`.
+
+       ⚠ 18 §UC-PI-005 — IN `landing` MODE THIS WRAPPER IS `display:contents`.
+       `FriendPortalSession.vue` is already inside the parent's ONE `.app` root, so a
+       second `.app` here would nest the token block, re-apply `min-height:100vh` in
+       the middle of a page and — worst — put a fresh `.app > *` stacking rule between
+       the session's page column and this subtree. The wrapper ELEMENT stays (one
+       element tree, one set of `v-if` branches, no fork) but generates NO BOX.
+
+       ⚠⚠ `display:contents` RATHER THAN A BARE UNSTYLED DIV, AND IT IS LOAD-BEARING,
+       NOT TIDINESS — measured at 378×420 before it was added. `.cartbar` is
+       `position:sticky; bottom:0`, and a sticky element may never be shifted ABOVE
+       its containing block's top edge. With a real wrapper box the containing block
+       started at the bar's own subtree (y=281 on that viewport), so the bar clamped
+       at 435 against a 420px fold — i.e. the friend's landing lost the sticky footer
+       that `/cycle/:id` has, silently and only on short screens. With no box, the
+       containing block is the session's page column (y=124) and the bar reaches the
+       viewport bottom exactly as it does on the deep link. `order-cartbar.spec.js`'s
+       „THE LANDING VARIANT" test pins both halves.
+
+       `.cartbar` itself reaches its theme rule through the DESCENDANT selector
+       `:where(.app,.modal-layer) .cartbar` from any depth — that part never changed. -->
+  <div
+    :class="isLanding ? '' : 'app flex flex-col'"
+    :style="isLanding ? 'display:contents' : null"
+    :data-fo-mode="mode"
+  >
     <!-- Brand chrome (UC-FO-001): appbar + hazard tape + ticker, full-bleed, NOT
          sticky — it scrolls away and `.cat-tabs` owns the top edge alone.
 
@@ -1023,7 +1183,12 @@ function applyMarkup(price) {
          "Späť", NOT "Späť na zoznam cyklov": the fatal-error state renders a button
          with that exact text, and Playwright matches accessible names as a
          case-insensitive SUBSTRING unless `exact: true`. -->
+    <!-- ⚠ ROUTE MODE ONLY (§UC-PI-005: „no `.app` root, no `BrandChrome`"). The
+         landing's chrome is the portal's own appbar + drawer (§UC-PI-003/004), one
+         instance across all three auth states — a second `BrandChrome` beneath it
+         would render a second wordmark, a second ticker and a second lock chip. -->
     <BrandChrome
+      v-if="!isLanding"
       :title="cycle?.name || ''"
       :subtitle="friend?.name || ''"
       :ticker="isLocked
@@ -1052,18 +1217,28 @@ function applyMarkup(price) {
     </BrandChrome>
 
     <!-- Loading -->
-    <div v-if="loading" class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7">
+    <div v-if="loading" :class="loadingColumnClass">
       <div class="sub" style="text-align:center;padding:32px 0">Načítavam...</div>
     </div>
 
     <!-- Fatal error (no friend loaded at all) -->
-    <div v-else-if="error && !friend" class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 flex flex-col gap-[14px]">
+    <div v-else-if="error && !friend" :class="errorColumnClass">
       <div class="banner danger" role="alert">
         <span class="dot"></span>
         <div style="min-width:0"><b>Chyba:</b> {{ error }}</div>
       </div>
+      <!-- ⚠ TWO BUTTONS, ONE STATE (18 §UC-PI-005 / §UC-PI-017).
+           · deep link — „Späť na ponuku" (was „Späť na zoznam cyklov"; the list is
+             gone, §UC-PI-017's copy table). It keeps containing „Späť", which the
+             appbar chevron's `aria-label` also is — Playwright matches accessible
+             names as a case-insensitive SUBSTRING, so a spec that wants the chevron
+             alone must pass `exact: true`. That hazard is unchanged by the re-word.
+           · landing — „Skúsiť znova", because there is no list to go back to and `/`
+             is already the current URL: `goBack()` there would be a no-op that looks
+             like a dead button. It RE-RUNS the load that failed. -->
       <div>
-        <button type="button" class="btn" @click="goBack">Späť na zoznam cyklov</button>
+        <button v-if="isLanding" type="button" class="btn" @click="retryOrderData">Skúsiť znova</button>
+        <button v-else type="button" class="btn" @click="goBack">Späť na ponuku</button>
       </div>
     </div>
 
@@ -1082,7 +1257,7 @@ function applyMarkup(price) {
          It is documented where it belongs, in `FriendPortalSession.vue`. Here
          `p-4` would be perfectly legal (UC-DS-004 rule 2 lists it as an allowed
          layout utility); the axis form is kept for consistency, not for a pin. -->
-    <div v-else class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 pb-2 sm:pb-2 flex flex-col gap-[14px] flex-1">
+    <div v-else :class="bodyColumnClass">
       <!-- Status banner. Exactly one of the two, in the shipped priority order.
            ⚠ The green one now YIELDS while unsent changes exist — the prototype's
            `submitted && !dirty && lines > 0`, whose repo equivalent is
@@ -1273,7 +1448,7 @@ function applyMarkup(price) {
              session in onMounted, which runs AFTER a child's setup, so fetching any
              earlier would 401 on a fresh load of /cycle/:id. -->
         <GuestSubOrders
-          :cycle-id="cycleId"
+          :cycle-id="activeCycleId"
           :cycle-locked="isLocked"
           :ready="!!friend"
           @summary="guestSummary = $event"
@@ -1761,6 +1936,41 @@ function applyMarkup(price) {
            Zaplatiť opens `PaymentModal` with its pinned props; the modal's internals
            belong to module 06 and are untouched by this row. -->
       <div v-if="!isLocked" class="actions">
+        <!-- 18 §UC-PI-011 — the cartbar share icon, the LEADING control of the row.
+             `flex:0 0 52px; padding:0` overrides the theme's `.cartbar .actions .btn
+             { flex:1 }` so it stays a square glyph while the three shipped buttons
+             keep sharing the rest of the row equally.
+
+             ⚠ Icon only, so its accessible name has to be the `aria-label` — and it
+             is the SAME string as the drawer row's `.lab` („Zdieľať s kolegami"),
+             because §UC-PI-011 names both triggers with one name. Both set
+             `showShareModal`; there is exactly one dialog.
+
+             ⚠ `state === 'open'` only: this whole `.actions` row is already
+             `v-if="!isLocked"`, which is the same condition expressed on the cycle
+             (04 §UC-FO-014 treats planned/locked/completed alike), so a locked or
+             closed round carries no share affordance — 05 §UC-KG-002.
+
+             ⚠⚠ LANDING ONLY, AND THAT IS NOT A SIMPLIFICATION — it is what two
+             IMMUTABLE specs require. `guest-host-view.spec.js:890,929` and
+             `share-dialog.spec.js`'s mount-seam test both assert an UNSCOPED
+             `getByRole('button', { name: /Zdieľať/ })` on `/cycle/:id`:
+             `toHaveCount(0)` on the „Moja objednávka" tab and `toHaveCount(1)` on
+             „Kolegovia". An always-visible cartbar icon named „Zdieľať s kolegami"
+             would make the first 1 and the second 2 — a strict-mode violation in
+             specs this row is not allowed to edit. §UC-PI-005 introduces the icon
+             under „Landing composition", and §UC-PI-011 calls the two triggers „the
+             cartbar icon + the drawer item", both of which are landing surfaces; the
+             deep link keeps module 05's Kolegovia share card as its entry point. -->
+        <button
+          v-if="isLanding"
+          type="button"
+          class="btn"
+          aria-label="Zdieľať s kolegami"
+          data-testid="cartbar-share"
+          style="flex:0 0 52px;padding:0"
+          @click="openShareDialog"
+        ><NeoIcon name="share" /></button>
         <button
           type="button"
           class="btn danger sm"
@@ -1961,7 +2171,7 @@ function applyMarkup(price) {
     <!-- Share with colleagues (guest link) — shared with FriendPortal -->
     <GuestShareDialog
       :open="showShareModal"
-      :cycle-id="cycleId"
+      :cycle-id="activeCycleId"
       :cycle-name="cycle?.name || ''"
       @update:open="showShareModal = $event"
     />

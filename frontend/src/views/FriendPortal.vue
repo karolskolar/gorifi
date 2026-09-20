@@ -118,9 +118,8 @@ const googleButtonEl = ref(null)
 //     request that decides whether the token is good (see `beginSession`). The
 //     session view seeds its list from it, so a login stays at ONE cycles
 //     request rather than two.
-//   · `subscriptions` — the type filter behind that list, awaited in the
-//     handshake for the same reason it always was: the gear must not be
-//     openable before it has landed, or the modal prefills "everything".
+//   · ~~`subscriptions`~~ — RETIRED by PI-T3 (18 §UC-PI-016): the gear and its
+//     modal are gone, so nothing prefills. The table and both routes stay.
 //   · `mustChangePassword` + `currentPassword` — UC-FL-012's gate and the
 //     plaintext password the friend just logged in with. The password stays on
 //     THIS side of the boundary because it is a login credential — the two form
@@ -357,25 +356,17 @@ async function beginSession({
 } = {}) {
   const cycles = await api.getFriendsCycles(selectedFriendId.value)
 
-  // ⚠ Fetched HERE rather than on the child's mount, and the ordering is the
-  // point: it is what decides which cycles the list is allowed to show, so the
-  // subscription modal must never be openable before it has landed. Awaiting it
-  // in the handshake is also exactly what the pre-extraction `loadCycles()` did
-  // — same two sequential requests, same "resolved before the authenticated
-  // paint" guarantee. Failure is non-fatal (it only prefills a modal) and must
-  // never take the session down with it.
-  let subscriptions = []
-  try {
-    subscriptions = (await api.getSubscriptions(selectedFriendId.value)).types || []
-  } catch {
-    // non-critical
-  }
+  // ⚠ The `subscriptions` fetch that used to sit HERE is RETIRED (18 §UC-PI-016,
+  // PI-T3). Its only consumer was the „Nastavenia odberu" modal's prefill, and that
+  // modal is gone; `GET/PUT /api/subscriptions/friend/:id`, the table and the
+  // SERVER-side filter in `GET /friends/cycles` are all untouched. A login is one
+  // request lighter as a result, which is the visible half of the change.
 
   // ⚠ Bumped HERE, one statement before the payload it keys. Every fresh
   // handshake re-creates the session view; see `sessionSeq`'s declaration.
   sessionSeq.value++
   entry.value = {
-    cycles, subscriptions, mustChangePassword, currentPassword, needsCredentialSetup,
+    cycles, mustChangePassword, currentPassword, needsCredentialSetup,
     viaMagicLink, magicPromptDismissed,
     googleLinked, googlePromptDismissed,
   }

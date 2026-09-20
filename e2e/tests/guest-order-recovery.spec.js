@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding } from '../helpers/portal.js'
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -202,13 +202,25 @@ async function gotoPortal(page) {
 
 // A hard load of /cycle/:id bounces to the portal, so a real host arrives through it.
 async function gotoCycle(page, cycle) {
-  await gotoPortal(page)
-  await page.getByRole('heading', { name: cycle.name, exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
+  // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005), so
+  // `goto('/')` + a heading click is no longer a route to an order screen.
+  // `portalGotoCycle` (helpers/portal.js) is the ONE home of that navigation; it
+  // still enters cold and still proves state came back from the server.
+  await portalGotoCycle(page, cycle.id)
 }
 
-const portalCard = (page, name) =>
-  page.locator('div.card.p-4', { has: page.getByRole('heading', { name, exact: true }) })
+// ⚠ PI-T3 · 18 §UC-PI-005/011 — `portalCard()` IS GONE. It located module 03's cycle
+// CARD (`div.card.p-4` + the cycle's `<h3>`), whose share ROW was entry point B into
+// the dialog. The card is retired with the cycle list; the landing IS the current open
+// round's order screen, and its share affordance is the `.cartbar` icon — whose
+// accessible name §UC-PI-011 fixes to the SAME „Zdieľať s kolegami" the card carried.
+// The locator moved; the accessible-name contract did not.
+//
+// ⚠ It resolves only for the CURRENT OPEN round, which every caller satisfies by
+// creating its cycle immediately before navigating (the newest open round is the
+// landing's — `lib/portal-state.js`).
+const landingShare = (page) =>
+  page.locator('.app .cartbar').getByRole('button', { name: 'Zdieľať s kolegami' })
 
 // Entry point A — the "Kolegovia" panel in FriendOrder (module 05's own).
 async function openFromOrderPage(page, host, cycle, { width = 378 } = {}) {
@@ -222,13 +234,14 @@ async function openFromOrderPage(page, host, cycle, { width = 378 } = {}) {
   return dialog
 }
 
-// Entry point B — the portal cycle card's share row. ONE shared component
-// (GSO-T2), so both entry points must render the same standing copy.
+// Entry point B — the LANDING's cartbar share icon (18 §UC-PI-011; it was the portal
+// cycle card's share row until PI-T3). ONE shared component (GSO-T2), so both entry
+// points must render the same standing copy.
 async function openFromPortal(page, host, cycle, { width = 378 } = {}) {
   await page.setViewportSize({ width, height: 900 })
   await signInAsHost(page, host)
   await gotoPortal(page)
-  await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+  await landingShare(page).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()
   return dialog
@@ -419,7 +432,7 @@ test.describe('UC-GR-009 — share dialog standing copy', () => {
     await page.setViewportSize({ width: 320, height: 900 })
     await signInAsHost(page, host)
     await gotoPortal(page)
-    await portalCard(page, cycle.name).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await landingShare(page).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog.getByTestId('share-standing-copy')).toBeVisible()
 

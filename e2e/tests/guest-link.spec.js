@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding } from '../helpers/portal.js'
+import { expectLanding, gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import { ADMIN_PASSWORD, CYCLE_NAME } from '../fixtures.js'
 
 // GSO-T2: the host's guest share link (`guest_order_links`) — create,
@@ -257,8 +257,9 @@ test.describe('Guest share link — UI', () => {
     await expectLanding(page)
 
     // Open the cycle → FriendOrder.
-    await page.getByRole('heading', { name: CYCLE_NAME, exact: true }).click()
-    await expect(page).toHaveURL(new RegExp(`/cycle/${cycleId}$`))
+    // ⚠ PI-T3 · 18 §UC-PI-019 item 3 — the cycle CARDS are retired (§UC-PI-005);
+    // `helpers/portal.js gotoCycle()` is the one home of portal → order navigation.
+    await portalGotoCycle(page, cycleId)
 
     const shareButton = page.getByRole('button', { name: 'Zdieľať objednávku s kolegami' })
 
@@ -293,33 +294,43 @@ test.describe('Guest share link — UI', () => {
     expect(value.endsWith(`/g/${fromApi.link.token}`)).toBe(true)
   })
 
-  test('host can share straight from the portal cycle card, and only for open cycles', async ({ page }) => {
+  test('host can share straight from the LANDING cartbar, and the URL stays `/`', async ({ page }) => {
+    // ⚠ PI-T3 · 18 §UC-PI-011/§UC-PI-019 item 12 — RETARGETED, not weakened. This was
+    // „host can share straight from the portal cycle CARD, and only for open cycles".
+    // The card is retired (§UC-PI-005); the landing IS the current open round, and its
+    // share affordance is the `.cartbar` icon, whose accessible name §UC-PI-011 fixes
+    // to the same „Zdieľať s kolegami" the card's button carried.
+    //
+    // ⚠ THE „only for open cycles" HALF MOVED RATHER THAN DIED, and it had to: this
+    // suite's database carries ~135 open rounds, so locking ONE cycle does not make
+    // the landing closed — the resolver simply picks the next newest open one, and a
+    // `toHaveCount(0)` here would be measuring the wrong round. The absence is pinned
+    // in `portal-landing.spec.js` („no share affordance when the round is not open"),
+    // against a STUBBED cycles payload where „no open round" is an actual state.
     const host = await makeHost('uiportal')
 
-    // A locked cycle must not offer sharing (nobody can order into it).
-    const lockedName = `E2E GSO Locked ${uniq}`
-    const lockedRes = await admin('/api/cycles', { method: 'post', data: { name: lockedName, type: 'coffee', status: 'open' } })
-    expect(lockedRes.status()).toBe(201)
-    const locked = await lockedRes.json()
-    expect((await admin(`/api/cycles/${locked.id}`, { method: 'patch', data: { status: 'locked' } })).status()).toBe(200)
+    // Created last ⇒ the newest open round ⇒ the landing's round (lib/portal-state.js).
+    const name = `E2E GSO Landing ${uniq}`
+    const res = await admin('/api/cycles', { method: 'post', data: { name, type: 'coffee', status: 'open' } })
+    expect(res.status()).toBe(201)
+    const cycle = await res.json()
 
     await signInAsHost(page, host)
     await page.goto('/')
     await expectLanding(page)
 
-    const cardFor = (name) => page.locator('div.p-4', { has: page.getByRole('heading', { name, exact: true }) })
-    await expect(cardFor(lockedName)).toBeVisible()
-    await expect(
-      cardFor(lockedName).getByRole('button', { name: 'Zdieľať s kolegami' }),
-      'a locked cycle offers no share affordance'
-    ).toHaveCount(0)
+    const share = page.locator('.app .cartbar').getByRole('button', { name: 'Zdieľať s kolegami' })
+    await expect(share, 'the open round offers the cartbar share icon').toHaveCount(1)
 
-    // The open cycle does — and clicking it must not navigate into the cycle.
-    await cardFor(CYCLE_NAME).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    // …and it must not navigate. (The card's `@click.stop` claim, restated on the
+    // control that replaced it: the bar submits and cancels orders, so a share tap
+    // leaving `/` would be the same defect one layer down.)
+    await share.click()
     await expect(page).toHaveURL(/\/$/)
 
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
+    await expect(dialog, 'the dialog names the round it shares').toContainText(name)
     await dialog.getByRole('button', { name: 'Vytvoriť odkaz' }).click()
 
     // RD-KG-2, authorized by 05 §UC-KG-007 item 1 — see the note above.
@@ -327,44 +338,67 @@ test.describe('Guest share link — UI', () => {
     expect(value).toMatch(/\/g\/[A-Z2-9]{12,}$/)
     await expect(dialog.getByRole('button', { name: 'Kopírovať' })).toBeVisible()
 
-    const fromApi = await (await ctx.get(`/api/guest-links/cycle/${cycleId}`, { headers: host.auth })).json()
+    const fromApi = await (await ctx.get(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })).json()
     expect(value.endsWith(`/g/${fromApi.link.token}`)).toBe(true)
   })
 
   test('a slow load for one cycle cannot overwrite the link shown for another', async ({ page }) => {
-    // The portal reuses ONE dialog for every cycle card, so an in-flight GET for
-    // a previously opened cycle must never land on top of the cycle currently on
-    // screen: the host would copy the wrong /g/:token (colleagues order into the
-    // wrong cycle) and the deactivate/regenerate buttons would hit the wrong row.
+    // ONE dialog serves every entry point, so an in-flight GET for a previously
+    // opened cycle must never land on top of the cycle currently on screen: the host
+    // would copy the wrong /g/:token (colleagues order into the wrong cycle) and the
+    // deactivate/regenerate buttons would hit the wrong row.
+    //
+    // ⚠ PI-T3 · §UC-PI-019 item 12 — RETARGETED. Two cycle cards side by side is not
+    // a state that exists any more: the landing resolves exactly ONE round. So the
+    // two openings are the landing's cartbar icon (round A, the newest open) and the
+    // DEEP LINK's Kolegovia card (round B) — two entry points, still one dialog.
+    //
+    // ⚠ AND THE HOP BETWEEN THEM IS `goBack()`, NOT A SECOND `page.goto`. The race is
+    // about a response outliving a dialog WITHIN one document; a fresh document load
+    // aborts the held request and the test would pass vacuously. Loading `/cycle/B`
+    // cold bounces to `/` (shipped behaviour — `helpers/portal.js gotoCycle`), which
+    // leaves `/cycle/B` one same-document history entry away.
     const host = await makeHost('race')
+
     const cycleBName = `E2E GSO Race B ${uniq}`
     const cycleB = await (await admin('/api/cycles', {
       method: 'post', data: { name: cycleBName, type: 'coffee', status: 'open' },
     })).json()
+    // A is created LAST, so A is the landing's round.
+    const cycleAName = `E2E GSO Race A ${uniq}`
+    const cycleA = await (await admin('/api/cycles', {
+      method: 'post', data: { name: cycleAName, type: 'coffee', status: 'open' },
+    })).json()
 
-    const linkA = (await (await ctx.post(`/api/guest-links/cycle/${cycleId}`, { headers: host.auth })).json()).link
+    const linkA = (await (await ctx.post(`/api/guest-links/cycle/${cycleA.id}`, { headers: host.auth })).json()).link
     const linkB = (await (await ctx.post(`/api/guest-links/cycle/${cycleB.id}`, { headers: host.auth })).json()).link
     expect(linkA.token).not.toBe(linkB.token)
 
     await signInAsHost(page, host)
 
-    // Hold cycle A's GET open so its response lands only after the dialog has
-    // been reopened for cycle B.
-    await page.route(`**/api/guest-links/cycle/${cycleId}`, async (route) => {
+    // Hold cycle A's GET open so its response lands only after the dialog has been
+    // reopened for cycle B.
+    await page.route(`**/api/guest-links/cycle/${cycleA.id}`, async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
       await new Promise((resolve) => setTimeout(resolve, 2000))
       await route.continue()
     })
 
-    await page.goto('/')
+    await page.goto(`/cycle/${cycleB.id}`)
     await expectLanding(page)
-    const cardFor = (name) => page.locator('div.p-4', { has: page.getByRole('heading', { name, exact: true }) })
 
-    const staleLoad = page.waitForResponse((r) => r.url().includes(`/api/guest-links/cycle/${cycleId}`))
-    await cardFor(CYCLE_NAME).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    const staleLoad = page.waitForResponse((r) =>
+      r.url().includes(`/api/guest-links/cycle/${cycleA.id}`) && r.request().method() === 'GET')
+    await page.locator('.app .cartbar').getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await expect(page.getByRole('dialog')).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
-    await cardFor(cycleBName).getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+    await page.goBack()
+    await expect(page).toHaveURL(new RegExp(`/cycle/${cycleB.id}$`))
+    await page.getByTestId('main-tab-guests').click()
+    await page.getByRole('button', { name: /Zdieľať/ }).click()
+
     const dialog = page.getByRole('dialog')
     const urlField = dialog.getByTestId('guest-link-url')
     // RD-KG-2, authorized by 05 §UC-KG-007 item 1 — see the note in the first UI
@@ -382,12 +416,12 @@ test.describe('Guest share link — UI', () => {
     // must leave cycle A's link untouched.
     await dialog.getByRole('button', { name: 'Deaktivovať odkaz' }).click()
     await expect(dialog).toContainText('Odkaz je deaktivovaný')
-    const afterA = await (await ctx.get(`/api/guest-links/cycle/${cycleId}`, { headers: host.auth })).json()
+    const afterA = await (await ctx.get(`/api/guest-links/cycle/${cycleA.id}`, { headers: host.auth })).json()
     const afterB = await (await ctx.get(`/api/guest-links/cycle/${cycleB.id}`, { headers: host.auth })).json()
     expect(afterA.link.active, 'cycle A must stay active').toBe(1)
     expect(afterB.link.active, 'cycle B is the one deactivated').toBe(0)
 
-    // With several open cycles side by side, the dialog must say which one it is
+    // With several open rounds in the database, the dialog must say which one it is
     // sharing — an unlabelled URL is impossible to verify.
     await expect(dialog, 'the dialog names the cycle it is sharing').toContainText(cycleBName)
   })

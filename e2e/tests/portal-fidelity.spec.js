@@ -157,11 +157,18 @@ const MATRIX = [
   }),
 ]
 
-/** The same list with every free-text field weaponised. */
+/** The same list with every free-text field weaponised.
+ *
+ * ⚠ PI-T3: `plan_note` and the cycle NAME no longer reach any friend screen (the card
+ * that rendered them is retired), so the field that still carries the claim is
+ * `expected_date` — admin FREE TEXT, rendered VERBATIM in the landing's status line
+ * (§UC-PI-005 item 1). It is weaponised here for exactly that reason; the other two
+ * stay so the fixture keeps its meaning when PI-T4/T5 render them again. */
 const HOSTILE = [
   cycleRow({
     id: 9811, name: NAMES.hostile, status: 'open',
     plan_note: `Objednávky sem: ${LONG_URL}\n${LONG_TOKEN}`,
+    expected_date: `${LONG_URL} ${LONG_TOKEN}`,
     hasOrder: true, orderTotal: 1234.56, orderStatus: 'submitted', orderKilos: 12.5, orderItemCount: 4,
   }),
   cycleRow({ id: 9812, name: NAMES.archived, status: 'completed', hasOrder: true, orderTotal: 44.15 }),
@@ -230,39 +237,20 @@ test.describe('A9/A10 — the preflight line-height counter is in force (02 §UC
     await expect(pill).toHaveCSS('line-height', 'normal')
     near((await pill.boundingBox()).height, CANON.negPill, '.neg.pill height')
 
-    const card = page.locator('div.p-4', { has: page.getByRole('heading', { name: NAMES.open, exact: true }) })
-    // the order total — `.display` with no line-height of its own
-    await expect(card.locator('span.display')).toHaveCSS('line-height', 'normal')
-    // the cycle name is ALSO `.display` but declares `line-height:1` inline, and
-    // that must keep winning: `:where()` gives the A10 rule zero specificity.
-    await expect(card.locator('h3.display')).toHaveCSS('line-height', '22px')
-    await expect(card.locator('.badge.ok')).toHaveCSS('line-height', 'normal')
-    // ⚠ The date row lost `.mono` on 2026-08-13 (Figtree Bold since 2026-08-18).
-    // The invariant is UNCHANGED and still the point of this line:
-    // `.sub` is in A10's list, so it is what keeps preflight's 1.5 off this row now.
-    await expect(card.getByTestId('cycle-date')).toHaveCSS('line-height', 'normal')
-
-    // the plan block declares an inline 1.7 — same invariant, other way up. It has
-    // NO class at all now, which is exactly why the inline value is load-bearing.
-    // 13.5px x the inline 1.7 = 22.95px (was 12px x 1.7 = 20.4px before the
-    // 2026-08-13 size bump). The INVARIANT is unchanged — the inline multiplier is
-    // still the only declaration standing between this row and preflight's 1.5.
-    await expect(card.getByTestId('cycle-plan')).toHaveCSS('line-height', '22.95px')
-  })
-
-  // The portal's share of the four plain-text sites; the login screen's two (the
-  // dashed footnote and the remember-me label) are pinned in the login test below.
-  test('portal: the PLAIN-TEXT call-site fixes survive (no theme class can reach them)', async ({ page }) => {
-    await openPortal(page)
-
-    const toggle = page.getByTestId('archive-toggle')
-    await expect(toggle, 'archive toggle row').toHaveCSS('line-height', 'normal')
-    await toggle.click()
-
-    const archived = page.locator('.card.flat').first()
-    await expect(archived).toBeVisible()
-    await expect(archived.locator('> div > div').first(), 'archive row name').toHaveCSS('line-height', 'normal')
-    await expect(archived.locator('.mono'), 'archive row sum').toHaveCSS('line-height', 'normal')
+    // ⚠ PI-T3 · 18 §UC-PI-019 item 13 — THE CYCLE-CARD HALF OF THIS TEST IS RETIRED
+    // WITH THE CARD (§UC-PI-005). It pinned A10 on `span.display` / `h3.display` /
+    // `.badge.ok` / `[data-testid=cycle-date]` / `[data-testid=cycle-plan]`, five
+    // elements that no longer exist on any screen. The A10 RULE is unchanged and is
+    // still measured above on `.ticker` and `.neg.pill`; item 13 assigns the LANDING
+    // equivalents (`.banner.slim`, `.badge`, `own-order-card .display`, `.cs-tl .lbl`)
+    // to PI-T12, once PI-T4/T5 have built the surfaces that carry them.
+    //
+    // ⚠ The whole „portal: the PLAIN-TEXT call-site fixes survive" test went the same
+    // way: both of its sites were the UC-FL-008 archive fold's (the toggle row and an
+    // archived row's name/sum). The RULE it protected — „A9/A10 are class lists and a
+    // plain-text site needs an inline `line-height:normal`" — is stated in
+    // `friends-theme.css` §A10 and is re-asserted on the login screen's two sites in
+    // the test below, so it is not left unwitnessed.
   })
 
   test('modern login: the dashed footnote card is the canon height, not the preflight one', async ({ page }) => {
@@ -349,23 +337,25 @@ test.describe('320 px — zero horizontal document overflow with hostile free te
     await noOverflow(page, 'modern login')
   })
 
-  test('portal + archive, with a 120-char cycle name and a pasted URL in plan_note', async ({ page }) => {
+  test('portal, with a 120-char display name and a hostile `expected_date`', async ({ page }) => {
+    // ⚠ PI-T3 · 18 §UC-PI-019 item 13: the CARD assertions this test carried
+    // (`cycle-plan` / `h3.display` `overflow-wrap`, and the archive fold) are retired
+    // with the structures. But the CLAIM they protected — free ADMIN text must not
+    // scroll the document sideways; RD-FL-4 measured 531px against a 320px viewport on
+    // a pasted Google Sheets URL — is NOT retired, because the landing renders one such
+    // field VERBATIM: `expected_date`, in the status line (§UC-PI-005 item 1, „admin
+    // free text, rendered verbatim"). So the fixture weaponises that field and the
+    // claim is asserted on the element that carries it. (The A10 line-height half is
+    // still PI-T12's, once PI-T4/T5 build the surfaces it needs.)
     await openPortal(page, { cycles: HOSTILE, displayName: `Meno ${LONG_TOKEN}` })
+
+    const line = page.getByTestId('landing-status')
+    // Non-vacuity: the hostile text really reached the screen.
+    await expect(line).toContainText(LONG_TOKEN)
+    await expect(line.locator('div').first(), 'the status line must break an unbreakable token')
+      .toHaveCSS('overflow-wrap', 'anywhere')
+
     await noOverflow(page, 'portal')
-
-    // RD-FL-4's finding, re-asserted: `plan_note` is free ADMIN text and needs
-    // `overflow-wrap` — without it the whole document scrolled to 531px.
-    const card = page.locator('div.p-4', { has: page.getByRole('heading', { name: NAMES.hostile, exact: true }) })
-    // ⚠ `.mono:not(.sub)` → the testid: the plan block carries no class at all
-    // since 2026-08-13 (Figtree Regular since 2026-08-18). The claim is unchanged and
-    // is the load-bearing one on this screen — a pasted URL in `plan_note` scrolled
-    // the whole document to 531px without `overflow-wrap`.
-    await expect(card.getByTestId('cycle-plan')).toHaveCSS('overflow-wrap', 'anywhere')
-    await expect(card.locator('h3.display')).toHaveCSS('overflow-wrap', 'anywhere')
-
-    await page.getByTestId('archive-toggle').click()
-    await expect(page.locator('.card.flat').first()).toBeVisible()
-    await noOverflow(page, 'portal + archive')
   })
 
   test('the appbar ellipsizes a long display name rather than widening the bar', async ({ page }) => {
@@ -387,12 +377,9 @@ test.describe('320 px — zero horizontal document overflow with hostile free te
     await noOverflow(page, 'profile modal + password fold')
   })
 
-  test('subscription modal', async ({ page }) => {
-    await openPortal(page, { cycles: HOSTILE })
-    await page.getByLabel('Nastavenia odberu').click()
-    await expect(page.getByRole('dialog')).toBeVisible()
-    await noOverflow(page, 'subscription modal')
-  })
+  // ⚠ PI-T3 · 18 §UC-PI-016 — the „subscription modal" 320px test is RETIRED: the
+  // modal is gone (the column and both routes stay). No other dialog lost its pass;
+  // profile and invite are measured above and below.
 
   test('invite modal — the copy row must ellipsize, never widen the page', async ({ page }) => {
     await openPortal(page, { cycles: HOSTILE })
