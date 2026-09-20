@@ -49,7 +49,7 @@
 // =============================================================================
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import api, { getFriendsAuthInfo } from '../api'
 // 10 §UC-GA-012 — the ONE home for the GIS script. Never a second injector.
 import { loadGis } from '../lib/gis'
@@ -61,6 +61,9 @@ import { fmtEur } from '@/lib/money'
 import { VARIANT_GRAMS } from '@/lib/guest-cart'
 import { colleaguesLabel } from '@/lib/plural'
 import { kgLabel } from '@/lib/kg'
+// 18 §UC-PI-002 — the ONE home of "which round is this landing about, and in what
+// state". Never re-derive open/locked/closed beside it.
+import { resolveLanding } from '@/lib/portal-state'
 import FriendBalanceCard from '@/components/FriendBalanceCard.vue'
 import GuestShareDialog from '@/components/GuestShareDialog.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
@@ -69,6 +72,7 @@ import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
 
 const router = useRouter()
+const route = useRoute()
 
 const props = defineProps({
   // The authenticated friend's id. Also the parent's `:key`, so a change of
@@ -938,6 +942,38 @@ function goToCycle(cycleId) {
 const activeCycles = computed(() => cycles.value.filter(c => c.status !== 'completed'))
 const archivedCycles = computed(() => cycles.value.filter(c => c.status === 'completed'))
 
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-001/002 — WHICH VIEW, and WHICH ROUND (PI-T1; the four view BODIES
+// are PI-T3..T8).
+//
+// ⚠ BOTH ARE `computed`, AND BOTH LIVE HERE RATHER THAN IN `FriendPortal.vue`.
+// That is the session-boundary rule, not a placement preference (see this file's
+// header): every piece of state module 18 adds — `view`, `menuOpen`,
+// `closedModalDismissed`, the resolved round, history expansion, balance,
+// explainer state, drawer counts — belongs on THIS side of the parent's
+// `v-if` + `:key="sessionSeq"`, so that logging out destroys it with no list to
+// maintain. Hoisting any of it into the parent, into a plain `<script>` block or
+// into `localStorage` would let friend A's session greet friend B.
+//
+// Being a `computed` off `route`/`cycles` is itself part of that: it holds no
+// value of its own, so there is nothing for a logout to fail to clear.
+// ---------------------------------------------------------------------------
+
+/**
+ * Which of the four views this route asks for: `shop` | `history` | `balance` |
+ * `explainer` (`router.js` `meta.view`). The fallback is `shop` — the deep link
+ * `/cycle/:id` never mounts this component, so an unmapped route can only be a
+ * new one someone forgot to give a `meta.view`, and the offer is the safe answer.
+ */
+const view = computed(() => route.meta?.view || 'shop')
+
+/**
+ * The landing's round and state, from the ONE home (`lib/portal-state.js`).
+ * Recomputed whenever `cycles` is reloaded; `resolveLanding` is pure, so this
+ * never fires a request of its own.
+ */
+const landing = computed(() => resolveLanding(cycles.value))
+
 function getCycleTypeLabel(type) {
   if (type === 'bakery') return 'Pekáreň'
   return 'Káva'
@@ -1396,7 +1432,30 @@ defineExpose({ openProfileModal, openInviteModal })
        further down), so an all-sides utility here would make that locator match
        the column as well and trip Playwright strict mode. RD-FL-8b: was `py-6`
        (24px), which was 8px over on phone and 4px under on desktop. -->
-  <div class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7">
+  <!-- ⚠ `data-testid="portal-landing"` — 18 §UC-PI-019 item 1: THE „portal is
+       ready" MARKER, present in every view and in every landing state. It replaces
+       the heading gate `getByRole('heading', { name: 'Objednávkové cykly' })` that
+       ~30 spec files used to wait on, precisely because that heading is a
+       STRUCTURE this module retires (§UC-PI-005) — a gate tied to one screen's
+       copy cannot survive the screen. Tests reach it through
+       `e2e/helpers/portal.js expectLanding()`, one home, so the next IA change
+       edits one file rather than thirty.
+
+       ⚠ It sits on the PAGE COLUMN, which is the session's only unconditional
+       element: this is a fragment component (the voucher banner is its sibling),
+       so there is no single root to carry it, and the column is the one node that
+       renders in all four views, all three states and behind every modal gate.
+
+       `data-view` publishes `route.meta.view` (§UC-PI-001) and
+       `data-landing-state` the resolver's answer (§UC-PI-002) — the DOM handle
+       those two rules are asserted through while their VIEWS are still being
+       built (PI-T3..T8). Neither is user copy; both are read by e2e only. -->
+  <div
+    class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7"
+    data-testid="portal-landing"
+    :data-view="view"
+    :data-landing-state="landing.state"
+  >
     <!-- ⚠ The page-level error banner. After RD-FL-8a's convergence it has
          exactly ONE writer left — `resolveVoucher` — because the profile,
          subscription and invite failures each render in their own modal body
@@ -1467,9 +1526,15 @@ defineExpose({ openProfileModal, openInviteModal })
 
     <!-- Section header (UC-FL-006).
 
-         ⚠ PINNED: `<h2>` with the accessible name "Objednávkové cykly" —
+         ⚠ ~~PINNED: `<h2>` with the accessible name "Objednávkové cykly" —
          FIVE e2e specs locate it with `getByRole('heading', { name:
-         'Objednávkové cykly' })`. The name concatenates across the `.hl`
+         'Objednávkové cykly' })`.~~ **SUPERSEDED by PI-T1 (18 §UC-PI-019 item 1,
+         2026-09-20): NOTHING gates on this heading any more.** The „portal is
+         ready" gate is `expectLanding()` in `e2e/helpers/portal.js`, asserting
+         `data-testid="portal-landing"` on the page column below. The only two
+         remaining locators live in `portal-cycles.spec.js` and
+         `portal-share-row.spec.js`, both of which PI-T3 deletes with the cards —
+         so PI-T3 may remove this heading without hesitating over a pin. The name concatenates across the `.hl`
          span, so the highlight costs nothing; the space before the span is
          load-bearing. `h-screen` is the theme's DISPLAY-HEADING class inside
          `.app` (UC-DS-001), not Tailwind's height utility — it is blocklisted

@@ -224,6 +224,28 @@ Plus, in every state: `nextCycle` = the newest `status === 'planned'` cycle (or 
 - else `nextCycle.plan_note` ⇒ the note verbatim (`white-space:pre-line`, `overflow-wrap:anywhere`);
 - else ⇒ **„O ďalšej objednávke dáme vedieť.“** (R1.3, „kole“ → „objednávke“ per §16).
 
+⚠⚠ **PI-T1 AMENDMENT (2026-09-20) — `nextText` WAS NOT IMPLEMENTED HERE, AND THE DATE
+FORMAT IS AN OPEN PO QUESTION.** Module 17 shipped `nextOpeningText()` in
+`lib/cycle-stages.js` the day before this row ran, with exactly the three branches above, so
+`resolveLanding` **delegates** rather than carrying a second copy (one-home rule; pinned by a
+byte-equality assertion in `portal-shell.spec.js`). Likewise the open→locked precedence and
+the two-open `console.warn` come from 17's `currentCycleFor()` — the warning therefore reads
+`[cycle-stages] N cycles are open at once — using the newest`, not the `[portal]` text above.
+⚠ **The one genuine conflict:** 17 renders that sentence with `fmtDay` („približne **3.
+októbra**"), this section with `fmtDayMonth` („približne **3. 10.**"). PI-T1 kept 17's shipped
+form, because the alternative is a second home for one sentence. ⚠ **The consequence,
+stated precisely (corrected in the PI-T1 review — the first wording said „both forms in one
+modal", which a PI-T4 implementer would have found false and might then have concluded the
+conflict had evaporated):** the same CLOSED landing prints both — the SHORT form in
+§UC-PI-006's modal card, and the LONG form in the warn banner that REPLACES the modal after
+dismissal, and again in §UC-PI-007's next-round banner. In the `opens_at === null` branch the
+modal card carries `nextText` alone, so there is no collision inside the modal at all.
+**PI-T4 must not resolve this at a call site** — it is one sentence with one home until the PO
+rules. ~~`{fmtDayMonth(opens_at)}` in the sentence~~
+— see `docs/learnings/10-portal-ia.md` §1 for the two options. **PI-T4 must not resolve it at
+a call site.** `lib/dates.js` below is built as specified and is correct for every OTHER
+surface.
+
 **Dates one home — `frontend/src/lib/dates.js`:** `fmtDayMonth(iso)` → `12. 9.`,
 `fmtDate(iso)` → `12. 9. 2026`, `fmtWeekdayDayMonth(iso)` → `piatku 12. 9.` (genitive
 weekdays: pondelka, utorka, stredy, štvrtka, piatku, soboty, nedele), `weeksUntil(iso)`.
@@ -961,7 +983,15 @@ IA change edits one file):** `expectLanding(page)` = `expect(page.getByTestId('p
 `openProfile(page)` (menu → Profil → dialog `.m-title` „Upraviť profil“); `openInvite(page)` (chip).
 
 **2. The „portal is ready“ gate — `getByRole('heading', { name: 'Objednávkové cykly' })` →
-`expectLanding(page)` (UC-PI-005):** 29 files — `magic-link` (14), `portal-cycles` (7 — file
+`expectLanding(page)` (UC-PI-005):** ~~29 files~~ — **DONE by PI-T1 (2026-09-20). The
+enumeration below was STALE and is kept only as history; the measured figure is 30 files /
+72 occurrences, of which 28 files / 60 occurrences were retargeted** (`portal-cycles` 7 and
+`portal-share-row` 5 skipped — PI-T3 deletes both files). ⚠ **`payment-links.spec.js` is in
+the real list and in neither this enumeration nor the backlog row** — it landed with PL-T4,
+after this file was written, which is exactly why the re-enumeration instruction is here.
+⚠ **`google-auth` is 1 occurrence but 19 call sites**: `const PORTAL_HEADING =
+'Objednávkové cykly'` at `:1594` plus 18 indirect usages, invisible to a grep for the
+assertion shape. Historical list: `magic-link` (14), `portal-cycles` (7 — file
 retired, item 5), `friends-consolidation` (6), `portal-share-row` (5 — retired), `modern-login`
 (4), `guest-link` (3), `order-modals` (3), `portal-appbar` (3), `portal-profile-modal` (3),
 `order-locked` (2), `portal-session-boundary` (2), `portal-subscription-invite` (2), and one
@@ -969,9 +999,9 @@ each in `cat-scroll-arrow`, `catalog-admin`, `colleagues-panel`, `forced-change-
 `google-auth`, `guest-host-view`, `guest-order-recovery`, `money-rounding`, `order-cartbar`,
 `order-fidelity`, `order-product-card`, `order-shell`, `portal-fidelity`,
 `portal-transactions-modal`, `product-desc-font`, `product-photo-lightbox`, `share-dialog`.
-Where the heading's `toHaveCount(0)` proved a logout (`portal-appbar.spec.js:268`), assert
-`portal-landing` count 0. Re-enumerate before editing:
-`grep -ln "Objednávkové cykly" e2e/tests/*.spec.js`.
+Where the heading's `toHaveCount(0)` proved a logout (`portal-appbar.spec.js:268`,
+`magic-link.spec.js:1549`), assert `portal-landing` count 0 (`expectNoLanding(page)`).
+Re-enumerate before editing: `grep -ln "Objednávkové cykly" e2e/tests/*.spec.js`.
 
 **3. Portal → cycle navigation by clicking the card heading (UC-PI-018):**
 `guest-link.spec.js:255`, `catalog-admin.spec.js:2419`, and any hit of

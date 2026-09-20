@@ -2,11 +2,51 @@ import { createRouter, createWebHistory } from 'vue-router'
 import api from './api'
 
 const routes = [
+  // ── The authenticated friend portal: FOUR routes, ONE view, ONE session ──────
+  //
+  // 18 §UC-PI-001. `FriendPortal.vue` stays the one authenticated shell and
+  // `FriendPortalSession.vue` the one session component; `meta.view` is the only
+  // thing that differs between these four entries, and the session reads it to
+  // decide WHICH view to render inside the same instance.
+  //
+  // ⚠ They are separate ROUTES rather than in-place state (18 resolved conflict 7)
+  // so the phone back button returns to the offer instead of leaving the site, and
+  // „Ako to funguje" is linkable. They are NOT separate components: a second
+  // component would be a second session, and the session boundary
+  // (`FriendPortal.vue:136-146`, `:key="sessionSeq"`) is what keeps friend A's data
+  // off friend B's screen.
+  //
+  // ⚠ No auth guard, deliberately. An anonymous visit to any of the four must show
+  // the LOGIN state on the SAME URL (§UC-PI-001 acceptance), so that logging in
+  // lands on the view that was asked for; a redirect to `/` would lose it. The real
+  // gate is server-side, as everywhere else.
   {
     path: '/',
     name: 'friend-portal',
-    component: () => import('./views/FriendPortal.vue')
+    component: () => import('./views/FriendPortal.vue'),
+    meta: { view: 'shop' }
   },
+  {
+    path: '/moje-objednavky',
+    name: 'friend-history',
+    component: () => import('./views/FriendPortal.vue'),
+    meta: { view: 'history' }
+  },
+  {
+    path: '/zostatok',
+    name: 'friend-balance',
+    component: () => import('./views/FriendPortal.vue'),
+    meta: { view: 'balance' }
+  },
+  {
+    path: '/ako-to-funguje',
+    name: 'friend-explainer',
+    component: () => import('./views/FriendPortal.vue'),
+    meta: { view: 'explainer' }
+  },
+  // The cycle DEEP LINK (18 §UC-PI-018) — a standalone screen with its own `.app`
+  // root and chrome, NOT one of the four views above. It keeps working forever:
+  // the URL sits in share messages, in mail and in the admin's links.
   {
     path: '/cycle/:cycleId',
     name: 'friend-order',

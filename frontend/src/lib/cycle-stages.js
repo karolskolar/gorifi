@@ -244,16 +244,41 @@ export function openUntilText(cycle) {
  * picking one is how it goes unnoticed for a month.
  */
 export function currentCycleFor(cycles) {
-  if (!Array.isArray(cycles)) return null
-  const byStatus = (status) => cycles.filter((c) => c && typeof c === 'object' && c.status === status)
-  const open = byStatus('open')
+  const open = cyclesWith(cycles, ['open'])
   if (open.length > 1) {
     console.warn(`[cycle-stages] ${open.length} cycles are open at once — using the newest`)
   }
-  for (const candidates of [open, byStatus('locked'), byStatus('planned')]) {
-    if (candidates.length) return candidates.slice().sort(newestFirst)[0]
-  }
-  return null
+  return newestCycleWith(cycles, ['open'])
+    || newestCycleWith(cycles, ['locked'])
+    || newestCycleWith(cycles, ['planned'])
+}
+
+/**
+ * The NEWEST cycle whose `status` is one of `statuses`, or `null`.
+ *
+ * ⚠ Extracted for module 18's `resolveLanding()` (18 §UC-PI-002), which needs two
+ * more picks off the same list — the newest `planned` REGARDLESS of whether
+ * something is open (`nextCycle`), and the newest of the UNION `{locked,
+ * completed}` (`catalogCycle`) — and must not carry a second copy of "newest".
+ * `currentCycleFor()` above is still the ONE home of the open→locked→planned
+ * PRECEDENCE and of the two-open warning; this is only the sort it precedences
+ * over. Calling it once per status group is what keeps the precedence; calling it
+ * with several statuses at once asks the union question instead, which is exactly
+ * what `catalogCycle` is.
+ *
+ * "Newest" is `created_at` DESC then `id` DESC: `created_at` is second-resolution,
+ * so two rounds created in the same second tie on it and the id is what breaks the
+ * tie deterministically (CLAUDE.md, the `, id DESC` rule).
+ */
+export function newestCycleWith(cycles, statuses) {
+  const matches = cyclesWith(cycles, statuses)
+  return matches.length ? matches.slice().sort(newestFirst)[0] : null
+}
+
+function cyclesWith(cycles, statuses) {
+  if (!Array.isArray(cycles)) return []
+  const wanted = Array.isArray(statuses) ? statuses : [statuses]
+  return cycles.filter((c) => c && typeof c === 'object' && wanted.includes(c.status))
 }
 
 function newestFirst(a, b) {

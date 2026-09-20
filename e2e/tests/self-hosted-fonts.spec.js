@@ -150,8 +150,14 @@ const PROBES = [
   { family: 'Figtree', weight: 400, fallback: 'monospace' },
   { family: 'Courier Prime', weight: 400, fallback: 'sans-serif' },
   { family: 'Courier Prime', weight: 700, fallback: 'sans-serif' },
-  // Figtree 700 carries `.pspec` and the portal cycle-date row since 2026-08-18
+  // Figtree 700 carries `.pspec` and ~~the portal cycle-date row~~ since 2026-08-18
   // (the Noto Sans Cond 500/700 probes that stood here left with the face).
+  // ⚠ PI-T1 / 18 §UC-PI-019 item 15: the `cycle-date` half of that sentence is
+  // being retired — `[data-testid="cycle-date"]` lives on the cycle CARD, which
+  // §UC-PI-005 removes with the list (PI-T3). The face itself is not at risk: the
+  // enduring Figtree-700 surface inside `[data-testid="portal-landing"]` is the
+  // `.btn` / `.tab` / `.field-lbl` / `.pspec` family, which every landing state
+  // renders. The PROBE is unchanged — only the example naming it was stale.
   { family: 'Figtree', weight: 700, fallback: 'monospace' },
 ]
 
@@ -581,6 +587,20 @@ test.describe('No public route fetches a third-party subresource', () => {
     // `/` fetches exactly the same five URLs and this row would have gone red for a
     // perfectly correct page.
     '/': [GIS_HOST, GIS_IFRAME_HOST],
+    // ⚠ PI-T1 / 18 §UC-PI-001, §UC-PI-019 item 15 — THE THREE NEW FRIEND ROUTES.
+    // They render `FriendPortal.vue`, the same component `/` does, and an
+    // ANONYMOUS visit to any of them shows the same login card (there is no auth
+    // guard by design: logging in must land on the view that was asked for). So
+    // they get `/`'s allowance for the same latent reason, and not one host more.
+    //
+    // ⚠ They are swept even though they share a component with `/`, because that
+    // is a fact about TODAY: the moment PI-T3..T8 give each view a body, a
+    // view-specific asset added to one of them is a subresource on a route this
+    // file would otherwise never open — which is the exact shape of the
+    // `InviteRegister.vue` logo bug that made this sweep a route sweep at all.
+    '/moje-objednavky': [GIS_HOST, GIS_IFRAME_HOST],
+    '/zostatok': [GIS_HOST, GIS_IFRAME_HOST],
+    '/ako-to-funguje': [GIS_HOST, GIS_IFRAME_HOST],
     '/invite/:code': [GIS_HOST],
     // ⚠ GA-T8: the invite screen's Google block lives in the `form` state, which
     // only a VALID code reaches — so the route is swept in BOTH states, and only
@@ -613,6 +633,10 @@ test.describe('No public route fetches a third-party subresource', () => {
     // to exercise.
     const routes = [
       { label: '/', url: '/' },
+      // PI-T1 / 18 §UC-PI-001: the three new friend views, visited anonymously.
+      { label: '/moje-objednavky', url: '/moje-objednavky' },
+      { label: '/zostatok', url: '/zostatok' },
+      { label: '/ako-to-funguje', url: '/ako-to-funguje' },
       { label: '/invite/:code', url: `/invite/RDDS6-${uniq}` },
       { label: '/invite/:code (valid)', url: `/invite/${inviteCode}` },
       // `/admin` (GA-T10, §UC-GA-011): visited ANONYMOUSLY, which is the state that

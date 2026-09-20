@@ -332,9 +332,14 @@ phone and 4 px under on desktop. Corrected here in both the spec and the view, b
 margin-bottom: 14px`):
 
 - `<h2 class="h-screen">Objednávkové <span class="hl">cykly</span></h2>` — font-size
-  **28 px phone / 34 px desktop**. **Pinned: it must stay a real `<h2>`** — five e2e
+  **28 px phone / 34 px desktop**. ~~**Pinned: it must stay a real `<h2>`** — five e2e
   specs locate `getByRole('heading', { name: 'Objednávkové cykly' })` (the accessible
-  name concatenates across the `.hl` span, so the markup above satisfies it).
+  name concatenates across the `.hl` span, so the markup above satisfies it).~~
+  ⚠ **SUPERSEDED by PI-T1 (18 §UC-PI-019 item 1, 2026-09-20): nothing gates on this
+  heading any more.** The „portal is ready" gate is `expectLanding()` in
+  `e2e/helpers/portal.js` (`data-testid="portal-landing"`), retargeted across 28 files.
+  The two surviving locators are in `portal-cycles.spec.js` / `portal-share-row.spec.js`,
+  which PI-T3 deletes with the cards.
 - Right: `NeoIcon name="gear"` in a span (`color: var(--ink-dim)`, `cursor:pointer`,
   `title="Nastavenia odberu"`) → opens the subscription modal.
 
@@ -677,7 +682,7 @@ and cannot be dismissed by Esc/scrim; setting a valid password lands on the cycl
 | `toHaveTitle(/Gorifi/)` on `/` | `public-flow.spec.js:9` | UC-FL-001 title rule |
 | `getByText('Prihlásenie')` on anonymous `/` | `public-flow.spec.js:11`, `friend-login-list.spec.js:42` | legacy branch untouched (UC-FL-003); e2e seed is legacy |
 | `getByRole('combobox')` + populated options | `friend-login-list.spec.js:44-48` | legacy branch untouched |
-| `getByRole('heading', { name: 'Objednávkové cykly' })` | `guest-link.spec.js` ×3, `guest-host-view.spec.js:667` | `<h2 class="h-screen">` (UC-FL-006) |
+| ~~`getByRole('heading', { name: 'Objednávkové cykly' })`~~ **RETIRED — PI-T1, 18 §UC-PI-019 item 1; now `expectLanding()` / `portal-landing`. None of the named sites still asserts it.** | ~~`guest-link.spec.js` ×3, `guest-host-view.spec.js:667`~~ | `<h2 class="h-screen">` (UC-FL-006) |
 | `div.p-4` card wrapper + `heading` exact cycle name + share button inside it | `guest-link.spec.js:301-320` | `div.card.p-4` + `<h3>` + button (UC-FL-006/007) |
 | button accessible name `'Zdieľať s kolegami'`, absent on locked cards, `@click.stop` (URL stays `/`) | `guest-link.spec.js:287-322` | `aria-label` + open-only row (UC-FL-007) |
 | one share-dialog instance, Escape closes (`role="dialog"` count 0), race-guarded | `guest-link.spec.js:325+` | UC-FL-007 entry contract + module 05 |
@@ -743,7 +748,7 @@ re-run). All 10 hold; three table entries are inaccurate and are corrected here:
 | 1 | `toHaveTitle(/Gorifi/)` — `public-flow.spec.js:9` | ✅ line exact; `watchEffect` unchanged |
 | 2 | `getByText('Prihlásenie')` — `public-flow.spec.js:11`, `friend-login-list.spec.js:42` | ✅ lines exact; legacy `CardTitle` untouched |
 | 3 | `getByRole('combobox')` — `friend-login-list.spec.js:44-48` | ✅ lines exact; shadcn `SelectTrigger` untouched |
-| 4 | heading "Objednávkové cykly" | ✅ but **UNDER-COUNTED**: `guest-link.spec.js` 252/299/349 + `guest-host-view.spec.js:667` **+ `forced-change-ui.spec.js:50`** — FIVE pre-existing sites, not four |
+| 4 | ~~heading "Objednávkové cykly"~~ **RETIRED by PI-T1 (2026-09-20)** — the gate is now `expectLanding()` (`portal-landing`), and NONE of the sites enumerated here still asserts the heading. ⚠ The under-count note below was itself an enumeration written from a grep of the assertion SHAPE, which is exactly what missed `google-auth`'s 18 call sites behind a `PORTAL_HEADING` constant. | ~~✅ but **UNDER-COUNTED**: `guest-link.spec.js` 252/299/349 + `guest-host-view.spec.js:667` **+ `forced-change-ui.spec.js:50`** — FIVE pre-existing sites, not four |
 | 5 | `div.p-4` + exact `<h3>` + share button — `guest-link.spec.js:301-320` | ✅ `cardFor()` on 301; card is `class="card p-4"`, column is `px-4 sm:px-7 py-6` (never `p-4`) |
 | 6 | `'Zdieľať s kolegami'`, absent on locked, `@click.stop` — `:287-322` | ✅ lines exact; `aria-label` + open-only `v-if` + `.stop` all present |
 | 7 | one dialog, Escape closes, race-guarded — `guest-link.spec.js:325+` | ✅ but the test starts at **324**, not 325 |

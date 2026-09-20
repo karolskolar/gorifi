@@ -423,7 +423,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## 16. Portal information architecture (18) — landing = current offer, menu, explainer, profile
 
-- [ ] PI-T1  Portal shell: routes `/moje-objednavky`, `/zostatok`, `/ako-to-funguje` (+ `meta.view`, bodies later) + `lib/portal-state.js` `resolveLanding()` (state/currentCycle/catalogCycle/nextCycle/nextText; two-open `console.warn`) + `lib/dates.js` + `GET /friends/cycles` payload extension (`opens_at/closes_at/stage` from CS-T1, `orderHandedOver` from DP-T1's `handed_over_at`) + `data-testid="portal-landing"` + `e2e/helpers/portal.js` gate retarget across ~27 files — `18 §UC-PI-001,002,019(items 1,2,15)` ⚠ all session state in `FriendPortalSession.vue` (`:key`), never `FriendPortal.vue`/localStorage; `closes_at` date only (PO); subscription filter block stays server-side. ⚠ SANCTIONED: `getByRole('heading',{name:'Objednávkové cykly'})` → `expectLanding(page)` (skip `portal-cycles`/`portal-share-row`, retired in PI-T3); `portal-appbar.spec.js:268`; `self-hosted-fonts` sweep += the three routes.
+- [x] PI-T1  Portal shell: routes `/moje-objednavky`, `/zostatok`, `/ako-to-funguje` (+ `meta.view`, bodies later) + `lib/portal-state.js` `resolveLanding()` (state/currentCycle/catalogCycle/nextCycle/nextText; two-open `console.warn`) + `lib/dates.js` + `GET /friends/cycles` payload extension (`opens_at/closes_at/stage` from CS-T1, `orderHandedOver` from DP-T1's `handed_over_at`) + `data-testid="portal-landing"` + `e2e/helpers/portal.js` gate retarget across ~27 files — `18 §UC-PI-001,002,019(items 1,2,15)` ⚠ all session state in `FriendPortalSession.vue` (`:key`), never `FriendPortal.vue`/localStorage; `closes_at` date only (PO); subscription filter block stays server-side. ⚠ SANCTIONED: `getByRole('heading',{name:'Objednávkové cykly'})` → `expectLanding(page)` (skip `portal-cycles`/`portal-share-row`, retired in PI-T3); `portal-appbar.spec.js:268`; `self-hosted-fonts` sweep += the three routes.
 - [ ] PI-T2  Appbar per state (menu · brand + subtitle · **Pozvať chip stays** · lock chip when not open · three tickers) + `NeoDrawer.vue` via `useModalLayer()` extracted from `NeoModal` (scrim/Esc/focus-trap/scroll-lock ONE home) + A13 `portal2.css` port into `friends-theme.css` + drawer items 1–3/5–7 (item 4 slot left for PI-T3) + ONE session-level balance fetch + badge + logout/profile moved into the drawer + `NeoIcon menu` — `18 §UC-PI-003,004,019(items 4,5,7)` · model=heavy ⚠ drawer = `Teleport` → `.modal-layer` → `aside[role=dialog]`, never a fixed child of `.app` (z-index trap); shipped specs counting dialogs must open it deliberately. ⚠ header = friend `name` only (PO: no uid, no „člen od“). ⚠ SANCTIONED (large): logout control → `logout(page)` in portal-appbar ×6, portal-session-boundary ×3, portal-profile-modal ×2, friends-consolidation:1006, google-auth ×12; `.titles`→profile pins INVERTED; pencil tests → one `profile-pencil` count-0 pin; `portal-appbar` ticker rewrite; balance-card describe PARKED for PI-T7; NEW `portal-menu.spec.js`.
 - [ ] PI-T3  Landing OPEN state: `FriendOrder.vue` `mode='landing'` (props `cycleId/friendId/mode`; no `.app`/BrandChrome inside; `.cartbar` stays a theme class) + cycle list, gear and subscription modal RETIRED (column/endpoint kept) + status line („Objednávky do {closes_at} · Káva príde okolo {expected_date} — Ako to funguje?“) + cartbar share icon + drawer item 4 via `defineExpose({openShareDialog})` + „Späť na ponuku“ + DELETE `portal-cycles.spec.js`/`portal-share-row.spec.js` (protected properties move to `portal-landing`/`portal-menu`) — `18 §UC-PI-005,011,016,019(items 3,6,8,12)` · model=heavy ⚠ riskiest row: FriendOrder is the ONE home — extend, never fork; leave guard fires on drawer `router.push`; exactly ONE `GuestShareDialog` instance. ⚠ landing slot 2 left empty for the debt banner (PI-T7); `FriendBalanceCard` stays on the landing until PI-T7. ⚠ SANCTIONED: `guest-link.spec.js` 255 / 291–380 retargets, `portal-subscription-invite` describes → two pins, `catalog-admin:2419`, `order-cartbar` landing variant; `share-dialog.spec.js` unmodified.
 - [ ] PI-T4  Landing CLOSED state: parametrised NeoModal „Objednávky sú zatvorené“ once per SESSION (PO: „once, then banner“ = the spec's session rule, no persistence) + `nextText` card + `CycleTimeline variant="compact"` (own caption row) + `.banner.warn.slim` after dismiss + read-only `catalogCycle` grid (`readonly` landing mode: `.p2-ro`, tabs live, no stock bars/cartbar/tabgroup) + empty „Ponuka ešte nie je pripravená.“ — `18 §UC-PI-006` ⚠ modal title/intro/lead are PROPS so PI-T5 only passes strings for the no-order locked variant.
@@ -473,6 +473,40 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 ## Log
 
+- 2026-09-20 · PI-T1 · (this commit) · no PR (project convention) · **Module 18 opens: the portal
+  shell, the landing resolver, and a gate retarget across 28 spec files.** Three routes with
+  `meta.view`, `lib/portal-state.js resolveLanding()`, `lib/dates.js`, an additive
+  `GET /friends/cycles` extension (module 17's three columns + `parcel_*`, plus `orderPaid` /
+  `orderHandedOver` from module 16), `data-testid="portal-landing"` and the new
+  `e2e/helpers/portal.js`.
+  ⚠ **The spec asked for things module 17 shipped the day before, and they were NOT duplicated.**
+  `nextText` delegates to `nextOpeningText()`; precedence and the two-open warning come from
+  `currentCycleFor()`; „newest" became a new export on module 17's OWN file (`newestCycleWith`)
+  rather than a fork. Review fuzzed the rewritten `currentCycleFor` against its HEAD version over
+  **20 000 randomised arrays — zero differences**.
+  ⚠ **The date format is a PO QUESTION, deliberately unresolved.** 17 renders „približne
+  3. októbra"; §UC-PI-002 specifies „3. 10." for the SAME sentence. 17's form was kept (the
+  alternative is a second home for one sentence) and `lib/dates.js` built as specified for the other
+  surfaces; nothing in `frontend/src` imports it yet, so no code picks a winner. ⚠ The consequence
+  was recorded WRONG first („both forms in one modal") and corrected in review: the same CLOSED
+  landing prints the SHORT form in the modal card and the LONG form in the banner that REPLACES the
+  modal after dismissal. PI-T4 must not resolve it at a call site.
+  ⚠ **Three enumerations were stale, all measured:** the spec said 29 files, the row said ~27 — it is
+  **30 files / 72 occurrences** (28 / 60 retargeted; `portal-cycles` and `portal-share-row` are
+  PI-T3's deletions). `payment-links.spec.js` is in the real set and in NEITHER list. And
+  `google-auth.spec.js` showed **1** grep hit but had **19** call sites behind a `PORTAL_HEADING`
+  constant — a grep for an assertion SHAPE cannot see a constant.
+  ⚠ **Orchestrator found a gate GAP:** the row edited module 17's shipped `lib/cycle-stages.js` but
+  did not run `cycle-stages.spec.js`, the 124-test file that pins it. Added: green.
+  ⚠ **The implementer caught a can't-fail assertion of its OWN before shipping it** — a DST test that
+  named a timezone (CS-T2's rule) was still a fixed point; it needs clocks moving FORWARD *and* a day
+  count straddling the week rounding. **Naming a timezone is necessary, not sufficient.**
+  ⚠ **Orchestrator fixed a robustness bug review found:** `weeksUntil(iso, null)` returned **2961**,
+  because `new Date(null)` is a VALID Date at the epoch, not Invalid — a default-parameter guard does
+  not catch it. `undefined` must still mean „now". Pinned in both directions; no caller existed yet,
+  and a not-yet-loaded clock is exactly what arrives as `null`.
+  Gate: **966 passed / 0 failed / 1 skipped** over 31 files. Review: **approve**, five minors, all
+  acted on.
 - 2026-09-20 · FUP-T26 · (this commit) · no PR (project convention) · **One branch: the lock default
   now fires from `open` ONLY, and a handed-out round stops rewinding.** `completed(ready) → locked`
   — the admin's recovery path for a mis-completed round — reset `stage` from `ready` to `ordered`,

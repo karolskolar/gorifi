@@ -1,4 +1,9 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding } from '../helpers/portal.js'
 import { readFileSync, existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -142,7 +147,7 @@ async function signIn(page, who = friend) {
 
 async function openPortal(page) {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+  await expectLanding(page)
 }
 
 /**
@@ -1055,7 +1060,7 @@ test.describe('⚠ session-scoped modal state dies with the session', () => {
     await page.getByLabel(/^užívateľské meno$/i).fill(who.username)
     await page.getByLabel(/^heslo$/i).fill(who.password)
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
 
     const reopened = await openProfile(page)
     // Fold closed again (UC-FL-009 specifies default-closed)…
@@ -1130,7 +1135,7 @@ test.describe('⚠ session-scoped modal state dies with the session', () => {
     await expect(setup.getByText('Heslá sa nezhodujú')).toBeVisible()
     await setup.getByRole('button', { name: 'Neskôr' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
 
     // Log out, and let a DIFFERENT friend log in with the same shared password.
     await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()

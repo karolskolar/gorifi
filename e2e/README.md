@@ -293,6 +293,22 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   own fallback, so a `getComputedStyle('.mk')` read there passes with every fallback
   deleted. It pins the state VECTOR, keys, labels and the `when` line instead, on TWO
   fixtures one step apart (`ready` and `arrived`) so a fixed index cannot satisfy both.
+- `tests/portal-shell.spec.js` — PI-T1 / 18 §UC-PI-001, §UC-PI-002, §UC-PI-019 items 1, 2,
+  15: the module-18 SHELL. The four friend routes on one session component (`meta.view`,
+  no auth guard — anonymous keeps its URL and shows the login card), the session boundary
+  across a friend switch, `lib/portal-state.js resolveLanding()` both as a module and wired
+  to the real payload through a `page.route` stub, `lib/dates.js`, the one-home source pins
+  (`portal-state.js` formats no date and sorts no cycle; `FriendPortal.vue` holds none of
+  it), and the friend cycles payload extension driven through the REAL routes
+  (submit → packed → handed-over → paid, then back again). ⚠ Its FIRST test is the one that
+  matters most: `data-testid="portal-landing"` must be ABSENT anonymous, PRESENT signed in
+  and absent again after logout — 60 assertions in 28 files were retargeted onto that
+  marker in one commit, and a marker that also rendered on the login screen would have
+  turned every one of them into an assertion that cannot fail. ⚠ Two timezone tests, two
+  zones, because one could not catch both rules: a SPRING-FORWARD boundary for
+  `weeksUntil` (the autumn one is a FIXED POINT of the naive implementation — measured) and
+  a NEGATIVE-OFFSET zone for the display day. Needs the frontend source beside `e2e/` for
+  the module-import and source-pin describes; they self-skip against a deployment.
 - `tests/self-hosted-fonts.spec.js` — RD-DS-6: the brand webfonts must be
   **self-hosted**, and the CSP hole that hid it. The Podpultovka restyle loaded
   Darker Grotesque / Figtree / Courier Prime from `fonts.googleapis.com`, which
@@ -418,6 +434,17 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   planned `portal-vocabulary.spec.js` (18 §UC-PI-018, `/cykl|kolo/i` over the friend
   surfaces) is the next case, and it must mark the interpolations on the surfaces it sweeps
   the way `AdminFriends.vue` does.
+- `helpers/portal.js` — `expectLanding(page)` / `expectNoLanding(page)` / `LANDING`: the ONE
+  home of the „the friend portal is (not) on screen" gate (18 §UC-PI-019 item 1). It
+  replaced `getByRole('heading', { name: 'Objednávkové cykly' })` in **28 files / 60
+  occurrences** (PI-T1) — that heading is a structure module 18 retires, so a gate tied to
+  its copy could not survive the screen. Outside `tests/` for the same `testDir` reason as
+  the other two. ⚠ The marker means „a friend is signed in and the session is mounted" and
+  nothing more — NOT „the cycles have loaded", which the heading did not claim either.
+  ⚠ `expectNoLanding` is `toHaveCount(0)`, not `not.toBeVisible()`: the session is unmounted
+  by a `v-if`, and count-0 is what would red if a change merely HID it (the six-leak class).
+  ⚠ **PI-T2 adds `openMenu` / `menuGo` / `logout` / `openProfile` / `openInvite` HERE** —
+  they all drive the drawer PI-T2 builds, which is why PI-T1 shipped only two.
 
 ## The database is an INPUT — copy the template, never reuse a working file
 

@@ -1,4 +1,9 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD, fixtureEmail } from '../fixtures.js'
 
@@ -852,7 +857,7 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
     await page.getByLabel(/^užívateľské meno$/i).fill(friend.username)
     await page.getByLabel(/^heslo$/i).fill('ownPass1')
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
   }
 
   // `hydrateCurrentFriend` is fire-and-forget; the username box only exists once
@@ -915,7 +920,7 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
     // the modal PREFILLS from the saved values, and clearing the email is
     // allowed with NO confirm (11 §UC-FC-009 — the badge is the signal).
     await page.goto('/')
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     dialog = await openProfile(page)
     await expect(dialog.getByLabel('Email')).toHaveValue(newEmail)
     await expect(dialog.getByLabel('Mobil')).toHaveValue('0900303030')
@@ -964,7 +969,7 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
       (r) => r.url().includes(`/api/friends/${friend.id}/profile`) && r.request().method() === 'GET' && r.status() === 200
     )
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     await hydrated
 
     const dialog = await openProfile(page)
@@ -1010,7 +1015,7 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
     await page.getByLabel(/^užívateľské meno$/i).fill(a.username)
     await page.getByLabel(/^heslo$/i).fill('ownPass1')
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
 
     // Log out WITHOUT ever letting A's hydrate resolve — the held GET is still
     // pending in the browser's network layer; app-level logout does not abort it.
@@ -1021,7 +1026,7 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
     await page.getByLabel(/^užívateľské meno$/i).fill(b.username)
     await page.getByLabel(/^heslo$/i).fill('ownPass1')
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
 
     // NOW let A's stale response land — straight into what is now B's session.
     releaseA()
@@ -1058,7 +1063,7 @@ test.describe('UI — UC-FC-009 portal profile modal', () => {
       (r) => r.url().includes(`/api/friends/${friend.id}/profile`) && r.request().method() === 'GET' && r.status() === 200
     )
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     await hydrated
 
     const dialog = await openProfile(page)

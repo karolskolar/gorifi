@@ -39,6 +39,11 @@
 // only both pass if the flag is really the gate.
 
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { execFileSync } from 'node:child_process'
@@ -1591,8 +1596,6 @@ const PROMPT_LATER = 'Teraz nie'
 const PROMPT_NEVER = 'Už sa nepýtať'
 const PROMPT_FOOTNOTE = 'Prepojenie nájdete kedykoľvek v profile.'
 
-const PORTAL_HEADING = 'Objednávkové cykly'
-
 /** Start a throwaway backend, put it in `mode`, and hand the test its API + a page. */
 async function withPortal({ mode = 'modern', env = {} } = {}, fn) {
   await withGoogleBackend(env, async (bundle) => {
@@ -1638,7 +1641,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       }
 
       // The friend IS logged in behind it — the prompt is a prompt, not a gate.
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
 
       // ⚠ One modal at a time: the credential-setup dialog and the forced gate must
       // not be up, and neither must a second copy of this one.
@@ -1713,7 +1716,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
 
       await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
       await loginModern(page, backend, friend)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page), 'a dismissed prompt never auto-opens again').toHaveCount(0)
     })
   })
@@ -1730,12 +1733,12 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       await trackGoogle(page, { fulfilWith: GIS_STUB })
 
       await loginModern(page, backend, linked)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page), 'googleLinked === true ⇒ nothing to offer').toHaveCount(0)
 
       await page.getByRole('button', { name: 'Odhlásiť sa' }).click()
       await loginModern(page, backend, dismissed)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page), 'googlePromptDismissed === true ⇒ silenced').toHaveCount(0)
     })
   })
@@ -1773,7 +1776,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       }))
       await page.goto(`${backend.baseUrl}/`)
 
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(
         page.getByTestId('magic-prompt'),
         'the session really IS a magic-link session — ML-T6\'s own prompt is on screen'
@@ -1791,7 +1794,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       await promptOf(page).getByRole('button', { name: PROMPT_LATER, exact: true }).click()
 
       await page.reload()
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page), 'a restore is not a login (§UC-GA-006)').toHaveCount(0)
     })
   })
@@ -1855,7 +1858,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
 
       // Non-vacuity: the portal really rendered. "Zero requests" is otherwise
       // satisfied by a page that failed to mount at all.
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(page.locator('.appbar')).toContainText(friend.name)
       await expect(page.getByTestId('google-signin'), 'the login card never rendered').toHaveCount(0)
       await page.waitForLoadState('networkidle')
@@ -1904,7 +1907,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       await page.getByPlaceholder('Zadajte heslo').fill(friend.password)
       await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
 
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page), 'not modern ⇒ no link offer').toHaveCount(0)
 
       const handshake = await (await api.passwordLogin(friend.username, friend.password)).json()
@@ -1955,7 +1958,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       await gate.getByLabel(/^potvrdiť nové heslo$/i).fill('gatePass12345')
       await gate.getByRole('button', { name: /Nastaviť heslo a pokračovať/ }).click()
       await expect(gate).toHaveCount(0)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page), 'the prompt skips this login entirely').toHaveCount(0)
 
       // The next login has no gate, so it does get the prompt — the absence above is
@@ -2075,7 +2078,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       // LOGIN callback — firing it signs the (now linked) friend straight in.
       await page.evaluate((token) => window.__gisCallback({ credential: token }), `TEST:${sub}:me@example.test`)
       await expect(page.locator('.appbar')).toContainText(friend.name)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
 
       // ⚠ "NEVER FOR A GOOGLE LOGIN" (§UC-GA-006) — the one trigger branch that had no
       // assertion of its own. The two lines above do NOT cover it: the portal heading
@@ -2178,7 +2181,7 @@ test.describe('§UC-GA-006 — the post-login Google link prompt', () => {
       const hits = await trackGoogle(page)
 
       await loginModern(page, backend, friend)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
       await expect(promptOf(page)).toHaveCount(0)
       await page.waitForLoadState('networkidle')
       expect(hits, 'an unconfigured deployment must be Google-free').toEqual([])
@@ -2249,7 +2252,7 @@ const sectionOf = (page) => page.getByTestId('profile-google')
  * as "no .m-title", which looks like a broken modal rather than a race.
  */
 async function openProfileSection(page) {
-  await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+  await expectLanding(page)
   await page.locator('.appbar .titles').click()
   await expect(page.getByRole('dialog').locator('.m-title')).toHaveText('Upraviť profil')
   return sectionOf(page)
@@ -2434,7 +2437,7 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await page.goto(`${backend.baseUrl}/`)
       await expect(page.getByTestId('google-signin')).toBeVisible()
       await fireCredential(page, `TEST:${sub}:nopass@example.test`)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
 
       const section = await openProfileSection(page)
       // ⚠ WAS AN ABSENCE PIN, NOW THE POSITIVE (GA-T11 — e2e-immutability case (a),
@@ -2496,7 +2499,7 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await page.goto(`${backend.baseUrl}/`)
       await expect(page.getByTestId('google-signin')).toBeVisible()
       await fireCredential(page, `TEST:${sub}:setpw@example.test`)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
 
       await openProfileSection(page)
       const dialog = page.getByRole('dialog')
@@ -2528,7 +2531,7 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       // friend — the presenting one included — so a client that ignored the re-mint
       // would look fine for one tick and 401 on its next request. Proving the portal is
       // still usable is what catches that.
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
 
       // The fold flips IN PLACE off the merged `hasCredentials`, with no reload: the
       // set form is gone and the change form has taken its slot.
@@ -2543,7 +2546,7 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       // the modern login card, with nothing but the name and password just chosen.
       await page.evaluate(() => localStorage.clear())
       await loginModern(page, backend, { username, password })
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
     })
   })
 
@@ -2661,7 +2664,7 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       // Proof rather than inference: the callback it now owns is a LOGIN callback.
       await fireCredential(page, `TEST:${mySub}:own7@example.test`)
       await expect(page.locator('.appbar')).toContainText(friend.name)
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
     })
   })
 
@@ -2814,7 +2817,7 @@ test.describe('§UC-GA-007 — the profile modal Google section', () => {
       await page.getByPlaceholder('Zadajte užívateľské meno').fill(friend.username)
       await page.getByPlaceholder('Zadajte heslo').fill(friend.password)
       await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
-      await expect(page.getByRole('heading', { name: PORTAL_HEADING })).toBeVisible()
+      await expectLanding(page)
 
       await openProfileSection(page)
       await expect(sectionOf(page), 'not modern ⇒ no link offer the server would refuse')

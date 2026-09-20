@@ -1,4 +1,9 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
 // RD-FO-4 — the four modals FriendOrder owns: Spôsob prevzatia (04 §UC-FO-010),
@@ -218,7 +223,7 @@ async function stubLocations(page, locations) {
 // `FriendOrder.vue`'s onMounted delegates restore to `FriendPortal`.
 async function gotoCycle(page, cycle) {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+  await expectLanding(page)
   await page.getByRole('heading', { name: cycle.name, exact: true }).click()
   await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
   await expect(page.locator('.app .cartbar')).toBeVisible()
@@ -991,7 +996,7 @@ test.describe('UC-FO-011 — the Hotovo! success modal', () => {
       await close()
       await expect(page, `${label} lands on the portal`).toHaveURL(/\/$/)
       await expect(page.getByText('Neuložené zmeny'), `${label} must not arm the leave guard`).toHaveCount(0)
-      await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+      await expectLanding(page)
     }
   })
 })
@@ -1138,7 +1143,7 @@ test.describe('UC-FO-013 — the leave guard, all three outcomes', () => {
     await page.getByRole('button', { name: 'Späť', exact: true }).click()
     await dialog(page).getByRole('button', { name: 'Opustiť' }).click()
     await expect(page).toHaveURL(/\/$/)
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     // The whole point of the warning: the server still holds the pre-edit cart.
     const items = (await (await ctx.get(`/api/orders/cycle/${cycle.id}/friend/${host.id}`, {
       headers: host.auth, timeout: TIMEOUT,

@@ -1,4 +1,9 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding } from '../helpers/portal.js'
 import { ADMIN_PASSWORD, CYCLE_NAME } from '../fixtures.js'
 
 // GSO-T2: the host's guest share link (`guest_order_links`) — create,
@@ -249,7 +254,7 @@ test.describe('Guest share link — UI', () => {
     await signInAsHost(page, host)
 
     await page.goto('/')
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
 
     // Open the cycle → FriendOrder.
     await page.getByRole('heading', { name: CYCLE_NAME, exact: true }).click()
@@ -300,7 +305,7 @@ test.describe('Guest share link — UI', () => {
 
     await signInAsHost(page, host)
     await page.goto('/')
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
 
     const cardFor = (name) => page.locator('div.p-4', { has: page.getByRole('heading', { name, exact: true }) })
     await expect(cardFor(lockedName)).toBeVisible()
@@ -351,7 +356,7 @@ test.describe('Guest share link — UI', () => {
     })
 
     await page.goto('/')
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     const cardFor = (name) => page.locator('div.p-4', { has: page.getByRole('heading', { name, exact: true }) })
 
     const staleLoad = page.waitForResponse((r) => r.url().includes(`/api/guest-links/cycle/${cycleId}`))

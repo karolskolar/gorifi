@@ -1,4 +1,9 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
 // RD-KG-1 — 05 §UC-KG-001..005, 007: the "Kolegovia" panel restyled onto the
@@ -148,7 +153,7 @@ async function signInAsHost(page, host) {
 // going in through the portal is how a real host gets here.
 async function gotoCycle(page, cycle) {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+  await expectLanding(page)
   await page.getByRole('heading', { name: cycle.name, exact: true }).click()
   await expect(page).toHaveURL(new RegExp(`/cycle/${cycle.id}$`))
 }

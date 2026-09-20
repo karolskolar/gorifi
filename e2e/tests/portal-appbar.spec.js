@@ -1,4 +1,9 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
+// PI-T1 · 18 §UC-PI-019 item 1 — the ONE home of the „portal is ready“ gate.
+// It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
+// waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
+// tied to its copy could not survive the screen. Same claim, one home.
+import { expectLanding, expectNoLanding } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 
 // RD-FL-3 — the authenticated portal appbar (03 §UC-FL-004) and the restyled
@@ -115,7 +120,7 @@ async function stubBalance(page, balance) {
 
 async function openPortal(page) {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+  await expectLanding(page)
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +270,7 @@ test.describe('Portal appbar — name, code, pencil, Pozvať chip, logout (UC-FL
 
     // Logout → back to the login state, storage cleared, wordmark restored.
     await page.locator('.appbar span[aria-label="Odhlásiť sa"]').click()
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toHaveCount(0)
+    await expectNoLanding(page)
     await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
     expect(await page.evaluate(() => localStorage.getItem('gorifi_friend_auth'))).toBeNull()
   })
@@ -602,7 +607,7 @@ test.describe('Authenticated error banner — the RD-FL-1 residual', () => {
     await page.getByLabel(/^heslo$/i).fill('ownPass12')
     await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
 
-    await expect(page.getByRole('heading', { name: 'Objednávkové cykly' })).toBeVisible()
+    await expectLanding(page)
     await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
     await expect(page.locator('.appbar .titles .s')).toHaveText(friend.name)
     await expect(page.locator('.banner.danger')).toHaveCount(0)

@@ -867,7 +867,8 @@ router.get('/cycles', (req, res) => {
   // Get all cycles (open, locked, completed) with stored total_friends
   const cycles = db.prepare(`
     SELECT c.id, c.name, c.status, c.created_at, c.total_friends, c.expected_date, c.type, c.plan_note,
-           c.opens_at, c.closes_at, c.stage
+           c.opens_at, c.closes_at, c.stage,
+           c.parcel_enabled, c.parcel_fee
     FROM order_cycles c
     WHERE c.name != '_placeholder'
     ORDER BY c.created_at DESC
@@ -882,10 +883,22 @@ router.get('/cycles', (req, res) => {
     let orderItemCount = 0;
     let orderPickupName = null;
     let orderPacketa = false;
+    // 18 §UC-PI-002, ADDITIVE. `orderPaid` drives the locked own-order card's
+    // Zaplatené/Nezaplatené badge (§UC-PI-007) and `orderHandedOver` the history
+    // list's „Odovzdaná" badge (§UC-PI-009). Both default FALSE with no order, so
+    // a cycle the friend never ordered from can never read as paid or handed over.
+    //
+    // ⚠ NEITHER IS A MONEY WRITE OR A MONEY READ. `paid` is the admin's toggle
+    // (CLAUDE.md Money: `delivered` is host-only, `paid` admin-only) and
+    // `handed_over_at` is LEDGER-NEUTRAL stage-3 data (module 16) — `packed` is
+    // the money moment. This route publishes them, it does not act on them.
+    let orderPaid = false;
+    let orderHandedOver = false;
 
     if (friendId) {
       const order = db.prepare(`
         SELECT o.id, o.status, o.total, o.delivery_fee, o.packeta_address,
+               o.paid, o.handed_over_at,
                o.pickup_location_id, o.pickup_location_note, pl.name as pickup_location_name
         FROM orders o
         LEFT JOIN pickup_locations pl ON pl.id = o.pickup_location_id
@@ -931,6 +944,8 @@ router.get('/cycles', (req, res) => {
         orderItemCount = itemCountResult.itemCount;
         orderPickupName = order.pickup_location_name || order.pickup_location_note || null;
         orderPacketa = !!order.packeta_address;
+        orderPaid = !!order.paid;
+        orderHandedOver = order.handed_over_at != null;
       }
     }
 
@@ -942,7 +957,9 @@ router.get('/cycles', (req, res) => {
       orderKilos,
       orderItemCount,
       orderPickupName,
-      orderPacketa
+      orderPacketa,
+      orderPaid,
+      orderHandedOver
     };
   });
 

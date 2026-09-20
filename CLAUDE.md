@@ -54,6 +54,7 @@ cd frontend && npm run dev     # :5173
 | Admin sets a party's pickup point (`helpers/pickup.js`, `PickupLocationPicker.vue`) | `docs/learnings/06-pickup-point.md` |
 | Payment links, variable symbol, `payment_creditor_name` (module 15) | `docs/learnings/07-payment-links.md` |
 | Distribution pipeline: hand-over, the board, the outbox enqueue, the cycle header (module 16) | `docs/learnings/08-distribution-pipeline.md` |
+| Portal IA: the four friend routes, `resolveLanding`, `lib/dates.js`, the `portal-landing` gate (module 18) | `docs/learnings/10-portal-ia.md` |
 | Cycle stages: the three `order_cycles` columns, `markCycleReady()`, the `POST/PATCH /cycles` contract, `lib/cycle-stages.js` + `CycleTimeline.vue`, the admin date/stage controls, the guest „Kde je vaša káva" card (module 17) | `docs/learnings/09-cycle-stages.md` |
 
 Specs: `docs/specification/*.md`, `docs/superpowers/specs/*.md`. Spec text that cites "CLAUDE.md GSO-T3" /
@@ -221,10 +222,25 @@ append the full write-up to the matching learnings file and add at most one line
   passes with every fallback deleted — pin the vertical variant's state vector, keys and labels
   instead (CS-T4). Its one vertical mount is that page's „Kde je vaša káva" card
   (`guest-timeline-card`, `cycle && !isCancelled`, INSIDE the read view so edit mode hides it).
+- Portal IA (module 18): `/`, `/moje-objednavky`, `/zostatok`, `/ako-to-funguje` all mount
+  `FriendPortal.vue` with `meta.view` and NO auth guard (anonymous ⇒ the login state on the SAME URL);
+  `/cycle/:id` stays the standalone deep link and never gets a `meta.view`. EVERY piece of module-18
+  state lives in `FriendPortalSession.vue` (the `:key="sessionSeq"` side) — never the parent, a plain
+  `<script>` block or `localStorage`. `lib/portal-state.js resolveLanding()` is the one home of the
+  landing state (`state`/`currentCycle`/`catalogCycle`/`nextCycle`/`nextText`/`nextOpening`;
+  `currentCycle` is NULL under `closed`) and it DELEGATES — `nextText` to `nextOpeningText()`, the
+  open→locked precedence + the two-open `[cycle-stages]` warn to `currentCycleFor()`, „newest" to
+  `newestCycleWith()`. `lib/dates.js` owns the SHORT forms ONLY (`12. 9.` / `12. 9. 2026` /
+  `piatku 12. 9.` / `weeksUntil`; an unparsable STRING renders raw, a non-string renders `''`); a date
+  INSIDE one of module 17's composed sentences stays LONG (`fmtDay`, „3. októbra"). ⚠ The two specs
+  disagree about that ONE sentence and PI-T1 kept 17's shipped form — PO decision pending, do not
+  resolve it at a call site (learnings 10 §1). `data-testid="portal-landing"` on the session's page
+  column is THE e2e „portal is ready" gate; specs reach it only through `e2e/helpers/portal.js`
+  (`expectLanding`/`expectNoLanding`; PI-T2 adds the drawer helpers THERE, never a second module).
 - Where a round IS: `lib/cycle-stages.js` is the one home of the six `STEPS`, their Slovak copy and
   `stageIndex`/`timelineSteps`/`fmtDay`/`daysUntil`/`inWeeksText`/`nextOpeningText`/`openUntilText`/
-  `currentCycleFor`; it imports only `./plural.js` (which owns `daysLabel`/`weeksLabel`) so a Playwright
-  spec can import it — this repo's substitute for a unit test. ⚠ `stageIndex()` reads `status` BEFORE
+  `currentCycleFor`/`newestCycleWith`; it imports only `./plural.js` (which owns
+  `daysLabel`/`weeksLabel`) so a Playwright spec can import it — this repo's substitute for a unit test. ⚠ `stageIndex()` reads `status` BEFORE
   `stage`, and that order is the ONLY thing hiding the three stale-/reset-stage transitions CS-T1
   measured (learnings 09 §10); invert it and all three reach the friend with nothing going red. No
   string in the lib or the component may contain „kolo"/„kolá"/„cyklus"/„cykl" (sweep regex
