@@ -242,3 +242,45 @@ export async function dismissLandingState(page) {
   await modal.getByRole('button', { name: 'Prezrieť ponuku' }).click()
   await expect(modal).toHaveCount(0)
 }
+
+// ── THE FIRST-LOGIN EXPLAINER GATE (PI-T9) ───────────────────────────────────
+// 18 §UC-PI-013: a friend whose `friends.explainer_seen_at` is NULL is sent to
+// `/ako-to-funguje` by their next LOGIN — not by a restore. That is the feature, and
+// it is also a TRAP FOR EVERY FIXTURE IN THIS SUITE that logs a freshly created
+// friend in THROUGH THE UI: `POST /api/friends` writes no acknowledgement, so every
+// such friend is a first-login friend and lands on the explainer instead of the
+// screen the spec came to measure.
+//
+// ⚠ THE SUITE'S TWO CONTAINMENTS, and they cover different populations:
+//   1. `e2e/seed.mjs` step 7 pre-stamps every friend the gate DATABASE starts with
+//      (the 76-friend template + `E2ETester`), leaving exactly one named fixture
+//      (`E2EExplainerGate`) unacknowledged;
+//   2. THIS helper, for the friends a spec creates DURING a run — seed.mjs cannot
+//      reach them, and there are more of those than of the seeded kind.
+//
+// ⚠ IT GOES THROUGH THE REAL ROUTE, with the friend's OWN session token, because
+// that is the only credential the route accepts (`requireFriendOwner`; the shared
+// password resolves no identity and is a 401 — the GA-T5 rule). So it is also a
+// continuous, incidental round-trip of the endpoint from a dozen spec files.
+//
+// ⚠ A SPEC WHOSE SUBJECT IS THE GATE MUST NOT CALL THIS. `portal-explainer.spec.js`
+// §9 provisions friends and deliberately leaves them unacknowledged; stamping them
+// would delete the tests. Same rule as `helpers/admin.js` and `api-security`.
+
+/**
+ * Mark a friend as having already seen the explainer, so a UI login lands on the
+ * view the spec is about rather than on the first-login gate.
+ *
+ * @param ctx   an `APIRequestContext` pointed at the target
+ * @param friend `{ id, token }` — the friend's OWN Bearer session
+ */
+export async function ackExplainer(ctx, friend) {
+  const res = await ctx.post(`/api/friends/${friend.id}/explainer-seen`, {
+    headers: { Authorization: `Bearer ${friend.token}` },
+  })
+  // ⚠ ASSERTED, not shrugged off: a silent failure here would put the calling spec
+  // back on the explainer with no explanation at all, which is the single most
+  // confusing way for this to go wrong.
+  expect(res.status(), `explainer pre-ack for friend ${friend.id}`).toBe(200)
+  return res
+}

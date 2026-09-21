@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding, logout, openInvite, openMenu, openProfile, expectChromeName } from '../helpers/portal.js'
+import { ackExplainer, expectLanding, logout, openInvite, openMenu, openProfile, expectChromeName } from '../helpers/portal.js'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 import { makeAdmin } from '../helpers/admin.js'
 
@@ -73,6 +73,12 @@ test.beforeAll(async () => {
   })
   expect(changed.status(), 'forced change').toBe(200)
   const token = (await changed.json()).token || body.token
+
+  // ⚠ 18 §UC-PI-013 (PI-T9): a friend created here has never acknowledged „Ako to
+  // funguje", so a LOGIN THROUGH THE CARD would land on `/ako-to-funguje` — where the
+  // hamburger is a back chevron, so every drawer helper below times out. One round
+  // trip through the real route; see `helpers/portal.js ackExplainer`.
+  await ackExplainer(ctx, { id: row.id, token })
 
   const profile = await ctx.get(`/api/friends/${row.id}/profile`, {
     headers: { Authorization: `Bearer ${token}` },

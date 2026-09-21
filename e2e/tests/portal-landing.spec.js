@@ -1,10 +1,7 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { assertReadable, code, HAS_SRC, NEEDS_SRC } from '../helpers/source-pins.js'
-import {
-  expectLanding, drawer, openMenu, menuGo, gotoCycle,
-  landingStateModal, dismissLandingState, logout,
-} from '../helpers/portal.js'
+import { ackExplainer, expectLanding, drawer, openMenu, menuGo, gotoCycle, landingStateModal, dismissLandingState, logout } from '../helpers/portal.js'
 import { makeAdmin } from '../helpers/admin.js'
 
 // PI-T3 — 18 §UC-PI-005 (the landing, OPEN state), §UC-PI-011 (the two new share
@@ -89,6 +86,11 @@ async function makeFriend(label) {
   })
   expect(changed.status(), 'forced change').toBe(200)
   const token = (await changed.json()).token || body.token
+  // ⚠ 18 §UC-PI-013 (PI-T9): a friend created here has never acknowledged „Ako to
+  // funguje", so a LOGIN THROUGH THE CARD would land on `/ako-to-funguje` — where the
+  // hamburger is a back chevron, so every drawer helper below times out. One round
+  // trip through the real route; see `helpers/portal.js ackExplainer`.
+  await ackExplainer(ctx, { id: row.id, token })
   return { id: row.id, name, username, token }
 }
 

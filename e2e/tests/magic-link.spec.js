@@ -826,7 +826,13 @@ test.describe('UC-ML-005 — redemption (throwaway backend, modern mode)', () =>
 
       // ⚠ HAND-PICKED FIELDS, never `SELECT *` (07 §UC-IA-005). A raw-text sweep as
       // well as the key set, so a later `SELECT *` fails loudly rather than quietly.
-      expect(Object.keys(body.friend).sort()).toEqual(['id', 'name', 'packeta_address', 'uid', 'username'])
+      // ⚠ SANCTIONED RETARGET (18 §UC-PI-013, PI-T9; 03 UC-FL-013 case (a)): the
+      // redemption is one of the FOUR login payloads the first-login gate reads, so
+      // `explainer_seen_at` joins this hand-picked literal. The protected property is
+      // untouched and is why this stays an EXACT set beside the raw-text sweep below:
+      // a `SELECT *` spread must still red here, and it still does.
+      expect(Object.keys(body.friend).sort()).toEqual(['explainer_seen_at', 'id', 'name', 'packeta_address', 'uid', 'username'])
+      expect(body.friend.explainer_seen_at, 'never acknowledged ⇒ explicitly null').toBeNull()
       expect(body.friend.id).toBe(friend.id)
       expect(body.friend.username).toBe(friend.username)
       expect(await res.text()).not.toMatch(/invite_code|access_token|password_hash|google_sub|email/)

@@ -1657,9 +1657,16 @@ already lives, and PI-T9's `markExplainerSeen()` goes in `onExplainerDone()`.
 ⚠ The gate's LIVE behaviour is deliberately NOT tested here: nothing mounts the component
 with `as-gate` yet, so a test asserting the checkbox is on screen would be asserting a
 screen no route reaches. What IS pinned is the seam's SHAPE (prop default, the pre-tick,
-both labels on one button, the emit payload) plus the fact that the session passes NO
-`as-gate` today — which is what makes the „from the menu there is no checkbox" assertion a
+both labels on one button, the emit payload) plus ~~the fact that the session passes NO
+`as-gate` today~~ — which is what makes the „from the menu there is no checkbox" assertion a
 property of the app rather than of a default. M9 (`default: true`) reds both.
+
+⚠ **Superseded by PI-T9 (§PI-T9 below):** the session now binds `:as-gate="explainerGate"`.
+The „from the menu there is no checkbox" assertion is STILL a property of the app rather
+than of the default — but for a different reason: `explainerGate` is seeded once at setup
+from the login payload and lowered on the way out of the view, so a menu visit binds
+`false`. The spec file's copy of this claim was amended at the same time; a reader who
+finds only one of the two has found a stale copy.
 
 ### 5. Measured, and easy to get wrong
 
@@ -1736,3 +1743,375 @@ looks like.
    PO's to polish later and none of them a call-site decision: the WhatsApp mention in
    phase 2, „(PayMe)" in §Ako platím, the „— Karol" note, and both roaster texts. Reproduce,
    never improve — a reader who „tidies" one of them is editing the product owner's voice.
+
+---
+
+## PI-T9 — the first-login gate, and a suite-wide exposure that was real but 4× smaller than counted (2026-09-21)
+
+**What shipped.** `friends.explainer_seen_at` (try/catch ALTER, **no back-fill**);
+`POST /api/friends/:id/explainer-seen` (owner-guarded, shared-password 401, `COALESCE`);
+the field on all FOUR login payloads (`friends.js` ×3, `magic-link.js` ×1);
+`api.markExplainerSeen()`; `beginSession({ explainerPending })` + the three login call
+sites in `FriendPortal.vue`; `explainerGate` + the `router.replace` + `onExplainerDone
+({ hide })` + `:as-gate` in `FriendPortalSession.vue`; `e2e/seed.mjs` step 6/7 (the gate
+fixture + the 77-friend pre-stamp); `helpers/portal.js ackExplainer()`;
+`portal-explainer.spec.js` §9/§10 (12 new tests) plus THREE sanctioned fixture edits.
+**`PortalExplainer.vue` and `lib/roasters.js` were not touched** — PI-T8's seam held.
+
+### 1. ⚠⚠ THE 71-FILE EXPOSURE: WHAT IT REALLY IS, MEASURED THREE WAYS
+
+The row was handed „**71 spec files log a friend in**, every one a candidate to break".
+That number is real and it is the wrong population. Measured over `e2e/tests/*.spec.js`
+(91 files):
+
+| how a spec signs a friend in | files | can the gate fire? |
+|---|---|---|
+| `POST /api/friends/auth` from an `APIRequestContext` | **70** | **NO** — no browser, no `beginSession`, nothing reads the payload |
+| `localStorage.gorifi_friend_auth` + `goto` (a RESTORE) | **32** | **NO** — §UC-PI-013: a restore is not a login |
+| the login CARD, in the page (`zadajte heslo` / `užívateľské meno` / `pp-login-username` / `vyberte svoje meno`) | **15** | **YES** |
+
+(The three overlap; 74 files do at least one.) The 70 is almost certainly where „71"
+came from — `grep -rl "api/friends/auth"` — and it counts the population that is
+structurally immune, because the gate lives in `FriendPortal.vue`, not in the response.
+
+**And the 15 is an upper bound on the exposure, not the exposure.** `expectLanding()`
+resolves `data-testid="portal-landing"`, which PI-T1 put on the page COLUMN — present in
+all four views, the explainer included. So the „portal is ready" gate that 28 files share
+**passes on the explainer**, and a spec only breaks if it then asserts something
+view-specific. Measured on the real thing: of the first EIGHT files (alphabetical) in the
+targeted run, six were green including `first-password` and `forced-change-ui`, which DO
+log in through the card — they assert modals, and a modal sits over any view. Only
+`friends-consolidation` (6) and `google-auth` (13) reddened.
+
+⚠ **What actually breaks is narrower and worth naming: the drawer.** §UC-PI-003 puts a
+BACK CHEVRON where the hamburger is on the explainer view, so `openMenu` / `logout` /
+`openProfile` / `expectChromeName` — every `helpers/portal.js` function that goes through
+the drawer — time out on actionability. Both failing files fail that way. A spec that
+logs in and reads the screen is fine; a spec that logs in and opens the MENU is not.
+
+### 2. ⚠⚠ `seed.mjs` CANNOT CONTAIN THIS ALONE, AND THE BACKLOG ROW SAYS IT CAN
+
+The instruction („`seed.mjs` pre-stamps every seeded friend except one dedicated
+fixture") assumes the suite logs in as SEEDED friends. It does not: measured, **every one
+of the 15 card-login files provisions its own friend** through `POST /api/friends` during
+the run, and `POST /api/friends` writes no acknowledgement (rightly — a brand-new friend
+IS a first-login friend). `seed.mjs` runs once, before any of them exist.
+
+So the containment is TWO mechanisms over two populations, and saying so is the finding:
+
+1. **`seed.mjs` step 7** — the 76-friend template + `E2ETester` = 77 rows stamped, i.e.
+   the gate DATABASE put into the state a live deployment reaches once everyone has
+   logged in once. One named row, `E2EExplainerGate`, is left NULL.
+2. **`helpers/portal.js ackExplainer(ctx, {id, token})`** — for friends created DURING a
+   run. It POSTs the REAL route with the friend's OWN session, so a dozen fixtures
+   round-trip the endpoint incidentally.
+
+⚠ **Step 7 is a DB write and there is no API that could replace it.** The route is
+owner-guarded on purpose, so stamping 77 friends through it means minting 77 friend
+sessions — 154 requests on `authLimiter`, whose production default is 20/window. An admin
+endpoint was the other option and is worse: §UC-PI-019 item 16 says nothing in this module
+joins `ADMIN_ENDPOINTS`, and a server-side back door for a per-friend acknowledgement is
+the exact boundary the route's guard exists to hold. It is gated on `DB_PATH` so the
+script stays target-agnostic — **and that gate is the new silent-skip trap**: without
+`DB_PATH` the seed prints one line and every card login in the suite lands on the
+explainer. Recorded in `CLAUDE.md` and in `e2e/README.md` step 5, with the exact line a
+correct run prints.
+
+### 3. ⚠⚠ THE BUG THIS ROW CREATED AND THEN CAUGHT: `DB_PATH` WITHOUT ITS `BASE_URL`
+
+The first gate run reddened `portal-explainer.spec.js` §10 with „the DEDICATED fixture is
+deliberately NULL — Received: 2026-09-21 00:17:45", i.e. `E2EExplainerGate` was stamped
+**14 seconds into the run**, by nothing that appears in any spec file. Traced by reading the
+database rather than the code: the stamps arrive in BULK (77 rows at one second, then 9,
+then 60, then 35), and the only bulk `UPDATE … WHERE explainer_seen_at IS NULL` in the tree
+is `seed.mjs` step 7.
+
+**`e2e/mailgun-harness.js startBackend()` runs `seed.mjs` against every throwaway backend
+it spawns, with `env: { ...process.env, BASE_URL: baseUrl }` — and `DB_PATH` inherited.**
+That was harmless for two years because `seed.mjs` was a pure HTTP client: the ambient
+`DB_PATH` (the SHARED gate database, exported by the run recipe) was inherited and ignored.
+Step 7 made the script write to `DB_PATH` directly, so every one of those spawns seeded a
+throwaway backend over HTTP and then pre-stamped **the gate database** — including the one
+row the seed must leave NULL.
+
+**The invariant, now load-bearing and now written down: `DB_PATH` names the database that
+`BASE_URL` is serving.** Fixed at both ends, deliberately:
+
+1. the harness passes `DB_PATH: dbPath` (its own file) to the seed spawn — correct by
+   construction, and the throwaway gets its own pre-stamp;
+2. `seed.mjs` VERIFIES the pairing before writing: the API just told it which id
+   `E2EExplainerGate` has on the target, so a database where that id holds a different name
+   (or no row) is somebody else's, and the step skips with a `!!` line naming both paths.
+
+⚠ Proved in both directions, and the FIRST attempt at proving it was worthless: pointing
+`DB_PATH` at an older *seeded* copy did NOT trip the guard, because that copy has the same
+fixture at the same id — two databases seeded identically are indistinguishable by this
+correlation. The real case is not: a throwaway backend starts EMPTY, so its
+`E2EExplainerGate` is id 2, not 80. The shipped proof uses a raw `prod-template.sqlite`
+copy (no id 80 at all) → „is NOT the database … is serving (id 80 is absent there) —
+pre-stamp SKIPPED", and the stranger file still has **no `explainer_seen_at` column at
+all** afterwards, which is the strongest possible „nothing was written".
+
+### 4. ⚠ „Rozumiem" IS NOT THE GATE'S ONLY EXIT — THE BACK CHEVRON IS
+
+My own §9 test („re-entering from the drawer in the same session shows no checkbox")
+reddened against the first implementation, and it was right. §UC-PI-003 puts a BACK CHEVRON
+where the hamburger is on the explainer view, so the friend can leave the gate WITHOUT
+answering it — and `explainerGate` was lowered only inside `onExplainerDone`. After that
+escape the flag stayed raised, so an explainer the friend later opened FROM THE DRAWER still
+carried the pre-ticked „Už mi to neukazovať" and would have STAMPED the column on
+„Rozumiem" — the one thing §UC-PI-013 forbids in as many words.
+
+Fixed with a watch on the VIEW, not on the button: `before === 'explainer' && now !==
+'explainer'` ⇒ the gate ends. ⚠ The simpler predicate (`view !== 'explainer'`) is wrong and
+would have looked right: the session mounts on `shop` and `router.replace` lands a tick
+later, so it fires once at mount and lowers the flag before the gate has ever rendered.
+
+### 5. ⚠ THE `active = 1` 404 IS UNREACHABLE THROUGH THE API — AND SAYING SO IS THE TEST
+
+„A deactivated friend gets the 404" was written, run, and came back **401**: the admin
+`PATCH /:id { active: 0 }` INVALIDATES the friend's sessions, so the Bearer token is dead
+before `requireFriendOwner` can resolve anybody, and ownership is checked before the row
+lookup. Same shape as CS-T1 §2's unreachable `stage IS NULL` row, and handled the same way:
+
+- the API path is pinned as the **401** it really is, with the reason at the assertion;
+- the predicate is proved load-bearing by a `DB_PATH`-gated BUILT SCENARIO — `active = 0`
+  written straight into the row, leaving the session alive ⇒ 404 with the exact message —
+  and the non-vacuity half flips `active` back and gets a 200 from the same request.
+
+### 6. THE SANCTIONED SPEC EDITS: TWO CONTRACTS AND EIGHT FIXTURES
+
+**Two are CONTRACT retargets** (03 UC-FL-013 case (a)) — an EXACT key set on a login
+payload, which §UC-PI-013 mandates a sixth key on:
+
+- `google-auth.spec.js` §UC-GA-003's `Object.keys(body.friend).sort()`;
+- `magic-link.spec.js` UC-ML-005's, beside its raw-text `SELECT *` sweep.
+
+The protected property is untouched in both, and it is the reason the lines stay exact sets
+rather than `toContain`: a hand-picked literal turning into a spread must still red, and it
+still does (`password_hash`, `access_token`, `invite_code`, `google_sub`, `display_name`,
+`phone`, `email` all live on that row). Both now also assert the value is `null` for a
+friend who has never acknowledged it, so the key is not merely present.
+
+**Eight are FIXTURES** — the containment of §2, applied where it was MEASURED to be needed
+rather than everywhere it might be: `friends-consolidation`, `google-auth`
+(`friendWithLogin` **and** `plainFriend` — two helpers, and the second was found only by a
+second run), `magic-link`'s harness pairing, `portal-appbar`, `portal-landing`,
+`portal-menu`, `portal-profile-modal`, `portal-session-boundary`.
+
+⚠ `portal-session-boundary`'s `makePlainFriend()` needed the long way round and is worth
+knowing: that friend has NO credentials, so there is no personal login to mint a session
+with, and `ackExplainer` needs the friend's OWN token. The LEGACY shared-password branch of
+`POST /friends/auth` mints a per-friend session for exactly this case — the same fact
+`requireHost`'s comment relies on — and it is the only token that can acknowledge the
+explainer on their behalf.
+
+### 7. ⚠ FOUR LOGIN PAYLOADS — AND A FIFTH MINT SITE THAT IS NOT ONE
+
+The spec names `friends.js:173/230/358` and `magic-link.js:406`; all four are real and
+all four carry the field.
+
+⚠ **Found in review, after the count was already written: there is a FIFTH place that
+mints a friend session — `routes/onboarding.js` (invitation registration).** The grep the
+spec prescribes cannot see it, because the reason it is not a login payload is that it has
+no `friend: {` at all: it answers four flat fields, `OnboardingPage.vue` assembles
+`gorifi_friend_auth` from them and routes to the portal, so the friend arrives by the
+RESTORE path. Consequence: **the most newcomer-ish moment in the app does not open the
+newcomer gate.** That is uncomfortable and it is still right — adding the field there
+would make every reload re-open the gate. The fix, if the product wants it, is a ROUTE
+from `OnboardingPage.vue`, not a field. Noted at the site and in §UC-PI-013.
+⚠ The general lesson: **„the guard is a grep" only enumerates the sites that share the
+shape the grep matches.** A site that is out of scope BECAUSE it has a different shape is
+invisible to it by construction, so it has to be written down. `onboarding.js` was found by
+asking „what calls `createFriendSession`?", which is the question the shape-grep cannot ask. **`magic-link`'s has no client consumer, deliberately**: a
+redemption reaches the portal through `MagicLogin.vue` + the localStorage RESTORE path,
+and routing the flag through the stored payload would re-open the gate on every RELOAD —
+precisely what „a restore is not a login" forbids. A magic-link friend meets the explainer
+at their next ordinary login, stamp still NULL. Written at the site so it is not „fixed".
+
+⚠ `?? null` on every site, not a bare read: on a backend whose migration has not run the
+column is `undefined` and `JSON.stringify` DROPS the key, so the client's `=== null` would
+see `undefined` and decide „not a login" — correct, but by accident.
+
+⚠ The grep the spec prescribes (`grep -n "friend: {" backend/src/routes/*.js`) returns
+**12 lines in four files**, not four — and every one of the eight non-login hits had to be
+read to be excluded, which is the step that keeps the rule „logins only": `orders.js`
+:156/:308/:326/:476 (ORDER payloads), `invitations.js`:773 (the admin's approve response,
+plus a doc comment at :493), `friends.js`:859 (`set-password` — a CREDENTIAL route reached
+by an already-authenticated friend, so the gate decision is long made), and, since this
+row, the comment at `friends.js`:175 that names the set. **Counting the grep is not the
+same as reading it** — this file has recorded that failure four times (PI-T1 §3, PI-T2 §4,
+PI-T3 §3 and §10), so the count is written out per file here.
+
+### 8. ⚠ THE ALTER PLACEMENT WAS MEASURED, AND CS-T1's TRAP DOES NOT APPLY HERE
+
+CS-T1's lesson is that `order_cycles` is RECREATED from a hard-coded column list, so an
+`ADD COLUMN` above that block is silently dropped. **`friends` has no such block**, and this was
+COUNTED: `grep -n "_new " backend/src/db/schema.js` returns **8 lines** — six that are the
+two recreates (`order_cycles_new` ×3, `order_items_new` ×3), one that is the new comment
+saying so, and one unrelated `is_new` COLUMN in another table. Neither recreate touches
+`friends`. Verified rather than assumed, which is the whole point of that lesson; the ALTER sits at
+the end of the sixteen friends migrations, and the column is deliberately NOT added to
+`CREATE TABLE IF NOT EXISTS friends` — that statement is the original 2024 shape and every
+column since `active` arrives by ALTER. Splitting that convention per column is how the
+fresh-database and migrated-database paths start to disagree.
+
+### 9. `explainerGate` IS A REF, NOT A COMPUTED — AND THAT IS A BEHAVIOUR, NOT A STYLE
+
+A `computed(() => props.entry?.explainerPending)` reads identically and is wrong: the flag
+has to stop being true the moment the gate is ANSWERED, because the friend can re-open the
+explainer from the drawer in the same session and §UC-PI-013 says a menu-opened explainer
+writes nothing and shows no checkbox. `PortalExplainer` emits `{ hide }` in BOTH modes
+(one payload shape) and `hide` defaults to `true`, so a handler that read the payload
+without checking the gate flag would stamp on every menu visit. Pinned behaviourally
+(„re-entering from the drawer in the same session shows no checkbox", and it counts the
+POSTs) and in source.
+
+### 10. PRECEDENCE IS STRUCTURAL — AND CODING IT WOULD HAVE INVERTED IT
+
+§UC-PI-013 orders forced-password-change → Google prompt → explainer. Both of the first
+two are `NeoModal`s over whatever view is mounted, so the `router.replace` is
+UNCONDITIONAL and the explainer simply waits underneath. ⚠ The tempting
+`if (!forcedPasswordChange)` guard inverts the rule: the friend would finish the forced
+change and land on the SHOP, having never been shown the page the gate exists to show
+them. The test asserts BOTH halves in one document — the gate modal visible AND the URL
+already `/ako-to-funguje` — because either alone is satisfied by the wrong build.
+
+### 11. Small things measured rather than assumed
+
+- **`router.replace` — the spec's reason was wrong, and so was the first correction.**
+  §UC-PI-013 said „replaced … so back goes to `/`"; a replace does the opposite. The
+  orchestrator then substituted „the friend did not ask for this URL, so it must not be a
+  back destination" — also wrong, twice over: `replace` removes `/`, not `/ako-to-funguje`,
+  and under `push` the back destination WOULD be `/`, the one URL the friend did ask for.
+  ⚠ **The checkable reason, found in review:** `push` leaves a ONE-TAP BYPASS. `explainerGate`
+  is raised once at setup and the exit watch lowers it on any transition out of the view, so
+  back → `/` → `shop` ends the gate UNSTAMPED, and the ref cannot re-raise. Three copies
+  carried a justification that did not survive checking; the word `replace` was right
+  throughout. **A rationale is a claim — „the word is correct" is not evidence that the
+  sentence after it is.**
+- **The idempotency test waits 1.2 s.** `datetime('now')` is second-resolution, so two
+  calls in the same second agree even WITHOUT `COALESCE` — the pin would have been
+  vacuous. Same family as CS-T2 §4's „an assertion that names no timezone measures
+  nothing".
+- **Every refusal test READS THE ROW BACK.** A 401 that wrote anyway is indistinguishable
+  from a 401 that did not, from the status line. The shared-password test also carries a
+  NON-VACUITY half: the same header on the same deployment still authenticates
+  `GET /:id/balance` with 200, so the refusal is about identity and not about a typo.
+- **The 404 is only reachable for a DEACTIVATED friend.** Ownership is checked first, so
+  an unknown id presented with a friend's own token is a 403, never a 404. The test says
+  so rather than asserting the 404 it looks like it should.
+- **`GET /friends/:id/profile` already publishes the column** (`SELECT *` +
+  `sanitizeFriend`, credentials only) and that is fine — it is the fire-and-forget
+  hydrate, and nothing re-derives the gate from it.
+
+### 12. The gate, and the asked-versus-ran reconciliation
+
+`portal-explainer` · `api-security` · `admin-friends-labels` · `email-templates` ·
+`first-password` · `forced-change-ui` · `magic-link` · `neo-control-metrics` ·
+`portal-landing` · `portal-profile-modal` · `portal-session-boundary` ·
+`friends-consolidation` · `invitation-approval` · `modern-login` · `portal-appbar` ·
+`portal-menu` · `google-auth` · `portal-shell` · `portal-history` · `portal-balance` ·
+`order-shell` · `share-dialog` · `colleagues-panel` · `guest-host-view` — **24 asked, 24
+ran**, reconciled by diffing the asked list against
+`grep -oE 'tests/[a-z0-9-]+\.spec\.js' | sort -u`, behind a pre-flight `[ -f ]` check on
+every entry (a list where one name matches nothing is silent and exits 0).
+
+**Final: 698 passed, 0 failed, 1 skipped, 6.3 min**, on a per-run copy of
+`prod-template.sqlite` with all five limiter maxima at 100000 and the frontend built into
+`backend/public` first. The one skip is the documented `forced-change-ui.spec.js`
+`test.fixme`. **Server log read BEFORE the test log**, per CLAUDE.md: one line, the
+`Error: Not allowed by CORS` that `api-security`'s own CORS test provokes.
+
+⚠ The number to compare against is the FIRST run of this tree: **16 failed / 681 passed**,
+in the six files §1 and §3 explain. Every one of those failures was a real consequence of
+the feature, not a flake — which is why the row is written up the way it is.
+
+The set is deliberately wider than „the files I edited": it carries **all 15 friend
+card-login files** and a sample of the restore-path ones, because §1's exposure is the
+row's real risk.
+
+⚠ **One flake, confirmed as one** (CLAUDE.md's rule, applied): `magic-link.spec.js:1174`
+(a throwaway-backend test) failed once inside the 24-file batch and passed **73/73 twice
+running alone**, on the same tree and the same database.
+
+### 13. The mutation matrix (every one applied from a scratchpad copy, `cmp`-verified to have changed the file, rebuilt into `backend/public` or the server restarted, run, then reverted)
+
+| # | Mutation | Reds |
+|---|---|---|
+| M1 | the route's shared-password `friendId == null` 401 removed | 1 — „shared-password auth resolves NO identity", alone |
+| M2 | `COALESCE` → a bare `datetime('now')` | 1 — the idempotency test, alone |
+| M3 | the RESTORE path passes `explainerPending: true` | **6** — my restore test **plus five PI-T8 tests** that sign in through localStorage and then read the explainer and the product cards. That spread IS the evidence for §1: „a restore is not a login" is what keeps 32 spec files measuring their own screen |
+| M5 | `onExplainerDone` reads `hide` WITHOUT the gate check | 1 — the one-shot test („a menu-opened explainer never writes") |
+| M6 | the gate navigates nowhere (`router.replace` removed) | **5** — every gate test that expects `/ako-to-funguje`, precedence included |
+| M7 | `seed.mjs` step 7 stamps the fixture too (`id <> -1`) | 1 — §10, plus the seed's own `!!` line („expected exactly 1 unacknowledged friend, found 0") |
+| M9 | `explainer_seen_at` dropped from the SHARED-PASSWORD login payload only | 1 — the four-payload test, alone (the personal branch still carried it) |
+| M11 | `explainerGate` as a COMPUTED over `props.entry`, with the lowering removed | 2 — the seam source pin **and** the one-shot test, i.e. the style trap of §9 fails behaviourally too |
+| M12 | the §4 exit watch removed (back-chevron escape leaves the gate raised) | 1 — the one-shot test, alone |
+| M13 | `helpers/portal.js ackExplainer()` made a no-op | **4** — the two `portal-menu` session-scoping tests and the two `portal-profile-modal` ones, i.e. exactly the tests §2's containment was introduced for |
+
+⚠ M1/M2/M9 need a SERVER RESTART and M3/M5/M6/M11/M12 need a REBUILD into `backend/public`
+— a mutation that never reaches the running process proves the opposite of what it looks
+like (PI-T8 §6's rule, and the harness `cmp`s and aborts rather than trusting the edit).
+
+### 14. THE REVIEW PASS: SIX MINORS, AND FOUR OF THEM WERE DOCUMENTATION
+
+Review returned **approve with six minors**, no blockers and no majors. What they were is
+more interesting than the verdict, because five of six are the same failure in different
+clothes — **a sentence that was true when written and was not re-checked after the thing
+it describes moved**:
+
+1. `PortalExplainer.vue`'s PI-T8 seam comment predicted `:as-gate="explainerPending"`;
+   the shipped binding is `explainerGate`. The prediction was right about the SEAM (the
+   file was not touched) and wrong about the expression, and the difference is behavioural,
+   not cosmetic: binding the prop would re-arm the gate on every menu visit. Both the
+   component comment and §4's „the session passes NO `as-gate` today" were superseded —
+   the spec copy had been amended during the row, the other two had not. **Third time in
+   this module that an amendment reached one copy of three.**
+2. The `router.replace` rationale, twice wrong — see §11's first bullet and the three copies.
+3. The API refusal test was titled „… an unknown friend is 404" and asserts **403**. §5
+   had already measured and explained the 403; the TITLE and §UC-PI-013's own „404
+   unknown/inactive" bullet were the copies that did not get the news. A title is a claim.
+4. `seed.mjs`'s pairing check says it fails „LOUDLY" and did so with a `console.log` and
+   exit 0 — while the ONE caller the check exists for (`mailgun-harness.js`) spawns it
+   with `stdio: 'ignore'`. **„Loud" is a property of the listener, not of the speaker.**
+   Now: `process.exitCode = 1` on the mismatch, and the harness reports a non-zero seed
+   exit on its own stderr.
+5. `e2e/README.md` said the step stamps „all 76 template friends"; the run prints **77**
+   (76 template + the seed's own `E2ETester`, with `E2EExplainerGate` the 78th and the one
+   left NULL). The seed COUNTS rather than assumes, so the code was right and only the
+   prose was off — but the prose is what a reader compares the output against, and „77 ≠
+   76" reads as a broken step. **An enumeration is a measurement** — the fifth time this
+   file records that, and the first where the wrong number was in a README.
+6. The fifth mint site (§7).
+
+None of the six changed a line of shipped behaviour except 4's exit code. That is the
+shape of this row: the implementation was small and the claims about it were where the
+defects lived.
+
+### What PI-T9 LEAVES BEHIND
+
+1. ⚠⚠ **`seed.mjs` now needs `DB_PATH`, and losing it is SILENT** (§2). One line in the seed
+   output is the whole tell: `explainer: pre-stamped N friend(s); 1 left unacknowledged`. The
+   skip line (`DB_PATH not set`) and the mismatch line (`is NOT the database … is serving`)
+   are both `!!`-prefixed, and `e2e/README.md` step 5 now carries the recipe.
+2. ⚠ **`E2EExplainerGate` is a DELIBERATELY UNSTAMPED seeded friend**, and the next reader's
+   instinct will be to „tidy" it into the bulk UPDATE. `portal-explainer.spec.js` §10 asserts
+   one stamped and one NULL, scoped BY ID (`id < fixture.id` = „existed when the seed ran"),
+   because every other spec creates friends of its own and never stamps them — „no unstamped
+   friend anywhere" is false by construction the moment a second file has run.
+3. **The magic-link login payload publishes `explainer_seen_at` with NO client consumer**
+   (§7), on purpose. Plumbing it through `MagicLogin.vue`'s stored payload would re-open the
+   gate on every reload.
+4. ⚠ **PI-T10's profile modal auto-opens „until Mobil is filled", and its own row says
+   „after the gates of PI-T9"** — so that modal has to sit behind the explainer the way the
+   forced-password gate sits in front of it. The precedence chain is now three deep
+   (forced-password → Google prompt → explainer → PI-T10's profile), and only the first
+   three are implemented; PI-T10 owns adding itself to the end, not to the middle.
+5. ⚠ **`routes/onboarding.js` is a fifth session mint and NOT a login payload** (§7) — a
+   registering friend meets the explainer at their next ordinary login, not on the visit
+   they registered in. Documented at the site; do not „fix" it by adding the field.
+6. **`helpers/portal.js ackExplainer()` is the one home** for „this fixture friend is an
+   established friend". A spec that hand-writes `explainer_seen_at` into the row is
+   re-creating the problem — except where it genuinely cannot get a token
+   (`google-auth`'s two helpers, which say so at the site).

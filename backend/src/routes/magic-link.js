@@ -409,6 +409,21 @@ router.post('/redeem', authLimiter, (req, res) => {
       uid: friend.uid,
       username: friend.username,
       packeta_address: friend.packeta_address,
+      // 18 §UC-PI-013 (PI-T9) — the FOURTH and last friend-LOGIN payload. Published
+      // for the same reason the other three publish it: a login is the one handshake
+      // that may open the explainer gate, and the decision has to be takeable before
+      // the portal paints (the `googleLinked` argument at `friends.js:174`, verbatim).
+      //
+      // ⚠ IT HAS NO CLIENT CONSUMER TODAY, and that is deliberate rather than a gap.
+      // A redemption reaches the portal through `MagicLogin.vue` + the localStorage
+      // RESTORE path, and §UC-PI-013 says a restore is not a login — routing this
+      // field through the stored payload would make every RELOAD re-open the gate,
+      // which is the exact behaviour the restore rule forbids. On top of that a
+      // magic-link session always lands on ML-T6's own prompt or on the forced-change
+      // gate, and §UC-PI-013's precedence puts both ahead of the explainer. So the
+      // friend meets the explainer at their next ORDINARY login, with the stamp still
+      // NULL. Recorded here so the next reader does not "fix" it by plumbing it.
+      explainer_seen_at: friend.explainer_seen_at ?? null,
     },
     token: session.token,
     expiresAt: session.expiresAt,

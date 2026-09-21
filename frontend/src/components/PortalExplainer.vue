@@ -59,10 +59,18 @@ const props = defineProps({
    * the gate can reuse this view instead of forking it.
    *
    * ⚠ WHAT PI-T9 MUST NOT HAVE TO TOUCH: this component and `lib/roasters.js`. It
-   * passes `:as-gate="explainerPending"` at the ONE call site in
+   * passes ~~`:as-gate="explainerPending"`~~ at the ONE call site in
    * `FriendPortalSession.vue` and handles `@done`'s payload there (the `hide` flag
    * decides whether `markExplainerSeen()` fires). Routing stays in the session, which
    * is where every other `router.push` on the authenticated surface already lives.
+   *
+   * ⚠ **PI-T9 SHIPPED, and it binds `:as-gate="explainerGate"` — a `ref`, not the
+   * prop.** `explainerPending` is the LOGIN payload's field, true for the whole
+   * session; `explainerGate` is seeded from it once at setup and LOWERED the moment
+   * the friend leaves the explainer view, so a later visit from the menu is not a
+   * gate. Binding the prop directly would re-arm the gate on every menu visit.
+   * The prediction above was right about the SEAM (this file was not touched) and
+   * wrong about the expression — see `docs/learnings/10-portal-ia.md` §PI-T9.
    */
   asGate: { type: Boolean, default: false },
   /**

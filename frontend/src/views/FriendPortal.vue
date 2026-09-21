@@ -353,6 +353,25 @@ async function beginSession({
   // linked, stacked on ML-T6's magic prompt. Do not "tidy" these two into defaults.
   googleLinked,
   googlePromptDismissed,
+  // ⚠ 18 §UC-PI-013 (PI-T9) — THE FIRST-LOGIN EXPLAINER GATE, and the default is
+  // `false` rather than absent on purpose. Unlike the two Google fields above,
+  // "this handshake did not say" and "this handshake said no" mean the SAME thing
+  // here: do not open the gate. There is no consumer that has to tell them apart,
+  // and a tri-state would only create a way to get it wrong.
+  //
+  // ⚠ SET BY THE THREE LOGIN PATHS ONLY (`authenticate`, `authenticatePersonal`,
+  // `onGoogleCredential`), each as the literal `result.friend?.explainer_seen_at ===
+  // null`. A SESSION RESTORE IS NOT A LOGIN (§UC-PI-013, inheriting 10 §UC-GA-006's
+  // precedent), so neither restore path passes it — a friend who has not acknowledged
+  // the explainer must not be dragged into it by every reload, only by a fresh login.
+  // `hydrateCurrentFriend()` later learns the real value from `GET /:id/profile`;
+  // nothing may re-derive the gate from it.
+  //
+  // ⚠ `=== null`, never `!result.friend?.explainer_seen_at`. The truthy form opens the
+  // gate on `undefined` too — i.e. on any response from a backend older than this
+  // migration, and on the magic-link path if someone ever plumbs it — which is the
+  // `googleLinked` trap one comment up, in the other direction.
+  explainerPending = false,
 } = {}) {
   const cycles = await api.getFriendsCycles(selectedFriendId.value)
 
@@ -369,6 +388,7 @@ async function beginSession({
     cycles, mustChangePassword, currentPassword, needsCredentialSetup,
     viaMagicLink, magicPromptDismissed,
     googleLinked, googlePromptDismissed,
+    explainerPending,
   }
   authState.value = 'authenticated'
 
@@ -482,6 +502,9 @@ async function authenticate(silent = false) {
       // Admin reset this friend's password → force them to set a new one now.
       mustChangePassword: !!result.mustChangePassword,
       currentPassword: result.mustChangePassword ? password.value : '',
+      // 18 §UC-PI-013 — login 1 of 3. See `beginSession`'s parameter comment for why
+      // this is the literal `=== null` and why no restore path passes it.
+      explainerPending: result.friend?.explainer_seen_at === null,
     })
 
     // UC-FC-009: the auth payload carries no phone/email — hydrate them for THIS
@@ -553,6 +576,8 @@ async function authenticatePersonal() {
       // field (a pre-GA-T4 backend) into a definite `false` and open the prompt on it.
       googleLinked: result.googleLinked,
       googlePromptDismissed: result.googlePromptDismissed,
+      // 18 §UC-PI-013 — login 2 of 3.
+      explainerPending: result.friend?.explainer_seen_at === null,
     })
 
     // UC-FC-009: same as the shared-password path above — `/friends/auth`
@@ -690,6 +715,10 @@ async function onGoogleCredential(response) {
       // §UC-GA-006's prompt must not trigger on it. `true !== false` already shuts
       // the prompt; see `beginSession`'s enumeration for the full reasoning.
       googleLinked: true,
+      // 18 §UC-PI-013 — login 3 of 3. A Google sign-in is a login like the other two;
+      // a friend whose FIRST login is a Google one meets the explainer exactly once,
+      // which is the whole rule.
+      explainerPending: result.friend?.explainer_seen_at === null,
       // ⚠ NO `currentPassword`, and it must stay absent: a Google login never handled
       // one. `submitForcedPasswordChange()` sends `entry?.currentPassword || ''` and
       // the backend skips the current-password check while `must_change_password` is

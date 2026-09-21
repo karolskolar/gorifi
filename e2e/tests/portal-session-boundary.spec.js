@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding, logout, openProfile } from '../helpers/portal.js'
+import { ackExplainer, expectLanding, logout, openProfile } from '../helpers/portal.js'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { makeAdmin } from '../helpers/admin.js'
 
@@ -132,6 +132,12 @@ async function makeFriend(label, password) {
   expect(changed.status(), 'clear forced change').toBe(200)
   const token = (await changed.json()).token
 
+  // ⚠ 18 §UC-PI-013 (PI-T9): a friend created here has never acknowledged „Ako to
+  // funguje", so a LOGIN THROUGH THE CARD would land on `/ako-to-funguje` — where the
+  // hamburger is a back chevron, so every drawer helper below times out. One round
+  // trip through the real route; see `helpers/portal.js ackExplainer`.
+  await ackExplainer(ctx, { id: row.id, token })
+
   const profile = await ctx.get(`/api/friends/${row.id}/profile`, {
     headers: { Authorization: `Bearer ${token}` },
     timeout: TIMEOUT,
@@ -160,6 +166,21 @@ async function makePlainFriend(label) {
   const created = await admin('/api/friends', { method: 'post', data: { name } })
   expect(created.status(), 'friend create').toBe(201)
   const row = await created.json()
+
+  // ⚠ 18 §UC-PI-013 (PI-T9), and this friend needed the LONG way round: they have no
+  // credentials at all, so there is no personal login to mint a session with. The
+  // LEGACY shared-password branch of `POST /friends/auth` mints a per-friend session
+  // for exactly this case (`friends.js`, the `requireHost` comment), which is the one
+  // token that can acknowledge the explainer on their behalf. Without it the
+  // transition-mode test below logs in through the card, lands on `/ako-to-funguje`,
+  // and never reaches the auto-raised credential-setup dialog it is about.
+  const auth = await ctx.post('/api/friends/auth', {
+    data: { password: FRIENDS_PASSWORD, friendId: row.id },
+    timeout: TIMEOUT,
+  })
+  expect(auth.status(), 'legacy shared-password session for a credential-less friend').toBe(200)
+  await ackExplainer(ctx, { id: row.id, token: (await auth.json()).token })
+
   return { id: row.id, name, uid: row.uid || '' }
 }
 

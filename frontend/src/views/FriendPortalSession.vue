@@ -152,6 +152,9 @@ const props = defineProps({
   //   · `needsCredentialSetup` — transition mode, `hasCredentials === false`.
   //   · `googleLinked` + `googlePromptDismissed` — 10 §UC-GA-006. ⚠ These may be
   //     ABSENT, and absence is meaningful: see `googlePromptEligible` below.
+  //   · `explainerPending` — 18 §UC-PI-013. TRUE only on a LOGIN whose friend has
+  //     never acknowledged „Ako to funguje"; a restore never sets it. Read ONCE, at
+  //     mount, into `explainerGate` below — it is a one-shot instruction, not state.
   entry: { type: Object, default: () => ({}) },
   // ⚠ CONFIGURATION, not handshake state — the parent's two `GET /friends/auth-mode`
   // values, passed down rather than re-fetched. They are props (not `entry` keys)
@@ -812,6 +815,34 @@ let inviteSeq = 0
 // ---------------------------------------------------------------------------
 
 onMounted(async () => {
+  // ⚠ 18 §UC-PI-013 — THE FIRST-LOGIN GATE'S ONE NAVIGATION, and it is FIRST in this
+  // hook on purpose: it must land before the first paint settles, or the friend sees
+  // the shop flash past on their way to the explainer.
+  //
+  // `replace`, not `push` — §UC-PI-013's word, and the reason it gives is wrong (so was
+  // the first correction of it). ⚠ THE REAL REASON: `push` leaves a ONE-TAP BYPASS of the
+  // gate. `explainerGate` is raised ONCE, at setup, and the watch below lowers it on any
+  // transition OUT of the explainer view — so back → `/` → `view === 'shop'` would end the
+  // gate UNSTAMPED, and the ref cannot re-raise. `replace` removes the `/` entry, so that
+  // tap does not exist. (It does NOT remove `/ako-to-funguje`: after „Rozumiem" pushes `/`,
+  // back returns here — harmless, the gate has lowered and the write has happened.)
+  //
+  // ⚠ PRECEDENCE IS STRUCTURAL, NOT CODED HERE. §UC-PI-013 puts the forced
+  // password-change gate (03 §UC-FL-012) and the Google link prompt (10 §UC-GA-006)
+  // ahead of the explainer, and both are `NeoModal`s over WHATEVER view is mounted —
+  // so the explainer simply waits underneath them and is what the friend meets when
+  // the modal closes. Adding an `if (!forcedPasswordChange)` here would INVERT that:
+  // the friend would finish the forced change and land on the shop, having never been
+  // shown the page the gate exists to show them.
+  //
+  // ⚠ UNCONDITIONAL on the current path, deliberately. A friend who logged in on a
+  // deep-linked `/zostatok` (the three portal routes render the login card on their
+  // own URL — PI-T1) still meets the explainer first; it is the FIRST login, and the
+  // view they asked for is one tap away afterwards.
+  if (explainerGate.value && route.path !== '/ako-to-funguje') {
+    router.replace('/ako-to-funguje')
+  }
+
   const seq = ++guestCountSeq
   // 18 §UC-PI-004 — ONE balance request per session load, for the drawer badge
   // (and, from PI-T7, the landing debt banner). Fire-and-forget: the badge is
@@ -1554,17 +1585,67 @@ const explainerParcelEnabled = computed(() => !!explainerCycle.value?.parcel_ena
 const explainerParcelFee = computed(() => Number(explainerCycle.value?.parcel_fee) || 0)
 
 /**
+ * 18 §UC-PI-013 (PI-T9) — THE FIRST-LOGIN GATE, which is this same page with one
+ * checkbox on it.
+ *
+ * ⚠ A `ref` SEEDED ONCE, not a computed over `props.entry`. The flag has to STOP
+ * being true the moment the gate is answered: the friend can reach the explainer
+ * again from the drawer in the very same session, and §UC-PI-013 says an explainer
+ * opened from the menu never writes anything and shows no checkbox. A computed would
+ * keep the checkbox (and the stamping branch) alive for the rest of the session.
+ *
+ * ⚠ It is SESSION state, on the session side of the parent's `v-if` + `:key` — the
+ * six-leak guard. A logout destroys it; there is no list to maintain.
+ */
+const explainerGate = ref(!!props.entry?.explainerPending)
+
+/**
+ * ⚠ THE GATE IS ONE-SHOT PER ARRIVAL, AND „Rozumiem" IS NOT ITS ONLY EXIT — this
+ * watch is a MEASURED fix, not symmetry for its own sake. §UC-PI-003 puts a BACK
+ * CHEVRON on the explainer view where the hamburger is elsewhere, so the friend can
+ * leave the gate without answering it. Lowering the flag only in `onExplainerDone`
+ * left it RAISED after that escape, and the next visit from the drawer — an explainer
+ * the friend navigated to ON PURPOSE — still carried the pre-ticked „Už mi to
+ * neukazovať" and would have STAMPED the column on „Rozumiem". §UC-PI-013 forbids
+ * exactly that („opening the explainer from the menu never writes anything"), so the
+ * gate ends when the friend leaves the VIEW, however they leave it.
+ *
+ * ⚠ It watches the TRANSITION OUT (`before === 'explainer'`), never `view !==
+ * 'explainer'` on its own: the session mounts on `shop` and `router.replace` happens a
+ * tick later, so the simpler predicate would fire once at mount and lower the flag
+ * before the gate had ever rendered.
+ *
+ * The explicit lowering inside `onExplainerDone` stays: it has to happen BEFORE the
+ * `hide` branch can run a second time, and this watch fires only after the navigation.
+ */
+watch(view, (now, before) => {
+  if (before === 'explainer' && now !== 'explainer') explainerGate.value = false
+})
+
+/**
  * The explainer's one action (§UC-PI-012 item 8). From the menu it is „Späť na
  * ponuku" and means exactly the back chevron.
  *
- * ⚠ SEAM FOR PI-T9 (§UC-PI-013): the payload's `hide` flag is already here and is
- * IGNORED today, on purpose — nothing may be written from a menu-opened explainer
- * („Opening the explainer from the menu never writes anything"). PI-T9 passes
- * `:as-gate` at the mount below and reads `hide` here to decide whether
- * `markExplainerSeen()` fires, fire-and-forget. It does not have to touch
- * `PortalExplainer.vue` or `lib/roasters.js` to do it.
+ * ⚠ THE `hide` FLAG IS READ ONLY WHILE `explainerGate` IS TRUE. `PortalExplainer`
+ * emits `{ hide }` in BOTH modes (one payload shape, its header says so) and `hide`
+ * defaults to `true` — so reading it without the gate check would stamp the column
+ * every time a friend closed the explainer from the menu, which §UC-PI-013 forbids in
+ * as many words. The gate flag, not the payload, is what makes this a write.
+ *
+ * ⚠ FIRE-AND-FORGET, error SWALLOWED (§UC-PI-013: "the UX must not block on it").
+ * The friend is on their way to the shop; a failed stamp costs them one more explainer
+ * at their next login and nothing else. `.catch(() => {})` rather than `await` — an
+ * `await` here would make the navigation wait on a request whose answer is never read.
  */
-function onExplainerDone() {
+function onExplainerDone(payload) {
+  if (explainerGate.value) {
+    // Lowered FIRST, so a second click (or a re-entry from the drawer in this same
+    // session) can no longer take the writing branch.
+    explainerGate.value = false
+    if (payload?.hide) {
+      api.markExplainerSeen(props.friendId).catch(() => {})
+    }
+  }
   backHome()
 }
 
@@ -2748,6 +2829,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
          ⚠ Its own column: the component declares one, like the two views above. -->
     <PortalExplainer
       v-if="view === 'explainer'"
+      :as-gate="explainerGate"
       :parcel-enabled="explainerParcelEnabled"
       :parcel-fee="explainerParcelFee"
       @done="onExplainerDone"

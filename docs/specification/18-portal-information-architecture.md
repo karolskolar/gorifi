@@ -813,7 +813,12 @@ existing circle was never told how it works either).
 - 401 via `requireFriendOwner` (shared-password `friendId: null` is a **401**, same message
   as the contact gate friends.js:1015 — a write under an unresolved identity would stamp
   whoever's id is in the URL);
-- 404 unknown/inactive friend (`'Priateľ nebol nájdený alebo je neaktívny'`);
+- 404 unknown/inactive friend (`'Priateľ nebol nájdený alebo je neaktívny'`) — ⚠ **measured in
+  PI-T9: this branch is UNREACHABLE for an unknown id.** `requireFriendOwner` compares the
+  session's `friendId` to the URL id BEFORE the row is looked up, so another friend's id and
+  a nonexistent id both answer **403**. What the 404 still covers is the friend's OWN id
+  after the row was deactivated or deleted mid-session. A test aimed at „unknown → 404"
+  measures the 403 instead; the shipped spec asserts 403 and says so in its title;
 - `UPDATE friends SET explainer_seen_at = COALESCE(explainer_seen_at, datetime('now'))
   WHERE id = ?` — **idempotent**, never moves an existing timestamp;
 - 200 `{ explainer_seen_at }`. `api.js`: `markExplainerSeen(friendId)`.
@@ -826,6 +831,18 @@ must show the field on each friend-login site (orders.js:111/262 are order paylo
 logins — untouched). `GET /friends/:id/profile` already returns it (`SELECT *` +
 `sanitizeFriend`, which strips credentials only).
 
+⚠ **There is a FIFTH session-minting site and it is deliberately not on this list:**
+`routes/onboarding.js` (invitation registration) mints a friend session but returns no
+`friend` object at all — `OnboardingPage.vue` builds `gorifi_friend_auth` from its four
+flat fields and routes to the portal, so the newly registered friend arrives by the
+**restore** path, which the client rule below says is not a login. Consequence, accepted:
+a friend does NOT meet the explainer on the visit they registered in; they meet it at
+their next ordinary login, stamp still NULL. Adding the field to that payload would not
+help — it would make every reload re-open the gate. If the product wants the explainer on
+the registration visit the fix is a ROUTE, not a field. (The `grep -n "friend: {"` guard
+above does not see this site precisely because there is no `friend: {` in it — which is
+why the exception is written down rather than left to the grep.)
+
 **Client rules:**
 
 - `beginSession({ …, explainerPending })` — `true` iff the handshake came from a **login
@@ -833,7 +850,17 @@ logins — untouched). `GET /friends/:id/profile` already returns it (`SELECT *`
   (10 §UC-GA-006 precedent) and never sets it, even though `hydrateCurrentFriend` later
   learns the value — no auto-open on reload.
 - `explainerPending` ⇒ the session's initial view is `explainer` (URL replaced to
-  `/ako-to-funguje` via `router.replace` so back goes to `/`), with the checkbox row
+  `/ako-to-funguje` via `router.replace` ~~so back goes to `/`~~ — ⚠ **the stated reason is
+  backwards, AND the first correction of it (mine) was also wrong. The checkable reason,
+  measured:** `push` would leave a **ONE-TAP BYPASS OF THE GATE**. `explainerGate` is raised
+  once, at setup (`ref(!!props.entry?.explainerPending)`), and the exit watch lowers it on ANY
+  transition out of the explainer view. So under `push`: back → `/` → `view` becomes `shop` →
+  the watch fires → the gate is over, **unstamped**, and it cannot re-raise because the ref is
+  only computed at setup. `replace` removes the `/` entry instead, so that tap is not there.
+  ⚠ Note what `replace` does NOT do: it does not remove `/ako-to-funguje` from history — after
+  „Rozumiem" pushes `/`, back returns to the explainer. That is harmless (the gate has already
+  lowered and the write already happened) but it is why „so back goes to `/`" and „so the
+  friend cannot be bounced into a URL they never asked for" are both false), with the checkbox row
   (UC-PI-012 item 8). „Rozumiem, idem na ponuku“ with the box **ticked** ⇒
   `markExplainerSeen` (fire-and-forget, error swallowed — the UX must not block on it) then
   `/`; **unticked** ⇒ `/` without the call (shown again next login).

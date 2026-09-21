@@ -433,7 +433,7 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] PI-T6  „Moje objednávky“ history view: `hasOrder` rounds newest-first, short badges (Odoslaná / V pražiarni / Balíme / Zabalená / Odovzdaná / Vyzdvihnuté — owned HERE, never shared with 17's long labels), lazy `CartLineList` per round (`rowSeq`, one expanded), empty state, READ-ONLY (PO: no „Otvoriť“ link) — `18 §UC-PI-009` ⚠ NEW `portal-history.spec.js`; `orderHandedOver` from PI-T1 drives „Odovzdaná“.
 - [x] PI-T7  Money surfaces: debt banner + Zaplatiť on the landing in ALL states (`balance < -0.01`; PO: zero/positive NEVER on landing) + „Zostatok a platby“ view (`FriendBalanceCard` re-purposed, PL-T4's `pay-balance` trigger + mount RELOCATED here — never duplicated; keep „po zaplatení sa zostatok vyrovná do 1–2 dní“) + `FriendTransactionList.vue` lifted verbatim from `FriendTransactionsModal.vue` (deleted) + landing balance card REMOVED — `18 §UC-PI-008,010,019(items 7,9)` ⚠ SANCTIONED: RENAME `portal-transactions-modal.spec.js` → `portal-balance.spec.js` (keep every `tx-*` pin, sign/colour, 320 px test, admin invariance describe; drop the unsatisfiable modal-shell pins); parked `portal-appbar` balance describe lands here. ⚠ `BalanceBadge.vue` untouched (admin-shared).
 - [x] PI-T8  „Ako to funguje“ view: six phases (static text, live timeline NOT mounted), three delivery ways from `api.getPickupLocations('coffee')` (Packeta fee badge gated on `parcel_enabled`), „Kto sme a odkiaľ je káva“ + `lib/roasters.js` ONE home (Goriffee / Robo prototype drafts — PO polishes), „Ako platím“ (keep „(PayMe)“ — 15 shipped), personal note „— Karol“ (PO draft), keep WhatsApp mention in phase 2 (PO), `asGate` prop for PI-T9 + product-card roaster badge popover (one `NeoModal`, `role=button` only on a match) + `NeoIcon` I2 set — `18 §UC-PI-012,014` ⚠ seam → GL-T4 imports `lib/roasters.js`; admin never imports it. NEW `portal-explainer.spec.js` (content part).
-- [ ] PI-T9  First-login explainer gate: `friends.explainer_seen_at` (try/catch ALTER, **NO back-fill — PO: every existing friend sees it once**) + `POST /friends/:id/explainer-seen` (`requireFriendOwner`, idempotent COALESCE; shared-password `friendId:null` ⇒ 401) + field in all four login payloads (friends.js :173/:230/:358, magic-link.js :406; session restore is NOT a login) + `beginSession({explainerPending})` → `router.replace('/ako-to-funguje')` + pre-ticked „Už mi to neukazovať“ / „Rozumiem“ — `18 §UC-PI-013,019(item 16)` ⚠ `FRIEND_IDENTITY_ENDPOINTS += POST /api/friends/1/explainer-seen` (NEVER `ADMIN_ENDPOINTS`). ⚠ SUITE-WIDE: `e2e/seed.mjs` pre-stamps `explainer_seen_at` for every seeded friend except one dedicated fixture (orchestrator clarification (b)) — otherwise every login-then-land spec hits the explainer. Precedence: forced-password > Google prompt > explainer.
+- [x] PI-T9  First-login explainer gate: `friends.explainer_seen_at` (try/catch ALTER, **NO back-fill — PO: every existing friend sees it once**) + `POST /friends/:id/explainer-seen` (`requireFriendOwner`, idempotent COALESCE; shared-password `friendId:null` ⇒ 401) + field in all four login payloads (friends.js :173/:230/:358, magic-link.js :406; session restore is NOT a login) + `beginSession({explainerPending})` → `router.replace('/ako-to-funguje')` + pre-ticked „Už mi to neukazovať“ / „Rozumiem“ — `18 §UC-PI-013,019(item 16)` ⚠ `FRIEND_IDENTITY_ENDPOINTS += POST /api/friends/1/explainer-seen` (NEVER `ADMIN_ENDPOINTS`). ⚠ SUITE-WIDE: `e2e/seed.mjs` pre-stamps `explainer_seen_at` for every seeded friend except one dedicated fixture (orchestrator clarification (b)) — otherwise every login-then-land spec hits the explainer. Precedence: forced-password > Google prompt > explainer.
 - [ ] PI-T10 Profile modal per roadmap §19: **Login** read-only row (help avoids the adjective — `grep -i prihlasovac` guard stays EMPTY) · **Meno a priezvisko *** · **Mobil *** (NEW required on the self-edit route only: blank ⇒ 400 `{field:'phone'}`) · **E-mail** (help: Packeta + recovery) · Adresa Packeta (server bound 160 + `maxlength`) · password fold + Google untouched · NO uid; auto-open until Mobil filled (PO; after the gates of PI-T9, dismissible per session, re-opens next login) — `18 §UC-PI-015,019(items 10,11)` ⚠ marked SLOT under Mobil for module 21's `whatsapp_opt_in` checkbox (renders nothing here). ⚠ „E-mail required when Packeta chosen“ lives in the delivery-choice modal — module 20 (GP-T3) for guests, friend side stays as today. ⚠ SANCTIONED: `portal-profile-modal.spec.js` label/help-order/maxlength pins; `friends-consolidation.spec.js` 14 help-text pins → §19 E-mail help; FUP-T20 grep test verbatim.
 - [ ] PI-T11 Vocabulary rule + deep links: friend-surface copy edits (FriendOrder :1025/:1833, voucher copy-only, GuestShareDialog:182) + friend-facing SERVER 4xx sweep (orders.js / vouchers.js / guest-links.js / products.js — messages only, status codes kept; `cycles.js` admin strings untouched; `guest.js`/`guest-orders.js` strings → GL/GP rows) + Node grep guard + DOM sweep `portal-vocabulary.spec.js` (`/cykl|\bkol(o|a|e|u|om|á|ách)\b/i`) + `/cycle/:id` `mode='route'` regression net (standalone chrome, back → `/`, „Späť na ponuku“) — `18 §UC-PI-017,018` ⚠ any pinned server string changed is re-pointed in its e2e — grep `e2e/` per message; guard file list widens to guest files when GL lands.
 - [ ] PI-T12 Module-18 closeout: `portal-fidelity` landing equivalents (A10 `line-height:normal` pins on `.banner.slim`/`.badge`/`own-order-card .display`/`.p2-tl .lbl`; 320 px hostile text on all three states) + `portal-session-boundary` drawer surface walk (history, balance, explainer incl. checkbox, profile fold, invite, share) + admin invariance greps (no `pp-*`/`p2-*`/`neo/`/theme class under admin; no admin import of `lib/roasters|dates|portal-state`) + retired-file property audit + edited-e2e-file count in the commit + learnings + **full suite** — `18 §UC-PI-019(items 13,14,18, procedure)`.
@@ -474,6 +474,44 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 
 ## Log
+
+- 2026-09-21 · PI-T9 · (this commit) · no PR (project convention) · **The first-login explainer
+  gate — and a suite-wide exposure that was real, but four times smaller than the number I
+  reported.** `friends.explainer_seen_at` (CREATE + try/catch ALTER, no back-fill),
+  `POST /friends/:id/explainer-seen` (`requireFriendOwner`, idempotent `COALESCE`, joins
+  `FRIEND_IDENTITY_ENDPOINTS`), the field on all four login payloads, `beginSession({
+  explainerPending })` → `router.replace('/ako-to-funguje')` with the pre-ticked „Už mi to
+  neukazovať" checkbox, and `seed.mjs` step 7 pre-stamping every seeded friend except one
+  named fixture. **621 passed / 0 failed / 2 skipped across 16 files** (asked 16, ran 16),
+  server log clean apart from the one CORS refusal `api-security.spec.js` provokes on purpose.
+  ⚠⚠ **MY OWN „71 SPEC FILES ARE EXPOSED" FIGURE WAS ACCURATE AND MISLEADING**, which is the
+  worse failure of the two. It counted every file that logs a friend in — but an API-context
+  login has no browser and cannot open a gate, and a localStorage restore is excluded by the
+  spec. Only a CARD login can fire it: **16 failures in 6 files**, and the thing that broke was
+  the DRAWER (the appbar swaps the hamburger for a back chevron on the explainer), not the
+  landing I had predicted. A count is not an exposure until each member is checked.
+  ⚠⚠ **THE ROW CREATED A BUG AND THEN CAUGHT IT:** `seed.mjs` became a DB writer, and
+  `mailgun-harness.js` spawns it with only `BASE_URL` overridden — so every throwaway backend
+  pre-stamped the SHARED gate database, including the one row that must stay NULL. Fixed at both
+  ends (the harness passes its own `DB_PATH`; the seed correlates the gate fixture's id and
+  refuses a stranger's database). ⚠ Its FIRST proof was worthless — two identically-seeded
+  copies are indistinguishable — and the shipped proof uses a raw template copy.
+  ⚠ Review: **approve, six minors, all applied**. Five were the same failure in different
+  clothes — a sentence true when written and not re-checked after the thing it describes moved:
+  PI-T8's seam comment predicted `:as-gate="explainerPending"` (shipped binds `explainerGate`,
+  and the difference is behavioural — the prop would re-arm the gate on every menu visit); the
+  `router.replace` rationale was wrong in the spec AND wrong again in my correction of it (the
+  checkable reason is that `push` leaves a **one-tap bypass**: back → `/` → the exit watch lowers
+  a gate that only ever raises at setup); a refusal test titled „… is 404" asserts **403**
+  (ownership is checked before the row exists, so §UC-PI-013's 404 bullet was unreachable as
+  written); `seed.mjs`'s pairing check said it fails „LOUDLY" via `console.log` while its one
+  caller spawns it with `stdio: 'ignore'` (**„loud" is a property of the listener** — now
+  `process.exitCode = 1`, proved in both directions); and `e2e/README.md` said 76 where the run
+  prints 77. The sixth found a **FIFTH session-minting site**, `routes/onboarding.js` — invisible
+  to the prescribed `grep -n "friend: {"` precisely because it has no `friend: {`, so a
+  registering friend meets the explainer at their NEXT login, not the visit they registered in.
+  Documented rather than „fixed", because adding the field there would re-open the gate on
+  every reload. **A grep-shaped guard only enumerates the sites that share the grep's shape.**
 
 - 2026-09-20 · PI-T8 · (this commit) · no PR (project convention) · **„Ako to funguje" — and the
   boundary guard that named the rule was weaker than the rule.** New `lib/roasters.js` (one home,

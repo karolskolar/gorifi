@@ -568,9 +568,27 @@ curl -sf http://localhost:3997/api/health >/dev/null \
 # 5 — the suite's own fixtures ON TOP of the template
 cd e2e
 npm install && npx playwright install --with-deps chromium   # first time only
-BASE_URL=http://localhost:3997 node seed.mjs
+BASE_URL=http://localhost:3997 DB_PATH="$RUN_DB" node seed.mjs
 # ⚠ It must say `cycle: created` / `friend: created`. `exists` means you are talking
 #   to a server that is NOT on your fresh copy — stop and read the gotcha below.
+#
+# ⚠⚠ `DB_PATH` IS NOT OPTIONAL FOR THE SEED SINCE PI-T9 (18 §UC-PI-013), and its
+#   absence is SILENT. Step 7 of the seed pre-stamps `friends.explainer_seen_at` for
+#   every friend it finds — the state a live deployment reaches after everyone has
+#   logged in once — leaving exactly ONE named fixture (`E2EExplainerGate`)
+#   unacknowledged. ⚠ That is **77**, not 76: the template holds 76 friends and the
+#   seed adds its own `E2ETester` two steps earlier (`E2EExplainerGate` is the 78th
+#   and the one left NULL). The seed COUNTS rather than assuming, so the number moves
+#   with the template — a mismatch between this line and what the run prints means
+#   the template changed, not that the step is broken. Without `DB_PATH` the step prints
+#   `explainer: DB_PATH not set — skipping the pre-stamp` and every UI friend login in
+#   the suite lands on `/ako-to-funguje` instead of the screen it came to measure.
+#   The tell is that line in the seed output, and `explainer: pre-stamped 77 friend(s);
+#   1 left unacknowledged (the gate fixture)` is what a correct run prints. ⚠ A
+#   `DB_PATH` that names a DIFFERENT database than `BASE_URL` serves is refused rather
+#   than written to: the seed correlates the gate fixture's id, prints `is NOT the
+#   database … — pre-stamp SKIPPED` and exits **non-zero** (the exit code is there
+#   because `mailgun-harness.js` spawns the seed with `stdio: 'ignore'`).
 
 # 6 — run. ⚠ DB_PATH is optional only in the sense that nothing ERRORS without it —
 #     it SILENTLY REMOVES assertions, so pass it. Pointed at the same file the server

@@ -838,6 +838,37 @@ function initDb() {
     db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_friends_invite_code ON friends(invite_code) WHERE invite_code IS NOT NULL');
   } catch (e) {}
 
+  // Migration: 18 §UC-PI-013 (PI-T9) — when this friend last acknowledged the
+  // „Ako to funguje" explainer. NULL ⇒ the first login after this deploy opens it
+  // once, pre-ticked.
+  //
+  // ⚠ NO BACK-FILL, AND THAT IS THE PRODUCT DECISION, NOT AN OVERSIGHT (§UC-PI-013's
+  // `OPEN:` resolved to "no back-fill"): the explainer exists because the EXISTING
+  // circle was never told how any of this works either. A
+  // `UPDATE friends SET explainer_seen_at = datetime('now') WHERE explainer_seen_at
+  // IS NULL` here would ship the feature to nobody who matters and look like tidying.
+  //
+  // ⚠ ALTER PLACEMENT — MEASURED, not inherited. CS-T1's trap is that `order_cycles`
+  // is RECREATED further down this file from a hard-coded column list, so an
+  // `ADD COLUMN` placed above that block is silently dropped. There is NO equivalent
+  // block for `friends`: `grep -n "_new " backend/src/db/schema.js` returns EIGHT
+  // lines — six that are the two recreates (`order_cycles_new` ×3 at ~188/200/202 and
+  // `order_items_new` ×3 at ~424/438/444), this comment, and the unrelated `is_new`
+  // COLUMN at ~1136 — and neither recreate touches this table. Counted, because
+  // „there is no such block" is exactly the kind of claim CS-T1 was bitten by
+  // assuming. So this ALTER is safe anywhere after the CREATE, and it
+  // sits at the END of the friends migrations, in chronological order with the other
+  // fifteen. ⚠ The column is deliberately NOT added to the `CREATE TABLE IF NOT
+  // EXISTS friends` above — that statement is the ORIGINAL 2024 shape and every
+  // column since `active` arrives by ALTER; a fresh database runs both and ends up
+  // identical either way, and splitting the convention per column is how the two
+  // paths start to disagree.
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN explainer_seen_at DATETIME');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   // Create invitations table
   db.run(`
     CREATE TABLE IF NOT EXISTS invitations (

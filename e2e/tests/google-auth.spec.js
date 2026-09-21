@@ -141,7 +141,16 @@ function makeApi(ctx, adminToken, dbPath) {
       expect((await r.json()).authMode).toBe(mode)
     },
     /** Friend with a username + a password whose forced-change flag is CLEARED. */
-    async friendWithLogin(label, { keepForcedChange = false } = {}) {
+    /**
+     * ⚠ `explainerSeen` (PI-T9, 18 §UC-PI-013) DEFAULTS TO TRUE, and the default is
+     * the load-bearing half. A friend created here has never acknowledged „Ako to
+     * funguje", so every UI login in this file would land on `/ako-to-funguje` — a
+     * view with a BACK CHEVRON where the hamburger is (§UC-PI-003), which is what
+     * `logout()` / `openProfile()` / `expectChromeName()` all reach for. The stamp
+     * makes these fixtures behave like the established friends they stand in for.
+     * Pass `false` where the payload's own NULL is the subject.
+     */
+    async friendWithLogin(label, { keepForcedChange = false, explainerSeen = true } = {}) {
       const name = `GA4 ${label}`
       const username = `ga4${label}`.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 30)
       const created = await ctx.post('/api/friends', { headers: admin(), data: { name } })
@@ -167,6 +176,15 @@ function makeApi(ctx, adminToken, dbPath) {
         })
         expect(chg.status(), 'clear forced change').toBe(200)
         password = 'ownPass123'
+      }
+      // ⚠ Written straight into the row rather than through the route: with
+      // `keepForcedChange` there is no usable session to authenticate with, and the
+      // helper must behave the same either way. `linkGoogle` above sets the module's
+      // other precondition the same way.
+      if (explainerSeen) {
+        withDb((db) => {
+          db.prepare("UPDATE friends SET explainer_seen_at = datetime('now') WHERE id = ?").run(Number(friend.id))
+        })
       }
       return { ...friend, username, password }
     },
@@ -195,10 +213,21 @@ function makeApi(ctx, adminToken, dbPath) {
 
     // ── GA-T5 (§UC-GA-004) ───────────────────────────────────────────────────
     /** A friend with NO credentials at all — the `warning: 'no_password'` fixture. */
-    async plainFriend(label) {
+    async plainFriend(label, { explainerSeen = true } = {}) {
       const created = await ctx.post('/api/friends', { headers: admin(), data: { name: `GA5 ${label}` } })
       expect(created.status(), 'friend create').toBe(201)
-      return created.json()
+      const friend = await created.json()
+      // ⚠ PI-T9 (18 §UC-PI-013), same default and same reason as `friendWithLogin`
+      // above: these friends log into the PORTAL (through the card's Google button),
+      // and an unacknowledged friend lands on `/ako-to-funguje`, where the hamburger
+      // the profile tests reach for is a back chevron. Written into the row because a
+      // credential-less friend has no session of their own to authenticate with.
+      if (explainerSeen) {
+        withDb((db) => {
+          db.prepare("UPDATE friends SET explainer_seen_at = datetime('now') WHERE id = ?").run(Number(friend.id))
+        })
+      }
+      return friend
     },
     async givePassword(id, password = 'somePass123') {
       const r = await ctx.put(`/api/friends/${id}/reset-password`, { headers: admin(), data: { password } })
@@ -374,7 +403,9 @@ test.describe('§UC-GA-003 — POST /api/friends/auth/google', () => {
     test.skip(!CAN_SPAWN_BACKEND, NEEDS_SOURCE)
     await withGoogleBackend({}, async ({ api, ctx }) => {
       await api.setModernMode()
-      const friend = await api.friendWithLogin(tag('happy'))
+      // ⚠ `explainerSeen: false` — this test's subject is the payload, and the NULL
+      // is what a friend who has never acknowledged the explainer publishes.
+      const friend = await api.friendWithLogin(tag('happy'), { explainerSeen: false })
       const sub = tag('sub-happy')
       api.linkGoogle(friend.id, { sub, email: 'linked@example.test' })
 
@@ -393,7 +424,16 @@ test.describe('§UC-GA-003 — POST /api/friends/auth/google', () => {
         'expiresAt', 'friend', 'googleLinked', 'googlePromptDismissed',
         'hasCredentials', 'mustChangePassword', 'success', 'token',
       ])
-      expect(Object.keys(body.friend).sort()).toEqual(['id', 'name', 'packeta_address', 'uid', 'username'])
+      // ⚠ SANCTIONED RETARGET (18 §UC-PI-013, PI-T9; 03 UC-FL-013 case (a)):
+      // `explainer_seen_at` joins the friend object of ALL FOUR login payloads, this
+      // one included, because the first-login gate has to be decidable before the
+      // portal paints. The PROTECTED PROPERTY is untouched and is the reason this
+      // line is an exact set rather than a `toContain`: a hand-picked literal turning
+      // into a `SELECT *` spread must still red here, and it still does — the row also
+      // holds `password_hash`, `access_token`, `invite_code`, `google_sub`,
+      // `display_name`, `phone`, `email`.
+      expect(Object.keys(body.friend).sort()).toEqual(['explainer_seen_at', 'id', 'name', 'packeta_address', 'uid', 'username'])
+      expect(body.friend.explainer_seen_at, 'a friend who has never acknowledged the explainer').toBeNull()
       expect(body.success).toBe(true)
       expect(body.friend.id).toBe(friend.id)
       expect(body.friend.username).toBe(friend.username)

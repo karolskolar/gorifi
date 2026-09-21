@@ -372,6 +372,14 @@ export const api = {
   dismissGooglePrompt: (friendId) => request(`/friends/${friendId}/google-prompt-dismissed`, {
     method: 'POST'
   }),
+  // 18 §UC-PI-013 — „Už mi to neukazovať" on the first-login explainer gate. No body;
+  // the server stamps `friends.explainer_seen_at` with `COALESCE`, so calling it twice
+  // is a no-op rather than a fresh timestamp. Every caller is FIRE-AND-FORGET: the
+  // friend is on their way to the shop and a failed stamp costs them one extra
+  // explainer at their next login, which is not worth blocking a login over.
+  markExplainerSeen: (friendId) => request(`/friends/${friendId}/explainer-seen`, {
+    method: 'POST'
+  }),
 
   // Orders (password-protected, for friends)
   getOrderByFriend: (cycleId, friendId) => request(`/orders/cycle/${cycleId}/friend/${friendId}`),

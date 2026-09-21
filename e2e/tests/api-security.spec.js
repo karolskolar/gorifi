@@ -264,6 +264,16 @@ const FRIEND_IDENTITY_ENDPOINTS = [
   // this sweep would see 409 on a legacy target (which the shared seed is) and 401 on
   // a modern one, i.e. it would fail for a deployment setting rather than a bug.
   { method: 'post', path: '/api/friends/1/set-password' },
+  // PI-T9 — 18 §UC-PI-013 item 16. The friend's own acknowledgement of „Ako to
+  // funguje". Friend-OWNED, so it belongs here and NEVER in `ADMIN_ENDPOINTS`: an
+  // admin token is not host identity, and there is no admin path to this column at
+  // all (there is deliberately no way to clear it either).
+  //
+  // ⚠ It passes this target-agnostic sweep for the same ordering reason the three
+  // routes above do — `requireFriendOwner` runs BEFORE the row lookup, so an
+  // anonymous caller gets 401 rather than the 404 an id that does not exist on the
+  // target would otherwise produce.
+  { method: 'post', path: '/api/friends/1/explainer-seen' },
 ]
 
 test.describe('API security — friend-identity authorization', () => {

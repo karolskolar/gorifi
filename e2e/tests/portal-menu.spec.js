@@ -1,8 +1,6 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
-import {
-  expectLanding, expectNoLanding, drawer, openMenu, menuGo, logout, dismissLandingState,
-} from '../helpers/portal.js'
+import { ackExplainer, expectLanding, expectNoLanding, drawer, openMenu, menuGo, logout, dismissLandingState } from '../helpers/portal.js'
 import { makeAdmin } from '../helpers/admin.js'
 
 // PI-T2 — 18 §UC-PI-004, the hamburger drawer (`NeoDrawer.vue`), and
@@ -67,6 +65,11 @@ async function makeFriend(label) {
   })
   expect(changed.status(), 'forced change').toBe(200)
   const token = (await changed.json()).token || body.token
+  // ⚠ 18 §UC-PI-013 (PI-T9): a friend created here has never acknowledged „Ako to
+  // funguje", so a LOGIN THROUGH THE CARD would land on `/ako-to-funguje` — where the
+  // hamburger is a back chevron, so every drawer helper below times out. One round
+  // trip through the real route; see `helpers/portal.js ackExplainer`.
+  await ackExplainer(ctx, { id: row.id, token })
   return { id: row.id, name, username, token }
 }
 

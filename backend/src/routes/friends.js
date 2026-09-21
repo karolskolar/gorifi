@@ -169,9 +169,27 @@ router.post('/auth', authLimiter, (req, res) => {
     // Remember-me (09 §UC-ML-002): 60 days on an explicit opt-in, 24 h otherwise.
     // ⚠ `=== true`, never a truthy check — the string "false" must not buy 60 days.
     const session = createFriendSession(friend.id, { remember: req.body.remember === true });
+    // ⚠ 18 §UC-PI-013 (PI-T9) — `explainer_seen_at` rides the FRIEND OBJECT of every
+    // LOGIN response, and only of a login. FOUR sites, named so a grep for one finds
+    // the set: this branch, the shared-password branch below, `/auth/google`, and
+    // `magic-link.js`'s redeem. `orders.js:156/308/326/476` carry a `friend: {}` too
+    // and are ORDER payloads, not logins — they stay as they are.
+    //
+    // ⚠ A SESSION RESTORE IS NOT A LOGIN, and this is where that distinction is
+    // cheapest to state: the restore path has no friend payload at all (it probes with
+    // `GET /friends/cycles`), so the client cannot accidentally open the gate on a
+    // reload. `GET /friends/:id/profile` DOES publish the column (`SELECT *` +
+    // `sanitizeFriend`, which strips credentials only), and that is fine — it is the
+    // fire-and-forget hydrate, which `FriendPortal.vue` never reads the flag from.
+    //
+    // ⚠ `?? null`, not a bare read: on a backend whose migration has not run the
+    // column is `undefined` and `JSON.stringify` would DROP the key entirely, so the
+    // client's `=== null` test would see `undefined` and decide "not a login response"
+    // — silently correct here, but only by accident. An explicit `null` means "this
+    // friend has not acknowledged it", which is exactly what a missing column means.
     return res.json({
       success: true,
-      friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username, packeta_address: friend.packeta_address },
+      friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username, packeta_address: friend.packeta_address, explainer_seen_at: friend.explainer_seen_at ?? null },
       token: session.token,
       expiresAt: session.expiresAt,
       hasCredentials: true,
@@ -228,7 +246,10 @@ router.post('/auth', authLimiter, (req, res) => {
     const session = createFriendSession(friend.id, { remember: req.body.remember === true });
     return res.json({
       success: true,
-      friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username, packeta_address: friend.packeta_address },
+      // 18 §UC-PI-013 — login payload 2 of 4 (`explainer_seen_at`); the personal
+      // branch above carries the whole argument. Legacy shared-password logins open the
+      // gate too: the friend is a real person, and the mode is a deployment setting.
+      friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username, packeta_address: friend.packeta_address, explainer_seen_at: friend.explainer_seen_at ?? null },
       token: session.token,
       expiresAt: session.expiresAt,
       hasCredentials: !!friend.password_hash,
@@ -356,7 +377,9 @@ router.post('/auth/google', authLimiter, async (req, res) => {
     // here is a divergence in that path.
     return res.json({
       success: true,
-      friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username, packeta_address: friend.packeta_address },
+      // 18 §UC-PI-013 — login payload 3 of 4 (`explainer_seen_at`), byte-identical to
+      // the personal branch it is documented above as matching.
+      friend: { id: friend.id, name: friend.name, uid: friend.uid, username: friend.username, packeta_address: friend.packeta_address, explainer_seen_at: friend.explainer_seen_at ?? null },
       token: session.token,
       expiresAt: session.expiresAt,
       // ⚠ NOT the hardcoded `true` the password branch can afford: a friend created by
@@ -1679,6 +1702,60 @@ router.post('/:id/google-prompt-dismissed', (req, res) => {
   db.prepare('UPDATE friends SET google_prompt_dismissed = 1 WHERE id = ?').run(req.params.id);
 
   return res.json({ googlePromptDismissed: true });
+});
+
+// POST /friends/:id/explainer-seen — the friend acknowledged „Ako to funguje"
+// (18 §UC-PI-013, PI-T9). Friend-OWNED, no body.
+//
+// ⚠ THE SHARED-PASSWORD 401 IS THE POINT OF THIS ROUTE'S GUARD, not boilerplate.
+// `requireFriendOwner` resolves `friendId: null` for bare `X-Friends-Password` auth in
+// legacy mode, i.e. the caller proved only that they know a password the whole circle
+// shares — NOT who they are. Every id in the URL would then be writable, so the write
+// would stamp whoever the URL names and silently retire the explainer for a friend who
+// never saw it (GA-T5's rule; the same shape the contact half of `PATCH /:id/profile`
+// refuses one screen up). The damage is small but it is UNRECOVERABLE through the UI:
+// nothing in this module clears the column. Same sentence as the other two no-identity
+// refusals in this file, so the client sees one consistent instruction.
+//
+// ⚠ NO BODY IS READ, so the unbindable-shape class (`{}`, `true`, `[id]`, `'abc'`)
+// cannot reach this handler at all — there is nothing here to 400 on, and adding a
+// body would create the problem rather than solve it.
+//
+// ⚠ NO LIMITER. It verifies no credential (the session did that) and writes one
+// timestamp once per friend per lifetime; `authLimiter` is for credential CHECKING
+// (§UC-GA-013), and the five buckets are never collapsed or extended by habit.
+router.post('/:id/explainer-seen', (req, res) => {
+  const owner = requireFriendOwner(req, req.params.id);
+  if (owner.error) {
+    return res.status(owner.status).json({ error: owner.error });
+  }
+  if (owner.friendId == null) {
+    return res.status(401).json({ error: 'Prihláste sa svojím menom a heslom' });
+  }
+
+  // ⚠ `active = 1`, and the message says so: a deactivated friend is not a friend this
+  // surface writes for. The 404 is byte-identical to the other "unknown or inactive"
+  // refusals in this file (`POST /auth`'s shared-password branch, `PATCH /:id/profile`).
+  const friend = db.prepare('SELECT id, explainer_seen_at FROM friends WHERE id = ? AND active = 1').get(req.params.id);
+  if (!friend) {
+    return res.status(404).json({ error: 'Priateľ nebol nájdený alebo je neaktívny' });
+  }
+
+  // ⚠ IDEMPOTENT VIA `COALESCE`, never a bare assignment. „Už mi to neukazovať" is
+  // fired again by every later visit that ticks the box, and a second call must not
+  // MOVE the timestamp: the column is the answer to "when did this friend first
+  // acknowledge it", and an app that rewrites it on every visit stores "just now"
+  // forever. It also makes the route safe to retry — the client fires it
+  // fire-and-forget and never reads the response.
+  db.prepare("UPDATE friends SET explainer_seen_at = COALESCE(explainer_seen_at, datetime('now')) WHERE id = ?")
+    .run(req.params.id);
+
+  // Read back rather than echo `datetime('now')`: the stored value is the one the
+  // login payloads will publish, and on a second call it is the ORIGINAL one. No
+  // `await` sits between the UPDATE and this SELECT, so `instances: 1` plus a
+  // synchronous handler make the pair atomic (CLAUDE.md, Auth & boundaries).
+  const row = db.prepare('SELECT explainer_seen_at FROM friends WHERE id = ?').get(req.params.id);
+  return res.json({ explainer_seen_at: row?.explainer_seen_at ?? null });
 });
 
 // Admin: Reset friend password

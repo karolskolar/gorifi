@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding, logout, openProfile as portalOpenProfile } from '../helpers/portal.js'
+import { ackExplainer, expectLanding, logout, openProfile as portalOpenProfile } from '../helpers/portal.js'
 import { DatabaseSync } from 'node:sqlite'
 import { ADMIN_PASSWORD, fixtureEmail } from '../fixtures.js'
 import { makeAdmin } from '../helpers/admin.js'
@@ -99,6 +99,11 @@ async function makeFriendWithSession(label) {
   })
   expect(chg.status(), 'forced change').toBe(200)
   const token = (await chg.json()).token || first
+  // ⚠ 18 §UC-PI-013 (PI-T9) — a friend created here has never acknowledged „Ako to
+  // funguje", so a UI LOGIN would send them to `/ako-to-funguje` instead of the
+  // portal this file's UI half measures. One round trip through the real route with
+  // the friend's own session; see `helpers/portal.js ackExplainer`.
+  await ackExplainer(ctx, { id: friend.id, token })
   return { id: friend.id, username, token, auth: { Authorization: `Bearer ${token}` } }
 }
 

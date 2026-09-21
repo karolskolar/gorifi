@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { expectLanding, logout, openProfile as portalOpenProfile, expectChromeName } from '../helpers/portal.js'
+import { ackExplainer, expectLanding, logout, openProfile as portalOpenProfile, expectChromeName } from '../helpers/portal.js'
 import { readFileSync, existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -81,6 +81,12 @@ async function makeFriend(label) {
   expect(changed.status(), 'clear forced change').toBe(200)
   const token = (await changed.json()).token
 
+  // ⚠ 18 §UC-PI-013 (PI-T9): a friend created here has never acknowledged „Ako to
+  // funguje", so a LOGIN THROUGH THE CARD would land on `/ako-to-funguje` — where the
+  // hamburger is a back chevron, so every drawer helper below times out. One round
+  // trip through the real route; see `helpers/portal.js ackExplainer`.
+  await ackExplainer(ctx, { id: row.id, token })
+
   const profile = await ctx.get(`/api/friends/${row.id}/profile`, {
     headers: { Authorization: `Bearer ${token}` },
     timeout: TIMEOUT,
@@ -102,7 +108,22 @@ async function makePlainFriend(label) {
   const name = `RDFL6 ${label} ${uniq()}`
   const created = await admin('/api/friends', { method: 'post', data: { name } })
   expect(created.status(), 'friend create').toBe(201)
-  return { id: (await created.json()).id, name }
+  const id = (await created.json()).id
+
+  // ⚠ 18 §UC-PI-013 (PI-T9): these two log in THROUGH THE CARD, so an unacknowledged
+  // friend lands on `/ako-to-funguje` — a view whose appbar carries a back chevron
+  // instead of the hamburger, which is what `logout()` reaches for below. They have no
+  // credentials of their own, so the session `ackExplainer` needs comes from the
+  // LEGACY shared-password branch of `POST /friends/auth`, the one login that mints a
+  // token for a credential-less friend.
+  const auth = await ctx.post('/api/friends/auth', {
+    data: { password: FRIENDS_PASSWORD, friendId: id },
+    timeout: TIMEOUT,
+  })
+  expect(auth.status(), 'legacy shared-password session for a credential-less friend').toBe(200)
+  await ackExplainer(ctx, { id, token: (await auth.json()).token })
+
+  return { id, name }
 }
 
 test.beforeAll(async () => {

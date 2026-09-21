@@ -54,7 +54,7 @@ cd frontend && npm run dev     # :5173
 | Admin sets a party's pickup point (`helpers/pickup.js`, `PickupLocationPicker.vue`) | `docs/learnings/06-pickup-point.md` |
 | Payment links, variable symbol, `payment_creditor_name` (module 15) | `docs/learnings/07-payment-links.md` |
 | Distribution pipeline: hand-over, the board, the outbox enqueue, the cycle header (module 16) | `docs/learnings/08-distribution-pipeline.md` |
-| Portal IA: the four friend routes, `resolveLanding`, `lib/dates.js`, the `portal-landing` gate, the appbar per state + the drawer / `useModalLayer()`, the „Ako to funguje" explainer + `lib/roasters.js` (module 18) | `docs/learnings/10-portal-ia.md` |
+| Portal IA: the four friend routes, `resolveLanding`, `lib/dates.js`, the `portal-landing` gate, the appbar per state + the drawer / `useModalLayer()`, the „Ako to funguje" explainer + `lib/roasters.js`, the first-login gate + `explainer_seen_at` (module 18) | `docs/learnings/10-portal-ia.md` |
 | Cycle stages: the three `order_cycles` columns, `markCycleReady()`, the `POST/PATCH /cycles` contract, `lib/cycle-stages.js` + `CycleTimeline.vue`, the admin date/stage controls, the guest „Kde je vaša káva" card (module 17) | `docs/learnings/09-cycle-stages.md` |
 
 Specs: `docs/specification/*.md`, `docs/superpowers/specs/*.md`. Spec text that cites "CLAUDE.md GSO-T3" /
@@ -214,6 +214,18 @@ append the full write-up to the matching learnings file and add at most one line
 - SQLite: `WHERE col = ""` is an identifier and throws — use `''`. Single-row picks on second-resolution
   `created_at` need `, id DESC`. `orders` has no `UNIQUE(friend_id, cycle_id)` — get-or-create relies on `instances: 1`.
 - Friend creation via `POST /api/friends` sets no credentials; logins come only from approve / set-username / reset.
+- `friends.explainer_seen_at` (18 §UC-PI-013): NO back-fill, ever — every existing friend meets the explainer once.
+  `POST /:id/explainer-seen` is the ONE writer (`requireFriendOwner` + the `friendId: null` 401, `COALESCE` so a
+  second call never moves the stamp, no body, no limiter); nothing clears it and no admin route touches it. It rides
+  the friend object of the FOUR **login** payloads only (`friends.js` ×3 + `magic-link.js`) — a session RESTORE is
+  not a login and must never open the gate, which is what keeps ~32 localStorage-signed-in spec files measuring
+  their own screen — and is why `routes/onboarding.js`, a FIFTH session mint with no `friend: {` for the
+  prescribed grep to see, deliberately carries no such field (a registrant meets the explainer at the NEXT login).
+  ⚠ E2E: `seed.mjs` pre-stamps the seeded circle except `E2EExplainerGate` (needs `DB_PATH`, and a `DB_PATH` that
+  is not the database `BASE_URL` serves is refused with **exit 1** — a `console.log` was not enough, because the
+  one caller the check exists for spawns the seed with `stdio: 'ignore'`), and
+  a fixture that UI-logs-in a freshly created friend calls `helpers/portal.js ackExplainer()` — otherwise it lands
+  on `/ako-to-funguje`, where the hamburger is a back chevron and `openMenu`/`logout`/`openProfile` time out.
 - FOUR credential routes, never merged: `setup-credentials` (transition, so NO mode guard possible),
   `change-password` (400s without one), admin `reset-password`, and `set-password` (GA-T11 — the FIRST
   password, modern-mode-guarded, 409 once one exists, `username` honoured only while NULL, never a rename).
@@ -398,7 +410,10 @@ Full recipe and env in `e2e/README.md`. Checklist:
   wrapper must assert an `N passed` (N>0) summary and no `N failed`; never grep for `✘` (reporter-dependent).
 - **`--workers=1`** for any multi-file batch (one global admin token; parallel files clobber it → mass 401s).
 - Gate server: `BASE_URL=http://localhost:3997` (never the IP — CORS/crossorigin → CSS 500), `CORS_ORIGIN`
-  including that origin, fresh `DB_PATH` under the scratchpad + `node e2e/seed.mjs`, `GOOGLE_CLIENT_ID=test-client
+  including that origin, fresh `DB_PATH` under the scratchpad + `node e2e/seed.mjs` (⚠ **the seed needs `DB_PATH`
+  too** since PI-T9 — without it step 7's explainer pre-stamp SKIPS, silently, and every UI friend login in the
+  suite lands on `/ako-to-funguje`; a correct run prints `explainer: pre-stamped N friend(s); 1 left`),
+  `GOOGLE_CLIENT_ID=test-client
   GOOGLE_AUTH_TEST_MODE=1`, and all five limiter maxima raised **to `100000` for a full run** (`1000` is
   measurably too small: the shared `authLimiter` exhausts mid-run and the tail collapses into 429s on
   `admin login` that read as a mass regression) — **named, because the glob invites a wrong guess**: `RATE_LIMIT_AUTH_MAX`, `RATE_LIMIT_ABUSE_MAX`, `RATE_LIMIT_GUEST_READ_MAX`,

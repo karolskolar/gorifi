@@ -2,7 +2,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { ADMIN_PASSWORD } from '../fixtures.js'
+import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { assertReadable, code, HAS_SRC, NEEDS_SRC } from '../helpers/source-pins.js'
 import { expectLanding, menuGo } from '../helpers/portal.js'
 import { makeAdmin } from '../helpers/admin.js'
@@ -59,7 +59,20 @@ test.beforeAll(async () => {
 test.afterAll(async () => { await ctx?.dispose() })
 
 let friendSeq = 0
-async function makeFriend(label) {
+/**
+ * A fresh friend with their own username + password.
+ *
+ * ⚠ `explainer_seen_at` IS NULL ON EVERY FRIEND THIS MAKES, and PI-T9 depends on it:
+ * `POST /api/friends` writes no credentials and no acknowledgement, and the API login
+ * below is not the browser, so nothing stamps the column. That is the fixture §9's
+ * gate tests need and the reason they provision their own friend rather than reuse a
+ * seeded one (`e2e/seed.mjs` stamps everyone it seeds except its one named fixture).
+ *
+ * `opts.keepForcedChange` leaves `must_change_password` raised — the admin reset is
+ * what sets it, and the ordinary path clears it with a change-password call. §9's
+ * precedence test is the one caller that wants it left up.
+ */
+async function makeFriend(label, opts = {}) {
   const suffix = `_${uniq}${++friendSeq}`
   const username = `pi8_${String(label).toLowerCase().replace(/[^a-z0-9]/g, '')}`.slice(0, 30 - suffix.length) + suffix
   const name = `PI8 ${label} ${uniq}`
@@ -73,6 +86,9 @@ async function makeFriend(label) {
   const auth = await ctx.post('/api/friends/auth', { data: { username, password: 'initPass1' }, timeout: TIMEOUT })
   expect(auth.status(), 'friend login').toBe(200)
   const body = await auth.json()
+  if (opts.keepForcedChange) {
+    return { id: row.id, name, username, password: 'initPass1', token: body.token }
+  }
   const changed = await ctx.put(`/api/friends/${row.id}/change-password`, {
     headers: { Authorization: `Bearer ${body.token}` },
     data: { currentPassword: 'initPass1', newPassword: 'ownPass12' },
@@ -80,7 +96,7 @@ async function makeFriend(label) {
   })
   expect(changed.status(), 'forced change').toBe(200)
   const token = (await changed.json()).token || body.token
-  return { id: row.id, name, username, token }
+  return { id: row.id, name, username, password: 'ownPass12', token }
 }
 
 async function makeCycle(label, data = {}) {
@@ -543,10 +559,7 @@ test.describe('PI-T8 · 18 §UC-PI-012 — heading, payment, the note, the actio
 
   test('⚠ the SEAM: `asGate` exists, defaults false, and PI-T9 flips it at the mount', () => {
     test.skip(!HAS_SRC, NEEDS_SRC)
-    // The GATE's live behaviour belongs to PI-T9 (§UC-PI-013) — nothing mounts this
-    // component with `as-gate` yet, and a test that asserted the checkbox is on
-    // screen would be asserting a screen no route reaches. What IS this row's claim,
-    // and what PI-T9 must not have to rewrite, is the SHAPE of the seam.
+    // The seam's SHAPE — the half PI-T9 was told not to have to rewrite, and did not.
     const view = assertReadable('components/PortalExplainer.vue',
       ['asGate', 'Rozumiem, idem na ponuku', 'Späť na ponuku', 'done'])
     expect(view, 'the prop exists and defaults to false')
@@ -555,12 +568,26 @@ test.describe('PI-T8 · 18 §UC-PI-012 — heading, payment, the note, the actio
     expect(view, 'both labels live on the one button').toContain("asGate ? 'Rozumiem, idem na ponuku' : 'Späť na ponuku'")
     expect(view, 'the gate\'s decision leaves as a payload, not as a second ref').toContain("emit('done', { hide: hide.value })")
 
-    // …and the session passes no `as-gate` TODAY, which is what makes the menu
-    // assertion above a property of the app rather than of a default.
+    // ⚠⚠ SUPERSEDED IN PLACE BY PI-T9 (§UC-PI-013), not deleted, because the
+    // ~~claim~~ it replaces is the interesting part of the history. PI-T8 asserted
+    // „the session passes NO `as-gate`", which was then what made the menu-mode
+    // assertion above a property of the app rather than of a prop default. PI-T9 was
+    // handed that assertion to FLIP DELIBERATELY: the mount now binds
+    // `:as-gate="explainerGate"`, a ref that is true only for a first login.
+    //
+    // What replaces the absence claim is the SAME property, asserted one level up —
+    // the flag is a REF seeded once from the handshake, never a computed over
+    // `props.entry`, because it has to stop being true the moment the gate is
+    // answered (a drawer re-entry in the same session must show no checkbox). That is
+    // now pinned behaviourally in §9 as well; this is the source half.
     const session = assertReadable('views/FriendPortalSession.vue',
       ['PortalExplainer', 'explainerParcelEnabled', 'onExplainerDone'])
     expect(session.match(/<PortalExplainer\b/g), 'exactly ONE mount').toHaveLength(1)
-    expect(session, 'no gate flag yet — PI-T9 adds it here').not.toContain('as-gate')
+    expect(session, 'the gate flag is bound at that one mount (PI-T9)').toContain(':as-gate="explainerGate"')
+    expect(session, 'seeded ONCE from the handshake, as a ref — never a computed')
+      .toMatch(/const\s+explainerGate\s*=\s*ref\(!!props\.entry\?\.explainerPending\)/)
+    expect(session, 'and it is lowered before the write branch can run twice')
+      .toMatch(/explainerGate\.value\s*=\s*false/)
   })
 })
 
@@ -749,5 +776,395 @@ test.describe('PI-T8 · 18 §UC-PI-012 — the phone floor', () => {
     }))
     expect(overflow.doc, `no horizontal overflow at 320px (${JSON.stringify(overflow)})`)
       .toBeLessThanOrEqual(overflow.win)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 9. PI-T9 · 18 §UC-PI-013 — THE FIRST-LOGIN GATE
+//
+// ⚠⚠ THE PROPERTY THIS BLOCK PROTECTS FIRST, and it is a SUITE-WIDE one: the gate
+// fires on a LOGIN and on nothing else. A session RESTORE — which is how ~32 spec
+// files sign a friend in, by writing `gorifi_friend_auth` into localStorage — must
+// never reach the explainer, or every one of those files starts measuring a screen it
+// did not ask for. §UC-PI-013 states that as "a session restore is not a login"; the
+// „reload" test below is what makes it a red run instead of a sentence.
+//
+// ⚠ THE SECOND PROPERTY: the shared password resolves NO identity
+// (`requireFriendOwner` yields `friendId: null` in legacy mode), so the write is a
+// 401 there rather than a stamp of whoever the URL names — the GA-T5 rule. The
+// refusal test READS THE ROW BACK, because a route that 401s and writes anyway looks
+// identical from the status code.
+// ═════════════════════════════════════════════════════════════════════════════
+test.describe('PI-T9 · 18 §UC-PI-013 — the first-login explainer gate', () => {
+  /** The MODERN login card, without touching the deployment's `auth_mode`. */
+  async function modernCard(page) {
+    await page.route('**/friends/auth-mode', (route) => route.fulfill({ json: { authMode: 'modern' } }))
+  }
+
+  /** A fresh document with no stored session, so the next entry is a real LOGIN. */
+  async function freshVisit(page) {
+    await page.addInitScript(() => localStorage.clear())
+    await page.goto('/')
+  }
+
+  async function uiLogin(page, friend) {
+    await page.getByLabel(/^užívateľské meno$/i).fill(friend.username)
+    await page.getByLabel(/^heslo$/i).fill(friend.password)
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+  }
+
+  /** Every `POST …/explainer-seen` this page issued, in order. */
+  function countStamps(page, friendId) {
+    const seen = []
+    page.on('request', (r) => {
+      if (r.method() === 'POST' && r.url().includes(`/api/friends/${friendId}/explainer-seen`)) seen.push(r.url())
+    })
+    return seen
+  }
+
+  /** `explainer_seen_at` as the owner's own profile endpoint publishes it. */
+  async function storedStamp(friend) {
+    const res = await ctx.get(`/api/friends/${friend.id}/profile`, {
+      headers: { Authorization: `Bearer ${friend.token}` }, timeout: TIMEOUT,
+    })
+    expect(res.status(), 'profile read').toBe(200)
+    return (await res.json()).explainer_seen_at ?? null
+  }
+
+  async function gateFixture(page, label, opts) {
+    const friend = await makeFriend(label, opts)
+    await modernCard(page)
+    await stubBalance(page)
+    await stubCycles(page, [cycleRow({ n: 20, status: 'open' })])
+    expect(await storedStamp(friend), 'the fixture starts UNACKNOWLEDGED').toBeNull()
+    return friend
+  }
+
+  test('a fresh friend\'s LOGIN lands on the explainer, with the pre-ticked checkbox', async ({ page }) => {
+    const friend = await gateFixture(page, 'GateFresh')
+    await freshVisit(page)
+    await uiLogin(page, friend)
+
+    await expectLanding(page)
+    await expect(page).toHaveURL(/\/ako-to-funguje$/)
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-view', 'explainer')
+
+    // §UC-PI-012 item 8, gate mode: the checkbox row AND the gate's own button label.
+    const box = explainer(page).getByRole('checkbox', { name: 'Už mi to neukazovať' })
+    await expect(box).toHaveCount(1)
+    await expect(box, 'PRE-ticked — 18 resolved conflict 3').toHaveAttribute('aria-checked', 'true')
+    await expect(page.getByTestId('explainer-done')).toHaveText('Rozumiem, idem na ponuku')
+
+    // ⚠ THE DISCRIMINATING HALF: it is the EXPLAINER the friend met, not the shop
+    // behind a checkbox. Without this the test passes against a build that renders
+    // the landing and the gate's chrome at the same time.
+    await expect(explainer(page)).toBeVisible()
+    await expect(phases(page)).toHaveCount(6)
+  })
+
+  test('„Rozumiem" with the box TICKED stamps once, goes home, and the NEXT login skips the gate', async ({ page }) => {
+    const friend = await gateFixture(page, 'GateTick')
+    const stamps = countStamps(page, friend.id)
+    await freshVisit(page)
+    await uiLogin(page, friend)
+    await expect(page).toHaveURL(/\/ako-to-funguje$/)
+
+    const posted = page.waitForRequest((r) => r.method() === 'POST' && r.url().includes('/explainer-seen'), { timeout: TIMEOUT })
+    await page.getByTestId('explainer-done').click()
+    await posted
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-view', 'shop')
+
+    expect(stamps, 'exactly ONE stamp, for THIS friend').toHaveLength(1)
+    const stored = await storedStamp(friend)
+    expect(stored, 'and the column is really written').not.toBeNull()
+
+    // §UC-PI-013's acceptance criterion: „second login ⇒ straight to `/`".
+    await freshVisit(page)
+    await uiLogin(page, friend)
+    await expectLanding(page)
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-view', 'shop')
+    expect(stamps, 'and the second login writes nothing at all').toHaveLength(1)
+  })
+
+  test('„Rozumiem" UNTICKED writes nothing, and the gate comes back at the next login', async ({ page }) => {
+    const friend = await gateFixture(page, 'GateUntick')
+    const stamps = countStamps(page, friend.id)
+    await freshVisit(page)
+    await uiLogin(page, friend)
+    await expect(page).toHaveURL(/\/ako-to-funguje$/)
+
+    // Untick through the label's own text zone — the three-zone row the component
+    // copied from `FriendPortal.vue`; clicking it must toggle exactly once.
+    await explainer(page).getByText('Už mi to neukazovať', { exact: true }).click()
+    await expect(explainer(page).getByRole('checkbox')).toHaveAttribute('aria-checked', 'false')
+
+    await page.getByTestId('explainer-done').click()
+    await expect(page).toHaveURL(/\/$/)
+    expect(stamps, 'no write — the friend asked to be shown it again').toHaveLength(0)
+    expect(await storedStamp(friend), 'and the column is untouched').toBeNull()
+
+    // ⚠ NON-VACUITY for the absence above: the SAME fixture, one login later, still
+    // meets the gate. An implementation that simply never opened it would pass the
+    // „no POST" half and fail here.
+    await freshVisit(page)
+    await uiLogin(page, friend)
+    await expect(page).toHaveURL(/\/ako-to-funguje$/)
+    await expect(page.getByTestId('explainer-done')).toHaveText('Rozumiem, idem na ponuku')
+  })
+
+  test('⚠ a RESTORE is not a login: a reload with the stamp still NULL lands on the shop', async ({ page }) => {
+    const friend = await gateFixture(page, 'GateRestore')
+    const stamps = countStamps(page, friend.id)
+
+    // The ~32-spec-file shape: the stored session, restored, with nothing acknowledged.
+    await signIn(page, friend)
+    await open(page, '/')
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-view', 'shop')
+    await expect(explainer(page)).toHaveCount(0)
+
+    // And a second document — a genuine reload — behaves the same way.
+    await open(page, '/')
+    await expect(page).toHaveURL(/\/$/)
+    expect(stamps, 'a restore writes nothing either').toHaveLength(0)
+    expect(await storedStamp(friend), 'and the column stays NULL').toBeNull()
+
+    // ⚠ The other half of the same rule: reached from the MENU in that very session
+    // the page is the plain explainer — no checkbox, no gate label — because the flag
+    // came from a handshake that was not a login.
+    await menuGo(page, 'Ako to funguje')
+    await expect(page).toHaveURL(/\/ako-to-funguje$/)
+    await expect(page.getByTestId('explainer-done')).toHaveText('Späť na ponuku')
+    await expect(explainer(page).getByRole('checkbox')).toHaveCount(0)
+  })
+
+  test('⚠ the gate is ONE-SHOT: re-entering from the drawer in the same session shows no checkbox', async ({ page }) => {
+    const friend = await gateFixture(page, 'GateOnce')
+    const stamps = countStamps(page, friend.id)
+    await freshVisit(page)
+    await uiLogin(page, friend)
+    await expect(page).toHaveURL(/\/ako-to-funguje$/)
+
+    // Leave the gate WITHOUT answering it — the appbar's back chevron, which
+    // §UC-PI-003 puts where the hamburger is on the other three views.
+    await page.locator('.appbar [aria-label="Späť"]').click()
+    await expect(page).toHaveURL(/\/$/)
+    expect(stamps, 'the chevron answers nothing, so it writes nothing').toHaveLength(0)
+
+    // Back in from the drawer: the SAME session, now the menu-mode page.
+    await menuGo(page, 'Ako to funguje')
+    await expect(page.getByTestId('explainer-done')).toHaveText('Späť na ponuku')
+    await expect(explainer(page).getByRole('checkbox')).toHaveCount(0)
+    await page.getByTestId('explainer-done').click()
+    await expect(page).toHaveURL(/\/$/)
+    // ⚠ THE POINT: `PortalExplainer` emits `{ hide: true }` in BOTH modes (one payload
+    // shape), so a handler that read the payload without checking the gate flag would
+    // stamp HERE — silently retiring an explainer the friend never acknowledged.
+    expect(stamps, 'a menu-opened explainer never writes').toHaveLength(0)
+    expect(await storedStamp(friend), 'the column is still NULL').toBeNull()
+  })
+
+  test('precedence: the forced password change is met FIRST, with the explainer underneath', async ({ page }) => {
+    const friend = await gateFixture(page, 'GateForced', { keepForcedChange: true })
+    await freshVisit(page)
+    await uiLogin(page, friend)
+
+    // §UC-PI-013: „The forced-password gate (03 UC-FL-012) … takes precedence: the
+    // explainer view waits underneath". Both halves, because either alone is
+    // satisfied by the wrong build — the modal alone by a version that never routed,
+    // the URL alone by one that skipped the forced gate.
+    const gate = page.getByTestId('forced-password-change')
+    await expect(gate).toBeVisible()
+    await expect(page).toHaveURL(/\/ako-to-funguje$/)
+
+    await gate.getByLabel(/^nové heslo$/i).fill('novéHeslo123')
+    await gate.getByLabel(/^potvrdiť nové heslo$/i).fill('novéHeslo123')
+    await gate.getByRole('button', { name: 'Nastaviť heslo a pokračovať' }).click()
+    await expect(gate).toHaveCount(0)
+
+    // …and what is underneath is the gate-mode explainer, not the shop.
+    await expect(page).toHaveURL(/\/ako-to-funguje$/)
+    await expect(page.getByTestId('explainer-done')).toHaveText('Rozumiem, idem na ponuku')
+  })
+
+  // ── the route itself ───────────────────────────────────────────────────────
+
+  test('the stamp is IDEMPOTENT — a second POST returns the same timestamp', async ({ page }) => {
+    const friend = await makeFriend('GateIdem')
+    const auth = { Authorization: `Bearer ${friend.token}` }
+
+    const first = await ctx.post(`/api/friends/${friend.id}/explainer-seen`, { headers: auth, timeout: TIMEOUT })
+    expect(first.status()).toBe(200)
+    const one = (await first.json()).explainer_seen_at
+    expect(one, 'the route answers the stored value').toBeTruthy()
+
+    // ⚠ `datetime('now')` is SECOND-resolution, so two calls in the same second would
+    // agree even without `COALESCE`. Wait past the boundary, or this proves nothing.
+    await page.waitForTimeout(1200)
+
+    const second = await ctx.post(`/api/friends/${friend.id}/explainer-seen`, { headers: auth, timeout: TIMEOUT })
+    expect(second.status()).toBe(200)
+    expect((await second.json()).explainer_seen_at, 'COALESCE — never re-stamped').toBe(one)
+    expect(await storedStamp(friend), 'and the row agrees').toBe(one)
+  })
+
+  test('⚠ shared-password auth resolves NO identity: 401, and NOTHING is written', async () => {
+    const friend = await makeFriend('GateShared')
+    const victim = await makeFriend('GateVictim')
+
+    // The legacy window's credential. `requireFriendOwner` resolves `friendId: null`
+    // for it, so ownership is meaningless — the route must refuse rather than stamp
+    // whoever the URL names (GA-T5).
+    const res = await ctx.post(`/api/friends/${victim.id}/explainer-seen`, {
+      headers: { 'X-Friends-Password': FRIENDS_PASSWORD }, timeout: TIMEOUT,
+    })
+    expect(res.status(), 'the shared password is not an identity').toBe(401)
+    expect(await storedStamp(victim), 'READ BACK — a 401 that wrote anyway looks identical').toBeNull()
+
+    // Non-vacuity: the same header on the same deployment IS accepted elsewhere, so
+    // the refusal is about identity and not about a mis-typed header.
+    const balance = await ctx.get(`/api/friends/${victim.id}/balance`, {
+      headers: { 'X-Friends-Password': FRIENDS_PASSWORD }, timeout: TIMEOUT,
+    })
+    expect(balance.status(), 'the shared password still authenticates a READ').toBe(200)
+
+    // And a friend's own session may not stamp SOMEBODY ELSE (SEC-A1 IDOR).
+    const cross = await ctx.post(`/api/friends/${victim.id}/explainer-seen`, {
+      headers: { Authorization: `Bearer ${friend.token}` }, timeout: TIMEOUT,
+    })
+    expect(cross.status(), 'another friend\'s session is a 403').toBe(403)
+    expect(await storedStamp(victim), 'still nothing written').toBeNull()
+  })
+
+  test('an anonymous POST is 401 and an unknown id is 403 — ownership is checked first', async () => {
+    const friend = await makeFriend('GateUnknown')
+
+    const anon = await ctx.post(`/api/friends/${friend.id}/explainer-seen`, { timeout: TIMEOUT })
+    expect(anon.status(), 'no credential at all').toBe(401)
+    expect(await storedStamp(friend), 'and nothing was written').toBeNull()
+
+    // A friend's own token against a row that does not exist — the guard passes
+    // (the ids match) and the lookup is what refuses, which is the only way to reach
+    // the 404 at all.
+    const gone = await ctx.post('/api/friends/9999999/explainer-seen', {
+      headers: { Authorization: `Bearer ${friend.token}` }, timeout: TIMEOUT,
+    })
+    expect(gone.status(), 'ownership is checked first, so this is a 403 not a 404').toBe(403)
+  })
+
+  test('the field rides every LOGIN payload, and a deactivated friend is refused', async () => {
+    const friend = await makeFriend('GatePayload')
+
+    // 1 of 4 — the username branch.
+    const personal = await ctx.post('/api/friends/auth', {
+      data: { username: friend.username, password: friend.password }, timeout: TIMEOUT,
+    })
+    expect(personal.status()).toBe(200)
+    const personalBody = await personal.json()
+    expect(personalBody.friend, 'the field is PRESENT and explicitly null').toHaveProperty('explainer_seen_at', null)
+
+    // 2 of 4 — the legacy shared-password branch, which mints a per-friend session too.
+    const shared = await ctx.post('/api/friends/auth', {
+      data: { password: FRIENDS_PASSWORD, friendId: friend.id }, timeout: TIMEOUT,
+    })
+    expect(shared.status()).toBe(200)
+    expect((await shared.json()).friend).toHaveProperty('explainer_seen_at', null)
+
+    // …and it carries the REAL value once stamped, not a hardcoded null.
+    expect((await ctx.post(`/api/friends/${friend.id}/explainer-seen`, {
+      headers: { Authorization: `Bearer ${personalBody.token}` }, timeout: TIMEOUT,
+    })).status()).toBe(200)
+    const after = await ctx.post('/api/friends/auth', {
+      data: { username: friend.username, password: friend.password }, timeout: TIMEOUT,
+    })
+    expect((await after.json()).friend.explainer_seen_at, 'the stamped value rides the next login').toBeTruthy()
+
+    // ⚠ DEACTIVATING THROUGH THE API IS A 401, NOT THE 404 — and that is worth pinning
+    // rather than working around, because it is the honest answer: the admin PATCH
+    // invalidates the friend's sessions, so the Bearer token dies before
+    // `requireFriendOwner` can resolve anybody. The route's `active = 1` predicate is
+    // therefore UNREACHABLE on this path, exactly as CS-T1 found for `markCycleReady`'s
+    // `stage IS NULL` row.
+    expect((await admin(`/api/friends/${friend.id}`, { method: 'patch', data: { active: 0 } })).status()).toBe(200)
+    const viaApi = await ctx.post(`/api/friends/${friend.id}/explainer-seen`, {
+      headers: { Authorization: `Bearer ${personalBody.token}` }, timeout: TIMEOUT,
+    })
+    expect(viaApi.status(), 'deactivation kills the session first').toBe(401)
+  })
+
+  test('⚠ the `active = 1` predicate is load-bearing — the built scenario the API cannot reach', async () => {
+    const dbPath = process.env.DB_PATH
+    test.skip(!dbPath, 'requires DB_PATH to deactivate a friend WITHOUT killing their session')
+    const friend = await makeFriend('GateInactive')
+
+    // The state the API refuses to produce: `active = 0` with a LIVE session. Written
+    // straight into the row, the way `cycle-stages.spec.js` manufactures its
+    // `stage IS NULL` locked cycle — a build-the-scenario gate, not a shortcut.
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(dbPath)
+    try {
+      db.prepare('UPDATE friends SET active = 0 WHERE id = ?').run(Number(friend.id))
+    } finally {
+      db.close()
+    }
+
+    const res = await ctx.post(`/api/friends/${friend.id}/explainer-seen`, {
+      headers: { Authorization: `Bearer ${friend.token}` }, timeout: TIMEOUT,
+    })
+    expect(res.status(), 'unknown OR inactive').toBe(404)
+    expect((await res.json()).error).toBe('Priateľ nebol nájdený alebo je neaktívny')
+
+    // Non-vacuity: the SAME request against the SAME friend is a 200 once the row is
+    // active again, so the 404 is about `active`, not about the id or the token.
+    const db2 = new DatabaseSync(dbPath)
+    try {
+      db2.prepare('UPDATE friends SET active = 1 WHERE id = ?').run(Number(friend.id))
+    } finally {
+      db2.close()
+    }
+    expect((await ctx.post(`/api/friends/${friend.id}/explainer-seen`, {
+      headers: { Authorization: `Bearer ${friend.token}` }, timeout: TIMEOUT,
+    })).status(), 'and an active friend is stamped').toBe(200)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 10. PI-T9 · THE SEED'S OWN GUARD — the 76-friend pre-stamp, and its one exception
+//
+// ⚠⚠ THIS IS THE SUITE-WIDE HALF OF PI-T9, and it is the one a future reader is most
+// likely to undo. `e2e/seed.mjs` step 7 stamps every friend in the gate database
+// EXCEPT `E2EExplainerGate`, so that a spec logging a template friend in through the
+// UI measures the screen it came for rather than the explainer. Stamping the fixture
+// too — the obvious "tidy" — would leave the seed with no unacknowledged friend at
+// all and nothing would say so. This test says so.
+// ═════════════════════════════════════════════════════════════════════════════
+test.describe('PI-T9 · the seeded explainer state', () => {
+  test('the seed stamps the circle and leaves exactly one fixture unacknowledged', async () => {
+    const res = await admin('/api/friends', { method: 'get' })
+    expect(res.status(), 'admin friends list').toBe(200)
+    const rows = await res.json()
+
+    const seeded = rows.find((f) => f.name === 'E2ETester')
+    const fixture = rows.find((f) => f.name === 'E2EExplainerGate')
+    // Target-agnostic: a deployed environment has neither of the seed's fixtures.
+    test.skip(!seeded || !fixture, 'not a seeded gate database (e2e/seed.mjs has not run here)')
+
+    expect(seeded.explainer_seen_at, 'the ordinary seeded friend is pre-stamped').toBeTruthy()
+    expect(fixture.explainer_seen_at, 'the DEDICATED fixture is deliberately NULL').toBeNull()
+
+    // ⚠ NON-VACUITY, and it is the assertion that makes the pair mean something: the
+    // pre-stamp reached the TEMPLATE's 76 friends too, not just the one row the seed
+    // created. `E2ETester` alone would pass against a seed that stamped exactly one.
+    //
+    // ⚠ SCOPED BY ID, not by name. Every other spec file creates friends of its own
+    // and none of them stamps anything, so "no unstamped friend anywhere" is false by
+    // construction the moment a second file has run. The gate fixture is the LAST row
+    // the seed writes, so `id < fixture.id` is exactly "existed when the seed ran".
+    const preExisting = rows.filter((f) => f.id < fixture.id)
+    expect(preExisting.length, 'the template really is a ~76-friend snapshot').toBeGreaterThan(20)
+    const unstamped = preExisting.filter((f) => !f.explainer_seen_at).map((f) => f.name)
+    expect(unstamped, 'every friend that existed when the seed ran is stamped').toEqual([])
   })
 })
