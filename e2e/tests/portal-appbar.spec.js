@@ -53,7 +53,10 @@ test.beforeAll(async () => {
 
   const username = `rdfl3_${uniq}`.slice(0, 30)
   const name = `RDFL3 Tester ${uniq}`
-  const created = await admin('/api/friends', { method: 'post', data: { name } })
+  // ⚠ 18 §UC-PI-015 (PI-T10) — the phone is load-bearing for the profile-save tests
+  // below: „Mobil *" is required now, so „Uložiť" is DISABLED on a friend whose row
+  // has none, and a save this file stubs a 500 for would never be dispatched.
+  const created = await admin('/api/friends', { method: 'post', data: { name, phone: '0900 123 456' } })
   expect(created.status(), 'friend create').toBe(201)
   const row = await created.json()
 

@@ -97,7 +97,14 @@ append the full write-up to the matching learnings file and add at most one line
 - `POST /invitations/:id/approve`: bcrypt + retry loops OUTSIDE the transaction, exactly TWO writes inside, no
   subscriptions/session/transactions row. Temp password stays uppercase; only usernames are lowercased.
 - Unbindable body shapes (`{}`, `true`, `[id]`, `'abc'`) must 400, never 500 — the one-element array is the trap.
-- Server length bounds are mirrored as `maxlength` in the UI.
+- Server length bounds are mirrored as `maxlength` in the UI. (⚠ `#pp-profile-name` had NO
+  mirror at all until PI-T10 added its 120 — the rule had a hole on the one required field.)
+- `PATCH /friends/:id/profile` is the ONE writer of `friends.packeta_address` in `backend/src`
+  (no admin route and neither `INSERT INTO friends` touches the column), so its **160** bound
+  lives there and NOT in the shared `validateAdminFriendFields`; `orders.packeta_address` is a
+  different column with its own rule. Same place, same reason: `phone` blank ⇒ 400
+  `{field:'phone'}` on THAT route only — the ADMIN PATCH may still clear a phone, and both
+  halves are pinned (PI-T10). FUP-T12's „a non-string packeta_address = an absent key" stands.
 
 ### Money & data
 - `transactions` rows come ONLY from the friend paid toggle and pack/unpack (`orders.total`, never
@@ -214,6 +221,25 @@ append the full write-up to the matching learnings file and add at most one line
 - SQLite: `WHERE col = ""` is an identifier and throws — use `''`. Single-row picks on second-resolution
   `created_at` need `, id DESC`. `orders` has no `UNIQUE(friend_id, cycle_id)` — get-or-create relies on `instances: 1`.
 - Friend creation via `POST /api/friends` sets no credentials; logins come only from approve / set-username / reset.
+- The profile modal AUTO-OPENS for a friend with an empty `phone` (18 §UC-PI-015, PO 2026-09-19).
+  ⚠ Trigger = `entry.freshLogin`, which `beginSession` takes from the THREE **login** paths only —
+  a RESTORE is not a login, so a reload/deep link never re-opens it (§UC-PI-013's boundary, and the
+  measured difference between 16 and 53 exposed spec files). The decision waits on
+  `hydrateCurrentFriend` and asks `hasOwnProperty(friend,'phone')`, never truthiness (no phone key
+  until the fetch lands). Dismissal = `profileAutoOpenArmed`, a session-side `ref`, lowered on open.
+  ⚠ Precedence here IS coded — the OPPOSITE of PI-T9's explainer, because this is a `NeoModal` that
+  would STACK on a non-dismissable gate rather than a view it could wait under. ⚠⚠ **The term list is
+  DERIVED, never maintained by hand — it was wrong in review TWICE.** The derivation: walk every overlay
+  MOUNT in `FriendPortalSession.vue` (`<NeoModal>`, `<LandingStateModal>`, `<NeoDrawer>`, the teleported
+  `fixed inset-0` div) and ask „can it raise with NO friend action?" SEVEN can — forced-password,
+  credential-setup, Google prompt, explainer, `showClosedModal`, `showLockedModal` and **`showVoucherModal`**
+  (whose `z-50` teleport the `z-index:200` profile modal paints OVER: measured `elementFromPoint` →
+  `INPUT.inp` on top of a one-shot irreversible decision) — plus `showProfileModal`, a term of a DIFFERENT
+  kind (it may already be OPEN, and `openProfileModal()` re-seeds every field). The surface in front WINS
+  and the profile modal queues behind it. `portal-profile-modal.spec.js` PINS THE WALK IN SOURCE, so an
+  eighth self-raising overlay reds instead of stacking; each term also has a behaviour test that reds when
+  that ONE term is deleted. `showInviteModal`/`showBalancePayment`/the drawer need a click;
+  `showPasswordChange`/`showPasswordSet` are folds; `showMagicPrompt` is a banner — none are terms.
 - `friends.explainer_seen_at` (18 §UC-PI-013): NO back-fill, ever — every existing friend meets the explainer once.
   `POST /:id/explainer-seen` is the ONE writer (`requireFriendOwner` + the `friendId: null` 401, `COALESCE` so a
   second call never moves the stamp, no body, no limiter); nothing clears it and no admin route touches it. It rides
@@ -226,6 +252,18 @@ append the full write-up to the matching learnings file and add at most one line
   one caller the check exists for spawns the seed with `stdio: 'ignore'`), and
   a fixture that UI-logs-in a freshly created friend calls `helpers/portal.js ackExplainer()` — otherwise it lands
   on `/ako-to-funguje`, where the hamburger is a back chevron and `openMenu`/`logout`/`openProfile` time out.
+  ⚠ **SAME SHAPE, SECOND FIXTURE FACT (PI-T10): a fixture friend that logs in through the CARD also needs a
+  `phone`** — `POST /api/friends { name, phone }` — or the profile modal opens by itself over the drawer those
+  helpers reach for. ⚠ **The 76 TEMPLATE rows all carry a phone; `seed.mjs`'s OWN TWO friends do not** —
+  `E2ETester` (`:109`) and `E2EExplainerGate` (`:128`) are created with `{ name }` alone and the template holds
+  no `E2E*` row at all, so „the seeded circle is immune" (PI-T10's first wording) is FALSE for exactly the two
+  friends a spec is most likely to reach for. `E2ETester` is explainer-pre-stamped, so a legacy card login as
+  that friend (e.g. `magic-link.spec.js`) meets the auto-open; nothing is red today, which is why the rule and
+  not the gate is what has to say so. A required field also reaches RESTORE-based specs, for a different reason:
+  „Uložiť" is disabled on a phone-less friend. The AUTO-OPEN population is the CARD-login files, not the ~32
+  localStorage ones — the trigger is `entry.freshLogin`. Carried in `portal-profile-modal` (`FIXTURE_PHONE`),
+  `friends-consolidation` (`makeFriendWithSession`), `google-auth` (`GA_FIXTURE_PHONE`), `portal-appbar` and
+  `portal-session-boundary` (`nextBoundaryPhone()`, unique per friend — it is a swept field value there).
 - FOUR credential routes, never merged: `setup-credentials` (transition, so NO mode guard possible),
   `change-password` (400s without one), admin `reset-password`, and `set-password` (GA-T11 — the FIRST
   password, modern-mode-guarded, 409 once one exists, `username` honoured only while NULL, never a rename).

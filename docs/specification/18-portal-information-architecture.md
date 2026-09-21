@@ -932,7 +932,7 @@ login; no uid.
 | 3 | **Mobil *** | `input.inp#pp-profile-phone`, `type="tel"`, placeholder `+421 900 000 000` | **yes — NEW** (trimmed non-empty; Uložiť disabled otherwise) | 32 | **„Pre koordináciu objednávky a odovzdanie.“** |
 | — | *(module 21 inserts the WhatsApp opt-in `NeoCheckbox` row HERE, directly under Mobil — seam; nothing rendered by this module)* | | | | |
 | 4 | **E-mail** | `input.inp#pp-profile-email`, `type="email"`, no placeholder | no | 160 | **„Voliteľné. Packeta naň posiela informácie o zásielke; slúži aj na obnovenie prístupu.“** |
-| 5 | **Adresa Packeta výdajného miesta** | `input.inp#pp-profile-packeta`, placeholder `napr. Z-BOX Hlavná 15, Bratislava` | no | — (no server bound today; `OPEN:` add 160 — default add, mirrored) | **„Predvolená adresa pre doručenie Packetou (voliteľné).“** |
+| 5 | **Adresa Packeta výdajného miesta** | `input.inp#pp-profile-packeta`, placeholder `napr. Z-BOX Hlavná 15, Bratislava` | no | ~~— (no server bound today; `OPEN:` add 160)~~ **160 — RESOLVED (PO 2026-09-19) and SHIPPED by PI-T10** | **„Predvolená adresa pre doručenie Packetou (voliteľné).“** |
 | 6 | Zmeniť heslo fold | as shipped (03 UC-FL-009), `v-if="friend?.hasCredentials"` | | | |
 | 7 | Google section | as shipped (module 10) — untouched | | | |
 
@@ -953,11 +953,62 @@ requirement: `getByTestId('profile-uid')` count 0, the text „Jedinečné ID“
   an empty name stays the disabled button; ⚠ do not echo that server string into
   `FriendPortalSession.vue`.
 - A friend whose stored `phone` is empty can open the modal and see „Mobil *“ empty;
-  Uložiť is disabled until they fill it. `OPEN:` auto-open the profile modal on login for
-  friends without a phone — default **no**.
+  Uložiť is disabled until they fill it. ~~`OPEN:` auto-open the profile modal on login for
+  friends without a phone — default **no**.~~ **RESOLVED (PO 2026-09-19): YES, and SHIPPED
+  by PI-T10.** The rule as built:
+  - **The trigger is a LOGIN, not a session mount.** `beginSession({freshLogin:true})` is
+    passed by the THREE login paths only, exactly like `explainerPending`; neither restore
+    path passes it, so a reload and a deep link do **not** re-open it. ⚠ This DEPARTS from
+    the orchestrator's 2026-09-19 note („a reload therefore re-opens it"), on the wording
+    of clarification (c) itself („re-opens on the next **login**"), on §UC-PI-013's stated
+    boundary („a restore is not a login … must not be dragged into it by every reload")
+    and on a measured cost: a session-mount trigger exposes **53** spec files to an
+    unasked-for modal, a login trigger **16** — the population PI-T9 already contains.
+    Both halves are pinned in `portal-profile-modal.spec.js` (a login opens it, a reload
+    of that same session does not).
+  - **Dismissal is per session**: `profileAutoOpenArmed`, a plain `ref` on the session
+    side of `:key="sessionSeq"`, lowered when the modal opens. No persistence.
+  - **The decision waits on `hydrateCurrentFriend`**, because `phone` is in none of the
+    login payloads (PI-T9 pinned that set and PI-T10 did not extend it). The gate is
+    `hasOwnProperty(friend,'phone')` — a truthiness test would flash the modal open for
+    every friend during the hydrate window. A failed hydrate therefore never auto-opens.
+  - **Precedence is CODED here**, unlike PI-T9's explainer (learnings 10 §PI-T9.10): the
+    explainer is a VIEW that a modal paints over, this is a `NeoModal` that would STACK on
+    a gate the friend cannot dismiss. ⚠ **The predicate is a CLASS — „every surface that
+    raises itself without the friend asking" — not „the gates clarification (c) names".**
+    ⚠⚠ The list was wrong in review TWICE (round 1 missed the landing state modals, round 2
+    the voucher overlay), so it is **DERIVED, not maintained by hand**: walk every overlay
+    MOUNT in the component and ask „can it raise with NO friend action?" **SEVEN** can:
+    `forcedPasswordChange` (§UC-FL-012) · `showCredentialSetup` (§UC-FL-011) ·
+    `showGooglePrompt` (10 §UC-GA-006) · `explainerGate` (§UC-PI-013) ·
+    **`showClosedModal` / `showLockedModal`** (§UC-PI-006/007 — the landing STATE modals,
+    and the COMMON case: `closed` is the normal state for most of the month) ·
+    **`showVoucherModal`** (05 — `onMounted` awaits `checkPendingVouchers()`; its `z-50`
+    teleport sits UNDER the `z-index:200` modal layer, so the profile form paints over a
+    one-shot irreversible decision — measured `elementFromPoint` → `INPUT.inp`).
+    Plus **`showProfileModal`**, a term of a different kind: not self-raising but possibly
+    already OPEN, and `openProfileModal()` re-seeds every field, so a late hydrate would
+    wipe what the friend was typing.
+    ⚠ `portal-profile-modal.spec.js` PINS THE WALK IN SOURCE — every mount must be a term
+    or a documented non-term — so an EIGHTH self-raising overlay reds instead of stacking.
+    Only the 1st, 3rd and 4th are in clarification (c); each of the others is pinned by a
+    test that reds when that one term is deleted. NOT terms (each checked):
+    `showInviteModal` / `showBalancePayment` / the drawer need a click;
+    `showPasswordChange` / `showPasswordSet` are folds inside this modal;
+    `showMagicPrompt` is a `.banner`, not a modal.
+  - **The state modal WINS, and the profile modal queues behind it** — clarification (c)'s
+    „runs AFTER … resolve". Every term is a `computed`/`ref` that clears in place, so the
+    profile modal arrives the moment the friend dismisses whatever was there.
+- ⚠ **`#pp-profile-name` had no `maxlength` at all** until PI-T10 added the 120 this table
+  always claimed — measured, not assumed (the field-contract test reddened on
+  `maxlength=null` while phone/e-mail/Packeta were mirrored). CLAUDE.md's mirror rule had a
+  hole on the one field the table calls required.
 - The grep guard **holds and widens**: `grep -i prihlasovac frontend/src/views/AdminFriends.vue
   frontend/src/views/FriendPortalSession.vue` returns nothing (CLAUDE.md; pinned by
-  `portal-profile-modal.spec.js:424`). ⚠ „Login“ as a label is about `friends.username`
+  ~~`portal-profile-modal.spec.js:424`~~ **BY NAME, not by line — see item 10: the test is
+  „the grep guard itself: both views that edit `friends.name` are clean", and the DOM copy
+  sweep „the portal and the profile modal are free of /prihlasovac/i" beside it is the one
+  whose non-vacuity anchor PI-T10 had to retarget**). ⚠ „Login“ as a label is about `friends.username`
   (the real login) — the rule forbids calling `friends.name` a login, which nothing here does.
 - `E-mail` becomes required when Packeta is chosen at checkout — that rule belongs to the
   Spôsob prevzatia modal (04 UC-FO-010, R4.3 „same rule for friends“) and is **not**
@@ -1214,9 +1265,52 @@ nothing.
 Mobil, E-mail, Packeta); `Email` → `E-mail`; add „Mobil *“ required + `maxlength` +
 API 400 tests; the FUP-T20 grep test (424) and the display_name test (494) stay verbatim;
 `profile-uid` count 0 stays.
+⚠ **DONE by PI-T10 (2026-09-21), and THREE of this item's figures were wrong** — the
+sixth stale enumeration in this UC (items 2, 3 and 9 preceded it):
+- ⚠⚠ **THE LINE NUMBERS ARE THE WRONG UNIT AND PI-T10 PROVED IT TWICE.** The item said
+  424/494; the pre-edit tree said 467/538; the POST-edit tree — the one a reader opens —
+  says **518** and **596**, because this row's own +51/+58 lines moved them. A
+  re-measured line number is correct for exactly as long as it takes to land the diff.
+  **Cite test NAMES.** The two that stay verbatim are „the grep guard itself: both views
+  that edit `friends.name` are clean" and „the friend profile omits display_name; the
+  admin list still carries it", and both did.
+- ⚠ **The item names ONE test in that describe and there are TWO.** „the portal and the
+  profile modal are free of `/prihlasovac/i`" is a DOM copy sweep whose NON-VACUITY
+  anchor is `toMatch(/užívateľské meno/i)` — i.e. this item's own rename makes it red.
+  Retargeted to `/\blogin\b/i` plus an absence half. The SOURCE grep is the one that
+  stays verbatim, and it did.
+- „`.field-help` nth(0)/nth(1)" became the whole FIVE-entry sequence plus a count and an
+  input-order pin: an nth() pin that stops before the tail cannot see a field that moved
+  past it, which is the exact failure a reorder invites.
+- ⚠ **Unlisted consequence, found by running it:** the fixtures had to grow a PHONE.
+  Three of this file's describes save the form or count dialogs after a card login, and
+  a phone-less friend now meets the auto-open. `makeFriend`/`makePlainFriend` carry it,
+  and so does the „unhydrated modal" test, which is now also the pin for „before
+  hydration lands, this form cannot be saved at all".
 
 **11. `friends-consolidation.spec.js`:** the 14 `'Bez e-mailu…'` help-text pins → the §19
 E-mail help text; the `Mobil` label → `Mobil *`; item 2/4/5 sites.
+⚠ **DONE by PI-T10, and „14" counts the wrong thing.** The grep really did return 14
+occurrences — but only **ONE** was the friend-portal help text this item means, in
+„field contract: labels, .inp skin, maxlength mirror, type=email, placeholder policy,
+vy-form help". **ONE more** is the ADMIN modal's own hint, a DIFFERENT string („Bez
+e-mailu sa **priateľovi** nedá poslať…"), pinned in „exactly 4 writable fields, exact
+labels, maxlength mirrors the server bounds, truthful hints" — untouched. The other
+**twelve** are the admin contact-cell BADGE „Bez e-mailu", which §19 does not touch at
+all. Rewriting all fourteen would have deleted an admin surface's pins.
+⚠⚠ **AND THIS PARAGRAPH ORIGINALLY GAVE THREE LINE NUMBERS, TWO OF THEM ALREADY WRONG —
+three lines after item 10 records „cite test NAMES".** A lesson written down is not a
+lesson applied; the habit is the thing. (For the record, the grep now returns **15**:
+the retarget added an ABSENCE assertion for the string it replaced. A count restated in
+prose ages the moment the file changes, which is the same defect one level down.)
+⚠ Also unlisted: `getByLabel('Email')` → `'E-mail'` is REQUIRED (a substring matcher does
+not find „Email" inside „E-mail"), `getByLabel('Mobil')` → `'Mobil *'` is not (it would
+still match) but is done for truthfulness; the ADMIN-modal label list in „exactly 4
+writable fields, exact labels, maxlength mirrors the server bounds, truthful hints“ keeps
+„Mobil"/„Email" untouched; the API test „null clears" splits (the phone half is now a
+400 and reads the row back); the slow-hydrate race test's „B's fields are empty" becomes
+„B's own phone", a stricter statement of the same leak property; and every
+`makeFriendWithSession` friend now carries a `uniquePhone()`.
 
 **12. `guest-link.spec.js`:** :252 gate (item 2); :255 heading click (item 3); test
 „host can share straight from the portal cycle card“ (291–327) → „…from the landing

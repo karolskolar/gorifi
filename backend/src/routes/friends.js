@@ -58,6 +58,10 @@ const MAX_EMAIL_LENGTH = 160;
 // The admin note (`display_name`) had no precedent bound; 200 matches the modal's
 // practical size (11 §UC-FC-004).
 const MAX_NOTE_LENGTH = 200;
+// 18 §UC-PI-015 / PO 2026-09-19 — `friends.packeta_address`'s first bound. It is NOT
+// a member of `ADMIN_FRIEND_FIELDS` below, because no admin route writes the column:
+// its one writer in `backend/src` is `PATCH /:id/profile`, which enforces this there.
+const MAX_PACKETA_ADDRESS_LENGTH = 160;
 
 // Trimmed string; `undefined` when the field is absent; `''` when the field is an
 // explicit `null` — the shipped admin UI clears a field by sending `null`
@@ -1350,14 +1354,51 @@ router.patch('/:id/profile', (req, res) => {
   }
   const { phone, email } = contact.values;
 
+  // ⚠ 18 §UC-PI-015 (PI-T10) — MOBIL IS REQUIRED, AND ONLY ON THIS ROUTE.
+  //
+  // `validateAdminFriendFields` is SHARED with `POST /` and the admin `PATCH /:id`,
+  // where clearing a phone is shipped behaviour the admin still needs (a friend who
+  // asks for their number to be removed). So the required rule lives HERE, in the
+  // self-edit handler, and nowhere else — the admin half is pinned as still clearing
+  // in `portal-profile-modal.spec.js` beside this route's refusal.
+  //
+  // `''` is the ONLY blank the validator can hand back: `adminString` maps an explicit
+  // `null` to `''` and trims a string, so `{phone: null}` and `{phone: '   '}` both
+  // arrive here as `''`. A non-string already 400'd above with the type-guard message.
+  // Absent stays absent — a PATCH that does not mention the phone is not a clear.
+  if (phone !== undefined && !phone) {
+    return res.status(400).json({ error: 'Zadajte mobilné číslo', field: 'phone' });
+  }
+
+  // ⚠ 18 §UC-PI-015 + PO 2026-09-19 („Packeta address server bound = add 160") —
+  // the FIRST length rule this column has ever had, and it is deliberately NOT in
+  // `ADMIN_FRIEND_FIELDS`. `friends.packeta_address` has exactly ONE writer in
+  // `backend/src` (this statement; verified by walking every `UPDATE friends SET` and
+  // `INSERT INTO friends` — the admin routes never write it and neither creation site
+  // lists the column), so the bound has one home by construction. ⚠ `orders.packeta_address`
+  // is a DIFFERENT column with its own rule in `routes/orders.js`; do not fold them.
+  //
+  // ⚠ FUP-T12's decision is kept intact: a NON-STRING is still treated as an absent
+  // key (skipped write, rest of the PATCH applies), so the length rule can only fire
+  // on a real string. Checked BEFORE any write, like every other rule on this route.
+  if (typeof packeta_address === 'string' && packeta_address.trim().length > MAX_PACKETA_ADDRESS_LENGTH) {
+    return res.status(400).json({
+      error: `Adresa Packeta výdajného miesta je príliš dlhá (najviac ${MAX_PACKETA_ADDRESS_LENGTH} znakov)`,
+      field: 'packeta_address',
+    });
+  }
+
   if (name !== undefined) {
     db.prepare('UPDATE friends SET name = ? WHERE id = ?').run(name.trim(), friendId);
   }
 
   // ⚠ FUP-T12 — the OPTIONAL-FREE-TEXT case, and it is fixed differently from the
-  // required fields on purpose. `packeta_address` has NO rule of its own on this
+  // required fields on purpose. ~~`packeta_address` has NO rule of its own on this
   // route, so there is no existing message to refuse a non-string with and the row
-  // forbids inventing one. A non-string is therefore treated as if the KEY WERE
+  // forbids inventing one.~~ ⚠ AMENDED BY PI-T10: it now HAS a rule — the 160 bound a
+  // few lines up — but that rule deliberately does NOT change this decision, because a
+  // length message is not a type message and FUP-T12's reasoning was about the TYPE.
+  // A non-string is still treated as if the KEY WERE
   // ABSENT: the write is skipped and the rest of the PATCH still applies.
   //
   // ⚠ NOT `typeof x === 'string' ? x.trim() : null` — that answers 200 while silently

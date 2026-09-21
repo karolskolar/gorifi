@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { ackExplainer, expectLanding, logout, openProfile as portalOpenProfile, expectChromeName } from '../helpers/portal.js'
+import { ackExplainer, expectLanding, logout, menuGo, openProfile as portalOpenProfile, expectChromeName } from '../helpers/portal.js'
 import { readFileSync, existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -57,12 +57,23 @@ const admin = makeAdmin({
  * raises `must_change_password`, so the flag is cleared the way a real friend
  * clears it: one login + one change.
  */
-async function makeFriend(label) {
+/**
+ * ⚠ 18 §UC-PI-015 (PI-T10) — the fixture phone, and it is not decoration.
+ *
+ * „Mobil *" is REQUIRED from this row on: „Uložiť" is disabled while it is blank, and
+ * the profile modal AUTO-OPENS on a login for a friend whose stored phone is empty.
+ * Every fixture below that saves the form, or that wants a quiet screen, therefore
+ * provisions a phone. The tests that need an EMPTY one say so at the site and create
+ * their own friend — see the auto-open describe.
+ */
+const FIXTURE_PHONE = '0900 111 222'
+
+async function makeFriend(label, { phone = FIXTURE_PHONE, ack = true } = {}) {
   const u = uniq()
   const name = `RDFL6 ${label} ${u}`
   const username = `rdfl6${label}${u}`.toLowerCase().slice(0, 30)
 
-  const created = await admin('/api/friends', { method: 'post', data: { name } })
+  const created = await admin('/api/friends', { method: 'post', data: { name, phone } })
   expect(created.status(), 'friend create').toBe(201)
   const row = await created.json()
 
@@ -85,7 +96,10 @@ async function makeFriend(label) {
   // funguje", so a LOGIN THROUGH THE CARD would land on `/ako-to-funguje` — where the
   // hamburger is a back chevron, so every drawer helper below times out. One round
   // trip through the real route; see `helpers/portal.js ackExplainer`.
-  await ackExplainer(ctx, { id: row.id, token })
+  // ⚠ `ack: false` is the PI-T10 explainer-precedence fixture: a friend who has not
+  // acknowledged „Ako to funguje" is a FIRST-login friend, which is the one state in
+  // which §UC-PI-013's gate and §UC-PI-015's auto-open compete for the same login.
+  if (ack) await ackExplainer(ctx, { id: row.id, token })
 
   const profile = await ctx.get(`/api/friends/${row.id}/profile`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -104,9 +118,12 @@ async function makeFriend(label) {
  * transition mode auto-raises the credential-setup dialog on. They log in with
  * the shared password + the name dropdown.
  */
-async function makePlainFriend(label) {
+async function makePlainFriend(label, { phone = FIXTURE_PHONE } = {}) {
   const name = `RDFL6 ${label} ${uniq()}`
-  const created = await admin('/api/friends', { method: 'post', data: { name } })
+  // ⚠ 18 §UC-PI-015 (PI-T10) — a phone, for the same reason `makeFriend` has one: both
+  // callers of this helper log in THROUGH THE CARD, and a phone-less login auto-opens
+  // the profile modal. A test counting dialogs would then be counting that.
+  const created = await admin('/api/friends', { method: 'post', data: { name, phone } })
   expect(created.status(), 'friend create').toBe(201)
   const id = (await created.json()).id
 
@@ -123,7 +140,7 @@ async function makePlainFriend(label) {
   expect(auth.status(), 'legacy shared-password session for a credential-less friend').toBe(200)
   await ackExplainer(ctx, { id, token: (await auth.json()).token })
 
-  return { id, name }
+  return { id, name, phone }
 }
 
 test.beforeAll(async () => {
@@ -254,8 +271,28 @@ test.describe('Profile modal — structure on NeoModal (UC-FL-009)', () => {
     // field is REQUIRED, which is Packeta delivery.
     await expect(dialog.locator('#pp-profile-name')).toHaveClass(/\binp\b/)
     await expect(dialog.locator('#pp-profile-packeta')).toHaveAttribute('placeholder', 'napr. Z-BOX Hlavná 15, Bratislava')
-    await expect(dialog.locator('.field-help').nth(0)).toHaveText('Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia.')
-    await expect(dialog.locator('.field-help').nth(1)).toHaveText('Predvolená adresa pre doručenie Packetou (voliteľné).')
+
+    // ⚠ RETARGETED (case (a)) — 18 §UC-PI-019 item 10 / §UC-PI-015's field table.
+    // The two `.field-help` pins were nth(0)=Meno, nth(1)=Packeta; §19 reorders the
+    // body (Login → Meno → Mobil → E-mail → Packeta) and gives Login, Mobil and
+    // E-mail helps of their own. The PROTECTED PROPERTY is „the help texts are
+    // verbatim AND in the documented order", so the assertion grows into the whole
+    // sequence rather than being re-pointed at two of five — an nth() pin that does
+    // not cover the tail cannot see a field that moved past it.
+    await expect(dialog.locator('.field-help')).toHaveCount(5)
+    await expect(dialog.locator('.field-help').nth(0)).toHaveText('Meno, ktorým sa prihlasujete. Nemení sa.')
+    await expect(dialog.locator('.field-help').nth(1)).toHaveText('Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia.')
+    await expect(dialog.locator('.field-help').nth(2)).toHaveText('Pre koordináciu objednávky a odovzdanie.')
+    await expect(dialog.locator('.field-help').nth(3)).toHaveText('Voliteľné. Packeta naň posiela informácie o zásielke; slúži aj na obnovenie prístupu.')
+    await expect(dialog.locator('.field-help').nth(4)).toHaveText('Predvolená adresa pre doručenie Packetou (voliteľné).')
+    // The help the E-mail row REPLACES (§UC-PI-015 row 4) is really gone.
+    await expect(dialog).not.toContainText('Bez e-mailu vám nevieme poslať odkaz na obnovenie prístupu.')
+
+    // …and the INPUTS are in the same order as their helps. `.field-help` alone
+    // cannot see a field that moved without its help; this is the other half.
+    const fieldIds = await dialog.locator('.m-body input.inp').evaluateAll((els) => els.map((e) => e.id))
+    expect(fieldIds, JSON.stringify(fieldIds))
+      .toEqual(['pp-profile-name', 'pp-profile-phone', 'pp-profile-email', 'pp-profile-packeta'])
 
     // The fold's separator: 2px ink-at-12% rule with 12px of air under it.
     const fold = dialog.getByRole('button', { name: 'Zmeniť heslo' })
@@ -289,11 +326,25 @@ test.describe('Profile modal — structure on NeoModal (UC-FL-009)', () => {
     // exists for — programmatic label association on a non-input — is still
     // asserted, on the box that survives.
     await expect(dialog.getByLabel('Jedinečné ID')).toHaveCount(0)
-    await expect(dialog.getByLabel('Užívateľské meno')).toHaveText(friend.username)
+    // ⚠ RETARGETED (case (a)) — 18 §UC-PI-019 item 10: the read-only row's label is
+    // „Login" since PI-T10 (§UC-PI-015 row 1). The property this line exists for —
+    // programmatic label association on a NON-INPUT, which `<label for>` cannot do —
+    // is untouched; only the string moved.
+    await expect(dialog.getByLabel('Login')).toHaveText(friend.username)
+    // ⚠ NON-VACUITY, and it is the half that makes the rename real: „Užívateľské meno"
+    // survives on the LOGIN SCREEN (03 §UC-FL-002) and in both username-SETUP dialogs
+    // in this same component, so the rename is only observable as an absence INSIDE
+    // this dialog. `getByLabel` substring-matches, so this also proves no setup label
+    // is currently rendered here to collide with it.
+    await expect(dialog.getByLabel('Užívateľské meno')).toHaveCount(0)
 
     // ⚠ RETARGETED (case (a), FUP-T20): the label was `Prihlasovacie meno *`
     // while the field writes `friends.name`. Same field, truthful label.
     await expect(dialog.getByLabel('Meno a priezvisko *')).toHaveValue(friend.name)
+    // ⚠ RETARGETED (case (a)) — §UC-PI-015 rows 3/4: „Mobil" gained its star and
+    // „Email" became „E-mail" (a different string to a substring matcher).
+    await expect(dialog.getByLabel('Mobil *')).toHaveValue(FIXTURE_PHONE)
+    await expect(dialog.getByLabel('E-mail')).toHaveValue('')
     await expect(dialog.getByLabel('Adresa Packeta výdajného miesta')).toHaveValue('')
 
     await dialog.getByRole('button', { name: 'Zmeniť heslo' }).click()
@@ -505,7 +556,14 @@ test.describe('⚠ FUP-T20 — no copy on the friend surface claims the name is 
     // (the standing CLAUDE.md trap). The absence assertions above are already
     // case-insensitive regexes, so they are unaffected.
     expect(modalCopy).toMatch(/meno a priezvisko \*/i)
-    expect(modalCopy).toMatch(/užívateľské meno/i)
+    // ⚠ RETARGETED (case (a)) — 18 §UC-PI-015 row 1 renames THIS row's label to
+    // „Login". The line is a NON-VACUITY anchor („the sweep really read the modal"),
+    // not a claim about the string, so it follows the label. ⚠ The absence half above
+    // is what the test is for and is untouched — and the new help line („Meno, ktorým
+    // sa prihlasujete. Nemení sa.") is precisely the wording that keeps it green: a
+    // VERB, never the guarded adjective.
+    expect(modalCopy).toMatch(/\blogin\b/i)
+    expect(modalCopy, 'the renamed row really replaced the old label').not.toMatch(/užívateľské meno/i)
     // …and the modal is the one that used to carry the claim, on the field that
     // writes `friends.name`.
     await expect(dialog.getByLabel('Meno a priezvisko *')).toHaveValue(friend.name)
@@ -690,12 +748,24 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
     // The name still prefills — it comes from the stored session, not the GET.
     await expect(dialog.getByLabel('Meno a priezvisko *')).toHaveValue(who.name)
 
+    // ⚠ RETARGETED (case (a)) — 18 §UC-PI-015 row 3 made „Mobil *" required, and
+    // hydration is what would have prefilled it, so an unhydrated modal now opens
+    // with „Uložiť" DISABLED. That is a real consequence of the row and it is pinned
+    // here rather than left implied: before hydration lands, this form cannot be
+    // saved at all until the friend types a phone.
+    await expect(dialog.getByLabel('Mobil *')).toHaveValue('')
+    await expect(dialog.getByRole('button', { name: 'Uložiť' })).toBeDisabled()
+    await dialog.getByLabel('Mobil *').fill(FIXTURE_PHONE)
+
     await dialog.getByRole('button', { name: 'Uložiť' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
-    // On the wire: an untouched, unhydrated field is simply absent.
+    // On the wire: an untouched, unhydrated field is simply absent. ⚠ THE PROTECTED
+    // PROPERTY IS THE ABSENCE OF `packeta_address`, not the exact key set — the phone
+    // the friend just typed IS a change and travels, which is the delta rule working.
     expect(bodies.length, JSON.stringify(bodies)).toBe(1)
-    expect(bodies[0]).toEqual({ name: who.name })
+    expect(bodies[0]).toEqual({ name: who.name, phone: FIXTURE_PHONE })
+    expect(bodies[0], 'an unhydrated Packeta field must not travel').not.toHaveProperty('packeta_address')
 
     // …and where it actually matters — the stored address survived the save.
     const after = await ctx.get(`/api/friends/${who.id}/profile`, {
@@ -715,6 +785,79 @@ test.describe('saveProfile side-effects (unchanged behavior, new surface)', () =
     await expect(dialog.getByRole('button', { name: 'Uložiť' })).toBeDisabled()
     await dialog.getByLabel('Meno a priezvisko *').fill(friend.name)
     await expect(dialog.getByRole('button', { name: 'Uložiť' })).toBeEnabled()
+  })
+
+  // 18 §UC-PI-015 row 3 (PI-T10) — the SECOND required field, and its client half.
+  test('⚠ "Uložiť" is disabled while the required Mobil is blank — independently of the name', async ({ page }) => {
+    await signIn(page)
+    await openPortal(page)
+    const dialog = await openProfile(page)
+    const save = dialog.getByRole('button', { name: 'Uložiť' })
+
+    // Non-vacuity: the name is fine throughout, so only the phone can be the reason.
+    await expect(dialog.getByLabel('Meno a priezvisko *')).toHaveValue(friend.name)
+    await expect(save).toBeEnabled()
+
+    await dialog.getByLabel('Mobil *').fill('   ')
+    await expect(save, 'a whitespace-only phone is blank').toBeDisabled()
+    await dialog.getByLabel('Mobil *').fill('')
+    await expect(save).toBeDisabled()
+    await dialog.getByLabel('Mobil *').fill('0900 999 888')
+    await expect(save).toBeEnabled()
+  })
+
+  // ⚠ A `disabled` attribute does not stop a DISPATCHED click reaching the handler
+  // (CLAUDE.md), so `saveProfile()` carries the same two terms in JS. Without the JS
+  // half this dispatch would PATCH a blank phone and take the server's 400 into the
+  // banner; with it, nothing leaves the page at all.
+  test('⚠ a dispatched click on the disabled "Uložiť" sends no request', async ({ page }) => {
+    await signIn(page)
+    await openPortal(page)
+
+    const bodies = []
+    await page.route('**/api/friends/*/profile', async (route) => {
+      if (route.request().method() === 'PATCH') bodies.push(route.request().postDataJSON())
+      await route.continue()
+    })
+
+    const dialog = await openProfile(page)
+    await dialog.getByLabel('Mobil *').fill('')
+    await dialog.getByRole('button', { name: 'Uložiť' }).dispatchEvent('click')
+    // The modal is still open (nothing succeeded) and no PATCH was made.
+    await expect(dialog.locator('.m-title')).toHaveText('Upraviť profil')
+    expect(bodies, JSON.stringify(bodies)).toEqual([])
+    // Non-vacuity for the route interception itself: a real save DOES record one.
+    await dialog.getByLabel('Mobil *').fill('0900 777 666')
+    await dialog.getByRole('button', { name: 'Uložiť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    expect(bodies.length, JSON.stringify(bodies)).toBe(1)
+  })
+
+  // 18 §UC-PI-015 — the `maxlength` mirror (the GSO-T3 convention: every server bound
+  // is an attribute in the UI). ⚠ `pp-profile-packeta`'s 160 is NEW with PI-T10 and is
+  // the mirror of this row's new server rule.
+  test('⚠ the field contract: types, placeholders and the maxlength mirror', async ({ page }) => {
+    await signIn(page)
+    await openPortal(page)
+    const dialog = await openProfile(page)
+
+    const phone = dialog.getByLabel('Mobil *')
+    await expect(phone).toHaveAttribute('type', 'tel')
+    await expect(phone).toHaveAttribute('maxlength', '32')
+    await expect(phone).toHaveAttribute('placeholder', '+421 900 000 000')
+
+    const email = dialog.getByLabel('E-mail')
+    await expect(email).toHaveAttribute('type', 'email')
+    await expect(email).toHaveAttribute('maxlength', '160')
+    // NO placeholder on E-mail (the 2026-08-10 no-placeholder decision).
+    await expect(email).not.toHaveAttribute('placeholder', /./)
+
+    const packeta = dialog.getByLabel('Adresa Packeta výdajného miesta')
+    await expect(packeta).toHaveAttribute('maxlength', '160')
+    await expect(packeta).toHaveAttribute('placeholder', 'napr. Z-BOX Hlavná 15, Bratislava')
+
+    // Name keeps its 120 (MAX_NAME_LENGTH), so the mirror is complete.
+    await expect(dialog.getByLabel('Meno a priezvisko *')).toHaveAttribute('maxlength', '120')
   })
 
   test('⚠ a failed save renders .banner.danger.slim IN THE MODAL — and exactly once', async ({ page }) => {
@@ -1200,5 +1343,573 @@ test.describe('Admin invariance', () => {
       return bad.filter((sel) => document.querySelector(sel) !== null)
     })
     expect(leaked, JSON.stringify(leaked)).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-015 (PI-T10) — THE SERVER HALF: `PATCH /api/friends/:id/profile`
+// ---------------------------------------------------------------------------
+
+test.describe('⚠ PI-T10 — the profile route: Mobil required HERE ONLY, Packeta bounded at 160', () => {
+  /** The friend's own PATCH, with their own session — the only identity this route takes. */
+  function ownPatch(who, data) {
+    return ctx.patch(`/api/friends/${who.id}/profile`, {
+      headers: { Authorization: `Bearer ${who.token}` },
+      data,
+      timeout: TIMEOUT,
+    })
+  }
+
+  async function readRow(who) {
+    const res = await ctx.get(`/api/friends/${who.id}/profile`, {
+      headers: { Authorization: `Bearer ${who.token}` },
+      timeout: TIMEOUT,
+    })
+    expect(res.status()).toBe(200)
+    return res.json()
+  }
+
+  test('a blank phone is 400 { field: "phone" } — and the row is unchanged', async () => {
+    const who = await makeFriend('reqphone')
+    expect((await readRow(who)).phone, 'fixture precondition').toBe(FIXTURE_PHONE)
+
+    for (const blank of ['', '   ', null]) {
+      const res = await ownPatch(who, { phone: blank })
+      expect(res.status(), `phone=${JSON.stringify(blank)}`).toBe(400)
+      expect(await res.json()).toEqual({ error: 'Zadajte mobilné číslo', field: 'phone' })
+    }
+
+    // ⚠ EVERY REFUSAL TEST READS THE ROW BACK: a 400 that wrote anyway is
+    // indistinguishable from one that did not, from the status line alone.
+    expect((await readRow(who)).phone).toBe(FIXTURE_PHONE)
+  })
+
+  test('⚠ the refusal is SCOPED to this route: the ADMIN PATCH may still clear a phone', async () => {
+    const who = await makeFriend('adminclear')
+    // The shared validator (`validateAdminFriendFields`) is the one both routes use,
+    // so this is the assertion that the required rule did NOT go into it.
+    const res = await admin(`/api/friends/${who.id}`, { method: 'patch', data: { phone: null } })
+    expect(res.status(), 'the admin clears a phone').toBe(200)
+    expect((await readRow(who)).phone, 'and it really cleared').toBeNull()
+  })
+
+  test('⚠ a whole PATCH is refused by a blank phone — the name beside it is not written', async () => {
+    const who = await makeFriend('atomic')
+    const res = await ownPatch(who, { name: `${who.name} NOPE`, phone: '' })
+    expect(res.status()).toBe(400)
+    expect((await res.json()).field).toBe('phone')
+    const row = await readRow(who)
+    expect(row.name, 'validation runs before any write').toBe(who.name)
+    expect(row.phone).toBe(FIXTURE_PHONE)
+  })
+
+  test('an ABSENT phone is not a clear — a name-only PATCH still 200s', async () => {
+    const who = await makeFriend('absent')
+    const renamed = `${who.name} OK`
+    expect((await ownPatch(who, { name: renamed })).status()).toBe(200)
+    const row = await readRow(who)
+    expect(row.name).toBe(renamed)
+    expect(row.phone).toBe(FIXTURE_PHONE)
+  })
+
+  test('packeta_address: 160 passes, 161 is a 400 { field: "packeta_address" }, and the row is unchanged', async () => {
+    const who = await makeFriend('pktbound')
+    const ok = 'Z'.repeat(160)
+    expect((await ownPatch(who, { packeta_address: ok })).status(), '160 is allowed').toBe(200)
+    expect((await readRow(who)).packeta_address).toBe(ok)
+
+    const res = await ownPatch(who, { packeta_address: 'Z'.repeat(161) })
+    expect(res.status()).toBe(400)
+    expect(await res.json()).toEqual({
+      error: 'Adresa Packeta výdajného miesta je príliš dlhá (najviac 160 znakov)',
+      field: 'packeta_address',
+    })
+    expect((await readRow(who)).packeta_address, 'the stored address survived the refusal').toBe(ok)
+
+    // ⚠ The bound is on the TRIMMED value, like every other rule on this route.
+    expect((await ownPatch(who, { packeta_address: `  ${ok}  ` })).status(), 'trimmed to 160').toBe(200)
+  })
+
+  test('⚠ FUP-T12 survives: a NON-STRING packeta_address is still treated as an absent key', async () => {
+    const who = await makeFriend('pkt12')
+    const stored = 'Z-BOX FUP12, Bratislava'
+    expect((await ownPatch(who, { packeta_address: stored })).status()).toBe(200)
+
+    // A number/object/array must not 500, must not wipe the stored address, and must
+    // not be measured against the new length rule either.
+    for (const bad of [123, {}, [], true]) {
+      const res = await ownPatch(who, { name: who.name, packeta_address: bad })
+      expect(res.status(), `packeta_address=${JSON.stringify(bad)}`).toBe(200)
+    }
+    expect((await readRow(who)).packeta_address, 'never wiped').toBe(stored)
+
+    // `null` still CLEARS — the shipped convention the FUP-T12 comment protects.
+    expect((await ownPatch(who, { packeta_address: null })).status()).toBe(200)
+    expect((await readRow(who)).packeta_address).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 18 §UC-PI-015 + PO decision 2026-09-19 („Profile modal auto-open = YES") and
+// orchestrator clarification (c) — THE AUTO-OPEN (PI-T10)
+// ---------------------------------------------------------------------------
+//
+// The rule, in full: a friend whose STORED `phone` is empty meets the profile modal
+// by itself, AFTER the forced-password gate, the Google prompt and PI-T9's explainer
+// gate have resolved; it is dismissible PER SESSION and comes back at the NEXT LOGIN
+// until Mobil is filled.
+//
+// ⚠⚠ „NEXT LOGIN", NOT „NEXT SESSION MOUNT", AND THE DIFFERENCE IS PINNED BELOW.
+// `FriendPortal.vue` restores a stored session on EVERY document load, so a trigger
+// that fired on the mount would put this modal in front of a phone-less friend on
+// every reload and every deep link they open. §UC-PI-013 rejected exactly that for the
+// explainer („must not be dragged into it by every reload, only by a fresh login") and
+// `beginSession`'s `freshLogin` flag inherits the boundary verbatim: the three LOGIN
+// paths pass it, neither restore path does. Both halves are asserted here — a login
+// opens it, a reload of that same session does not.
+
+test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled', () => {
+  const PROFILE_TITLE = 'Upraviť profil'
+
+  /** A friend with a username and a known password, and NO stored phone. */
+  function makePhonelessFriend(label) {
+    return makeFriend(label, { phone: null })
+  }
+
+  /**
+   * The MODERN login card — a real login, which is what arms the auto-open.
+   * (`signIn()` above seeds `localStorage` instead: that is a RESTORE, and the tests
+   * below rely on the two being different.)
+   */
+  async function cardLogin(page, who, { password = PASSWORD } = {}) {
+    await muteGuestCounts(page)
+    await page.route('**/friends/auth-mode', (route) => route.fulfill({ json: { authMode: 'modern' } }))
+    await page.goto('/')
+    await page.getByLabel(/^užívateľské meno$/i).fill(who.username)
+    await page.getByLabel(/^heslo$/i).fill(password)
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+    await expectLanding(page)
+  }
+
+  test('a LOGIN by a friend with no stored phone opens it by itself', async ({ page }) => {
+    const who = await makePhonelessFriend('auto')
+    await cardLogin(page, who)
+
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.locator('.m-title')).toHaveText(PROFILE_TITLE)
+    // It is THE profile modal, opened on the field the rule exists for.
+    await expect(dialog.getByLabel('Mobil *')).toHaveValue('')
+    await expect(dialog.getByRole('button', { name: 'Uložiť' })).toBeDisabled()
+    // ⚠ Nothing in this test opened the drawer — the modal arrived on its own.
+    await expect(page.getByRole('dialog')).toHaveCount(1)
+  })
+
+  test('⚠ a friend WHO HAS a phone is never interrupted', async ({ page }) => {
+    // The non-vacuity counterpart of the test above: same login, same screen, and the
+    // only difference is the stored column.
+    const who = await makeFriend('autoquiet')
+    await cardLogin(page, who)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    // …and it stays shut: the landing is genuinely interactive.
+    await expect(page.getByTestId('portal-landing')).toBeVisible()
+  })
+
+  test('⚠ dismissing it is PER SESSION — it does not come back in the same session', async ({ page }) => {
+    const who = await makePhonelessFriend('dismiss')
+    await cardLogin(page, who)
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.locator('.m-title')).toHaveText(PROFILE_TITLE)
+    await dialog.getByRole('button', { name: 'Zrušiť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    // Walking the portal in the same session must not re-raise it — the drawer is
+    // reachable, which also proves nothing is left covering the appbar.
+    await menuGo(page, 'Zostatok a platby')
+    await expect(page).toHaveURL(/\/zostatok$/)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await menuGo(page, 'Aktuálna ponuka')
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+  })
+
+  test('⚠ a RESTORE is not a login: a reload does NOT re-open it', async ({ page }) => {
+    const who = await makePhonelessFriend('restore')
+    await cardLogin(page, who)
+    await expect(page.getByRole('dialog').locator('.m-title')).toHaveText(PROFILE_TITLE)
+    await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    // The login wrote `gorifi_friend_auth`, so this reload restores the session —
+    // the same path a deep link takes. ⚠ NO `signIn()` here: its `addInitScript`
+    // clears localStorage on EVERY navigation, which would destroy the very session
+    // this test is reloading (the PI-T4 trap).
+    await page.reload()
+    await expectLanding(page)
+    await expect(page.getByRole('dialog'), 'a restore must not auto-open it').toHaveCount(0)
+    // Non-vacuity: the phone really is still empty, so the only reason it stayed shut
+    // is that a restore is not a login.
+    const row = await ctx.get(`/api/friends/${who.id}/profile`, {
+      headers: { Authorization: `Bearer ${who.token}` },
+      timeout: TIMEOUT,
+    })
+    expect((await row.json()).phone).toBeNull()
+  })
+
+  test('⚠ it comes back at the NEXT login — and stops once Mobil is saved', async ({ page }) => {
+    const who = await makePhonelessFriend('next')
+    await cardLogin(page, who)
+    await page.getByRole('dialog').getByRole('button', { name: 'Zrušiť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    // Second login, same browser: still no phone, so it is there again.
+    await logout(page)
+    await page.getByLabel(/^užívateľské meno$/i).fill(who.username)
+    await page.getByLabel(/^heslo$/i).fill(PASSWORD)
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+    await expectLanding(page)
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.locator('.m-title')).toHaveText(PROFILE_TITLE)
+
+    // Fill it in and save — the one thing that ends the prompt for good.
+    await dialog.getByLabel('Mobil *').fill('0911 654 321')
+    await dialog.getByRole('button', { name: 'Uložiť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    // Third login: quiet.
+    await logout(page)
+    await page.getByLabel(/^užívateľské meno$/i).fill(who.username)
+    await page.getByLabel(/^heslo$/i).fill(PASSWORD)
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+    await expectLanding(page)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+  })
+
+  // ⚠⚠ PRECEDENCE. Unlike PI-T9's explainer (a VIEW, which a modal simply paints
+  // over), this is a `NeoModal`: opened while the forced-password gate is up it would
+  // STACK on a gate the friend cannot dismiss. Both halves are asserted in one
+  // document — the gate is alone while it is up, and the profile modal arrives the
+  // moment it is satisfied — because either half alone passes on the wrong build.
+  test('⚠ it waits for the forced-password gate, and arrives when that gate clears', async ({ page }) => {
+    const who = await makePhonelessFriend('gate')
+    // An admin reset raises `must_change_password` — UC-FL-012's gate.
+    expect((await admin(`/api/friends/${who.id}/reset-password`, { method: 'put', data: { password: 'tempPass2' } })).status()).toBe(200)
+
+    await cardLogin(page, who, { password: 'tempPass2' })
+
+    const gate = page.getByTestId('forced-password-change')
+    await expect(gate).toBeVisible()
+    // EXACTLY ONE dialog while the gate is up: the profile modal is not stacked on it.
+    await expect(page.getByRole('dialog')).toHaveCount(1)
+    await expect(page.locator('.modal-layer')).toHaveCount(1)
+    await expect(page.getByRole('dialog')).not.toContainText(PROFILE_TITLE)
+
+    // ⚠ RD-FL-2's strict-mode trap: 'Nové heslo' substring-matches 'Potvrdiť nové heslo'.
+    await gate.getByLabel(/^nové heslo$/i).fill('friendChosen9')
+    await gate.getByLabel(/^potvrdiť nové heslo$/i).fill('friendChosen9')
+    await gate.getByRole('button', { name: /Nastaviť heslo a pokračovať/ }).click()
+    await expect(gate).toBeHidden()
+
+    // …and now it is this friend's turn to be asked for a phone.
+    await expect(page.getByRole('dialog').locator('.m-title')).toHaveText(PROFILE_TITLE)
+  })
+
+  // ⚠⚠ THE FOURTH PRECEDENCE TERM, AND IT HAD NO TEST UNTIL A MUTATION SAID SO.
+  // Removing `!explainerGate.value` from the trigger reddened NOTHING: every fixture in
+  // `portal-explainer.spec.js` carries a phone, so the two rules never met. They meet on
+  // exactly one friend — a FIRST login with no stored phone — and that is this test.
+  // §UC-PI-013 owns that login: the explainer is a VIEW the friend must be shown, and a
+  // modal over it would be the first thing they see instead.
+  test('⚠ it waits for the FIRST-LOGIN explainer gate, and arrives when that gate clears', async ({ page }) => {
+    const who = await makeFriend('gatex', { phone: null, ack: false })
+    await cardLogin(page, who)
+
+    // The gate won: the explainer view, and NO modal over it.
+    await expect(page).toHaveURL(/\/ako-to-funguje$/)
+    await expect(page.getByTestId('portal-landing')).toHaveAttribute('data-view', 'explainer')
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    // Answer it the way a friend does…
+    await page.getByTestId('explainer-done').click()
+    await expect(page).toHaveURL(/\/$/)
+
+    // …and only now is it this friend's turn to be asked for a phone.
+    await expect(page.getByRole('dialog').locator('.m-title')).toHaveText(PROFILE_TITLE)
+    await expect(page.getByRole('dialog').getByLabel('Mobil *')).toHaveValue('')
+  })
+
+  // ⚠ THE TERM CLARIFICATION (c) DOES NOT NAME. `showCredentialSetup` is the
+  // transition-mode credential dialog (03 §UC-FL-011) — another non-dismissable
+  // `NeoModal` raised straight from the handshake — so without it in the trigger this
+  // modal stacks on it, scrim over scrim, for a credential-less friend with no phone.
+  test('⚠ it waits for the AUTO-RAISED credential-setup dialog too', async ({ page }) => {
+    const who = await makePlainFriend('setupgate', { phone: null })
+
+    await muteGuestCounts(page)
+    await page.route('**/friends/auth-mode', (route) => route.fulfill({ json: { authMode: 'transition' } }))
+    await page.route('**/api/friends/login-list', (route) =>
+      route.fulfill({ json: [{ id: who.id, name: who.name, hasCredentials: false }] })
+    )
+    await page.addInitScript(() => localStorage.clear())
+    await page.goto('/')
+    await page.getByRole('combobox').click()
+    await page.getByRole('option', { name: who.name }).click()
+    await page.getByPlaceholder('Zadajte heslo').fill(FRIENDS_PASSWORD)
+    await page.getByRole('button', { name: 'Prihlásiť sa' }).click()
+
+    const setup = page.getByRole('dialog')
+    await expect(setup.getByRole('heading', { name: 'Nastavte si osobné prihlásenie' })).toBeVisible()
+    // ALONE while it is up.
+    await expect(page.getByRole('dialog')).toHaveCount(1)
+    await expect(page.locator('.modal-layer')).toHaveCount(1)
+    await expect(setup).not.toContainText(PROFILE_TITLE)
+
+    await setup.getByRole('button', { name: 'Neskôr' }).click()
+
+    // …and now the profile modal takes its turn.
+    await expect(page.getByRole('dialog').locator('.m-title')).toHaveText(PROFILE_TITLE)
+    await expect(page.getByRole('dialog').getByLabel('Mobil *')).toHaveValue('')
+  })
+
+  // ⚠⚠ THE REGRESSION REVIEW FOUND, AND IT IS THE COMMON CASE — not an edge.
+  //
+  // PI-T10's first pass enumerated „the gates clarification (c) names, plus
+  // `showCredentialSetup`" and stopped. The landing's own STATE modals (§UC-PI-006/007)
+  // raise themselves with no friend action too, and `closed` is the normal state for
+  // most of the month — so a phone-less friend logging in then got BOTH, measured as
+  // `dialogs=2 modal-layers=2`. The enumeration was narrower than the class its own
+  // source comment names („every surface that raises itself without the friend asking").
+  //
+  // ⚠ THE ORDER IS „STATE MODAL FIRST": clarification (c) says the auto-open runs AFTER
+  // the other surfaces resolve, and the state modal is the landing explaining why there
+  // is nothing to order. Both halves are asserted in ONE document — alone while it is
+  // up, and arriving the moment it is dismissed — because either half alone passes on
+  // the wrong build.
+  const closedCycle = {
+    id: 90_001, name: 'PI-T10 Closed Stub', status: 'completed',
+    created_at: '2026-09-01 10:00:00', total_friends: 0, expected_date: null,
+    type: 'coffee', plan_note: null, opens_at: null, closes_at: null, stage: null,
+    parcel_enabled: 0, parcel_fee: 0, hasOrder: false, orderTotal: 0, orderStatus: null,
+    orderKilos: 0, orderItemCount: 0, orderPickupName: null, orderPacketa: false,
+    orderPaid: false, orderHandedOver: false,
+  }
+
+  test('⚠ it waits for the CLOSED landing\'s state modal — never two modals at once', async ({ page }) => {
+    const who = await makePhonelessFriend('closed')
+    // One `completed` round and nothing else ⇒ `resolveLanding()` reports `closed`,
+    // which auto-mounts `LandingStateModal` (§UC-PI-006).
+    await page.route('**/api/friends/cycles*', (route) => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify([closedCycle]),
+    }))
+    await cardLogin(page, who)
+
+    // EXACTLY ONE dialog, and it is the state modal — not the profile form.
+    await expect(page.getByRole('dialog')).toHaveCount(1)
+    await expect(page.locator('.modal-layer')).toHaveCount(1)
+    const state = page.getByRole('dialog')
+    await expect(state.locator('.m-title')).toHaveText('Objednávky sú zatvorené')
+    await expect(state).not.toContainText(PROFILE_TITLE)
+
+    // Dismiss it the way a friend does, and the profile modal takes its turn — the
+    // terms are computeds, so this is a queue and not a race.
+    await state.getByRole('button', { name: 'Prezrieť ponuku' }).click()
+    await expect(page.getByRole('dialog').locator('.m-title')).toHaveText(PROFILE_TITLE)
+    await expect(page.getByRole('dialog')).toHaveCount(1)
+    await expect(page.getByRole('dialog').getByLabel('Mobil *')).toHaveValue('')
+  })
+
+  // ⚠ THE LOCKED HALF, and it exists because M16 removed BOTH terms at once and the
+  // `closed` test alone could not tell them apart. Deleting `!showLockedModal.value` by
+  // itself would otherwise be a silent mutation — this row's own standing lesson.
+  // §UC-PI-007's „locked, NO own order" branch is the same treatment with another title.
+  test('⚠ …and for the LOCKED landing\'s state modal, which is a separate term', async ({ page }) => {
+    const who = await makePhonelessFriend('locked')
+    await page.route('**/api/friends/cycles*', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      // `locked` + `hasOrder: false` is the ONE discriminator for this modal: a friend
+      // who ordered gets the own-order card and never sees it.
+      body: JSON.stringify([{ ...closedCycle, id: 90_002, status: 'locked', hasOrder: false }]),
+    }))
+    await cardLogin(page, who)
+
+    await expect(page.getByRole('dialog')).toHaveCount(1)
+    const state = page.getByRole('dialog')
+    await expect(state.locator('.m-title')).toHaveText('Objednávky sú uzamknuté')
+    await expect(state).not.toContainText(PROFILE_TITLE)
+
+    await state.getByRole('button', { name: 'Prezrieť ponuku' }).click()
+    await expect(page.getByRole('dialog').locator('.m-title')).toHaveText(PROFILE_TITLE)
+    await expect(page.getByRole('dialog')).toHaveCount(1)
+  })
+
+  // ⚠⚠ THE PIN THAT REPLACES A HAND-KEPT LIST, and it exists because the list was wrong
+  // TWICE: round 1 missed the two landing STATE modals, round 2 missed the VOUCHER
+  // overlay — each time under a comment that states the predicate as a CLASS („every
+  // surface that raises itself without the friend asking") and then enumerates. A class
+  // rule with a complete-LOOKING list under it is worse than no list.
+  //
+  // So this walks the SOURCE the way the derivation says to: every overlay MOUNT in
+  // `FriendPortalSession.vue` — `<NeoModal>`, `<LandingStateModal>`, `<NeoDrawer>` and
+  // the teleported `fixed inset-0` voucher div — must be EITHER a term of the auto-open
+  // trigger OR in the exclusion list below WITH a reason. An eighth self-raising overlay
+  // therefore reds here instead of silently stacking on the profile form.
+  test('⚠ SOURCE: every overlay mount is either a trigger term or a documented non-term', () => {
+    const file = resolve(HERE, '..', '..', 'frontend', 'src', 'views', 'FriendPortalSession.vue')
+    expect(existsSync(file), file).toBe(true)
+    const src = readFileSync(file, 'utf8')
+    // Readability gate (the PI-T3 rule): a regex that silently matched nothing would
+    // make every assertion below vacuous.
+    expect(src.length, 'the component source is readable').toBeGreaterThan(50_000)
+
+    const mounts = [
+      ...[...src.matchAll(/<(?:NeoModal|LandingStateModal|NeoDrawer)\b[^>]*?\sv-if="([^"]+)"/gs)].map((m) => m[1]),
+      ...[...src.matchAll(/<div\s+v-if="([^"]+)"[^>]*class="fixed inset-0[^"]*"/g)].map((m) => m[1]),
+    ].map((expr) => expr.trim().split(/\s*&&\s*/)[0].replace(/^!/, ''))
+    expect(mounts.length, 'the mount walk found nothing — the regex broke').toBeGreaterThanOrEqual(9)
+
+    // The trigger's own negated terms, harvested from source. Line comments are stripped
+    // first so a term merely NAMED in the prose above cannot count as one.
+    const getter = src.match(/\(\)\s*=>\s*profileAutoOpenArmed\.value([\s\S]*?),\n\s*\(ready\)/)
+    expect(getter, 'the auto-open trigger was not found — did it move?').toBeTruthy()
+    const code = getter[1].split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+    const terms = [...code.matchAll(/&&\s*!\s*([A-Za-z_$][\w$]*)\.value/g)].map((m) => m[1])
+
+    // ⚠ EVERY exclusion carries its reason. „Needs a friend's click" and „is not an
+    // overlay at all" are the only two admissible ones; anything else is a term.
+    const NOT_SELF_RAISING = {
+      showInviteModal: 'the „Pozvať" chip / drawer row — a friend clicks it',
+      menuOpen: 'the hamburger — a friend clicks it',
+    }
+
+    const unaccounted = mounts.filter((id) => !terms.includes(id) && !(id in NOT_SELF_RAISING))
+    expect(
+      unaccounted,
+      `overlay mount(s) that are neither an auto-open trigger term nor a documented ` +
+      `non-term: ${JSON.stringify(unaccounted)}. If one of these can raise itself with ` +
+      `no friend action it MUST join the trigger (18 §UC-PI-015); if it cannot, add it ` +
+      `to NOT_SELF_RAISING with its reason.`
+    ).toEqual([])
+
+    // …and the other direction: the seven self-raising surfaces really are terms, so a
+    // deleted term reds here too and not only in its behaviour test.
+    for (const id of [
+      'forcedPasswordChange', 'showCredentialSetup', 'showGooglePrompt', 'explainerGate',
+      'showClosedModal', 'showLockedModal', 'showVoucherModal',
+    ]) {
+      expect(terms, `${id} must be a term of the auto-open trigger`).toContain(id)
+    }
+    // ⚠ `showProfileModal` is a term for a DIFFERENT reason — not „it raises itself" but
+    // „it may already be open", and `openProfileModal()` re-seeds every field. It is
+    // therefore NOT in NOT_SELF_RAISING (it is not an exclusion) and is asserted here so
+    // deleting it reds in source as well as in its behaviour test.
+    expect(terms, 'showProfileModal guards against re-prefilling an open modal').toContain('showProfileModal')
+    // Non-vacuity for the harvest itself: a broken regex would make every `toContain`
+    // above pass against an empty array only if it threw — this makes it explicit.
+    expect(terms.length, 'the trigger-term harvest found nothing').toBeGreaterThanOrEqual(8)
+  })
+
+  // ⚠⚠ THE VOUCHER OVERLAY — the SEVENTH self-raising surface, and the worst one to
+  // stack on. `onMounted` AWAITS `checkPendingVouchers()`, which raises it with no
+  // friend action; it is a hand-rolled `fixed inset-0 z-50` teleport while
+  // `.modal-layer` is `z-index: 200`, so the profile form paints OVER it — and the
+  // decision underneath is one-shot and irreversible („Toto rozhodnutie je jednorazové
+  // a nedá sa zmeniť"), with no dismiss, only accept or decline.
+  test('⚠ it waits for the PENDING-VOUCHER overlay, which it would otherwise paint over', async ({ page }) => {
+    const who = await makePhonelessFriend('voucher')
+    await page.route('**/api/vouchers/pending*', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      // ⚠ THE SHAPE IS LOAD-BEARING: the overlay renders
+      // `voucher_amount.toFixed(2)` and the two discount fields, so a thinner stub
+      // throws inside the render and the overlay never appears — which looks exactly
+      // like „the fix works" and is how this test failed on its first run.
+      body: JSON.stringify([{
+        id: 777_001, friend_id: who.id, cycle_id: 1, cycle_name: 'PI-T10 Voucher Round',
+        voucher_amount: 5, supplier_discount: 10, applied_discount: 5, status: 'pending',
+      }]),
+    }))
+    await cardLogin(page, who)
+
+    // The voucher is up and the profile form is NOT — asserted on the overlay itself,
+    // because it is a teleported div and not a `role="dialog"`.
+    const overlay = page.locator('.fixed.inset-0.z-50')
+    await expect(overlay).toBeVisible()
+
+    // ⚠ THE DISCRIMINATING ASSERTION GOES FIRST, deliberately. A dialog COUNT reds under
+    // the mutation too, but it reds before this line ever runs — so ordering it first is
+    // what proves the z-order claim is itself load-bearing and not carried by the count.
+    // What the friend would actually hit: without the term the profile modal's e-mail
+    // input sits over the voucher's own button (measured: `INPUT.inp`).
+    const onTop = await overlay.getByRole('button').first().evaluate((el) => {
+      const r = el.getBoundingClientRect()
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+      return hit ? `${hit.tagName}${hit.className ? '.' + String(hit.className).split(' ')[0] : ''}` : 'none'
+    })
+    expect(onTop, 'the voucher decision must be the thing the friend can click').not.toMatch(/^INPUT/)
+
+    // …and the plain counts, which say the same thing the cheap way.
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(page.locator('.modal-layer')).toHaveCount(0)
+
+    // ⚠ THE QUEUE HALF — the same „arrives when the surface in front resolves" claim the
+    // closed/locked tests make, and the direction a „never opens at all" mutation breaks.
+    // The friend ANSWERS the voucher (it has no dismiss, only accept/decline)…
+    await page.route('**/api/vouchers/*/resolve', (route) => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }),
+    }))
+    await overlay.getByRole('button', { name: /Nepotrebujem/ }).click()
+    await expect(overlay).toHaveCount(0)
+
+    // …and only now is it the profile modal's turn.
+    await expect(page.getByRole('dialog').locator('.m-title')).toHaveText(PROFILE_TITLE)
+    await expect(page.getByRole('dialog').getByLabel('Mobil *')).toHaveValue('')
+  })
+
+  // ⚠ THE RE-PREFILL, which is a term of a DIFFERENT kind — `showProfileModal` does not
+  // raise itself, it is already up. `openProfileModal()` unconditionally re-seeds all
+  // four fields, so without the term the sequence below wipes what the friend typed.
+  //
+  // ⚠ The shipped „unhydrated modal" test CANNOT see this: it signs in through
+  // `signIn()` (a RESTORE), so `freshLogin` is false and the trigger never arms. This
+  // one logs in through the card, which is the only way the two can collide.
+  test('⚠ a late hydrate must NOT re-prefill a modal the friend already has open', async ({ page }) => {
+    const who = await makePhonelessFriend('reprefill')
+
+    // Hold the profile GET so the friend can get in front of it. The PATCH on the same
+    // URL pattern still goes through.
+    let release
+    const held = new Promise((r) => { release = r })
+    await page.route(`**/api/friends/${who.id}/profile`, async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      await held
+      await route.continue()
+    })
+
+    await cardLogin(page, who)
+    // Nothing auto-opened: hydrate has not landed, so the trigger cannot be true yet.
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    // The friend opens Profil themselves and starts typing.
+    await portalOpenProfile(page)
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.locator('.m-title')).toHaveText(PROFILE_TITLE)
+    const typedName = `${who.name} TYPED`
+    await dialog.getByLabel('Meno a priezvisko *').fill(typedName)
+    await dialog.getByLabel('Mobil *').fill('0911 000 111')
+
+    // NOW let the hydrate land, and WAIT for it — otherwise the assertion below could
+    // pass simply because the response had not arrived yet.
+    const landed = page.waitForResponse(
+      (r) => r.url().includes(`/api/friends/${who.id}/profile`) && r.request().method() === 'GET'
+    )
+    release()
+    await landed
+
+    // The friend's typing survived. Without `!showProfileModal.value` the watch fires
+    // here and `openProfileModal()` reassigns both fields from the server row.
+    await expect(dialog.getByLabel('Meno a priezvisko *')).toHaveValue(typedName)
+    await expect(dialog.getByLabel('Mobil *')).toHaveValue('0911 000 111')
+    // …and exactly one modal is open — it was not re-opened on top of itself.
+    await expect(page.getByRole('dialog')).toHaveCount(1)
+    await expect(page.locator('.modal-layer')).toHaveCount(1)
   })
 })

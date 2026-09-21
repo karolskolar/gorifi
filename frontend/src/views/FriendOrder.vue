@@ -2706,11 +2706,25 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
         data-testid="packeta-section"
       >
         <label class="field-lbl" for="fo-packeta-address">Adresa výdajného miesta *</label>
+        <!-- ⚠ `maxlength` MIRRORS `friends.packeta_address`'s 160 (18 §UC-PI-015,
+             PI-T10 — CLAUDE.md's mirror convention). THIS FIELD IS THE COLUMN'S SECOND
+             CLIENT WRITER and it is the quiet one: `confirmPickupAndSubmit()` PATCHes
+             the profile inside a `catch {}` that proceeds with the order on purpose
+             (saving a default must never cost the friend their order), so a server
+             refusal here has NO surface at all. Without the mirror, an address over
+             160 chars would make „uložiť ako predvolenú" silently stop working — a
+             regression PI-T10's own bound would have introduced.
+             ⚠ RECORDED, NOT FIXED: `orders.packeta_address` — the address that
+             actually reaches the distribution sheet — is bounded by `routes/orders.js`
+             on TYPE and non-emptiness only, with no length rule, so the per-order
+             address stays unbounded while the profile default is capped. That
+             asymmetry is a PI-T11 / guest-delivery-row decision, not this one. -->
         <input
           id="fo-packeta-address"
           v-model="packetaAddress"
           class="inp"
           type="text"
+          maxlength="160"
           placeholder="napr. Z-BOX Hlavná 15, Bratislava"
         />
         <!-- Save-as-default. DEFAULT UNCHECKED (resolved conflict #11) — see the

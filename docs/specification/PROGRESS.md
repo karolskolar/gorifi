@@ -434,9 +434,9 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 - [x] PI-T7  Money surfaces: debt banner + Zaplatiť on the landing in ALL states (`balance < -0.01`; PO: zero/positive NEVER on landing) + „Zostatok a platby“ view (`FriendBalanceCard` re-purposed, PL-T4's `pay-balance` trigger + mount RELOCATED here — never duplicated; keep „po zaplatení sa zostatok vyrovná do 1–2 dní“) + `FriendTransactionList.vue` lifted verbatim from `FriendTransactionsModal.vue` (deleted) + landing balance card REMOVED — `18 §UC-PI-008,010,019(items 7,9)` ⚠ SANCTIONED: RENAME `portal-transactions-modal.spec.js` → `portal-balance.spec.js` (keep every `tx-*` pin, sign/colour, 320 px test, admin invariance describe; drop the unsatisfiable modal-shell pins); parked `portal-appbar` balance describe lands here. ⚠ `BalanceBadge.vue` untouched (admin-shared).
 - [x] PI-T8  „Ako to funguje“ view: six phases (static text, live timeline NOT mounted), three delivery ways from `api.getPickupLocations('coffee')` (Packeta fee badge gated on `parcel_enabled`), „Kto sme a odkiaľ je káva“ + `lib/roasters.js` ONE home (Goriffee / Robo prototype drafts — PO polishes), „Ako platím“ (keep „(PayMe)“ — 15 shipped), personal note „— Karol“ (PO draft), keep WhatsApp mention in phase 2 (PO), `asGate` prop for PI-T9 + product-card roaster badge popover (one `NeoModal`, `role=button` only on a match) + `NeoIcon` I2 set — `18 §UC-PI-012,014` ⚠ seam → GL-T4 imports `lib/roasters.js`; admin never imports it. NEW `portal-explainer.spec.js` (content part).
 - [x] PI-T9  First-login explainer gate: `friends.explainer_seen_at` (try/catch ALTER, **NO back-fill — PO: every existing friend sees it once**) + `POST /friends/:id/explainer-seen` (`requireFriendOwner`, idempotent COALESCE; shared-password `friendId:null` ⇒ 401) + field in all four login payloads (friends.js :173/:230/:358, magic-link.js :406; session restore is NOT a login) + `beginSession({explainerPending})` → `router.replace('/ako-to-funguje')` + pre-ticked „Už mi to neukazovať“ / „Rozumiem“ — `18 §UC-PI-013,019(item 16)` ⚠ `FRIEND_IDENTITY_ENDPOINTS += POST /api/friends/1/explainer-seen` (NEVER `ADMIN_ENDPOINTS`). ⚠ SUITE-WIDE: `e2e/seed.mjs` pre-stamps `explainer_seen_at` for every seeded friend except one dedicated fixture (orchestrator clarification (b)) — otherwise every login-then-land spec hits the explainer. Precedence: forced-password > Google prompt > explainer.
-- [ ] PI-T10 Profile modal per roadmap §19: **Login** read-only row (help avoids the adjective — `grep -i prihlasovac` guard stays EMPTY) · **Meno a priezvisko *** · **Mobil *** (NEW required on the self-edit route only: blank ⇒ 400 `{field:'phone'}`) · **E-mail** (help: Packeta + recovery) · Adresa Packeta (server bound 160 + `maxlength`) · password fold + Google untouched · NO uid; auto-open until Mobil filled (PO; after the gates of PI-T9, dismissible per session, re-opens next login) — `18 §UC-PI-015,019(items 10,11)` ⚠ marked SLOT under Mobil for module 21's `whatsapp_opt_in` checkbox (renders nothing here). ⚠ „E-mail required when Packeta chosen“ lives in the delivery-choice modal — module 20 (GP-T3) for guests, friend side stays as today. ⚠ SANCTIONED: `portal-profile-modal.spec.js` label/help-order/maxlength pins; `friends-consolidation.spec.js` 14 help-text pins → §19 E-mail help; FUP-T20 grep test verbatim.
+- [x] PI-T10 Profile modal per roadmap §19: **Login** read-only row (help avoids the adjective — `grep -i prihlasovac` guard stays EMPTY) · **Meno a priezvisko *** · **Mobil *** (NEW required on the self-edit route only: blank ⇒ 400 `{field:'phone'}`) · **E-mail** (help: Packeta + recovery) · Adresa Packeta (server bound 160 + `maxlength`) · password fold + Google untouched · NO uid; auto-open until Mobil filled (PO; after the gates of PI-T9, dismissible per session, re-opens next login) — `18 §UC-PI-015,019(items 10,11)` ⚠ marked SLOT under Mobil for module 21's `whatsapp_opt_in` checkbox (renders nothing here). ⚠ „E-mail required when Packeta chosen“ lives in the delivery-choice modal — module 20 (GP-T3) for guests, friend side stays as today. ⚠ SANCTIONED: `portal-profile-modal.spec.js` label/help-order/maxlength pins; `friends-consolidation.spec.js` 14 help-text pins → §19 E-mail help; FUP-T20 grep test verbatim.
 - [ ] PI-T11 Vocabulary rule + deep links: friend-surface copy edits (FriendOrder :1025/:1833, voucher copy-only, GuestShareDialog:182) + friend-facing SERVER 4xx sweep (orders.js / vouchers.js / guest-links.js / products.js — messages only, status codes kept; `cycles.js` admin strings untouched; `guest.js`/`guest-orders.js` strings → GL/GP rows) + Node grep guard + DOM sweep `portal-vocabulary.spec.js` (`/cykl|\bkol(o|a|e|u|om|á|ách)\b/i`) + `/cycle/:id` `mode='route'` regression net (standalone chrome, back → `/`, „Späť na ponuku“) — `18 §UC-PI-017,018` ⚠ any pinned server string changed is re-pointed in its e2e — grep `e2e/` per message; guard file list widens to guest files when GL lands.
-- [ ] PI-T12 Module-18 closeout: `portal-fidelity` landing equivalents (A10 `line-height:normal` pins on `.banner.slim`/`.badge`/`own-order-card .display`/`.p2-tl .lbl`; 320 px hostile text on all three states) + `portal-session-boundary` drawer surface walk (history, balance, explainer incl. checkbox, profile fold, invite, share) + admin invariance greps (no `pp-*`/`p2-*`/`neo/`/theme class under admin; no admin import of `lib/roasters|dates|portal-state`) + retired-file property audit + edited-e2e-file count in the commit + learnings + **full suite** — `18 §UC-PI-019(items 13,14,18, procedure)`.
+- [ ] PI-T12 Module-18 closeout: `portal-fidelity` landing equivalents (A10 `line-height:normal` pins on `.banner.slim`/`.badge`/`own-order-card .display`/`.p2-tl .lbl`; 320 px hostile text on all three states) + `portal-session-boundary` drawer surface walk (history, balance, explainer incl. checkbox, profile fold, invite, share) + admin invariance greps (no `pp-*`/`p2-*`/`neo/`/theme class under admin; no admin import of `lib/roasters|dates|portal-state`) + retired-file property audit + edited-e2e-file count in the commit + learnings + **full suite** — `18 §UC-PI-019(items 13,14,18, procedure)`. ⚠ ADDED BY PI-T10's REVIEW ROUND: a SOURCE-PIN over `FriendPortalSession.vue`'s auto-open trigger TERM COUNT. That trigger is now the only place that knows what „a surface that raises itself without the friend asking“ means — six terms (forced-password, credential-setup, Google prompt, explainer, closed modal, locked modal). PI-T10 shipped it four terms wide and stacked two modals on the CLOSED landing, the app's normal state. ⚠ AND THE SEVENTH ALREADY EXISTED: round 2 measured `showVoucherModal` (set from an AWAITED `checkPendingVouchers()` in `onMounted`) sitting UNDER the profile form — `elementFromPoint` over the voucher's own button returned the profile modal's e-mail input, and that voucher carries a ONE-SHOT IRREVERSIBLE decision. Fixed in PI-T10; the pin is what stops the eighth. Pin the COUNT, not the spelling.
 
 ## 17. Standing guest link + pre-open page + waitlist (19)
 
@@ -474,6 +474,53 @@ a stronger model (money paths, state machines, dense pin surfaces); untagged row
 
 
 ## Log
+
+- 2026-09-21 · PI-T10 · (this commit) · no PR (project convention) · **The §19 profile modal — and a
+  precedence list that was narrower than the sentence above it, three times running.** Field set reordered
+  to §UC-PI-015 (Login / Meno / Mobil* / module-21 slot / E-mail / Adresa Packeta), `Mobil` now REQUIRED
+  (400 `{error:'Zadajte mobilné číslo', field:'phone'}` on the FRIEND route only — the admin PATCH still
+  clears a phone, both halves pinned), PO's 160 bound on `packeta_address`, and the auto-open for a
+  phone-less friend. **1001 passed / 0 failed / 13 skipped across 25 files** (asked 25, ran 25, diff empty),
+  server log clean apart from the two deliberately provoked errors.
+  ⚠ **THE TRIGGER IS A LOGIN, NOT A SESSION MOUNT, AND THE ORCHESTRATOR'S BRIEF SAID OTHERWISE.** The brief
+  reasoned from `closedModalDismissed`'s per-session precedent; clarification (c)'s own words are „re-opens
+  on the next LOGIN", and §UC-PI-013 had already codified that a restore is not a login. Implemented as
+  `beginSession({freshLogin:true})` from the three login paths, mirroring `explainerPending`. Measured blast
+  radius of the wrong reading: 53 spec files vs 16.
+  ⚠⚠ **THE DEFECT OF THIS ROW, AND IT RECURRED UNDER ITS OWN FIX.** The auto-open must queue behind every
+  surface that raises itself without the friend asking. Round 1 shipped FOUR terms and stacked two modals on
+  the CLOSED landing — the app's normal state most of the month — proven by a probe spec
+  (`dialogs=2, titles=["Objednávky sú zatvorené","Upraviť profil"]`). The fix added two terms AND a comment
+  stating the rule as a CLASS („every surface that raises itself"), then listed six — and that six-item list
+  was copied into CLAUDE.md and the spec. Round 2 measured a SEVENTH: `showVoucherModal`, set from an
+  AWAITED `checkPendingVouchers()` in `onMounted`; `elementFromPoint` over the voucher's own button returned
+  the profile modal's e-mail input, and that voucher carries a ONE-SHOT IRREVERSIBLE decision the friend
+  cannot dismiss. An eighth (`showProfileModal`) let a late hydrate wipe text the friend was typing.
+  **A class rule with a complete-looking list under it is worse than no list**, and enumerating by SOURCE
+  („the gates clarification (c) names") when the predicate is a CLASS is what produced all three rounds.
+  ⚠ **SO THE LIST IS NO LONGER MAINTAINED BY HAND.** `portal-profile-modal.spec.js` walks every
+  `NeoModal`/`LandingStateModal`/`NeoDrawer`/teleported-`fixed inset-0` mount in the component; each must be
+  a trigger term or sit in `NOT_SELF_RAISING` **with a reason**. Verified by the orchestrator, not relayed:
+  injecting a brand-new unguarded `<NeoModal v-if="showFakeNewSurface">` reds the pin with
+  `overlay mount(s) that are neither an auto-open trigger term nor a documented non-term:
+  ["showFakeNewSurface"]` and tells the author what to do; reverted byte-identical, 51 passed.
+  ⚠ Free riders caught twice by the implementer on itself: M16 removes both state-modal terms at once and
+  cannot tell them apart, so a second `locked` fixture + M18/M19 prove each independently (round 2 re-ran
+  both); and M21 (`!pendingVouchers.length`) was **discarded as non-discriminating** rather than swapped in
+  quietly. Two fixture traps recorded: a thin stub makes the voucher overlay's own render throw, which looks
+  exactly like „the fix works"; and assertion ORDER matters — the dialog counts red first under M20 and
+  would have carried the z-order claim without ever measuring it.
+  ⚠ Documentation: §UC-FL-009 in `03-friend-login-portal.md` vouched „re-verified … and is accurate" for a
+  table this row falsified — FOUR claims struck, not three, because the fourth lived in PROSE below the table
+  and the first sweep walked the TABLE. The spec's own figures were wrong again: `:424`→518, `:494`→596,
+  and „14 `Bez e-mailu` pins" was really 1 friend help + 1 different ADMIN string + 12 admin badge pins
+  (rewriting all 14 as instructed would have destroyed an admin surface's pins; the count is now 15 anyway).
+  Line numbers replaced with TEST NAMES — after the row re-introduced three raw ones three lines below its
+  own lesson, two already stale. **A lesson written down is not a lesson applied.**
+  ⚠ Recorded, NOT fixed: `orders.packeta_address` stays unbounded while the profile default is capped at 160
+  (PI-T11 / guest-delivery decision); a magic-link or onboarding friend arrives by RESTORE and so structurally
+  never meets the auto-open; `seed.mjs`'s own two friends are phone-less while all 76 template rows carry a
+  phone (latent, not red). PI-T12 gains the term-count pin's rationale.
 
 - 2026-09-21 · PI-T9 · (this commit) · no PR (project convention) · **The first-login explainer
   gate — and a suite-wide exposure that was real, but four times smaller than the number I

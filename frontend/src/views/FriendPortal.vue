@@ -372,6 +372,24 @@ async function beginSession({
   // migration, and on the magic-link path if someone ever plumbs it — which is the
   // `googleLinked` trap one comment up, in the other direction.
   explainerPending = false,
+  // ⚠ 18 §UC-PI-015 + PO 2026-09-19 clarification (c) (PI-T10) — „THIS HANDSHAKE IS A
+  // LOGIN", the trigger for the profile modal's auto-open.
+  //
+  // ⚠ It is a FLAG, not the phone number, and that is deliberate: `phone` is in NONE
+  // of the login payloads and PI-T9 pinned that set (four payloads, six fields). The
+  // session view combines this flag with the phone it learns from
+  // `hydrateCurrentFriend()`'s `GET /:id/profile` — which is also what puts the
+  // auto-open LAST in the precedence chain, since that fetch settles after the gates.
+  //
+  // ⚠ SET BY THE THREE LOGIN PATHS ONLY, exactly like `explainerPending` above, and
+  // for the same reason stated there in as many words: A SESSION RESTORE IS NOT A
+  // LOGIN. `FriendPortal.vue` restores on EVERY document load, so a session-mount
+  // trigger would put this modal in front of a phone-less friend on every reload and
+  // every deep link they open — the behaviour §UC-PI-013 rejected for the explainer
+  // („must not be dragged into it by every reload, only by a fresh login"). A magic
+  // link and the onboarding registration arrive through the restore path and so do
+  // not carry it either, matching the explainer gate's shipped boundary.
+  freshLogin = false,
 } = {}) {
   const cycles = await api.getFriendsCycles(selectedFriendId.value)
 
@@ -389,6 +407,7 @@ async function beginSession({
     viaMagicLink, magicPromptDismissed,
     googleLinked, googlePromptDismissed,
     explainerPending,
+    freshLogin,
   }
   authState.value = 'authenticated'
 
@@ -505,6 +524,8 @@ async function authenticate(silent = false) {
       // 18 §UC-PI-013 — login 1 of 3. See `beginSession`'s parameter comment for why
       // this is the literal `=== null` and why no restore path passes it.
       explainerPending: result.friend?.explainer_seen_at === null,
+      // 18 §UC-PI-015 (PI-T10) — login 1 of 3 of the profile auto-open. See `beginSession`.
+      freshLogin: true,
     })
 
     // UC-FC-009: the auth payload carries no phone/email — hydrate them for THIS
@@ -578,6 +599,8 @@ async function authenticatePersonal() {
       googlePromptDismissed: result.googlePromptDismissed,
       // 18 §UC-PI-013 — login 2 of 3.
       explainerPending: result.friend?.explainer_seen_at === null,
+      // 18 §UC-PI-015 (PI-T10) — login 2 of 3 of the profile auto-open. See `beginSession`.
+      freshLogin: true,
     })
 
     // UC-FC-009: same as the shared-password path above — `/friends/auth`
@@ -719,6 +742,8 @@ async function onGoogleCredential(response) {
       // a friend whose FIRST login is a Google one meets the explainer exactly once,
       // which is the whole rule.
       explainerPending: result.friend?.explainer_seen_at === null,
+      // 18 §UC-PI-015 (PI-T10) — login 3 of 3 of the profile auto-open. See `beginSession`.
+      freshLogin: true,
       // ⚠ NO `currentPassword`, and it must stay absent: a Google login never handled
       // one. `submitForcedPasswordChange()` sends `entry?.currentPassword || ''` and
       // the backend skips the current-password check while `must_change_password` is

@@ -2115,3 +2115,441 @@ defects lived.
    established friend". A spec that hand-writes `explainer_seen_at` into the row is
    re-creating the problem — except where it genuinely cannot get a token
    (`google-auth`'s two helpers, which say so at the site).
+
+---
+
+## PI-T10 — the profile modal, a required field, and a trigger I deliberately narrowed (2026-09-21)
+
+**Row:** PI-T10 · `18 §UC-PI-015`, `§UC-PI-019 items 10/11`, PO decisions 2026-09-19
+(„Profile modal auto-open = YES", „Packeta address server bound = add 160",
+clarification (c)).
+
+**Shipped:** the profile modal's body reordered and relabelled per §19 (Login ·
+Meno a priezvisko * · Mobil * · [module-21 slot] · E-mail · Adresa Packeta), „Mobil"
+required on `PATCH /friends/:id/profile` **only**, a 160 bound on
+`friends.packeta_address`, and the auto-open for a friend with no stored phone.
+
+### 1. ⚠⚠ I NARROWED THE AUTO-OPEN'S TRIGGER TO A LOGIN, AGAINST THE ROW'S OWN NOTE
+
+The row said: dismissal is a per-session `ref`, therefore „a RELOAD re-opens it — state
+it explicitly and pin it." I pinned the opposite, and this is the one thing in the row a
+reviewer must agree or overturn.
+
+What I measured before deciding, over `e2e/tests/*.spec.js`:
+
+| trigger | spec files that could meet an unasked-for modal |
+|---|---|
+| **session mount** (login OR restore) | **53** — the union of the 35 card-login files and the 33 that seed `localStorage` |
+| **login only** (`entry.freshLogin`) | **16** — exactly PI-T9's card-login population |
+
+53 files is not a containment job, it is a second row. But the size is the second
+argument, not the first. Three others come before it:
+
+1. **Clarification (c)'s own words**: „dismissible per session and **re-opens on the next
+   login**". A reload is not a login anywhere else in this module.
+2. **§UC-PI-013 already decided this**, in `beginSession`'s own comment: „A SESSION
+   RESTORE IS NOT A LOGIN … a friend who has not acknowledged the explainer must not be
+   dragged into it by every reload, only by a fresh login." The same sentence is true
+   word for word with „the explainer" replaced by „the profile modal", and §UC-GA-006's
+   Google prompt made the same call before it.
+3. **The product consequence.** `FriendPortal.vue` restores on EVERY document load, so
+   a session-mount trigger is not „once per reload" — it is a modal on every deep link,
+   every bookmark, every share URL a phone-less friend opens. That is the behaviour two
+   earlier rows in this module already refused.
+
+So `beginSession` gained `freshLogin`, seeded from the three login paths exactly as
+`explainerPending` is, and `FriendPortalSession` seeds `profileAutoOpenArmed` from it.
+Both halves are pinned: a login opens it, a reload of that same session does not (with a
+non-vacuity read of the row proving the phone really is still empty).
+
+⚠ If the PO wants the reload behaviour after all, the change is ONE seed
+(`ref(!!props.entry?.freshLogin)` → `ref(true)`) — and it owes the suite ~37 more fixture
+phones. That is the trade, priced.
+
+### 2. ⚠⚠ PRECEDENCE IS CODED HERE, AND PI-T9 SAYS NOT TO CODE IT — BOTH ARE RIGHT
+
+§PI-T9.10 above records: „PRECEDENCE IS STRUCTURAL, AND CODING IT WOULD HAVE INVERTED
+IT." That is about a `router.replace` to a VIEW: the forced-password gate and the Google
+prompt are modals that paint over whatever view is mounted, so the explainer waits
+underneath and an `if (!forcedPasswordChange)` would have skipped it entirely.
+
+PI-T10's surface is a `NeoModal`. A modal opened while another modal is up does not wait
+underneath it — it stacks, traps focus against its sibling and puts a scrim over a gate
+the friend cannot dismiss. So here the gates are terms in the trigger, read REACTIVELY
+(each clears in place, and this modal is meant to arrive at exactly that moment).
+
+⚠ **Four terms, and the fourth is not in clarification (c):** `forcedPasswordChange`,
+**`showCredentialSetup`**, `showGooglePrompt`, `explainerGate`. The credential-setup
+dialog is the transition-mode `NeoModal` raised from the same handshake; omitting it
+stacks this modal on top of it for a credential-less friend with no phone — which
+`portal-profile-modal.spec.js`'s own „the CREDENTIAL-SETUP dialog must not open
+pre-filled" test would have caught as a mysterious dialog count. Added deliberately and
+said out loud rather than silently. ⚠ `showMagicPrompt` is NOT a term: it renders as a
+`.banner`, not a modal, so there is nothing to stack on.
+
+The gate test asserts BOTH halves in one document — the forced gate ALONE while it is up
+(`getByRole('dialog')` count 1, `.modal-layer` count 1) and the profile modal arriving
+the moment it clears — because either half alone passes on the wrong build.
+
+### 3. ⚠ THE HYDRATE GATE IS A `hasOwnProperty`, AND A TRUTHINESS TEST WOULD HAVE SHIPPED A FLASH
+
+`phone` is in NONE of the login payloads (PI-T9 pinned that set: six fields, four
+payloads) and PI-T10 did not extend it — the row forbade it and there was no need. It
+arrives through `hydrateCurrentFriend()`'s `GET /:id/profile`.
+
+`!props.friend?.phone` is therefore TRUE for every friend for the first few hundred
+milliseconds of every login, phone or no phone. The predicate is
+`Object.prototype.hasOwnProperty.call(props.friend, 'phone')` — „do I know yet?" — and it
+is also what places the auto-open last in the chain for free, since that fetch settles
+after the gates have painted. Pinned by „a friend WHO HAS a phone is never interrupted",
+which is the non-vacuity twin of the opening test: same login, same screen, one column
+different.
+
+⚠ A FAILED hydrate never auto-opens. Deliberate: that fetch is documented fire-and-forget
+and allowed to fail silently; the cost of a miss is one more prompt at the next login.
+
+### 4. THE BOUND WENT WHERE THE COLUMN'S ONE WRITER IS — WHICH I WALKED RATHER THAN ASSUMED
+
+`friends.packeta_address` has **exactly one** writer in `backend/src`: the `UPDATE` in
+`PATCH /:id/profile`. Walked, not guessed — every `UPDATE friends SET` (27 sites) and
+every `INSERT INTO friends` (3 sites: `friends.js POST /`, `invitations.js` approve,
+`onboarding.js` register). None of the three creation sites lists the column and no admin
+route writes it (`ADMIN_FRIEND_FIELDS` has name/display_name/phone/email and nothing
+else). ⚠ `orders.packeta_address` is a DIFFERENT column with its own rule in
+`routes/orders.js`; a grep for the identifier hits both.
+
+So the 160 lives in the profile handler beside FUP-T12's type rule, not in
+`validateAdminFriendFields`. Same reasoning, opposite direction, for the required phone:
+that validator is SHARED, and the admin must still be able to clear a phone — so the
+required check is in the handler, and **both halves are pinned** (the friend route
+refuses; the admin route clears and the row is read back).
+
+### 5. ⚠ A BOUND THAT WAS NEVER MIRRORED, FOUND BY WRITING THE MIRROR TEST
+
+CLAUDE.md: „Server length bounds are mirrored as `maxlength` in the UI." §UC-PI-015's
+table says 120 for „Meno a priezvisko *". `#pp-profile-name` had **no `maxlength`
+attribute at all** — measured (`Received: ""`), not assumed, while phone/e-mail/Packeta
+were all mirrored. The rule had a hole on the one field the table calls required, and it
+had been there since the modal shipped. Added.
+
+### 6. THE ENUMERATIONS IN §UC-PI-019 WERE WRONG AGAIN — ITEMS 10 AND 11, SIX AND SEVEN
+
+Item 2 was stale, item 3 was stale by twenty files, item 9 under-counted; PI-T7, PI-T8
+and PI-T9 each found another. This row found two more, and item 11's is the largest
+relative error in the file:
+
+| the item says | measured |
+|---|---|
+| „the FUP-T20 grep test (**424**)" | **467** — and it really did stay verbatim |
+| „the display_name test (**494**)" | **538** — likewise |
+| item 10 names ONE test in that describe | there are **TWO**, and the other one — the DOM copy sweep at 539 — reds on item 10's own rename, because its NON-VACUITY anchor is `toMatch(/užívateľské meno/i)` |
+| „the **14** `'Bez e-mailu…'` help-text pins" | 14 OCCURRENCES, of which **1** is the friend help text (`:904`). **1** more (`:604`) is the ADMIN modal's different string („…sa **priateľovi** nedá poslať…") and **12** are the admin contact-cell BADGE. Rewriting fourteen would have deleted an admin surface's pins. |
+
+⚠ The lesson is narrower than „re-count": item 10's figure was not just stale, it named
+the WRONG MEMBER of a pair. „The FUP-T20 grep test stays verbatim" is true of the SOURCE
+grep and false of the DOM sweep beside it, and only reading the describe shows that.
+
+### 7. ⚠ `getByLabel` SUBSTRING MATCHING CUTS BOTH WAYS IN THE SAME EDIT
+
+- „Mobil" → „Mobil *": `getByLabel('Mobil')` still matches, so nothing HAD to change.
+  Changed anyway, for truthfulness.
+- „Email" → „E-mail": `getByLabel('Email')` does **not** match „E-mail" (the hyphen is a
+  character, not a separator), so every one of the eight sites HAD to change or red.
+- „Užívateľské meno" → „Login": the rename is only observable INSIDE this dialog, because
+  the string legitimately survives on the login screen (03 §UC-FL-002) and in BOTH
+  username-setup dialogs in this same component. So the test pins the presence of „Login"
+  AND the absence of „Užívateľské meno" scoped to the dialog — which doubles as proof that
+  no setup label is rendered there to collide with it.
+
+### 8. THE FIXTURE PHONE — PI-T9'S `ackExplainer` PROBLEM, SECOND EDITION
+
+Same shape, different column. A friend created by `POST /api/friends` has no phone (right:
+a brand-new friend genuinely has none), so every card-login fixture meets its own modal
+over the drawer that `openProfile`/`openMenu`/`logout` reach for.
+
+⚠ **The 76 TEMPLATE rows needed nothing**: every one already carries a phone (measured —
+the scrub fakes them rather than nulling them). ⚠⚠ **But „the seeded circle is immune",
+which is what this section said first, is WRONG and review caught it**: the template holds
+NO `E2E*` row at all, and `seed.mjs` creates its own two friends — `E2ETester` (`:109`) and
+`E2EExplainerGate` (`:128`) — with `{ name }` alone. `E2ETester` is explainer-pre-stamped,
+so a legacy card login as that friend walks straight into the auto-open. Nothing is red
+today (no spec in the gate does that and then needs the drawer), so this is a
+RULE-ACCURACY defect, not a broken gate — and that is the worse kind, because the rule's
+only job is to tell the next author where to look and it was pointing away from the two
+friends they are most likely to reach for. The seed is deliberately NOT changed: it is a
+shared input, nothing needs it today, and an accurate rule is the deliverable. The
+containment is fixture constants: `FIXTURE_PHONE` (portal-profile-modal),
+`makeFriendWithSession({phone = uniquePhone()})` (friends-consolidation) and
+`GA_FIXTURE_PHONE` (google-auth, four creation sites).
+
+`google-auth.spec.js` is the file this cost the most: its §UC-GA-006 and §UC-GA-007
+describes are ALL „dismiss a modal and count what is left", so fourteen of them reddened
+— each at a 2-minute actionability timeout, which is also why the first blast-radius run
+was killed and re-run rather than watched to the end.
+
+### 9. Smaller things measured rather than assumed
+
+- **An unhydrated profile modal can no longer be saved at all.** With Mobil required and
+  hydration stalled, „Uložiť" is disabled until the friend types a phone. FUP-T5's
+  „an unhydrated modal must NOT wipe a stored Packeta address" test now says so out loud;
+  its protected property (`packeta_address` ABSENT from the wire) is asserted as an
+  absence rather than as an exact key set, because the typed phone legitimately travels.
+- **The `.field-help` pin grew from two `nth()`s to the whole sequence + a count + an
+  input-order pin.** An `nth(0)/nth(1)` pair cannot see a field that moved past it, which
+  is the exact failure a reorder invites.
+- **The `prihlasovac` guard caught my own COMMENT first.** The first draft of the new
+  Login help's code comment contained the stem while explaining that the stem is
+  forbidden. The guard greps the FILE, not the copy — comments included, which is what the
+  FUP-T20 comment already said and what I still had to be reminded of by a red grep.
+- **The friend's own „clear my contact data" API test had to split.** `{phone: null,
+  email: null}` is now a 400; the property „clearing needs no confirm" survives on the
+  field that is still optional, and the refused PATCH is read back to prove it wrote
+  neither field.
+- **The slow-hydrate race test got STRICTER, not weaker.** „B's fields are empty" became
+  „B's fields hold B's OWN phone" — A's stale response landing would replace it either
+  way, and the empty assertion was only ever a consequence of B having no contact data.
+
+### 10. The mutation matrix (every one applied from a scratchpad copy, `cmp`-verified to have changed the file, rebuilt into `backend/public` or the backend restarted, run, then reverted)
+
+| # | mutation | reddened |
+|---|---|---|
+| M1 | delete the `phone !== undefined && !phone` 400 | ✔ 2 of 3 (blank-phone refusal, whole-PATCH atomicity) |
+| M2 | move the required-phone rule INTO `validateAdminFriendFields` | ✔ „the ADMIN PATCH may still clear a phone" |
+| M3 | `MAX_PACKETA_ADDRESS_LENGTH` 160 → 1600 | ✔ the 160/161 bound test |
+| M4 | drop FUP-T12's `typeof === 'string'` guard | ✔ „FUP-T12 survives" |
+| M5 | drop `!profilePhone.trim()` from „Uložiť"'s `:disabled` | ✔ |
+| M6 | drop the same term from `saveProfile()`'s JS guard | ✔ „a dispatched click … sends no request" |
+| M7 | `profileAutoOpenArmed = ref(true)` (session-mount trigger) | ✔ „a RESTORE is not a login" |
+| M8 | drop `!forcedPasswordChange.value` from the trigger | ✔ the forced-gate precedence test |
+| M9 | `profilePhoneKnown` → plain truthiness of `props.friend` | ✔ „a friend WHO HAS a phone is never interrupted" |
+| M10 | move the Packeta block back to its old position | ✔ the `.field-help` sequence + the input-order pin |
+| M11 | rename the „Login" label back | ✔ the label test AND the `/prihlasovac/i` copy sweep |
+| M12 | delete `maxlength="120"` from `#pp-profile-name` | ✔ the field-contract test |
+| **M13** | **never lower `profileAutoOpenArmed` on open** | **✘ NOTHING — and that is correct, see below** |
+| **M14** | **drop `!explainerGate.value` from the trigger** | **✘ NOTHING AT FIRST — a real gap; a test was written, and then it reddened** |
+| **M15** | **drop `!showCredentialSetup.value`** | ✘ nothing at first, same gap, same fix; reddens the new test |
+
+⚠ **M13 is defence in depth and I am saying so rather than claiming a test covers it.**
+`watch` fires on a CHANGE of the watched expression, and closing the modal changes nothing
+in it (`showProfileModal` is not a term), so „armed" staying true simply never fires again
+in that session. It is kept because it states the intent and because it would matter the
+day a gate term toggles late.
+
+⚠⚠ **M14 AND M15 ARE THE REAL FINDING OF THIS MATRIX.** Two of the four precedence terms
+reddened NOTHING when deleted — not because they are harmless, but because no fixture in
+the suite was in the one state where the rules compete. For the explainer that state is a
+FIRST login with no stored phone (`portal-explainer.spec.js`'s fixtures all carry a
+phone); for credential-setup it is a transition-mode credential-less friend with no phone.
+Two tests now build exactly those friends, and with them M14 and M15 both red. **A term
+whose mutation is silent is not proven — it is unmeasured, and the fix is a fixture, not
+a shrug.**
+
+### 11. The gate, and the asked-versus-ran reconciliation
+
+Targeted, per CLAUDE.md — but the row's blast radius made „targeted" mean 21 files, not 2.
+`cd e2e`, `--workers=1`, output to a file, `DB_PATH` on both the seed and the run, all five
+`RATE_LIMIT_*_MAX` at 100000, a fresh copy of `prod-template.sqlite` per run, the frontend
+rebuilt into `backend/public` before every run.
+
+**Asked 21 files, ran 21** (`grep -oE 'tests/[a-z0-9-]+\.spec\.js' … | sort -u`, reconciled
+against the list): `portal-profile-modal`, `friends-consolidation`, `google-auth`,
+`portal-appbar`, `portal-session-boundary`, `portal-explainer`, `portal-landing`,
+`portal-menu`, `portal-shell`, `portal-balance`, `portal-history`, `modern-login`,
+`magic-link`, `first-password`, `forced-change-ui`, `neo-control-metrics`,
+`invitation-approval`, `admin-friends-labels`, `email-templates`, `nonstring-body-shape`,
+`api-security`. **902 passed / 0 failed / 13 skipped, exit 0** (6.4 min). The 13 are the
+documented `nonstring-body-shape` „no stack reaches the log" gates plus
+`forced-change-ui`'s `test.fixme`.
+
+⚠ **AFTER THE REVIEW ROUND (§12) the gate was re-run at 25 files** — the 21 above plus
+`order-shell`, `order-pickup-edit`, `order-modals`, `order-cartbar`, added because the
+minor-6 fix touches `FriendOrder.vue`'s checkout pickup modal. Asked 25, **ran 25**
+(`diff` of the asked list against the ran list: empty). **998 passed / 0 failed / 13
+skipped, exit 0** (6.5 min), on a FRESH template copy with the seed printing
+`explainer: pre-stamped 77 friend(s); 1 left unacknowledged`. Server log: 16 lines, two
+of them errors, both deliberate test cases (`api-security`'s CORS refusal,
+`invitation-approval`'s CHECK-constraint probe). ⚠ The reviewer's own server was left
+running on `:3997`; it was replaced rather than reused, because its DB was not a database
+this row controlled and „the DB is an INPUT".
+
+⚠ **The silent-drop trap fired once and was caught before the run**: `portal-vocabulary.spec.js`
+is in §UC-PI-019 item 17's list but does not exist yet (PI-T11 writes it). Had it stayed in
+a batch whose other entries matched, it would have been dropped without a word.
+
+An earlier batch also measured the blast radius honestly rather than predicting it: run 1
+of the card-login population reddened 14 `google-auth` tests at a 2-minute actionability
+timeout each, and two files more (`portal-appbar`, `portal-session-boundary`) reddened for
+a DIFFERENT reason — not the auto-open but „Uložiť" being disabled on a phone-less friend
+under a `signIn()` RESTORE. ⚠ That second failure mode is worth naming: **a required field
+reaches restore-based specs too**, even though the auto-open does not.
+
+### 12. ⚠⚠ THE REVIEW: the precedence list was narrower than the class its own comment names
+
+Two majors, four minors. The one that matters:
+
+**The trigger enumerated four gates and the landing has SIX self-raising surfaces.** On a
+CLOSED landing — the normal state for most of the month, not an edge — a phone-less friend
+got `dialogs=2 modal-layers=2`, „Objednávky sú zatvorené" AND „Upraviť profil", scrim over
+scrim. The reviewer found it by BUILDING that login (a phone-less credentialed friend,
+`/api/friends/cycles` stubbed to one `completed` row, modern card login) rather than by
+reading the list.
+
+⚠ **The failure is not „I forgot two computeds". It is that I enumerated by SOURCE —
+„the gates clarification (c) names, plus `showCredentialSetup`" — when the predicate is a
+CLASS: „every surface that raises itself without the friend asking." `showClosedModal` /
+`showLockedModal` are auto-raised `NeoModal`s from the same landing, and I had written the
+class out longhand in the comment directly above the bug.** This is the standing
+„a rule stated narrower than what it protects" trap, committed in the file whose comment
+exists to catch it. The term list now carries all six with its own justification per term.
+
+⚠ **ORDER: the state modal wins.** Clarification (c) says the auto-open runs AFTER the
+other surfaces resolve, and the state modal is the landing explaining why there is nothing
+to order; the profile form is the interruption. Every term is a `computed`/`ref` that
+clears in place, so this is a QUEUE, not a race — the profile modal arrives the instant
+the friend dismisses the state modal.
+
+**M16–M19, the four mutations this fix owes** (each `cmp`-verified, rebuilt, run, reverted):
+
+| # | mutation | reddened |
+|---|---|---|
+| M16 | remove BOTH state-modal terms (the shipped defect, restored) | ✔ `dialogs Expected 1, Received 2` — byte-identical to the reviewer's measurement |
+| M17 | key on `landing.state !== 'closed'/'locked'` instead of the modals' visibility | ✔ the OTHER direction: the state never clears on dismissal, so the profile modal never arrives — „element(s) not found" |
+| M18 | remove ONLY `!showClosedModal.value` | ✔ the closed test alone |
+| M19 | remove ONLY `!showLockedModal.value` | ✔ the locked test alone |
+
+⚠ M18/M19 exist because M16 removed both at once and could not tell them apart — the
+same „a silent mutation is unmeasured" lesson as M14/M15, applied to my own fix before
+anyone asked. The locked test is why `showLockedModal` is not a free rider.
+
+**The four minors, each a documentation-or-mirror defect rather than a behaviour one:**
+
+1. **03 §UC-FL-009 still described the pre-PI-T10 modal** — and its „⚠ OPEN" note, which
+   disclaims INCOMPLETENESS, also vouched that *„everything the table DOES describe … is
+   accurate"*. §UC-PI-015's own closing bullet points readers AT 03, where they read the
+   opposite. ⚠ **A disclaimer about what is MISSING does not cover a later row CHANGING
+   what is listed.** Three `~~strike~~`+pointer edits and the vouch itself struck.
+2. **The FUP-T20 comment still said „the read-only `Užívateľské meno` box above"** eight
+   lines above the box PI-T10 renamed to „Login". The grep guard sees a forbidden STEM,
+   never a stale REFERENCE — so nothing could have caught it.
+3. **„The seeded circle is immune" was false** — see §8, corrected in place.
+4. **`FriendOrder.vue`'s checkout pickup modal is the 160 bound's SECOND client writer**
+   and it had no `maxlength`. Worse than a missing mirror: `confirmPickupAndSubmit()`
+   PATCHes the profile inside `catch { /* Non-critical, proceed */ }`, so a refusal has
+   NO surface — „uložiť ako predvolenú" would just silently stop working above 160 chars,
+   a regression this row's own bound would have introduced. Mirrored.
+   ⚠ **RECORDED, NOT FIXED**: `orders.packeta_address` (`routes/orders.js:396`) is bounded
+   on type + non-emptiness only, so the address that actually reaches the distribution
+   sheet stays unbounded while the profile default is capped. Noted at the call site; a
+   PI-T11 / guest-delivery decision.
+
+⚠ And a fifth, which is this row's own lesson turned on itself: **my „re-measured" line
+numbers (467/538/539) were stale by the time the diff landed** (actuals 518/596/542 —
+my own +51/+58 lines moved them). Item 10's whole point is that an enumeration is a
+measurement; a line number is a measurement with a shelf life of one commit. **The spec
+now cites test NAMES.**
+
+### 13. ⚠⚠ ROUND 2: A SEVENTH SURFACE, AND WHY I STOPPED MAINTAINING THE LIST BY HAND
+
+Round 1 added the two landing state modals and I wrote the predicate as a CLASS above the
+list. Round 2 found `showVoucherModal` — a seventh self-raising surface — under that same
+comment. **Third consecutive copy of the same narrowing, and the second time under a
+sentence that says „every surface that raises itself".**
+
+The voucher is the worst one to have missed: `onMounted` AWAITS `checkPendingVouchers()`,
+which raises a hand-rolled `fixed inset-0 z-50` teleport while `.modal-layer` is
+`z-index: 200` — so the profile form paints OVER it. Measured, byte-identical to the
+reviewer: `elementFromPoint()` over the voucher's own button returns **`INPUT.inp`**, my
+e-mail field. The decision underneath is one-shot and irreversible („Toto rozhodnutie je
+jednorazové a nedá sa zmeniť") and has no dismiss — only accept or decline.
+
+⚠ The file's existing „ACCEPTED RESIDUAL — the voucher overlay" note did NOT transfer,
+and checking that was the cheap part: its whole argument is that `googlePromptEligible`
+is a SEEDED-ONCE ref and an async term would turn that seed into a `watch`. This trigger
+*is* a watch. The cost that note was protecting against does not exist here.
+
+**THE ACTUAL FIX IS NOT „MAKE IT SEVEN".** A hand-kept list under a class rule reads as
+complete; that is what failed twice. So:
+
+1. The comment now states the **derivation** — walk every overlay MOUNT (`<NeoModal>`,
+   `<LandingStateModal>`, `<NeoDrawer>`, the teleported `fixed inset-0` div) and ask „can
+   this raise with no friend action?" — and says *do not maintain the list by hand*.
+2. `portal-profile-modal.spec.js` **pins that walk in source**: every mount must be
+   either a trigger term or in a `NOT_SELF_RAISING` map WITH a reason. Proven by
+   **M24**, which adds a brand-new `<NeoModal v-if="showFakeNewSurface">` and no term:
+   the pin reds with `overlay mount(s) that are neither an auto-open trigger term nor a
+   documented non-term: ["showFakeNewSurface"]` and tells the author what to do.
+3. I re-derived the set MYSELF rather than accepting „seven": nine overlay mounts, of
+   which `showInviteModal` and the drawer need a click, `showPasswordChange` /
+   `showPasswordSet` are FOLDS inside the profile modal, `showBalancePayment` needs
+   „Zaplatiť", and `showMagicPrompt` is a banner. Seven self-raising. It agreed — but
+   the agreement is worth having only because it was checked.
+
+**An eighth term of a different kind: `showProfileModal`.** Not self-raising — already
+open. `openProfileModal()` unconditionally re-seeds all four fields, so a late hydrate
+could wipe what the friend was typing: gates clear → hydrate still in flight
+(`profilePhoneKnown` false) → friend opens Profil from the drawer and types → hydrate
+lands → watch fires → fields reset. ⚠ The shipped „unhydrated modal" test cannot see it:
+it uses `signIn()`, a RESTORE, so `freshLogin` is false and the trigger never arms.
+
+**Round-2 mutation matrix:**
+
+| # | mutation | reddened |
+|---|---|---|
+| M20 | remove `!showVoucherModal.value` | ✔ BOTH the source pin (naming `showVoucherModal`) and the behaviour test — `elementFromPoint` returned `INPUT.inp` |
+| M21 | key on `!pendingVouchers.value.length` | ✘ **nothing — and it is not a discriminating mutation**: `resolveVoucher()` filters that array, so the term does clear. Discarded rather than reported as a pass. |
+| M22 | disarm on raise („skip the profile prompt this session") | ✔ the QUEUE half — the profile modal never arrives after the friend answers |
+| M23 | remove `!showProfileModal.value` | ✔ the typed name came back as the server's — „… TYPED" wiped |
+| M24 | add an eighth overlay with no term | ✔ the source pin, by construction |
+
+⚠ **M21 is recorded because it is the honest shape of a failed probe.** The first
+direction-2 attempt did not discriminate, and the reason (the array really is filtered)
+is more useful than quietly swapping in one that works. The replacement, M22, is also
+the more realistic wrong implementation.
+
+⚠ **The voucher fixture failed on its first run and the failure looked like success.**
+A thin stub (`{id, amount}`) makes the overlay's own render throw on
+`voucher_amount.toFixed(2)`, so the overlay never appears — which is exactly what „the
+fix works" looks like. The stub carries the full shape now, and the comment says why.
+
+⚠ **Assertion ORDER inside the voucher test is deliberate.** A dialog COUNT reds under
+M20 too, but it reds *before* the `elementFromPoint` line runs — so the z-order claim
+would have been carried by a cheaper assertion and never measured. The discriminating
+assertion goes first; the counts follow.
+
+**Round-2 gate:** the same 25 files, asked 25 / **ran 25** (`diff` empty), **1001 passed
+/ 0 failed / 13 skipped, exit 0** (6.5 min) on a fresh template copy with the seed
+printing `explainer: pre-stamped 77 friend(s); 1 left unacknowledged`. Server log: 16
+lines, two errors, both deliberate test cases. The PI-T10 auto-open describe is now
+**13 tests** (10 behaviour + the source pin + the voucher + the re-prefill).
+
+**Round-2 documentation fixes:** a FOURTH falsified claim in 03 §UC-FL-009 (the „no
+helper text under the read-only row" bullet — ⚠ it lived in PROSE below the table, and
+my first sweep walked the TABLE and stopped: **grep the section, not the structure you
+expect**); and item 11's paragraph, which added three fresh raw line numbers — two
+already wrong — *three lines after item 10 records „cite test NAMES"*. ⚠ **A lesson
+written down is not a lesson applied.** Both now cite test names.
+
+### What PI-T10 LEAVES BEHIND
+
+1. ⚠⚠ **The auto-open's trigger is a LOGIN, not a session mount, and that DEPARTS from the
+   row's own note** (§1). If it is overturned, the change is one seed and ~37 fixture
+   phones. Both halves are pinned, so an overturn reds a named test rather than drifting.
+2. ⚠ **PI-T9's `LEAVES BEHIND` item 4 is DISCHARGED**: the chain is now four deep
+   (forced-password → credential-setup → Google prompt → explainer → profile), and the
+   fourth link is CODED, not structural — the reason is §2 above, not forgetfulness.
+3. ⚠⚠ **THE TRIGGER'S TERM LIST IS DERIVED, NOT MAINTAINED BY HAND — and a source pin
+   enforces that.** Clarification (c) names three gates; the trigger has **eight** terms
+   (seven self-raising surfaces + `showProfileModal`), and the list was wrong in review
+   TWICE (§12, §13). `portal-profile-modal.spec.js` now walks every overlay MOUNT in the
+   component and fails on any that is neither a trigger term nor a documented non-term,
+   so an EIGHTH self-raising overlay reds instead of stacking. **Add the mount and let
+   the pin tell you** — do not edit the list from memory.
+4. **The module-21 slot is a MARKED COMMENT directly under Mobil** in
+   `FriendPortalSession.vue` — `whatsapp_opt_in`'s `NeoCheckbox` goes there (WA-T1), and
+   the `.field-help` ORDER pin in `portal-profile-modal.spec.js` will red if a field is
+   inserted without its help. The checkbox is not a `.field-help`, so WA-T1 should expect
+   that count to stay 5 unless it adds a help line of its own.
+5. ⚠ **A fixture friend that CARD-LOGS IN needs a `phone`** (§8), the same way it needs
+   `ackExplainer()`. Three constants carry it today; a new card-login spec needs its own.
+6. **`friends.packeta_address` still has exactly ONE writer**, and the 160 lives with it
+   (§4). A second writer means moving the bound, not copying it.

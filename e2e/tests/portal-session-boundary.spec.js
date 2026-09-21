@@ -107,13 +107,25 @@ const admin = makeAdmin({
  * `reset-password` always raises `must_change_password`, so it is cleared the way
  * a real friend clears it: one login + one change.
  */
+// ⚠ 18 §UC-PI-015 (PI-T10) — see the note inside the two builders below. UNIQUE per
+// friend on purpose: the phone is now a FIELD VALUE the boundary sweep sees, so a
+// shared number would make „A's phone on B's screen" indistinguishable from „B's own".
+let boundaryPhoneSeq = 0
+const nextBoundaryPhone = () => `0900 12 3${String(++boundaryPhoneSeq).padStart(3, '0')}`
+
 async function makeFriend(label, password) {
   expect(password, 'each friend needs their OWN password — see PASSWORD_A/B').toBeTruthy()
   const u = uniq()
+  const phone = nextBoundaryPhone()
   const name = `RDFL7 ${label} ${u}`
   const username = `rdfl7${label}${u}`.toLowerCase().slice(0, 30)
 
-  const created = await admin('/api/friends', { method: 'post', data: { name } })
+  // ⚠ 18 §UC-PI-015 (PI-T10) — the phone, for the same reason as the `ackExplainer`
+  // call below: these friends log in THROUGH THE CARD, and the profile modal now
+  // AUTO-OPENS on a login for a friend with no stored phone. The surface walk here
+  // opens and counts dialogs of its own, so an uninvited one would be measured as
+  // leaked state. („Mobil *" is also required, so „Uložiť" would be disabled.)
+  const created = await admin('/api/friends', { method: 'post', data: { name, phone } })
   expect(created.status(), 'friend create').toBe(201)
   const row = await created.json()
 
@@ -157,13 +169,19 @@ async function makeFriend(label, password) {
   const inviteCode = (await code.json()).inviteCode
   expect(inviteCode, 'invite code is what the modal renders').toBeTruthy()
 
-  return { id: row.id, name, username, uid: full.uid, password, packeta: full.packeta_address || '', inviteCode }
+  return { id: row.id, name, username, uid: full.uid, password, phone, packeta: full.packeta_address || '', inviteCode }
 }
 
 /** A friend with NO personal credentials — transition mode auto-raises the setup dialog for them. */
 async function makePlainFriend(label) {
   const name = `RDFL7 ${label} ${uniq()}`
-  const created = await admin('/api/friends', { method: 'post', data: { name } })
+  const phone = nextBoundaryPhone()
+  // ⚠ 18 §UC-PI-015 (PI-T10) — the phone, for the same reason as the `ackExplainer`
+  // call below: these friends log in THROUGH THE CARD, and the profile modal now
+  // AUTO-OPENS on a login for a friend with no stored phone. The surface walk here
+  // opens and counts dialogs of its own, so an uninvited one would be measured as
+  // leaked state. („Mobil *" is also required, so „Uložiť" would be disabled.)
+  const created = await admin('/api/friends', { method: 'post', data: { name, phone } })
   expect(created.status(), 'friend create').toBe(201)
   const row = await created.json()
 
@@ -181,7 +199,7 @@ async function makePlainFriend(label) {
   expect(auth.status(), 'legacy shared-password session for a credential-less friend').toBe(200)
   await ackExplainer(ctx, { id: row.id, token: (await auth.json()).token })
 
-  return { id: row.id, name, uid: row.uid || '' }
+  return { id: row.id, name, uid: row.uid || '', phone }
 }
 
 /**
@@ -424,7 +442,10 @@ test.describe('⚠ nothing crosses the session boundary (the whole friend surfac
     await loginAs(b)
     await walkAuthenticated(page, { fill: false, snaps, label: 'B' })
 
-    assertNoCarryOver(snaps, ['', b.name, b.username, b.uid, b.packeta])
+    // ⚠ `b.phone` joins the allow-list (18 §UC-PI-015, PI-T10): the profile modal now
+    // renders a required Mobil, so B's own number is a legitimate field value. A's is
+    // swept as a secret two lines down, which is what keeps invariant 3 meaningful.
+    assertNoCarryOver(snaps, ['', b.name, b.username, b.uid, b.packeta, b.phone])
 
     // Belt and braces on the thing the three invariants abstract over: NOTHING
     // that identifies friend A may appear anywhere on friend B's screen —
@@ -432,7 +453,7 @@ test.describe('⚠ nothing crosses the session boundary (the whole friend surfac
     // because it is not a "value the user typed" (so `SENTINEL-` cannot cover
     // it) and it is an identity: whoever registers through it is credited to A.
     const values = snaps.flatMap((s) => s.fields.map((f) => f.value)).filter(Boolean)
-    for (const secret of [a.name, a.username, a.password, a.uid, a.inviteCode]) {
+    for (const secret of [a.name, a.username, a.password, a.uid, a.inviteCode, a.phone]) {
       expect(values, `${secret} in a field B can see: ${JSON.stringify(values)}`).not.toContain(secret)
       for (const s of snaps) {
         expect(s.html, `${s.label}: renders friend A's ${secret}`).not.toContain(secret)
@@ -500,7 +521,8 @@ test.describe('⚠ nothing crosses the session boundary (the whole friend surfac
     await expect(page.getByRole('dialog')).toHaveCount(0)
     await walkAuthenticated(page, { fill: false, snaps, label: 'B' })
 
-    assertNoCarryOver(snaps, ['', b.name, b.uid])
+    // ⚠ `b.phone` — see the modern-login test above (18 §UC-PI-015, PI-T10).
+    assertNoCarryOver(snaps, ['', b.name, b.uid, b.phone])
   })
 
   // -------------------------------------------------------------------------

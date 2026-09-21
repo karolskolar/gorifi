@@ -155,6 +155,10 @@ const props = defineProps({
   //   · `explainerPending` — 18 §UC-PI-013. TRUE only on a LOGIN whose friend has
   //     never acknowledged „Ako to funguje"; a restore never sets it. Read ONCE, at
   //     mount, into `explainerGate` below — it is a one-shot instruction, not state.
+  //   · `freshLogin` — 18 §UC-PI-015 (PI-T10). TRUE on a LOGIN, absent on a restore,
+  //     same boundary as `explainerPending` and for the same stated reason. Read ONCE
+  //     into `profileAutoOpenArmed`; it carries NO phone number (none of the login
+  //     payloads does), so the auto-open waits on `hydrateCurrentFriend`.
   entry: { type: Object, default: () => ({}) },
   // ⚠ CONFIGURATION, not handshake state — the parent's two `GET /friends/auth-mode`
   // values, passed down rather than re-fetched. They are props (not `entry` keys)
@@ -1650,6 +1654,140 @@ function onExplainerDone(payload) {
 }
 
 // ---------------------------------------------------------------------------
+// 18 §UC-PI-015 + PO 2026-09-19(c) — THE PROFILE MODAL'S AUTO-OPEN (PI-T10)
+// ---------------------------------------------------------------------------
+
+/**
+ * „This login has not yet been shown the profile modal." ONE-SHOT, session-scoped.
+ *
+ * ⚠ IT IS A REF ON THE SESSION SIDE of the parent's `v-if` + `:key="sessionSeq"` —
+ * the six-leak boundary §UC-PI-001 states. A logout destroys it; there is no
+ * `localStorage`, no module scope (`<script setup>` has none), nothing keyed on the
+ * friend id. „Dismissible per session" is exactly this ref being lowered when the
+ * modal opens: the friend closes it and it does not come back until the NEXT LOGIN.
+ *
+ * ⚠ SEEDED FROM `entry.freshLogin`, which only the three LOGIN paths pass — see
+ * `FriendPortal.vue beginSession`. A restore (every reload, every deep link) leaves
+ * it false, inheriting §UC-PI-013's „a restore is not a login" boundary verbatim.
+ */
+const profileAutoOpenArmed = ref(!!props.entry?.freshLogin)
+
+/**
+ * ⚠ THE HYDRATE GATE, and it is a `hasOwnProperty`, not a truthiness test.
+ *
+ * `phone` is in NONE of the login payloads (PI-T9 pinned that set), so `props.friend`
+ * carries no `phone` KEY until `hydrateCurrentFriend()`'s `GET /:id/profile` lands.
+ * `!props.friend?.phone` would therefore be `true` for every friend for the first few
+ * hundred milliseconds of every login — including friends who HAVE a phone, who would
+ * see the modal flash open and (worse) stay open. Asking whether the key EXISTS is
+ * what turns „I do not know yet" into „not yet", and it is also what puts this last in
+ * the precedence chain for free: the fetch settles after the gates have painted.
+ *
+ * ⚠ A FAILED hydrate therefore never auto-opens. Accepted and deliberate: that fetch
+ * is documented fire-and-forget and allowed to fail silently, and the cost of a miss
+ * is one more prompt at the next login — the same trade `onExplainerDone` makes.
+ */
+const profilePhoneKnown = computed(
+  () => !!props.friend && Object.prototype.hasOwnProperty.call(props.friend, 'phone')
+)
+const profilePhoneMissing = computed(() => !String(props.friend?.phone ?? '').trim())
+
+/**
+ * ⚠⚠ PRECEDENCE IS CODED HERE, AND THAT IS THE OPPOSITE OF PI-T9'S EXPLAINER — say
+ * why, because the next reader will see the disagreement.
+ *
+ * The explainer gate is a `router.replace`: a VIEW, which the forced-password gate and
+ * the Google prompt simply paint over, so its precedence is structural and coding it
+ * would have INVERTED the rule (learnings 10 §PI-T9.10). This one is a `NeoModal`, and
+ * a modal opened while another modal is up does not wait underneath it — it stacks,
+ * traps focus against its sibling and puts a scrim over a gate the friend cannot
+ * dismiss. So the three gates PO clarification (c) names are terms in the trigger,
+ * read REACTIVELY (each of them clears in place when the friend satisfies it, and this
+ * modal is supposed to arrive at exactly that moment).
+ *
+ * ⚠⚠ THE TERM LIST IS „EVERY SURFACE THAT RAISES ITSELF WITHOUT THE FRIEND ASKING",
+ * NOT „the gates clarification (c) names". PI-T10's first pass enumerated the latter
+ * and shipped a measured defect: on a CLOSED landing — the normal state for most of the
+ * month — a phone-less friend got `dialogs=2`, „Objednávky sú zatvorené" AND „Upraviť
+ * profil", scrim over scrim. Found in review by BUILDING that login rather than reading
+ * the list. The class is the standing one: a rule stated narrower than what it protects
+ * reads as licence for everything it failed to name — and this comment is where that
+ * class is supposed to be caught.
+ *
+ * ⚠⚠ THE LIST BELOW IS DERIVED, AND THE DERIVATION IS THE PART THAT MATTERS — because
+ * a hand-kept list under a class rule reads as complete and has now been wrong TWICE
+ * (round 1 missed the two landing state modals; round 2 missed the voucher overlay).
+ * THE DERIVATION: walk every overlay MOUNT in this file's template — `<NeoModal>`,
+ * `<LandingStateModal>`, `<NeoDrawer>`, and the teleported `fixed inset-0` voucher div —
+ * and ask of each „can this raise with NO friend action?" Yes ⇒ it is a term.
+ * ⚠ `portal-profile-modal.spec.js` PINS THAT WALK IN SOURCE, so an EIGHTH self-raising
+ * overlay reds instead of silently stacking. Do not maintain the list by hand; add the
+ * mount and let the pin tell you.
+ *
+ * The seven self-raising surfaces, and why each is one:
+ *   · `forcedPasswordChange`  — 03 §UC-FL-012, non-dismissable `NeoModal`.
+ *   · `showCredentialSetup`   — 03 §UC-FL-011, auto-raised from the same handshake.
+ *   · `showGooglePrompt`      — 10 §UC-GA-006.
+ *   · `explainerGate`         — 18 §UC-PI-013 (a VIEW, but it owns that first login).
+ *   · `showClosedModal` / `showLockedModal` — 18 §UC-PI-006/007, the landing STATE
+ *     modals. They raise themselves with no friend action, exactly like the rest,
+ *     and they are the common case rather than the edge.
+ *   · `showVoucherModal`      — 05 §UC-KG: `onMounted` AWAITS `checkPendingVouchers()`
+ *     and it raises the overlay with no friend action. ⚠ It is the worst one to stack
+ *     on: it is a hand-rolled `fixed inset-0 z-50` teleport while `.modal-layer` is
+ *     `z-index: 200`, so the profile form paints OVER it — measured,
+ *     `elementFromPoint()` over the voucher's own button returned `INPUT.inp` — and the
+ *     decision under it („Toto rozhodnutie je jednorazové a nedá sa zmeniť") is
+ *     irreversible and cannot be dismissed, only answered.
+ *     ⚠ The „ACCEPTED RESIDUAL — the voucher overlay" note further up this file does
+ *     NOT license leaving it out: its whole argument is that `googlePromptEligible` is
+ *     a SEEDED-ONCE ref and an async term would turn that seed into a `watch`. This
+ *     trigger is already a watch, so the term costs nothing that argument was protecting.
+ * Only the first, third and fourth are in clarification (c); the rest were added
+ * deliberately and are each pinned by a test that reds when the term is deleted.
+ *
+ * ⚠ NOT self-raising, so NOT terms (each checked, not assumed): `showInviteModal` and
+ * `showBalancePayment` need a friend's click; `showPasswordChange` / `showPasswordSet`
+ * are FOLDS inside the profile modal, not overlays; the drawer needs the hamburger.
+ *
+ * ⚠ QUEUE BEHIND, NOT IN FRONT. Every term is a `computed`/`ref` that clears in place,
+ * so the profile modal arrives the moment the friend dismisses whatever was there —
+ * which is clarification (c)'s „runs AFTER … resolve", not a race for the same layer.
+ * ⚠ `showMagicPrompt` is NOT a term: its mount is `div.banner[data-testid="magic-prompt"]`,
+ * not a modal, so there is nothing to stack on. (The first draft cited a LINE NUMBER
+ * here and it was wrong twice over — stale when written, and staler once this very
+ * comment grew. Cite the selector.)
+ */
+watch(
+  () => profileAutoOpenArmed.value
+    && !forcedPasswordChange.value
+    && !showCredentialSetup.value
+    && !showGooglePrompt.value
+    && !explainerGate.value
+    && !showClosedModal.value
+    && !showLockedModal.value
+    && !showVoucherModal.value
+    // ⚠ NOT a self-raising surface — a term of a DIFFERENT kind, and the only one.
+    // `openProfileModal()` unconditionally re-seeds all four fields from `props.friend`,
+    // so without this the auto-open can fire on a modal the friend ALREADY HAS OPEN and
+    // wipe what they typed: hydrate is still in flight (`profilePhoneKnown` false, so the
+    // trigger is false), the friend opens Profil from the drawer and starts typing, the
+    // profile GET lands, and the watch re-prefills over them. Narrow and recoverable,
+    // and one term in an expression that already had to be right.
+    && !showProfileModal.value
+    && profilePhoneKnown.value
+    && profilePhoneMissing.value,
+  (ready) => {
+    if (!ready) return
+    // Lowered FIRST, so closing the modal cannot re-arm it and a later flip of any
+    // gate term cannot open it a second time in this session.
+    profileAutoOpenArmed.value = false
+    openProfileModal()
+  },
+  { immediate: true }
+)
+
+// ---------------------------------------------------------------------------
 // 18 §UC-PI-009 — „MOJE OBJEDNÁVKY", THE HISTORY VIEW (PI-T6).
 //
 // The rounds the friend actually ordered in, newest first, each a card with a short
@@ -1833,7 +1971,12 @@ function openProfileModal() {
 }
 
 async function saveProfile() {
-  if (!profileName.value.trim()) return
+  // ⚠ 18 §UC-PI-015 — the JS half of the two disabled terms. A `disabled` attribute
+  // does NOT stop a dispatched click reaching the handler (CLAUDE.md), and the modal
+  // can also be submitted from the keyboard, so both required fields are re-checked
+  // here. Mobil joined `name` with PI-T10; the SERVER refuses a blank phone too
+  // (400 `{field:'phone'}`), which is the rule this guard only mirrors.
+  if (!profileName.value.trim() || !profilePhone.value.trim()) return
 
   profileSaving.value = true
   // A retry must not leave the previous attempt's banner standing (RD-FL-3).
@@ -2915,10 +3058,18 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
            re-confirmed by FUP-T20's product decision: the admin renames, and
            module 10's Google login likely removes the need entirely). -->
       <div v-if="friend?.username">
-        <label id="pp-profile-username-lbl" class="field-lbl">Užívateľské meno</label>
+        <!-- ⚠ 18 §UC-PI-015 (PI-T10) — the label is „Login", not „Užívateľské meno".
+             §19 (newest) renames THIS row and only this row: the LOGIN SCREEN keeps
+             „Užívateľské meno" (03 §UC-FL-002) and so do both username-setup dialogs
+             further down this file (`pp-first-username`, `pp-setup-username`). The help
+             line is worded „…ktorým sa prihlasujete…" — a VERB — on purpose: FUP-T20's
+             source grep covers this file and the forbidden ADJECTIVE may not appear in
+             it, copy or comment (CLAUDE.md / 07 §UC-IA-007). -->
+        <label id="pp-profile-username-lbl" class="field-lbl">Login</label>
         <div class="copyrow">
           <div class="val" aria-labelledby="pp-profile-username-lbl" data-testid="profile-username">{{ friend.username }}</div>
         </div>
+        <div class="field-help">Meno, ktorým sa prihlasujete. Nemení sa.</div>
       </div>
     </div>
 
@@ -2932,52 +3083,71 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
          ⚠ THE GUARD NOW COVERS THIS FILE TOO — see CLAUDE.md / 07 §UC-IA-007: it
          must return nothing for `AdminFriends.vue` AND `FriendPortalSession.vue`,
          which is why no string here (copy or comment) spells out the forbidden
-         adjective. The login is the read-only `Užívateľské meno` box above (and it
+         adjective. The login is the read-only `Login` box above (⚠ relabelled from
+         „Užívateľské meno" by PI-T10, 18 §UC-PI-015 row 1 — this sentence named the
+         old label for eight lines after the label moved, and the grep guard cannot
+         see a stale reference, only a forbidden stem) (and it
          stays read-only by product decision); `friends.name` is the PACKETA
          DELIVERY name, which is why it is required and why the help text says so. -->
     <div>
       <label class="field-lbl" for="pp-profile-name">Meno a priezvisko *</label>
+      <!-- ⚠ `maxlength` ADDED BY PI-T10 (§UC-PI-015 row 2 names 120 = MAX_NAME_LENGTH).
+           It was the ONE server bound on this form with no mirror — measured, not
+           assumed: the field contract test reddened on `maxlength=null` here while the
+           phone/e-mail/Packeta mirrors were all in place. CLAUDE.md's rule („server
+           length bounds are mirrored as maxlength in the UI") had a hole exactly here. -->
       <input
         id="pp-profile-name"
         v-model="profileName"
         class="inp"
+        maxlength="120"
         :disabled="profileSaving"
       />
       <div class="field-help">Celé meno. Uvádza sa na zásielke pri doručení Packetou a vidí ho správca aj kolegovia.</div>
     </div>
 
-    <div>
-      <label class="field-lbl" for="pp-profile-packeta">Adresa Packeta výdajného miesta</label>
-      <input
-        id="pp-profile-packeta"
-        v-model="profilePacketaAddress"
-        class="inp"
-        placeholder="napr. Z-BOX Hlavná 15, Bratislava"
-        :disabled="profileSaving"
-      />
-      <div class="field-help">Predvolená adresa pre doručenie Packetou (voliteľné).</div>
-    </div>
-
     <!-- UC-FC-009: the friend's own contact data. Mobil keeps its format-example
          placeholder (a format example, not a label substitute — the admin modal
-         does the same); Email has NO placeholder (the 2026-08-10 no-placeholder
-         login decision) and carries the vy-form recovery hint verbatim.
-         `maxlength` mirrors the server bounds (MAX_PHONE_LENGTH 32 /
-         MAX_EMAIL_LENGTH 160 — the GSO-T3 mirror convention). -->
+         does the same); E-mail has NO placeholder (the 2026-08-10 no-placeholder
+         login decision). `maxlength` mirrors the server bounds (MAX_PHONE_LENGTH 32 /
+         MAX_EMAIL_LENGTH 160 — the GSO-T3 mirror convention).
+
+         ⚠ 18 §UC-PI-015 (PI-T10) — THE ORDER OF THIS BODY IS THE CONTRACT, and it
+         changed: Login → Meno a priezvisko → Mobil → E-mail → Adresa Packeta. The
+         Packeta address moved to LAST (it is the optional one), and Mobil moved ahead
+         of E-mail because Mobil is now REQUIRED. `portal-profile-modal.spec.js` pins
+         the `.field-help` sequence, so a field moved here without its help moving reds
+         that test. -->
     <div>
-      <label class="field-lbl" for="pp-profile-phone">Mobil</label>
+      <!-- ⚠ REQUIRED since PI-T10 (§UC-PI-015 row 3): the star is not decoration —
+           `PATCH /friends/:id/profile` answers 400 `{field:'phone'}` on a blank phone
+           (this route only; the admin PATCH may still clear one), and „Uložiť" is
+           disabled while it is empty. `type="tel"` is new too. -->
+      <label class="field-lbl" for="pp-profile-phone">Mobil *</label>
       <input
         id="pp-profile-phone"
         v-model="profilePhone"
         class="inp"
+        type="tel"
         maxlength="32"
         placeholder="+421 900 000 000"
         :disabled="profileSaving"
       />
+      <div class="field-help">Pre koordináciu objednávky a odovzdanie.</div>
     </div>
 
+    <!-- ⚠⚠ MODULE 21 SLOT — `friends.whatsapp_opt_in` (18 §UC-PI-015 row 3½, backlog
+         WA-T1). The WhatsApp opt-in `NeoCheckbox` row goes HERE, directly under Mobil
+         and directly above E-mail, and its label + privacy sentence are module 21's
+         strings, not this module's. PI-T10 renders NOTHING for it on purpose: an empty
+         marker is what keeps the field ORDER above stable when the checkbox lands.
+         Do not move this comment when adding fields. -->
+
     <div>
-      <label class="field-lbl" for="pp-profile-email">Email</label>
+      <!-- ⚠ „E-mail", with the hyphen (§UC-PI-015 row 4). It used to be „Email"; the
+           two are DIFFERENT strings to `getByLabel`, which substring-matches, so the
+           rename is a real retarget rather than cosmetics. -->
+      <label class="field-lbl" for="pp-profile-email">E-mail</label>
       <input
         id="pp-profile-email"
         v-model="profileEmail"
@@ -2986,7 +3156,26 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
         maxlength="160"
         :disabled="profileSaving"
       />
-      <div class="field-help">Bez e-mailu vám nevieme poslať odkaz na obnovenie prístupu.</div>
+      <!-- ⚠ REPLACES „Bez e-mailu vám nevieme poslať odkaz na obnovenie prístupu."
+           (§UC-PI-015 row 4). The recovery half survives inside the new sentence; the
+           Packeta half is new, and it is why the field is worth keeping at all now
+           that Mobil carries the coordination duty. The ADMIN modal's own hint („Bez
+           e-mailu sa priateľovi nedá poslať…") is a different string on a different
+           surface and is untouched. -->
+      <div class="field-help">Voliteľné. Packeta naň posiela informácie o zásielke; slúži aj na obnovenie prístupu.</div>
+    </div>
+
+    <div>
+      <label class="field-lbl" for="pp-profile-packeta">Adresa Packeta výdajného miesta</label>
+      <input
+        id="pp-profile-packeta"
+        v-model="profilePacketaAddress"
+        class="inp"
+        maxlength="160"
+        placeholder="napr. Z-BOX Hlavná 15, Bratislava"
+        :disabled="profileSaving"
+      />
+      <div class="field-help">Predvolená adresa pre doručenie Packetou (voliteľné).</div>
     </div>
 
     <!-- Password-change fold — only for friends who HAVE a password (repo
@@ -3285,7 +3474,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
       <button
         type="button"
         class="btn accent"
-        :disabled="!profileName.trim() || profileSaving"
+        :disabled="!profileName.trim() || !profilePhone.trim() || profileSaving"
         @click="saveProfile"
       >
         {{ profileSaving ? 'Ukladám...' : 'Uložiť' }}

@@ -76,6 +76,13 @@ const STRIP_RE = /google_sub/
 
 let seq = 0
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
+
+// ⚠ 18 §UC-PI-015 (PI-T10) — every fixture friend in this file that LOGS IN gets a
+// phone. „Mobil *" is required on the self-edit route from PI-T10 on, and the profile
+// modal auto-opens on a login when the stored phone is empty; without this, every
+// §UC-GA-006 prompt / §UC-GA-007 profile test in this file would be measuring a second
+// modal that opened by itself. Same containment shape as PI-T9's `explainerSeen`.
+const GA_FIXTURE_PHONE = '0900 123 456'
 const tag = (label) => `${label}-${uniq}-${++seq}`
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -153,7 +160,12 @@ function makeApi(ctx, adminToken, dbPath) {
     async friendWithLogin(label, { keepForcedChange = false, explainerSeen = true } = {}) {
       const name = `GA4 ${label}`
       const username = `ga4${label}`.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 30)
-      const created = await ctx.post('/api/friends', { headers: admin(), data: { name } })
+      // ⚠ 18 §UC-PI-015 (PI-T10) — THE PHONE IS LOAD-BEARING, same shape as the
+      // `explainerSeen` stamp above it. „Mobil *" is required on the friend's own
+      // profile route now, and the profile modal AUTO-OPENS on a LOGIN for a friend
+      // whose stored phone is empty — which would put a second `NeoModal` on top of
+      // every §UC-GA-006 prompt and §UC-GA-007 profile test in this file.
+      const created = await ctx.post('/api/friends', { headers: admin(), data: { name, phone: GA_FIXTURE_PHONE } })
       expect(created.status(), 'friend create').toBe(201)
       const friend = await created.json()
       expect((await ctx.put(`/api/friends/${friend.id}/admin-username`, {
@@ -214,7 +226,12 @@ function makeApi(ctx, adminToken, dbPath) {
     // ── GA-T5 (§UC-GA-004) ───────────────────────────────────────────────────
     /** A friend with NO credentials at all — the `warning: 'no_password'` fixture. */
     async plainFriend(label, { explainerSeen = true } = {}) {
-      const created = await ctx.post('/api/friends', { headers: admin(), data: { name: `GA5 ${label}` } })
+      // ⚠ 18 §UC-PI-015 (PI-T10) — THE PHONE IS LOAD-BEARING, same shape as the
+      // `explainerSeen` stamp above it. „Mobil *" is required on the friend's own
+      // profile route now, and the profile modal AUTO-OPENS on a LOGIN for a friend
+      // whose stored phone is empty — which would put a second `NeoModal` on top of
+      // every §UC-GA-006 prompt and §UC-GA-007 profile test in this file.
+      const created = await ctx.post('/api/friends', { headers: admin(), data: { name: `GA5 ${label}`, phone: GA_FIXTURE_PHONE } })
       expect(created.status(), 'friend create').toBe(201)
       const friend = await created.json()
       // ⚠ PI-T9 (18 §UC-PI-013), same default and same reason as `friendWithLogin`
@@ -3358,7 +3375,7 @@ test.describe('§UC-GA-008 — the invite-registration Google block', () => {
 
     const name = `GA8 Inviter ${uniq}`
     const username = `ga8i${uniq}`.replace(/[^a-z0-9_]/g, '').slice(0, 30)
-    const created = await inviteCtx.post('/api/friends', { headers: adminHeaders, data: { name } })
+    const created = await inviteCtx.post('/api/friends', { headers: adminHeaders, data: { name, phone: GA_FIXTURE_PHONE } })
     expect(created.status(), 'friend create').toBe(201)
     const friend = await created.json()
     expect((await inviteCtx.put(`/api/friends/${friend.id}/admin-username`, {
@@ -4033,7 +4050,7 @@ test.describe('§UC-GA-009 — the approval dialog\'s Google line', () => {
     const headers = { 'X-Admin-Token': uiAdminToken }
     const name = `GA9 Inviter ${uniq}`
     const username = `ga9i${uniq}`.replace(/[^a-z0-9_]/g, '').slice(0, 30)
-    const created = await uiCtx.post('/api/friends', { headers, data: { name } })
+    const created = await uiCtx.post('/api/friends', { headers, data: { name, phone: GA_FIXTURE_PHONE } })
     expect(created.status(), 'friend create').toBe(201)
     const friend = await created.json()
     expect((await uiCtx.put(`/api/friends/${friend.id}/admin-username`, { headers, data: { username } })).status()).toBe(200)
