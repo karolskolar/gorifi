@@ -298,6 +298,8 @@ append the full write-up to the matching learnings file and add at most one line
   honours a supplied one only while NULL. That branch is not dead code; deleting it reintroduces FUP-T20's
   portal-side rename on a credential route.
 
+- Guest Packeta surfaces (GP-T4) key on `packeta_address`, never the fee: the status-page edit SAVE always sends `use_parcel_delivery` (`parcelEnabled && method==='packeta'`, else `false`; cancel stays literal `{items: []}`), and the host card renders NO `guest-delivered` tick on a Packeta row (JS guard too), drops it from `pendingDelivery`, and keeps `totals` product-only (learnings 12 §23–28).
+
 ### Frontend
 - `.app > *` is `position:relative; z-index:1` at (0,1,0) and loads after Tailwind — `fixed/sticky/absolute/z-*`
   on a DIRECT child of `.app` silently compute `relative/1`. Overlays: `NeoModal`, `NeoDrawer`, radix `Dialog`, or

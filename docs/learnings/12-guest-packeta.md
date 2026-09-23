@@ -363,3 +363,97 @@ measured a corrupted tree (M11 was then added because that accident proved it re
 - GP-T4: mount `GuestDeliveryChoice` in edit mode (seed from `order.packeta_address`), import
   `EMAIL_SHAPE` from `lib/email-shape.js`, build the ALWAYS-sent delivery block yourself.
 - WA-T1: the D6 sentence „Na toto číslo vám pošleme správu…" goes into this checkout modal.
+
+---
+
+## GP-T4 — the status page's Packeta state + edit mode, and the host card (2026-09-23)
+
+**What shipped.** `views/GuestOrderStatus.vue` (read view: header sub „…organizuje {host} ·
+doručí Packeta", the „Doručí Packeta" `statuspill off` REPLACING the delivered pill, the fee as a
+`CartLineList` extra `status-delivery-fee`, `status-total` = `payment.amount`, the point card
+`status-packeta-card` also on a cancelled order; edit mode: `edit-delivery-card` hosting
+`GuestDeliveryChoice` above the grid, the write-once „E-mail *" `edit-guest-email`, the
+parcels-gone `edit-parcel-unavailable` warn banner, the cartbar fee + `edit-delivery-fee` sub-line,
+client validation into `edit-error`) and `components/GuestSubOrders.vue` (red `.badge.danger`
+„Packeta" + mono point + „Tento kolega dostane balík Packetou — nemusíte nič odovzdávať." inside
+the name block, no `guest-delivered-{id}` on Packeta rows + a JS guard in `toggleDelivered`,
+`pendingDelivery` excludes them, fee-inclusive `.foot .total` + `guest-total-breakdown-{id}`).
+No server change. `guest-packeta.spec.js` +16 tests (72 total).
+
+### 23. „Always send the delivery block" vs „absent = untouched" — both hold, for different clients
+
+GP-T2's seam said „send `use_parcel_delivery` ONLY from the delivery card"; GP-T3's said „the
+ALWAYS-sent delivery block"; §UC-GP-007 item 9 says „always sent in edit mode". The orchestrator
+ruled: follow the spec. So every non-empty SAVE from this screen carries the flag — `true` only
+for a Packeta choice on a round with `parcel_enabled`, `false` otherwise (via_host, a parcel-off
+round, and the parcels-gone banner, which is rule 5's `false` by construction). GP-T2's
+„absent/null = untouched" contract is unchanged and still pinned API-level — it serves every OTHER
+client (and the shipped items-only PUT). Consequence recorded: a plain via_host save on a
+parcel-OFF round now writes `delivery_fee = 0, packeta_address = NULL` through the `false`
+statement instead of the shipped two-column one — the same values, no shipped pin reads the
+request body of a non-cancel save (grepped: `guest-status-shell.spec.js`'s `recordWrites` pins
+only cancels). The CANCEL payload is untouched: `confirmCancel()` sends the literal
+`{ items: [] }` (it now calls `submitEdit({ items: [] })` — `submitEdit` takes the whole body).
+
+### 24. The edit-mode guard is `parcelEnabled && method === 'packeta'`, exactly as the checkout's
+
+On the parcels-gone state the method is SEEDED `'packeta'` (the order has a point) while no card
+renders. A raw `method === 'packeta'` would send `true` and meet the server's 400 — mutation M7
+reds only the parcels-gone test, which is the one that proves the guard.
+
+### 25. The write-once e-mail input asks the LOADED order, never the form
+
+`editNeedsEmail = editIsPacketa && !order.guest_email`. After a save that stored an e-mail the
+re-entered edit shows no input (pinned). The server ignores a body e-mail beside a stored one
+(GP-T2 §10), so this is UX — but the spec's „never shown when an e-mail exists" is the identity
+freeze on this surface. `guest-status-shell.spec.js:513`'s „`input` count 0 in edit mode" holds
+because its fixtures are parcel-off (no radios, no inputs); the view's header claim „Items-only by
+construction" is struck + pointed at this row.
+
+### 26. The host tick is ABSENT, not disabled — and the handler refuses too
+
+`v-if="!isPacketa(subOrder)"` on the whole `<label>`, plus `isPacketa` in `toggleDelivered`'s
+early return (a dispatched click ignores a missing/disabled control — CLAUDE.md). `PATCH
+…/delivered` is untouched server-side (§UC-GP-008 rule 2 — harmless, recorded): the status-page
+test ticks a Packeta bag through the API and asserts the page STILL renders no delivered pill,
+which is what discriminates „replaced" from „both" (M1).
+
+### 27. `pendingDelivery` vs `count` — the fixture that tells them apart
+
+The tab badge is `isLocked && pendingDelivery > 0 ? pendingDelivery : count`. One Packeta + one
+via_host live row on a LOCKED round ⇒ `1` (count would be `2`); ticking the via_host row drops
+`pendingDelivery` to 0 and the badge falls back to `count` = `2`. Both halves pinned. `count` and
+`totals` are unchanged — a Packeta colleague is still a colleague, and the heading's
+„spolu {totals.total}" stays product-only (GSO-T5, asserted by API `{count:2,total:49.8}` AND on
+screen).
+
+### 28. The badge lives in the NAME BLOCK, so two shipped pins keep their meaning
+
+Outside `sub-order-badges` (its „exactly one" pin), inside the fold `<button>` as `display:block`
+spans (no `<div>` in a button). ⚠ `colleagues-panel.spec.js`'s card-wide
+`card.locator('.badge').count() === 1 + group headers` WOULD count the Packeta badge — it holds
+only because every shipped fixture is via_host; a future Packeta fixture in that file must add 1.
+A cancelled Packeta row keeps the badge + point (the record) but NOT the „nemusíte nič
+odovzdávať" sentence, and its struck amount stays `cancelledTotal()` (items).
+
+### 29. The foot total's wrapper
+
+`.foot .total` now sits in a column `<div>` with the optional breakdown `.sub` — on EVERY row, so
+the DOM shape does not branch on the fee. `colleagues-panel`'s font/family pin reads `.total`
+itself and is unaffected.
+
+### Mutations (fresh boot, `guest-packeta.spec.js -g GP-T4`, each rebuilt)
+
+M1 delivered pill kept beside the Packeta one (1 red) · M2 `status-total` = `order.total` (3) ·
+M3 point card hidden when cancelled (1) · M4 block sent only for Packeta (2) · M5 e-mail input
+despite a stored e-mail (3) · M6 client validation skipped (1) · M7 `editIsPacketa` not
+parcel-guarded (1) · M8 `pendingDelivery` counts Packeta (2) · M9 tick on Packeta rows (2) · M10
+host foot product-only (1) · M11 badge inside `sub-order-badges` (1) · M12 cancelled row drops the
+badge (1) · M13 cartbar without the fee (2) · M14 no re-seed on edit entry (1) · M15 no
+parcels-gone banner (1). All 15 red.
+
+### Seams
+
+- GP-T5: the admin nested row / receivables are untouched here; `GuestDeliverySwitch.vue` is its.
+- GP-T6: the host card still lists a Packeta sub-order under the host (this module's host view is
+  `GUEST_ORDER_FIELDS`-driven); only the `/distribution` payload splits it into its own party.

@@ -29,6 +29,8 @@ import { decode as decodeBySquare } from '../../frontend/node_modules/bysquare/l
 import { EMAIL_SHAPE as CLIENT_EMAIL_SHAPE } from '../../frontend/src/lib/email-shape.js'
 import { BANNED } from '../helpers/vocabulary.js'
 import { collectAppCopy } from '../helpers/copy-sweep.js'
+// GP-T4 (20 §UC-GP-008) — the ONE home of portal → order-screen navigation.
+import { gotoCycle as portalGotoCycle } from '../helpers/portal.js'
 import {
   withMailHarness, multipartFields, CAN_SPAWN_BACKEND, FAKE_MAILGUN_KEY, STUB_MAILGUN_DOMAIN,
 } from '../mailgun-harness.js'
@@ -1701,5 +1703,523 @@ test.describe('GP-T3 · source pins — one home, and what this row must NOT tou
     expect(view).toMatch(/data-testid="cart-total">Celkom: \{\{ fmtEur\(cartTotal\) \}\}</)
     // The Platba modal is fed the SERVER's amount, never a client sum.
     expect(view).toMatch(/:amount="confirmation\.payment\.amount"/)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GP-T4 — 20 §UC-GP-007 (the status page: Packeta state, point, edit mode) and
+// §UC-GP-008 + §UC-GP-004's host row (`GuestSubOrders.vue`: badge, point, „nemusíte
+// nič odovzdávať", no hand-over tick, fee-inclusive foot). UI rows on the shared
+// target — every state here is reachable through the real API, so nothing is mocked.
+//
+// ⚠ PO copy (DRAFT, staging sign-off — PO 2026-09-19), transcribed from the spec and
+// hoisted so a sign-off edit is a known two-place change (these + the two .vue files).
+// ═════════════════════════════════════════════════════════════════════════════
+const GP4_SUB_HOST = (host) => `Vaša objednávka · organizuje a odovzdá ${host}`
+const GP4_SUB_PACKETA = (host) => `Vaša objednávka · organizuje ${host} · doručí Packeta`
+const GP4_PILL = 'Doručí Packeta'
+const GP4_FEE_LINE = 'Doručenie Packetou'
+const GP4_POINT_LBL = 'Výdajné miesto Packeta'
+const GP4_POINT_SUB = (email) => `Packeta vám pošle informácie o zásielke na ${email}.`
+const GP4_PARCEL_GONE = (host) => `Doručenie Packetou už nie je dostupné — objednávku vám odovzdá ${host}.`
+const GP4_EDIT_FEE = (fee) => `+ ${fee} doručenie Packetou`
+const GP4_HOST_NOTE = 'Tento kolega dostane balík Packetou — nemusíte nič odovzdávať.'
+const GP4_BREAKDOWN = (total, fee) => `(${total} + ${fee} doručenie)`
+
+const gp4Email = () => `gp4.${uniq}.${++phoneSeq}@example.test`
+
+/** A guest status page for `order`, on the canonical URL, at the phone width. */
+async function gp4Status(page, order) {
+  await page.setViewportSize(GP3_PHONE)
+  await page.goto(`/g/o/${order.order.order_token}`)
+  await expect(page.getByTestId('guest-status')).toBeVisible()
+}
+
+/** Every PUT this page sends for `orderToken`, parsed. */
+function gp4Writes(page, orderToken) {
+  const writes = []
+  page.on('request', (r) => {
+    if (r.method() === 'PUT' && r.url().includes('/api/guest/') && r.url().includes(orderToken)) {
+      writes.push(JSON.parse(r.postData() || 'null'))
+    }
+  })
+  return writes
+}
+
+const gp4EditRow = (page, testid) => page.locator('label.radiorow', { has: page.getByTestId(testid) })
+
+test.describe('GP-T4 · 20 §UC-GP-007 — the status page READ view', () => {
+  test('a Packeta order: header „doručí Packeta", the pill REPLACES the delivered one, fee line, fee-inclusive total, point card', async ({ page }) => {
+    const s = await scenario('gp4read', { fee: 3.5 })
+    const email = gp4Email()
+    const o = await submitOk(s.link.token, packetaBody(s.items, { guest_email: email }))
+    // The host ticks the bag „odovzdané" through the (unchanged) API — the page must
+    // STILL not render the delivered pill: the flag is meaningless for a bag the host
+    // never holds (§UC-GP-007 item 2; §UC-GP-008 rule 2 — no 409 is added).
+    const tick = await ctx.patch(`/api/guest-orders/${o.order.id}/delivered`, { headers: s.host.auth, data: { delivered: true } })
+    expect(tick.status(), 'PATCH …/delivered is unchanged server-side').toBe(200)
+    const first = s.host.name.split(' ')[0]
+
+    await gp4Status(page, o)
+    await expect(page.getByTestId('guest-status').locator('.sub').first()).toHaveText(GP4_SUB_PACKETA(first))
+
+    await expect(page.getByTestId('status-paid'), 'the paid pill is unchanged').toHaveText('Nezaplatené')
+    const pill = page.getByTestId('status-packeta')
+    await expect(pill).toHaveText(GP4_PILL)
+    await expect(pill).toHaveClass(/\bstatuspill\b/)
+    await expect(pill).toHaveClass(/\boff\b/)
+    await expect(page.getByTestId('status-delivered'), 'no delivered pill on a Packeta order — even once ticked').toHaveCount(0)
+    await expect(page.getByText('Odovzdané', { exact: true })).toHaveCount(0)
+
+    const fee = page.getByTestId('status-delivery-fee')
+    await expect(fee.locator('.ln-name')).toHaveText(GP4_FEE_LINE)
+    await expect(fee.locator('.ln-amt'), 'a fee is a LINE — `€`').toHaveText('3.50 €')
+    await expect(page.getByTestId('status-item')).toHaveCount(1)
+    await expect(page.getByTestId('status-total'), 'payment.amount = 24.90 + 3.50').toHaveText('28.40 EUR')
+
+    const address = page.getByTestId('status-packeta-address')
+    await expect(address).toHaveText(POINT)
+    await expect(address, 'person-typed — excluded from copy sweeps').toHaveAttribute('data-user-copy', '')
+    const card = page.locator('.card', { has: address })
+    await expect(card.locator('.field-lbl')).toHaveText(GP4_POINT_LBL)
+    await expect(card.locator('.sub')).toHaveText(GP4_POINT_SUB(email))
+  })
+
+  test('a via_host order on a parcel-ON round is today\'s page: shipped header + delivered pill, no fee line, no point card', async ({ page }) => {
+    const s = await scenario('gp4host', { fee: 3.5 })
+    const o = await submitOk(s.link.token, viaHostBody(s.items))
+    const first = s.host.name.split(' ')[0]
+
+    await gp4Status(page, o)
+    await expect(page.getByTestId('guest-status').locator('.sub').first()).toHaveText(GP4_SUB_HOST(first))
+    await expect(page.getByTestId('status-delivered'), 'non-vacuity: the pills row rendered').toHaveText('Zatiaľ neodovzdané')
+    await expect(page.getByTestId('status-packeta')).toHaveCount(0)
+    await expect(page.getByTestId('status-total')).toHaveText('24.90 EUR')
+    await expect(page.getByTestId('status-delivery-fee')).toHaveCount(0)
+    await expect(page.getByTestId('status-packeta-address')).toHaveCount(0)
+    await expect(page.getByText(GP4_POINT_LBL, { exact: true })).toHaveCount(0)
+  })
+
+  test('a CANCELLED Packeta order keeps its point card (the record); no fee line, no total', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('gp4canc', { fee: 3.5 })
+    const o = await submitOk(s.link.token, packetaBody(s.items))
+    expect((await editCanonical(o)({ items: [] })).status()).toBe(200)
+    expect(guestRow(o.order.id)).toMatchObject({ status: 'cancelled', delivery_fee: 0, packeta_address: POINT })
+
+    await gp4Status(page, o)
+    await expect(page.getByTestId('status-cancelled')).toBeVisible()
+    await expect(page.getByTestId('status-packeta-address')).toHaveText(POINT)
+    await expect(page.getByTestId('status-item'), 'non-vacuity: the struck lines rendered').toHaveCount(1)
+    await expect(page.getByTestId('status-delivery-fee')).toHaveCount(0)
+    await expect(page.getByTestId('status-total')).toHaveCount(0)
+  })
+})
+
+test.describe('GP-T4 · 20 §UC-GP-007 — the status page EDIT mode', () => {
+  test('Packeta → via_host: the card is seeded, the cartbar carries the fee, the save sends `false` and the page drops the point + fee', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('gp4off', { fee: 3.5 })
+    const o = await submitOk(s.link.token, packetaBody(s.items))
+    const first = s.host.name.split(' ')[0]
+    const writes = gp4Writes(page, o.order.order_token)
+
+    await gp4Status(page, o)
+    await page.getByTestId('start-edit').click()
+    const card = page.getByTestId('edit-delivery-card')
+    await expect(card).toBeVisible()
+    await expect(card.getByTestId('guest-delivery-choice')).toBeVisible()
+    await expect(page.getByTestId('guest-delivery-packeta'), 'seeded from order.packeta_address').toBeChecked()
+    await expect(page.getByTestId('guest-packeta-address')).toHaveValue(POINT)
+    await expect(page.getByTestId('guest-packeta-address')).toHaveAttribute('maxlength', '160')
+    await expect(page.getByTestId('edit-guest-email'), 'the order HAS an e-mail — identity stays frozen').toHaveCount(0)
+    // Card ABOVE the product grid.
+    const cardTop = (await card.boundingBox()).y
+    const gridTop = (await page.getByTestId(`product-${s.product.id}`).boundingBox()).y
+    expect(cardTop, 'the delivery card sits above the grid').toBeLessThan(gridTop)
+
+    await expect(page.getByTestId('edit-total')).toHaveText('Celkom: 28.40 EUR')
+    await expect(page.getByTestId('edit-delivery-fee')).toHaveText(GP4_EDIT_FEE('3.50 EUR'))
+
+    await gp4EditRow(page, 'guest-delivery-via-host').click()
+    await expect(page.getByTestId('edit-total')).toHaveText('Celkom: 24.90 EUR')
+    await expect(page.getByTestId('edit-delivery-fee')).toHaveCount(0)
+    await page.getByTestId('save-edit').click()
+    await expect(page.getByTestId('guest-status')).toBeVisible()
+
+    expect(writes, 'exactly one write — the delivery block is always sent, `false` here').toEqual([
+      { items: [{ product_id: s.product.id, variant: '250g', quantity: 1 }], use_parcel_delivery: false },
+    ])
+    await expect(page.getByTestId('guest-status').locator('.sub').first()).toHaveText(GP4_SUB_HOST(first))
+    await expect(page.getByTestId('status-packeta-address')).toHaveCount(0)
+    await expect(page.getByTestId('status-total'), 'the total dropped by the fee').toHaveText('24.90 EUR')
+    await expect(page.getByTestId('status-delivered')).toBeVisible()
+    expect(guestRow(o.order.id)).toMatchObject({ delivery_fee: 0, packeta_address: null, total: 24.9 })
+  })
+
+  test('an e-mail-LESS via_host order switching to Packeta: the write-once „E-mail *" input, three client messages without a request, then one save carrying it', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('gp4mail', { fee: 3.5 })
+    const o = await submitOk(s.link.token, viaHostBody(s.items))
+    expect(guestRow(o.order.id).guest_email).toBeNull()
+    const writes = gp4Writes(page, o.order.order_token)
+
+    await gp4Status(page, o)
+    await page.getByTestId('start-edit').click()
+    await expect(page.getByTestId('guest-delivery-via-host'), 'seeded via_host').toBeChecked()
+    await expect(page.getByTestId('edit-guest-email'), 'via_host — no e-mail input').toHaveCount(0)
+    await expect(page.getByTestId('edit-total')).toHaveText('Celkom: 24.90 EUR')
+
+    await gp4EditRow(page, 'guest-delivery-packeta').click()
+    const input = page.getByTestId('edit-guest-email')
+    await expect(input).toBeVisible()
+    await expect(input).toHaveAttribute('maxlength', '160')
+    await expect(page.locator('label[for="edit-guest-email"]')).toHaveText(GP3_EMAIL_REQ)
+    await expect(page.getByTestId('edit-guest-email-help')).toHaveText(GP3_EMAIL_HELP)
+    await expect(page.getByTestId('edit-total')).toHaveText('Celkom: 28.40 EUR')
+
+    // The three client messages, each WITHOUT a request (§UC-GP-007 item 9 mirrors 003).
+    await page.getByTestId('save-edit').click()
+    await expect(page.getByTestId('edit-error')).toHaveText(GP3_MSG_POINT)
+    await page.getByTestId('guest-packeta-address').fill(`  ${POINT}  `)
+    await page.getByTestId('save-edit').click()
+    await expect(page.getByTestId('edit-error')).toHaveText(GP3_MSG_EMAIL)
+    await input.fill('nie-je-email')
+    await page.getByTestId('save-edit').click()
+    await expect(page.getByTestId('edit-error')).toHaveText(GP3_MSG_SHAPE)
+    expect(writes, 'no request for a client-side refusal').toEqual([])
+
+    const email = gp4Email()
+    await input.fill(`  ${email}  `)
+    await page.getByTestId('save-edit').click()
+    await expect(page.getByTestId('status-packeta-address')).toHaveText(POINT)
+    expect(writes).toEqual([{
+      items: [{ product_id: s.product.id, variant: '250g', quantity: 1 }],
+      use_parcel_delivery: true, packeta_address: POINT, guest_email: email,
+    }])
+    await expect(page.getByTestId('status-total')).toHaveText('28.40 EUR')
+    await expect(page.locator('.card', { has: page.getByTestId('status-packeta-address') }).locator('.sub'))
+      .toHaveText(GP4_POINT_SUB(email))
+    expect(guestRow(o.order.id)).toMatchObject({ guest_email: email, delivery_fee: 3.5, packeta_address: POINT })
+
+    // Re-entering edit: the order now HAS an e-mail, so the input never shows again.
+    await page.getByTestId('start-edit').click()
+    await expect(page.getByTestId('guest-delivery-packeta')).toBeChecked()
+    await expect(page.getByTestId('edit-guest-email')).toHaveCount(0)
+  })
+
+  test('a via_host order WITH an e-mail switching to Packeta: no e-mail input and no `guest_email` key in the save', async ({ page }) => {
+    const s = await scenario('gp4hasmail', { fee: 3.5 })
+    const o = await submitOk(s.link.token, viaHostBody(s.items, { guest_email: gp4Email() }))
+    const writes = gp4Writes(page, o.order.order_token)
+
+    await gp4Status(page, o)
+    await page.getByTestId('start-edit').click()
+    await gp4EditRow(page, 'guest-delivery-packeta').click()
+    await expect(page.getByTestId('guest-packeta-address'), 'non-vacuity: the Packeta branch is open').toBeVisible()
+    await expect(page.getByTestId('edit-guest-email')).toHaveCount(0)
+    await page.getByTestId('guest-packeta-address').fill(POINT)
+    await page.getByTestId('save-edit').click()
+    await expect(page.getByTestId('status-packeta-address')).toHaveText(POINT)
+    expect(writes.map((w) => Object.keys(w).sort())).toEqual([['items', 'packeta_address', 'use_parcel_delivery']])
+  })
+
+  test('parcels switched OFF after the guest chose Packeta: no card, the warn banner, and the save sends `false`', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('gp4gone', { fee: 3.5 })
+    const o = await submitOk(s.link.token, packetaBody(s.items))
+    expect((await setCycle(s.cycle.id, { parcel_enabled: false })).status()).toBe(200)
+    const first = s.host.name.split(' ')[0]
+    const writes = gp4Writes(page, o.order.order_token)
+
+    await gp4Status(page, o)
+    // The read view still tells the truth about the STORED state (rule 5).
+    await expect(page.getByTestId('status-packeta-address')).toHaveText(POINT)
+    await page.getByTestId('start-edit').click()
+    await expect(page.getByTestId(`product-${s.product.id}`), 'non-vacuity: edit mode rendered').toBeVisible()
+    await expect(page.getByTestId('edit-delivery-card')).toHaveCount(0)
+    await expect(page.getByTestId('guest-delivery-choice')).toHaveCount(0)
+    const banner = page.getByTestId('edit-parcel-unavailable')
+    await expect(banner).toHaveText(GP4_PARCEL_GONE(first))
+    await expect(banner).toHaveClass(/\bbanner\b.*\bwarn\b.*\bslim\b|\bbanner\b.*\bslim\b.*\bwarn\b/)
+    await expect(page.getByTestId('edit-total'), 'no fee offered on a parcel-off round').toHaveText('Celkom: 24.90 EUR')
+
+    await page.getByTestId('save-edit').click()
+    await expect(page.getByTestId('status-packeta-address')).toHaveCount(0)
+    expect(writes).toEqual([{ items: [{ product_id: s.product.id, variant: '250g', quantity: 1 }], use_parcel_delivery: false }])
+    expect(guestRow(o.order.id)).toMatchObject({ delivery_fee: 0, packeta_address: null })
+  })
+
+  test('a parcel-OFF via_host order: no card, no banner — and cancel from edit mode still sends the literal `{ items: [] }` only', async ({ page }) => {
+    const s = await scenario('gp4plain', { parcel: false })
+    const o = await submitOk(s.link.token, viaHostBody(s.items))
+    const writes = gp4Writes(page, o.order.order_token)
+
+    await gp4Status(page, o)
+    await page.getByTestId('start-edit').click()
+    await expect(page.getByTestId(`product-${s.product.id}`), 'non-vacuity: edit mode rendered').toBeVisible()
+    await expect(page.getByTestId('edit-delivery-card')).toHaveCount(0)
+    await expect(page.getByTestId('edit-parcel-unavailable')).toHaveCount(0)
+    await page.getByTestId('cancel-order').click()
+    await page.getByTestId('confirm-cancel-order').click()
+    await expect(page.getByTestId('status-cancelled')).toBeVisible()
+    expect(writes, 'the cancel payload is untouched by the delivery block').toEqual([{ items: [] }])
+  })
+
+  test('cancel from edit mode on a PACKETA order is still exactly `{ items: [] }`', async ({ page }) => {
+    const s = await scenario('gp4pcanc', { fee: 3.5 })
+    const o = await submitOk(s.link.token, packetaBody(s.items))
+    const writes = gp4Writes(page, o.order.order_token)
+
+    await gp4Status(page, o)
+    await page.getByTestId('start-edit').click()
+    await expect(page.getByTestId('edit-delivery-card')).toBeVisible()
+    await page.getByTestId('cancel-order').click()
+    await page.getByTestId('confirm-cancel-order').click()
+    await expect(page.getByTestId('status-cancelled')).toBeVisible()
+    expect(writes).toEqual([{ items: [] }])
+  })
+
+  test('the rendered copy sweep: Packeta read view + edit branch carry no „cyklus"/„kolo"', async ({ page }) => {
+    const s = await scenario('gp4vocab', { fee: 3.5 })
+    const o = await submitOk(s.link.token, viaHostBody(s.items))
+    await gp4Status(page, o)
+    await page.getByTestId('start-edit').click()
+    await gp4EditRow(page, 'guest-delivery-packeta').click()
+    let copy = await page.evaluate(collectAppCopy())
+    expect(copy.toLowerCase(), 'non-vacuity: the e-mail branch rendered').toContain('packeta vám naň pošle')
+    expect(BANNED.test(copy), copy).toBe(false)
+
+    await page.getByTestId('guest-packeta-address').fill(POINT)
+    await page.getByTestId('edit-guest-email').fill(gp4Email())
+    await page.getByTestId('save-edit').click()
+    await expect(page.getByTestId('status-packeta')).toBeVisible()
+    copy = await page.evaluate(collectAppCopy())
+    expect(copy.toLowerCase(), 'non-vacuity: the Packeta read view rendered').toContain('doručí packeta')
+    expect(BANNED.test(copy), copy).toBe(false)
+    for (const str of [GP4_SUB_PACKETA('X'), GP4_PILL, GP4_POINT_SUB('x'), GP4_PARCEL_GONE('X'), GP4_EDIT_FEE('1 EUR'),
+      GP4_HOST_NOTE, GP4_BREAKDOWN('1 EUR', '1 EUR')]) {
+      expect(str, 'no „cyklus"/„kolo" in the new copy').not.toMatch(BANNED)
+    }
+  })
+
+  test('keyboard: the choice card is a real Tab stop, and Tab continues from the point field into the write-once e-mail input', async ({ page }) => {
+    const s = await scenario('gp4kbd', { fee: 3.5 })
+    const o = await submitOk(s.link.token, viaHostBody(s.items))
+    expect(guestRow(o.order.id).guest_email, 'non-vacuity: the e-mail branch is reachable').toBeNull()
+
+    await gp4Status(page, o)
+    await page.getByTestId('start-edit').click()
+    const viaHostRadio = page.getByTestId('guest-delivery-via-host')
+    const packetaRadio = page.getByTestId('guest-delivery-packeta')
+    await viaHostRadio.focus()
+    await expect(viaHostRadio, 'the choice card mounted in edit mode is reachable, same as the checkout (GP-T3)').toBeFocused()
+
+    await page.keyboard.press('ArrowDown')
+    await expect(packetaRadio, 'the native group still moves with arrow keys here').toBeChecked()
+    const point = page.getByTestId('guest-packeta-address')
+    await expect(point).toBeVisible()
+
+    await page.keyboard.press('Tab')
+    await expect(point, 'one Tab stop for the group, then the point field').toBeFocused()
+    await page.keyboard.type(POINT)
+
+    // The e-mail input is EDIT MODE's own addition (§UC-GP-007 item 7) — no equivalent
+    // exists in the checkout, so its place in the Tab order is this test's to prove.
+    await page.keyboard.press('Tab')
+    await expect(page.getByTestId('edit-guest-email'), 'Tab continues past the point field into the write-once e-mail input').toBeFocused()
+  })
+})
+
+// ─── §UC-GP-008 — the host card ──────────────────────────────────────────────
+
+// The colleagues-panel idiom: a real per-friend Bearer session restored from
+// localStorage (a RESTORE is not a login — neither the explainer nor the profile
+// modal opens), and the admin-only friends list the portal asks for stubbed.
+async function gp4SignInAsHost(page, host) {
+  await page.addInitScript((value) => {
+    localStorage.setItem('gorifi_friend_auth', value)
+  }, JSON.stringify({ friendId: host.id, friendName: host.name, token: host.token, expiresAt: Date.now() + 864e5 }))
+  await page.route('**/api/friends?active=true', (route) => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify([{ id: host.id, name: host.name, uid: 'E2EGP4', active: 1, subscriptions: ['coffee', 'bakery'] }]),
+  }))
+}
+
+async function gp4OpenPanel(page, s) {
+  await page.setViewportSize(GP3_PHONE)
+  await gp4SignInAsHost(page, s.host)
+  await portalGotoCycle(page, s.cycle.id)
+  await page.getByTestId('main-tab-guests').click()
+  const panel = page.getByTestId('guest-sub-orders')
+  await expect(panel).toBeVisible()
+  return panel
+}
+
+const gp4Card = (panel, id) => panel.locator('.suborder', { has: panel.page().getByTestId(`guest-copy-url-${id}`) })
+
+test.describe('GP-T4 · 20 §UC-GP-008 — the host card', () => {
+  test('LOCKED, one Packeta + one via_host: badge outside `sub-order-badges`, point, sentence, no tick, fee-inclusive foot; the tab badge reads 1', async ({ page }) => {
+    const s = await scenario('gp4hostv', { fee: 3.5 })
+    const p = await submitOk(s.link.token, packetaBody(s.items))
+    const v = await submitOk(s.link.token, viaHostBody(s.items))
+    expect((await setCycle(s.cycle.id, { status: 'locked' })).status()).toBe(200)
+
+    // ⚠ The host `totals` stay PRODUCT-ONLY (GSO-T5 pin) — the context line is not a charge.
+    const view = await (await ctx.get(`/api/guest-links/cycle/${s.cycle.id}`, { headers: s.host.auth })).json()
+    expect(view.totals).toEqual({ count: 2, total: 49.8 })
+
+    const panel = await gp4OpenPanel(page, s)
+    // count = 2, pendingDelivery = 1 (the Packeta bag owes the host nothing) ⇒ amber 1.
+    await expect(page.getByTestId('guest-tab-badge'), 'pendingDelivery excludes the Packeta row').toHaveText('1')
+    await expect(panel.locator('.sub').first(), 'heading money line = product-only totals')
+      .toContainText('spolu 49.80 EUR')
+
+    const pc = gp4Card(panel, p.order.id)
+    const badge = pc.getByTestId(`guest-packeta-${p.order.id}`)
+    await expect(badge).toHaveText('Packeta')
+    await expect(badge).toHaveClass(/\bbadge\b/)
+    await expect(badge).toHaveClass(/\bdanger\b/)
+    await expect(pc.getByTestId('sub-order-badges').getByTestId(`guest-packeta-${p.order.id}`), 'NOT inside sub-order-badges').toHaveCount(0)
+    await expect(pc.getByTestId('sub-order-badges').locator('.badge'), 'still exactly one status badge').toHaveCount(1)
+    // …and inside the name block, so the fold control is the same control.
+    await expect(pc.getByTestId(`guest-items-toggle-${p.order.id}`).getByTestId(`guest-packeta-${p.order.id}`)).toHaveCount(1)
+    const addr = pc.getByTestId(`guest-packeta-address-${p.order.id}`)
+    await expect(addr).toHaveText(POINT)
+    await expect(addr).toHaveAttribute('data-user-copy', '')
+    await expect(pc.getByTestId(`guest-packeta-note-${p.order.id}`)).toHaveText(GP4_HOST_NOTE)
+    await expect(pc.getByTestId(`guest-delivered-${p.order.id}`), 'nothing to hand over').toHaveCount(0)
+    await expect(pc.getByTestId(`guest-copy-url-${p.order.id}`), 'the resend stays').toBeVisible()
+    await expect(pc.locator('.foot .total')).toHaveText('28.40 EUR')
+    await expect(pc.getByTestId(`guest-total-breakdown-${p.order.id}`)).toHaveText(GP4_BREAKDOWN('24.90 EUR', '3.50 EUR'))
+
+    const vc = gp4Card(panel, v.order.id)
+    await expect(vc.getByTestId(`guest-delivered-${v.order.id}`), 'non-vacuity: the via_host row keeps its tick').toBeVisible()
+    await expect(vc.getByTestId(`guest-packeta-${v.order.id}`)).toHaveCount(0)
+    await expect(vc.getByText(GP4_HOST_NOTE)).toHaveCount(0)
+    await expect(vc.locator('.foot .total')).toHaveText('24.90 EUR')
+    await expect(vc.getByTestId(`guest-total-breakdown-${v.order.id}`)).toHaveCount(0)
+
+    // Tick the only hand-over there is ⇒ pendingDelivery 0 ⇒ the badge falls back to count.
+    await vc.getByTestId(`guest-delivered-${v.order.id}`).click()
+    await expect(vc.getByTestId(`guest-delivered-${v.order.id}`)).toBeChecked()
+    await expect(page.getByTestId('guest-tab-badge')).toHaveText('2')
+  })
+
+  test('OPEN round: „Odstrániť" stays on a Packeta row; a CANCELLED Packeta row keeps the badge + point and strikes the ITEMS amount', async ({ page }) => {
+    const s = await scenario('gp4hostc', { fee: 3.5 })
+    const live = await submitOk(s.link.token, packetaBody(s.items))
+    const gone = await submitOk(s.link.token, packetaBody(s.items))
+    expect((await editCanonical(gone)({ items: [] })).status()).toBe(200)
+
+    const panel = await gp4OpenPanel(page, s)
+    const lc = gp4Card(panel, live.order.id)
+    await expect(lc.getByTestId(`guest-remove-${live.order.id}`), 'soft cancel stays on a Packeta row').toBeVisible()
+    await expect(lc.getByTestId(`guest-delivered-${live.order.id}`)).toHaveCount(0)
+
+    const cc = gp4Card(panel, gone.order.id)
+    await expect(cc.getByTestId(`guest-status-${gone.order.id}`), 'non-vacuity: the cancelled row').toHaveText('Zrušené')
+    await expect(cc.getByTestId(`guest-packeta-${gone.order.id}`), 'the record keeps its badge').toHaveText('Packeta')
+    await expect(cc.getByTestId(`guest-packeta-address-${gone.order.id}`)).toHaveText(POINT)
+    await expect(cc.getByTestId(`guest-packeta-note-${gone.order.id}`), 'no live promise on a called-off bag').toHaveCount(0)
+    await expect(cc.locator('.foot .sub').first(), 'cancelledTotal() = items, the fee is not recomputed').toHaveText('24.90 EUR')
+    await expect(cc.getByTestId(`guest-total-breakdown-${gone.order.id}`)).toHaveCount(0)
+  })
+
+  test('the rendered copy sweep: the host card\'s Packeta badge, point and sentence carry no „cyklus"/„kolo"', async ({ page }) => {
+    const s = await scenario('gp4hostvocab', { fee: 3.5 })
+    await submitOk(s.link.token, packetaBody(s.items))
+    const panel = await gp4OpenPanel(page, s)
+    await expect(panel.getByText(GP4_HOST_NOTE), 'non-vacuity: the sentence really rendered').toBeVisible()
+    const copy = await page.evaluate(collectAppCopy())
+    // ⚠ CLAUDE.md's `innerText` trap: it applies `text-transform`, and the badge
+    // renders UPPERCASE (`PACKETA`) — case-insensitive, same as the other sweeps here.
+    expect(copy.toLowerCase(), 'non-vacuity: the Packeta badge really rendered').toContain('packeta')
+    expect(copy.toLowerCase(), 'non-vacuity: the host sentence really rendered').toContain('nemusíte nič odovzdávať')
+    expect(BANNED.test(copy), copy).toBe(false)
+  })
+})
+
+test.describe('GP-T4 · 320px — the new blocks overflow nothing', () => {
+  // The document AND every descendant scroller (CLAUDE.md: a scroller absorbs the
+  // spill, so measuring the document alone proves nothing).
+  const overflow = (page) => page.evaluate(() => {
+    const out = []
+    const de = document.documentElement
+    if (de.scrollWidth > de.clientWidth) out.push(`document ${de.scrollWidth} > ${de.clientWidth}`)
+    for (const el of document.querySelectorAll('body *')) {
+      const cs = getComputedStyle(el)
+      if (!/(auto|scroll)/.test(cs.overflowX)) continue
+      if (el.scrollWidth > el.clientWidth + 1) out.push(`${el.tagName}.${el.className} ${el.scrollWidth} > ${el.clientWidth}`)
+    }
+    return out
+  })
+  const LONG = 'Z-BOX Obchodné centrum Hlavná stanica Bratislava-Staré Mesto Námestie Slobody 1234567890'
+
+  test('status page: the Packeta read view and the edit card with the e-mail input at 320px', async ({ page }) => {
+    const s = await scenario('gp4narrow', { fee: 3.5 })
+    const o = await submitOk(s.link.token, packetaBody(s.items, { packeta_address: LONG }))
+    await page.setViewportSize({ width: 320, height: 800 })
+    await page.goto(`/g/o/${o.order.order_token}`)
+    await expect(page.getByTestId('status-packeta-address'), 'non-vacuity').toHaveText(LONG)
+    expect(await overflow(page)).toEqual([])
+    const v = await submitOk(s.link.token, viaHostBody(s.items))
+    await page.goto(`/g/o/${v.order.order_token}`)
+    await page.getByTestId('start-edit').click()
+    await gp4EditRow(page, 'guest-delivery-packeta').click()
+    await page.getByTestId('guest-packeta-address').fill(LONG)
+    await expect(page.getByTestId('edit-guest-email'), 'non-vacuity: the widest branch').toBeVisible()
+    await expect(page.getByTestId('edit-delivery-fee')).toBeVisible()
+    expect(await overflow(page)).toEqual([])
+  })
+
+  test('host card: a Packeta row with a long point at 320px', async ({ page }) => {
+    const s = await scenario('gp4narrowh', { fee: 3.5 })
+    const p = await submitOk(s.link.token, packetaBody(s.items, { packeta_address: LONG }))
+    await page.setViewportSize({ width: 320, height: 900 })
+    await gp4SignInAsHost(page, s.host)
+    await portalGotoCycle(page, s.cycle.id)
+    await page.getByTestId('main-tab-guests').click()
+    await expect(page.getByTestId(`guest-packeta-address-${p.order.id}`), 'non-vacuity').toHaveText(LONG)
+    await expect(page.getByTestId(`guest-total-breakdown-${p.order.id}`)).toBeVisible()
+    expect(await overflow(page)).toEqual([])
+  })
+})
+
+test.describe('GP-T4 · source pins — one home, and what this row must NOT touch', () => {
+  test('GuestOrderStatus.vue mounts GuestDeliveryChoice ONCE, imports the ONE EMAIL_SHAPE, and holds no copy of the choice', () => {
+    test.skip(!HAS_SRC, NEEDS_SRC)
+    const view = assertReadable('views/GuestOrderStatus.vue', ['edit-error', 'GuestDeliveryChoice', 'status-total'])
+    expect(view.match(/<GuestDeliveryChoice\b/g) || [], 'one mount').toHaveLength(1)
+    expect(view).toMatch(/import GuestDeliveryChoice from '@\/components\/GuestDeliveryChoice\.vue'/)
+    expect(view).toMatch(/import \{ EMAIL_SHAPE \} from '@\/lib\/email-shape'/)
+    for (const token of ['guest-packeta-address', 'Poslať Packetou', 'Prevezmem od', 'type="radio"']) {
+      expect(view, `„${token}" lives in the component, never in the view`).not.toContain(token)
+    }
+    // The fee line is a CartLineList EXTRA through lib/order-lines.js — never new markup.
+    expect(view).toMatch(/import \{ deliveryExtras \} from '@\/lib\/order-lines'/)
+    // The total is the SERVER's amount (§UC-GP-004: no surface composes it from the cart).
+    expect(view).toMatch(/data-testid="status-total">\{\{ fmtEur\(amountDue\) \}\}</)
+    // Shipped, load-bearing behaviour untouched (§UC-GP-007 item 10).
+    expect(view).toContain('watch(orderToken, () => {')
+    expect(view).toContain('let loadSeq = 0')
+    expect(view).toMatch(/document\.title = cycle\.value\?\.name/)
+    expect(view, 'the cancel payload is the literal empty cart').toMatch(/submitEdit\(\{ items: \[\] \}\)/)
+  })
+
+  test('GuestSubOrders.vue: the tick is gated on the Packeta marker, pendingDelivery excludes it, and `totals` is never folded with the fee', () => {
+    test.skip(!HAS_SRC, NEEDS_SRC)
+    const comp = assertReadable('components/GuestSubOrders.vue', ['guest-delivered-', 'pendingDelivery', 'sub-order-badges'])
+    expect(comp).toMatch(/pendingDelivery: live\.reduce\(\(sum, o\) => sum \+ \(o\.delivered \|\| isPacketa\(o\) \? 0 : 1\), 0\)/)
+    expect(comp).toMatch(/function isPacketa\(subOrder\) \{\s*return !!subOrder\.packeta_address\s*\}/)
+    // The marker is the ADDRESS, never the fee (learnings 12 §1).
+    expect(comp, 'no fee-based Packeta test').not.toMatch(/delivery_fee\s*>\s*0\s*\?|isPacketa[^\n]*delivery_fee/)
+    // `totals` stays the server's product-only figure.
+    expect(comp, 'the heading reads totals.total untouched').toContain('formatPrice(totals.total)')
+    expect(comp, 'no fee folded into totals').not.toMatch(/totals\.value\.total\s*\+|totals\.total\s*\+/)
+    // The sub-order-badges block holds no Packeta badge.
+    const block = comp.slice(comp.indexOf('data-testid="sub-order-badges"'), comp.indexOf('</div>', comp.indexOf('data-testid="sub-order-badges"')))
+    expect(block, 'readability gate').toContain('guest-paid-badge')
+    expect(block).not.toContain('packeta')
   })
 })
