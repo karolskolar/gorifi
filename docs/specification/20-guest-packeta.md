@@ -804,6 +804,13 @@ five `RATE_LIMIT_*_MAX` raised, output to a file, `echo "EXIT: $?"`.
   column that survives cancel (contradicts R4.7's "zeroes `delivery_fee` too" — the PO
   would have to amend that line).
 - `OPEN:` **D3 (write-once e-mail on edit)** — confirm, or choose the 409 alternative.
+- `OPEN:` **An unshaped checkout e-mail blocks Packeta mail forever** (GP-T2 review,
+  2026-09-23; learnings 12 §10). A via_host checkout accepts an unshaped optional e-mail
+  (§Accepted risks), and a later switch to Packeta treats it as „has e-mail" (§UC-GP-005
+  rule 3: `order.guest_email` non-null). Because of D3 (write-once) the guest can never
+  correct it, so Packeta may get an undeliverable address. Options: (a) a stored e-mail
+  counts only if it passes `EMAIL_SHAPE` (an unshaped one is replaced by the body's on the
+  Packeta switch); (b) the admin can correct a guest's e-mail. Shipped: neither, pending PO.
 - `OPEN:` **Admin sets a Packeta point for a guest** (D5) — not in v1; confirm it can wait
   (the guest can do it via their edit URL while the cycle is open; after lock the admin
   has today no way to make a guest Packeta — is that acceptable for the first round?).

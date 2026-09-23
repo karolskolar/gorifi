@@ -233,6 +233,33 @@ function validateDeliveryChoice(body, cycle) {
   return { delivery: { packeta: true, address } };
 }
 
+// 20 §UC-GP-005 rule 3 — the edit's e-mail for a switch to Packeta on an order that
+// has NONE stored (D3, PO 2026-09-19: write-once). Called ONLY then: when the row
+// already carries an e-mail, the body's value is ignored — never validated, never an
+// error, never written — because identity is frozen on edit (GSO-T4) and the freeze's
+// one exception is filling a hole, not rewriting a contact. Returns `{ error, field }`
+// or `{ email }`. Same bounds and messages as the submit: 160 chars
+// (`validateIdentity`'s), the mailer's `EMAIL_SHAPE` (one home).
+function packetaEditEmail(raw) {
+  if (raw === undefined || raw === null) {
+    return { error: PACKETA_EMAIL_MISSING_ERROR, field: 'guest_email' };
+  }
+  if (typeof raw !== 'string') {
+    return { error: 'Neplatný e-mail', field: 'guest_email' };
+  }
+  const email = raw.trim();
+  if (!email) {
+    return { error: PACKETA_EMAIL_MISSING_ERROR, field: 'guest_email' };
+  }
+  if (email.length > MAX_EMAIL_LENGTH) {
+    return { error: `E-mail je príliš dlhý (najviac ${MAX_EMAIL_LENGTH} znakov)`, field: 'guest_email' };
+  }
+  if (!EMAIL_SHAPE.test(email)) {
+    return { error: 'Neplatný e-mail', field: 'guest_email' };
+  }
+  return { email };
+}
+
 function firstName(name) {
   return String(name || '').trim().split(/\s+/)[0] || '';
 }
@@ -1321,13 +1348,19 @@ function handleStatusRead(res, { link, cycle, order }) {
 // endpoint is unauthenticated, so anyone holding the URL could otherwise rewrite
 // somebody else's name and phone number. `paid` (admin, GSO-T6), `delivered`
 // (host, GSO-T5), `status`, `total` and `order_token` are all server-owned too.
+// ⚠ Module 20 (GP-T2) adds the DELIVERY block (`use_parcel_delivery` +
+// `packeta_address`, §UC-GP-005) and the freeze's ONE exception: a switch to Packeta
+// on an order with NO e-mail stores the body's `guest_email` once (D3, write-once —
+// `WHERE guest_email IS NULL`). A body e-mail beside a stored one is ignored (200).
 //
 // Status codes:
 //   404 — the order token does not resolve (applied by the callers, before this)
 //   410 — the link or the host is deactivated: same closed door the submit sees
 //   409 — the cycle is not open (edits end at the lock), or the sub-order is
 //         already cancelled
-//   400 — bounds or stock limits
+//   409 `paid` — a non-empty edit of a paid sub-order (its delivery method with it)
+//   400 — bounds or stock limits; the delivery block (method type, parcels off,
+//         point, the Packeta e-mail)
 function handleStatusEdit(req, res, { link, cycle, order }) {
   // A dead link or a deactivated host closes writes exactly as it closes the
   // submit — the host is the person who hands the goods over. Reading stays open.
@@ -1403,6 +1436,38 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
     });
   }
 
+  // 20 §UC-GP-005 — the DELIVERY BLOCK (R4.5, the friend rules), additive.
+  //
+  // ⚠ Only alongside a NON-EMPTY `items` (rule 1): a literal `items: []` is a cancel,
+  // and a cancel body's delivery keys are IGNORED — never validated, never written (the
+  // destructive action is the whole request's meaning). And only AFTER the paid gate
+  // above (rule 2 / D2): the delivery method is frozen with the items, so a paid row
+  // answers 409 `paid` whatever the delivery keys say.
+  //
+  // `use_parcel_delivery` absent or `null` ⇒ `delivery` stays null ⇒ BOTH columns
+  // untouched (resolved conflict 4 — the shipped items-only PUT is byte-identical).
+  // `false` / `true` / anything else go through the submit's validator (one home):
+  // `false` ⇒ fee 0 + point NULL, `true` ⇒ parcels on + a valid point, else 400.
+  // Before pricing, as on the submit.
+  let delivery = null;
+  let emailToStore = null;
+  if (requestedCount > 0 && req.body.use_parcel_delivery !== undefined && req.body.use_parcel_delivery !== null) {
+    const chosen = validateDeliveryChoice(req.body, cycle);
+    if (chosen.error) {
+      return res.status(400).json({ error: chosen.error, field: chosen.field });
+    }
+    delivery = chosen.delivery;
+    // R4.3 — Packeta needs an e-mail. A stored one satisfies it (whatever the body
+    // says); otherwise the body's is REQUIRED and stored ONCE (D3, see the helper).
+    if (delivery.packeta && !order.guest_email) {
+      const mail = packetaEditEmail(req.body.guest_email);
+      if (mail.error) {
+        return res.status(400).json({ error: mail.error, field: mail.field });
+      }
+      emailToStore = mail.email;
+    }
+  }
+
   const markupRatio = cycle.markup_ratio || 1.0;
   const priced = priceRequestedItems(req.body, cycle, markupRatio);
   if (priced.error) {
@@ -1442,7 +1507,12 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
     // Re-read inside the transaction: the admin may have locked the cycle, or the
     // host may have deleted the sub-order (GSO-T5), while this request was being
     // validated.
-    const current = db.prepare('SELECT status FROM order_cycles WHERE id = ?').get(cycle.id);
+    //
+    // ⚠ `parcel_fee` is re-read HERE, with the status (20 §UC-GP-005 rule 3, the
+    // submit's rule 2 mirrored): every PUT carrying `true` charges the row's fee AT THE
+    // WRITE — a fee the admin changed after submit is picked up by the next such save
+    // (rule 6), never by one that omits the delivery keys.
+    const current = db.prepare('SELECT status, parcel_fee FROM order_cycles WHERE id = ?').get(cycle.id);
     if (current?.status !== 'open') return { conflict: 'closed' };
     const currentOrder = db.prepare('SELECT status, paid FROM guest_orders WHERE id = ?').get(order.id);
     if (!currentOrder) return { conflict: 'gone' };
@@ -1476,7 +1546,25 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
       softCancelGuestOrder(order.id);
     } else {
       const total = replaceItems(order.id, lines);
-      db.prepare("UPDATE guest_orders SET total = ?, status = 'submitted' WHERE id = ?").run(total, order.id);
+      if (delivery) {
+        // Literal columns in ONE statement with the items write (rule 4) — never a
+        // spread body. `total` stays product-only; the fee is its own column.
+        // `delivery_fee_paid` is NOT written here (its two writers are the soft cancel
+        // and the admin paid toggle, learnings 12 §6) — and a paid row never gets this
+        // far anyway (the paid gates above).
+        const deliveryFee = delivery.packeta ? roundMoney(Number(current.parcel_fee) || 0) : 0;
+        db.prepare(
+          "UPDATE guest_orders SET total = ?, status = 'submitted', delivery_fee = ?, packeta_address = ? WHERE id = ?"
+        ).run(total, deliveryFee, delivery.address, order.id);
+        // D3 write-once: the PREDICATE is the guard — an e-mail that is already there
+        // is never overwritten, whatever the handler above concluded.
+        if (emailToStore) {
+          db.prepare('UPDATE guest_orders SET guest_email = ? WHERE id = ? AND guest_email IS NULL')
+            .run(emailToStore, order.id);
+        }
+      } else {
+        db.prepare("UPDATE guest_orders SET total = ?, status = 'submitted' WHERE id = ?").run(total, order.id);
+      }
     }
     return {};
   });

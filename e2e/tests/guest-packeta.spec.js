@@ -615,9 +615,26 @@ function refundAmount(id) {
   const itemsAmount = items.reduce((sum, it) => sum + it.price * it.quantity, 0)
   return Math.round((itemsAmount + (row.paid ? row.delivery_fee_paid || 0 : 0)) * 100) / 100
 }
-// Test-side fixture write: the live fee of a sub-order can only change through GP-T2's edit
-// / GP-T5's delivery PATCH, neither of which exists yet — so the „edit fee" step of the
-// last sequence sets the column directly, exactly as those writers will.
+// Test-side fixture write. ⚠ RE-POINTED by GP-T2 (learnings 12 §6/§9): wherever the
+// sequence changes the fee of an UNPAID row it now goes through the real writer — the
+// edit PUT carrying `use_parcel_delivery: true` after the admin moved `parcel_fee`
+// (`repriceByEdit()`). What is LEFT here are the steps that change the fee of a PAID
+// row: the edit cannot reach that state (D2 — a paid row's method is frozen with its
+// items, 409 `paid`, pinned right beside each call), so only GP-T5's delivery PATCH
+// (which zeroes it) will be a real writer there — re-point those at it when it lands.
+async function repriceByEdit(s, o, fee) {
+  expect((await admin(`/api/cycles/${s.cycle.id}`, { method: 'patch', data: { parcel_fee: fee } })).status()).toBe(200)
+  const res = await ctx.put(`/api/guest/o/${o.order.order_token}`, {
+    data: { items: s.items, use_parcel_delivery: true, packeta_address: 'Z-BOX Hlavná 15, Bratislava' },
+  })
+  expect(res.status(), `the edit re-reads the fee: ${await res.text()}`).toBe(200)
+}
+async function paidEditRefused(s, o) {
+  const res = await ctx.put(`/api/guest/o/${o.order.order_token}`, {
+    data: { items: s.items, use_parcel_delivery: true, packeta_address: 'Z-BOX Hlavná 15, Bratislava' },
+  })
+  expect(res.status(), 'a PAID row cannot be repriced by the edit (D2)').toBe(409)
+}
 function setLiveFee(id, fee) {
   const db = new DatabaseSync(DB_PATH)
   try {
@@ -702,11 +719,14 @@ test.describe('GP-T1 · the `delivery_fee_paid` snapshot — frozen at the FIRST
     const o = await submitOk(s.link.token, packetaBody(s.items))
     expect((await setPaid(o.order.id, true)).status()).toBe(200)
     expect((await setPaid(o.order.id, false)).status()).toBe(200)
-    setLiveFee(o.order.id, 4)
+    await repriceByEdit(s, o, 4) // GP-T2: the real writer
     expect(snap(o.order.id)).toEqual({ paid: 0, status: 'submitted', delivery_fee: 4, delivery_fee_paid: null })
     expect((await setPaid(o.order.id, true)).status()).toBe(200)
     expect(snap(o.order.id).delivery_fee_paid).toBe(4)
-    // …and an existing snapshot then wins over a later live change (COALESCE, not a copy)
+    // …and an existing snapshot then wins over a later live change (COALESCE, not a copy).
+    // The row is PAID here, so the edit cannot move the fee (fixture stand-in for GP-T5).
+    await paidEditRefused(s, o)
+    expect(snap(o.order.id).delivery_fee, 'the refused edit wrote nothing').toBe(4)
     setLiveFee(o.order.id, 5)
     expect((await setPaid(o.order.id, true)).status()).toBe(200)
     expect(snap(o.order.id).delivery_fee_paid).toBe(4)
@@ -717,6 +737,7 @@ test.describe('GP-T1 · the `delivery_fee_paid` snapshot — frozen at the FIRST
     const s = await scenario('snapfirst', { fee: 3.5 })
     const o = await submitOk(s.link.token, packetaBody(s.items))
     expect((await setPaid(o.order.id, true)).status()).toBe(200)
+    await paidEditRefused(s, o) // PAID ⇒ the edit is no writer here (fixture stand-in for GP-T5)
     setLiveFee(o.order.id, 4)
     expect((await admin(`/api/guest-orders/${o.order.id}/cancel`, { method: 'post' })).status()).toBe(200)
     expect(snap(o.order.id)).toEqual({ paid: 1, status: 'cancelled', delivery_fee: 0, delivery_fee_paid: 3.5 })
@@ -774,13 +795,19 @@ test.describe('GP-T1 · the `delivery_fee_paid` snapshot — frozen at the FIRST
 // §6 Ledger — guests have NO balance
 // ═════════════════════════════════════════════════════════════════════════════
 test.describe('GP-T1 · no `transactions` row, ever', () => {
-  test('MAX(transactions.id) is unmoved across a Packeta submit, the paid toggle both ways and each cancel door', async () => {
+  test('MAX(transactions.id) is unmoved across a Packeta submit, the edit both ways (GP-T2), the paid toggle both ways and each cancel door', async () => {
     test.skip(!DB_PATH, NEEDS_DB)
     const s = await scenario('ledger', { fee: 3.5 })
     const mark = ledgerWatermark()
     const check = (label) => expect(ledgerWatermark(), label).toBe(mark)
 
     const a = await submitOk(s.link.token, packetaBody(s.items)); check('submit')
+    // GP-T2 — the edit PUT switching both ways (the fee is re-read and written; no ledger)
+    const put = (data) => ctx.put(`/api/guest/o/${a.order.order_token}`, { data })
+    expect((await put({ items: s.items, use_parcel_delivery: false })).status()).toBe(200); check('edit → via_host')
+    expect(guestRow(a.order.id).delivery_fee, 'non-vacuity: the switch wrote').toBe(0)
+    expect((await put({ items: s.items, use_parcel_delivery: true, packeta_address: 'Bod 1' })).status()).toBe(200); check('edit → Packeta')
+    expect(guestRow(a.order.id).delivery_fee, 'non-vacuity: the switch wrote').toBe(3.5)
     await setPaid(a.order.id, true); check('paid on')
     await setPaid(a.order.id, false); check('paid off')
     await ctx.put(`/api/guest/o/${a.order.order_token}`, { data: { items: [] } }); check('guest cancel')
@@ -836,6 +863,276 @@ test.describe('GP-T1 · 20 §UC-GP-004 — the confirmation mail carries the fee
 })
 
 // ═════════════════════════════════════════════════════════════════════════════
+// §7b UC-GP-005 — the edit PUT's delivery block (GP-T2), BOTH URL forms
+// ═════════════════════════════════════════════════════════════════════════════
+// The shared `handleStatusEdit` is reached by the canonical `/o/:orderToken` and the
+// legacy `/:token/orders/:orderToken` pair — every rule below is exercised on both, and
+// every refusal reads the row back (the response is not evidence of what was stored).
+const ERR_EMAIL_LONG = 'E-mail je príliš dlhý (najviac 160 znakov)'
+const editCanonical = (o) => (data) => ctx.put(`/api/guest/o/${o.order.order_token}`, { data })
+const editLegacy = (link, o) => (data) => ctx.put(`/api/guest/${link.token}/orders/${o.order.order_token}`, { data })
+const setCycle = (id, patch) => admin(`/api/cycles/${id}`, { method: 'patch', data: patch })
+// The columns the edit may touch, plus the identity it may NOT (bar the write-once e-mail).
+const editRow = (id) => {
+  const r = guestRow(id)
+  const items = withDb((db) => db.prepare(
+    'SELECT product_id, variant, quantity, price FROM guest_order_items WHERE guest_order_id = ? ORDER BY id').all(Number(id)))
+  return {
+    status: r.status, total: r.total, delivery_fee: r.delivery_fee, packeta_address: r.packeta_address,
+    guest_name: r.guest_name, guest_phone: r.guest_phone, guest_email: r.guest_email,
+    paid: r.paid, delivery_fee_paid: r.delivery_fee_paid, items: items.map((i) => ({ ...i })),
+  }
+}
+const viaHostBody = (items, extra = {}) => ({ ...identity(), items, ...extra })
+const twoBags = (s) => [{ ...s.items[0], quantity: 2 }]
+const POINT = 'Z-BOX Hlavná 15, Bratislava'
+
+test.describe('GP-T2 · 20 §UC-GP-005 — the edit PUT switches pickup ↔ Packeta', () => {
+  test('via_host → Packeta on an e-mail-less order stores the e-mail ONCE; a second PUT with a different e-mail ⇒ 200, unchanged (both URL forms)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('edit2p', { fee: 3.5 })
+    const o = await submitOk(s.link.token, viaHostBody(s.items))
+    expect(editRow(o.order.id)).toMatchObject({ delivery_fee: 0, packeta_address: null, guest_email: null })
+    const first = `gp2.first.${uniq}@example.test`
+
+    // canonical form — the switch, with the body e-mail
+    const res = await editCanonical(o)({
+      items: twoBags(s), use_parcel_delivery: true, packeta_address: `  ${POINT}  `, guest_email: `  ${first}  `,
+      guest_name: 'Prepísané Meno', guest_phone: '0911 999 999', // identity freeze — ignored
+    })
+    expect(res.status(), await res.text()).toBe(200)
+    const body = await res.json()
+    const row = editRow(o.order.id)
+    expect(row).toMatchObject({
+      status: 'submitted', total: 49.8, delivery_fee: 3.5, packeta_address: POINT, guest_email: first,
+      guest_name: 'Zuzana Packetová', guest_phone: o.order.guest_phone, delivery_fee_paid: null,
+    })
+    expect(body.order).toMatchObject({ delivery_fee: 3.5, packeta_address: POINT, total: 49.8 })
+    expect(body.payment.amount, 'amount = total + fee').toBe(53.3)
+
+    // legacy pair form — a DIFFERENT body e-mail on a row that now has one ⇒ ignored, 200
+    const again = await editLegacy(s.link, o)({
+      items: s.items, use_parcel_delivery: true, packeta_address: POINT, guest_email: `gp2.second.${uniq}@example.test`,
+    })
+    expect(again.status(), await again.text()).toBe(200)
+    expect(editRow(o.order.id)).toMatchObject({ guest_email: first, total: 24.9, delivery_fee: 3.5 })
+    // …and a GARBAGE body e-mail beside a stored one is ignored too — never validated, never an error
+    const garbage = await editCanonical(o)({ items: s.items, use_parcel_delivery: true, packeta_address: POINT, guest_email: { x: 1 } })
+    expect(garbage.status(), await garbage.text()).toBe(200)
+    expect(editRow(o.order.id).guest_email).toBe(first)
+  })
+
+  test('a Packeta row with an e-mail from checkout needs no body e-mail; a via_host PUT never writes a body e-mail', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('edit2mail', { fee: 3.5 })
+    const p = await submitOk(s.link.token, packetaBody(s.items))
+    const stored = guestRow(p.order.id).guest_email
+    const r = await editLegacy(s.link, p)({ items: twoBags(s), use_parcel_delivery: true, packeta_address: 'Iný bod 7' })
+    expect(r.status(), await r.text()).toBe(200)
+    expect(editRow(p.order.id)).toMatchObject({ guest_email: stored, packeta_address: 'Iný bod 7', total: 49.8, delivery_fee: 3.5 })
+
+    // `false` / absent never write the e-mail, even on an e-mail-less row (the freeze's only exception is Packeta)
+    const v = await submitOk(s.link.token, viaHostBody(s.items))
+    for (const extra of [{ use_parcel_delivery: false }, {}, { use_parcel_delivery: null }]) {
+      const res = await editCanonical(v)({ items: s.items, guest_email: `gp2.nope.${uniq}@example.test`, ...extra })
+      expect(res.status(), JSON.stringify(extra)).toBe(200)
+      expect(editRow(v.order.id).guest_email, JSON.stringify(extra)).toBe(null)
+    }
+  })
+
+  test('Packeta → `false` zeroes the fee and NULLs the point (row read back); `total` stays product-only (both URL forms)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('edit2v', { fee: 3.5 })
+    for (const form of ['canonical', 'legacy']) {
+      const p = await submitOk(s.link.token, packetaBody(s.items))
+      const stored = guestRow(p.order.id).guest_email
+      const put = form === 'canonical' ? editCanonical(p) : editLegacy(s.link, p)
+      // a stray point beside `false` is NOT stored (validateDeliveryChoice's via_host branch)
+      const res = await put({ items: twoBags(s), use_parcel_delivery: false, packeta_address: 'Stray 1' })
+      expect(res.status(), `${form}: ${await res.text()}`).toBe(200)
+      expect(editRow(p.order.id), form).toMatchObject({
+        status: 'submitted', total: 49.8, delivery_fee: 0, packeta_address: null, guest_email: stored,
+      })
+      expect((await res.json()).payment.amount, `${form}: amount = total`).toBe(49.8)
+    }
+  })
+
+  test('`use_parcel_delivery` absent or `null` ⇒ BOTH columns untouched; stray delivery keys beside it are not written', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('edit2abs', { fee: 3.5 })
+    const p = await submitOk(s.link.token, packetaBody(s.items))
+    for (const extra of [{}, { use_parcel_delivery: null }, { packeta_address: 'Stray 2' }, { use_parcel_delivery: null, packeta_address: '' }]) {
+      const res = await editCanonical(p)({ items: twoBags(s), ...extra })
+      expect(res.status(), JSON.stringify(extra)).toBe(200)
+      expect(editRow(p.order.id), JSON.stringify(extra)).toMatchObject({ total: 49.8, delivery_fee: 3.5, packeta_address: POINT })
+    }
+    // …and on a via_host row the absent flag keeps it via_host
+    const v = await submitOk(s.link.token, viaHostBody(s.items))
+    expect((await editLegacy(s.link, v)({ items: twoBags(s), packeta_address: 'Stray 3' })).status()).toBe(200)
+    expect(editRow(v.order.id)).toMatchObject({ total: 49.8, delivery_fee: 0, packeta_address: null })
+  })
+
+  test('fee changed after submit: 3.50 → 4.00 — a PUT without delivery keys keeps 3.50, a re-save with `true` stores 4.00', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('edit2fee', { fee: 3.5 })
+    const p = await submitOk(s.link.token, packetaBody(s.items))
+    expect((await setCycle(s.cycle.id, { parcel_fee: 4 })).status()).toBe(200)
+    const keep = await editCanonical(p)({ items: twoBags(s) })
+    expect(keep.status()).toBe(200)
+    expect(editRow(p.order.id)).toMatchObject({ total: 49.8, delivery_fee: 3.5 })
+    expect((await keep.json()).payment.amount, 'the stored fee is charged, not the new one').toBe(53.3)
+    // an UNCHANGED method still re-reads the fee when the PUT carries `true` (resolved conflict 4)
+    const resave = await editLegacy(s.link, p)({ items: twoBags(s), use_parcel_delivery: true, packeta_address: POINT })
+    expect(resave.status()).toBe(200)
+    expect(editRow(p.order.id)).toMatchObject({ total: 49.8, delivery_fee: 4, packeta_address: POINT })
+    expect((await resave.json()).payment.amount).toBe(53.8)
+    // the admin figure is rounded at ITS write; the edit charges roundMoney(parcel_fee)
+    expect((await setCycle(s.cycle.id, { parcel_fee: 3.456 })).status()).toBe(200)
+    expect((await editCanonical(p)({ items: s.items, use_parcel_delivery: true, packeta_address: POINT })).status()).toBe(200)
+    expect(editRow(p.order.id).delivery_fee).toBe(3.46)
+  })
+
+  test('parcels switched OFF after the guest chose Packeta: the stored fee survives; `true` ⇒ 400 + row unchanged; `false` clears', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('edit2off', { fee: 3.5 })
+    const p = await submitOk(s.link.token, packetaBody(s.items))
+    const v = await submitOk(s.link.token, viaHostBody(s.items))
+    expect((await setCycle(s.cycle.id, { parcel_enabled: false })).status()).toBe(200)
+    const before = editRow(p.order.id)
+    expect(before).toMatchObject({ delivery_fee: 3.5, packeta_address: POINT })
+
+    for (const [label, o, put] of [['Packeta row, canonical', p, editCanonical(p)], ['via_host row, legacy', v, editLegacy(s.link, v)]]) {
+      const snapshot = editRow(o.order.id)
+      const res = await put({ items: twoBags(s), use_parcel_delivery: true, packeta_address: POINT, guest_email: `gp2.off.${uniq}@example.test` })
+      expect(res.status(), label).toBe(400)
+      expect(await res.json(), label).toEqual({ error: ERR_PARCEL_OFF, field: 'use_parcel_delivery' })
+      expect(editRow(o.order.id), `${label}: row unchanged (items and e-mail included)`).toEqual(snapshot)
+    }
+    // an items-only save keeps the now-unavailable Packeta state (the admin corrects it — UC-GP-009)
+    expect((await editCanonical(p)({ items: twoBags(s) })).status()).toBe(200)
+    expect(editRow(p.order.id)).toMatchObject({ delivery_fee: 3.5, packeta_address: POINT, total: 49.8 })
+    // the UI then sends `false`, which clears both
+    expect((await editLegacy(s.link, p)({ items: s.items, use_parcel_delivery: false })).status()).toBe(200)
+    expect(editRow(p.order.id)).toMatchObject({ delivery_fee: 0, packeta_address: null, total: 24.9 })
+  })
+
+  test('PAID ⇒ the method is frozen with the items: `items` + `false` / `true` ⇒ 409 `paid`, fee kept (both URL forms)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('edit2paid', { fee: 3.5 })
+    const p = await submitOk(s.link.token, packetaBody(s.items))
+    const v = await submitOk(s.link.token, viaHostBody(s.items))
+    for (const o of [p, v]) expect((await setPaid(o.order.id, true)).status()).toBe(200)
+    const cases = [
+      ['Packeta → false, canonical', p, editCanonical(p), { items: s.items, use_parcel_delivery: false }],
+      ['Packeta → true (new point), legacy', p, editLegacy(s.link, p), { items: s.items, use_parcel_delivery: true, packeta_address: 'Iný bod' }],
+      ['via_host → true, canonical', v, editCanonical(v), { items: s.items, use_parcel_delivery: true, packeta_address: POINT, guest_email: `gp2.paid.${uniq}@example.test` }],
+      // the paid gate comes BEFORE the delivery block: an invalid flag on a paid row is still a 409
+      ['invalid flag, legacy', v, editLegacy(s.link, v), { items: s.items, use_parcel_delivery: 'true' }],
+    ]
+    for (const [label, o, put, data] of cases) {
+      const snapshot = editRow(o.order.id)
+      const res = await put(data)
+      expect(res.status(), label).toBe(409)
+      expect((await res.json()).reason, label).toBe('paid')
+      expect(editRow(o.order.id), `${label}: row unchanged`).toEqual(snapshot)
+    }
+    expect(editRow(p.order.id)).toMatchObject({ delivery_fee: 3.5, packeta_address: POINT, delivery_fee_paid: 3.5 })
+    expect(editRow(v.order.id)).toMatchObject({ delivery_fee: 0, packeta_address: null, guest_email: null })
+  })
+
+  test('a CANCEL body ignores delivery keys — never validated, never written (paid and unpaid rows)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('edit2cancel', { fee: 3.5 })
+    const garbage = [
+      { use_parcel_delivery: 'true', packeta_address: 5, guest_email: { x: 1 } },
+      { use_parcel_delivery: false },
+      { use_parcel_delivery: true, packeta_address: 'Nový bod', guest_email: `gp2.cancel.${uniq}@example.test` },
+    ]
+    for (const [i, extra] of garbage.entries()) {
+      const paid = i === 0
+      const o = await submitOk(s.link.token, i === 2 ? viaHostBody(s.items) : packetaBody(s.items))
+      if (paid) expect((await setPaid(o.order.id, true)).status()).toBe(200)
+      const before = editRow(o.order.id)
+      expect(before.packeta_address, 'non-vacuity: the Packeta rows have a point to keep').toBe(i === 2 ? null : POINT)
+      const put = i % 2 ? editLegacy(s.link, o) : editCanonical(o)
+      const res = await put({ items: [], ...extra })
+      expect(res.status(), `${JSON.stringify(extra)}: ${await res.text()}`).toBe(200)
+      expect(editRow(o.order.id), JSON.stringify(extra)).toMatchObject({
+        status: 'cancelled', total: 0, delivery_fee: 0,
+        packeta_address: before.packeta_address, guest_email: before.guest_email, // KEPT — nothing written
+      })
+    }
+  })
+
+  test('the edit 400 matrix: each refusal names its field, says the exact message, and leaves the row byte-identical', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('edit2matrix', { fee: 3.5 })
+    const v = await submitOk(s.link.token, viaHostBody(s.items)) // e-mail-less, so the e-mail rule bites
+    const ok = { items: twoBags(s), use_parcel_delivery: true, packeta_address: POINT, guest_email: `gp2.m.${uniq}@example.test` }
+    const cases = [
+      [{ use_parcel_delivery: 'true' }, ERR_METHOD, 'use_parcel_delivery'],
+      [{ use_parcel_delivery: 'false' }, ERR_METHOD, 'use_parcel_delivery'],
+      [{ use_parcel_delivery: 1 }, ERR_METHOD, 'use_parcel_delivery'],
+      [{ use_parcel_delivery: 0 }, ERR_METHOD, 'use_parcel_delivery'],
+      [{ use_parcel_delivery: [true] }, ERR_METHOD, 'use_parcel_delivery'],
+      [{ use_parcel_delivery: {} }, ERR_METHOD, 'use_parcel_delivery'],
+      [{ packeta_address: undefined }, ERR_ADDRESS_MISSING, 'packeta_address'],
+      [{ packeta_address: '   ' }, ERR_ADDRESS_MISSING, 'packeta_address'],
+      [{ packeta_address: 15 }, ERR_ADDRESS_MISSING, 'packeta_address'],
+      [{ packeta_address: { a: 1 } }, ERR_ADDRESS_MISSING, 'packeta_address'],
+      [{ packeta_address: ['x'] }, ERR_ADDRESS_MISSING, 'packeta_address'],
+      [{ packeta_address: 'x'.repeat(161) }, ERR_ADDRESS_LONG, 'packeta_address'],
+      [{ guest_email: undefined }, ERR_EMAIL_MISSING, 'guest_email'],
+      [{ guest_email: null }, ERR_EMAIL_MISSING, 'guest_email'],
+      [{ guest_email: '   ' }, ERR_EMAIL_MISSING, 'guest_email'],
+      [{ guest_email: 'x' }, ERR_EMAIL_SHAPE, 'guest_email'],
+      [{ guest_email: 5 }, ERR_EMAIL_SHAPE, 'guest_email'],
+      [{ guest_email: ['a@b.sk'] }, ERR_EMAIL_SHAPE, 'guest_email'],
+      [{ guest_email: `${'a'.repeat(150)}@example.sk` }, ERR_EMAIL_LONG, 'guest_email'],
+      // gate order: the delivery block runs BEFORE pricing (as on the submit)
+      [{ use_parcel_delivery: 'x', items: [{ ...s.items[0], quantity: 101 }] }, ERR_METHOD, 'use_parcel_delivery'],
+    ]
+    const snapshot = editRow(v.order.id)
+    for (const [i, [override, error, field]] of cases.entries()) {
+      const data = { ...ok, ...override }
+      for (const k of Object.keys(override)) if (override[k] === undefined) delete data[k]
+      const res = await (i % 2 ? editLegacy(s.link, v) : editCanonical(v))(data)
+      const label = JSON.stringify(override).slice(0, 80)
+      expect(res.status(), label).toBe(400)
+      expect(await res.json(), label).toEqual({ error, field })
+      expect(editRow(v.order.id), `${label}: row unchanged`).toEqual(snapshot)
+    }
+    // non-vacuity: the SAME body without an override is accepted
+    expect((await editCanonical(v)(ok)).status()).toBe(200)
+    expect(editRow(v.order.id)).toMatchObject({ delivery_fee: 3.5, packeta_address: POINT, guest_email: ok.guest_email })
+    // exactly 160 chars (after trim) of point and of e-mail are accepted
+    const w = await submitOk(s.link.token, viaHostBody(s.items))
+    const email160 = `${'b'.repeat(149)}@example.sk`
+    expect(email160).toHaveLength(160)
+    const edge = await editLegacy(s.link, w)({ items: s.items, use_parcel_delivery: true, packeta_address: ` ${'p'.repeat(160)} `, guest_email: email160 })
+    expect(edge.status(), await edge.text()).toBe(200)
+    expect(editRow(w.order.id)).toMatchObject({ packeta_address: 'p'.repeat(160), guest_email: email160 })
+  })
+
+  test('unbindable WHOLE bodies ({} / true / [1] / "abc") on the edit answer 400, never 500, and write nothing', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('edit2shape', { fee: 3.5 })
+    const p = await submitOk(s.link.token, packetaBody(s.items))
+    const snapshot = editRow(p.order.id)
+    const raws = ['{}', 'true', '[1]', '[true]', '"abc"', 'abc',
+      '{"use_parcel_delivery":true}', '{"use_parcel_delivery":false,"items":"x"}']
+    for (const raw of raws) {
+      const res = await ctx.put(`/api/guest/o/${p.order.order_token}`, {
+        headers: { 'Content-Type': 'application/json' },
+        data: raw,
+      })
+      expect(res.status(), raw).toBe(400)
+      expect(editRow(p.order.id), raw).toEqual(snapshot)
+    }
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
 // §8 Source pins
 // ═════════════════════════════════════════════════════════════════════════════
 test.describe('GP-T1 · source pins', () => {
@@ -869,10 +1166,46 @@ test.describe('GP-T1 · source pins', () => {
     // row — over HTTP the two always agree (sync handlers), so only this pin can see it.
     expect(guest).toMatch(/const deliveryFee = delivery\.packeta \? roundMoney\(Number\(current\.parcel_fee\) \|\| 0\) : 0;/)
     expect(guest, 'the resolver row never prices the fee').not.toMatch(/roundMoney\(Number\(cycle\.parcel_fee\)[^\n]*: 0;/)
-    expect(guest, 'no write folds the fee into total').not.toMatch(/total\s*=\s*[^;\n]*delivery_fee/)
+    // ⚠ GP-T2: the original `[^;\n]*` matched the edit's spec-mandated statement (20
+    // §UC-GP-005 rule 4: `SET total = ?, status = 'submitted', delivery_fee = ?, …`), and
+    // a plain `[^,;\n]` then missed folds with a comma INSIDE the expression
+    // (`ROUND(?, 2) + delivery_fee` — review). So the scan cuts only at a comma that
+    // STARTS THE NEXT ASSIGNMENT (`, <col> =`).
+    const FOLD = /total\s*=\s*(?:(?!,\s*\w+\s*=)[^;\n])*delivery_fee/
+    expect(guest, 'no write folds the fee into total').not.toMatch(FOLD)
+    for (const fold of ['total = ? + delivery_fee', 'total = ROUND(?, 2) + delivery_fee', 'total = MAX(?, 0) + delivery_fee']) {
+      expect(fold, 'non-vacuity: the pin still sees a fold').toMatch(FOLD)
+    }
+    expect("SET total = ?, status = 'submitted', delivery_fee = ?, packeta_address = ? WHERE id = ?",
+      'the spec statement is NOT a fold').not.toMatch(FOLD)
     const helper = stripComments(readBackend('helpers/guest-orders.js'))
     expect(helper).toMatch(/UPDATE guest_orders\s+SET status = 'cancelled', total = 0, delivery_fee = 0,/)
     expect(helper, 'the address is the record — never cleared by cancel').not.toMatch(/packeta_address\s*=\s*NULL/)
+  })
+
+  test('GP-T2: the EDIT re-reads the fee in its transaction, writes literal columns, and the e-mail write is write-once', () => {
+    const guest = stripComments(readBackend('routes/guest.js'))
+    const start = guest.indexOf('function handleStatusEdit(')
+    const end = guest.indexOf('function handleInviteRequest(')
+    expect(start, 'the edit handler was found').toBeGreaterThan(-1)
+    expect(end, 'the next handler was found').toBeGreaterThan(start)
+    const edit = guest.slice(start, end)
+    expect(edit, 'readability gate: the slice reaches the response').toContain('res.json(statusPayload(link, cycle, loadOrder(order.id)))')
+    // the SAME validator as the submit (one home), never a second copy
+    expect(edit).toContain('validateDeliveryChoice(req.body, cycle)')
+    // the fee is read WITH the status, INSIDE db.transaction, and THAT read is charged
+    expect(edit).toMatch(/db\.transaction\(\(\) => \{[\s\S]*?SELECT status, parcel_fee FROM order_cycles WHERE id = \?[\s\S]*?const deliveryFee = delivery\.packeta \? roundMoney\(Number\(current\.parcel_fee\) \|\| 0\) : 0;/)
+    expect(edit, 'the resolver row never prices the edit').not.toMatch(/cycle\.parcel_fee/)
+    // literal columns in ONE statement with the items write (rule 4), bound by name
+    expect(edit).toContain("UPDATE guest_orders SET total = ?, status = 'submitted', delivery_fee = ?, packeta_address = ? WHERE id = ?")
+    expect(edit).toContain('.run(total, deliveryFee, delivery.address, order.id)')
+    // the items-only write (absent flag ⇒ untouched) is still there
+    expect(edit).toContain(`UPDATE guest_orders SET total = ?, status = 'submitted' WHERE id = ?`)
+    // the write-once predicate IS the guard (D3)
+    expect(edit).toContain('UPDATE guest_orders SET guest_email = ? WHERE id = ? AND guest_email IS NULL')
+    expect(guest.match(/guest_email\s*=/g), 'guest_email is SET in exactly one place in the public route').toHaveLength(1)
+    expect(edit, 'never a spread body').not.toMatch(/\.\.\.\s*req\.body/)
+    expect(edit, 'no ledger').not.toMatch(/transactions/)
   })
 
   test('the new guest-facing server strings never say „cyklus"/„kolo" (e2e/helpers/vocabulary.js BANNED)', () => {

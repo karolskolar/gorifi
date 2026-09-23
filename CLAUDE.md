@@ -236,6 +236,7 @@ append the full write-up to the matching learnings file and add at most one line
   (~~ONE writer~~, orchestrator 2026-09-23 pending PO; learnings 12 §6).
 - `delivered` is host-only, `paid` admin-only. Name literal columns; never spread a request body into an UPDATE.
 - Share-link regeneration UPDATEs the token in place (DELETE+INSERT cascades away every sub-order).
+- Guest edit PUT delivery block (GP-T2, learnings 12 §9–11): only beside a NON-EMPTY `items` and AFTER the paid 409; flag absent/`null` ⇒ both columns untouched; `guest_email`'s only edit write is the Packeta switch's `… WHERE guest_email IS NULL` (write-once, D3) — a body e-mail beside a stored one is ignored, never validated.
 - Pickup: `orders` row if one exists (any status), else `guest_order_links`; no cycle-open gate; exactly one of
   `pickup_location_id`/`pickup_location_note`; switching Packeta → pickup zeroes `delivery_fee` (ledger-neutral).
 - Guest tables live in `schema.js` CREATEs; new columns on tables already in prod need CREATE **and** ALTER.
