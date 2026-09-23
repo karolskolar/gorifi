@@ -870,3 +870,254 @@ test.describe('GL-T3 · source pins', () => {
     expect(api).toMatch(/deleteGuestWaitlistRow: \(id\) => adminRequest\(`\/guest-waitlist\/\$\{id\}`, \{ method: 'DELETE' \}\)/)
   })
 })
+
+// ═════════════════════════════════════════════════════════════════════════════
+// §8 GL-T6 · 19 §UC-GL-009 (UI) — CycleDetail.vue's „Čakajúci hostia (N)" card
+// ═════════════════════════════════════════════════════════════════════════════
+// The admin half of the waitlist: the rows IN FULL (name, phone, consent, dates),
+// grouped by host, a per-row „Odstrániť" with an inline confirm and per-row pending
+// (`rowSeq`). Cycle-INDEPENDENT data — every cycle's orders tab renders the same card.
+//
+// ⚠ The shared target carries OTHER files' waitlist rows (this file plants dozens), so
+// every assertion is scoped to a planted row's own testid, and the „(N)" is compared
+// with the admin GET read in the same breath. The empty state is reachable only by
+// editing the real response (route.fetch-and-edit, never a hand-built stub).
+// ⚠ ONE admin session app-wide: fixtures are built FIRST, then the UI login's token is
+// adopted for every API read afterwards (the guest-admin-view.spec.js:820 trap).
+const GL6_TITLE = (n) => `Čakajúci hostia (${n})`
+const GL6_EMPTY = 'Nikto nečaká.'
+const GL6_CONFIRM = 'Odstrániť tento záznam?'
+const GL6_HEADERS = ['Meno', 'Mobil', 'WhatsApp', 'Zapísané', 'Upozornené']
+
+// `plant()` with an explicit created_at, so the „Zapísané" date is a fixed string.
+function plantAt(hostId, fields, createdAt) {
+  const id = plant(hostId, fields)
+  const db = new DatabaseSync(DB_PATH)
+  try {
+    db.exec('PRAGMA busy_timeout = 5000')
+    db.prepare('UPDATE guest_waitlist SET created_at = ? WHERE id = ?').run(createdAt, id)
+  } finally {
+    db.close()
+  }
+  return id
+}
+
+async function gl6AdoptUi(page) {
+  await page.goto('/admin')
+  await page.locator('#password').fill(ADMIN_PASSWORD)
+  await page.getByRole('button', { name: /Prihlásiť sa/ }).click()
+  await expect(page).toHaveURL(/\/admin\/dashboard/)
+  const token = await page.evaluate(() => localStorage.getItem('adminToken'))
+  expect(token, 'the UI login stored an admin token').toBeTruthy()
+  adminToken = token
+}
+
+async function gl6OrdersTab(page, cycle) {
+  await page.goto(`/admin/cycle/${cycle.id}`)
+  await page.getByRole('tab', { name: 'Objednávky' }).click()
+  const card = page.getByTestId('guest-waitlist-card')
+  await expect(card).toBeVisible()
+  return card
+}
+
+async function gl6Total() {
+  const res = await admin('/api/guest-waitlist')
+  expect(res.status()).toBe(200)
+  return (await res.json()).rows.length
+}
+
+test.describe('GL-T6 · 19 §UC-GL-009 — CycleDetail „Čakajúci hostia (N)" card', () => {
+  test.skip(!DB_PATH, NEEDS_DB)
+
+  test('rows IN FULL, grouped by host: Meno · Mobil (E.164, else the raw phone) · WhatsApp áno/nie · Zapísané · Upozornené (date or —); the (N) is the whole list', async ({ page }) => {
+    const alpha = await makeFriend('Card Alfa')
+    const beta = await makeFriend('Card Beta')
+    const cycle = await makeCycle('Card')
+    const m1 = mobile(); const m3 = mobile()
+    const r1 = plantAt(alpha.id, { name: 'Karta Jedna', phone: m1.national, e164: m1.e164, optIn: 1 }, '2026-09-10 10:00:00')
+    const r2 = plantAt(alpha.id, { name: 'Karta Dva', phone: '12345', e164: null, optIn: 0, notified: '2026-09-01 10:00:00' }, '2026-08-20 10:00:00')
+    const r3 = plantAt(beta.id, { name: 'Karta Tri', phone: m3.national, e164: m3.e164, optIn: 1 }, '2026-09-11 10:00:00')
+
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await gl6AdoptUi(page)
+    const card = await gl6OrdersTab(page, cycle)
+    await expect(card.getByTestId('guest-waitlist-title')).toHaveText(GL6_TITLE(await gl6Total()))
+
+    // Grouped by host: the host's name heads its group, and its rows sit INSIDE it.
+    const groupA = card.getByTestId(`guest-waitlist-group-${alpha.id}`)
+    const groupB = card.getByTestId(`guest-waitlist-group-${beta.id}`)
+    await expect(groupA.getByTestId(`guest-waitlist-host-${alpha.id}`)).toHaveText(alpha.name)
+    await expect(groupB.getByTestId(`guest-waitlist-host-${beta.id}`)).toHaveText(beta.name)
+    await expect(groupA.getByTestId(`guest-waitlist-row-${r1}`)).toHaveCount(1)
+    await expect(groupA.getByTestId(`guest-waitlist-row-${r2}`)).toHaveCount(1)
+    await expect(groupB.getByTestId(`guest-waitlist-row-${r3}`)).toHaveCount(1)
+    await expect(groupA.getByTestId(`guest-waitlist-row-${r3}`), 'a row never lands under another host').toHaveCount(0)
+
+    // The five columns, in order (header of the group's table).
+    const heads = await groupA.locator('th').allTextContents()
+    expect(heads.map((h) => h.trim()).slice(0, 5)).toEqual(GL6_HEADERS)
+
+    const cells = async (id) => (await card.getByTestId(`guest-waitlist-row-${id}`).getByRole('cell').allTextContents()).map((t) => t.trim())
+    expect((await cells(r1)).slice(0, 5), 'E.164 shown; consented; never notified').toEqual(['Karta Jedna', m1.e164, 'áno', '10. 9. 2026', '—'])
+    expect((await cells(r2)).slice(0, 5), 'no E.164 ⇒ the raw phone; no consent; notified').toEqual(['Karta Dva', '12345', 'nie', '20. 8. 2026', '1. 9. 2026'])
+    // Newest first within a host (the API order is kept).
+    const idsA = await groupA.locator('[data-testid^="guest-waitlist-row-"]').evaluateAll((els) => els.map((e) => e.dataset.testid))
+    expect(idsA.indexOf(`guest-waitlist-row-${r1}`)).toBeLessThan(idsA.indexOf(`guest-waitlist-row-${r2}`))
+
+    // Person-typed values are marked (FUP-T22): the name, the phone and the host name.
+    for (const sel of [`guest-waitlist-row-${r1}`]) {
+      const marked = await card.getByTestId(sel).locator('[data-user-copy]').allTextContents()
+      expect(marked.map((t) => t.trim())).toEqual(expect.arrayContaining(['Karta Jedna', m1.e164]))
+    }
+    await expect(groupA.getByTestId(`guest-waitlist-host-${alpha.id}`)).toHaveAttribute('data-user-copy', '')
+    await expect(card.getByTestId('guest-waitlist-empty')).toHaveCount(0)
+  })
+
+  test('cycle-INDEPENDENT: a second cycle\'s orders tab — a different status too — renders the same row', async ({ page }) => {
+    const host = await makeFriend('Card Indep')
+    const open = await makeCycle('Card Indep open')
+    const done = await makeCycle('Card Indep done', 'completed')
+    const m = mobile()
+    const id = plantAt(host.id, { name: 'Všade Rovnaká', phone: m.national, e164: m.e164 }, '2026-09-12 10:00:00')
+
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await gl6AdoptUi(page)
+    const texts = []
+    for (const cycle of [open, done]) {
+      const card = await gl6OrdersTab(page, cycle)
+      const row = card.getByTestId(`guest-waitlist-row-${id}`)
+      await expect(row).toBeVisible()
+      texts.push((await row.textContent()).trim())
+    }
+    expect(texts[1]).toBe(texts[0])
+  })
+
+  test('„Odstrániť": inline confirm; „Nie" backs out with NOTHING deleted; „Áno, odstrániť" removes the row from the card AND the DB, (N) and the host\'s waiting_count drop by one', async ({ page }) => {
+    const host = await makeHost('Card Del')
+    const cycle = await makeCycle('Card Del')
+    const m1 = mobile(); const m2 = mobile()
+    const gone = plant(host.id, { name: 'Zmazať Ma', phone: m1.national, e164: m1.e164 })
+    const stays = plant(host.id, { name: 'Ostávam', phone: m2.national, e164: m2.e164 })
+    const count0 = (await (await ctx.get('/api/guest-links/standing', { headers: host.auth })).json()).waiting_count
+    expect(count0).toBe(2)
+
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await gl6AdoptUi(page)
+    const card = await gl6OrdersTab(page, cycle)
+    const total = await gl6Total()
+    await expect(card.getByTestId('guest-waitlist-title')).toHaveText(GL6_TITLE(total))
+
+    const del = card.getByTestId(`guest-waitlist-delete-${gone}`)
+    await expect(del).toHaveText('Odstrániť')
+    await expect(card.getByTestId(`guest-waitlist-confirm-${gone}`)).toHaveCount(0)
+    await del.click()
+    const confirm = card.getByTestId(`guest-waitlist-confirm-${gone}`)
+    await expect(confirm).toContainText(GL6_CONFIRM)
+    await expect(del, 'the trigger yields to its confirmation').toHaveCount(0)
+    await expect(card.getByTestId(`guest-waitlist-confirm-${stays}`), 'only THIS row asks').toHaveCount(0)
+
+    await card.getByTestId(`guest-waitlist-no-${gone}`).click()
+    await expect(confirm).toHaveCount(0)
+    expect(rowsById(gone), '„Nie" deleted nothing — read back').toHaveLength(1)
+
+    await card.getByTestId(`guest-waitlist-delete-${gone}`).click()
+    await expect(card.getByTestId(`guest-waitlist-yes-${gone}`)).toHaveText('Áno, odstrániť')
+    await card.getByTestId(`guest-waitlist-yes-${gone}`).click()
+    await expect(card.getByTestId(`guest-waitlist-row-${gone}`)).toHaveCount(0)
+    await expect(card.getByTestId(`guest-waitlist-row-${stays}`)).toBeVisible()
+    await expect(card.getByTestId('guest-waitlist-title')).toHaveText(GL6_TITLE(total - 1))
+    expect(rowsById(gone, stays).map((r) => r.id), 'the DB agrees').toEqual([stays])
+    expect(await gl6Total()).toBe(total - 1)
+    const count1 = (await (await ctx.get('/api/guest-links/standing', { headers: host.auth })).json()).waiting_count
+    expect(count1, 'the host\'s count follows').toBe(1)
+  })
+
+  test('per-row pending (rowSeq): a HELD delete on row A never blocks row B; A is disabled AND JS-guarded (a dispatched click sends no second DELETE)', async ({ page }) => {
+    const host = await makeFriend('Card Pend')
+    const cycle = await makeCycle('Card Pend')
+    const m1 = mobile(); const m2 = mobile()
+    const a = plant(host.id, { name: 'Pomalá', phone: m1.national, e164: m1.e164 })
+    const b = plant(host.id, { name: 'Rýchla', phone: m2.national, e164: m2.e164 })
+
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await gl6AdoptUi(page)
+    const deletes = []
+    await page.route(`**/api/guest-waitlist/${a}`, async (route) => {
+      if (route.request().method() !== 'DELETE') return route.continue()
+      deletes.push(a)
+      await new Promise((r) => setTimeout(r, 15000))
+      await route.continue().catch(() => {})
+    })
+    const card = await gl6OrdersTab(page, cycle)
+
+    await card.getByTestId(`guest-waitlist-delete-${a}`).click()
+    await card.getByTestId(`guest-waitlist-yes-${a}`).click()
+    const yesA = card.getByTestId(`guest-waitlist-yes-${a}`)
+    await expect(yesA).toHaveText('Odstraňujem...', { timeout: 3000 })
+    await expect(yesA).toBeDisabled({ timeout: 3000 })
+
+    // Row B, while A is still held: it completes on its own.
+    await card.getByTestId(`guest-waitlist-delete-${b}`).click()
+    await card.getByTestId(`guest-waitlist-yes-${b}`).click()
+    await expect(card.getByTestId(`guest-waitlist-row-${b}`), 'B was not blocked by A').toHaveCount(0, { timeout: 3000 })
+    expect(rowsById(b)).toHaveLength(0)
+    await expect(card.getByTestId(`guest-waitlist-row-${a}`), 'A is still pending, still on screen').toBeVisible({ timeout: 1000 })
+
+    // ⚠ A `disabled` attribute does not stop a DISPATCHED click (CLAUDE.md) — the JS guard does.
+    await yesA.dispatchEvent('click')
+    await page.waitForTimeout(300)
+    expect(deletes, 'exactly ONE DELETE for row A').toEqual([a])
+    expect(rowsById(a), 'A is not deleted yet — the request is held').toHaveLength(1)
+  })
+
+  test('a REFUSED delete keeps the row, says why on THAT row, and deleted nothing — read back', async ({ page }) => {
+    const host = await makeFriend('Card Refuse')
+    const cycle = await makeCycle('Card Refuse')
+    const m = mobile()
+    const id = plant(host.id, { name: 'Neodstrániteľná', phone: m.national, e164: m.e164 })
+
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await gl6AdoptUi(page)
+    await page.route(`**/api/guest-waitlist/${id}`, (route) => {
+      if (route.request().method() !== 'DELETE') return route.continue()
+      return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Server je nedostupný' }) })
+    })
+    const card = await gl6OrdersTab(page, cycle)
+    await card.getByTestId(`guest-waitlist-delete-${id}`).click()
+    await card.getByTestId(`guest-waitlist-yes-${id}`).click()
+    await expect(card.getByTestId(`guest-waitlist-row-error-${id}`)).toContainText('Server je nedostupný')
+    await expect(card.getByTestId(`guest-waitlist-row-${id}`), 'never shown as done').toBeVisible()
+    expect(rowsById(id)).toHaveLength(1)
+  })
+
+  test('empty ⇒ „Nikto nečaká." and (0), no table; a FAILED load is NOT the empty state', async ({ page }) => {
+    const cycle = await makeCycle('Card Empty')
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await gl6AdoptUi(page)
+
+    await page.route('**/api/guest-waitlist', async (route) => {
+      const res = await route.fetch()
+      const body = await res.json()
+      expect(Array.isArray(body.rows), 'the real payload was fetched').toBe(true)
+      body.rows = []
+      await route.fulfill({ response: res, body: JSON.stringify(body) })
+    })
+    let card = await gl6OrdersTab(page, cycle)
+    await expect(card.getByTestId('guest-waitlist-empty')).toHaveText(GL6_EMPTY)
+    await expect(card.getByTestId('guest-waitlist-title')).toHaveText(GL6_TITLE(0))
+    await expect(card.locator('table')).toHaveCount(0)
+    await expect(card.getByTestId('guest-waitlist-error')).toHaveCount(0)
+
+    await page.unroute('**/api/guest-waitlist')
+    await page.route('**/api/guest-waitlist', (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Chyba servera' }) }))
+    card = await gl6OrdersTab(page, cycle)
+    await expect(card.getByTestId('guest-waitlist-error')).toContainText('Chyba servera')
+    await expect(card.getByTestId('guest-waitlist-empty'), 'a failed load never reads as „nobody waits"').toHaveCount(0)
+    await expect(card.getByTestId('guest-waitlist-title'), 'no count is claimed').toHaveText('Čakajúci hostia')
+
+    // (No in-flight state to pin: `loadAll()` awaits the listing behind the page's own
+    // „Načítavam...", the precedent `loadGuestUnpaid()` / `loadGuestLinks()` follow,
+    // so the card never renders before the list or the failure has arrived.)
+  })
+})

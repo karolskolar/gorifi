@@ -470,7 +470,7 @@ keeps one number across rebuilds.
 `e2e/scrub-template.sql`, and read what is actually checked from
 `e2e/verify-scrub.sql`.** Those two files are the scrub; prose beside them is a fourth
 copy waiting to drift, and this section already carried one. The fail-closed check now
-covers **one line per column the scrub touches** and prints all 22, because twice it was
+covers **one line per column the scrub touches** and prints all ~~22~~ **26** (GL-T6), because twice it was
 narrower than the scrub, which was narrower than the schema:
 
 - **2026-08-31** — `payment_iban` / `payment_revolut_username` (the PO's real bank
@@ -484,6 +484,20 @@ narrower than the scrub, which was narrower than the schema:
   identity. All four passed a check that confidently returned `0`.
 
 **A verification narrower than the scrub does not weaken the claim, it launders it.**
+
+⚠⚠ **`make-test-db.sh` FAILS CLOSED UNTIL PRODUCTION CARRIES MODULE 19's MIGRATIONS
+(GL-T6, 2026-09-23).** Both SQL files now name `friends.guest_link_token` (GL-T1, the
+standing guest-link bearer token) and `guest_waitlist` (GL-T3, non-member PII: name,
+phone, `phone_e164` — ALL scrubbed, the name too; the „names are kept" rule is for
+friends only). SQL cannot branch on a missing table or column, so against a production
+that predates those deploys the server-side scrub stops with `no such table:
+guest_waitlist` / `no such column: guest_link_token` and **nothing is downloaded**. That
+is deliberate: the lines ship with the first row that can mint a standing token (GL-T6's
+share dialog / the admin friend detail), never after it. The fix is to deploy module 19
+to production first (a backend restart runs the migrations), then build the template;
+the existing `prod-template.sqlite` keeps working meanwhile (it predates GL-T1 — the gate
+server migrates the per-run COPY on boot). `node e2e/scrub-local.mjs` fails the same way
+on a pre-GL-T1 file, so to re-check an OLD template boot a backend on a copy once first.
 
 ```bash
 ./e2e/make-test-db.sh                      # once, or whenever you want fresher data

@@ -136,7 +136,8 @@ Three structural fixes, not just three more columns:
    same bytes the server runs — and the quoted-heredoc trap (bash expanding backticked
    SQL comments and executing `node e2e/seed.mjs` from inside one) is retired rather than
    commented around.
-2. The verification is now **one line per column the scrub touches**, printing all 22
+2. The verification is now **one line per column the scrub touches**, printing all ~~22~~ **26 since GL-T6** (the standing token + three `guest_waitlist`
+   columns — learnings 11 §GL-T6)
    named counts on success and naming the offenders on failure. The contract is written
    at the top of both files: add a column there ⇒ add a line here.
 3. **`e2e/scrub-local.mjs`** re-scrubs or verifies a template locally, using those same

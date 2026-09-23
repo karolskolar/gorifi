@@ -163,3 +163,18 @@ export function weeksAwayLabel(days) {
   if (days <= 6) return 'už tento týždeň'
   return `o ${weeksLabel(Math.round(days / 7))}`
 }
+
+// 1 človek čaká / 2-4 ľudia čakajú / 5+ ľudí čaká — „na váš odkaz": the host share
+// dialog's „kto čaká" count line (19 §UC-GL-008 item 1, GL-T6). The count is the
+// server's `waiting_count` (`helpers/standing-link.js waitingCount()`: the host's
+// `guest_waitlist` rows not yet told). ⚠ The VERB agrees too — 2-4 take the plural
+// „čakajú", 1 and 5+ the singular „čaká" (the genitive plural of 5+ governs a
+// singular verb, the `bagsMoveVerb` rule) — which is why the whole phrase lives here
+// rather than a noun the caller glues a verb onto. 0 reads „0 ľudí čaká…"; the dialog
+// renders no line at 0, so that branch is only the declension's own completeness.
+export function waitingLabel(count) {
+  const n = Number(count) || 0
+  if (n === 1) return '1 človek čaká na váš odkaz'
+  if (n >= 2 && n <= 4) return `${n} ľudia čakajú na váš odkaz`
+  return `${n} ľudí čaká na váš odkaz`
+}

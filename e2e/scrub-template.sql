@@ -23,8 +23,16 @@
 BEGIN IMMEDIATE;
 
 -- ── CONTACT DATA (PO: randomise) ──────────────────────────────────────────────
+-- ⚠ THE INNER PARENTHESES ON EVERY PHONE LINE ARE LOAD-BEARING (GL-T3 review, fixed
+-- GL-T6). In SQLite `||` binds TIGHTER than `%`, so the old
+-- `'00000000' || (10000000 + id * 7919) % 100000000` padded FIRST and took the modulo
+-- of the padded string: correct only while the sum stayed below 100000000. Past that
+-- (friends from id ~11365, guest_orders ~12055, invitations ~12459) the modulo result
+-- was no longer padded, `substr(…, -8)` returned fewer than 8 digits and the verify's
+-- GLOB failed — closed, not leaking, but a template build that dies once production
+-- grows. `((… ) % 100000000)` takes the modulo first, then pads. Keep the form.
 UPDATE friends SET
-  phone = '09' || substr('00000000' || (10000000 + id * 7919) % 100000000, -8),
+  phone = '09' || substr('00000000' || ((10000000 + id * 7919) % 100000000), -8),
   email = CASE WHEN email IS NULL OR email = '' THEN email
                ELSE 'friend' || id || '@example.test' END,
   -- A Packeta address is contact data too (it can be a home address). Not named by
@@ -34,18 +42,33 @@ UPDATE friends SET
                          ELSE 'Z-Box Testovacia ' || id || ', 010 01 Mesto' END;
 
 UPDATE invitations SET
-  phone = '09' || substr('00000000' || (20000000 + id * 6421) % 100000000, -8),
+  phone = '09' || substr('00000000' || ((20000000 + id * 6421) % 100000000), -8),
   email = CASE WHEN email IS NULL OR email = '' THEN email
                ELSE 'invite' || id || '@example.test' END;
 
 UPDATE guest_orders SET
-  guest_phone = '09' || substr('00000000' || (30000000 + id * 5807) % 100000000, -8),
+  guest_phone = '09' || substr('00000000' || ((30000000 + id * 5807) % 100000000), -8),
   guest_email = CASE WHEN guest_email IS NULL OR guest_email = '' THEN guest_email
                      ELSE 'guest' || id || '@example.test' END;
 
 UPDATE orders SET
   packeta_address = CASE WHEN packeta_address IS NULL OR packeta_address = '' THEN packeta_address
                          ELSE 'Z-Box Testovacia ' || id || ', 010 01 Mesto' END;
+
+-- 19 §UC-GL-004 (GL-T6) — the guest WAITLIST: people who asked to be told when a
+-- host's round opens and who NEVER JOINED. ⚠ The name is scrubbed TOO — the stricter
+-- default (orchestrator, 2026-09-23): the PO's „names are kept" rule above was made
+-- for friends and is not extended to strangers.
+-- ⚠ `phone_e164` is re-derived from the SAME expression as `phone`, not from `phone`:
+-- an UPDATE's right-hand side reads the OLD row, so `'+421' || substr(phone, 2)` here
+-- would copy the REAL number. NULL stays NULL (a number that did not normalise). The
+-- partial unique index on (host_friend_id, phone_e164) cannot collide — the value is
+-- per id. The verify ties e164 to the SCRUBBED phone, so a real number cannot survive.
+UPDATE guest_waitlist SET
+  name       = 'Cakajuci ' || id,
+  phone      = '09' || substr('00000000' || ((40000000 + id * 4973) % 100000000), -8),
+  phone_e164 = CASE WHEN phone_e164 IS NULL THEN NULL
+                    ELSE '+4219' || substr('00000000' || ((40000000 + id * 4973) % 100000000), -8) END;
 
 -- ── CREDENTIALS ───────────────────────────────────────────────────────────────
 -- ⚠ EVERY ONE OF THESE IS LIVE AGAINST THE PRODUCTION SITE. This is the half that
@@ -56,6 +79,10 @@ UPDATE orders SET
 --   guest_order_links.token  — /g/:token, the ordering surface; no password at all
 --   guest_orders.order_token — /g/o/:orderToken, and since GR-T1 it is the WHOLE
 --                              credential: it resolves regardless of the link half
+--   friends.guest_link_token — 19's STANDING /g/:token (GL-T1), a host's permanent
+--                              door; `invite_code`'s class. NULLed, not regenerated:
+--                              NULL is the „not minted yet" state (the next GET mints
+--                              lazily) and the unique index ignores NULLs (GL-T6)
 --   login_tokens.token       — magic-link login
 --   onboarding_links.token   — onboarding
 --   friend_sessions          — live Bearer sessions
@@ -87,6 +114,10 @@ UPDATE friends SET
   google_sub    = NULL,
   google_email  = CASE WHEN google_email IS NULL OR google_email = '' THEN google_email
                        ELSE 'gfriend' || id || '@example.test' END;
+
+-- ⚠ Its OWN statement (GL-T6a review): on a snapshot without the column this fails
+-- ALONE, and the five credential scrubs above it have already run.
+UPDATE friends SET guest_link_token = NULL;
 
 UPDATE invitations SET
   google_sub   = NULL,

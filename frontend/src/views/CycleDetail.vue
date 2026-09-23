@@ -414,6 +414,11 @@ async function loadAll() {
     // the orders tab rendering. Both helpers swallow their own errors into an inline
     // message, so neither can reject and land in the catch below.
     await loadGuestLinks()
+    // Same contract (19 §UC-GL-009, GL-T6): the waitlist card is cycle-independent
+    // data, never a precondition for this page. It re-runs with every `loadAll()` on
+    // purpose — the admin's complete PATCH is one of the two purge paths
+    // (§UC-GL-005), so a round just completed may have removed rows.
+    await loadGuestWaitlist()
   } catch (e) {
     error.value = e.message
   } finally {
@@ -955,6 +960,111 @@ async function cancelGuestOrder(subOrder) {
     setRowMessage(guestRowErrors, id, e.message)
   } finally {
     clearRowFlag(guestCancelPending, id)
+  }
+}
+
+// ── 19 §UC-GL-009 (GL-T6) — „Čakajúci hostia (N)", the guest WAITLIST ──────────
+//
+// People who asked a host's STANDING link to tell them when a round opens
+// (`POST /api/guest/:token/waitlist`, §UC-GL-004). Shown to the admin IN FULL — name,
+// phone, consent, dates — and deletable (the privacy line). ⚠ CYCLE-INDEPENDENT: the
+// data has no cycle owner (the PO asked for it „under the cycle"), so every cycle's
+// orders tab renders the SAME list; nothing here reads `cycleId`.
+//
+// ⚠ The rows are NON-MEMBER PII: every person-typed value in the template is marked
+// `data-user-copy` (FUP-T22), and the e2e scrub covers the table (GL-T6).
+// ⚠ No admin write of `notified_at` and no admin create — module 21 owns the former,
+// the public signup is the only writer of rows (helpers/guest-waitlist.js).
+const guestWaitlist = ref([])
+const guestWaitlistError = ref('')
+// `false` until a load succeeds (and again after one fails): the „(N)" is a claim
+// about the list, so a failed load claims no count, and the error branch wins over
+// „Nikto nečaká." in the template. (No in-flight state ever renders: `loadAll()`
+// awaits this behind the page's own spinner, like `loadGuestUnpaid()`.)
+const guestWaitlistLoaded = ref(false)
+// Per ROW (the `rowSeq` convention, GSO-T5): two rows may be deleted concurrently and
+// a slow one never blocks or overwrites another.
+const waitlistDeletePending = ref({})
+const waitlistRowErrors = ref({})
+// The inline confirm is per row TOO (not one shared id): a held delete's confirm must
+// stay on screen, showing its pending state, while the admin works on another row.
+const waitlistConfirmOpen = ref({})
+// ⚠ Script-side on purpose: in the template `waitlistConfirmOpen` is auto-unwrapped, so
+// `clearRowFlag(waitlistConfirmOpen, id)` there would receive the plain object, not the ref.
+function openWaitlistConfirm(id) {
+  waitlistConfirmOpen.value = { ...waitlistConfirmOpen.value, [id]: true }
+}
+function closeWaitlistConfirm(id) {
+  clearRowFlag(waitlistConfirmOpen, id)
+}
+const waitlistRowSeq = new Map()
+
+// SEQUENCE GUARD (`loadSeq`): `loadAll()` re-runs after every cycle action, so two
+// listings can be in flight and resolve out of order.
+let guestWaitlistSeq = 0
+
+async function loadGuestWaitlist() {
+  const seq = ++guestWaitlistSeq
+  try {
+    const data = await api.getGuestWaitlist()
+    if (seq !== guestWaitlistSeq) return
+    guestWaitlist.value = Array.isArray(data?.rows) ? data.rows : []
+    guestWaitlistError.value = ''
+    guestWaitlistLoaded.value = true
+  } catch (e) {
+    if (seq !== guestWaitlistSeq) return
+    guestWaitlistError.value = e.message
+    guestWaitlistLoaded.value = false
+  }
+}
+
+// Grouped by HOST in the server's order (host NOCASE → newest signup → id). Keyed by
+// `host_friend_id`, never the name: two friends may share a name.
+const guestWaitlistGroups = computed(() => {
+  const groups = []
+  const byHost = new Map()
+  for (const row of guestWaitlist.value) {
+    let g = byHost.get(row.host_friend_id)
+    if (!g) {
+      g = { hostId: row.host_friend_id, hostName: row.host_name, rows: [] }
+      byHost.set(row.host_friend_id, g)
+      groups.push(g)
+    }
+    g.rows.push(row)
+  }
+  return groups
+})
+
+// `YYYY-MM-DD HH:MM:SS` (SQLite, UTC) → „1. 9. 2026" in the admin's local day. A
+// value that does not parse renders as it came; NULL is „—" (the caller's choice).
+function formatWaitlistDate(ts) {
+  if (!ts) return '—'
+  const d = new Date(String(ts).replace(' ', 'T') + (/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(String(ts)) ? '' : 'Z'))
+  if (Number.isNaN(d.getTime())) return String(ts)
+  return `${d.getDate()}. ${d.getMonth() + 1}. ${d.getFullYear()}`
+}
+
+async function deleteWaitlistRow(row) {
+  const id = row.id
+  // ⚠ The JS guard, not only `:disabled` — a dispatched click reaches the handler.
+  if (waitlistDeletePending.value[id]) return
+  const seq = (waitlistRowSeq.get(id) || 0) + 1
+  waitlistRowSeq.set(id, seq)
+  waitlistDeletePending.value = { ...waitlistDeletePending.value, [id]: true }
+  setRowMessage(waitlistRowErrors, id, '')
+  try {
+    await api.deleteGuestWaitlistRow(id)
+    if (waitlistRowSeq.get(id) !== seq) return
+    // Patched in place — no reload, so every other row keeps its own pending/confirm.
+    guestWaitlist.value = guestWaitlist.value.filter((r) => r.id !== id)
+    clearRowFlag(waitlistConfirmOpen, id)
+  } catch (e) {
+    if (waitlistRowSeq.get(id) !== seq) return
+    // Reported on THIS row and never shown as done; the confirm stays open so the
+    // refusal sits next to the thing the admin asked for.
+    setRowMessage(waitlistRowErrors, id, e.message)
+  } finally {
+    clearRowFlag(waitlistDeletePending, id)
   }
 }
 
@@ -2927,6 +3037,114 @@ function getStatusVariant(status) {
                       @close-confirm="guestLinkRegenConfirmId = null"
                     />
                   </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <!-- ══ Čakajúci hostia (19 §UC-GL-009, GL-T6) ═════════════════════════════
+               The guest WAITLIST: people who asked a host's standing link to tell them
+               when a round opens. ⚠ CYCLE-INDEPENDENT — the same list on every cycle's
+               orders tab (the data has no cycle owner). ⚠ A SIBLING BELOW the order
+               tables' v-if / v-else-if / v-else chain, like the fold above.
+               ⚠ Admin shadcn skin only — no `neo/`, no theme class.
+               ⚠ NON-MEMBER PII, shown in full to the admin by design (the privacy line):
+               every person-typed value carries `data-user-copy` (FUP-T22).
+               Copy is DRAFT pending the PO's staging sign-off (19 §OPEN). -->
+          <Card class="mt-4" data-testid="guest-waitlist-card">
+            <CardContent class="p-4">
+              <h3 class="text-sm font-medium mb-1" data-testid="guest-waitlist-title">Čakajúci hostia<template v-if="guestWaitlistLoaded"> ({{ guestWaitlist.length }})</template></h3>
+              <p class="text-xs text-muted-foreground mb-3 max-w-3xl">
+                Ľudia, ktorí sa cez stály odkaz priateľa zapísali, aby dostali správu, keď sa
+                objednávka otvorí.
+              </p>
+
+              <div
+                v-if="guestWaitlistError"
+                class="text-sm text-destructive"
+                data-testid="guest-waitlist-error"
+              >
+                Zoznam čakajúcich hostí sa nepodarilo načítať: {{ guestWaitlistError }}
+              </div>
+              <div
+                v-else-if="guestWaitlist.length === 0"
+                class="text-sm text-muted-foreground"
+                data-testid="guest-waitlist-empty"
+              >Nikto nečaká.</div>
+              <div v-else class="space-y-4">
+                <div
+                  v-for="group in guestWaitlistGroups"
+                  :key="`wl-${group.hostId}`"
+                  :data-testid="`guest-waitlist-group-${group.hostId}`"
+                >
+                  <div class="text-sm font-semibold mb-1">
+                    <span :data-testid="`guest-waitlist-host-${group.hostId}`" data-user-copy>{{ group.hostName }}</span>
+                  </div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Meno</TableHead>
+                        <TableHead>Mobil</TableHead>
+                        <TableHead>WhatsApp</TableHead>
+                        <TableHead>Zapísané</TableHead>
+                        <TableHead>Upozornené</TableHead>
+                        <TableHead class="text-right">
+                          <span class="sr-only">Akcie</span>
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      <TableRow
+                        v-for="row in group.rows"
+                        :key="`wl-row-${row.id}`"
+                        :data-testid="`guest-waitlist-row-${row.id}`"
+                      >
+                        <TableCell class="font-medium break-words"><span data-user-copy>{{ row.name }}</span></TableCell>
+                        <!-- E.164 when it normalised (§UC-GL-009 acceptance), else the raw
+                             phone as typed — the admin still needs a number to call. -->
+                        <TableCell class="whitespace-nowrap"><span data-user-copy>{{ row.phone_e164 || row.phone }}</span></TableCell>
+                        <TableCell>{{ row.whatsapp_opt_in ? 'áno' : 'nie' }}</TableCell>
+                        <TableCell class="whitespace-nowrap">{{ formatWaitlistDate(row.created_at) }}</TableCell>
+                        <TableCell class="whitespace-nowrap">{{ formatWaitlistDate(row.notified_at) }}</TableCell>
+                        <TableCell class="text-right">
+                          <div class="flex flex-wrap items-center justify-end gap-2">
+                            <button
+                              v-if="!waitlistConfirmOpen[row.id]"
+                              type="button"
+                              class="text-xs text-destructive underline underline-offset-2 hover:no-underline"
+                              :data-testid="`guest-waitlist-delete-${row.id}`"
+                              @click="openWaitlistConfirm(row.id)"
+                            >Odstrániť</button>
+                            <span
+                              v-else
+                              class="text-xs inline-flex flex-wrap items-center gap-1.5"
+                              :data-testid="`guest-waitlist-confirm-${row.id}`"
+                            >
+                              <span class="text-muted-foreground">Odstrániť tento záznam?</span>
+                              <button
+                                type="button"
+                                class="text-destructive underline underline-offset-2 hover:no-underline disabled:opacity-50"
+                                :disabled="!!waitlistDeletePending[row.id]"
+                                :data-testid="`guest-waitlist-yes-${row.id}`"
+                                @click="deleteWaitlistRow(row)"
+                              >{{ waitlistDeletePending[row.id] ? 'Odstraňujem...' : 'Áno, odstrániť' }}</button>
+                              <button
+                                type="button"
+                                class="text-muted-foreground underline underline-offset-2 hover:no-underline"
+                                :data-testid="`guest-waitlist-no-${row.id}`"
+                                @click="closeWaitlistConfirm(row.id)"
+                              >Nie</button>
+                            </span>
+                            <span
+                              v-if="waitlistRowErrors[row.id]"
+                              class="text-xs text-destructive"
+                              :data-testid="`guest-waitlist-row-error-${row.id}`"
+                            >{{ waitlistRowErrors[row.id] }}</span>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
                 </div>
               </div>
             </CardContent>

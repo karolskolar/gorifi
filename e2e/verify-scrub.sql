@@ -16,6 +16,11 @@
 -- follows the scrub's own order so the two can be diffed side by side.
 --
 -- A missing column makes sqlite3 exit non-zero, which also fails closed.
+-- ⚠ GL-T6 (2026-09-23): the `guest_waitlist.*` and `friends.guest_link_token` lines
+-- (and their scrub twins) name a table and a column that exist only from module 19's
+-- GL-T1/GL-T3 migrations on. Until PRODUCTION carries them, `make-test-db.sh` FAILS
+-- CLOSED here („no such table/column") — deliberate: the lines ship with the first row
+-- that can mint a standing token / write a waitlist row, never after it.
 --
 -- ⚠ FORMAT CONTRACT, relied on by `make-test-db.sh`: each check is exactly ONE line
 -- beginning `SELECT '<name>'` (the `UNION ALL`s sit on their own lines). The script
@@ -54,6 +59,16 @@ UNION ALL
   SELECT 'orders.packeta_address',     COUNT(*) FROM orders
    WHERE packeta_address IS NOT NULL AND packeta_address <> ''
      AND packeta_address NOT LIKE 'Z-Box Testovacia %'
+UNION ALL
+  SELECT 'guest_waitlist.name',        COUNT(*) FROM guest_waitlist
+   WHERE name IS NULL OR name NOT GLOB 'Cakajuci [0-9]*'
+UNION ALL
+  SELECT 'guest_waitlist.phone',       COUNT(*) FROM guest_waitlist
+   WHERE phone IS NULL OR phone NOT GLOB '09[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+UNION ALL
+  -- tied to the SCRUBBED phone, so a real number cannot survive in it
+  SELECT 'guest_waitlist.phone_e164',  COUNT(*) FROM guest_waitlist
+   WHERE phone_e164 IS NOT NULL AND phone_e164 <> '+421' || substr(phone, 2)
 
 -- ── CREDENTIALS ───────────────────────────────────────────────────────────────
 UNION ALL
@@ -67,6 +82,8 @@ UNION ALL
 UNION ALL
   SELECT 'friends.google_email',       COUNT(*) FROM friends
    WHERE google_email IS NOT NULL AND google_email <> '' AND google_email NOT LIKE '%@example.test'
+UNION ALL
+  SELECT 'friends.guest_link_token',   COUNT(*) FROM friends WHERE guest_link_token IS NOT NULL
 UNION ALL
   SELECT 'invitations.google_sub',     COUNT(*) FROM invitations WHERE google_sub IS NOT NULL
 UNION ALL

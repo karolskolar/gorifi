@@ -2940,3 +2940,214 @@ test.describe('GL-T5 · source pins — extend, never fork', () => {
     expect(header, 'no ticker prop').not.toMatch(/\bticker:\s*\{/)
   })
 })
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GL-T6 · 19 §UC-GL-008 item 1 — waitingLabel() (lib/plural.js, plain node)
+// ═════════════════════════════════════════════════════════════════════════════
+test.describe('GL-T6 · 19 §UC-GL-008 — waitingLabel() (lib/plural.js, imported by plain node)', () => {
+  test.skip(!HAS_FRONTEND_SRC, NEEDS_FRONTEND_SRC)
+
+  test('1 človek čaká / 2–4 ľudia čakajú / 5+ ľudí čaká — the verb agrees with the count; junk ⇒ 0', async () => {
+    const { waitingLabel } = await import('file://' + join(FRONTEND_SRC_DIR, 'lib', 'plural.js'))
+    const cases = [
+      [1, '1 človek čaká na váš odkaz'],
+      [2, '2 ľudia čakajú na váš odkaz'], [3, '3 ľudia čakajú na váš odkaz'], [4, '4 ľudia čakajú na váš odkaz'],
+      [5, '5 ľudí čaká na váš odkaz'], [11, '11 ľudí čaká na váš odkaz'], [21, '21 ľudí čaká na váš odkaz'],
+      [0, '0 ľudí čaká na váš odkaz'], [null, '0 ľudí čaká na váš odkaz'], ['x', '0 ľudí čaká na váš odkaz'],
+      ['3', '3 ľudia čakajú na váš odkaz'],
+    ]
+    for (const [n, want] of cases) expect(waitingLabel(n), String(n)).toBe(want)
+    for (const [, want] of cases) expect(BANNED.test(want), want).toBe(false)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GL-T6 · 19 PO block (2026-09-19) — the admin friend detail's standing-link row
+// ═════════════════════════════════════════════════════════════════════════════
+// `FriendDetail.vue` (`/admin/friends/:id`, reached from AdminFriends' „Detail"):
+// a read-only row + „Vygenerovať nový". ⚠ THE TOKEN NEVER REACHES THE DOM — not as
+// text, not as an attribute: the URL is composed in JS at click time and handed to the
+// clipboard (CycleDetail's §UC-GR-007 admin rule; a rendered token is a credential in
+// every screenshot). ⚠ PO-VISIBLE FACT, pinned: the admin GET mints lazily, so OPENING
+// a friend's detail gives that friend a standing token (a gradual back-fill of every
+// friend the admin opens — 19 has no bulk back-fill). An INACTIVE friend with no token
+// is never minted one (409 `inactive_host`); one WITH a token keeps it rotatable.
+const GL6_REFUSAL = 'Priateľ je deaktivovaný - stály odkaz pre hostí by nefungoval. Najprv ho aktivujte.'
+const GL6_CONFIRM = 'Starý stály odkaz prestane fungovať. Objednávky, ktoré kolegovia už vytvorili, zostanú funkčné.'
+
+async function gl6Friend(label) {
+  const name = `GL6 ${label} ${uniq}`
+  const res = await admin('/api/friends', { method: 'post', data: { name, phone: '0905 000 222' } })
+  expect(res.status(), 'friend create').toBe(201)
+  return { ...(await res.json()), name }
+}
+
+function gl6Token(friendId) {
+  return readRows('SELECT guest_link_token AS t FROM friends WHERE id = ?', friendId)[0].t
+}
+
+async function gl6AdoptUi(page) {
+  await page.goto('/admin')
+  await page.locator('#password').fill(ADMIN_PASSWORD)
+  await page.getByRole('button', { name: /Prihlásiť sa/ }).click()
+  await expect(page).toHaveURL(/\/admin\/dashboard/)
+  const token = await page.evaluate(() => localStorage.getItem('adminToken'))
+  expect(token, 'the UI login stored an admin token').toBeTruthy()
+  adminToken = token
+}
+
+async function gl6Detail(page, friend) {
+  await page.goto(`/admin/friends/${friend.id}`)
+  const row = page.getByTestId('standing-link-admin')
+  await expect(row).toBeVisible()
+  return row
+}
+
+test.describe('GL-T6 · 19 PO block — FriendDetail standing-link row + „Vygenerovať nový"', () => {
+  test.skip(!DB_PATH, NEEDS_DB)
+
+  test('⚠ opening the detail MINTS (the PO-visible lazy back-fill); the token is never in the DOM; „Kopírovať odkaz" puts the full URL on the clipboard; a reload does not re-mint', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    const friend = await gl6Friend('Mint')
+    expect(gl6Token(friend.id), 'non-vacuity: nothing minted yet').toBe(null)
+
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await gl6AdoptUi(page)
+    const row = await gl6Detail(page, friend)
+    await expect(row).toContainText('Stály odkaz pre hostí')
+    const copy = row.getByTestId('standing-link-admin-copy')
+    await expect(copy).toHaveText('Kopírovať odkaz')
+    const token = gl6Token(friend.id)
+    expect(token, 'the admin GET behind the page minted one').toMatch(TOKEN_RE)
+
+    const html = await page.evaluate(() => document.documentElement.outerHTML)
+    expect(html, 'the token is not rendered — text or attribute').not.toContain(token)
+
+    await copy.click()
+    await expect(copy).toHaveText('Skopírované!')
+    const origin = await page.evaluate(() => window.location.origin)
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`${origin}/g/${token}`)
+    await expect(copy).toHaveText('Kopírovať odkaz', { timeout: 5000 })
+
+    await page.reload()
+    await expect(page.getByTestId('standing-link-admin-copy')).toBeVisible()
+    expect(gl6Token(friend.id), 'a read never re-mints').toBe(token)
+    await expect(row.getByTestId('standing-link-admin-refused')).toHaveCount(0)
+    await expect(row.getByTestId('standing-link-admin-dead')).toHaveCount(0)
+  })
+
+  test('„Vygenerovať nový": inline confirm (exact copy); „Nie" rotates nothing; „Áno, vygenerovať" rotates — the old URL 404s, the copy row hands out the NEW one, neither token in the DOM', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    const friend = await gl6Friend('Regen')
+    const before = (await adminStanding(friend.id)).standing.token
+
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await gl6AdoptUi(page)
+    const row = await gl6Detail(page, friend)
+    const trigger = row.getByTestId('standing-link-admin-regen')
+    await expect(trigger).toHaveText('Vygenerovať nový')
+    await expect(row.getByTestId('standing-link-admin-confirm')).toHaveCount(0)
+    await trigger.click()
+    const confirm = row.getByTestId('standing-link-admin-confirm')
+    await expect(confirm).toContainText(GL6_CONFIRM)
+    await expect(trigger, 'the trigger yields to its confirmation').toHaveCount(0)
+
+    await confirm.getByRole('button', { name: 'Nie', exact: true }).click()
+    await expect(confirm).toHaveCount(0)
+    expect(gl6Token(friend.id), '„Nie" rotates nothing — read back').toBe(before)
+
+    await row.getByTestId('standing-link-admin-regen').click()
+    await row.getByTestId('standing-link-admin-confirm').getByRole('button', { name: 'Áno, vygenerovať' }).click()
+    await expect(row.getByTestId('standing-link-admin-regenerated')).toBeVisible()
+    await expect(row.getByTestId('standing-link-admin-confirm')).toHaveCount(0)
+    const after = gl6Token(friend.id)
+    expect(after).toMatch(TOKEN_RE)
+    expect(after).not.toBe(before)
+    expect((await ctx.get(`/api/guest/${before}`)).status(), 'the old URL 404s').toBe(404)
+
+    await row.getByTestId('standing-link-admin-copy').click()
+    const origin = await page.evaluate(() => window.location.origin)
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`${origin}/g/${after}`)
+    const html = await page.evaluate(() => document.documentElement.outerHTML)
+    expect(html).not.toContain(before)
+    expect(html).not.toContain(after)
+  })
+
+  test('an INACTIVE friend with NO token: the refusal is stated, no control is offered, and NOTHING is minted — read back', async ({ page }) => {
+    const friend = await gl6Friend('Inactive')
+    expect((await admin(`/api/friends/${friend.id}`, { method: 'patch', data: { active: false } })).status()).toBe(200)
+
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await gl6AdoptUi(page)
+    const row = await gl6Detail(page, friend)
+    await expect(row.getByTestId('standing-link-admin-refused')).toHaveText(GL6_REFUSAL)
+    await expect(row.getByTestId('standing-link-admin-copy')).toHaveCount(0)
+    await expect(row.getByTestId('standing-link-admin-regen')).toHaveCount(0)
+    await expect(row.getByTestId('standing-link-admin-error'), 'a refusal is not a failure').toHaveCount(0)
+    expect(gl6Token(friend.id), 'the 409 minted nothing').toBe(null)
+  })
+
+  test('an INACTIVE friend WITH a token: marked as not working, still copyable, still ROTATABLE (revocation)', async ({ page }) => {
+    const friend = await gl6Friend('Dead')
+    const before = (await adminStanding(friend.id)).standing.token
+    expect((await admin(`/api/friends/${friend.id}`, { method: 'patch', data: { active: false } })).status()).toBe(200)
+
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await gl6AdoptUi(page)
+    const row = await gl6Detail(page, friend)
+    await expect(row.getByTestId('standing-link-admin-dead')).toBeVisible()
+    await expect(row.getByTestId('standing-link-admin-copy')).toBeVisible()
+    await row.getByTestId('standing-link-admin-regen').click()
+    await row.getByTestId('standing-link-admin-confirm').getByRole('button', { name: 'Áno, vygenerovať' }).click()
+    await expect(row.getByTestId('standing-link-admin-regenerated')).toBeVisible()
+    expect(gl6Token(friend.id)).not.toBe(before)
+  })
+
+  test('a FAILED regenerate says so in ITS OWN sentence (not „načítať"), keeps the confirm, rotates nothing — read back', async ({ page }) => {
+    const friend = await gl6Friend('RegenFail')
+    const before = (await adminStanding(friend.id)).standing.token
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await gl6AdoptUi(page)
+    await page.route(`**/api/friends/${friend.id}/guest-link/standing/regenerate`, (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Chyba servera' }) }))
+    const row = await gl6Detail(page, friend)
+    await row.getByTestId('standing-link-admin-regen').click()
+    await row.getByTestId('standing-link-admin-confirm').getByRole('button', { name: 'Áno, vygenerovať' }).click()
+    await expect(row.getByTestId('standing-link-admin-regen-error')).toHaveText('Nový odkaz sa nepodarilo vygenerovať: Chyba servera')
+    await expect(row.getByTestId('standing-link-admin-error'), 'the READ did not fail').toHaveCount(0)
+    await expect(row.getByTestId('standing-link-admin-regenerated')).toHaveCount(0)
+    await expect(row.getByTestId('standing-link-admin-copy'), 'the existing link stays usable').toBeVisible()
+    expect(gl6Token(friend.id)).toBe(before)
+  })
+
+  test('a FAILED read is stated as a failure (not a refusal, not „no link"); the regenerate is disabled AND JS-guarded while pending — ONE POST', async ({ page }) => {
+    const friend = await gl6Friend('Guard')
+    await adminStanding(friend.id)
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await gl6AdoptUi(page)
+
+    await page.route(`**/api/friends/${friend.id}/guest-link/standing`, (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Chyba servera' }) }))
+    let row = await gl6Detail(page, friend)
+    await expect(row.getByTestId('standing-link-admin-error')).toContainText('Chyba servera')
+    await expect(row.getByTestId('standing-link-admin-copy')).toHaveCount(0)
+    await expect(row.getByTestId('standing-link-admin-refused')).toHaveCount(0)
+    await page.unroute(`**/api/friends/${friend.id}/guest-link/standing`)
+
+    const posts = []
+    await page.route(`**/api/friends/${friend.id}/guest-link/standing/regenerate`, async (route) => {
+      posts.push(1)
+      await new Promise((r) => setTimeout(r, 15000))
+      await route.continue().catch(() => {})
+    })
+    row = await gl6Detail(page, friend)
+    await row.getByTestId('standing-link-admin-regen').click()
+    const yes = row.getByTestId('standing-link-admin-confirm').getByRole('button', { name: /Áno, vygenerovať|Generujem/ })
+    await yes.click()
+    await expect(yes).toHaveText('Generujem...', { timeout: 3000 })
+    await expect(yes).toBeDisabled({ timeout: 3000 })
+    await yes.dispatchEvent('click')
+    await page.waitForTimeout(300)
+    expect(posts, 'exactly ONE regenerate request').toHaveLength(1)
+  })
+})

@@ -217,7 +217,9 @@ and it cannot go in yet, for a reason worth knowing before anyone „just adds t
   template built from a pre-GL-T1 production has no column at all.
 
 So it is a BLOCKING note on GL-T6 (the first minter) with the exact two lines, and the matching
-one on GL-T3 for `guest_waitlist` (non-member PII). ⚠ Rule of thumb for the next credential
+one on GL-T3 for `guest_waitlist` (non-member PII). **→ LANDED in GL-T6 (§GL-T6 §1 below): both
+pairs are in the two SQL files, and `make-test-db.sh` now fails closed until production has the
+migrations.** ⚠ Rule of thumb for the next credential
 column on a prod table: the scrub lines ship WITH the first row that can put a real value in
 production, and only once production already has the column.
 
@@ -234,8 +236,8 @@ production, and only once production already has the column.
   lines MOVED to the GL-T6 row, to land with the token pair; see GL-T3 §6 below**).
 - GL-T6: `api.getStandingGuestLink` / `regenerateStandingGuestLink` (host dialog) and
   `adminGetFriendStandingLink` / `adminRegenerateFriendStandingLink` (AdminFriends) exist.
-  ⚠ BLOCKING: `scrub-template.sql` + `verify-scrub.sql` must NULL / check
-  `friends.guest_link_token` before any production mint (§13 — the exact lines are in the GL-T6
+  ~~⚠ BLOCKING: `scrub-template.sql` + `verify-scrub.sql` must NULL / check
+  `friends.guest_link_token` before any production mint~~ **DONE in GL-T6 (§GL-T6 §1)** (§13 — the exact lines are in the GL-T6
   row). ⚠ For GL-T6/PO: the admin GET mints lazily, so rendering the standing row on every
   AdminFriends detail = a GRADUAL BACK-FILL of every friend the admin browses (19 deliberately
   has no back-fill). Behaviour unchanged by GL-T1; decide it where it becomes visible. An
@@ -511,7 +513,7 @@ database" migration proof would then only half hold.
   120/32.
 - GL-T6: `api.getGuestWaitlist({ host_friend_id })` / `deleteGuestWaitlistRow(id)`; rows carry
   `host_name`, `cycle_name`, `phone_e164`, `notified_at`, ordered host NOCASE → newest first.
-  ⚠ BLOCKING: the scrub lines (token + waitlist) are on the GL-T6 row.
+  ~~⚠ BLOCKING: the scrub lines (token + waitlist) are on the GL-T6 row.~~ **Landed in GL-T6 (§GL-T6 §1).**
 - WA-T1: adopt `helpers/phone.js` UNCHANGED (`grep -rn parsePhoneNumber backend/src` → that file
   only — pinned in `guest-waitlist.spec.js`). The waitlist INSERT already writes `phone_e164`
   through it, so WA-T1's writer table row for module 19 is DONE; the segment SQL is in the header
@@ -727,3 +729,127 @@ catch after the banner is already set (benign — the banner shows, the memory i
 - GL-T6: nothing here — the host dialog/admin card are separate surfaces.
 - GL-T7 (vocabulary guard over guest files): the pre-open copy is already swept rendered here;
   the source guard's closure will reach `GuestOrder.vue`'s new strings for free.
+
+---
+
+## GL-T6 — the scrub pair, the admin waitlist card, the admin standing row; the DIALOG half SPLIT to GL-T6b (2026-09-23)
+
+**What shipped (the ADMIN half + the scrub).** `e2e/scrub-template.sql` + `e2e/verify-scrub.sql`
+cover `friends.guest_link_token` and `guest_waitlist.name/phone/phone_e164` (the BLOCKING note
+of GL-T1 §13 / GL-T3 §6), plus the padding-precedence fix on the three shipped phone lines;
+`lib/plural.js waitingLabel()`; `CycleDetail.vue`'s „Čakajúci hostia (N)" card (19 §UC-GL-009 UI);
+`FriendDetail.vue`'s standing-link row + „Vygenerovať nový" (19 PO block — „AdminFriends' friend
+detail" is `/admin/friends/:id`, reached from AdminFriends' „Detail"). **NOT shipped: the host
+share dialog's standing section (§UC-GL-008) — see §4.**
+
+### 1. The scrub — landed, and what it now costs
+
+- Scrub: `guest_link_token = NULL` joins the credentials `UPDATE friends` (NULL = „not minted";
+  the unique index ignores NULLs); the `guest_waitlist` UPDATE sits in CONTACT DATA with the
+  STRICTER default (name too). Verify: +4 `SELECT '<name>'` lines (22 → 26; `make-test-db.sh`'s
+  EXPECTED is DERIVED by `grep -c`, so nothing else moved).
+- ⚠ **`make-test-db.sh` now FAILS CLOSED until PRODUCTION carries the GL-T1/GL-T3 migrations**
+  (`no such table: guest_waitlist` — the first unconditional line it reaches). Deliberate, written
+  into `e2e/README.md` beside the make-test-db instructions, the verify header and CLAUDE.md.
+  Deploy module 19 first (a restart migrates), then rebuild the template. The existing
+  `prod-template.sqlite` keeps working — the gate server migrates the per-run COPY on boot — but
+  `node e2e/scrub-local.mjs` on that raw pre-GL-T1 file now errors the same way (measured).
+- ⚠ Padding precedence: `'00000000' || (X) % 100000000` padded FIRST (SQLite `||` binds tighter
+  than `%`), so past X ≥ 1e8 the phone lost digits and the verify's GLOB failed (friends from id
+  ~11365, guest_orders ~12055, invitations ~12459 — closed, not leaking). All four phone
+  expressions are now `substr('00000000' || ((X) % 100000000), -8)`; a comment at the block says why.
+- **Verified on a COPY** (never the template): copy → boot the real backend once on :3996
+  (⚠ checkpoint the WAL before copying the copy again — the migrations sat in `-wal`, and a bare
+  `cp` of the main file lost them) → plant 4 high-id clones each of friends / invitations /
+  guest_orders (ids 12066, 13000, 20000, 99999, real-shaped phones and tokens), 7 standing tokens,
+  4 waitlist rows (normalised, non-normalising with e164 NULL, ids 12066 and 99999).
+  Before any scrub, the new verify reports friends.phone 4 · invitations.phone 4 ·
+  guest_orders.guest_phone 4 · waitlist 4|4|3 · guest_link_token 7 (+ the usual credentials).
+  HEAD's scrub + the new verify: friends.phone **2**, invitations.phone **1**, guest_phone **2**
+  (the precedence bug, measured) + waitlist 4|4|3 + token 7. The NEW scrub via
+  `scrub-local.mjs --scrub`: all **26** checks 0, byte scan clean, and a `grep -a` for the planted
+  real values (`Skuto…`, `REALSTANDING`, `905123456`, the planted tokens, `944000111`) finds 0 —
+  id 12066's waitlist phone is `0900004218` (the old form would have yielded `094218`).
+
+### 2. The admin waitlist card (`CycleDetail.vue`, orders tab, below the all-friends fold)
+
+- `loadGuestWaitlist()` runs inside `loadAll()` after `loadGuestLinks()` (the precedent), guarded
+  by `guestWaitlistSeq`; it re-runs on every `loadAll()` because the complete PATCH is a purge
+  path. ⚠ „Non-blocking" in this view means „a failure never blocks", NOT „no latency": `loadAll`
+  awaits it behind the page's own „Načítavam...", so no in-flight state ever renders (a hold test
+  proved it — the card simply appears later). `guestWaitlistLoaded` therefore only governs the
+  „(N)" after a FAILED load (no count claimed); the error branch wins over „Nikto nečaká.".
+- Grouped by `host_friend_id` (never the name — two friends may share one) in the server's
+  order. Mobil = `phone_e164 || phone` (a non-normalising number is still a number to call).
+  Dates are the admin's local day of the UTC timestamp, `1. 9. 2026`, via a local
+  `formatWaitlistDate` — ⚠ NOT `lib/dates.js`: the PI-T12 admin-closure pin bans it from admin.
+  `lib/plural.js` IS admin-legal (Distribution imports it), though the card needs no plural.
+- Per-row `waitlistRowSeq` + `waitlistDeletePending` + ⚠ a per-row CONFIRM map too: with one
+  shared `confirmId`, opening row B's confirm hid row A's held „Odstraňujem..." — the pending
+  test caught it. And ⚠ **a ref passed to a helper FROM THE TEMPLATE arrives unwrapped**:
+  `@click="clearRowFlag(waitlistConfirmOpen, row.id)"` handed the helper the plain object, so
+  `bag.value = …` wrote a property and the confirm never closed. Script-side wrappers
+  (`openWaitlistConfirm` / `closeWaitlistConfirm`) fix it; the „Nie" test is what went red.
+- Every person-typed value (`name`, the phone, the host name) carries `data-user-copy`.
+
+### 3. The admin standing row (`FriendDetail.vue`)
+
+- ⚠ **No token in the DOM** — CycleDetail's §UC-GR-007 admin rule, not the host dialog's (which
+  renders its own share URL by spec): `standingPath` is JS-only, „Kopírovať odkaz" composes
+  `origin + url_path` at click time. Pinned by an `outerHTML` sweep for BOTH the old and the new
+  token after a rotation, and a `:title` mutant reds it.
+- ⚠ **PO-visible fact, kept (orchestrator):** opening a friend's detail MINTS their token (the
+  admin GET is lazy, D1). Every friend the admin opens is back-filled; pinned by reading
+  `friends.guest_link_token` NULL before and a token after the page load, and „a reload never
+  re-mints".
+- Inactive + no token ⇒ the 409 `inactive_host` message rendered as a muted refusal
+  (`e.reason`, which `request()` already carries), no control, nothing minted (read back).
+  Inactive + token ⇒ „Priateľ je deaktivovaný - odkaz teraz nefunguje." + copy + rotate.
+- „Vygenerovať nový" → inline confirm with the host dialog's §UC-GL-008 item-2 copy (same fact,
+  same rotation) → „Áno, vygenerovať" (disabled + JS-guarded, `standingSeq`) / „Nie".
+
+### 4. ⚠⚠ BLOCKED — the host dialog's standing section cannot ship AND leave three specs unmodified
+
+19 §UC-GL-008 audited the shipped pins for `p.sub`, `<b>` in `#subtitle`, `.confirmbox` and
+`/Zdieľať/` — and missed four more, each of which a second `NeoCopyRow` (or the native-share
+change) breaks in a spec the row says must pass UNMODIFIED:
+
+1. `.copyrow` COUNTS in the dialog — `share-dialog.spec.js:271` (no link ⇒ 0), `:278`, `:309`
+   (0 under the spinner), `:313`, `:503`, `:686` (cycle B has no link ⇒ 0), `:708`, `:731`;
+   `guest-order-recovery.spec.js:316,358`.
+2. Strict-mode singletons: `dialog.getByRole('button', {name:'Kopírovať'})` (`share-dialog:368`,
+   `guest-link:291,342` — substring match, so any second copy button collides) and
+   `dialog.locator('.copyrow button')` (`share-dialog:382`).
+3. §UC-GL-008 item 3 „native share prefers the standing URL" vs `share-dialog.spec.js:540-548`
+   and `:590-596`, which pin `url: ${origin}/g/${link.token}` — the PER-CYCLE token.
+4. `share-dialog.spec.js:345` pins the error banner as the FIRST `.m-body` child (a standing
+   section „at the top of the body" must sit below it — solvable, but it is another pin).
+
+Options for the orchestrator/PO: (a) sanctioned retargets — scope the per-cycle assertions to a
+`data-testid` wrapper around the per-cycle section and re-point the native-share URL at the
+standing token (a case-(a) retarget citing §UC-GL-008); (b) render the standing section only when
+`cycleId` is null — contradicts „with an open cycle both render in that order"; (c) a non-
+`NeoCopyRow` standing row with a differently named button — forks the one-home component.
+`waitingLabel()` is shipped for whichever lands. Nothing in `GuestShareDialog.vue` was touched.
+**→ Option (a) SANCTIONED by the orchestrator 2026-09-23 — see the GL-T6b row in PROGRESS.md.**
+
+### 5. Tests + mutations
+
+`guest-waitlist.spec.js` +6 (`GL-T6 ·` describe: full rows + grouping + columns + markers;
+cycle-independence across an open and a completed cycle; delete with „Nie"/„Áno" read back +
+(N) + the host's `waiting_count`; per-row pending with a 15 s hold + a dispatched click ⇒ ONE
+DELETE; a refused delete keeps the row; empty via route.fetch-and-edit + failed-load ≠ empty).
+`guest-standing-link.spec.js` +7 (`waitingLabel` branches + BANNED sweep; mint-on-open + no DOM
+token + clipboard + no re-mint; regenerate confirm/„Nie"/„Áno" + old 404 + new clipboard;
+inactive-no-token refusal read back; inactive-with-token rotatable; a failed REGENERATE in its own sentence (review round, own ref `standingRegenError`); failed read + ONE POST).
+Mutations, each red then restored: no delete JS guard; no in-place removal; raw phone instead of
+E.164; group key off by one; count shown after a failed load; token in a `:title`; no regenerate
+JS guard; `inactive_host` treated as an error; regenerate not updating the path.
+
+### Seams left for the next rows
+
+- The dialog half (§4) — needs the orchestrator's decision first. `api.getStandingGuestLink()`
+  answers `{standing:{token,url_path,created}, waiting_count, current}`; `waitingLabel(n)` is the
+  count line; the admin row's confirm copy is §UC-GL-008 item 2's, so the two stay in step.
+- GL-T7 (guest vocabulary guard): the admin card/row copy is admin-only; `waitingLabel` passes
+  `BANNED` (pinned).
