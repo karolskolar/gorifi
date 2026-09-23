@@ -288,7 +288,8 @@ test.describe('Guest share link — UI', () => {
     const value = (await urlField.textContent()).trim()
     expect(value, 'the full shareable URL is surfaced').toMatch(/\/g\/[A-Z2-9]{12,}$/)
 
-    await expect(dialog.getByRole('button', { name: 'Kopírovať' })).toBeVisible()
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second copy button; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').getByRole('button', { name: 'Kopírovať' })).toBeVisible()
     // navigator.share is unavailable here, so the native share sheet button hides.
     await expect(dialog.getByRole('button', { name: 'Zdieľať' })).toHaveCount(0)
 
@@ -339,7 +340,8 @@ test.describe('Guest share link — UI', () => {
     // RD-KG-2, authorized by 05 §UC-KG-007 item 1 — see the note above.
     const value = (await dialog.getByTestId('guest-link-url').textContent()).trim()
     expect(value).toMatch(/\/g\/[A-Z2-9]{12,}$/)
-    await expect(dialog.getByRole('button', { name: 'Kopírovať' })).toBeVisible()
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second copy button; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').getByRole('button', { name: 'Kopírovať' })).toBeVisible()
 
     const fromApi = await (await ctx.get(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })).json()
     expect(value.endsWith(`/g/${fromApi.link.token}`)).toBe(true)

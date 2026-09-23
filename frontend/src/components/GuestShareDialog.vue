@@ -1,5 +1,9 @@
 <script setup>
-// Guest share link for one cycle — "Zdieľať s kolegami" (05 §UC-KG-006).
+// Guest share links — "Zdieľať s kolegami" (05 §UC-KG-006, 19 §UC-GL-008).
+// ⚠ GL-T6b: TWO sections. FIRST the host's STANDING link (one per host, never tied
+// to a round — `GET /guest-links/standing`, minted lazily) with the „kto čaká"
+// count and „Nový stály odkaz"; BELOW it, under „Odkaz len na túto objednávku",
+// the per-cycle link described next, rendered only with a `cycleId`.
 // The host owns exactly one link per cycle (`guest_order_links`); colleagues
 // order through /g/:token without an account and the host hands the goods over.
 // Shared by FriendOrder.vue (the "Kolegovia" panel) and FriendPortalSession.vue
@@ -14,7 +18,7 @@
 // behaviour the bespoke `document.execCommand` branch used to provide.
 import { ref, computed, watch } from 'vue'
 import api from '../api'
-import { ordersAccusativeLabel } from '@/lib/plural'
+import { ordersAccusativeLabel, waitingLabel } from '@/lib/plural'
 import NeoModal from '@/components/neo/NeoModal.vue'
 import NeoCopyRow from '@/components/neo/NeoCopyRow.vue'
 import NeoIcon from '@/components/neo/NeoIcon.vue'
@@ -125,6 +129,99 @@ watch(() => props.open, async (isOpen) => {
   }
 }, { immediate: true })
 
+// ---------------------------------------------------------------------------
+// GL-T6b · 19 §UC-GL-008 — THE STANDING SECTION (R9.4): the host's one link that
+// never expires with a round, shown FIRST; the per-cycle link below is demoted
+// under „Odkaz len na túto objednávku" and rendered only with a `cycleId`.
+//
+// ⚠ ITS OWN SEQUENCE COUNTER, never `loadSeq`. The two reads run in parallel on
+// every open and each drops only ITS OWN stale result — a per-cycle POST/PATCH
+// bumping `loadSeq` must not orphan an in-flight standing read, and a standing
+// regenerate must not orphan a per-cycle one. Same rule as `loadSeq` otherwise:
+// bumped on open AND close, so a slow read from a previous open can never land
+// on the reopened dialog (pinned in guest-standing-link.spec.js „⚠ loadSeq").
+//
+// ⚠ Keeps `url_path` and the COUNT only — the payload has no names/phones by
+// construction (19 §UC-GL-001), and `standing.token` is not stored separately.
+// The URL IS rendered (NeoCopyRow text + `title`), exactly like the per-cycle one:
+// it is the host's share URL (§UC-GL-008 placement bullet 3), not the admin's
+// never-in-the-DOM rule (FriendDetail.vue, GL-T6a).
+//
+// ⚠ Works with `cycleId = null` (module 18's menu entry for a closed round): this
+// watcher never reads the cycle. No trigger reaches that today — the drawer row and
+// the cartbar icon are `state === 'open'` only — so it is SOURCE-pinned.
+let standingSeq = 0
+const standingPath = ref('')
+const waitingCount = ref(0)
+const standingError = ref('') // a failed READ — no copy row, no rotation offered
+const standingRegenError = ref('') // a failed ROTATION — its own sentence, row kept
+const confirmStanding = ref(false)
+const standingSaving = ref(false)
+
+const standingUrl = computed(() =>
+  standingPath.value ? `${window.location.origin}${standingPath.value}` : ''
+)
+
+// §UC-GL-008 item 3 — native share PREFERS the standing URL; the per-cycle one is
+// the fallback only when the standing read FAILED (never merely „not loaded yet",
+// or a quick tap would share the per-cycle URL and a slow one the standing URL).
+const shareUrl = computed(() => standingUrl.value || (standingError.value ? guestUrl.value : ''))
+
+watch(() => props.open, async (isOpen) => {
+  const seq = ++standingSeq
+  standingPath.value = ''
+  waitingCount.value = 0
+  standingError.value = ''
+  standingRegenError.value = ''
+  confirmStanding.value = false
+  standingSaving.value = false
+  if (!isOpen) return
+
+  try {
+    const data = await api.getStandingGuestLink()
+    if (seq !== standingSeq) return
+    standingPath.value = data?.standing?.url_path || ''
+    waitingCount.value = Number(data?.waiting_count) || 0
+  } catch (e) {
+    if (seq !== standingSeq) return
+    standingError.value = `Stály odkaz sa nepodarilo načítať: ${e.message}`
+  }
+}, { immediate: true })
+
+// The two confirms share „Áno, vygenerovať", so they never stand open together.
+function openStandingConfirm() {
+  confirmRegenerate.value = false
+  standingRegenError.value = ''
+  confirmStanding.value = true
+}
+
+function openCycleConfirm() {
+  confirmStanding.value = false
+  confirmRegenerate.value = true
+}
+
+// No `has_orders` gate (19 D2): rotating strands nobody who has ordered — every
+// sub-order resolves by `order_token` — so no blocked state exists here.
+// ⚠ The JS guard is not redundant with `:disabled` (a dispatched click ignores it).
+async function regenerateStanding() {
+  if (standingSaving.value) return
+  const seq = ++standingSeq
+  standingSaving.value = true
+  standingRegenError.value = ''
+  try {
+    const data = await api.regenerateStandingGuestLink()
+    if (seq !== standingSeq) return
+    standingPath.value = data?.standing?.url_path || standingPath.value
+    waitingCount.value = Number(data?.waiting_count) || 0
+    confirmStanding.value = false
+  } catch (e) {
+    if (seq !== standingSeq) return
+    standingRegenError.value = `Nový stály odkaz sa nepodarilo vygenerovať: ${e.message}`
+  } finally {
+    if (seq === standingSeq) standingSaving.value = false
+  }
+}
+
 // Create the link, or issue a fresh token for an existing one. The backend keeps
 // the same link row, so sub-orders colleagues already placed are preserved.
 async function saveLink() {
@@ -175,12 +272,12 @@ async function toggleActive() {
 // so both strings are now "Podpultovka" (tab pinned by public-flow.spec.js,
 // this payload by share-dialog.spec.js).
 async function nativeShare() {
-  if (!canNativeShare || !guestUrl.value) return
+  if (!canNativeShare || !shareUrl.value) return
   try {
     await navigator.share({
       title: 'Objednávka Podpultovka',
       text: `Pridajte sa k mojej objednávke - ${props.cycleName || 'objednávka'}`,
-      url: guestUrl.value
+      url: shareUrl.value
     })
   } catch (e) {
     // User dismissed the share sheet — nothing to report
@@ -229,10 +326,73 @@ async function nativeShare() {
       <div style="min-width:0">{{ error }}</div>
     </div>
 
+    <!-- GL-T6b · 19 §UC-GL-008 — THE STANDING SECTION, first after the error banner
+         (which stays the FIRST body child — `share-dialog.spec.js`'s error-state pin).
+         Its lines are `div.field-lbl` / `div.field-help` / `span.badge`, never a
+         `p.sub` (single-element pinned) and never a `<b>` (none in `#subtitle`); its
+         confirm is `div.standing-confirm`, NOT `.confirmbox` (whose copy and single
+         `<b>` are pinned); no button name here matches `/Zdieľať/` except the ONE
+         native-share button, which is absent without `navigator.share`. -->
+    <div data-testid="standing-link" class="gsd-section">
+      <div class="field-lbl gsd-lbl">Stály odkaz pre kolegov</div>
+      <div v-if="standingError" class="banner danger slim" role="alert" data-testid="standing-error">
+        <span class="dot"></span>
+        <div style="min-width:0">{{ standingError }}</div>
+      </div>
+      <div v-else-if="!standingPath" class="field-help">Načítavam...</div>
+      <template v-else>
+        <NeoCopyRow :value="standingUrl" value-testid="standing-link-url" />
+
+        <!-- §UC-GL-008 item 3 — the ONE native-share button lives HERE while the
+             standing link is known; the per-cycle section renders it only as the
+             fallback after a failed standing read. -->
+        <button
+          v-if="canNativeShare"
+          type="button"
+          class="btn accent block"
+          @click="nativeShare"
+        >
+          <NeoIcon name="share" /> Zdieľať odkaz
+        </button>
+
+        <div class="field-help" data-testid="standing-copy">Tento odkaz platí stále — pred otvorením objednávky, počas nej aj po nej. Kolegovia cez neho uvidia aktuálnu objednávku, alebo sa zapíšu, aby dostali správu, keď sa otvorí.</div>
+
+        <!-- The „kto čaká" COUNT — only when > 0; no names exist to render. -->
+        <div v-if="waitingCount > 0" data-testid="waiting-count"><span class="badge acc">{{ waitingLabel(waitingCount) }}</span></div>
+
+        <div v-if="!confirmStanding">
+          <button type="button" class="btn ghost sm" @click="openStandingConfirm">Nový stály odkaz</button>
+        </div>
+        <div v-else class="standing-confirm" data-testid="standing-confirm">
+          <span>Starý stály odkaz prestane fungovať. Objednávky, ktoré kolegovia už vytvorili, zostanú funkčné.</span>
+          <div class="row">
+            <button
+              type="button"
+              class="btn sm dark"
+              :disabled="standingSaving"
+              @click="regenerateStanding"
+            >{{ standingSaving ? 'Generujem...' : 'Áno, vygenerovať' }}</button>
+            <button
+              type="button"
+              class="btn sm ghost"
+              @click="confirmStanding = false"
+            >Nie</button>
+          </div>
+        </div>
+        <div v-if="standingRegenError" class="field-help gsd-err" role="alert" data-testid="standing-regen-error">{{ standingRegenError }}</div>
+      </template>
+    </div>
+
+    <!-- The per-cycle section, DEMOTED (§UC-GL-008 item 4) and rendered only with a
+         `cycleId`. Everything inside `per-cycle-link` is the shipped body verbatim.
+         ⚠ The loading `.sub` stays a DIRECT `.m-body` child (`.m-body > .sub` is
+         pinned), so it sits between the label and the wrapper, not inside it. -->
+    <div v-if="cycleId" class="field-lbl gsd-lbl" data-testid="per-cycle-label">Odkaz len na túto objednávku</div>
+
     <!-- 2. Loading -->
     <div v-if="loading" class="sub" style="text-align:center">Načítavam...</div>
 
-    <template v-else>
+    <div v-else-if="cycleId" data-testid="per-cycle-link" class="gsd-section">
       <!-- 3. Not shared yet. Not in the prototype — composed from its
            primary-action pattern; the copy is pinned by e2e and by the GSO-T2
            register rule (impersonal vy-form, no gendered participle). -->
@@ -273,9 +433,10 @@ async function nativeShare() {
              widen. Copy is DRAFT pending PO sign-off (14 §OPEN). -->
         <div v-if="link.active" class="field-help" data-testid="share-standing-copy">Ten istý odkaz platí pre všetkých kolegov - každý si cez neho vytvorí vlastnú objednávku. Pre ďalšieho kolegu nevytvárajte nový odkaz.</div>
 
-        <!-- Native share sheet — rendered only where navigator.share exists. -->
+        <!-- Native share sheet — rendered only where navigator.share exists, and
+             HERE only as the fallback after a failed standing read (GL-T6b). -->
         <button
-          v-if="canNativeShare"
+          v-if="canNativeShare && standingError"
           type="button"
           class="btn accent block"
           @click="nativeShare"
@@ -321,7 +482,7 @@ async function nativeShare() {
             v-if="!confirmRegenerate && !regenerateBlocked"
             type="button"
             class="btn ghost sm"
-            @click="confirmRegenerate = true"
+            @click="openCycleConfirm"
           >Vygenerovať nový odkaz</button>
         </div>
 
@@ -351,10 +512,23 @@ async function nativeShare() {
           </div>
         </div>
       </template>
-    </template>
+    </div>
 
     <template #footer>
       <button type="button" class="btn" @click="emit('update:open', false)">Zavrieť</button>
     </template>
   </NeoModal>
 </template>
+
+<style scoped>
+/* GL-T6b — the two sections keep `.m-body`'s own 12px rhythm inside their wrapper. */
+.gsd-section{display:flex;flex-direction:column;gap:12px;min-width:0}
+/* `.field-lbl`'s 8px bottom margin on top of the 12px gap would double the space. */
+.gsd-lbl{margin-bottom:0}
+.gsd-err{color:var(--danger)}
+/* The standing confirm: `.confirmbox`'s look under its OWN class (19 §UC-GL-008 item
+   2 — that class's copy and single `<b>` are pinned), `line-height:normal` as A10
+   gives `.confirmbox`. */
+.standing-confirm{border:3px solid var(--nb-ink);border-radius:10px;background:var(--warn-soft);padding:12px;display:flex;flex-direction:column;gap:10px;font-size:13.5px;line-height:normal}
+.standing-confirm .row{display:flex;gap:8px}
+</style>

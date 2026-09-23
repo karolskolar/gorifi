@@ -853,3 +853,69 @@ JS guard; `inactive_host` treated as an error; regenerate not updating the path.
   count line; the admin row's confirm copy is §UC-GL-008 item 2's, so the two stay in step.
 - GL-T7 (guest vocabulary guard): the admin card/row copy is admin-only; `waitingLabel` passes
   `BANNED` (pinned).
+
+---
+
+## GL-T6b — the host share dialog's standing section (19 §UC-GL-008) (2026-09-23)
+
+**What shipped.** `GuestShareDialog.vue` now renders, after the (still FIRST) per-cycle error
+banner: `standing-link` — `div.field-lbl` „Stály odkaz pre kolegov" · `NeoCopyRow
+value-testid="standing-link-url"` · the ONE native-share button · `standing-copy` (`div.field-help`,
+PO copy verbatim) · `waiting-count` (only when > 0: `span.badge.acc` holding the whole
+`waitingLabel(n)`) · „Nový stály odkaz" → `div.standing-confirm` („Áno, vygenerovať" / „Nie") →
+`POST /guest-links/standing/regenerate`, row updated in place. Below it, only with a `cycleId`:
+`per-cycle-label` „Odkaz len na túto objednávku", the loading `.sub`, and `per-cycle-link` wrapping
+the shipped body verbatim. API frozen; one mount (FriendOrder) unchanged.
+
+### 1. Decisions
+
+- ⚠ **Structure is dictated by `.m-body > …` pins.** The per-cycle loading `.sub` must stay a DIRECT
+  `.m-body` child (`share-dialog.spec.js` `.m-body > .sub` — NOT in the sanctioned list), so the
+  testid wrapper wraps only the post-load states; the label and the spinner sit between. The error
+  banner stays the first body child, so the `:346` pin needed NO retarget.
+- ⚠ **Its own `standingSeq`, never `loadSeq`** — the two reads run in parallel and each drops only
+  its own stale result; bumped on open AND close. Pinned by holding a `route.fetch()`ed (old-token)
+  response past a reopen — a `route.continue()` after the delay would fetch the NEW token and prove
+  nothing.
+- **Native share prefers the standing URL** and falls back to the per-cycle URL ONLY after a FAILED
+  standing read (`shareUrl`), never „not loaded yet" (a fast tap would share the other URL). The
+  button renders in the standing section, or — fallback only — in the per-cycle section; never both.
+- **The standing URL IS rendered** (NeoCopyRow text + `title`), like the per-cycle one — spec
+  placement bullet 3. The admin's never-in-the-DOM rule (FriendDetail, GL-T6a) is a different surface.
+- The two confirms share „Áno, vygenerovať", so opening one closes the other (`openStandingConfirm`/
+  `openCycleConfirm`) — no strict-mode collision is reachable.
+- Failed read ⇒ `.banner.danger.slim` `standing-error` in the section, no copy row, no rotation.
+  Failed rotation ⇒ its own `standing-regen-error` sentence, confirm + old URL kept (GL-T6a lesson).
+  Both strings are DRAFT copy („Stály odkaz sa nepodarilo načítať: …" / „Nový stály odkaz sa
+  nepodarilo vygenerovať: …").
+- ⚠ **`cycleId = null` has no reachable trigger** (drawer row + cartbar icon are `state === 'open'`
+  only; the Kolegovia card is on an order screen). The dialog supports it (the standing watcher never
+  reads the cycle; every per-cycle node is `cycleId`-gated) and that is SOURCE-pinned. Wiring module
+  18's closed-round menu entry is **GL-T6c** (PROGRESS.md) — it needs an entry point, since the one
+  instance lives in `FriendOrder.vue`, and must keep the ONE-mount pin in `portal-landing.spec.js`.
+
+### 2. Sanctioned retargets (option (a), each with a `// SANCTIONED RETARGET (GL-T6b, …)` line)
+
+`share-dialog.spec.js`: `.copyrow` counts at 271, 278, 309, 313, 503, 686, 708, 731 and the
+`Kopírovať`/`.copyrow button` locators at 368, 382 → scoped to `getByTestId('per-cycle-link')`;
+the share-sheet `url` at 547 and 596 → `${origin}${standing.url_path}` via a new `standingOf(host)`
+helper. `guest-link.spec.js:291,342` and `guest-order-recovery.spec.js:316,358` → scoped likewise.
+`:346` untouched (passes). The „UNMODIFIED" claim is struck in 19 (three spots), 14:587, the
+PROGRESS GL-T6 row and the `guest-order-recovery.spec.js` additivity-guard comment.
+
+### 3. Tests + mutations
+
+`guest-standing-link.spec.js` +10 (`GL-T6b ·`): order of sections + exact copy + clipboard + count
+absent at 0 + payload has no `name`/`phone`/`rows`; count 1 → 2 with a notified row excluded and no
+name in the DOM (planted rows — the shared target always has an open round, so the public POST 409s);
+regenerate confirm/„Nie"/„Áno" + old URL 404 + per-cycle token untouched; confirm exclusivity; failed
++ pending (15 s hold, dispatched click ⇒ ONE POST); failed read + per-cycle fallback share; native
+share = standing URL; loadSeq; 320px with a 12-row badge + open confirm; source pin (cycleId null).
+Mutations, each red then restored: no stale-drop in the standing GET; share uses the per-cycle URL;
+count shown at 0; confirms not exclusive; no regenerate JS guard; fallback share button always on;
+rotation failure written to the READ error; watcher gated on `cycleId`; regenerate not updating the row.
+
+### Seams left for the next rows
+
+- **GL-T6c** — module 18's menu entry for a CLOSED/locked round (open the dialog with `cycleId = null`); the dialog is ready, the entry point is not.
+- GL-T7: the new strings pass `BANNED` (the share-dialog sweep in `portal-vocabulary` covers them).

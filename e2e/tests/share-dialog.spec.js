@@ -126,6 +126,14 @@ async function hostView(host, cycleId) {
   return res.json()
 }
 
+// GL-T6b · 19 §UC-GL-008 — the host's STANDING link (a GET mints lazily, then is
+// idempotent), read back to pin the share sheet's url (item 3).
+async function standingOf(host) {
+  const res = await ctx.get('/api/guest-links/standing', { headers: host.auth })
+  expect(res.status(), 'standing GET').toBe(200)
+  return res.json()
+}
+
 // FriendPortal resolves the stored session against GET /api/friends?active=true,
 // which is admin-gated — an anonymous browser gets 401 (pre-existing app gap, see
 // e2e/README.md), so that ONE response is stubbed. Everything under test still
@@ -268,14 +276,16 @@ test.describe('UC-KG-006 — body states', () => {
     await expect(create).toBeVisible()
     expect(await create.evaluate((el) => el.className)).toContain('accent')
     expect(await create.evaluate((el) => el.className)).toContain('block')
-    await expect(dialog.locator('.copyrow'), 'no link ⇒ no copy row').toHaveCount(0)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow'), 'no link ⇒ no copy row').toHaveCount(0)
     await expect(dialog.locator('.banner'), 'and no banner of any kind').toHaveCount(0)
     await expect(dialog.locator('.confirmbox')).toHaveCount(0)
     await expect(dialog.getByRole('button', { name: 'Deaktivovať odkaz' })).toHaveCount(0)
 
     // Creating flips the state in place.
     await create.click()
-    await expect(dialog.locator('.copyrow')).toHaveCount(1)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1)
     await expect(dialog.locator('p.sub')).toHaveCount(0)
     await expect(dialog.getByRole('button', { name: 'Vytvoriť odkaz' })).toHaveCount(0)
 
@@ -306,11 +316,13 @@ test.describe('UC-KG-006 — body states', () => {
     const loading = dialog.locator('.m-body > .sub')
     await expect(loading).toHaveText('Načítavam...')
     expect(await loading.evaluate((el) => getComputedStyle(el).textAlign)).toBe('center')
-    await expect(dialog.locator('.copyrow'), 'nothing renders under the spinner').toHaveCount(0)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link'), 'nothing renders under the spinner').toHaveCount(0)
     await expect(dialog.getByRole('button', { name: 'Vytvoriť odkaz' })).toHaveCount(0)
 
     // …and it resolves into the link state.
-    await expect(dialog.locator('.copyrow')).toHaveCount(1, { timeout: 10000 })
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1, { timeout: 10000 })
     await expect(dialog.locator('.m-body > .sub')).toHaveCount(0)
   })
 
@@ -365,7 +377,8 @@ test.describe('UC-KG-006 — body states', () => {
     await expect(val).toHaveAttribute('title', `${origin}/g/${link.token}`)
 
     await expect(dialog.locator('.banner.warn'), 'an active link warns about nothing').toHaveCount(0)
-    await expect(dialog.getByRole('button', { name: 'Kopírovať' })).toBeVisible()
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second copy button; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').getByRole('button', { name: 'Kopírovať' })).toBeVisible()
     await expect(dialog.getByRole('button', { name: 'Deaktivovať odkaz' })).toBeVisible()
     await expect(dialog.getByRole('button', { name: 'Vygenerovať nový odkaz' })).toBeVisible()
     await expect(dialog.locator('.confirmbox')).toHaveCount(0)
@@ -379,7 +392,8 @@ test.describe('UC-KG-006 — body states', () => {
     const link = await shareLink(host, cycle.id)
 
     const dialog = await openFromOrderPage(page, host, cycle)
-    const btn = dialog.locator('.copyrow button')
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second copy button; scoped to the per-cycle section)
+    const btn = dialog.getByTestId('per-cycle-link').locator('.copyrow button')
     await expect(btn).toHaveText('Kopírovať')
 
     await btn.click()
@@ -500,7 +514,8 @@ test.describe('UC-KG-006 — native share', () => {
     await shareLink(host, cycle.id)
 
     const dialog = await openFromOrderPage(page, host, cycle)
-    await expect(dialog.locator('.copyrow')).toHaveCount(1)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1)
     await expect(dialog.getByRole('button', { name: 'Zdieľať' })).toHaveCount(0)
     await expect(dialog.getByRole('button', { name: 'Zdieľať odkaz' })).toHaveCount(0)
     // The only accent-block button in this state would have been the share sheet.
@@ -544,7 +559,8 @@ test.describe('UC-KG-006 — native share', () => {
     expect(await page.evaluate(() => window.__shared)).toEqual([{
       title: 'Objednávka Podpultovka',
       text: `Pridajte sa k mojej objednávke - ${cycle.name}`,
-      url: `${origin}/g/${link.token}`,
+      // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — item 3: native share prefers the STANDING url)
+      url: `${origin}${(await standingOf(host)).standing.url_path}`,
     }])
   })
 
@@ -593,7 +609,8 @@ test.describe('UC-KG-006 — native share', () => {
       expect(await page.evaluate(() => window.__shared)).toEqual([{
         title: 'Objednávka Podpultovka',
         text: 'Pridajte sa k mojej objednávke - objednávka',
-        url: `${origin}/g/${link.token}`,
+        // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — item 3: native share prefers the STANDING url)
+        url: `${origin}${(await standingOf(host)).standing.url_path}`,
       }])
     })
 })
@@ -683,7 +700,8 @@ test.describe('UC-KG-007 — mount seam and invariants', () => {
     await expect(dialog).toContainText(cycleB.name)
     await expect(dialog.locator('p.sub')).toHaveText('Odkaz ešte nie je vytvorený.')
     await expect(dialog.getByTestId('guest-link-url')).toHaveCount(0)
-    await expect(dialog.locator('.copyrow')).toHaveCount(0)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(0)
   })
 
   test('a guest\'s order_token is published to the host payload (UC-GR-006) but never rendered into the DOM', async ({ page }) => {
@@ -705,7 +723,8 @@ test.describe('UC-KG-007 — mount seam and invariants', () => {
       .toBe(sub.order.order_token)
 
     const dialog = await openFromOrderPage(page, host, cycle)
-    await expect(dialog.locator('.copyrow')).toHaveCount(1)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1)
     // The host's URL is the LINK token; the guest's private edit token is nowhere.
     await expect(dialog.getByTestId('guest-link-url')).toContainText(`/g/${link.token}`)
     const html = await page.evaluate(() => document.documentElement.outerHTML)
@@ -728,7 +747,8 @@ test.describe('UC-KG-007 — mount seam and invariants', () => {
     await gotoPortal(page)
     await landingShare(page).click()
     const dialog = page.getByRole('dialog')
-    await expect(dialog.locator('.copyrow')).toHaveCount(1)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1)
 
     // ⚠ `.btn` is `white-space:nowrap`, so a too-wide control gives NO
     // degradation signal — it neither wraps nor ellipsizes, it pushes sideways.

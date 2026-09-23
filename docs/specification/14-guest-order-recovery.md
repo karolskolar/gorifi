@@ -584,7 +584,7 @@ PO sign-off pending, §OPEN):** two standing lines in the **link-exists** state:
 - The no-link state gains nothing (there is no link to mis-share yet).
 
 **Acceptance criteria:** both testids render in the link-exists state with the exact
-strings; the full `share-dialog.spec.js` passes UNMODIFIED; the strings render on
+strings; the full `share-dialog.spec.js` passes UNMODIFIED (**true for GR-T7; later SUPERSEDED — PI-T3 re-pointed its entry point and GL-T6b (19 §UC-GL-008) retargeted its `.copyrow`/`Kopírovať`/native-share pins**); the strings render on
 both entry points (one shared dialog — GSO-T2 rule).
 
 ---
@@ -670,7 +670,7 @@ the canonical form. The many direct `page.goto` pair URLs across this file and
 the pair page working) — do not "modernise" them; they are now the regression net for
 the legacy form.
 
-**8. `share-dialog.spec.js`: NO edits** — UC-GR-009's placement constraints exist
+**8. `share-dialog.spec.js`: NO edits** (true for GR-T7; SUPERSEDED — PI-T3 re-pointed its entry point and GL-T6b, 19 §UC-GL-008, retargeted its `.copyrow`/`Kopírovať`/native-share pins) — UC-GR-009's placement constraints exist
 precisely so this file passes unmodified. `share-dialog.spec.js:594-595` (the
 guest-links payload absence pin inside the dialog test) inverts with UC-GR-006;
 `:602` (the rendered dialog HTML never contains the order token) **stays** — the

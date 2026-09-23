@@ -313,7 +313,8 @@ test.describe('UC-GR-009 — share dialog standing copy', () => {
     await shareLink(host, cycle.id)
 
     const dialog = await openFromOrderPage(page, host, cycle)
-    await expect(dialog.locator('.copyrow')).toHaveCount(1)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1)
     // Presence first, so a MISSING line fails by name instead of as a null
     // dereference inside the evaluate below.
     await expect(dialog.getByTestId('share-standing-copy')).toHaveText(STANDING_COPY)
@@ -355,7 +356,8 @@ test.describe('UC-GR-009 — share dialog standing copy', () => {
 
     // Creating the link flips the state in place — and the copy comes with it.
     await dialog.getByRole('button', { name: 'Vytvoriť odkaz' }).click()
-    await expect(dialog.locator('.copyrow')).toHaveCount(1)
+    // SANCTIONED RETARGET (GL-T6b, 19 §UC-GL-008 — the standing section adds a second .copyrow; scoped to the per-cycle section)
+    await expect(dialog.getByTestId('per-cycle-link').locator('.copyrow')).toHaveCount(1)
     await expect(dialog.getByTestId('share-standing-copy')).toHaveText(STANDING_COPY)
     await expect(dialog.getByTestId('regen-guidance')).toHaveText(REGEN_GUIDANCE)
   })
@@ -387,7 +389,9 @@ test.describe('UC-GR-009 — share dialog standing copy', () => {
     await expect(dialog.getByTestId('share-standing-copy')).toHaveText(STANDING_COPY)
   })
 
-  // ⚠ THE ADDITIVITY GUARD. `share-dialog.spec.js` must pass UNMODIFIED
+  // ⚠ THE ADDITIVITY GUARD. `share-dialog.spec.js` must pass ~~UNMODIFIED~~ (true for
+  // GR-T7; SUPERSEDED — GL-T6b retargeted its `.copyrow`/`Kopírovať`/native-share pins
+  // under 19 §UC-GL-008, and PI-T3 its entry point; the three pins below still hold)
   // (§UC-GR-009, UC-GR-010 item 8), so this row may not introduce a second
   // `p.sub` in the dialog, a second `<b>` in the subtitle slot, or touch the
   // `.confirmbox`. Asserted here so a later refactor toward those primitives

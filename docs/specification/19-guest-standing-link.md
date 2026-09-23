@@ -542,15 +542,16 @@ two lines above 12 px.
 
 **Goal:** R9.4 — `GuestShareDialog.vue` shows the standing link first, with the waiting count; the
 per-cycle link becomes the secondary, legacy section. Component API stays frozen (`open` / `cycleId` /
-`cycleName`, `update:open`); the standing section works with `cycleId = null` (module 18's menu entry
-opens the dialog when no round is open).
+`cycleName`, `update:open`); ~~the standing section works with `cycleId = null` (module 18's menu entry
+opens the dialog when no round is open)~~ **— CORRECTED by the GL-T6b review: the component supports
+`cycleId = null`, but that is source-pinned only: the drawer share item is `state === 'open'`-only (`FriendPortalSession.vue:1513,1539`), the ONE dialog instance lives in `FriendOrder.vue` bound to `activeCycleId`, and the closed landing has no `landingOrder` ref — so no UI path opens it with `cycleId = null`; the entry point is **GL-T6c**.**
 
 **Data:** on open, `api.getStandingGuestLink()` (`loadSeq`-guarded like the existing GET; both requests
 may run in parallel, each drops a stale result). `cycleId` present ⇒ the existing per-cycle GET runs too,
 unchanged.
 
-**Structure (additive; the shipped pins in `share-dialog.spec.js` / `guest-link.spec.js` /
-`guest-order-recovery.spec.js` must pass — see the placement constraints below):**
+**Structure (additive; ~~the shipped pins in `share-dialog.spec.js` / `guest-link.spec.js` /
+`guest-order-recovery.spec.js` must pass~~ **CORRECTED by GL-T6b (orchestrator sanction 2026-09-23, option (a)): they could not pass unmodified — a second `NeoCopyRow` breaks `.copyrow` counts and strict `Kopírovať` locators, and item 3 contradicts the per-cycle native-share url pins. Those exact pins were retargeted (scoped to `data-testid="per-cycle-link"`, native-share url → the standing token), each marked `// SANCTIONED RETARGET (GL-T6b, …)`; nothing else in the three files changed. Learnings 11 §GL-T6b.** — see the placement constraints below):**
 
 1. **Standing section** at the top of the body (`data-testid="standing-link"`): `div.field-lbl` **„Stály
    odkaz pre kolegov“** · `NeoCopyRow :value="standingUrl" value-testid="standing-link-url"` (full origin
@@ -588,11 +589,12 @@ unchanged.
   it so.
 - The dialog stays `v-if`-mounted (the RD-KG-2 rule).
 
-**Acceptance criteria:** opening the dialog with no open cycle shows the standing section and NOT the
-per-cycle section; with an open cycle both render in that order; the copy row value matches
+**Acceptance criteria:** ~~opening the dialog with no open cycle shows the standing section and NOT the
+per-cycle section~~ **(GL-T6b review: source-pinned only: the drawer share item is `state === 'open'`-only (`FriendPortalSession.vue:1513,1539`), the ONE dialog instance lives in `FriendOrder.vue` bound to `activeCycleId`, and the closed landing has no `landingOrder` ref — so no UI path opens it with `cycleId = null`; the entry point is **GL-T6c**; GL-T6c owns this clause)**; with an open cycle both render in that order; the copy row value matches
 `/\/g\/[A-Z2-9]{14}$/`; the count line is absent at 0 and reads „1 človek čaká na váš odkaz“ after one
-waitlist submit; regenerate changes the row value and the old URL 404s; every shipped share-dialog spec
-passes unmodified.
+waitlist submit; regenerate changes the row value and the old URL 404s; ~~every shipped share-dialog spec
+passes unmodified~~ **— CORRECTED by GL-T6b: every shipped share-dialog spec passes with ONLY the
+sanctioned retargets (see the Structure note above).**
 
 ---
 
@@ -675,7 +677,10 @@ PUBLIC and must NOT join `ADMIN_ENDPOINTS` (the `/api/guest/o/…` precedent).
   `guest-status.spec.js:598` and `guest-order-recovery.spec.js:1296` (+ a submit-409 counter-pin);
   see learnings 11 GL-T2 §9. Everything else in those files passes unmodified** — the
   open-state chip/subtitle/ticker pins hold (resolved conflict 2), the dialog's per-cycle section is
-  untouched (UC-GL-008), and standing-token visitors create ordinary rows.
+  untouched (UC-GL-008), and standing-token visitors create ordinary rows. **⚠ CORRECTED AGAIN by GL-T6b:
+  „untouched" is true of the per-cycle section's own DOM, not of the three dialog specs — the standing
+  section's second `NeoCopyRow` + item 3 forced sanctioned retargets in `share-dialog` (12 pins),
+  `guest-link` (2) and `guest-order-recovery` (2); see UC-GL-008's Structure note.**
 
 **3. New `e2e/tests/guest-standing-link.spec.js`** (fixtures per test, never a shared `beforeAll`; one
 token per matrix row — the cached-410 lesson): UC-GL-001 mint idempotency + regenerate (old 404, per-cycle

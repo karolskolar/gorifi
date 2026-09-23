@@ -60,6 +60,7 @@ import { makeAdmin } from '../helpers/admin.js'
 import { stripComments } from '../helpers/source-pins.js'
 import { BANNED } from '../helpers/vocabulary.js'
 import { collectAppCopy } from '../helpers/copy-sweep.js'
+import { gotoCycle } from '../helpers/portal.js'
 
 const DB_PATH = process.env.DB_PATH || ''
 const NEEDS_DB = 'needs direct DB access — set DB_PATH to the database the server runs on'
@@ -3149,5 +3150,458 @@ test.describe('GL-T6 · 19 PO block — FriendDetail standing-link row + „Vyge
     await yes.dispatchEvent('click')
     await page.waitForTimeout(300)
     expect(posts, 'exactly ONE regenerate request').toHaveLength(1)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GL-T6b · 19 §UC-GL-008 — the HOST share dialog's standing section
+// ═════════════════════════════════════════════════════════════════════════════
+// `GuestShareDialog.vue` (the ONE friend-surface instance, in `FriendOrder.vue`):
+// the standing section FIRST (`standing-link`: „Stály odkaz pre kolegov" +
+// NeoCopyRow + the standing copy + the „kto čaká" COUNT + „Nový stály odkaz" with its
+// own `standing-confirm`), then the demoted per-cycle section under „Odkaz len na
+// túto objednávku" (`per-cycle-label` + `per-cycle-link`, rendered only with a
+// `cycleId`). ⚠ The standing URL IS rendered (NeoCopyRow's text + `title`), exactly as
+// the per-cycle one is — a host share URL by spec (§UC-GL-008 placement bullet 3),
+// NOT the admin's no-token-in-DOM rule. ⚠ COUNT ONLY: the payload carries no names.
+const GL6B_STANDING_COPY = 'Tento odkaz platí stále — pred otvorením objednávky, počas nej aj po nej. Kolegovia cez neho uvidia aktuálnu objednávku, alebo sa zapíšu, aby dostali správu, keď sa otvorí.'
+const GL6B_URL_RE = /\/g\/[A-Z2-9]{14}$/
+
+// The session-restore idiom (share-dialog.spec.js): a RESTORE is not a login, so
+// neither the explainer gate nor the profile auto-open can raise over the landing.
+async function gl6bSignIn(page, host, { share = false, viewport = { width: 378, height: 900 } } = {}) {
+  await page.setViewportSize(viewport)
+  await page.addInitScript((value) => {
+    localStorage.setItem('gorifi_friend_auth', value)
+  }, JSON.stringify({ friendId: host.id, friendName: host.name, token: host.token, expiresAt: Date.now() + 864e5 }))
+  await page.route('**/api/friends?active=true', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify([{ id: host.id, name: host.name, uid: 'E2EGL6B', active: 1, subscriptions: ['coffee', 'bakery'] }]),
+  }))
+  if (share) {
+    await page.addInitScript(() => {
+      window.__shared = []
+      Object.defineProperty(navigator, 'share', {
+        configurable: true,
+        value: (data) => { window.__shared.push(data); return Promise.resolve() },
+      })
+    })
+  }
+}
+
+// The landing's cartbar icon — it exists only for the CURRENT (newest) open round,
+// which every caller satisfies by creating its cycle immediately before.
+async function gl6bOpen(page) {
+  await page.goto('/')
+  await expect(page.getByTestId('portal-landing')).toBeVisible()
+  await page.locator('.app .cartbar').getByRole('button', { name: 'Zdieľať s kolegami' }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toBeVisible()
+  return dialog
+}
+
+let gl6bPhoneSeq = 0
+function gl6bPlant(hostId, name, { notified = null } = {}) {
+  // Unique per row: (host, phone_e164) is a partial UNIQUE index (GL-T1).
+  const digits = `${phoneSeed.slice(-3)}${String(++gl6bPhoneSeq).padStart(3, '0')}`
+  const db = new DatabaseSync(DB_PATH)
+  try {
+    db.exec('PRAGMA busy_timeout = 5000')
+    return Number(db.prepare(
+      'INSERT INTO guest_waitlist (host_friend_id, name, phone, phone_e164, whatsapp_opt_in, notified_at) VALUES (?, ?, ?, ?, 1, ?)'
+    ).run(hostId, name, `0905 ${digits}`, `+421905${digits}`, notified).lastInsertRowid)
+  } finally {
+    db.close()
+  }
+}
+
+test.describe('GL-T6b · 19 §UC-GL-008 — the host share dialog: standing section first', () => {
+  test('with an open round BOTH sections render, standing FIRST; the copy row is the standing URL (text + clipboard); exact copy; no count at 0; the per-cycle section is intact below its label', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    const host = await makeHost('Gl6bOrder')
+    const cycle = await makeCycle('Gl6bOrder')
+    const link = await shareLink(host, cycle.id)
+
+    const payloads = []
+    await page.route('**/api/guest-links/standing', async (route) => {
+      const res = await route.fetch()
+      payloads.push(await res.json())
+      await route.fulfill({ response: res })
+    })
+    await gl6bSignIn(page, host)
+    const dialog = await gl6bOpen(page)
+
+    const section = dialog.getByTestId('standing-link')
+    const url = section.getByTestId('standing-link-url')
+    await expect(url).toHaveText(GL6B_URL_RE)
+    const standingNow = (await standing(host)).standing
+    const origin = await page.evaluate(() => window.location.origin)
+    await expect(url).toHaveText(`${origin}${standingNow.url_path}`)
+    expect(standingNow.token, 'the standing token is not the per-cycle one').not.toBe(link.token)
+
+    await expect(section.locator('.field-lbl')).toHaveText('Stály odkaz pre kolegov')
+    await expect(section.getByTestId('standing-copy')).toHaveText(GL6B_STANDING_COPY)
+    await expect(section.getByTestId('standing-copy')).toHaveClass('field-help')
+    // Count 0 ⇒ NO line (non-vacuity: the section around it rendered, above).
+    await expect(dialog.getByTestId('waiting-count')).toHaveCount(0)
+    await expect(section.getByRole('button', { name: 'Nový stály odkaz' })).toBeVisible()
+
+    // Order: standing section → per-cycle label → per-cycle section.
+    await expect(dialog.getByTestId('per-cycle-label')).toHaveText('Odkaz len na túto objednávku')
+    await expect(dialog.getByTestId('per-cycle-link').getByTestId('guest-link-url')).toHaveText(`${origin}/g/${link.token}`)
+    const order = await dialog.evaluate((modal) => {
+      const at = (id) => modal.querySelector(`[data-testid="${id}"]`)
+      const F = Node.DOCUMENT_POSITION_FOLLOWING
+      return {
+        standingBeforeLabel: !!(at('standing-link').compareDocumentPosition(at('per-cycle-label')) & F),
+        labelBeforeSection: !!(at('per-cycle-label').compareDocumentPosition(at('per-cycle-link')) & F),
+        perCycleOutsideStanding: !at('standing-link').contains(at('per-cycle-link')),
+      }
+    })
+    expect(order).toEqual({ standingBeforeLabel: true, labelBeforeSection: true, perCycleOutsideStanding: true })
+
+    // The standing copy button hands out the STANDING url.
+    // A name locator would stop resolving the moment the label flips — hold the node.
+    const copy = section.locator('.copyrow button')
+    await expect(copy).toHaveText('Kopírovať')
+    await copy.click()
+    await expect(copy).toHaveText('Skopírované!')
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`${origin}${standingNow.url_path}`)
+
+    // Placement constraints: no new p.sub, subtitle keeps ONE <b>, no button named /Zdieľať/ here.
+    await expect(dialog.locator('p.sub')).toHaveCount(0)
+    await expect(dialog.locator('.m-head .sub b')).toHaveCount(1)
+    await expect(section.getByRole('button', { name: /Zdieľať/ })).toHaveCount(0)
+
+    // COUNT ONLY — the payload the dialog read carries no names/phones/rows.
+    expect(payloads.length, 'the dialog read the standing link').toBeGreaterThan(0)
+    for (const body of payloads) {
+      for (const k of ['name', 'phone', 'rows']) {
+        expect(Object.prototype.hasOwnProperty.call(body, k), k).toBe(false)
+        expect(Object.prototype.hasOwnProperty.call(body.standing, k), `standing.${k}`).toBe(false)
+      }
+    }
+  })
+
+  test('the count line: absent at 0, „1 človek čaká na váš odkaz" after one signup, „2 ľudia čakajú…" after two — a notified row is not counted, and no name reaches the DOM', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const host = await makeHost('Gl6bCount')
+    await makeCycle('Gl6bCount')
+    await gl6bSignIn(page, host)
+
+    let dialog = await gl6bOpen(page)
+    await expect(dialog.getByTestId('standing-link-url')).toHaveText(GL6B_URL_RE)
+    await expect(dialog.getByTestId('waiting-count')).toHaveCount(0)
+    await page.keyboard.press('Escape')
+
+    const first = `Čakateľ Prvý ${uniq}`
+    gl6bPlant(host.id, first)
+    gl6bPlant(host.id, `Už upozornený ${uniq}`, { notified: '2026-09-01 10:00:00' })
+    dialog = await gl6bOpen(page)
+    const line = dialog.getByTestId('waiting-count')
+    await expect(line).toHaveText('1 človek čaká na váš odkaz')
+    await expect(line.locator('span.badge.acc')).toHaveText('1 človek čaká na váš odkaz')
+    expect(await page.evaluate(() => document.documentElement.outerHTML), 'count only — no name').not.toContain(first)
+    // Inside the standing section, under the copy text.
+    expect(await dialog.evaluate((m) => m.querySelector('[data-testid="standing-link"]').contains(m.querySelector('[data-testid="waiting-count"]')))).toBe(true)
+    await page.keyboard.press('Escape')
+
+    gl6bPlant(host.id, `Čakateľ Druhý ${uniq}`)
+    dialog = await gl6bOpen(page)
+    await expect(dialog.getByTestId('waiting-count')).toHaveText('2 ľudia čakajú na váš odkaz')
+  })
+
+  test('„Nový stály odkaz": its OWN confirm (`standing-confirm`, not `.confirmbox`, exact copy); „Nie" rotates nothing; „Áno, vygenerovať" rotates in place — the old URL 404s, the row shows the new one; the per-cycle link is untouched', async ({ page }) => {
+    const host = await makeHost('Gl6bRegen')
+    const cycle = await makeCycle('Gl6bRegen')
+    const link = await shareLink(host, cycle.id)
+    const before = (await standing(host)).standing
+    await gl6bSignIn(page, host)
+    const dialog = await gl6bOpen(page)
+    const section = dialog.getByTestId('standing-link')
+    const origin = await page.evaluate(() => window.location.origin)
+    await expect(section.getByTestId('standing-link-url')).toHaveText(`${origin}${before.url_path}`)
+
+    const trigger = section.getByRole('button', { name: 'Nový stály odkaz' })
+    await expect(dialog.getByTestId('standing-confirm')).toHaveCount(0)
+    await trigger.click()
+    const box = dialog.getByTestId('standing-confirm')
+    await expect(box).toBeVisible()
+    await expect(box).toHaveClass('standing-confirm')
+    await expect(box).toContainText(GL6_CONFIRM)
+    await expect(box.locator('b'), 'no bold lead — this is not the per-cycle box').toHaveCount(0)
+    await expect(dialog.locator('.confirmbox'), 'the per-cycle .confirmbox stays closed').toHaveCount(0)
+    await expect(trigger, 'the trigger yields to its confirmation').toHaveCount(0)
+    for (const name of ['Áno, vygenerovať', 'Nie']) await expect(box.getByRole('button', { name, exact: true })).toBeVisible()
+    await expect(dialog.getByRole('button', { name: /Zdieľať/ })).toHaveCount(0)
+
+    await box.getByRole('button', { name: 'Nie', exact: true }).click()
+    await expect(dialog.getByTestId('standing-confirm')).toHaveCount(0)
+    expect((await standing(host)).standing.token, '„Nie" rotates nothing — read back').toBe(before.token)
+
+    await section.getByRole('button', { name: 'Nový stály odkaz' }).click()
+    await dialog.getByTestId('standing-confirm').getByRole('button', { name: 'Áno, vygenerovať' }).click()
+    await expect(dialog.getByTestId('standing-confirm')).toHaveCount(0)
+    const after = (await standing(host)).standing
+    expect(after.token).not.toBe(before.token)
+    await expect(section.getByTestId('standing-link-url')).toHaveText(`${origin}${after.url_path}`)
+    expect((await ctx.get(`/api/guest/${before.token}`)).status(), 'the old standing URL 404s').toBe(404)
+    // Nothing else moved: the per-cycle row still shows (and the server still holds) its token.
+    await expect(dialog.getByTestId('guest-link-url')).toHaveText(`${origin}/g/${link.token}`)
+    expect((await hostView(host, cycle.id)).link.token).toBe(link.token)
+  })
+
+  test('the two confirms never stand open together (they share „Áno, vygenerovať")', async ({ page }) => {
+    const host = await makeHost('Gl6bBoth')
+    const cycle = await makeCycle('Gl6bBoth')
+    await shareLink(host, cycle.id)
+    await gl6bSignIn(page, host)
+    const dialog = await gl6bOpen(page)
+    await dialog.getByRole('button', { name: 'Nový stály odkaz' }).click()
+    await expect(dialog.getByTestId('standing-confirm')).toBeVisible()
+    await dialog.getByRole('button', { name: 'Vygenerovať nový odkaz' }).click()
+    await expect(dialog.locator('.confirmbox')).toBeVisible()
+    await expect(dialog.getByTestId('standing-confirm')).toHaveCount(0)
+    await expect(dialog.getByRole('button', { name: 'Áno, vygenerovať' })).toHaveCount(1)
+    await dialog.getByRole('button', { name: 'Nový stály odkaz' }).click()
+    await expect(dialog.getByTestId('standing-confirm')).toBeVisible()
+    await expect(dialog.locator('.confirmbox')).toHaveCount(0)
+    await expect(dialog.getByRole('button', { name: 'Áno, vygenerovať' })).toHaveCount(1)
+  })
+
+  test('a FAILED regenerate says so in its own sentence, keeps the confirm and the old URL; a pending one is disabled AND JS-guarded — ONE POST', async ({ page }) => {
+    const host = await makeHost('Gl6bRegenFail')
+    await makeCycle('Gl6bRegenFail')
+    const before = (await standing(host)).standing
+    await gl6bSignIn(page, host)
+    await page.route('**/api/guest-links/standing/regenerate', (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Chyba servera' }) }))
+    let dialog = await gl6bOpen(page)
+    const origin = await page.evaluate(() => window.location.origin)
+    await dialog.getByRole('button', { name: 'Nový stály odkaz' }).click()
+    await dialog.getByTestId('standing-confirm').getByRole('button', { name: 'Áno, vygenerovať' }).click()
+    await expect(dialog.getByTestId('standing-regen-error')).toHaveText('Nový stály odkaz sa nepodarilo vygenerovať: Chyba servera')
+    await expect(dialog.getByTestId('standing-confirm'), 'the confirm stays for a retry').toBeVisible()
+    await expect(dialog.getByTestId('standing-link-url')).toHaveText(`${origin}${before.url_path}`)
+    await expect(dialog.getByTestId('standing-error'), 'the READ did not fail').toHaveCount(0)
+    expect((await standing(host)).standing.token).toBe(before.token)
+    await page.keyboard.press('Escape')
+    await page.unroute('**/api/guest-links/standing/regenerate')
+
+    const posts = []
+    await page.route('**/api/guest-links/standing/regenerate', async (route) => {
+      posts.push(1)
+      await new Promise((r) => setTimeout(r, 15000))
+      await route.continue().catch(() => {})
+    })
+    dialog = await gl6bOpen(page)
+    await expect(dialog.getByTestId('standing-regen-error'), 'a reopen starts clean').toHaveCount(0)
+    await dialog.getByRole('button', { name: 'Nový stály odkaz' }).click()
+    const yes = dialog.getByTestId('standing-confirm').getByRole('button', { name: /Áno, vygenerovať|Generujem/ })
+    await yes.click()
+    await expect(yes).toHaveText('Generujem...', { timeout: 3000 })
+    await expect(yes).toBeDisabled({ timeout: 3000 })
+    await yes.dispatchEvent('click')
+    await page.waitForTimeout(300)
+    expect(posts, 'exactly ONE regenerate request').toHaveLength(1)
+  })
+
+  test('a FAILED standing read is stated in the standing section; the per-cycle section still works and native share FALLS BACK to the per-cycle URL', async ({ page }) => {
+    const host = await makeHost('Gl6bReadFail')
+    const cycle = await makeCycle('Gl6bReadFail')
+    const link = await shareLink(host, cycle.id)
+    await gl6bSignIn(page, host, { share: true })
+    await page.route('**/api/guest-links/standing', (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Chyba servera' }) }))
+    const dialog = await gl6bOpen(page)
+    const section = dialog.getByTestId('standing-link')
+    await expect(section.getByTestId('standing-error')).toContainText('Stály odkaz sa nepodarilo načítať: Chyba servera')
+    await expect(section.locator('.copyrow')).toHaveCount(0)
+    await expect(section.getByRole('button', { name: 'Nový stály odkaz' })).toHaveCount(0)
+    const origin = await page.evaluate(() => window.location.origin)
+    await expect(dialog.getByTestId('per-cycle-link').getByTestId('guest-link-url')).toHaveText(`${origin}/g/${link.token}`)
+    const share = dialog.getByRole('button', { name: 'Zdieľať odkaz' })
+    await expect(share, 'ONE share button, in the per-cycle section').toHaveCount(1)
+    await expect(dialog.getByTestId('per-cycle-link').getByRole('button', { name: 'Zdieľať odkaz' })).toHaveCount(1)
+    await share.click()
+    expect((await page.evaluate(() => window.__shared))[0].url).toBe(`${origin}/g/${link.token}`)
+  })
+
+  test('with native share: ONE „Zdieľať odkaz", in the STANDING section, sharing the standing URL (item 3)', async ({ page }) => {
+    const host = await makeHost('Gl6bNative')
+    const cycle = await makeCycle('Gl6bNative')
+    await shareLink(host, cycle.id)
+    await gl6bSignIn(page, host, { share: true })
+    const dialog = await gl6bOpen(page)
+    const share = dialog.getByRole('button', { name: 'Zdieľať odkaz' })
+    await expect(share).toHaveCount(1)
+    await expect(dialog.getByTestId('standing-link').getByRole('button', { name: 'Zdieľať odkaz' })).toHaveCount(1)
+    await share.click()
+    const origin = await page.evaluate(() => window.location.origin)
+    expect(await page.evaluate(() => window.__shared)).toEqual([{
+      title: 'Objednávka Podpultovka',
+      text: `Pridajte sa k mojej objednávke - ${cycle.name}`,
+      url: `${origin}${(await standing(host)).standing.url_path}`,
+    }])
+  })
+
+  test('⚠ loadSeq: a SLOW standing read from a previous open cannot overwrite the reopened dialog\'s link', async ({ page }) => {
+    const host = await makeHost('Gl6bSeq')
+    await makeCycle('Gl6bSeq')
+    const old = (await standing(host)).standing
+    await gl6bSignIn(page, host)
+    let calls = 0
+    await page.route('**/api/guest-links/standing', async (route) => {
+      calls += 1
+      // Fetched NOW (so it carries the OLD token), delivered late.
+      const res = await route.fetch()
+      if (calls === 1) await new Promise((r) => setTimeout(r, 4000))
+      await route.fulfill({ response: res }).catch(() => {})
+    })
+    await page.goto('/')
+    await expect(page.getByTestId('portal-landing')).toBeVisible()
+    const icon = page.locator('.app .cartbar').getByRole('button', { name: 'Zdieľať s kolegami' })
+    await icon.click()
+    await expect(page.getByRole('dialog')).toBeVisible()
+    await page.waitForTimeout(500) // the first GET has been fetched with the OLD token
+    await page.keyboard.press('Escape')
+    const fresh = (await regenerate(host)).standing
+    await icon.click()
+    const dialog = page.getByRole('dialog')
+    const origin = await page.evaluate(() => window.location.origin)
+    await expect(dialog.getByTestId('standing-link-url')).toHaveText(`${origin}${fresh.url_path}`)
+    await page.waitForTimeout(4500) // the held first response has landed by now
+    await expect(dialog.getByTestId('standing-link-url')).toHaveText(`${origin}${fresh.url_path}`, { timeout: 500 })
+    expect(old.token).not.toBe(fresh.token)
+  })
+
+  test('320px: the count badge and the open standing confirm add no overflow and clip no control', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const host = await makeHost('Gl6bNarrow')
+    const cycle = await makeCycle('Gl6bNarrow')
+    await shareLink(host, cycle.id)
+    for (let i = 0; i < 12; i++) gl6bPlant(host.id, `Úzky ${i} ${uniq}`)
+    await gl6bSignIn(page, host, { share: true, viewport: { width: 320, height: 900 } })
+    const dialog = await gl6bOpen(page)
+    await expect(dialog.getByTestId('waiting-count')).toHaveText('12 ľudí čaká na váš odkaz')
+    await dialog.getByRole('button', { name: 'Nový stály odkaz' }).click()
+    await expect(dialog.getByTestId('standing-confirm')).toBeVisible()
+    const bad = await dialog.evaluate((modal) => {
+      const box = modal.getBoundingClientRect()
+      const out = []
+      for (const el of modal.querySelectorAll('[data-testid="standing-link"] *')) {
+        const r = el.getBoundingClientRect()
+        if (r.width && (r.right > box.right + 0.5 || r.left < box.left - 0.5)) out.push(el.className || el.tagName)
+      }
+      for (const el of modal.querySelectorAll('.btn')) if (el.scrollWidth > el.clientWidth + 1) out.push(`min-content:${el.textContent.trim()}`)
+      return out
+    })
+    expect(bad).toEqual([])
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0)
+  })
+
+  // Entry point A (05's own — share-dialog.spec.js's `openFromOrderPage`): the deep
+  // link `/cycle/:id`'s Kolegovia tab opens the SAME `GuestShareDialog` instance as
+  // the landing cartbar icon (entry point B, `gl6bOpen`), so it must render both
+  // GL-T6b sections in the same order, not just the per-cycle one every shipped
+  // Kolegovia-tab test predates this row and only ever checked.
+  test('the /cycle/:id deep link\'s Kolegovia tab opens the same dialog, standing FIRST, per-cycle intact below', async ({ page }) => {
+    const host = await makeHost('Gl6bDeep')
+    const cycle = await makeCycle('Gl6bDeep')
+    const link = await shareLink(host, cycle.id)
+    await gl6bSignIn(page, host)
+    await gotoCycle(page, cycle.id)
+    await page.getByTestId('main-tab-guests').click()
+    await page.getByRole('button', { name: /Zdieľať/ }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+
+    const origin = await page.evaluate(() => window.location.origin)
+    const standingNow = (await standing(host)).standing
+    await expect(dialog.getByTestId('standing-link-url')).toHaveText(`${origin}${standingNow.url_path}`)
+    await expect(dialog.getByTestId('per-cycle-label')).toHaveText('Odkaz len na túto objednávku')
+    await expect(dialog.getByTestId('per-cycle-link').getByTestId('guest-link-url')).toHaveText(`${origin}/g/${link.token}`)
+
+    const standingFirst = await dialog.evaluate((modal) => {
+      const at = (id) => modal.querySelector(`[data-testid="${id}"]`)
+      return !!(at('standing-link').compareDocumentPosition(at('per-cycle-link')) & Node.DOCUMENT_POSITION_FOLLOWING)
+    })
+    expect(standingFirst, 'same ordering as the landing entry point').toBe(true)
+  })
+
+  // 18 §UC-PI-019's shell rules (`NeoModal`/`use-modal-layer.js`) are pinned generically
+  // elsewhere. ⚠ NOT a focus-TRAP pin: `NeoModal`'s `trapping` computed is
+  // `trapFocus === null ? !closable : trapFocus` and this dialog never sets
+  // `trapFocus`, so — being `closable` (the default) — it deliberately has NO trap
+  // (RD-FL-2: only non-closable GATES opt in; measured live, Tab #8 here lands on
+  // `<body>`, exactly as `modern-login.spec.js`'s gate spec would red if a GATE did
+  // the same). What this pins instead is that GL-T6b's TWO NEW rows of controls
+  // (the standing copy button + "Nový stály odkaz") sit in the tab order in the
+  // right place — BETWEEN the × and the demoted per-cycle section's own three — so
+  // a control Tab skips does not survive unnoticed, and that Esc still closes it.
+  test('keyboard: Tab walks the standing section\'s controls, then the per-cycle section\'s, in order; Esc closes the dialog', async ({ page }) => {
+    const host = await makeHost('Gl6bKbd')
+    const cycle = await makeCycle('Gl6bKbd')
+    await shareLink(host, cycle.id)
+    await gl6bSignIn(page, host)
+    const dialog = await gl6bOpen(page)
+    // Both sections resolve their own async GET (`loadSeq` per §UC-GL-008's data
+    // note) — wait for BOTH copy rows before walking Tab, or a slow response under
+    // load makes the not-yet-rendered controls invisible to the same walk.
+    await expect(dialog.getByTestId('standing-link-url')).toHaveText(GL6B_URL_RE)
+    await expect(dialog.getByTestId('per-cycle-link').getByTestId('guest-link-url')).toBeVisible()
+
+    const seen = []
+    for (let i = 0; i < 7; i++) {
+      await page.keyboard.press('Tab')
+      seen.push(await page.evaluate(() => {
+        const el = document.activeElement
+        return {
+          inStanding: !!el?.closest('[data-testid="standing-link"]'),
+          inPerCycle: !!el?.closest('[data-testid="per-cycle-link"]'),
+          text: (el?.textContent || el?.getAttribute('aria-label') || '').trim(),
+        }
+      }))
+    }
+    // 1: the × (outside either section) · 2–3: standing (copy, regenerate) ·
+    // 4–6: per-cycle (copy, deactivate, regenerate) · 7: the footer "Zavrieť".
+    expect(seen[0]).toEqual({ inStanding: false, inPerCycle: false, text: 'Zatvoriť dialóg' })
+    expect(seen.filter((s) => s.inStanding).map((s) => s.text)).toEqual(['Kopírovať', 'Nový stály odkaz'])
+    expect(seen.filter((s) => s.inPerCycle).map((s) => s.text)).toEqual(['Kopírovať', 'Deaktivovať odkaz', 'Vygenerovať nový odkaz'])
+    expect(seen[6]).toEqual({ inStanding: false, inPerCycle: false, text: 'Zavrieť' })
+
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+  })
+})
+
+test.describe('GL-T6b · source pins — cycleId = null, one mount', () => {
+  test.skip(!HAS_FRONTEND_SRC, NEEDS_FRONTEND_SRC)
+
+  // ⚠ `cycleId = null` has NO reachable UI trigger today: the drawer row and the
+  // cartbar icon are `state === 'open'` only (18 §UC-PI-004/011) and the Kolegovia card
+  // lives on an order screen, which always has a cycle. §UC-GL-008 still requires the
+  // dialog to work with it (module 18's menu entry for a closed round), so the two
+  // properties that make it work are pinned in SOURCE: the standing read does not wait
+  // on a cycle, and every per-cycle node is gated on `cycleId`.
+  test('the standing read is not gated on cycleId; the per-cycle label and section are', () => {
+    const raw = readFileSync(join(FRONTEND_SRC_DIR, 'components', 'GuestShareDialog.vue'), 'utf8')
+    const src = stripComments(raw)
+    expect(src.length, 'readability gate').toBeGreaterThan(raw.length * 0.3)
+    const script = src.slice(0, src.indexOf('<template>'))
+    const template = src.slice(src.indexOf('<template>'))
+
+    const standingWatch = script.match(/watch\(\(\) => props\.open, async \(isOpen\) => \{\s*const seq = \+\+standingSeq[\s\S]*?\n\}, \{ immediate: true \}\)/)
+    expect(standingWatch, 'a standing watcher of its own').not.toBeNull()
+    expect(standingWatch[0]).toContain('api.getStandingGuestLink()')
+    expect(standingWatch[0], 'never waits on a cycle').not.toMatch(/cycleId/)
+
+    expect(template).toMatch(/<div\s+v-if="cycleId"[^>]*data-testid="per-cycle-label"/)
+    expect(template).toMatch(/v-else-if="cycleId"[^>]*data-testid="per-cycle-link"|data-testid="per-cycle-link"[^>]*v-else-if="cycleId"/)
+    // …and the standing section is not.
+    const standingTag = template.match(/<div[^>]*data-testid="standing-link"[^>]*>/)
+    expect(standingTag).not.toBeNull()
+    expect(standingTag[0]).not.toMatch(/cycleId/)
   })
 })

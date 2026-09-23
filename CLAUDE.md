@@ -460,6 +460,7 @@ append the full write-up to the matching learnings file and add at most one line
   halves, so whichever way the PO rules, exactly one of those expectations is the edit (PI-T1 §1, PI-T4).
 - Guest surface (`GuestOrder.vue`, `GuestOrderStatus.vue`) deliberately lags the friend skin in places; it is
   not the reference when restyling.
+- `GuestShareDialog.vue` = standing section (`standing-link`, own `standingSeq`, the ONE native-share button, URL rendered by spec) THEN the per-cycle one; per-cycle assertions scope to `per-cycle-link`, whose loading `.sub` stays a DIRECT `.m-body` child (pinned) and whose error banner stays first (GL-T6b).
 - Nothing new inside a guest hero (`.card.hl`, `preopen-hero`) may carry `.badge` or `.mono`: shipped pins count/strict-resolve them. `GuestSteps`/`GuestRoastersLine` re-declare those rules in scoped classes, pinned computed-style-equal (GL-T4).
 - The pre-open preview is `GuestProductGrid readonly` (GL-T5) — REMOVES steppers/stock bar/lightbox/tab stops (each JS-guarded); the `.p2-ro` fade is the CALLER's wrapper over strip AND cards; `gorifi_guest_waitlist` memory is `{at, whatsapp_opt_in, cycle_id}` and expires with the preview round (learnings 11 §GL-T5).
 
