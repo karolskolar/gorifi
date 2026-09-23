@@ -59,6 +59,7 @@ import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { makeAdmin } from '../helpers/admin.js'
 import { stripComments } from '../helpers/source-pins.js'
 import { BANNED } from '../helpers/vocabulary.js'
+import { collectAppCopy } from '../helpers/copy-sweep.js'
 
 const DB_PATH = process.env.DB_PATH || ''
 const NEEDS_DB = 'needs direct DB access — set DB_PATH to the database the server runs on'
@@ -1752,7 +1753,11 @@ test.describe('GL-T2 · GuestOrder.vue — the preopen-hero placeholder', () => 
     await page.setViewportSize(GL2_PHONE)
     const TOKEN = 'PREOPENMOCKED2'
     const cases = [
-      [preopenBody({ kind: 'planned_date', opens_at: '2026-10-03', cycle_name: 'X' }), 'Objednávky sú zatvorené', 'Ďalšia objednávka sa otvorí približne 3. októbra.'],
+      // GL-T5 retarget: a PAST `opens_at` — GL-T5's `weeksAwayLabel()` adds „(o N týždňov)"
+      // to a FUTURE one, so a fixed calendar date would change this sentence with the
+      // wall clock. A past date omits the parenthesis (19 §UC-GL-006 item 2) and keeps
+      // GL-T2's exact sentence; the parenthesis is pinned by the GL-T5 describes.
+      [preopenBody({ kind: 'planned_date', opens_at: '2020-10-03', cycle_name: 'X' }), 'Objednávky sú zatvorené', 'Ďalšia objednávka sa otvorí približne 3. októbra.'],
       [preopenBody({ kind: 'planned_note', plan_note: 'po Vianociach', cycle_name: 'X' }), 'Objednávky sú zatvorené', 'Ďalšia objednávka: po Vianociach'],
       [preopenBody({ kind: 'unknown' }), 'Objednávky sú zatvorené', 'O ďalšej objednávke dáme vedieť.'],
       [preopenBody({ kind: 'open_elsewhere', cycle_name: 'Nové' }, { stale_cycle: { id: 1, name: 'Staré' } }), 'Táto objednávka je už uzavretá', 'Janka má práve otvorenú novú objednávku. Požiadajte Janka o aktuálny odkaz.'],
@@ -2260,8 +2265,678 @@ test.describe('GL-T4 · source pins — one home for the roaster words, one icon
 
     const view = src('views/GuestOrder.vue')
     expect(view, 'readability gate').toContain('guest-steps-toggle')
-    expect((view.match(/<GuestSteps\b/g) || []).length, 'compact strip + the fold').toBe(2)
+    // GL-T5 retarget (19 §UC-GL-006 items 2–3): the pre-open page mounts the SAME two
+    // components — the „Ako to funguje" card (full) and the hero's roasters line.
+    expect((view.match(/<GuestSteps\b/g) || []).length, 'compact strip + the fold + the pre-open card').toBe(3)
     expect(view, 'packeta stays OFF until GP-T3').not.toMatch(/<GuestSteps[^>]*packeta/)
-    expect((view.match(/<GuestRoastersLine\b/g) || []).length).toBe(1)
+    expect((view.match(/<GuestRoastersLine\b/g) || []).length, 'open hero + pre-open hero').toBe(2)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GL-T5 · 19 §UC-GL-006 — the FULL pre-open page (`GLink2 Zatvorené`, transcribed).
+//
+// The shared target nearly always has an open round, so the kind-specific states run
+// on a FULFILLED `GET /api/guest/:token` (GL-T2's idiom) and the waitlist POST is
+// fulfilled too (its server half is `guest-waitlist.spec.js`, GL-T3). One test runs
+// against the real server: a legacy per-cycle token on a LOCKED cycle — pre-open on
+// any target. DRAFT PO copy throughout (19 §OPEN): transcribed, never improved, and
+// hoisted here so a PO edit is a two-place change (the 14-module precedent).
+// ═════════════════════════════════════════════════════════════════════════════
+const GL5_TICKER_CLOSED = '+++ OBJEDNÁVKY ZATVORENÉ +++ DÁME VEDIEŤ, KEĎ SA OTVORÍ +++'
+const GL5_DOC_TITLE = 'Objednávky sú zatvorené – Podpultovka'
+const GL5_LOCK_TITLE = 'Objednávky sú zatvorené'
+const GL5_FORM = {
+  title: 'Dajte mi vedieť',
+  sub: 'Pošleme jednu správu, keď sa objednávka otvorí. Nič viac.',
+  consent: 'Súhlasím so správou cez WhatsApp',
+  button: 'Chcem vedieť, keď sa otvorí',
+}
+const GL5_DONE_WA = (host) => `Dáme vedieť. Keď sa objednávka otvorí, príde vám správa na WhatsApp s odkazom od ${host}.`
+const GL5_DONE_NO_WA = (host) => `Dáme vedieť. Keď sa objednávka otvorí, ${host} vám pošle odkaz.`
+const GL5_STORAGE_KEY = 'gorifi_guest_waitlist'
+
+/** The local ISO date `n` calendar days from NOW (the page computes against its own clock). */
+function gl5Day(n) {
+  const d = new Date()
+  d.setDate(d.getDate() + n)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function gl5Product(id, name, extra = {}) {
+  return {
+    id, cycle_id: 9001, name, purpose: 'Espresso', description1: 'Brazília · natural', description2: 'čokoláda, oriešky',
+    roast_type: 'espresso', roastery: 'Goriffee', price_150g: null, price_200g: null, price_250g: 9.5, price_500g: null,
+    price_1kg: 32, price_20pc5g: null, price_8pc12g: null, price_unit: null, image: '/coffee-cup.png',
+    weight_grams: null, composition: null, variant_label: null, source_bakery_product_id: null, source_variant_id: null,
+    ...extra,
+  }
+}
+
+const GL5_PREVIEW = {
+  cycle: { id: 9001, name: 'Septembrová ponuka' },
+  products: [
+    gl5Product(91, 'Preview Alfa'),
+    gl5Product(92, 'Preview Beta', { roastery: 'Robo' }),
+    gl5Product(93, 'Preview Filter', { purpose: 'Filter' }),
+  ],
+}
+
+function gl5Body(next = { kind: 'planned_date', opens_at: gl5Day(28), cycle_name: 'Október' }, extra = {}) {
+  return preopenBody(next, { preview: GL5_PREVIEW, ...extra })
+}
+
+/**
+ * Serve `body` for the listing GET of `token`, and (optionally) a scripted answer for
+ * the waitlist POST. Returns the recorded POSTs + GET count.
+ */
+async function gl5Mock(page, token, body, { post = { status: 200, body: { success: true } }, holdPost = null } = {}) {
+  const seen = { gets: 0, posts: [] }
+  await page.route(`**/api/guest/${token}`, (route) => {
+    seen.gets++
+    const b = typeof body === 'function' ? body(seen.gets) : body
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) })
+  })
+  await page.route(`**/api/guest/${token}/waitlist`, async (route) => {
+    const req = route.request()
+    seen.posts.push({ method: req.method(), body: req.postDataJSON(), headers: req.headers() })
+    if (holdPost) await holdPost
+    return route.fulfill({ status: post.status, contentType: 'application/json', body: JSON.stringify(post.body) })
+  })
+  return seen
+}
+
+async function gl5Open(page, token, body, opts = {}, viewport = GL2_PHONE) {
+  const seen = await gl5Mock(page, token, body, opts)
+  await page.setViewportSize(viewport)
+  await page.goto(`/g/${token}`)
+  await expect(page.getByTestId('preopen-hero')).toBeVisible()
+  return seen
+}
+
+test.describe('GL-T5 · 19 §UC-GL-006 — weeksAwayLabel() (lib/plural.js, imported by plain node)', () => {
+  test.skip(!HAS_FRONTEND_SRC, NEEDS_FRONTEND_SRC)
+
+  test('every branch: not-a-number / past ⇒ "", 0–6 ⇒ „už tento týždeň", else „o N" rounded, declined by weeksLabel', async () => {
+    const { weeksAwayLabel } = await import('file://' + join(FRONTEND_SRC_DIR, 'lib', 'plural.js'))
+    const cases = [
+      [null, ''], [undefined, ''], [NaN, ''], [Infinity, ''], ['7', ''], [-1, ''], [-30, ''],
+      [0, 'už tento týždeň'], [1, 'už tento týždeň'], [6, 'už tento týždeň'],
+      [7, 'o 1 týždeň'], [10, 'o 1 týždeň'], [11, 'o 2 týždne'], [14, 'o 2 týždne'], [21, 'o 3 týždne'],
+      [28, 'o 4 týždne'], [31, 'o 4 týždne'], [32, 'o 5 týždňov'], [35, 'o 5 týždňov'], [70, 'o 10 týždňov'],
+    ]
+    for (const [days, want] of cases) expect(weeksAwayLabel(days), String(days)).toBe(want)
+  })
+})
+
+test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocked payload)', () => {
+  test('chrome: lock chip (no text, titled), the CLOSED ticker constant, the shipped subtitle; document.title', async ({ page }) => {
+    await gl5Open(page, 'GLFIVECHROME22', gl5Body())
+    const app = page.locator('.app')
+    const chip = app.locator('.appbar .chip')
+    await expect(chip).toHaveCount(1)
+    await expect(chip).toHaveClass(/p2-lock/)
+    await expect(chip).toHaveAttribute('title', GL5_LOCK_TITLE)
+    await expect(chip.locator('svg'), 'the lock glyph').toHaveCount(1)
+    expect((await chip.textContent()).trim(), 'the chip carries no text').toBe('')
+    await expect(app.getByText('Bez účtu'), 'the open chip is gone in this state').toHaveCount(0)
+    await expect(app.locator('.ticker span')).toContainText(GL5_TICKER_CLOSED)
+    await expect(app.locator('.ticker span')).not.toContainText('KÁVA POD PULTOM')
+    await expect(app.locator('.appbar .titles .s')).toHaveText('Objednávka cez odkaz')
+    await expect(page).toHaveTitle(GL5_DOC_TITLE)
+  })
+
+  test('the hero: badge, split headline with the highlighted „zatvorené", the host sentence + date sentence with „(o 4 týždne)", then the roasters line', async ({ page }) => {
+    const opens = gl5Day(28)
+    await gl5Open(page, 'GLFIVEHERO2222', gl5Body({ kind: 'planned_date', opens_at: opens, cycle_name: 'Október' }))
+    const hero = page.getByTestId('preopen-hero')
+    await expect(hero).toHaveClass(/card/)
+    await expect(hero).toHaveClass(/\bhl\b/)
+    await expect(hero.locator('.badge'), 'strict: the ONE badge in the hero').toHaveText('Zatvorené')
+    const h1 = hero.locator('h1.h-screen')
+    await expect(h1).toHaveText('Objednávky sú zatvorené')
+    await expect(h1.locator('br'), 'the prototype breaks the last word onto its own line').toHaveCount(1)
+    await expect(h1.locator('.hl')).toHaveText('zatvorené')
+    const day = new Date(`${opens}T00:00:00`).toLocaleDateString('sk-SK', { day: 'numeric', month: 'long' })
+    await expect(page.getByTestId('preopen-next')).toHaveText(`Ďalšia objednávka sa otvorí približne ${day} (o 4 týždne).`)
+    await expect(page.getByTestId('preopen-next').locator('b'), 'the date is bold').toHaveText(day)
+    await expect(hero.locator('b[data-user-copy]').first(), 'the host is bold and marked as person copy').toHaveText('Janka')
+    await expect(hero).toContainText('Janka vás pozýva do spoločnej objednávky výberovej kávy.')
+    // Order: badge → h1 → sentence → roasters line (DOM and geometry).
+    const order = await hero.evaluate((el) => {
+      const parts = [el.querySelector('.badge'), el.querySelector('h1'), el.querySelector('[data-testid="preopen-next"]'), el.querySelector('[data-testid="guest-roasters"]')]
+      if (!parts.every(Boolean)) return null
+      return parts.slice(1).map((p, i) => parts[i].getBoundingClientRect().bottom <= p.getBoundingClientRect().top + 0.5)
+    })
+    expect(order, 'badge → headline → sentence → roasters, top to bottom').toEqual([true, true, true])
+    await expect(hero.getByTestId('guest-roaster-badge')).toHaveText(['Goriffee', 'Robo'])
+    await expect(hero.locator('.mono'), 'nothing new in the hero carries .mono (GL-T4 rule)').toHaveCount(0)
+  })
+
+  test('the date parenthesis: 3 days ⇒ „(už tento týždeň)", a PAST date ⇒ none, 10 days ⇒ „(o 1 týždeň)"', async ({ page }) => {
+    const TOKEN = 'GLFIVEWEEKS222'
+    for (const [n, tail] of [[3, ' (už tento týždeň).'], [-2, '.'], [10, ' (o 1 týždeň).']]) {
+      const iso = gl5Day(n)
+      await page.unroute(`**/api/guest/${TOKEN}`)
+      await page.unroute(`**/api/guest/${TOKEN}/waitlist`)
+      await gl5Open(page, TOKEN, gl5Body({ kind: 'planned_date', opens_at: iso, cycle_name: 'X' }))
+      const day = new Date(`${iso}T00:00:00`).toLocaleDateString('sk-SK', { day: 'numeric', month: 'long' })
+      await expect(page.getByTestId('preopen-next'), `${n} days`).toHaveText(`Ďalšia objednávka sa otvorí približne ${day}${tail}`)
+    }
+  })
+
+  test('a MULTILINE plan_note keeps its lines (white-space:pre-line, 17 §UC-CS-005 item 6 — the consumer\'s job)', async ({ page }) => {
+    await gl5Open(page, 'GLFIVENOTEML22', gl5Body({ kind: 'planned_note', plan_note: 'po Vianociach\npresný dátum dáme vedieť', cycle_name: 'X' }))
+    const note = page.getByTestId('preopen-plan-note')
+    await expect(note).toHaveCSS('white-space', 'pre-line')
+    expect(await note.innerText(), 'the newline survives rendering').toBe('po Vianociach\npresný dátum dáme vedieť')
+    // The inline span may also wrap on width, so the pin is RELATIVE: the newline
+    // must add a line box that collapsed whitespace does not have.
+    const lines = await note.evaluate((el) => {
+      const count = () => new Set([...el.getClientRects()].map((r) => Math.round(r.top))).size
+      const kept = count()
+      el.style.whiteSpace = 'normal'
+      const collapsed = count()
+      el.style.whiteSpace = ''
+      return { kept, collapsed }
+    })
+    expect(lines.kept, 'the newline breaks the line').toBeGreaterThan(lines.collapsed)
+  })
+
+  test('the „Ako to funguje" card: field label + the FULL GuestSteps (three tiles WITH details, „Od {host}.")', async ({ page }) => {
+    await gl5Open(page, 'GLFIVESTEPS222', gl5Body())
+    const card = page.getByTestId('preopen-steps')
+    await expect(card).toHaveClass(/\bcard\b/)
+    await expect(card.locator('.field-lbl')).toHaveText('Ako to funguje')
+    await expect(card.getByTestId('guest-step')).toHaveCount(3)
+    await expect(card.getByTestId('guest-step-title')).toHaveText(GL4_STEPS)
+    await expect(card.getByTestId('guest-step-detail')).toHaveText([...GL4_DETAILS, 'Od Janka.'])
+    const tile = await card.getByTestId('guest-step').first().evaluate((s) => {
+      const r = s.firstElementChild.getBoundingClientRect()
+      return [r.width, r.height]
+    })
+    expect(tile, 'full layout tile 44×44').toEqual([44, 44])
+  })
+
+  test('the card ORDER is the prototype\'s: hero → Ako to funguje → Dajte mi vedieť → Minulá ponuka header → faded preview', async ({ page }) => {
+    await gl5Open(page, 'GLFIVEORDER222', gl5Body())
+    const ids = ['preopen-hero', 'preopen-steps', 'waitlist-form', 'preopen-preview-head', 'preopen-preview']
+    const tops = []
+    for (const id of ids) {
+      const box = await page.getByTestId(id).boundingBox()
+      expect(box, `${id} renders`).not.toBeNull()
+      tops.push(box.y)
+    }
+    for (let i = 1; i < tops.length; i++) expect(tops[i], `${ids[i - 1]} above ${ids[i]}`).toBeGreaterThan(tops[i - 1])
+  })
+
+  test('the form: copy, fields (placeholders, maxlength 120/32 mirrored, inputmode tel), consent CHECKED by default, one accent block button', async ({ page }) => {
+    await gl5Open(page, 'GLFIVEFORM2222', gl5Body())
+    const form = page.getByTestId('waitlist-form')
+    await expect(form.locator('.display')).toHaveText(GL5_FORM.title)
+    await expect(form.locator('.sub').first()).toHaveText(GL5_FORM.sub)
+    const name = form.getByTestId('waitlist-name')
+    const phone = form.getByTestId('waitlist-phone')
+    await expect(name).toHaveAttribute('placeholder', 'Meno a priezvisko')
+    await expect(name).toHaveAttribute('maxlength', '120')
+    await expect(phone).toHaveAttribute('placeholder', '09xx xxx xxx')
+    await expect(phone).toHaveAttribute('maxlength', '32')
+    await expect(phone).toHaveAttribute('inputmode', 'tel')
+    await expect(name).toHaveClass(/\binp\b/)
+    await expect(phone).toHaveClass(/\binp\b/)
+    // The labels NAME the inputs (a real <label for>), which is what a screen reader reads.
+    await expect(form.getByLabel('Meno')).toHaveCount(1)
+    await expect(form.getByLabel('Mobil')).toHaveCount(1)
+    const box = form.getByRole('checkbox', { name: GL5_FORM.consent })
+    await expect(box).toHaveAttribute('aria-checked', 'true')
+    const btn = form.getByTestId('waitlist-submit')
+    await expect(btn).toHaveText(GL5_FORM.button)
+    await expect(btn).toHaveClass(/\bbtn\b/)
+    await expect(btn).toHaveClass(/\baccent\b/)
+    await expect(btn).toHaveClass(/\bblock\b/)
+    // The three-zone label: the TEXT toggles too, exactly once.
+    await form.getByText(GL5_FORM.consent, { exact: true }).click()
+    await expect(box).toHaveAttribute('aria-checked', 'false')
+    await box.click()
+    await expect(box).toHaveAttribute('aria-checked', 'true')
+  })
+
+  test('the submit: disabled until BOTH fields hold text; posts {name, phone, whatsapp_opt_in:true} trimmed with NO auth header; the ok banner REPLACES the card; a reload keeps it', async ({ page }) => {
+    const TOKEN = 'GLFIVESUBMIT22'
+    const seen = await gl5Open(page, TOKEN, gl5Body())
+    const form = page.getByTestId('waitlist-form')
+    const btn = form.getByTestId('waitlist-submit')
+    await expect(btn).toBeDisabled()
+    await form.getByTestId('waitlist-name').fill('  Zuzka Hosťová  ')
+    await expect(btn, 'phone still empty').toBeDisabled()
+    await form.getByTestId('waitlist-phone').fill('   ')
+    await expect(btn, 'whitespace is not a phone').toBeDisabled()
+    await form.getByTestId('waitlist-phone').fill(' 0905 123 456 ')
+    await expect(btn).toBeEnabled()
+    // §UC-GL-006 acceptance: before submit the page's ONE enabled button is this one.
+    await expect(page.locator('.app button:enabled')).toHaveCount(1)
+    await btn.click()
+
+    const done = page.getByTestId('waitlist-done')
+    await expect(done).toHaveText(GL5_DONE_WA('Janka'))
+    await expect(done).toHaveClass(/\bbanner\b/)
+    await expect(done).toHaveClass(/\bok\b/)
+    await expect(done.locator('b')).toHaveText('Dáme vedieť.')
+    await expect(page.getByTestId('waitlist-form'), 'the card is REPLACED').toHaveCount(0)
+    await expect(page.locator('.app button:enabled'), '…and after it, none').toHaveCount(0)
+
+    expect(seen.posts.length).toBe(1)
+    const [post] = seen.posts
+    expect(post.method).toBe('POST')
+    expect(post.body).toEqual({ name: 'Zuzka Hosťová', phone: '0905 123 456', whatsapp_opt_in: true })
+    for (const h of ['x-admin-token', 'authorization', 'x-friends-password']) expect(post.headers[h], h).toBeUndefined()
+
+    const stored = await page.evaluate((k) => localStorage.getItem(k), GL5_STORAGE_KEY)
+    expect(stored, 'remembered on this device').toBeTruthy()
+    await page.reload()
+    await expect(page.getByTestId('preopen-hero')).toBeVisible()
+    await expect(page.getByTestId('waitlist-done')).toHaveText(GL5_DONE_WA('Janka'))
+    await expect(page.getByTestId('waitlist-form')).toHaveCount(0)
+    expect(seen.posts.length, 'a reload posts nothing').toBe(1)
+  })
+
+  test('consent UNTICKED ⇒ whatsapp_opt_in:false and the second banner, which does not promise WhatsApp; a reload keeps THAT banner', async ({ page }) => {
+    const seen = await gl5Open(page, 'GLFIVENOWA2222', gl5Body())
+    const form = page.getByTestId('waitlist-form')
+    await form.getByTestId('waitlist-name').fill('Peter')
+    await form.getByTestId('waitlist-phone').fill('0905123456')
+    await form.getByRole('checkbox', { name: GL5_FORM.consent }).click()
+    await form.getByTestId('waitlist-submit').click()
+    await expect(page.getByTestId('waitlist-done')).toHaveText(GL5_DONE_NO_WA('Janka'))
+    expect(seen.posts[0].body).toEqual({ name: 'Peter', phone: '0905123456', whatsapp_opt_in: false })
+    await page.reload()
+    await expect(page.getByTestId('waitlist-done')).toHaveText(GL5_DONE_NO_WA('Janka'))
+    await expect(page.getByTestId('waitlist-done')).not.toContainText('WhatsApp')
+  })
+
+  test('the JS guard: a DISPATCHED click on the disabled button posts nothing; while PENDING the button is disabled and a second click posts nothing', async ({ page }) => {
+    let release
+    const hold = new Promise((r) => { release = r })
+    const seen = await gl5Open(page, 'GLFIVEGUARD222', gl5Body(), { holdPost: hold })
+    const form = page.getByTestId('waitlist-form')
+    const btn = form.getByTestId('waitlist-submit')
+    await btn.dispatchEvent('click')
+    await form.getByTestId('waitlist-name').fill('Ema')
+    await btn.dispatchEvent('click')
+    await page.waitForTimeout(300)
+    expect(seen.posts.length, 'empty phone: nothing posted').toBe(0)
+
+    await form.getByTestId('waitlist-phone').fill('0905 111 222')
+    await btn.click()
+    await expect.poll(() => seen.posts.length).toBe(1)
+    await expect(btn, 'pending').toBeDisabled()
+    await btn.dispatchEvent('click')
+    await page.waitForTimeout(300)
+    expect(seen.posts.length, 'pending: no second POST').toBe(1)
+    release()
+    await expect(page.getByTestId('waitlist-done')).toBeVisible()
+  })
+
+  test('a server 400 renders its message in the card\'s danger banner and keeps the form (and what was typed); nothing is remembered', async ({ page }) => {
+    const seen = await gl5Open(page, 'GLFIVEERR40022', gl5Body(), { post: { status: 400, body: { error: 'Telefón je príliš dlhý (max 32 znakov)', field: 'phone' } } })
+    const form = page.getByTestId('waitlist-form')
+    await form.getByTestId('waitlist-name').fill('Ema')
+    await form.getByTestId('waitlist-phone').fill('0905 111 222')
+    await form.getByTestId('waitlist-submit').click()
+    const err = form.getByTestId('waitlist-error')
+    await expect(err).toHaveText('Telefón je príliš dlhý (max 32 znakov)')
+    await expect(form.locator('.banner.danger.slim')).toHaveCount(1)
+    await expect(page.getByTestId('waitlist-done')).toHaveCount(0)
+    await expect(form.getByTestId('waitlist-phone')).toHaveValue('0905 111 222')
+    await expect(form.getByTestId('waitlist-submit')).toBeEnabled()
+    expect(seen.posts.length).toBe(1)
+    expect(await page.evaluate((k) => localStorage.getItem(k), GL5_STORAGE_KEY)).toBeNull()
+  })
+
+  test('a 409 `open` (the round opened meanwhile) RELOADS into the live page — the listing is fetched again', async ({ page }) => {
+    const TOKEN = 'GLFIVEOPEN4092'
+    const live = {
+      cycle: { id: 1, name: 'Živá objednávka GL5', type: 'coffee', status: 'open', expected_date: null, plan_note: null },
+      host: { first_name: 'Janka' },
+      products: [],
+      availability: [],
+    }
+    const seen = await gl5Open(page, TOKEN, (n) => (n === 1 ? gl5Body() : live), {
+      post: { status: 409, body: { error: 'Objednávka je práve otvorená — môžete si objednať rovno.', reason: 'open' } },
+    })
+    const form = page.getByTestId('waitlist-form')
+    await form.getByTestId('waitlist-name').fill('Ema')
+    await form.getByTestId('waitlist-phone').fill('0905 111 222')
+    await form.getByTestId('waitlist-submit').click()
+    await expect(page.getByRole('heading', { name: 'Živá objednávka GL5' })).toBeVisible()
+    await expect(page.getByTestId('preopen-hero')).toHaveCount(0)
+    expect(seen.gets, 'the listing was read again').toBe(2)
+  })
+
+  test('localStorage THROWING (private mode) breaks nothing: the form renders, the submit still flips to the banner', async ({ page }) => {
+    await page.addInitScript(() => {
+      Storage.prototype.getItem = () => { throw new Error('denied') }
+      Storage.prototype.setItem = () => { throw new Error('denied') }
+    })
+    await gl5Open(page, 'GLFIVENOSTORE2', gl5Body())
+    const form = page.getByTestId('waitlist-form')
+    await form.getByTestId('waitlist-name').fill('Ema')
+    await form.getByTestId('waitlist-phone').fill('0905 111 222')
+    await form.getByTestId('waitlist-submit').click()
+    await expect(page.getByTestId('waitlist-done')).toHaveText(GL5_DONE_WA('Janka'))
+  })
+
+  test('the memory is per TOKEN and per preview ROUND: another token\'s entry, a different round\'s entry and garbage all show the form', async ({ page }) => {
+    const TOKEN = 'GLFIVEMEMORY22'
+    await page.addInitScript(({ key, token }) => {
+      // Only once per test (a reload must see what the PAGE wrote, not this seed).
+      if (sessionStorage.getItem('gl5-seeded')) return
+      sessionStorage.setItem('gl5-seeded', '1')
+      localStorage.setItem(key, JSON.stringify({
+        OTHERTOKEN2222: { at: '2026-09-01T10:00:00.000Z', whatsapp_opt_in: true, cycle_id: 9001 },
+        [token]: { at: '2026-09-01T10:00:00.000Z', whatsapp_opt_in: true, cycle_id: 1234 },
+      }))
+    }, { key: GL5_STORAGE_KEY, token: TOKEN })
+    await gl5Open(page, TOKEN, gl5Body())
+    await expect(page.getByTestId('waitlist-form'), 'a different round\'s memory is stale').toBeVisible()
+    await expect(page.getByTestId('waitlist-done')).toHaveCount(0)
+
+    await page.evaluate((k) => localStorage.setItem(k, '{not json'), GL5_STORAGE_KEY)
+    await page.reload()
+    await expect(page.getByTestId('waitlist-form'), 'garbage in storage').toBeVisible()
+  })
+
+  test('waitlist.available FALSE (the stale link): no form, no banner — the steps card and the preview still render', async ({ page }) => {
+    await gl5Open(page, 'GLFIVESTALE222', gl5Body({ kind: 'open_elsewhere', cycle_name: 'Nové' }, { stale_cycle: { id: 1, name: 'Staré' } }))
+    await expect(page.getByTestId('preopen-hero').locator('h1')).toHaveText('Táto objednávka je už uzavretá')
+    await expect(page.getByTestId('preopen-steps'), 'non-vacuity: the page body rendered').toBeVisible()
+    await expect(page.getByTestId('preopen-preview')).toBeVisible()
+    await expect(page.getByTestId('waitlist-form')).toHaveCount(0)
+    await expect(page.getByTestId('waitlist-done')).toHaveCount(0)
+    await expect(page.locator('.app button:enabled'), 'nothing on this page is a control').toHaveCount(0)
+  })
+
+  test('no cartbar, no checkout, no invite CTA, and the token is never composed into the DOM', async ({ page }) => {
+    const TOKEN = 'GLFIVENOCART22'
+    await gl5Open(page, TOKEN, gl5Body())
+    await expect(page.getByTestId('waitlist-form'), 'non-vacuity').toBeVisible()
+    for (const id of ['cartbar', 'open-checkout', 'cart-total', 'invite-cta', 'guest-submit']) {
+      await expect(page.getByTestId(id), id).toHaveCount(0)
+    }
+    await expect(page.locator('.cartbar')).toHaveCount(0)
+    expect(await page.content()).not.toContain(TOKEN)
+  })
+})
+
+test.describe('GL-T5 · 19 §UC-GL-006 item 5 — the faded read-only preview (GuestProductGrid `readonly`)', () => {
+  test('header „Minulá ponuka · {round}" + „len na prezretie"; `.p2-ro` wrapper (opacity .55, pointer-events none, user-select none) around the tabs AND the cards', async ({ page }) => {
+    await gl5Open(page, 'GLFIVEPREVIEW2', gl5Body())
+    const head = page.getByTestId('preopen-preview-head')
+    await expect(head.locator('.field-lbl')).toHaveText('Minulá ponuka · Septembrová ponuka')
+    await expect(head.locator('.field-lbl [data-user-copy]'), 'the round name is admin-typed data').toHaveText('Septembrová ponuka')
+    const ro = head.locator('.sub.mono')
+    await expect(ro).toHaveText('len na prezretie')
+    await expect(ro).toHaveCSS('font-size', '12px')
+    const preview = page.getByTestId('preopen-preview')
+    await expect(preview).toHaveClass(/\bp2-ro\b/)
+    await expect(preview).toHaveCSS('opacity', '0.55')
+    await expect(preview).toHaveCSS('pointer-events', 'none')
+    await expect(preview).toHaveCSS('user-select', 'none')
+    await expect(preview.getByTestId('purpose-tabs'), 'the shipped strip, inside the fade').toBeVisible()
+    await expect(preview.locator('[data-testid^="product-"]'), 'the Espresso tab: two cards').toHaveCount(2)
+    await expect(preview.getByTestId('product-91')).toContainText('Preview Alfa')
+    await expect(preview.getByTestId('product-91')).toContainText('9.50 EUR')
+    await expect(preview.getByTestId('product-91')).toContainText('32.00 EUR')
+  })
+
+  test('readonly: no stepper, no button, no stock bar, the photo and the tabs are not controls (nothing focusable), no lightbox', async ({ page }) => {
+    await gl5Open(page, 'GLFIVEREADONLY', gl5Body(undefined, { waitlist: { available: false } }))
+    const preview = page.getByTestId('preopen-preview')
+    await expect(preview.locator('.vbox'), 'non-vacuity: the variant boxes render').toHaveCount(4)
+    await expect(preview.locator('.vprice').first()).toHaveText('9.50 EUR')
+    await expect(preview.locator('button')).toHaveCount(0)
+    await expect(preview.locator('.stepper')).toHaveCount(0)
+    await expect(preview.getByTestId('stock-bar')).toHaveCount(0)
+    await expect(preview.locator('img'), 'non-vacuity: the photos render').toHaveCount(2)
+    await expect(preview.locator('[role="button"]')).toHaveCount(0)
+    await expect(preview.locator('[tabindex]:not([tabindex="-1"])'), 'no tab stop inside the preview').toHaveCount(0)
+    // The photo does not open the lightbox, even on a dispatched click.
+    await preview.locator('img').first().dispatchEvent('click')
+    await page.waitForTimeout(200)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(page.locator('.app button:enabled')).toHaveCount(0)
+  })
+
+  test('preview NULL ⇒ no header and no grid; preview with ZERO products ⇒ none either (never the grid\'s empty banner)', async ({ page }) => {
+    const TOKEN = 'GLFIVENOPREV22'
+    await gl5Open(page, TOKEN, gl5Body(undefined, { preview: null }))
+    await expect(page.getByTestId('preopen-steps'), 'non-vacuity').toBeVisible()
+    await expect(page.getByTestId('preopen-preview-head')).toHaveCount(0)
+    await expect(page.getByTestId('preopen-preview')).toHaveCount(0)
+    await page.unroute(`**/api/guest/${TOKEN}`)
+    await page.unroute(`**/api/guest/${TOKEN}/waitlist`)
+    await gl5Open(page, TOKEN, gl5Body(undefined, { preview: { cycle: { id: 1, name: 'Prázdna' }, products: [] } }))
+    await expect(page.getByTestId('preopen-preview-head')).toHaveCount(0)
+    await expect(page.getByTestId('preopen-preview')).toHaveCount(0)
+    await expect(page.locator('.app')).not.toContainText('žiadne produkty')
+  })
+})
+
+test.describe('GL-T5 · 19 §UC-GL-006 — phone floor, A12, tap targets, vocabulary', () => {
+  for (const width of [320, 378]) {
+    test(`${width}px: no horizontal overflow — every card, the form, the preview, a long host name and a long plan note`, async ({ page }) => {
+      const longHost = { first_name: 'Alžbeta-Kristínamária Novosadová-Hrušovská' }
+      await gl5Open(page, `GLFIVEWIDTH${width}`, gl5Body(undefined, { host: longHost }), {}, { width, height: 900 })
+      await expect(page.getByTestId('waitlist-form')).toBeVisible()
+      expect(await hOverflow(page), 'planned_date').toBeLessThanOrEqual(0)
+      // The page COLUMN (the ticker's 3× repeated span is clipped by design and would
+      // be a false offender); the preview's tab strip is a scroller of its own.
+      const offenders = await page.evaluate((w) => [...document.querySelectorAll('[data-testid="preopen-page"] *')]
+        .filter((el) => !el.closest('.cat-tabs'))
+        .filter((el) => el.getBoundingClientRect().right > w + 0.5 && el.getClientRects().length)
+        .map((el) => el.className || el.tagName).slice(0, 5), width)
+      expect(offenders, 'nothing paints past the viewport edge').toEqual([])
+    })
+  }
+
+  test('every control on the page is ≥ 44 px tall: both inputs, the consent row, the button', async ({ page }) => {
+    await gl5Open(page, 'GLFIVETAP22222', gl5Body())
+    const form = page.getByTestId('waitlist-form')
+    for (const loc of [form.getByTestId('waitlist-name'), form.getByTestId('waitlist-phone'), form.getByTestId('waitlist-consent'), form.getByTestId('waitlist-submit')]) {
+      const box = await loc.boundingBox()
+      expect(box.height).toBeGreaterThanOrEqual(44)
+    }
+  })
+
+  test('A12: under `pointer: coarse` both inputs compute 16px (no iOS focus zoom); on desktop the canon 15px', async ({ browser, baseURL }) => {
+    const TOKEN = 'GLFIVECOARSE22'
+    const coarse = await browser.newContext({ baseURL, viewport: { width: 378, height: 800 }, hasTouch: true, isMobile: true })
+    try {
+      const page = await coarse.newPage()
+      await gl5Open(page, TOKEN, gl5Body(), {}, { width: 378, height: 800 })
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches), 'non-vacuity: the context IS coarse').toBe(true)
+      await expect(page.getByTestId('waitlist-name')).toHaveCSS('font-size', '16px')
+      await expect(page.getByTestId('waitlist-phone')).toHaveCSS('font-size', '16px')
+    } finally {
+      await coarse.close()
+    }
+  })
+
+  test('the page\'s OWN copy carries no „cyklus"/„kolo" (the ONE regex) — every variant, the form and both banners', async ({ page }) => {
+    const TOKEN = 'GLFIVEVOCAB222'
+    const variants = [
+      gl5Body(),
+      gl5Body({ kind: 'planned_note', plan_note: 'po Vianociach', cycle_name: 'X' }),
+      gl5Body({ kind: 'unknown' }),
+      gl5Body({ kind: 'open_elsewhere', cycle_name: 'Nové' }, { stale_cycle: { id: 1, name: 'Staré' } }),
+    ]
+    for (const body of variants) {
+      await page.unroute(`**/api/guest/${TOKEN}`)
+      await page.unroute(`**/api/guest/${TOKEN}/waitlist`)
+      await gl5Open(page, TOKEN, body)
+      const copy = await page.evaluate(collectAppCopy())
+      expect(copy, 'non-vacuity').toContain('AKO TO FUNGUJE')
+      expect(copy, body.next.kind).not.toMatch(BANNED)
+    }
+    // Both success banners.
+    for (const tick of [true, false]) {
+      await page.evaluate((k) => localStorage.removeItem(k), GL5_STORAGE_KEY)
+      await page.unroute(`**/api/guest/${TOKEN}`)
+      await page.unroute(`**/api/guest/${TOKEN}/waitlist`)
+      await gl5Open(page, TOKEN, gl5Body())
+      const form = page.getByTestId('waitlist-form')
+      await form.getByTestId('waitlist-name').fill('Ema')
+      await form.getByTestId('waitlist-phone').fill('0905 111 222')
+      if (!tick) await form.getByRole('checkbox', { name: GL5_FORM.consent }).click()
+      await form.getByTestId('waitlist-submit').click()
+      await expect(page.getByTestId('waitlist-done')).toBeVisible()
+      expect(await page.evaluate(collectAppCopy())).not.toMatch(BANNED)
+    }
+  })
+})
+
+test.describe('GL-T5 · 19 §UC-GL-006 — against the real server (a legacy link on a LOCKED cycle)', () => {
+  test('the full page renders off the server\'s own payload: closed chrome, hero, steps, form iff waitlist.available, preview iff preview; no third-party request; token not in the DOM', async ({ page, baseURL }) => {
+    const host = await makeHost('Gl5Real')
+    const cycle = await makeCycle('Gl5Real')
+    await addProduct(cycle.id, 'Gl5Real')
+    const link = await shareLink(host, cycle.id)
+    expect((await admin(`/api/cycles/${cycle.id}`, { method: 'patch', data: { status: 'locked' } })).status()).toBe(200)
+    const res = await ctx.get(`/api/guest/${link.token}`)
+    expect(res.status()).toBe(200)
+    const api = await res.json()
+    expect(api.page, 'non-vacuity: pre-open').toBe('preopen')
+
+    const origin = new URL(baseURL || process.env.BASE_URL || 'http://localhost:3997').origin
+    const external = []
+    let seen = 0
+    page.on('request', (req) => {
+      const url = req.url()
+      if (!/^https?:/i.test(url)) return
+      seen++
+      if (new URL(url).origin !== origin) external.push(url)
+    })
+    await page.setViewportSize(GL2_PHONE)
+    await page.goto(`/g/${link.token}`)
+    const hero = page.getByTestId('preopen-hero')
+    await expect(hero).toBeVisible()
+    await expect(page.locator('.app .appbar .chip.p2-lock')).toHaveCount(1)
+    await expect(page.locator('.app .ticker span')).toContainText(GL5_TICKER_CLOSED)
+    await expect(page).toHaveTitle(GL5_DOC_TITLE)
+    await expect(hero).toContainText(host.name.split(' ')[0])
+    await expect(page.getByTestId('preopen-steps').getByTestId('guest-step')).toHaveCount(3)
+    await expect(page.getByTestId('waitlist-form')).toHaveCount(api.waitlist.available ? 1 : 0)
+    const hasPreview = Boolean(api.preview && api.preview.products.length)
+    await expect(page.getByTestId('preopen-preview')).toHaveCount(hasPreview ? 1 : 0)
+    if (hasPreview) {
+      await expect(page.getByTestId('preopen-preview-head')).toContainText(`Minulá ponuka · ${api.preview.cycle.name}`)
+      await expect(page.getByTestId('preopen-preview').locator('button')).toHaveCount(0)
+    }
+    await expect(page.getByTestId('cartbar')).toHaveCount(0)
+    await page.waitForLoadState('networkidle')
+    expect(seen, 'non-vacuity: requests were observed').toBeGreaterThan(0)
+    expect(external).toEqual([])
+    expect(await page.content()).not.toContain(link.token)
+    expect(await hOverflow(page)).toBeLessThanOrEqual(0)
+  })
+
+  test('a legacy link on a LOCKED cycle while a NEWER round is open (real server, real browser): lock chip, closed ticker, preopen-hero, the stale headline, and no waitlist form', async ({ page }) => {
+    const host = await makeHost('Gl5Newer')
+    const old = await makeCycle('Gl5NewerOld')
+    await addProduct(old.id, 'Gl5NewerOld')
+    const link = await shareLink(host, old.id)
+    expect((await admin(`/api/cycles/${old.id}`, { method: 'patch', data: { status: 'locked' } })).status()).toBe(200)
+    // A second, OPEN cycle — makeCycle defaults to status 'open' — so `openElsewhere`
+    // is deterministically true regardless of what other spec files left lying open
+    // (19 §UC-GL-002 rule 4, the same fixture shape as the D7 API test above).
+    await makeCycle('Gl5NewerNew')
+    const firstName = host.name.split(' ')[0]
+
+    await page.setViewportSize(GL2_PHONE)
+    await page.goto(`/g/${link.token}`)
+    const hero = page.getByTestId('preopen-hero')
+    await expect(hero).toBeVisible()
+    await expect(page.locator('.app .appbar .chip.p2-lock'), 'the lock chip').toHaveCount(1)
+    await expect(page.locator('.app .ticker span'), 'the closed ticker').toContainText(GL5_TICKER_CLOSED)
+    await expect(hero.locator('h1'), 'the stale headline, not the planned/unknown one').toHaveText('Táto objednávka je už uzavretá')
+    await expect(hero, 'the host is named twice, no gendered pronoun').toContainText(`${firstName} má práve otvorenú novú objednávku. Požiadajte ${firstName} o aktuálny odkaz.`)
+    await expect(page.getByTestId('waitlist-form'), 'no form once a newer round is open').toHaveCount(0)
+    await expect(page.getByTestId('waitlist-done')).toHaveCount(0)
+    expect(await page.content()).not.toContain(link.token)
+  })
+})
+
+test.describe('GL-T5 · 19 §UC-GL-006 — keyboard (against the running server\'s own payload, mocked listing)', () => {
+  test('Tab walks name → phone → consent → submit in order; Enter on the focused submit button submits', async ({ page }) => {
+    const TOKEN = 'GLFIVEKEYBOARD'
+    const seen = await gl5Open(page, TOKEN, gl5Body())
+    const form = page.getByTestId('waitlist-form')
+    const name = form.getByTestId('waitlist-name')
+    const phone = form.getByTestId('waitlist-phone')
+    const consent = form.getByRole('checkbox', { name: GL5_FORM.consent })
+    const submit = form.getByTestId('waitlist-submit')
+
+    await name.fill('Kika')
+    await phone.fill('0905 123 456')
+    await name.focus()
+    await expect(name).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(phone, 'Tab from name lands on phone').toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(consent, 'Tab from phone lands on the consent checkbox').toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(submit, 'Tab from consent lands on the submit button').toBeFocused()
+
+    await page.keyboard.press('Enter')
+    await expect(page.getByTestId('waitlist-done')).toBeVisible()
+    expect(seen.posts.length, 'Enter on the focused button submitted exactly once').toBe(1)
+    expect(seen.posts[0].body).toEqual({ name: 'Kika', phone: '0905 123 456', whatsapp_opt_in: true })
+  })
+})
+
+test.describe('GL-T5 · 19 §UC-GL-006 item 5 — the faded read-only preview at 320px', () => {
+  test('320px: still no steppers/buttons, the photo is not clickable (dispatched click opens no lightbox), and the tabs are not tab-stops', async ({ page }) => {
+    await gl5Open(page, 'GLFIVE320READ', gl5Body(), {}, GL2_PHONE_320)
+    const preview = page.getByTestId('preopen-preview')
+    await expect(preview).toBeVisible()
+    await expect(preview.locator('.vbox'), 'non-vacuity: the variant boxes still render').not.toHaveCount(0)
+    await expect(preview.locator('button')).toHaveCount(0)
+    await expect(preview.locator('.stepper')).toHaveCount(0)
+    await expect(preview.getByTestId('stock-bar')).toHaveCount(0)
+    await expect(preview.locator('[role="button"]')).toHaveCount(0)
+    await expect(preview.locator('[tabindex]:not([tabindex="-1"])'), 'no tab stop inside the preview at 320px').toHaveCount(0)
+    await preview.locator('img').first().dispatchEvent('click')
+    await page.waitForTimeout(200)
+    await expect(page.getByRole('dialog'), 'the photo does not open the lightbox').toHaveCount(0)
+    await expect(page.locator('.app button:enabled')).toHaveCount(0)
+  })
+})
+
+test.describe('GL-T5 · source pins — extend, never fork', () => {
+  test.skip(!HAS_FRONTEND_SRC, NEEDS_FRONTEND_SRC)
+
+  const src = (rel) => {
+    const raw = readFileSync(join(FRONTEND_SRC_DIR, rel), 'utf8')
+    const stripped = stripComments(raw)
+    expect(stripped.length, `${rel} survived the comment strip`).toBeGreaterThan(200)
+    return stripped
+  }
+
+  test('GuestProductGrid gains a `readonly` Boolean prop (default false); the view mounts THAT grid twice and no second grid exists', () => {
+    const grid = src('components/GuestProductGrid.vue')
+    expect(grid).toMatch(/readonly:\s*\{\s*type:\s*Boolean,\s*default:\s*false\s*\}/)
+    const view = src('views/GuestOrder.vue')
+    expect((view.match(/<GuestProductGrid\b/g) || []).length, 'live grid + preview').toBe(2)
+    expect(view).toMatch(/<GuestProductGrid[^>]*\breadonly\b/)
+    const components = readdirSync(join(FRONTEND_SRC_DIR, 'components'))
+    expect(components.filter((f) => /preview|grid/i.test(f) && f !== 'GuestProductGrid.vue'), 'no forked preview grid').toEqual([])
+  })
+
+  test('GuestBrandHeader: a `closed` Boolean picks between TWO module constants — still no free-text ticker prop', () => {
+    const header = src('components/GuestBrandHeader.vue')
+    expect(header).toMatch(/closed:\s*\{\s*type:\s*Boolean,\s*default:\s*false\s*\}/)
+    expect(header).toContain(`const GUEST_TICKER_CLOSED = '${GL5_TICKER_CLOSED}'`)
+    expect(header).toContain("const GUEST_TICKER = '")
+    expect(header, 'no ticker prop').not.toMatch(/\bticker:\s*\{/)
   })
 })

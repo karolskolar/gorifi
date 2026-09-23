@@ -1120,7 +1120,7 @@ with every `[data-user-copy]` subtree dropped (FUP-T22)** — on every view, sta
 2026-09-20): it now reads „Objednávky sú uzavreté, objednávku už nie je možné upraviť."** —
 ~~`GuestOrder.vue:170` „Cyklus sa medzičasom uzamkol“~~ **— GONE, removed by GL-T2 with the
 dead `closed` card variant it belonged to (19 §UC-GL-006: the listing never answers 410 `closed`
-any more)** —, `GuestProductGrid.vue:76` („:73" was
+any more)** —, `GuestProductGrid.vue:88` (~~:76~~ moved by GL-T5; „:73" was
 stale) „V tomto cykle zatiaľ nie sú žiadne produkty.“. The guard's file list widens to the
 two REMAINING files when 19 lands. ⚠ A third, server-side: `backend/src/routes/guest.js:216`
 „Objednávanie v tomto cykle je už uzavreté." (since GL-T2 served by the submit's 409 ONLY — the

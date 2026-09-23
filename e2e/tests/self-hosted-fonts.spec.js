@@ -493,6 +493,7 @@ function watchExternal(page, origin) {
 test.describe('No public route fetches a third-party subresource', () => {
   let ctx = null
   let guestToken = ''
+  let preopenToken = ''
   let inviteCode = ''
   const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
@@ -536,6 +537,30 @@ test.describe('No public route fetches a third-party subresource', () => {
     expect(link.status(), 'guest link create').toBe(201)
     guestToken = (await link.json()).link.token
     expect(guestToken, 'guest token').toBeTruthy()
+
+    // ⚠ GL-T5 / 19 §UC-GL-011 item 5 — the SECOND state of the one public guest route.
+    // The pre-open page pulls its own components (steps glyphs, roasters line, the
+    // waitlist form, the faded preview), none of which the live page above renders, so
+    // it is swept as its own row. The cheapest fixture that is pre-open on ANY target: a
+    // legacy per-cycle link whose cycle is LOCKED (a standing token would need a DB
+    // with no open round — never the shared target). A product is added first so the
+    // round has a catalogue for the preview (the newest closed round, globally).
+    const preCycle = await admin('/api/cycles', { method: 'post', data: { name: `E2E RDDS6 Preopen ${uniq}`, type: 'coffee', status: 'open' } })
+    expect(preCycle.status(), 'preopen cycle create').toBe(201)
+    const preCycleId = (await preCycle.json()).id
+    const preProduct = await admin('/api/products', {
+      method: 'post',
+      data: { cycle_id: preCycleId, name: `RDDS6 Preopen Bean ${uniq}`, purpose: 'Espresso', price_250g: 8 },
+    })
+    expect(preProduct.status(), 'preopen product create').toBe(201)
+    const preLink = await ctx.post(`/api/guest-links/cycle/${preCycleId}`, {
+      headers: { Authorization: `Bearer ${hostToken}` },
+    })
+    expect(preLink.status(), 'preopen link create').toBe(201)
+    preopenToken = (await preLink.json()).link.token
+    expect((await admin(`/api/cycles/${preCycleId}`, { method: 'patch', data: { status: 'locked' } })).status(), 'lock').toBe(200)
+    const prePage = await ctx.get(`/api/guest/${preopenToken}`)
+    expect((await prePage.json()).page, 'non-vacuity: the row really is the pre-open state').toBe('preopen')
 
     // ⚠ GA-T8: a VALID invite code, so the sweeps below can visit the route in the
     // state where its Google block actually renders (`form`). `friends.js` strips
@@ -615,6 +640,8 @@ test.describe('No public route fetches a third-party subresource', () => {
     // made the file's own generalizing claim untrue.
     '/admin': [GIS_HOST, GIS_IFRAME_HOST],
     '/g/:token': [],
+    // GL-T5 / 19 §UC-GL-011 item 5 — the pre-open state of the same route: zero, too.
+    '/g/:token (preopen)': [],
     '/magic/:token': [],
   }
 
@@ -644,12 +671,16 @@ test.describe('No public route fetches a third-party subresource', () => {
       // its own GIS button. A stored token would redirect to the dashboard instead.
       { label: '/admin', url: '/admin' },
       { label: '/g/:token', url: `/g/${guestToken}` },
+      { label: '/g/:token (preopen)', url: `/g/${preopenToken}`, ready: 'preopen-hero' },
       { label: '/magic/:token', url: `/magic/${'f'.repeat(64)}` },
     ]
 
-    for (const { label, url } of routes) {
+    for (const { label, url, ready } of routes) {
       const external = watchExternal(page, origin)
       await page.goto(url)
+      // A row that names its screen proves it REACHED it (a 404 card would sweep
+      // clean and prove nothing about the pre-open page's own components).
+      if (ready) await expect(page.getByTestId(ready), `${label} rendered`).toBeVisible()
       await page.waitForLoadState('networkidle')
       const allowed = EXTERNAL_ALLOWLIST[label]
       // The allowlist is per-route and per-HOST: an allowed host on `/` is still an
@@ -764,6 +795,8 @@ test.describe('No public route fetches a third-party subresource', () => {
       ['/admin', '/admin', googleOnAdminLogin],
       // ⚠ UNCONDITIONAL, on every target and in every auth mode.
       ['/g/:token', `/g/${guestToken}`, false],
+      // GL-T5: the pre-open state of the same route — guests never see Google either.
+      ['/g/:token (preopen)', `/g/${preopenToken}`, false],
       ['/magic/:token', `/magic/${'f'.repeat(64)}`, false],
     ]
 

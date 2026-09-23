@@ -46,10 +46,18 @@ import {
 //      would double it.
 //   4. NO `:disabled` on the stepper. A guest grid is only ever rendered on an
 //      orderable surface — a locked cycle ~~410s the listing~~ gets the pre-open
-//      page on `/g/:token` (19 §UC-GL-002, no grid in GL-T2's placeholder; GL-T5's
-//      read-only preview EXTENDS this grid with a `readonly` prop), and the
-//      status page publishes `products` only when `editable` (GSO-T4). There is no
-//      "locked but visible" state for this grid to render.
+//      page on `/g/:token` (19 §UC-GL-002), and the status page publishes
+//      `products` only when `editable` (GSO-T4). ~~There is no "locked but visible"
+//      state for this grid to render.~~ **GL-T5 (19 §UC-GL-006 item 5): there is ONE
+//      now — the pre-open page's faded preview of the last round — and it is this
+//      grid with `readonly`, never a fork. `readonly` does not DISABLE the stepper,
+//      it REMOVES it (the prototype's `disabled` card: „steppers absent,
+//      add-to-cart absent"), and with it every other control: no stock bar (the
+//      preview has no availability), the photo is a plain image (no role, no tab
+//      stop, no lightbox — each with a JS guard too, since a dispatched click
+//      ignores a missing role), and the tabs leave the tab order with
+//      `aria-disabled`. The fade itself (`.p2-ro`) is the CALLER's wrapper, as in
+//      the prototype, because it covers the strip AND the cards.**
 //   5. This component owns its tab strip, so the strip and the card list are its
 //      own root's children; 04 has them as siblings in the page column. The root is
 //      therefore the same `flex column, gap 14` the page column would have given
@@ -75,6 +83,8 @@ const props = defineProps({
   // sub-order already holds are NOT shown as taken.
   availability: { type: Object, default: () => ({}) },
   isBakery: { type: Boolean, default: false },
+  // GL-T5 — the pre-open page's read-only preview (see fact 4 in the header).
+  readonly: { type: Boolean, default: false },
   emptyMessage: { type: String, default: 'V tomto cykle zatiaľ nie sú žiadne produkty.' }
 })
 
@@ -189,7 +199,19 @@ function stockPct(productId) {
   return Math.min(100, ((limit - getRemainingGrams(productId)) / limit) * 100)
 }
 
+function selectTab(purpose, e) {
+  if (props.readonly) return
+  if (e) snapTab(e)
+  activeTab.value = purpose
+}
+
+function openPhoto(product) {
+  if (props.readonly) return
+  photoProduct.value = product
+}
+
 function setQuantity(productId, variant, quantity) {
+  if (props.readonly) return
   const key = cartKey(productId, variant)
   const next = { ...cart.value }
   if (quantity <= 0) delete next[key]
@@ -252,11 +274,12 @@ function onQty(productId, variant, next) {
           class="tab"
           :class="{ on: purpose === activeTab }"
           role="tab"
-          tabindex="0"
+          :tabindex="readonly ? null : 0"
           :aria-selected="purpose === activeTab ? 'true' : 'false'"
-          @click="(e) => { snapTab(e); activeTab = purpose }"
-          @keydown.enter.prevent="activeTab = purpose"
-          @keydown.space.prevent="activeTab = purpose"
+          :aria-disabled="readonly ? 'true' : null"
+          @click="(e) => selectTab(purpose, e)"
+          @keydown.enter.prevent="selectTab(purpose)"
+          @keydown.space.prevent="selectTab(purpose)"
         >{{ purpose }}</span>
         <!-- Scroll affordance — the same control as the friend strip, one
              component, so the two cannot diverge. MUST stay the last direct child
@@ -305,8 +328,8 @@ function onQty(productId, variant, next) {
                    so it is fixed here exactly as 04 fixes it. The coffee card
                    needs nothing: its `<h3>` is block-level. -->
               <div class="min-w-0" style="overflow-wrap:anywhere;line-height:normal">
-                <h3 class="display inline text-[19px] sm:text-[21px]" style="line-height:.95">{{ product.name }}</h3>
-                <span v-if="product.description2" class="sub" style="font-size:13px;margin-left:8px">{{ product.description2 }}</span>
+                <h3 class="display inline text-[19px] sm:text-[21px]" style="line-height:.95" data-user-copy>{{ product.name }}</h3>
+                <span v-if="product.description2" class="sub" style="font-size:13px;margin-left:8px" data-user-copy>{{ product.description2 }}</span>
               </div>
               <!-- Card-level weight = the FIRST variant row's `weight_grams` (the
                    snapshot carries one per variant); the prototype shows exactly
@@ -318,11 +341,11 @@ function onQty(productId, variant, next) {
               >{{ product._variants[0].weight_grams }} g</span>
             </div>
 
-            <div v-if="product.description1" class="sub" style="font-size:13px;margin-top:6px">{{ product.description1 }}</div>
+            <div v-if="product.description1" class="sub" style="font-size:13px;margin-top:6px" data-user-copy>{{ product.description1 }}</div>
 
             <details v-if="product.composition" style="margin-top:8px">
               <summary class="sub" style="cursor:pointer;font-size:13px">Zloženie</summary>
-              <div class="sub" style="font-size:13px;margin-top:4px">{{ product.composition }}</div>
+              <div class="sub" style="font-size:13px;margin-top:4px" data-user-copy>{{ product.composition }}</div>
             </details>
 
             <!-- Column rule and the 368px floor: see the coffee grid below. -->
@@ -334,14 +357,15 @@ function onQty(productId, variant, next) {
                 v-for="v in product._variants"
                 :key="v.id"
                 class="vbox"
-                :class="{ sel: getQuantity(v.id, 'unit') > 0 }"
+                :class="{ sel: !readonly && getQuantity(v.id, 'unit') > 0 }"
               >
                 <div class="vrow">
                   <!-- NULL on legacy single-variant snapshots. -->
-                  <span class="vsize">{{ v.variant_label || '1 ks' }}</span>
+                  <span class="vsize" :data-user-copy="v.variant_label ? '' : null">{{ v.variant_label || '1 ks' }}</span>
                   <span class="vprice">{{ fmtEur(v.price_unit) }}</span>
                 </div>
                 <NeoStepper
+                  v-if="!readonly"
                   :model-value="getQuantity(v.id, 'unit')"
                   :inc-disabled="!canIncrement(v.id, 'unit')"
                   :dec-testid="`dec-unit-${v.id}`"
@@ -373,14 +397,14 @@ function onQty(productId, variant, next) {
                 v-if="product.image"
                 :src="product.image"
                 :alt="product.name"
-                :aria-label="`Zobraziť fotku: ${product.name}`"
-                role="button"
-                tabindex="0"
+                :aria-label="readonly ? null : `Zobraziť fotku: ${product.name}`"
+                :role="readonly ? null : 'button'"
+                :tabindex="readonly ? null : 0"
                 class="w-[58px] sm:w-[70px] shrink-0 self-start"
-                style="display:block;height:auto;cursor:pointer"
-                @click="photoProduct = product"
-                @keydown.enter.prevent="photoProduct = product"
-                @keydown.space.prevent="photoProduct = product"
+                :style="readonly ? 'display:block;height:auto' : 'display:block;height:auto;cursor:pointer'"
+                @click="openPhoto(product)"
+                @keydown.enter.prevent="openPhoto(product)"
+                @keydown.space.prevent="openPhoto(product)"
               />
               <!-- ⚠ `overflow-wrap:anywhere` is REQUIRED, not cosmetic, and
                    `min-w-0` alone does not do it: `min-w-0` lets the flex item
@@ -388,10 +412,10 @@ function onQty(productId, variant, next) {
                    Product names are free admin text. Set on the CONTAINER because
                    `overflow-wrap` inherits and description1/2 are equally free. -->
               <div class="flex-1 min-w-0" style="overflow-wrap:anywhere">
-                <h3 class="display text-[19px] sm:text-[21px]" style="line-height:.95">{{ product.name }}</h3>
+                <h3 class="display text-[19px] sm:text-[21px]" style="line-height:.95" data-user-copy>{{ product.name }}</h3>
                 <div v-if="product.roast_type || product.roastery" class="flex flex-wrap gap-[6px] mt-2">
-                  <span v-if="product.roast_type" class="badge" style="font-size:11px;padding:2px 7px">{{ product.roast_type }}</span>
-                  <span v-if="product.roastery" class="badge acc-o" style="font-size:11px;padding:2px 7px">{{ product.roastery }}</span>
+                  <span v-if="product.roast_type" class="badge" style="font-size:11px;padding:2px 7px" data-user-copy>{{ product.roast_type }}</span>
+                  <span v-if="product.roastery" class="badge acc-o" style="font-size:11px;padding:2px 7px" data-user-copy>{{ product.roastery }}</span>
                 </div>
                 <!-- Fixed field mapping (04 §UC-FO-005): `description1` is the
                      spec line, `description2` the tasting notes. The old
@@ -402,8 +426,8 @@ function onQty(productId, variant, next) {
                      06 §UC-GX-002 requires this card to be PIXEL-IDENTICAL to the
                      friend one, so the two must change together even though the rest
                      of this component is still on the old skin until RD-GX-1. -->
-                <div v-if="product.description1" class="pspec" style="margin-top:7px">{{ product.description1 }}</div>
-                <div v-if="product.description2" class="pnotes" style="margin-top:2px">{{ product.description2 }}</div>
+                <div v-if="product.description1" class="pspec" style="margin-top:7px" data-user-copy>{{ product.description1 }}</div>
+                <div v-if="product.description2" class="pnotes" style="margin-top:2px" data-user-copy>{{ product.description2 }}</div>
               </div>
             </div>
 
@@ -420,7 +444,7 @@ function onQty(productId, variant, next) {
                  always accent magenta; the sold-out signal is the danger-red
                  "Vypredané" LABEL, never a bar colour, so the old amber/red bar
                  tinting goes. -->
-            <div v-if="availability[product.id]" class="flex items-center gap-[10px] mt-3" data-testid="stock-bar">
+            <div v-if="!readonly && availability[product.id]" class="flex items-center gap-[10px] mt-3" data-testid="stock-bar">
               <div style="flex:1;height:10px;border:2px solid var(--nb-ink);border-radius:6px;overflow:hidden;background:#fff">
                 <div
                   data-testid="stock-fill"
@@ -465,7 +489,7 @@ function onQty(productId, variant, next) {
                 v-for="def in coffeeVariantsFor(product)"
                 :key="def.variant"
                 class="vbox"
-                :class="{ sel: getQuantity(product.id, def.variant) > 0 }"
+                :class="{ sel: !readonly && getQuantity(product.id, def.variant) > 0 }"
               >
                 <div class="vrow">
                   <span class="vsize">{{ def.label }}</span>
@@ -484,6 +508,7 @@ function onQty(productId, variant, next) {
                      exceed the limit. The server remains the authority either way
                      (GSO-T3 `helpers/stock.js`). -->
                 <NeoStepper
+                  v-if="!readonly"
                   :model-value="getQuantity(product.id, def.variant)"
                   :inc-disabled="!canIncrement(product.id, def.variant)"
                   :dec-testid="`dec-${def.variant}`"
@@ -501,7 +526,7 @@ function onQty(productId, variant, next) {
     <!-- The shared product-photo lightbox. `v-if` on the mount, per the standing
          rule for every modal on this shell. -->
     <ProductImageModal
-      v-if="photoProduct"
+      v-if="photoProduct && !readonly"
       :image="photoProduct.image"
       :name="photoProduct.name"
       @close="photoProduct = null"

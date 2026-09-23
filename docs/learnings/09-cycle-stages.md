@@ -514,7 +514,7 @@ proof for both readers.
   strings render app-owned copy with the banned word, and both were missing from it:
   `frontend/src/views/GuestOrder.vue:170` („Cyklus sa medzičasom uzamkol — objednávky už
   neprijímame.", pinned by `guest-invite-dead.spec.js:381`) and
-  `frontend/src/components/GuestProductGrid.vue:76` („V tomto cykle zatiaľ nie sú žiadne
+  `frontend/src/components/GuestProductGrid.vue:88` (~~:76~~, moved by GL-T5) („V tomto cykle zatiaľ nie sú žiadne
   produkty."). The second renders inside `GuestOrderStatus.vue`'s OWN edit mode, so
   §UC-CS-008's „the page contains neither „kolo" nor „cyklus"" is true **of the read view
   only**. Leaving all three is still right — `18-portal-information-architecture.md`'s

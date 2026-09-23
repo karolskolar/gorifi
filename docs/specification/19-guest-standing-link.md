@@ -430,6 +430,11 @@ scaffold):**
      date formatted `sk-SK` day + month name (`3. októbra`); the parenthesis via a new
      `lib/plural.js` `weeksAwayLabel(days)`: days ≤ 6 ⇒ „už tento týždeň“, else N = `Math.round(days/7)`
      ⇒ „o 1 týždeň“ / „o 2–4 týždne“ / „o 5+ týždňov“; a past `opens_at` ⇒ omit the parenthesis.
+     **(GL-T5: shipped as written, `days` = `lib/cycle-stages.js daysUntil()`. ⚠ It DIFFERS from 17's
+     `inWeeksText()` for the same sentence on the friend side — 17's PO decision O6 prints „o n dní“
+     under a week and nothing for today; this draft prints „už tento týždeň“ for 0–6. Two registers,
+     one shared declension (`weeksLabel`); PO question raised in the GL-T5 report, not resolved at a
+     call site.)**
    - `planned_note`: **„Ďalšia objednávka: {plan_note}“** (admin text verbatim).
    - `unknown`: **„O ďalšej objednávke dáme vedieť.“** (resolved conflict 5).
    - `open_elsewhere` (stale legacy link): h1 becomes **„Táto objednávka je už uzavretá“**, `.sub`:
@@ -449,7 +454,10 @@ scaffold):**
      vedieť.</b> Keď sa objednávka otvorí, príde vám správa na WhatsApp s odkazom od {host.first_name}.“**
      when opted in; **„<b>Dáme vedieť.</b> Keď sa objednávka otvorí, {host.first_name} vám pošle odkaz.“**
      when the box was unticked (draft, §OPEN — see also the consent question there).
-   - Success is remembered per token in `localStorage` (`gorifi_guest_waitlist` = `{ [token]: iso }`,
+   - Success is remembered per token in `localStorage` (`gorifi_guest_waitlist` = ~~`{ [token]: iso }`~~
+     **`{ [token]: { at: iso, whatsapp_opt_in, cycle_id } }` (GL-T5: the bare ISO string cannot say
+     WHICH of the two banners to re-show, nor expire with the round — `cycle_id` is the preview round,
+     i.e. the server row's own `cycle_id`; an entry for a different round shows the form again)**,
      try/catch, per-viewer convenience only) so a reload shows the banner, not the form again. Not a
      source of truth — the server's idempotency is.
 5. **Preview block** (only when `preview` non-null): header row `span.field-lbl` **„Minulá ponuka ·

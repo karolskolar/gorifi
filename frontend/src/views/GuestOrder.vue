@@ -12,10 +12,11 @@ import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
 import CartLineList from '@/components/CartLineList.vue'
 import GuestSteps from '@/components/GuestSteps.vue'
 import GuestRoastersLine from '@/components/GuestRoastersLine.vue'
+import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { fmtEur } from '@/lib/money'
 import { purposeOrder } from '@/lib/purposes'
-import { itemsLabel } from '@/lib/plural'
-import { fmtDay } from '@/lib/cycle-stages'
+import { itemsLabel, weeksAwayLabel } from '@/lib/plural'
+import { fmtDay, daysUntil } from '@/lib/cycle-stages'
 import {
   availabilityMap,
   cartLines,
@@ -121,6 +122,11 @@ const confirmationLines = computed(() => (confirmation.value?.items || []).map((
 const purposes = computed(() => purposeOrder(products.value))
 
 watchEffect(() => {
+  // 19 §UC-GL-006 item 7 — the pre-open state has its own title (DRAFT, en dash).
+  if (preopen.value) {
+    document.title = 'Objednávky sú zatvorené – Podpultovka'
+    return
+  }
   document.title = cycle.value?.name ? `${cycle.value.name} - Objednávka` : 'Objednávka'
 })
 
@@ -134,6 +140,7 @@ async function load() {
     const data = await api.getGuestOrderPage(token.value)
     if (data?.page === 'preopen') {
       preopen.value = data
+      waitlistDone.value = readWaitlistMemory()
       return
     }
     cycle.value = data.cycle
@@ -189,29 +196,136 @@ const unavailableText = computed(() => {
   return unavailable.value.message
 })
 
-// ================= pre-open (19 §UC-GL-006) — GL-T2's MINIMAL placeholder =================
-// ⚠ GL-T5 REPLACES this block with the full `GLink2 Zatvorené` transcription (steps,
-// roasters line, waitlist form, faded preview, closed chrome, document.title) and
-// KEEPS the `preopen-hero` testid. What is here is only what the payload already
-// decides: the badge, the headline, the host sentence and the `next` sentence.
+// ================= pre-open (19 §UC-GL-006) — `GLink2 Zatvorené`, transcribed (GL-T5) =================
+// GL-T2 shipped a minimal placeholder here; GL-T5 REPLACES it with the prototype's
+// whole closed state and KEEPS `preopen-hero`. Source order = the prototype's card
+// order: hero (badge, split headline, host + next sentence, roasters line) → „Ako to
+// funguje" (the FULL `GuestSteps`) → „Dajte mi vedieť" (only when the SERVER says
+// `waitlist.available` — an affordance the server would refuse is never on screen)
+// → the faded read-only preview (`GuestProductGrid readonly`, never a fork).
+// No cartbar, no checkout, no invite CTA (item 6): the page has nothing to order.
 //
-// DRAFT copy (19 §OPEN → PO sign-off on staging), vy-form, no „kolo"/„cyklus".
-// The `planned_date` date is module 17's LONG form (`fmtDay`, „3. októbra") — 17's
-// `opens_at` is live, so this variant renders from day one. GL-T5 adds the
-// „(o N týždňov)" parenthesis through its own `weeksAwayLabel()`.
+// DRAFT copy (19 §OPEN → PO sign-off on staging), vy-form, no „kolo"/„cyklus" —
+// reproduce, never improve. The stale sentence names the host in the nominative
+// („Požiadajte Janka") exactly as 19 drafts it — a PO question, not a fix here.
+//
+// The `planned_date` date is module 17's LONG form (`fmtDay`, „3. októbra"); the
+// parenthesis is `lib/plural.js weeksAwayLabel(daysUntil(opens_at))` — 19's own
+// draft register („už tento týždeň" under a week), NOT 17's `inWeeksText` („o 3
+// dni"): see the note on `weeksAwayLabel`. A past `opens_at` omits it.
 const preopenStale = computed(() => preopen.value?.next?.kind === 'open_elsewhere')
-const preopenTitle = computed(() => (preopenStale.value ? 'Táto objednávka je už uzavretá' : 'Objednávky sú zatvorené'))
+const preopenTitle = computed(() => (preopenStale.value
+  ? { lead: 'Táto objednávka je už', hl: 'uzavretá' }
+  : { lead: 'Objednávky sú', hl: 'zatvorené' }))
 const preopenHost = computed(() => preopen.value?.host?.first_name || '')
-const preopenNextText = computed(() => {
+// { kind, date, away, note } — the template lays the pieces out (the date is bold).
+const preopenNext = computed(() => {
   const next = preopen.value?.next
-  if (!next) return ''
-  if (next.kind === 'planned_date') {
-    const day = fmtDay(next.opens_at)
-    if (day) return `Ďalšia objednávka sa otvorí približne ${day}.`
+  if (next?.kind === 'planned_date') {
+    const date = fmtDay(next.opens_at)
+    if (date) return { kind: 'date', date, away: weeksAwayLabel(daysUntil(next.opens_at)) }
   }
-  if (next.kind === 'planned_note' && next.plan_note) return `Ďalšia objednávka: ${next.plan_note}`
-  return 'O ďalšej objednávke dáme vedieť.'
+  if (next?.kind === 'planned_note' && next.plan_note) return { kind: 'note', note: next.plan_note }
+  return { kind: 'unknown' }
 })
+const waitlistAvailable = computed(() => preopen.value?.waitlist?.available === true)
+// A preview with no products renders nothing at all — never the grid's empty banner
+// (whose shipped copy says „cykle", and a closed round with no catalogue has nothing
+// to show anyway).
+const preview = computed(() => {
+  const p = preopen.value?.preview
+  return p && Array.isArray(p.products) && p.products.length > 0 ? p : null
+})
+const previewTab = ref('')
+// The read-only grid still takes the cart as a two-way model; it never writes it.
+const PREVIEW_CART = Object.freeze({})
+
+// ——— „Dajte mi vedieť" (19 §UC-GL-004 via `api.joinGuestWaitlist`) ———
+// The server bounds are mirrored as `maxlength` (120 / 32). The button is disabled
+// while pending or while either field is blank — and `joinWaitlist()` re-checks both,
+// because a `disabled` attribute does not stop a dispatched click (CLAUDE.md).
+const waitlistName = ref('')
+const waitlistPhone = ref('')
+const waitlistConsent = ref(true) // default CHECKED (§UC-GL-006 item 4)
+const waitlistPending = ref(false)
+const waitlistError = ref('')
+// `null` = show the form; `{ whatsapp_opt_in }` = show the banner (which of the two).
+const waitlistDone = ref(null)
+const waitlistReady = computed(() => Boolean(waitlistName.value.trim() && waitlistPhone.value.trim()))
+
+async function joinWaitlist() {
+  if (waitlistPending.value || !waitlistReady.value || !waitlistAvailable.value) return
+  waitlistPending.value = true
+  waitlistError.value = ''
+  const optIn = waitlistConsent.value === true
+  try {
+    await api.joinGuestWaitlist(token.value, {
+      name: waitlistName.value.trim(),
+      phone: waitlistPhone.value.trim(),
+      whatsapp_opt_in: optIn
+    })
+    waitlistDone.value = { whatsapp_opt_in: optIn }
+    rememberWaitlist(optIn)
+  } catch (e) {
+    // 409 `open`: the round opened while the guest was reading — there is nothing to
+    // wait for any more, so the page re-reads itself into the live listing (GL-T3's
+    // seam). Every other refusal (400 with `field`, 404/410, 429) is the server's own
+    // sentence in the card's danger banner; the typed values stay.
+    if (e.status === 409 && e.reason === 'open') {
+      load()
+      return
+    }
+    waitlistError.value = e.message || 'Nepodarilo sa odoslať. Skúste to znova.'
+  } finally {
+    waitlistPending.value = false
+  }
+}
+
+// Per-viewer convenience ONLY (19 §UC-GL-006 item 4) — never a source of truth; the
+// server's (host, phone) idempotency is. Every access is try/catch'd: private mode or
+// blocked storage must never break the page.
+//
+// ⚠ DEVIATION, recorded (GL-T5): 19 writes the value as a bare ISO string. It is an
+// object `{ at, whatsapp_opt_in, cycle_id }` instead, for two reasons the bare string
+// cannot carry: (1) the reload must show the SAME one of the two banners the submit
+// showed; (2) the memory must expire with the round — `cycle_id` is the preview's
+// round (= the server row's `cycle_id`, `lastClosedCycle()` at signup), so once a new
+// round has opened and closed (and the row has been notified or purged) the form
+// comes back instead of a banner that is no longer true. The token lives only in
+// storage, never in the DOM.
+const WAITLIST_STORAGE_KEY = 'gorifi_guest_waitlist'
+
+function readWaitlistStore() {
+  try {
+    const raw = localStorage.getItem(WAITLIST_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : {}
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch (e) {
+    return {}
+  }
+}
+
+function readWaitlistMemory() {
+  const entry = readWaitlistStore()[token.value]
+  if (!entry || typeof entry !== 'object') return null
+  const round = preopen.value?.preview?.cycle?.id ?? null
+  if ((entry.cycle_id ?? null) !== round) return null
+  return { whatsapp_opt_in: entry.whatsapp_opt_in === true }
+}
+
+function rememberWaitlist(optIn) {
+  try {
+    const store = readWaitlistStore()
+    store[token.value] = {
+      at: new Date().toISOString(),
+      whatsapp_opt_in: optIn,
+      cycle_id: preopen.value?.preview?.cycle?.id ?? null
+    }
+    localStorage.setItem(WAITLIST_STORAGE_KEY, JSON.stringify(store))
+  } catch (e) {
+    // The banner is already on screen; losing the memory costs one re-render of the form.
+  }
+}
 
 function openCheckout() {
   checkoutError.value = ''
@@ -377,26 +491,141 @@ function goToStatus() {
     </template>
 
     <!-- ======================= pre-open (19 §UC-GL-006) =======================
-         GL-T2's MINIMAL placeholder — see the script note. No cartbar, no checkout,
-         no invite CTA in this state (§UC-GL-006 item 6): the page has nothing to
-         order. The token is never composed into the DOM (the payload has none). -->
+         `GLink2 Zatvorené`, transcribed — see the script note. The page column is the
+         prototype's (max 760, padding 16/28, gap 14). `line-height:normal` on every
+         UNCLASSED text wrapper (A10 is a class list and cannot reach them); where the
+         canon DECLARES a line-height (the headline 1.12, the host sentence 1.45, the
+         `.display` 22px title 1) that value is used (the PI-T12 rule). -->
     <template v-else-if="preopen">
-      <GuestBrandHeader subtitle="Objednávka cez odkaz" />
+      <GuestBrandHeader subtitle="Objednávka cez odkaz" closed />
 
-      <div class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 flex flex-col gap-[14px] flex-1">
-        <div class="card hl p-4 sm:p-5" data-testid="preopen-hero" style="line-height:normal">
-          <span class="badge">Zatvorené</span>
-          <h1 class="h-screen text-[30px] sm:text-[38px]" style="margin-top:10px">{{ preopenTitle }}</h1>
-          <div v-if="preopenStale" class="sub" style="margin-top:8px;font-size:14.5px" data-testid="preopen-next">
+      <div
+        class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 pb-2 sm:pb-2 flex flex-col gap-[14px] flex-1"
+        data-testid="preopen-page"
+      >
+        <!-- ① Hero. ⚠ Nothing new in here may carry `.badge` or `.mono`: shipped pins
+             strict-resolve `preopen-hero .badge` (GL-T4 rule) — the roasters line uses
+             its own scoped classes for exactly that reason. -->
+        <div class="card hl" data-testid="preopen-hero" style="padding:16px;display:flex;flex-direction:column;gap:12px;line-height:normal">
+          <span class="badge" style="align-self:flex-start">Zatvorené</span>
+          <!-- The prototype breaks the last word onto its own highlighted line. The
+               space before `<br>` is load-bearing: it keeps the headline's TEXT a
+               sentence („Objednávky sú zatvorené") for every reader of textContent. -->
+          <h1 class="h-screen text-[30px] sm:text-[38px]" style="line-height:1.12">{{ preopenTitle.lead }} <br /><span class="hl" style="display:inline-block;line-height:.95;margin-top:4px">{{ preopenTitle.hl }}</span></h1>
+          <div v-if="preopenStale" class="sub" style="font-size:14.5px;line-height:1.45;overflow-wrap:anywhere" data-testid="preopen-next">
             <span data-user-copy>{{ preopenHost }}</span> má práve otvorenú novú objednávku. Požiadajte <span data-user-copy>{{ preopenHost }}</span> o aktuálny odkaz.
           </div>
-          <template v-else>
-            <div class="sub" style="margin-top:8px;font-size:14.5px">
-              <b style="color:var(--ink)" data-user-copy>{{ preopenHost }}</b> vás pozýva do spoločnej objednávky výberovej kávy.
-            </div>
-            <div class="sub" style="margin-top:6px;font-size:14.5px" data-testid="preopen-next">{{ preopenNextText }}</div>
-          </template>
+          <div v-else class="sub" style="font-size:14.5px;line-height:1.45;overflow-wrap:anywhere">
+            <b style="color:var(--ink)" data-user-copy>{{ preopenHost }}</b> vás pozýva do spoločnej objednávky výberovej kávy.
+            <span data-testid="preopen-next">
+              <template v-if="preopenNext.kind === 'date'">Ďalšia objednávka sa otvorí približne <b style="color:var(--ink)">{{ preopenNext.date }}</b><template v-if="preopenNext.away"> ({{ preopenNext.away }})</template>.</template>
+              <template v-else-if="preopenNext.kind === 'note'">Ďalšia objednávka: <span data-user-copy style="white-space:pre-line" data-testid="preopen-plan-note">{{ preopenNext.note }}</span></template>
+              <template v-else>O ďalšej objednávke dáme vedieť.</template>
+            </span>
+          </div>
+          <GuestRoastersLine />
         </div>
+
+        <!-- ② „Ako to funguje" — the FULL `GuestSteps` (GL-T4's component, its default
+             layout). `packeta` stays off until GP-T3 (19 §Accepted risks). -->
+        <div class="card" style="padding:16px" data-testid="preopen-steps">
+          <div class="field-lbl" style="margin-bottom:12px">Ako to funguje</div>
+          <GuestSteps :host-name="preopenHost" />
+        </div>
+
+        <!-- ③ „Dajte mi vedieť" — only when the server says the signup is possible
+             (`waitlist.available`, 19 §UC-GL-003 rule 3). Success REPLACES the card
+             with the ok banner (one of two, by the consent the guest sent). -->
+        <template v-if="waitlistAvailable">
+          <div v-if="waitlistDone" class="banner ok" data-testid="waitlist-done" role="status">
+            <span class="dot"></span>
+            <div style="min-width:0;overflow-wrap:anywhere;line-height:normal">
+              <template v-if="waitlistDone.whatsapp_opt_in"><b>Dáme vedieť.</b> Keď sa objednávka otvorí, príde vám správa na WhatsApp s odkazom od <span data-user-copy>{{ preopenHost }}</span>.</template>
+              <template v-else><b>Dáme vedieť.</b> Keď sa objednávka otvorí, <span data-user-copy>{{ preopenHost }}</span> vám pošle odkaz.</template>
+            </div>
+          </div>
+          <div v-else class="card" style="padding:16px;display:flex;flex-direction:column;gap:12px" data-testid="waitlist-form">
+            <div style="line-height:normal">
+              <div class="display" style="font-size:22px;line-height:1">Dajte mi vedieť</div>
+              <div class="sub" style="margin-top:4px">Pošleme jednu správu, keď sa objednávka otvorí. Nič viac.</div>
+            </div>
+            <div>
+              <label class="field-lbl" for="waitlist-name">Meno</label>
+              <input
+                id="waitlist-name"
+                v-model="waitlistName"
+                class="inp"
+                type="text"
+                data-testid="waitlist-name"
+                placeholder="Meno a priezvisko"
+                autocomplete="name"
+                maxlength="120"
+                required
+              />
+            </div>
+            <div>
+              <label class="field-lbl" for="waitlist-phone">Mobil</label>
+              <input
+                id="waitlist-phone"
+                v-model="waitlistPhone"
+                class="inp"
+                type="text"
+                data-testid="waitlist-phone"
+                placeholder="09xx xxx xxx"
+                inputmode="tel"
+                autocomplete="tel"
+                maxlength="32"
+                required
+              />
+            </div>
+            <!-- The three-zone checkbox row (02 §UC-DS-009 — the shipped call sites'
+                 pattern): the box has its own handler, the text its `@click`, the gap
+                 `@click.self`. `min-height:44px` makes the whole row the ≥44px tap
+                 target §UC-GL-006 asks for (the box itself is the canon's 24px). -->
+            <label
+              data-testid="waitlist-consent"
+              style="display:flex;align-items:center;gap:10px;font-size:13.5px;line-height:normal;cursor:pointer;min-height:44px"
+              @click.self="waitlistConsent = !waitlistConsent"
+            >
+              <NeoCheckbox v-model="waitlistConsent" aria-label="Súhlasím so správou cez WhatsApp" />
+              <span @click="waitlistConsent = !waitlistConsent">Súhlasím so správou cez WhatsApp</span>
+            </label>
+            <div v-if="waitlistError" class="banner danger slim" role="alert">
+              <span class="dot"></span><span style="min-width:0;overflow-wrap:anywhere" data-testid="waitlist-error">{{ waitlistError }}</span>
+            </div>
+            <button
+              type="button"
+              class="btn accent block"
+              data-testid="waitlist-submit"
+              :disabled="waitlistPending || !waitlistReady"
+              @click="joinWaitlist"
+            >Chcem vedieť, keď sa otvorí</button>
+          </div>
+        </template>
+
+        <!-- ④ The faded preview of the last round (item 5): only with products. The
+             `.p2-ro` wrapper (A13's canon port: opacity .55 + pointer-events none;
+             `user-select:none` is this view's scoped addition, per 19) covers the tab
+             strip AND the cards, as in the prototype. The grid is the SHIPPED one in
+             `readonly` — no steppers, no stock bars, no lightbox, no tab stops. Cards
+             beyond the server's 12 do not exist; there is no „zobraziť viac". -->
+        <template v-if="preview">
+          <div
+            data-testid="preopen-preview-head"
+            style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-top:6px;line-height:normal"
+          >
+            <span class="field-lbl" style="margin:0;min-width:0;overflow-wrap:anywhere">Minulá ponuka · <span data-user-copy>{{ preview.cycle?.name }}</span></span>
+            <span class="sub mono" style="white-space:nowrap;font-size:12px">len na prezretie</span>
+          </div>
+          <div class="p2-ro gx-ro" data-testid="preopen-preview">
+            <GuestProductGrid
+              :model-value="PREVIEW_CART"
+              v-model:active-tab="previewTab"
+              :products="preview.products"
+              readonly
+            />
+          </div>
+        </template>
       </div>
     </template>
 
@@ -853,6 +1082,14 @@ function goToStatus() {
   padding: 6px 2px;
   font-size: 14.5px;
   color: var(--ink);
+}
+
+/* 19 §UC-GL-006 item 5 — the preview's third property. The theme's `.p2-ro` (A13)
+   carries the canon's opacity + pointer-events; `user-select:none` is 19's addition,
+   kept here rather than edited into the canon port. */
+.gx-ro {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 @media (max-width: 400px) {

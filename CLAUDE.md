@@ -391,8 +391,10 @@ append the full write-up to the matching learnings file and add at most one line
   `GuestOrder.vue`'s `checkout-error` banner — ~~and a 410 from `GET /:token`~~ **the listing never
   answers `closed` since GL-T2, 19 resolved conflict 1**; module 19 §208 pins it as the shipped message),
   ~~`GuestOrder.vue:170`~~ **(REMOVED by GL-T2 with the dead `closed` card variant, 19 §UC-GL-006)** and
-  `GuestProductGrid.vue:76` (the latter renders inside `GuestOrderStatus.vue`'s own EDIT mode, so
-  §UC-CS-008's „no „kolo"/„cyklus" on the page" holds for the READ view only). Owned by
+  `GuestProductGrid.vue:88` (~~:76~~, moved by GL-T5; its empty-grid default „V tomto cykle…" renders on
+  TWO surfaces — `GuestOrderStatus.vue`'s own EDIT mode, so §UC-CS-008's „no „kolo"/„cyklus" on the page"
+  holds for the READ view only, AND `GuestOrder.vue`'s LIVE listing (~:832, an open round with zero
+  products); the pre-open preview filters an empty product list out and never shows it). Owned by
   `18-portal-information-architecture.md`'s hand-off list; PO decision pending.
 - A dialog/loader reused across entities needs a `loadSeq` guard; per-row mutations need per-id pending state;
   friend-authenticated children of `FriendOrder` need the `ready` gate; its two panels stay `v-show`.
@@ -456,6 +458,7 @@ append the full write-up to the matching learnings file and add at most one line
 - Guest surface (`GuestOrder.vue`, `GuestOrderStatus.vue`) deliberately lags the friend skin in places; it is
   not the reference when restyling.
 - Nothing new inside a guest hero (`.card.hl`, `preopen-hero`) may carry `.badge` or `.mono`: shipped pins count/strict-resolve them. `GuestSteps`/`GuestRoastersLine` re-declare those rules in scoped classes, pinned computed-style-equal (GL-T4).
+- The pre-open preview is `GuestProductGrid readonly` (GL-T5) — REMOVES steppers/stock bar/lightbox/tab stops (each JS-guarded); the `.p2-ro` fade is the CALLER's wrapper over strip AND cards; `gorifi_guest_waitlist` memory is `{at, whatsapp_opt_in, cycle_id}` and expires with the preview round (learnings 11 §GL-T5).
 
 ### Documentation discipline
 - A rule stated as a guard/grep must enumerate EVERY file that edits the column, and a superseded claim must be

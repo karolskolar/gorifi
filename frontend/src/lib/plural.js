@@ -121,7 +121,9 @@ export function itemsLabel(count) {
 //
 // ⚠ These two live HERE and not in `cycle-stages.js` for the reason this whole file
 // exists: the declension is the shared thing, the sentence around it is not. Module
-// 19's pre-open page prints the same „o n týždňov" from `nextOpeningText()`, and
+// 19's pre-open page ~~prints the same „o n týždňov" from `nextOpeningText()`~~
+// **prints it through `weeksAwayLabel()` below (GL-T5 — 19's own draft register,
+// which declines the weeks with THIS `weeksLabel`)**, and
 // module 21's notification copy is the next candidate — a second three-branch copy
 // is how one screen ends up reading „o 3 týždňov".
 export function daysLabel(count) {
@@ -138,4 +140,26 @@ export function weeksLabel(count) {
   if (n === 1) return '1 týždeň'
   if (n >= 2 && n <= 4) return `${n} týždne`
   return `${n} týždňov`
+}
+
+// The pre-open guest page's „(…)" after the next opening date (19 §UC-GL-006
+// item 2): `days` = whole calendar days until `opens_at` (the caller passes
+// `lib/cycle-stages.js daysUntil()`, the ONE day counter). Returns the phrase
+// WITHOUT the parentheses — the sentence around it is the view's.
+//
+//   · not a finite number, or a date already PAST (days < 0) ⇒ '' (the caller then
+//     omits the parenthesis entirely);
+//   · 0–6 days ⇒ „už tento týždeň";
+//   · else N = Math.round(days / 7) ⇒ „o 1 týždeň" / „o 2–4 týždne" / „o 5+ týždňov"
+//     (`weeksLabel`, the accusative after „o" — never a second declension).
+//
+// ⚠ NOT `cycle-stages.js inWeeksText()`, and deliberately so: 17's PO decision O6
+// counts DAYS under a week („o 3 dni") and prints nothing for today, while 19's
+// draft says „už tento týždeň" for 0–6. Two surfaces, two drafted registers, both
+// awaiting the PO's staging sign-off (GL-T5 report) — do not merge them at a call
+// site. The shared thing, the week declension, stays ONE (`weeksLabel`).
+export function weeksAwayLabel(days) {
+  if (typeof days !== 'number' || !Number.isFinite(days) || days < 0) return ''
+  if (days <= 6) return 'už tento týždeň'
+  return `o ${weeksLabel(Math.round(days / 7))}`
 }

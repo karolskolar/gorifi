@@ -103,7 +103,7 @@ export const BANNED_CASES = {
 // ⚠ WHAT IS DELIBERATELY NOT A ROOT. `views/GuestOrder.vue` and
 // `views/GuestOrderStatus.vue` are the GUEST surface, and ~~three~~ TWO „cyklus" strings
 // there survive on purpose pending a PO decision (`routes/guest.js`'s submit-409 `CLOSED`,
-// `GuestProductGrid.vue:76` — CLAUDE.md names both; ~~`GuestOrder.vue:170`~~ was REMOVED by
+// `GuestProductGrid.vue:88` (~~:76~~, moved by GL-T5) — CLAUDE.md names both; ~~`GuestOrder.vue:170`~~ was REMOVED by
 // GL-T2 together with the dead `closed` card variant, 19 §UC-GL-006). GL-T7 widens the guard by
 // adding those two roots to `FRIEND_SURFACE_ROOTS` — one line, no list to re-derive.
 //

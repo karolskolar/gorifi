@@ -609,3 +609,121 @@ into the component (source pin + §7 importer set); `overflow-wrap` removed from
 - GP-T3: pass `:packeta="Boolean(cycle?.parcel_enabled)"` on BOTH `GuestSteps` mounts in the open
   hero (and GL-T5's). The GL-T4 source pin „`GuestOrder.vue` does not pass `packeta`" is the
   sanctioned retarget for that row.
+
+
+## GL-T5 — the full pre-open page (`GLink2 Zatvorené`, transcribed) (2026-09-23)
+
+19 §UC-GL-006 + §UC-GL-011 item 5. Frontend only; no backend, no migration.
+
+### 1. What shipped
+
+- `GuestOrder.vue` `preopen` state REPLACES GL-T2's placeholder (keeps `preopen-hero`), in the
+  prototype's card order: hero (`.badge` „Zatvorené" · split headline with the last word in
+  `.hl` on its own line · host + next sentence · `GuestRoastersLine`) → „Ako to funguje"
+  (`preopen-steps`, the FULL `GuestSteps`) → „Dajte mi vedieť" (`waitlist-form`, only when
+  `waitlist.available`; success REPLACES it with `waitlist-done`, one of two banners by the
+  consent SENT) → the preview (`preopen-preview-head` + `preopen-preview`, only with products).
+  Page column testid `preopen-page`. `document.title` = „Objednávky sú zatvorené – Podpultovka"
+  in every preopen variant (en dash). No cartbar/checkout/invite CTA — the branch simply has none.
+- `GuestBrandHeader.vue` `closed` Boolean: lock chip `.chip.p2-lock` (the friend appbar's A13
+  class, glyph only, `title`, `aria-hidden` like the friend one) + `GUEST_TICKER_CLOSED`. Still no
+  ticker prop — a boolean picks one of two module constants.
+- `GuestProductGrid.vue` `readonly` Boolean (EXTENDED, never forked): steppers REMOVED (not
+  disabled), no stock bar, no `.sel`, the photo loses role/tabindex/aria-label/cursor and never
+  opens the lightbox, tabs leave the tab order (`aria-disabled`); every one has a JS guard too
+  (`selectTab`, `openPhoto`, `setQuantity`). The `.p2-ro` fade is the CALLER's wrapper (it covers
+  the strip AND the cards, as in the prototype — unlike FriendOrder's readonly, where `.cat-tabs`
+  stays browsable); `user-select:none` is a scoped `.gx-ro` in the view, not a theme edit.
+  Product fields (name, descriptions, composition, roast type, roastery, a real `variant_label`)
+  now carry `data-user-copy` on BOTH guest screens (admin-typed data, FUP-T22).
+- `lib/plural.js weeksAwayLabel(days)` — 19's rule verbatim; `days` from `cycle-stages.js
+  daysUntil()`, the weeks declined by the existing `weeksLabel`.
+- `self-hosted-fonts.spec.js`: `/g/:token (preopen)` in BOTH sweeps (third-party allowlist `[]`,
+  and the Google-host sweep `false`), fixture = a legacy per-cycle link on a LOCKED cycle with one
+  product; the row asserts `preopen-hero` rendered before sweeping (a 404 card would sweep clean).
+
+### 2. ⚠ `weeksAwayLabel` vs 17's `inWeeksText` — two drafted registers for ONE sentence
+
+„Ďalšia objednávka sa otvorí približne {d. mmmm} (…)." exists on the friend side too
+(`nextOpeningText()`), and 17 §UC-CS-005 item 6 said 19's page would print it from there. 19
+§UC-GL-006 item 2 specifies its OWN parenthesis: 0–6 days ⇒ „už tento týždeň" (17's PO decision
+O6: „o n dní", and NOTHING for today). The row and the orchestrator named `weeksAwayLabel`, so it
+shipped as 19 writes it and the page composes the sentence itself (`fmtDay` + `daysUntil` +
+the label; the date is `<b>`, which a finished string cannot carry anyway). Both copies of the
+„consumers never re-compose" claim (17 §UC-CS-005 item 6, `cycle-stages.js` header) and
+`plural.js`'s „19 prints it from `nextOpeningText()`" are struck with pointers (review: also
+17 §→19 hand-off and the PROGRESS CS-T2 consumer list). **PO question:** one register or two? If
+one, exactly one of `weeksAwayLabel` / `inWeeksText` is the edit. ⚠ Reviewer's point for the PO:
+„už tento týždeň" is a DAY count, not a calendar week — at 5–6 days out (e.g. Wednesday → next
+Tuesday) it is often literally NEXT calendar week, i.e. the phrase can be false as written.
+
+### 3. ⚠ The waitlist memory's SHAPE deviates from 19 — `{ at, whatsapp_opt_in, cycle_id }`
+
+19 writes `gorifi_guest_waitlist = { [token]: iso }`. A bare string cannot say which of the TWO
+banners to re-show on reload, and never expires — a guest who signed up, got notified, ordered
+(row purged) and came back at the next closed period would see „Dáme vedieť." for a signup that
+no longer exists. `cycle_id` = the preview round's id, which IS the server row's `cycle_id`
+(`lastClosedCycle()` at signup), so an entry for another round shows the form again. Per-viewer
+convenience only, every access try/catch'd; the token lives in storage, never the DOM. 19's line
+is struck with a pointer. Garbage / non-object JSON ⇒ `{}`.
+
+### 4. Other decisions
+
+- **409 `open`** on submit ⇒ `load()` (GL-T3's seam: the round opened, re-read into the live
+  page). Every other refusal is the server's own sentence in `waitlist-error`
+  (`.banner.danger.slim`), typed values kept, nothing remembered.
+- **Empty preview** (`products: []`) renders NOTHING — never the grid's empty banner, whose
+  shipped copy says „V tomto cykle…" (BANNED vocabulary) and has nothing to show anyway.
+- **The stale headline** gets the same split as the canon's („Táto objednávka je už" / `.hl`
+  „uzavretá") — the prototype draws only the „zatvorené" one; this is the structural analogue.
+  The stale sentence keeps 19's nominative „Požiadajte {host}" (PO question, not a fix).
+- **Multiline `plan_note`**: the note span is `white-space:pre-line` (17 §UC-CS-005 item 6 —
+  the consumer preserves newlines), pinned by a two-line-box test (review).
+- **„cykle" line reference** `GuestProductGrid.vue:76` → `:88` updated in CLAUDE.md, `vocabulary.js`,
+  18 and learnings 09; the empty-grid string is reachable on the LIVE listing too (open round,
+  zero products), named in CLAUDE.md and the GL-T7 row (review).
+- **Tap targets**: the consent row is `min-height:44px` (the box is the canon 24px); inputs are
+  46, the button 44. No GL-T4 `btn.ghost.sm` toggle on this page, so its 38px is not reused.
+- **Headline line-heights** are the canon's declared values (1.12 / .95 on the `.hl` span,
+  1.45 on the host sentence, 1 on the 22px title — the PI-T12 rule); unclassed wrappers get
+  `line-height:normal`. `overflow-wrap:anywhere` on every sentence that interpolates a name.
+
+### 5. Retargets (own module, sanctioned by the row)
+
+- GL-T2 `the four next sentences`: `planned_date` fixture moved to a PAST `opens_at`
+  (`2020-10-03`) — a fixed future date would now grow „(o N týždňov)" with the wall clock; the
+  parenthesis has its own GL-T5 tests with `gl5Day(n)` dates relative to now.
+- GL-T4 source pin: `<GuestSteps` 2 → 3 and `<GuestRoastersLine` 1 → 2 (this row mounts them).
+
+### 6. Tests (`guest-standing-link.spec.js`, six `GL-T5 ·` describes, 28 tests)
+
+`weeksAwayLabel` (plain-node import, 20 cases); mocked-payload page: chrome + title, hero
+structure/order/bold/`.hl`, the parenthesis (3 / −2 / 10 days), steps card, card order, form
+fidelity + three-zone toggle, submit (disabled rules, trimmed body, NO auth headers, `button:enabled`
+1 → 0, banner replaces card, reload keeps it), unticked consent (second banner, reload keeps
+THAT one), JS guard (dispatched clicks on disabled + while pending), 400 banner, 409 reload,
+throwing storage, memory per token/round/garbage, `available:false`, no cart/CTA + token not in
+DOM; preview (header, `.p2-ro` computed opacity/pointer-events/user-select, readonly: 0 buttons,
+0 steppers, 0 stock bars, no `[role=button]`, no tab stop, dispatched photo click opens nothing,
+empty/NULL preview); 320/378 overflow with a long host; ≥44px controls; A12 16px in a
+`hasTouch/isMobile` context with a non-vacuity `matchMedia` gate; BANNED over `collectAppCopy()`
+for all four variants and both banners; one REAL-server test (legacy link, locked cycle: closed
+chrome, form iff `available`, preview iff products, zero third-party requests, token not in DOM);
+source pins (`readonly` prop, grid mounted twice, no forked grid file; `closed` + two constants,
+no ticker prop).
+
+Mutations (each red, then restored): stepper kept in readonly; JS guard removed; unguarded
+storage READ; closed ticker ignored; lock chip dropped; `weeksAwayLabel` counting days;
+memory ignoring the round; `.p2-ro` dropped; consent default off; 409 not reloading; empty
+preview shown; form ignoring `available`; tab stops kept in readonly; `role=button` kept on the
+photo. **Survivors (recorded):** an unguarded storage WRITE is caught by `joinWaitlist`'s own
+catch after the banner is already set (benign — the banner shows, the memory is lost); the
+`openPhoto` guard alone is masked by the second layer (`ProductImageModal v-if … && !readonly`)
+— defence in depth, the observable property holds with either one.
+
+### Seams left for the next rows
+
+- GP-T3: pass `:packeta` on the THIRD `GuestSteps` mount too (the pre-open card).
+- GL-T6: nothing here — the host dialog/admin card are separate surfaces.
+- GL-T7 (vocabulary guard over guest files): the pre-open copy is already swept rendered here;
+  the source guard's closure will reach `GuestOrder.vue`'s new strings for free.
