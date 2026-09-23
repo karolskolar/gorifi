@@ -156,8 +156,32 @@ const activeCaption = computed(() => {
     </div>
 
     <template #footer>
-      <button type="button" class="btn" @click="$emit('explainer')">Ako to funguje</button>
-      <button type="button" class="btn accent" @click="$emit('close')">Prezrieť ponuku</button>
+      <!-- ⚠ A WRAPPING ROW, and the wrapper is load-bearing (PI-T12). `.btn` is
+           `white-space:nowrap` and `.m-foot .btn` is `flex:1`, so a footer that does
+           not fit neither wraps nor shrinks: it paints past the modal's border and
+           `.modal-scrim` grows a horizontal scrollbar (the CLAUDE.md „no degradation
+           signal" class). These two labels need ~290px of min-content; a 320px
+           viewport leaves 240 (scrim 18 + border 4 + `.m-foot` 18, a side, minus the
+           8px gap). Measured by `portal-fidelity`'s 320px test: scrim 330 > 320.
+           ⚠ `flex-wrap`, NOT the Google prompt's column: at the canon's 378px the row
+           FITS and stays the canon's two equal buttons byte-for-byte (the theme's
+           `flex:1` still reaches them — `.modal .m-foot .btn` is a descendant
+           selector); it only breaks onto two lines where it cannot fit. Padding
+           relief (`FriendOrder.vue`'s `.fo-foot-btn`) saves 24px, which is not enough
+           here. The wrapper is deliberately NOT a `.btn`, so no `flex:1` reaches it. -->
+      <div class="lsm-actions">
+        <button type="button" class="btn" @click="$emit('explainer')">Ako to funguje</button>
+        <button type="button" class="btn accent" @click="$emit('close')">Prezrieť ponuku</button>
+      </div>
     </template>
   </NeoModal>
 </template>
+
+<style scoped>
+.lsm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+</style>

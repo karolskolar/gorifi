@@ -94,7 +94,11 @@ function choose(key) {
           tabindex="-1"
         >
           <div class="p2-dh">
-            <div style="flex: 1; min-width: 0">
+            <!-- ⚠ `overflow-wrap: anywhere` (PI-T12) — the friend's NAME below is
+                 person-typed and unbounded by shape; an unbreakable one painted past
+                 the drawer and scrolled its scrim sideways (1194 > 320, measured).
+                 Same remedy as the row column below; `min-width:0` alone is not it. -->
+            <div style="flex: 1; min-width: 0; overflow-wrap: anywhere">
               <div class="display" style="font-size: 25px; line-height: 1.1">Pod<span style="color:var(--accent)">pult</span>ovka</div>
               <div v-if="friendName" data-testid="drawer-friend-name" data-user-copy style="margin-top: 8px; font-weight: 700; font-size: 15px; line-height: normal">{{ friendName }}</div>
             </div>
@@ -126,7 +130,14 @@ function choose(key) {
               @keydown.space.prevent="choose(item.key)"
             >
               <span class="ic"><NeoIcon :name="item.icon" /></span>
-              <div style="flex: 1; min-width: 0">
+              <!-- ⚠ `overflow-wrap: anywhere` (PI-T12): `min-width:0` lets this column
+                   SHRINK, but it is not a wrapping rule (CLAUDE.md §Frontend), and the
+                   sub-line carries person-typed text — „… · naposledy {cycle name}".
+                   A 120-char unbreakable name made the row list (its own
+                   `overflow-y:auto` column, so `overflow-x` computes to `auto`) scroll
+                   sideways: 1016px of content in a 271px drawer at 320px, measured by
+                   `portal-fidelity.spec.js`'s CLOSED-landing 320px test. -->
+              <div style="flex: 1; min-width: 0; overflow-wrap: anywhere">
                 <div class="lab">{{ item.label }}</div>
                 <div v-if="item.sub" class="sub">{{ item.sub }}<template v-if="item.subData">{{ ' ' }}<span data-user-copy>{{ item.subData }}</span></template></div>
               </div>

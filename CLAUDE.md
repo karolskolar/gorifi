@@ -230,15 +230,18 @@ append the full write-up to the matching learnings file and add at most one line
   ⚠ Precedence here IS coded — the OPPOSITE of PI-T9's explainer, because this is a `NeoModal` that
   would STACK on a non-dismissable gate rather than a view it could wait under. ⚠⚠ **The term list is
   DERIVED, never maintained by hand — it was wrong in review TWICE.** The derivation: walk every overlay
-  MOUNT in `FriendPortalSession.vue` (`<NeoModal>`, `<LandingStateModal>`, `<NeoDrawer>`, the teleported
-  `fixed inset-0` div) and ask „can it raise with NO friend action?" SEVEN can — forced-password,
+  MOUNT in `FriendPortalSession.vue` (~~`<NeoModal>`, `<LandingStateModal>`, `<NeoDrawer>`, the teleported
+  `fixed inset-0` div~~ **every `*Modal`/`*Dialog`/`*Drawer` component and `fixed` element, any shape — that
+  four-shape list missed `<PaymentModal :open>`, the TENTH mount, PI-T12**) and ask „can it raise with NO
+  friend action?" SEVEN can — forced-password,
   credential-setup, Google prompt, explainer, `showClosedModal`, `showLockedModal` and **`showVoucherModal`**
   (whose `z-50` teleport the `z-index:200` profile modal paints OVER: measured `elementFromPoint` →
   `INPUT.inp` on top of a one-shot irreversible decision) — plus `showProfileModal`, a term of a DIFFERENT
   kind (it may already be OPEN, and `openProfileModal()` re-seeds every field). The surface in front WINS
   and the profile modal queues behind it. `portal-profile-modal.spec.js` PINS THE WALK IN SOURCE, so an
-  eighth self-raising overlay reds instead of stacking; each term also has a behaviour test that reds when
-  that ONE term is deleted. `showInviteModal`/`showBalancePayment`/the drawer need a click;
+  eighth self-raising overlay reds instead of stacking — and (PI-T12) PINS THE COUNTS (10 mounts, 8 terms)
+  and the exact derived term set, so a term added or dropped reds too; each term also has a behaviour test
+  that reds when that ONE term is deleted. `showInviteModal`/`showBalancePayment`/the drawer need a click;
   `showPasswordChange`/`showPasswordSet` are folds; `showMagicPrompt` is a banner — none are terms.
 - `friends.explainer_seen_at` (18 §UC-PI-013): NO back-fill, ever — every existing friend meets the explainer once.
   `POST /:id/explainer-seen` is the ONE writer (`requireFriendOwner` + the `friendId: null` 401, `COALESCE` so a
@@ -425,6 +428,7 @@ append the full write-up to the matching learnings file and add at most one line
   interpolation — never the app copy beside it. The test template has a friend NAMED `Prihlasovacie.meno`; a
   sweep that reddens on data is repaired by marking the data render, never by narrowing the regex (FUP-T22).
 - Never `maximum-scale=1` / `user-scalable=no`; iOS zoom is handled by A12 (16px inputs under `pointer: coarse`).
+- A10 (`line-height:normal`) is for canon-SILENT classes only; where `portal2.jsx`/`portal2.css` DECLARES a line-height, the port and its `portal-fidelity` pin use THAT value (PI-T12 measured three drifts, one under a comment citing „the canon's value").
 - Text: `min-w-0` is not `overflow-wrap` (set `overflow-wrap:anywhere` on the container); `€` on item lines,
   `EUR` on totals; ordinary space before `€`. **kg display = `lib/kg.js kgLabel(grams)` — ONE home, returns the
   whole „X kg" string** (`FriendOrder`, `GuestProductGrid`, `FriendPortalSession`, `Distribution` all import it;
@@ -495,6 +499,7 @@ Full recipe and env in `e2e/README.md`. Checklist:
   and one that counts dialogs there is counting the modal. ⚠ `signIn()` helpers that `localStorage.clear()` in
   an `addInitScript` run on EVERY navigation, a RELOAD included — so a test asserting something is NOT
   persisted may not use them, or it passes whatever the app stores (measured, PI-T4).
+- A 320px claim about a modal-layer surface measures the LAYER and every descendant scroller (`portal-fidelity.spec.js noLayerOverflow`), never only the document or the outer box: a scrim or an `overflow-y:auto` column absorbs the spill (PI-T12: the drawer hid 1016 > 271).
 - Spec hygiene: refusal tests read the row back; absence assertions need a non-vacuity gate; Playwright role
   names match as case-insensitive substrings unless `exact: true`; `innerText` applies `text-transform`;
   NBSP survives regex `toHaveText`; `li` counts must be `li.ln`; UI+API admin tests must adopt the browser's token.

@@ -1343,15 +1343,32 @@ Escape, `page.goto('/cycle/<B>')`, open there ⇒ B's link, never A's (the dialo
 
 **13. `portal-fidelity.spec.js`:** portal tests built on `div.p-4`, `cycle-date`,
 `cycle-plan`, `archive-toggle` (216–261, 347–363) → retire; ADD landing equivalents:
-A10 `line-height:normal` on `.banner.slim`, `.badge`, `.display` inside `own-order-card`,
-`.cs-tl .lbl` (via 17's component — ⚠ the prototype's `.p2-` prefix was dropped when
+A10 `line-height:normal` on `.banner.slim`, `.badge`, ~~`.display` inside `own-order-card`,
+`.cs-tl .lbl`~~ **(these two are NOT A10 sites — the canon declares both; see the ⚠ DONE note
+below)** (via 17's component — ⚠ the prototype's `.p2-` prefix was dropped when
 CS-T2 shipped `CycleTimeline.vue`; 17 §UC-CS-006 always said `.cs-`), 320 px hostile text in `plan_note`/`expected_date`/
 pickup note/cycle name on all three states. Login/modal tests stay (377 via item 5).
+⚠ **DONE by PI-T12 (2026-09-23), and TWO of the four named sites are NOT A10 sites** — A10
+covers only the classes the canon leaves line-height-SILENT, and these two the canon
+declares: `own-order-card .display` is inline `lineHeight: 1` (`portal2.jsx:350/356`) and
+`.cs-tl .lbl` is `1.25` (`portal2.css:31`; `1` on the „now" step, `:33`). Pinning them at
+`normal` would have pinned a DRIFT. They are pinned at the canon's values instead, and the
+timeline's real A10 site is a class this item does not name — `.when` (`portal2.css:34`,
+silent). Measuring against the canon found THREE shipped drifts, all fixed: own-order
+`.display` `.9` → `1` (19.8 → 22px), the history total's inline `.9` removed (canon silent ⇒
+A10 `normal`), and `CycleTimeline.vue` `.when` 17.25px → `normal`. The 320 px pass found two
+real overflows: the state modal's footer at every viewport below ~370px (static copy, no
+hostile text needed) and the drawer (row sub-line + header name). See learnings 10 §PI-T12.
 
 **14. `portal-session-boundary.spec.js`:** the surface walk (252–307) → drawer-based:
 open every drawer item (history expand, balance, explainer incl. the checkbox, profile
 fold, invite, share when open), close, `logout(page)`; invariants 1–4 unchanged; the
 `setupSaving` Esc test unchanged. Header comment updated to name the drawer.
+⚠ **DONE by PI-T12.** „The explainer incl. the checkbox" is TWO stops, not one: the
+„Už mi to neukazovať" checkbox renders only on the first-login GATE (`asGate`), never on
+the drawer's „Ako to funguje". So the modern-login test's two friends are left
+unacknowledged and the walk starts on the gate; the drawer's explainer is a separate stop
+that pins the checkbox's ABSENCE. The balance stop also opens the Platba modal.
 
 **15. `self-hosted-fonts.spec.js`:** the `cycle-date` reference → a landing element
 (`portal-landing`); the three new routes join its zero-external-requests sweep

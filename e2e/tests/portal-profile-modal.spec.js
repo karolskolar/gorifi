@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { collectAppCopy } from '../helpers/copy-sweep.js'
 import { makeAdmin } from '../helpers/admin.js'
+import { stripComments } from '../helpers/source-pins.js'
 
 // FUP-T20's source-grep guard needs the checkout's own path (see that test).
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -1748,36 +1749,165 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
   // rule with a complete-LOOKING list under it is worse than no list.
   //
   // So this walks the SOURCE the way the derivation says to: every overlay MOUNT in
-  // `FriendPortalSession.vue` — `<NeoModal>`, `<LandingStateModal>`, `<NeoDrawer>` and
-  // the teleported `fixed inset-0` voucher div — must be EITHER a term of the auto-open
-  // trigger OR in the exclusion list below WITH a reason. An eighth self-raising overlay
-  // therefore reds here instead of silently stacking on the profile form.
-  test('⚠ SOURCE: every overlay mount is either a trigger term or a documented non-term', () => {
+  // `FriendPortalSession.vue` must be EITHER a term of the auto-open trigger OR in the
+  // exclusion list below WITH a reason. An eighth self-raising overlay therefore reds
+  // here instead of silently stacking on the profile form.
+  //
+  // ⚠⚠ PI-T12 — AND THE WALK ITSELF WAS NARROWER THAN ITS OWN RULE, the same defect one
+  // level down. It found mounts by SHAPE — `<NeoModal|LandingStateModal|NeoDrawer …
+  // v-if>` plus a `<div v-if … class="fixed inset-0">` in exactly that attribute order —
+  // and a census of the template says there are TEN overlay mounts, not nine:
+  // `<PaymentModal v-if="balancePayment" :open="showBalancePayment">` matched neither
+  // shape, so the one overlay whose visibility is a PROP was never classified at all.
+  // Its comment named it a non-term; the pin had never looked. So the mounts now come
+  // from a CENSUS that does not care about the shape: every component named
+  // `*Modal`/`*Dialog`/`*Drawer`/`*Sheet`/`*Popover`, every element with a `fixed`
+  // class token or an inline `position:fixed`, with its visibility read from `:open` /
+  // `v-model:open` / `v-show` first and `v-if` last (PaymentModal's `v-if` gates on
+  // DATA; `:open` is what raises it). Every `<Teleport>` must wrap one of them, so a
+  // teleported surface of a shape nobody thought of is loud too.
+  // ⚠ PI-T12 review — THE CENSUS'S OWN READABILITY. Two holes were found in the first
+  // version, both of the „a regex that silently matches less" kind this pin exists for:
+  //   1. it stripped the TEMPLATE with `stripComments()`, i.e. with JAVASCRIPT rules
+  //      (`//`, `/* */`), which a Vue template does not have — its only comment syntax
+  //      is `<!-- -->`. A stray `/*` in template text would open a hole that swallows
+  //      whatever mount sits after it (the PI-T3 16 709-char hole, one layer over). Now
+  //      the template loses its HTML comments and nothing else, and an ORDERED set of
+  //      tokens spread across every gap between the mounts must survive.
+  //   2. the attribute scan was `[^>]*`, which stops at the first `>` — so
+  //      `<div @click="() => x" class="fixed inset-0" v-if="y">` lost its class and its
+  //      `v-if` and was never counted. The scan is now quote-aware. Both shapes are pinned
+  //      by a direct test on a fixture string (`scanOverlays` is a pure function).
+  const ATTRS = `((?:[^>"']|"[^"]*"|'[^']*')*)`
+  function scanOverlays(tpl) {
+    const keyOf = (attrs) => {
+      const m = attrs.match(/(?:^|\s)(?::open|v-model:open|v-show)="([^"]+)"/) || attrs.match(/(?:^|\s)v-if="([^"]+)"/)
+      return m ? m[1].trim().split(/\s*&&\s*/)[0].replace(/^!/, '') : null
+    }
+    const text = tpl.replace(/<!--[\s\S]*?-->/g, (c) => ' '.repeat(c.length)) // keep offsets
+    return [
+      ...[...text.matchAll(new RegExp(`<([A-Z][\\w]*(?:Modal|Dialog|Drawer|Sheet|Popover))\\b${ATTRS}>`, 'g'))]
+        .map((m) => ({ what: `<${m[1]}>`, key: keyOf(m[2]), at: m.index })),
+      ...[...text.matchAll(new RegExp(`<([a-z][\\w-]*)\\b${ATTRS}>`, 'g'))]
+        // A WHOLE class token (`fixed`, or a variant like `md:fixed`) — `\bfixed\b` also
+        // matched `not-fixed-here`, since `-` is a word boundary (the fixture caught it).
+        .filter((m) => (m[2].match(/(?:^|\s)class="([^"]*)"/)?.[1] || '').split(/\s+/).some((c) => /^(?:[\w-]+:)*fixed$/.test(c))
+          || /position:\s*fixed/.test(m[2]))
+        .map((m) => ({ what: `<${m[1]} class="fixed …">`, key: keyOf(m[2]), at: m.index })),
+    ].sort((a, b) => a.at - b.at)
+  }
+
+  /** Tokens that sit in EVERY gap between the ten mounts, in template order. */
+  const GATE_TOKENS = [
+    'landing-status', //                          ← before the closed state modal
+    'landing-closed-banner', 'own-order-card', // ← closed modal … locked modal
+    'landing-locked-banner', 'history-round', // ← locked modal … PaymentModal
+    'showBalancePayment = false', //              ← PaymentModal … profile modal
+    'Zmeniť heslo', //                            ← profile modal … forced-password
+    'forcedError', //                             ← forced-password … credential setup
+    'Nastavte si osobné prihlásenie', //          ← credential setup … Google prompt
+    'google-link-prompt', //                      ← Google prompt … invite
+    'Pozvi priateľa', //                          ← invite … drawer
+    'onMenuSelect', //                            ← drawer … voucher overlay
+    'Máš voucher!', //                            ← inside the teleported voucher overlay
+  ]
+
+  /** The overlay census of `FriendPortalSession.vue`'s template — see the notes above. */
+  function overlayCensus() {
     const file = resolve(HERE, '..', '..', 'frontend', 'src', 'views', 'FriendPortalSession.vue')
     expect(existsSync(file), file).toBe(true)
     const src = readFileSync(file, 'utf8')
-    // Readability gate (the PI-T3 rule): a regex that silently matched nothing would
-    // make every assertion below vacuous.
     expect(src.length, 'the component source is readable').toBeGreaterThan(50_000)
+    const tplStart = src.lastIndexOf('</script>')
+    const tplEnd = src.indexOf('<style', tplStart)
+    expect(tplStart > 0 && tplEnd > tplStart, 'the template region was found').toBe(true)
+    const tpl = src.slice(tplStart, tplEnd).replace(/<!--[\s\S]*?-->/g, (c) => ' '.repeat(c.length))
 
-    const mounts = [
-      ...[...src.matchAll(/<(?:NeoModal|LandingStateModal|NeoDrawer)\b[^>]*?\sv-if="([^"]+)"/gs)].map((m) => m[1]),
-      ...[...src.matchAll(/<div\s+v-if="([^"]+)"[^>]*class="fixed inset-0[^"]*"/g)].map((m) => m[1]),
-    ].map((expr) => expr.trim().split(/\s*&&\s*/)[0].replace(/^!/, ''))
-    expect(mounts.length, 'the mount walk found nothing — the regex broke').toBeGreaterThanOrEqual(9)
+    // Readability gate ON THE TEXT THE REGEXES READ: every token, in order.
+    let last = -1
+    for (const token of GATE_TOKENS) {
+      const at = tpl.indexOf(token, last + 1)
+      expect(at, `census gate: \`${token}\` must survive the comment strip, after the previous token`).toBeGreaterThan(last)
+      last = at
+    }
 
-    // The trigger's own negated terms, harvested from source. Line comments are stripped
-    // first so a term merely NAMED in the prose above cannot count as one.
+    const hits = scanOverlays(tpl)
+    // …and the tokens really do INTERLEAVE the mounts: between two consecutive hits
+    // there is always at least one token, so no stretch between mounts is unread.
+    const tokenAt = []
+    let cursor = -1
+    for (const token of GATE_TOKENS) { cursor = tpl.indexOf(token, cursor + 1); tokenAt.push(cursor) }
+    for (let i = 0; i + 1 < hits.length; i++) {
+      expect(tokenAt.some((t) => t > hits[i].at && t < hits[i + 1].at),
+        `census gate: no token between ${hits[i].what} and ${hits[i + 1].what} — add one to GATE_TOKENS`).toBe(true)
+    }
+
+    // Each `<Teleport>` as the [start, end) range it spans in the template.
+    const teleports = [...tpl.matchAll(/<Teleport\b[^>]*>[\s\S]*?<\/Teleport>/g)]
+      .map((m) => ({ start: m.index, end: m.index + m[0].length, text: m[0] }))
+    return { src, tpl, hits, teleports }
+  }
+
+  test('⚠ SOURCE: the census counts the shapes a narrower scan would miss (a fixture, not the component)', () => {
+    const fixture = [
+      '<div @click="() => close()" class="fixed inset-0 z-50" v-if="arrowFirst"></div>',
+      '<SomethingDialog v-model:open="modelOpen" />',
+      '<NeoModal :title="a > b ? \'x\' : \'y\'" v-if="gtInAttr">',
+      '<PaymentModal v-if="data" :open="propOpen" />',
+      '<div style="position: fixed; inset: 0" v-show="inlineFixed"></div>',
+      '<!-- <NeoModal v-if="commentedOut"> -->',
+      '<div class="not-fixed-here" v-if="plain"></div>',
+      // A `/*` in template TEXT and a `*/` later: JS comment rules would swallow the
+      // drawer between them. HTML has no such comment, so it must be counted.
+      '<p>see /* here</p>',
+      '<NeoDrawer v-if="afterStray" />',
+      '<p>and here */ too, with a // for good measure</p>',
+    ].join('\n')
+    // Non-vacuity for the HTML-only strip: the JS strip really WOULD have lost it.
+    expect(scanOverlays(stripComments(fixture)).map((h) => h.key), 'the JS strip swallows the drawer').not.toContain('afterStray')
+    expect(scanOverlays(fixture).map((h) => h.key))
+      .toEqual(['arrowFirst', 'modelOpen', 'gtInAttr', 'propOpen', 'inlineFixed', 'afterStray'])
+  })
+
+  /** The trigger's own negated terms, harvested from source. */
+  function triggerTerms(src) {
     const getter = src.match(/\(\)\s*=>\s*profileAutoOpenArmed\.value([\s\S]*?),\n\s*\(ready\)/)
     expect(getter, 'the auto-open trigger was not found — did it move?').toBeTruthy()
+    // Line comments are stripped first so a term merely NAMED in the prose cannot count.
     const code = getter[1].split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
-    const terms = [...code.matchAll(/&&\s*!\s*([A-Za-z_$][\w$]*)\.value/g)].map((m) => m[1])
+    return [...code.matchAll(/&&\s*!\s*([A-Za-z_$][\w$]*)\.value/g)].map((m) => m[1])
+  }
 
-    // ⚠ EVERY exclusion carries its reason. „Needs a friend's click" and „is not an
-    // overlay at all" are the only two admissible ones; anything else is a term.
-    const NOT_SELF_RAISING = {
-      showInviteModal: 'the „Pozvať" chip / drawer row — a friend clicks it',
-      menuOpen: 'the hamburger — a friend clicks it',
+  // ⚠ EVERY exclusion carries its reason. „Needs a friend's click" and „is not an
+  // overlay at all" are the only two admissible ones; anything else is a term.
+  const NOT_SELF_RAISING = {
+    showInviteModal: 'the „Pozvať" chip / drawer row — a friend clicks it',
+    menuOpen: 'the hamburger — a friend clicks it',
+    showBalancePayment: '„Zaplatiť" (`pay-balance` / `debt-banner-pay`) — a friend clicks it (PI-T12: the census found it)',
+  }
+  // ⚠ And the one term that is NOT an overlay mount, with ITS reason — the reverse
+  // direction of the walk, so a term with no surface behind it cannot hide either.
+  const NON_MOUNT_TERMS = {
+    explainerGate: 'the first-login gate is a VIEW (`router.replace`), not a mount — but it owns that first login (18 §UC-PI-013)',
+  }
+
+  test('⚠ SOURCE: every overlay mount is either a trigger term or a documented non-term', () => {
+    const { src, hits, teleports } = overlayCensus()
+    const terms = triggerTerms(src)
+
+    // Every census hit resolves to a visibility expression — an overlay mounted with
+    // no condition at all would be ALWAYS up, which is its own defect.
+    const keyless = hits.filter((h) => !h.key).map((h) => h.what)
+    expect(keyless, `overlay(s) with no v-if / v-show / :open: ${JSON.stringify(keyless)}`).toEqual([])
+    const mounts = hits.map((h) => h.key)
+    expect(mounts.length, 'the census found nothing — the regex broke').toBeGreaterThanOrEqual(10)
+
+    // Every `<Teleport>` wraps a census hit — a teleported surface is an overlay by
+    // construction, so one of an unrecognised shape must red HERE.
+    expect(teleports.length, 'non-vacuity: the voucher overlay is teleported').toBeGreaterThan(0)
+    for (const t of teleports) {
+      const inner = hits.filter((h) => h.at > t.start && h.at < t.end)
+      expect(inner.length, `a <Teleport> wraps no recognised overlay:\n${t.text.slice(0, 200)}`).toBeGreaterThan(0)
     }
 
     const unaccounted = mounts.filter((id) => !terms.includes(id) && !(id in NOT_SELF_RAISING))
@@ -1788,23 +1918,47 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
       `no friend action it MUST join the trigger (18 §UC-PI-015); if it cannot, add it ` +
       `to NOT_SELF_RAISING with its reason.`
     ).toEqual([])
-
-    // …and the other direction: the seven self-raising surfaces really are terms, so a
-    // deleted term reds here too and not only in its behaviour test.
-    for (const id of [
-      'forcedPasswordChange', 'showCredentialSetup', 'showGooglePrompt', 'explainerGate',
-      'showClosedModal', 'showLockedModal', 'showVoucherModal',
-    ]) {
-      expect(terms, `${id} must be a term of the auto-open trigger`).toContain(id)
+    // An exclusion must name a mount that EXISTS — a stale entry would exempt the next
+    // overlay to reuse the name.
+    for (const id of Object.keys(NOT_SELF_RAISING)) {
+      expect(mounts, `NOT_SELF_RAISING.${id} names no overlay mount any more`).toContain(id)
     }
-    // ⚠ `showProfileModal` is a term for a DIFFERENT reason — not „it raises itself" but
-    // „it may already be open", and `openProfileModal()` re-seeds every field. It is
-    // therefore NOT in NOT_SELF_RAISING (it is not an exclusion) and is asserted here so
-    // deleting it reds in source as well as in its behaviour test.
+  })
+
+  // ⚠⚠ PI-T12 — THE TERM COUNT, PINNED (the PI-T10 review's ask: „pin the COUNT, not
+  // the spelling"). The walk above says every self-raising MOUNT is a term; it cannot
+  // say the trigger has no term too MANY or too FEW, and before this test the count was
+  // a floor (`>= 8`) plus a list of seven names — a spelling pin, which reds on a
+  // harmless rename and says nothing about a ninth term. Now the set is DERIVED from
+  // the census and must equal the harvest exactly, and its size is pinned as a number a
+  // diff has to change on purpose. Every term the trigger gains or loses reds here.
+  test('⚠ SOURCE: the auto-open trigger has EXACTLY the derived term set — its COUNT is pinned', () => {
+    const { src, hits } = overlayCensus()
+    const terms = triggerTerms(src)
+    const mounts = hits.map((h) => h.key)
+
+    // The DERIVATION, stated as code: every overlay mount that is not a documented
+    // click-only surface, plus the documented non-mount terms.
+    const derived = [...new Set([
+      ...mounts.filter((id) => !(id in NOT_SELF_RAISING)),
+      ...Object.keys(NON_MOUNT_TERMS),
+    ])].sort()
+    expect([...terms].sort(), 'the trigger\'s terms are exactly the derived set').toEqual(derived)
+    // No duplicates, and no excluded surface smuggled in as a term.
+    expect(new Set(terms).size, 'a term repeated').toBe(terms.length)
+    expect(terms.filter((id) => id in NOT_SELF_RAISING), 'a click-only surface is a term').toEqual([])
+
+    // ⚠ THE COUNTS, as numbers. 10 overlay mounts (5 NeoModal, 2 LandingStateModal,
+    // NeoDrawer, PaymentModal, the voucher's fixed div); 8 terms = the 7 self-raising
+    // surfaces + `showProfileModal` (the re-prefill guard — already OPEN, not
+    // self-raising, and a term for that reason; see the re-prefill test below).
+    // Changing either number is a DELIBERATE edit, made with the derivation re-walked.
+    // ⚠ The two numbers are ALSO written in three prose copies — keep them in step.
+    const COPIES = 'CLAUDE.md (§Money & data, the profile auto-open rule), the trigger comment in ' +
+      '`FriendPortalSession.vue`, and docs/learnings/10-portal-ia.md §PI-T12 §4'
+    expect(mounts.length, `overlay mounts in FriendPortalSession.vue — if this moves, update ${COPIES}`).toBe(10)
+    expect(terms.length, `auto-open trigger terms — if this moves, update ${COPIES}`).toBe(8)
     expect(terms, 'showProfileModal guards against re-prefilling an open modal').toContain('showProfileModal')
-    // Non-vacuity for the harvest itself: a broken regex would make every `toContain`
-    // above pass against an empty array only if it threw — this makes it explicit.
-    expect(terms.length, 'the trigger-term harvest found nothing').toBeGreaterThanOrEqual(8)
   })
 
   // ⚠⚠ THE VOUCHER OVERLAY — the SEVENTH self-raising surface, and the worst one to

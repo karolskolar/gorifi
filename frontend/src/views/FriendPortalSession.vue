@@ -1732,12 +1732,15 @@ const profilePhoneMissing = computed(() => !String(props.friend?.phone ?? '').tr
  * ⚠⚠ THE LIST BELOW IS DERIVED, AND THE DERIVATION IS THE PART THAT MATTERS — because
  * a hand-kept list under a class rule reads as complete and has now been wrong TWICE
  * (round 1 missed the two landing state modals; round 2 missed the voucher overlay).
- * THE DERIVATION: walk every overlay MOUNT in this file's template — `<NeoModal>`,
- * `<LandingStateModal>`, `<NeoDrawer>`, and the teleported `fixed inset-0` voucher div —
+ * THE DERIVATION: walk every overlay MOUNT in this file's template — ~~`<NeoModal>`,
+ * `<LandingStateModal>`, `<NeoDrawer>`, and the teleported `fixed inset-0` voucher div~~
+ * **every `*Modal`/`*Dialog`/`*Drawer` component and every `fixed` element, whatever its
+ * shape (PI-T12: that four-shape list missed `<PaymentModal :open>`, the TENTH mount)** —
  * and ask of each „can this raise with NO friend action?" Yes ⇒ it is a term.
  * ⚠ `portal-profile-modal.spec.js` PINS THAT WALK IN SOURCE, so an EIGHTH self-raising
- * overlay reds instead of silently stacking. Do not maintain the list by hand; add the
- * mount and let the pin tell you.
+ * overlay reds instead of silently stacking — and, since PI-T12, it pins the COUNTS
+ * too (10 mounts, 8 terms) and derives the exact term set, so a term added or dropped
+ * reds as well. Do not maintain the list by hand; add the mount and let the pin tell you.
  *
  * The seven self-raising surfaces, and why each is one:
  *   · `forcedPasswordChange`  — 03 §UC-FL-012, non-dismissable `NeoModal`.
@@ -2662,8 +2665,12 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
             <!-- ⚠ `line-height` INLINE — `friends-theme.css` loads after Tailwind and
                  `:where(.app,.modal-layer) .display` matches at the same specificity
                  as a utility, so the canon's value survives only as a style attribute
-                 (CLAUDE.md §Frontend; the same remedy `LandingStateModal` uses). -->
-            <span class="display" style="font-size:22px;line-height:.9">Vaša objednávka</span>
+                 (CLAUDE.md §Frontend; the same remedy `LandingStateModal` uses).
+                 ⚠ The canon's value HERE is `1` (`portal2.jsx:350`, and `:356` for the
+                 total below). PI-T5 shipped `.9` — `LandingStateModal`'s 38px date value,
+                 a different element — and PI-T12's `portal-fidelity` pin measured it
+                 (19.8px, not 22px). -->
+            <span class="display" style="font-size:22px;line-height:1">Vaša objednávka</span>
             <!-- The cycles payload's `hasOrder` is a SUBMITTED order (`routes/
                  friends.js`), so this badge has no second state to carry. -->
             <span class="badge ok">Odoslaná</span>
@@ -2688,7 +2695,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
             <span class="field-lbl">Spolu</span>
             <span
               class="display"
-              style="font-size:22px;line-height:.9"
+              style="font-size:22px;line-height:1"
               data-testid="own-order-total"
             >{{ fmtEur(lockedOwnOrder.total) }}</span>
           </div>
@@ -2904,10 +2911,14 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
                  from that fetch instead (`roundLines[id].total`), because `cycles` is
                  seeded at the handshake and never reloaded in-session — see
                  `loadRoundLines`. Either way the number is the SERVER's; this view still
-                 derives no money. `EUR` on a total, `€` on the lines below. -->
+                 derives no money. `EUR` on a total, `€` on the lines below.
+                 ⚠ NO inline `line-height`, unlike the name beside it: the canon sets
+                 `fontSize: 18` and nothing else here (`portal2.jsx:211`), so `.display`
+                 is left to A10's `normal`. PI-T6 shipped `.9` (16.2px, measured by
+                 PI-T12's `portal-fidelity` pin). -->
             <span
               class="display"
-              style="font-size:18px;line-height:.9"
+              style="font-size:18px"
               data-testid="history-total"
             >{{ fmtEur(roundLines[round.id]?.total ?? round.orderTotal) }}</span>
             <span class="chev" :class="{ open: expandedRound === round.id }"><NeoIcon name="chev" /></span>

@@ -2,12 +2,13 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 // PI-T3 review · the ONE home of source reading + comment stripping. See its header:
 // the obvious stripper is WRONG on a `.vue` file and made these pins vacuous.
-import { assertReadable, code as sharedCode } from '../helpers/source-pins.js'
+import { assertReadable, code as sharedCode, stripComments } from '../helpers/source-pins.js'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 import { expectLanding, expectNoLanding, LANDING, logout, expectChromeName } from '../helpers/portal.js'
 import { makeAdmin } from '../helpers/admin.js'
+import { importClosure } from '../helpers/vocabulary.js'
 
 // PI-T1 — module 18 (portal information architecture), 18 §UC-PI-001 /
 // §UC-PI-002 / §UC-PI-019 items 1, 2, 15. The SHELL: four routes on one session,
@@ -680,16 +681,20 @@ test.describe('PI-T1 · one home — no second copy of module 17, no state in th
 
   test('⚠ no ADMIN view imports the three module-18 libs (02 UC-DS-014 admin invariance)', () => {
     // §UC-PI-019 item 18, asserted early because it is cheapest to keep true.
-    const adminish = ['views/CycleDetail.vue', 'views/Distribution.vue', 'views/AdminDashboard.vue',
-      'views/AdminFriends.vue', 'views/AdminSettings.vue', 'views/FriendDetail.vue']
-    let checked = 0
-    for (const f of adminish) {
-      if (!existsSync(join(FRONTEND_SRC, f))) continue
-      checked += 1
-      const src = read(f)
-      expect(src, f).not.toMatch(/lib\/(portal-state|dates)/)
+    // ⚠⚠ STRENGTHENED BY PI-T12 (the closeout's own item 18). This read a TYPED list of
+    // six admin views for a regex naming TWO of the three libs — so `lib/roasters.js`
+    // was not in it at all (`portal-explainer.spec.js` §7 covers that one on its own),
+    // ten of the sixteen admin route components (`LiveCycleDashboard`, the analytics
+    // views, `AdminCatalog` …) were never read, and a TRANSITIVE import — an admin view
+    // importing a shared component that imports `lib/dates.js` — was invisible by
+    // construction. It now asks the question the rule asks: is any of the three libs
+    // REACHABLE from an admin route? `adminClosure()` (the describe below) derives the
+    // roots from `router.js` and walks every import form `importClosure()` follows.
+    const closure = adminClosure()
+    for (const lib of ['lib/roasters.js', 'lib/dates.js', 'lib/portal-state.js']) {
+      expect(existsSync(join(FRONTEND_SRC, lib)), `non-vacuity: ${lib} exists`).toBe(true)
+      expect(closure, `${lib} is reachable from an admin route`).not.toContain(lib)
     }
-    expect(checked, 'admin views were actually read').toBeGreaterThan(3)
   })
 })
 
@@ -862,5 +867,205 @@ test.describe('PI-T1 · 18 §UC-PI-002 — the friend cycles payload extension',
         headers: fx.friend.auth, data: { types: [] }, timeout: TIMEOUT,
       })
     }
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PI-T12 · 18 §UC-PI-019 item 18 — ADMIN INVARIANCE (02 §UC-DS-014 item 2)
+//
+// „Admin views don't reference `pp-*` utilities, `neo/` components, or theme classes,
+// and `friends-theme.css` contains no unprefixed component selector" — re-asserted by
+// every later task, and module 18 is the one that added the most friend-only surface
+// (`components/neo/NeoDrawer.vue`, `lib/roasters|dates|portal-state.js`, the whole
+// portal-v2 `p2-*` canon sync) right next to the admin skin.
+//
+// ⚠ THE ADMIN SURFACE IS DERIVED, NEVER LISTED — the PI-T11 lesson (a class enumerated
+// by hand goes stale the moment someone adds a file). The roots are every `/admin…`
+// route component in `router.js`; the surface is their import closure, so a shared
+// component an admin view pulls in is checked exactly like the view.
+//
+// ⚠ These are SOURCE pins. The DOM half — theme classes absent from a rendered admin
+// page — already lives with the surfaces it measures (`catalog-admin.spec.js`
+// „admin-skin invariance", `portal-balance.spec.js` §7, `portal-profile-modal.spec.js`
+// „Admin invariance"), and `BalanceBadge.vue`'s „untouched on this branch" is
+// `portal-balance.spec.js` §7's `git diff` pin.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Every `/admin…` route in `router.js`, each resolved to its component file (or marked
+ * a redirect). ⚠ PI-T12 review: the first version was ONE regex whose `[^}]*?` stopped at
+ * the first `}` — so a `meta: { … }` or `props: { … }` written before `component` hid the
+ * route, and a static `component: AdminX` (an imported identifier) never matched at all.
+ * Now each route is the text from its `path:` to the next one, and the component is read
+ * in either form. `adminClosure()` reconciles the count EXACTLY against the raw number of
+ * `path: '/admin` occurrences, so a route this parser cannot resolve reds instead of
+ * silently leaving the admin surface.
+ */
+function adminRoutes() {
+  const router = stripComments(readFileSync(join(FRONTEND_SRC, 'router.js'), 'utf8'))
+  const statics = Object.fromEntries(
+    [...router.matchAll(/import\s+([A-Za-z_$][\w$]*)\s+from\s+['"]\.\/([^'"]+)['"]/g)].map((m) => [m[1], m[2]])
+  )
+  const starts = [...router.matchAll(/path:\s*['"]([^'"]*)['"]/g)]
+  const routes = []
+  starts.forEach((m, i) => {
+    if (!m[1].startsWith('/admin')) return
+    const body = router.slice(m.index, i + 1 < starts.length ? starts[i + 1].index : router.length)
+    const lazy = body.match(/component:\s*\(\)\s*=>\s*import\(\s*['"]\.\/([^'"]+)['"]\s*\)/)
+    const stat = body.match(/component:\s*([A-Za-z_$][\w$]*)\s*[,}\n]/)
+    routes.push({
+      path: m[1],
+      file: lazy ? lazy[1] : stat ? statics[stat[1]] || `UNRESOLVED-STATIC:${stat[1]}` : null,
+      redirect: /\bredirect:/.test(body),
+    })
+  })
+  return { routes, raw: (router.match(/path:\s*['"]\/admin/g) || []).length }
+}
+
+function adminRoots() {
+  return adminRoutes().routes.map((r) => r.file).filter(Boolean)
+}
+
+/** The admin surface: the import closure of every admin route component. */
+function adminClosure() {
+  const { routes, raw } = adminRoutes()
+  // EXACT reconciliation: every `path: '/admin…'` in the file is a route this parser
+  // resolved to a component, or an explicit redirect — nothing in between.
+  expect(routes.length, 'every `path: \'/admin` occurrence was parsed').toBe(raw)
+  const unresolved = routes.filter((r) => !r.redirect && (!r.file || r.file.startsWith('UNRESOLVED')))
+  expect(unresolved, 'admin routes whose component could not be resolved').toEqual([])
+  const roots = adminRoots()
+  expect(roots.length + routes.filter((r) => !r.file && r.redirect).length, 'components + redirects = admin routes').toBe(raw)
+  // Non-vacuity: the regex really found the admin routes, and the two the spec names.
+  expect(roots.length, 'admin route components found in router.js').toBeGreaterThanOrEqual(16)
+  expect(roots).toEqual(expect.arrayContaining(['views/CycleDetail.vue', 'views/Distribution.vue', 'views/AdminFriends.vue']))
+  const closure = importClosure(roots)
+  expect(closure.filter((f) => f.startsWith('UNRESOLVED:')), 'every admin import resolves').toEqual([])
+  return closure
+}
+
+/**
+ * Class tokens a template writes: every static `class="…"`, plus the object KEYS of
+ * every `:class="…"` — quoted (`{ 'bg-x text-y': c }`) AND unquoted (`{ active: c }`).
+ * ⚠ PI-T12 review: the first version read quoted keys only, so `{ banner: c }` walked
+ * past it. NOT harvested, deliberately: string literals in `:class` ternaries/arrays —
+ * they are indistinguishable from comparison operands (`dir === 'flat'` measured as a
+ * false `flat` class in `CoffeeAnalytics.vue`), so the DOM half (`catalog-admin`,
+ * `portal-balance` §7) stays the net for a class chosen at runtime.
+ */
+function templateClasses(relPath) {
+  const text = stripComments(readFileSync(join(FRONTEND_SRC, relPath), 'utf8'))
+  const tokens = []
+  for (const m of text.matchAll(/\sclass="([^"]*)"/g)) tokens.push(...m[1].split(/\s+/).filter(Boolean))
+  for (const m of text.matchAll(/:class="([^"]*)"/g)) {
+    for (const k of m[1].matchAll(/'([^']+)'\s*:/g)) tokens.push(...k[1].split(/\s+/).filter(Boolean))
+    for (const k of m[1].matchAll(/[{,]\s*([A-Za-z_][\w-]*)\s*:/g)) tokens.push(k[1])
+  }
+  return tokens
+}
+
+/** Every class token a `friends-theme.css` selector names — the theme vocabulary. */
+function themeVocabulary() {
+  const css = readFileSync(join(FRONTEND_SRC, 'friends-theme.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  const vocab = new Set()
+  for (const m of css.matchAll(/([^{}]+)\{/g)) {
+    const prelude = m[1].trim()
+    if (prelude.startsWith('@')) continue
+    for (const c of prelude.matchAll(/\.([A-Za-z_][\w-]*)/g)) vocab.add(c[1])
+  }
+  vocab.delete('app')
+  vocab.delete('modal-layer')
+  return vocab
+}
+
+test.describe('PI-T12 · 18 §UC-PI-019 item 18 — admin invariance, over the DERIVED admin surface', () => {
+  test.skip(!HAS_SRC, NEEDS_SRC)
+
+  test('no admin-reachable file is a `components/neo/` primitive or a module-18 portal lib', () => {
+    const closure = adminClosure()
+    // Non-vacuity: the closure is the admin skin, shared components included.
+    expect(closure.length, 'the admin import closure').toBeGreaterThan(40)
+    expect(closure).toEqual(expect.arrayContaining(['components/BalanceBadge.vue', 'components/CycleTimeline.vue']))
+    expect(closure.filter((f) => f.startsWith('components/neo/')), 'a neo primitive is reachable from an admin route')
+      .toEqual([])
+    // The friend-surface ROOTS must not be reachable either — an admin view that
+    // imported `FriendOrder.vue` would drag the whole neobrutal skin in with it.
+    expect(closure.filter((f) => /^(views\/(FriendPortal|FriendPortalSession|FriendOrder)\.vue|components\/(PortalExplainer|DebtBanner|LandingStateModal|FriendBalanceCard)\.vue)$/.test(f)),
+      'a friend-portal surface is reachable from an admin route').toEqual([])
+  })
+
+  test('no admin template writes a `pp-*` utility, a `p2-*` class or a friends-theme class', () => {
+    const closure = adminClosure().filter((f) => f.endsWith('.vue'))
+    const vocab = themeVocabulary()
+    // Non-vacuity for the vocabulary: it is the theme, `p2-*` canon sync included.
+    expect(vocab.size, 'the theme vocabulary').toBeGreaterThan(100)
+    for (const c of ['banner', 'appbar', 'cartbar', 'm-title', 'field-lbl', 'p2-drawer', 'p2-ro']) expect(vocab.has(c), c).toBe(true)
+
+    // ⚠ The ONLY admissible overlaps, each with its reason. A theme selector matches
+    // nothing outside `.app` / `.modal-layer` (the item's second half, below), so a
+    // shared WORD is inert — but it must be a word someone decided on, not one that
+    // slipped in.
+    const COLLISIONS = {
+      grid: 'Tailwind `display:grid` utility — the theme\'s `.qr .grid` is a different class of the same name',
+      block: 'Tailwind `display:block` utility — the theme\'s `.btn.block` modifier only applies inside `.app`',
+      ln: '`CycleTimeline.vue`\'s OWN scoped `.cs-dots .ln` (module 17, the one shared component)',
+      lbl: '`CycleTimeline.vue`\'s OWN scoped `.cs-tl .lbl` (module 17, the one shared component)',
+    }
+
+    const offenders = []
+    let seen = 0
+    for (const f of closure) {
+      for (const tok of templateClasses(f)) {
+        seen += 1
+        const bare = tok.replace(/^.*:/, '') // `hover:bg-pp-accent` → `bg-pp-accent`
+        if (/(^|-)pp-/.test(bare)) offenders.push(`${f}: \`${tok}\` is a pp-* utility`)
+        else if (/^p2-/.test(bare)) offenders.push(`${f}: \`${tok}\` is a p2-* class`)
+        else if (vocab.has(bare) && !(bare in COLLISIONS)) offenders.push(`${f}: \`${tok}\` is a friends-theme class`)
+      }
+    }
+    expect(seen, 'non-vacuity: the admin templates carry class tokens').toBeGreaterThan(1000)
+    // …and the UNQUOTED `:class` key harvest really fires on this surface (today: only
+    // `CycleTimeline.vue`'s `{ now: …, next: … }`), so its silence is a measurement too.
+    const unquoted = templateClasses('components/CycleTimeline.vue')
+    expect(unquoted, 'the unquoted `:class` key harvest reads `{ now: … }`').toEqual(expect.arrayContaining(['now', 'next']))
+    expect(offenders, offenders.join('\n')).toEqual([])
+
+    // POSITIVE CONTROL — the same harvest over the FRIEND surface finds theme classes
+    // by the hundred, so an empty admin result above is a measurement, not a blind spot.
+    let friendHits = 0
+    for (const f of importClosure(['views/FriendPortal.vue']).filter((x) => x.endsWith('.vue'))) {
+      friendHits += templateClasses(f).filter((t) => vocab.has(t) && !(t in COLLISIONS)).length
+    }
+    expect(friendHits, 'the harvest SEES theme classes where they are').toBeGreaterThan(100)
+  })
+
+  test('`friends-theme.css` has no unprefixed component selector — every rule is scoped to `.app` / `.modal-layer`', () => {
+    const css = readFileSync(join(FRONTEND_SRC, 'friends-theme.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+    const unscoped = []
+    let selectors = 0
+    for (const m of css.matchAll(/([^{}]+)\{/g)) {
+      const prelude = m[1].trim()
+      if (!prelude || prelude.startsWith('@')) continue
+      // Split on TOP-LEVEL commas only — `:where(.app, .modal-layer)` has its own.
+      const parts = []
+      let depth = 0
+      let cur = ''
+      for (const ch of prelude) {
+        if (ch === '(') depth++
+        else if (ch === ')') depth--
+        if (ch === ',' && depth === 0) { parts.push(cur.trim()); cur = '' } else cur += ch
+      }
+      parts.push(cur.trim())
+      for (const sel of parts) {
+        selectors += 1
+        // `from`/`to`/`n%` are @keyframes steps; `.app{…}` / `.modal-layer{…}` are the
+        // A6 scope roots themselves.
+        if (/^(from|to|\d+(\.\d+)?%)$/.test(sel)) continue
+        if (/^(:where\(\.app,\s*\.modal-layer\)|\.app\b|\.modal-layer\b)/.test(sel)) continue
+        unscoped.push(sel)
+      }
+    }
+    expect(selectors, 'non-vacuity: the stylesheet\'s selectors were read').toBeGreaterThan(200)
+    expect(unscoped, `selectors that would reach the admin skin:\n${unscoped.join('\n')}`).toEqual([])
   })
 })

@@ -3,7 +3,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test'
 // It replaces this file's `getByRole('heading', { name: 'Objednávkové cykly' })`
 // waits: that heading is a STRUCTURE module 18 retires (§UC-PI-005), so a gate
 // tied to its copy could not survive the screen. Same claim, one home.
-import { ackExplainer, expectLanding, logout, openProfile } from '../helpers/portal.js'
+import { LANDING, ackExplainer, expectLanding, logout, menuGo, openMenu, openProfile } from '../helpers/portal.js'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { makeAdmin } from '../helpers/admin.js'
 
@@ -19,10 +19,15 @@ import { makeAdmin } from '../helpers/admin.js'
 // working, and every row still adds refs.
 //
 // So this spec enumerates the SURFACE, not the refs. It walks everything a
-// friend can open — every disclosure, every modal reachable from the appbar and
-// the cycle cards — types a unique `SENTINEL-<n>` into every field, ticks every
-// control, logs out, logs a DIFFERENT friend in, and walks the same surface
-// again asserting four invariants that name no ref at all:
+// friend can open — ~~every disclosure, every modal reachable from the appbar and
+// the cycle cards~~ **since PI-T12 (18 §UC-PI-019 item 14): every item of the
+// hamburger DRAWER** (history with a round expanded, „Zostatok a platby" with its
+// Platba modal, „Ako to funguje", Profil with its password fold, „Pozvať priateľa",
+// „Zdieľať s kolegami" when the landing's round is open) **plus the first-login
+// explainer GATE and its „Už mi to neukazovať" checkbox** — types a unique
+// `SENTINEL-<n>` into every field, ticks every control, logs out, logs a DIFFERENT
+// friend in, and walks the same surface again asserting four invariants that name
+// no ref at all:
 //
 //   1. `page.content()` contains no `SENTINEL-`;
 //   2. every visible password-ish field still renders `type="password"`;
@@ -31,8 +36,12 @@ import { makeAdmin } from '../helpers/admin.js'
 //   4. every visible `[aria-pressed]` toggle reads `"false"` — B pressed nothing,
 //      so nothing on B's screen may be engaged.
 //
-// A row that adds a modal is covered the moment the modal is reachable from the
-// appbar or a cycle card — no edit here, and no ref list to keep in sync.
+// A row that adds a modal is covered the moment the modal is reachable from ~~the
+// appbar or a cycle card~~ a DRAWER item (the cycle cards are retired, 18
+// §UC-PI-005) — ⚠ with one edit here after all: the walk names the drawer's rows,
+// because a view has no generic „open everything" control. So the walk READS the
+// drawer's `[data-menu-item]` keys at its drawer stop and reds on any key it does not
+// visit (`WALKED_ROWS`) — a new row cannot join the drawer without joining this walk.
 //
 // ⚠ SCOPE, STATED HONESTLY — this net is narrower than the paragraph above
 // suggests, and nobody should read a green run as "switchUser() is clean".
@@ -113,7 +122,7 @@ const admin = makeAdmin({
 let boundaryPhoneSeq = 0
 const nextBoundaryPhone = () => `0900 12 3${String(++boundaryPhoneSeq).padStart(3, '0')}`
 
-async function makeFriend(label, password) {
+async function makeFriend(label, password, { ack = true } = {}) {
   expect(password, 'each friend needs their OWN password — see PASSWORD_A/B').toBeTruthy()
   const u = uniq()
   const phone = nextBoundaryPhone()
@@ -148,7 +157,12 @@ async function makeFriend(label, password) {
   // funguje", so a LOGIN THROUGH THE CARD would land on `/ako-to-funguje` — where the
   // hamburger is a back chevron, so every drawer helper below times out. One round
   // trip through the real route; see `helpers/portal.js ackExplainer`.
-  await ackExplainer(ctx, { id: row.id, token })
+  // ⚠ `ack: false` (PI-T12) is the modern-login test's choice, and it is deliberate:
+  // the GATE is part of the surface this file walks (18 §UC-PI-019 item 14, „the
+  // explainer incl. the checkbox"), and the checkbox renders ONLY on the gate — the
+  // drawer's „Ako to funguje" is the same view without it. So that test's friends are
+  // left unacknowledged and `walkAuthenticated({ gate: true })` walks it first.
+  if (ack) await ackExplainer(ctx, { id: row.id, token })
 
   const profile = await ctx.get(`/api/friends/${row.id}/profile`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -214,6 +228,82 @@ async function makePlainFriend(label) {
  */
 async function muteGuestCounts(page) {
   await page.route('**/api/guest-links/cycle/*', (route) => route.abort())
+}
+
+/**
+ * ⚠ PI-T12 — the data two drawer stops need, and nothing global is written for it.
+ *
+ * A fresh friend has no rounds and no debt, so „Moje objednávky" would be its EMPTY
+ * state and „Zostatok a platby" would offer no „Zaplatiť" — two surfaces with nothing
+ * to expand, fill or leak. Both are STUBBED per page rather than created, keeping this
+ * file's „nothing global is mutated" rule (a real round would be a cycle every later
+ * spec file sees):
+ *   · `GET /friends/cycles` is the REAL list plus ONE completed `hasOrder` round
+ *     (`route.fetch()`), so the landing keeps whatever state the database is in and the
+ *     history view gains exactly one row. A completed row never outranks an open one
+ *     in `resolveLanding()`.
+ *   · that round's line fetch answers PER FRIEND — the line names the friend id it was
+ *     asked for, `#<id>#` — so a lines cache that survived the logout would paint A's
+ *     line on B's screen, and the secret sweep names A's.
+ *   · a debt balance with a `payment` block, so the Platba modal can open — ALSO per
+ *     friend (PI-T12 review): amount, reference and variable symbol all derive from
+ *     the id asked for, so a balance or payment block that survived the logout paints
+ *     A's figures on B's landing banner, drawer badge, account card and Platba modal,
+ *     and the secret sweep names all three.
+ */
+const HISTORY_ROUND_ID = 990_071
+const historyLine = (friendId) => `History line for #${friendId}#`
+const balanceFor = (friendId) => {
+  const id = Number(friendId)
+  return {
+    amount: 500 + id + 0.37,
+    reference: `RDFL7 / zostatok #${id}#`,
+    variable_symbol: `8${String(id).padStart(6, '0')}`,
+  }
+}
+/** What of friend A's money block must never render on B's screen. */
+const balanceSecrets = (friendId) => {
+  const b = balanceFor(friendId)
+  return [b.amount.toFixed(2), b.reference, b.variable_symbol]
+}
+
+async function stubWalkData(page) {
+  await page.route('**/api/friends/cycles*', async (route) => {
+    const res = await route.fetch()
+    const list = await res.json()
+    await route.fulfill({
+      response: res,
+      json: [...(Array.isArray(list) ? list : []), {
+        id: HISTORY_ROUND_ID, name: 'RDFL7 History round', status: 'completed',
+        created_at: '2026-01-01 10:00:00', type: 'coffee', expected_date: null, plan_note: null,
+        opens_at: null, closes_at: null, stage: null, parcel_enabled: 0, parcel_fee: 0,
+        hasOrder: true, orderTotal: 16, orderStatus: 'submitted', orderKilos: 0.5, orderItemCount: 1,
+        orderPickupName: null, orderPacketa: false, orderPaid: true, orderHandedOver: true,
+      }],
+    })
+  })
+  await page.route(`**/api/orders/cycle/${HISTORY_ROUND_ID}/friend/*`, (route) => {
+    const friendId = route.request().url().match(/\/friend\/(\d+)/)[1]
+    return route.fulfill({
+      json: {
+        order: { id: 1, status: 'submitted', total: 16, delivery_fee: 0 },
+        items: [{ id: 1, product_name: historyLine(friendId), purpose: 'Espresso', variant: '250g', quantity: 2, price: 8 }],
+      },
+    })
+  })
+  await page.route('**/api/friends/*/balance', (route) => {
+    const b = balanceFor(route.request().url().match(/\/friends\/(\d+)\/balance/)[1])
+    return route.fulfill({
+      json: {
+        balance: -b.amount,
+        transactions: [],
+        payment: {
+          amount: b.amount, reference: b.reference, iban: 'SK3112000000198742637541',
+          revolut_username: 'gorifitest', variable_symbol: b.variable_symbol, creditor_name: 'Gorifi',
+        },
+      },
+    })
+  })
 }
 
 test.beforeAll(async () => {
@@ -286,30 +376,106 @@ async function fillEverything(scope) {
 }
 
 /**
- * Walk the whole authenticated surface.
+ * Walk the whole authenticated surface — the DRAWER, item by item (18 §UC-PI-019
+ * item 14), plus the first-login gate when `gate` is set.
  *
  * `fill: true`  — seed it (friend A).
  * `fill: false` — re-open the same things and snapshot each (friend B).
+ * `self`        — the friend walking, for the per-friend non-vacuity checks.
  *
  * Deliberately NOT a list of known refs: it enumerates what a friend can OPEN.
  */
-async function walkAuthenticated(page, { fill, snaps = [], label = '' } = {}) {
+/** The drawer rows the walk visits, by `data-menu-item` key. `shop` is the landing stop. */
+const WALKED_ROWS = ['shop', 'history', 'balance', 'share', 'invite', 'explainer', 'profile']
+
+async function walkAuthenticated(page, { fill, snaps = [], label = '', gate = false, self = null } = {}) {
   const record = async (tag) => { if (!fill) snaps.push(await snapshot(page, `${label}:${tag}`)) }
+  const home = new RegExp('/$')
+
+  // ── 0. THE FIRST-LOGIN GATE (18 §UC-PI-013) — the one place „Už mi to neukazovať"
+  // renders. PRE-TICKED is its default (§UC-PI-012 item 8), so friend A UNTICKS it
+  // and friend B must meet it ticked again: an unticked box carried across the
+  // boundary would silently skip B's acknowledgement write. ⚠ That is a state
+  // invariant 4 cannot see (`aria-checked`, not `aria-pressed`), hence named here.
+  if (gate) {
+    await expect(page).toHaveURL(/\/ako-to-funguje$/)
+    const box = page.getByRole('checkbox', { name: 'Už mi to neukazovať' })
+    await expect(box, `${label || 'A'}: the gate's checkbox arrives pre-ticked`).toHaveAttribute('aria-checked', 'true')
+    if (fill) {
+      await fillEverything(page.getByTestId(LANDING))
+      await expect(box, 'non-vacuity: friend A really unticked it').toHaveAttribute('aria-checked', 'false')
+    }
+    await record('explainer-gate')
+    await page.getByTestId('explainer-done').click()
+    await expect(page).toHaveURL(home)
+  }
 
   await expectLanding(page)
   await record('landing')
 
-  // ⚠ PI-T3 · 18 §UC-PI-005/016 — TWO STOPS ARE GONE FROM THIS WALK, because the
-  // surfaces are: the UC-FL-008 archive fold (`showArchive`) and the „Nastavenia
-  // odberu" modal (`subCoffee`/`subBakery`/`subSaving`/`subError`). Both were named
-  // in the six-leak history this file exists for, and both are now UNREACHABLE rather
-  // than unwatched — their refs were deleted with the controls, so there is no state
-  // left to carry over. §UC-PI-019 item 14 gives PI-T12 the drawer-based rewrite that
-  // adds the NEW stops (history, balance, explainer) once those views exist.
+  // ⚠ PI-T3 · 18 §UC-PI-005/016 — the archive fold (`showArchive`) and the
+  // „Nastavenia odberu" modal (`subCoffee`/`subBakery`/`subSaving`/`subError`) are
+  // GONE from this walk because the surfaces are: both were named in the six-leak
+  // history this file exists for, and both are UNREACHABLE rather than unwatched —
+  // their refs were deleted with the controls. PI-T12 replaced them with the drawer.
 
-  // Modal: profile, appbar `.titles` (UC-FL-004/009) — plus its password fold.
-  await openProfile(page)
+  // ── 1. the drawer itself — its header carries the friend's NAME, the one place a
+  // friend's identity renders (§UC-PI-003), so it is a stop in its own right. And it is
+  // where the walk checks its OWN coverage: every row the drawer offers is one below.
+  await openMenu(page)
+  const rows = await page.locator('[data-menu-item]').evaluateAll((els) => els.map((el) => el.dataset.menuItem))
+  expect(rows.length, 'non-vacuity: the drawer\'s rows were read').toBeGreaterThanOrEqual(6)
+  expect(rows.filter((key) => !WALKED_ROWS.includes(key)),
+    'a drawer row this walk does not visit — add its stop to walkAuthenticated()').toEqual([])
+  await record('drawer')
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: 'Menu' })).toHaveCount(0)
+
+  // ── 2. „Moje objednávky" — the history view, with its one round EXPANDED.
+  // Expanding is this view's „tick": `expandedRound` and the `roundLines` cache are
+  // exactly the per-session state the boundary must drop.
+  await menuGo(page, 'Moje objednávky')
+  await expect(page).toHaveURL(/\/moje-objednavky$/)
+  const round = page.getByTestId('history-round')
+  await expect(round, 'the stubbed round is the only one').toHaveCount(1)
+  // B arrives with NOTHING expanded — A's expansion must not be B's (the history
+  // twin of invariant 4, positional, so asserted before B's own click).
+  await expect(round, `${label || 'A'}: no round is expanded on arrival`).toHaveAttribute('aria-expanded', 'false')
+  await record('history')
+  await round.click()
+  await expect(round).toHaveAttribute('aria-expanded', 'true')
+  // …and the lines it paints are THIS friend's, fetched now — not a cache from before.
+  if (self) await expect(round.getByTestId('history-line')).toContainText(historyLine(self.id))
+  await record('history-expanded')
+
+  // ── 3. „Zostatok a platby" — the view, then its Platba modal.
+  await menuGo(page, 'Zostatok a platby')
+  await expect(page).toHaveURL(/\/zostatok$/)
+  await record('balance')
+  await page.getByTestId('pay-balance').click()
   let dialog = page.getByRole('dialog')
+  await expect(dialog).toBeVisible()
+  // …quoting THIS friend's block, fetched for this session (the per-friend stub).
+  if (self) await expect(dialog.getByTestId('payment-vs')).toContainText(balanceFor(self.id).variable_symbol)
+  if (fill) await fillEverything(dialog)
+  await record('balance-payment')
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+
+  // ── 4. „Ako to funguje" from the DRAWER — the same view as the gate, WITHOUT the
+  // checkbox (`asGate` false), which is why the gate above is its own stop.
+  await menuGo(page, 'Ako to funguje')
+  await expect(page).toHaveURL(/\/ako-to-funguje$/)
+  await expect(page.getByRole('checkbox', { name: 'Už mi to neukazovať' }), 'the drawer\'s explainer is not the gate')
+    .toHaveCount(0)
+  if (fill) await fillEverything(page.getByTestId(LANDING))
+  await record('explainer')
+  await page.getByTestId('explainer-done').click()
+  await expect(page).toHaveURL(home)
+
+  // ── 5. Profil — the modal and its password fold (UC-FL-004/009).
+  await openProfile(page)
+  dialog = page.getByRole('dialog')
   await expect(dialog.locator('.m-title')).toHaveText('Upraviť profil')
   const fold = dialog.getByRole('button', { name: 'Zmeniť heslo' })
   if (await fold.count()) await fold.first().click()
@@ -318,8 +484,8 @@ async function walkAuthenticated(page, { fill, snaps = [], label = '' } = {}) {
   await dialog.getByRole('button', { name: 'Zrušiť' }).click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
 
-  // Modal: invite, appbar "Pozvať" chip (UC-FL-011).
-  await page.locator('.appbar').getByText('Pozvať').click()
+  // ── 6. „Pozvať priateľa" — the drawer row (the appbar chip opens the same modal).
+  await menuGo(page, 'Pozvať priateľa')
   dialog = page.getByRole('dialog')
   await expect(dialog.locator('.m-title')).toHaveText('Pozvi priateľa')
   await expect(dialog.locator('.copyrow, .banner.danger.slim')).toHaveCount(1)
@@ -333,18 +499,23 @@ async function walkAuthenticated(page, { fill, snaps = [], label = '' } = {}) {
   await dialog.getByRole('button', { name: 'Zavrieť' }).click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
 
-  // Modal: the guest share dialog, off the landing's cartbar icon (18 §UC-PI-011;
-  // it hung off a cycle card until PI-T3). Present only when the landing's round is
-  // OPEN, hence the guard — the same condition the card's row carried.
-  const share = page.getByRole('button', { name: 'Zdieľať s kolegami' })
+  // ── 7. „Zdieľať s kolegami" — drawer item 4, present only while the landing's
+  // round is OPEN (§UC-PI-004), hence the guard; it depends on the database's state,
+  // not on this file's stubs (the stubbed round is completed and never outranks an
+  // open one). The walk records whether it ran, and the modern test asserts it did.
+  const menu = await openMenu(page)
+  const share = menu.getByRole('button', { name: 'Zdieľať s kolegami' })
   if (await share.count()) {
-    await share.first().click()
+    await share.click()
     dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
     if (fill) await fillEverything(dialog)
     await record('share')
     await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog')).toHaveCount(0)
+  } else {
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog', { name: 'Menu' })).toHaveCount(0)
   }
 
   return snaps
@@ -406,11 +577,14 @@ function assertNoCarryOver(snaps, allowed) {
 
 test.describe('⚠ nothing crosses the session boundary (the whole friend surface)', () => {
   test('modern login: one component instance, friend A seeds every field, friend B sees none of it', async ({ page }) => {
-    const a = await makeFriend('a', PASSWORD_A)
-    const b = await makeFriend('b', PASSWORD_B)
+    // ⚠ `ack: false` — both friends meet the first-login explainer GATE, which is a
+    // stop of the walk (see `makeFriend`).
+    const a = await makeFriend('a', PASSWORD_A, { ack: false })
+    const b = await makeFriend('b', PASSWORD_B, { ack: false })
     expect(a.password, 'the secret sweep needs two distinct passwords').not.toBe(b.password)
 
     await muteGuestCounts(page)
+    await stubWalkData(page)
     // Modern login card = a form both friends can authenticate through without a
     // reload. Per page only; the shared seed stays legacy.
     await page.route('**/friends/auth-mode', (route) => route.fulfill({ json: { authMode: 'modern' } }))
@@ -432,7 +606,7 @@ test.describe('⚠ nothing crosses the session boundary (the whole friend surfac
     }
 
     await loginAs(a)
-    await walkAuthenticated(page, { fill: true })
+    await walkAuthenticated(page, { fill: true, gate: true, self: a })
 
     // --- the boundary itself
     await logout(page)
@@ -440,7 +614,17 @@ test.describe('⚠ nothing crosses the session boundary (the whole friend surfac
 
     const snaps = [await snapshot(page, 'login-after-logout')]
     await loginAs(b)
-    await walkAuthenticated(page, { fill: false, snaps, label: 'B' })
+    await walkAuthenticated(page, { fill: false, snaps, label: 'B', gate: true, self: b })
+
+    // ⚠ Non-vacuity for the WALK itself (PI-T12): every drawer stop really produced a
+    // snapshot. „Zdieľať s kolegami" is the one conditional stop (the landing's round
+    // must be OPEN), and the gate database always has one — `seed.mjs`'s open
+    // „E2E Test Cycle" — so on this target a missing share snapshot is a lost stop.
+    expect(snaps.map((x) => x.label)).toEqual([
+      'login-after-logout', 'B:explainer-gate', 'B:landing', 'B:drawer', 'B:history',
+      'B:history-expanded', 'B:balance', 'B:balance-payment', 'B:explainer', 'B:profile',
+      'B:invite', 'B:share',
+    ])
 
     // ⚠ `b.phone` joins the allow-list (18 §UC-PI-015, PI-T10): the profile modal now
     // renders a required Mobil, so B's own number is a legitimate field value. A's is
@@ -453,7 +637,9 @@ test.describe('⚠ nothing crosses the session boundary (the whole friend surfac
     // because it is not a "value the user typed" (so `SENTINEL-` cannot cover
     // it) and it is an identity: whoever registers through it is credited to A.
     const values = snaps.flatMap((s) => s.fields.map((f) => f.value)).filter(Boolean)
-    for (const secret of [a.name, a.username, a.password, a.uid, a.inviteCode, a.phone]) {
+    // `historyLine(a.id)` (PI-T12): A's expanded round painted it; B's must never. Same
+    // for A's money block — amount, reference, variable symbol (PI-T12 review).
+    for (const secret of [a.name, a.username, a.password, a.uid, a.inviteCode, a.phone, historyLine(a.id), ...balanceSecrets(a.id)]) {
       expect(values, `${secret} in a field B can see: ${JSON.stringify(values)}`).not.toContain(secret)
       for (const s of snaps) {
         expect(s.html, `${s.label}: renders friend A's ${secret}`).not.toContain(secret)
@@ -479,6 +665,7 @@ test.describe('⚠ nothing crosses the session boundary (the whole friend surfac
     const b = await makePlainFriend('tb')
 
     await muteGuestCounts(page)
+    await stubWalkData(page)
     await page.route('**/friends/auth-mode', (route) => route.fulfill({ json: { authMode: 'transition' } }))
     await page.route('**/api/friends/login-list', (route) =>
       route.fulfill({
@@ -510,7 +697,7 @@ test.describe('⚠ nothing crosses the session boundary (the whole friend surfac
     // these on its SUCCESS path only.
     await setup.getByRole('button', { name: 'Neskôr' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
-    await walkAuthenticated(page, { fill: true })
+    await walkAuthenticated(page, { fill: true, self: a })
 
     await logout(page)
     await expect(page.locator('.appbar .titles .t')).toHaveText('Podpultovka')
@@ -519,10 +706,15 @@ test.describe('⚠ nothing crosses the session boundary (the whole friend surfac
     const snaps = [await snapshot(page, 'B:credential-setup')]
     await reopened.getByRole('button', { name: 'Neskôr' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
-    await walkAuthenticated(page, { fill: false, snaps, label: 'B' })
+    await walkAuthenticated(page, { fill: false, snaps, label: 'B', self: b })
 
     // ⚠ `b.phone` — see the modern-login test above (18 §UC-PI-015, PI-T10).
     assertNoCarryOver(snaps, ['', b.name, b.uid, b.phone])
+    for (const s of snaps) {
+      for (const secret of [historyLine(a.id), ...balanceSecrets(a.id)]) {
+        expect(s.html, `${s.label}: renders friend A's ${secret}`).not.toContain(secret)
+      }
+    }
   })
 
   // -------------------------------------------------------------------------

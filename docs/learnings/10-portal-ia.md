@@ -681,10 +681,11 @@ inherits this trap.**
 2. ⚠ **`portal-fidelity.spec.js` is two tests lighter** (§UC-PI-019 item 13): the cycle-card
    A10 block and the archive plain-text test retired with their structures. PI-T12 owes the
    landing equivalents — `.banner.slim`, `.badge`, `own-order-card .display`, `.cs-tl .lbl`
-   — and they need PI-T4/T5 to exist first.
+   — and they need PI-T4/T5 to exist first. **✔ DISCHARGED by PI-T12 §1 — and two of the
+   four are not A10 sites (the canon declares them).**
 3. ⚠ **`portal-session-boundary.spec.js`'s walk lost two stops** (archive fold, subscription
    modal) because both surfaces are gone. §UC-PI-019 item 14's drawer-based rewrite (history,
-   balance, explainer) is still PI-T12's.
+   balance, explainer) is still PI-T12's. **✔ DISCHARGED by PI-T12 §3.**
 4. **`helpers/portal.js gotoCycle()` is the one home of portal → order navigation** (§4).
    PI-T11's `/cycle/:id` regression net builds on it; a spec that hand-rolls the bounce is
    re-creating the problem.
@@ -1037,7 +1038,8 @@ where 17's vocabulary shows in the DOM, plus computed `font-weight` on the three
    and marked in the template where it goes.
 4. ⚠ **PI-T12 owes `portal-fidelity` the A10 pins for the new surfaces** (`.banner.slim`
    on the closed banner, `.field-lbl` in the caption row, the 38 px `.display` in the
-   modal's card) and a 320 px hostile-text pass over the closed state.
+   modal's card) and a 320 px hostile-text pass over the closed state. **✔ DISCHARGED by
+   PI-T12 §1–2 — and the 320 px pass found the modal's own footer overflowing.**
 5. ⚠ **`portal-vocabulary.spec.js` (PI-T11) must add `components/LandingStateModal.vue` to
    §UC-PI-017's grep list** — it is a friend surface with Slovak copy and it is in no file
    list today.
@@ -1284,7 +1286,9 @@ so the embedded `FriendOrder` fails its load and the own-order card never appear
    landing's Slovak lives in `FriendPortalSession.vue` and `LandingStateModal.vue`, both
    already named (the latter by PI-T4's handoff).
 5. ⚠ **PI-T12 owes `portal-fidelity` the A10 pins for `own-order-card .display` and
-   `.cs-tl .lbl`** — §UC-PI-019 item 13 already lists both; this row shipped the surfaces
+   `.cs-tl .lbl`** (**✔ DISCHARGED by PI-T12 §1 — pinned at the CANON's values, which are
+   not `normal`; the `.display` was shipped at `.9` against the canon's `1` and is fixed**)
+   — §UC-PI-019 item 13 already lists both; this row shipped the surfaces
    they describe, at 320 px included (`portal-appbar`'s overflow test now covers the
    timeline incidentally, which is not the same as a hostile-text pass).
 6. ⚠ **`.p2-lines` in `friends-theme.css` (A13) is still unconsumed and should stay that
@@ -1413,7 +1417,9 @@ weakening — a second loader still fails exactly as before.
    should nonetheless visit `/moje-objednavky` with a round expanded.
 4. ⚠ **PI-T12's `portal-fidelity` A10 list should gain `history-round .display`** — the
    20px round name and the 18px total both carry inline `line-height`, for the reason
-   every `.display` on this surface does.
+   every `.display` on this surface does. **✔ DISCHARGED by PI-T12 §1 — and ~~for the
+   reason every `.display` does~~ the TOTAL's inline `.9` had no canon behind it
+   (`portal2.jsx:211` sets only `fontSize: 18`), so it was removed and the total is A10.**
 
 ---
 
@@ -1530,7 +1536,9 @@ opposite of what it looks like.
   font-size:13px}` AFTER `:25`'s `.display` at equal specificity, so `.display.neg` paints
   the display face away. `portal-fidelity.spec.js`'s A10 pin was re-pointed at the
   surviving `.neg` (a ledger amount on `/zostatok`); its `near(…, CANON.negPill)` HEIGHT
-  measurement is retired, with `CANON.negPill` kept as the record. The two classes stay in
+  measurement is retired, ~~with `CANON.negPill` kept as the record~~ **and the constant
+  itself was retired by PI-T12 §1 (nothing read it; the record is `friends-theme.css` §A10's
+  table).** The two classes stay in
   the canon-ported theme file.
 - ⚠ **The 320 px outer measurement MOVED with the markup.** In the modal, `.modal-scrim`
   was `overflow-y:auto` — CSS computes the other axis of a non-`visible` overflow to
@@ -1560,6 +1568,8 @@ opposite of what it looks like.
 2. ⚠ **PI-T12's `portal-fidelity` A10 list should gain the balance card's 38px
    `.display`** — it carries an inline `line-height:1`, for the reason every `.display`
    on this surface does — and should decide whether to retire `CANON.negPill` outright.
+   **✔ DISCHARGED by PI-T12 §1 (pinned at 38px, the canon's `1`) — and `negPill` is
+   RETIRED: nothing read it; the record lives in `friends-theme.css` §A10's table.**
 3. **Module 21 (messages) quotes `balancePaymentBlock()`.** The note now lives in
    `FriendBalanceCard.vue`'s header AND in the session's mount comment, because the
    reader composing a debt message may be looking at either.
@@ -2471,15 +2481,19 @@ is a SEEDED-ONCE ref and an async term would turn that seed into a `watch`. This
 **THE ACTUAL FIX IS NOT „MAKE IT SEVEN".** A hand-kept list under a class rule reads as
 complete; that is what failed twice. So:
 
-1. The comment now states the **derivation** — walk every overlay MOUNT (`<NeoModal>`,
-   `<LandingStateModal>`, `<NeoDrawer>`, the teleported `fixed inset-0` div) and ask „can
+1. The comment now states the **derivation** — walk every overlay MOUNT (~~`<NeoModal>`,
+   `<LandingStateModal>`, `<NeoDrawer>`, the teleported `fixed inset-0` div~~ — **a
+   four-SHAPE list, and therefore a hand-kept list one level down: PI-T12 §4 replaced it
+   with a shape-independent census**) and ask „can
    this raise with no friend action?" — and says *do not maintain the list by hand*.
 2. `portal-profile-modal.spec.js` **pins that walk in source**: every mount must be
    either a trigger term or in a `NOT_SELF_RAISING` map WITH a reason. Proven by
    **M24**, which adds a brand-new `<NeoModal v-if="showFakeNewSurface">` and no term:
    the pin reds with `overlay mount(s) that are neither an auto-open trigger term nor a
    documented non-term: ["showFakeNewSurface"]` and tells the author what to do.
-3. I re-derived the set MYSELF rather than accepting „seven": nine overlay mounts, of
+3. I re-derived the set MYSELF rather than accepting „seven": ~~nine~~ overlay mounts
+   (**TEN — PI-T12's census found `<PaymentModal v-if="balancePayment" :open="showBalancePayment">`,
+   a shape the walk's regex could not match; see PI-T12 §4**), of
    which `showInviteModal` and the drawer need a click, `showPasswordChange` /
    `showPasswordSet` are FOLDS inside the profile modal, `showBalancePayment` needs
    „Zaplatiť", and `showMagicPrompt` is a banner. Seven self-raising. It agreed — but
@@ -2717,3 +2731,339 @@ restarted, run, then reverted:
   - the `landing-next-round` note;
   - the own-order pickup `data`;
   - the explainer location name.
+
+## PI-T12 — the module-18 closeout: the canon, not `normal`; a drawer walk; a derived admin surface; and three pins that measured less than they claimed (2026-09-23)
+
+18 §UC-PI-019 items 13, 14 and 18, its Procedure, and the PI-T10 review's term-count ask.
+Tests are the product of this row. It changed app code in four files, and each change
+answers a pin that was first seen red.
+
+### 1. ⚠⚠ Item 13: two of the four named sites are not A10 sites, and measuring the canon found three drifts
+
+A10 covers only the classes the canon leaves line-height-SILENT. Item 13 named four
+landing sites „at `line-height:normal`". The canon declares a value for two of them:
+
+| element | canon | shipped | now |
+|---|---|---|---|
+| `.banner.slim` (status, closed, locked, next-round, debt) | silent ⇒ A10 `normal` | `normal` | pinned |
+| `.badge` (own-order card ×3 + `CartLineList` group header, catalogue cards) | silent ⇒ `normal` | `normal` | pinned |
+| own-order `.display` ×2 | inline `lineHeight: 1` (`portal2.jsx:350/356`) | inline **`.9`** (19.8px) | **fixed → `1`** (22px) |
+| `.cs-tl .lbl` / `.now .lbl` | `1.25` / `1` (`portal2.css:31/33`) | ported | pinned 18.75px / 20px |
+| `.cs-tl .when` (NOT named by item 13) | silent ⇒ `normal` (`portal2.css:34`) | **17.25px** (preflight's 1.5) | **fixed** (`CycleTimeline.vue` scoped) |
+| state modal's 38px date | inline `.9` (`portal2.jsx:417`) | `.9` | pinned 34.2px |
+| history round name | inline `1` (`portal2.jsx:207`) | `1` | pinned |
+| history total | `fontSize: 18` only (`:211`) ⇒ A10 `normal` | inline **`.9`** (16.2px) | **fixed → removed** |
+| balance card figure | inline `1` (`:232`) | `1` | pinned 38px |
+
+⚠ Pinning the two declared sites at `normal`, as written, would have pinned a DRIFT and
+called it fidelity. The own-order `.9` is `LandingStateModal`'s 38px date value copied to
+a different element, and its comment even said „the canon's value". **A comment that
+cites the canon is not a measurement of it.** The last four rows are the PI-T4, PI-T6 and
+PI-T7 hand-offs, which asked for them by name.
+
+`CycleTimeline.vue`'s header now counts FOUR deviations from the canon's bytes. The
+fourth, `.when { line-height: normal }`, restores the canon's RESULT: the prototype
+gets `normal` for free, because it has no Tailwind. `.mk` is left alone on A10's
+`.tabbadge` reasoning (a fixed 28px flex box centres its line). The admin header mounts
+only the COMPACT variant, which has no text, so no admin pixel moved.
+
+### 2. ⚠⚠ The 320px pass found two real overflows, and my own layer check was vacuous for one of them
+
+**The state modal's footer overflowed with NO hostile text.** „Ako to funguje" +
+„Prezrieť ponuku" are `nowrap` + `flex:1` and need ~290px of min-content. A 320px
+viewport leaves 240 (scrim 18 + border 4 + `.m-foot` 18, a side, minus the 8px gap).
+Result: scrim 330 > 320, and so on every viewport below ~370px, on the CLOSED landing,
+which is the app's normal state for most of the month.
+- Fixed with a wrapping row (`LandingStateModal.vue .lsm-actions`, `flex-wrap`).
+- NOT the Google prompt's column. At the canon's 378px the row fits and stays the canon's
+  two equal 145px buttons. Measured: 320 and 360 wrap to 240/280-wide rows; 378 and 420
+  stay one row.
+- Padding relief (`FriendOrder.vue .fo-foot-btn`) saves only 24px, so it was not enough.
+- Pinned in BOTH directions: the scrim test reds on overflow, and „one row at 378px" reds
+  on a permanent column (F5).
+
+**The drawer scrolled sideways, and the first version of my helper could not see it.**
+`noLayerOverflow()` measured the scrim and the `.p2-drawer` box, and both reported a clean
+271/271. The drawer's row list is its own `overflow-y:auto` column, so `overflow-x`
+computes to `auto` there too, and that list absorbed the spill. This is PI-T7's scrim
+lesson, one element further in. A probe found it (1016 > 271: the „naposledy {cycle name}"
+sub-line). With a hostile friend NAME the header then pushed the scrim itself to 1194 > 320.
+- Fixed: `overflow-wrap: anywhere` on both of `NeoDrawer.vue`'s text columns.
+  `min-width:0` was already there, and CLAUDE.md says in so many words that it is not a
+  wrapping rule.
+- The helper now measures every DESCENDANT. None may be a sideways scroller, and none may
+  paint past the box, unless an ancestor inside the box clips it (the copy row's ellipsis
+  is the legitimate case).
+- The profile and invite 320px tests only ever measured the DOCUMENT, which PI-T7 showed
+  measures nothing while a dialog is up. They now run the layer check too, and it passes
+  on both.
+
+⚠ **Rule, recorded in CLAUDE.md:** a 320px claim about a modal-layer surface measures the
+layer and every descendant scroller, never only the document or the outer box.
+
+### 3. Item 14: the drawer walk, and why „the explainer incl. the checkbox" is two stops
+
+`walkAuthenticated()` now goes through the drawer, stop by stop:
+1. the drawer itself (its header is the one place a friend's NAME renders);
+2. history, with its one round EXPANDED;
+3. „Zostatok a platby" and its Platba modal;
+4. „Ako to funguje";
+5. Profil, with the password fold;
+6. „Pozvať priateľa";
+7. „Zdieľať s kolegami", when the round is open.
+
+The four invariants are unchanged.
+- **The checkbox renders only on the first-login GATE** (`asGate`), never on the drawer's
+  explainer. So the modern test's two friends are created with `ack: false` and the walk
+  starts on the gate. A unticks the pre-ticked box, and B must meet it ticked again: an
+  unticked box carried across the boundary would silently skip B's acknowledgement
+  write. That is `aria-checked`, which invariant 4 (`aria-pressed`) cannot see, so it is
+  asserted by name. The drawer's explainer stop pins the box's ABSENCE.
+- **The data is stubbed, never written.** The file's rule is „nothing global is mutated".
+  `GET /friends/cycles` is the REAL list plus one completed `hasOrder` row
+  (`route.fetch()`), so the landing keeps the database's state. That row's line fetch
+  answers PER FRIEND, `History line for #<id>#`, so a lines cache that survived the logout
+  paints A's line on B's screen. The balance is a stubbed debt with a `payment` block,
+  and (review) it is PER FRIEND too: amount `500 + id + .37`, reference `… #<id>#`, VS
+  `8<id>`. A's three values join the secret sweep, and the Platba modal must quote the
+  walking friend's own VS. The first version answered identically for A and B, so a
+  balance cache that survived the logout was invisible by construction (B1).
+- **The walk's own non-vacuity:** the modern test pins the exact list of 12 snapshot
+  labels. „Share" is the one conditional stop, and the gate DB always has `seed.mjs`'s
+  open round, so a missing `B:share` is a lost stop (S4).
+- **And its own COVERAGE:** at the drawer stop the walk reads every `[data-menu-item]` key
+  and reds on one it does not visit (`WALKED_ROWS`). A new drawer row therefore cannot
+  land without its own stop here (S5). The first draft of the header only said that
+  `portal-menu` would notice, which is true but tells nobody to come here.
+
+Mutations, each rebuilt, run and then restored `cmp`-identical:
+
+| # | mutation (a real leak class: a plain-`<script>` singleton) | reddened |
+|---|---|---|
+| S1 | `PortalExplainer` `hide` shared across mounts | ✔ „B: the gate's checkbox arrives pre-ticked" — `false` |
+| S2 | `expandedRound` shared across sessions | ✔ both walk tests — „B: no round is expanded on arrival" |
+| S3 | `roundLines` shared across sessions | ✔ both — B's round painted `#125#` where `#126#` was due |
+| S4 | the share drawer row removed | ✔ the label list — `B:share` missing |
+| S5 | an eighth drawer row (`extra`) added | ✔ both walk tests — „a drawer row this walk does not visit" |
+| B1 | `balance`/`balancePayment` module-scoped + „skip the fetch if cached" (a tab-lived balance cache) | ✔ both walk tests — B's Platba modal quoted `8000091`, A's VS |
+| S1+S2+S3 | all three at once, run against **HEAD's** spec | ✘ **HEAD: 3 passed** — the old walk was blind to all three; the new one reds 2 |
+
+### 4. ⚠⚠ The trigger TERM COUNT pin: the existing pin was count-less, spelling-bound, and its walk missed a mount
+
+The PI-T10 review asked for a source pin over `FriendPortalSession.vue`'s auto-open trigger
+TERM COUNT: „pin the COUNT, not the spelling". CLAUDE.md said
+`portal-profile-modal.spec.js` already „PINS THE WALK IN SOURCE". I checked it against
+that ask before touching it. It fell short in three ways:
+1. **No count.** `mounts >= 9` and `terms >= 8` are floors. A ninth term went green (T1).
+2. **Spelling.** The „other direction" was a list of seven NAMES. A harmless consistent
+   rename went red (T5), and a new term said nothing.
+3. **⚠ The walk was narrower than its own rule** — the class of defect it exists to catch,
+   one level down. It found mounts by SHAPE: `<NeoModal|LandingStateModal|NeoDrawer
+   v-if>`, plus `<div v-if … class="fixed inset-0">` in exactly that attribute order. A
+   shape-independent census of the template finds **TEN** overlay mounts, not nine.
+   `<PaymentModal v-if="balancePayment" :open="showBalancePayment">` matched neither
+   shape: it is the one overlay whose visibility is a PROP. Its comment called it a
+   non-term, but the pin had never looked at it. A new overlay written that way, or as a
+   class-first fixed div, went green (T2, T3).
+
+What replaced it (the same two test names' neighbourhood, and one new test):
+- a CENSUS: every `*Modal`/`*Dialog`/`*Drawer`/`*Sheet`/`*Popover` component and every
+  element with a `fixed` class TOKEN or inline `position:fixed`. Visibility is read from
+  `:open` / `v-model:open` / `v-show` first and `v-if` last, because PaymentModal's `v-if`
+  gates on DATA. Every `<Teleport>` must wrap a census hit.
+- ⚠ **Review round, three holes in the census itself.**
+  - It stripped the TEMPLATE with `stripComments()`, i.e. JavaScript rules, which a Vue
+    template does not have. A `/*` in text and a `*/` later would swallow the mount between
+    them. Now only `<!-- -->` is stripped, and an ORDERED list of `GATE_TOKENS` must survive,
+    with at least one token between every pair of consecutive mounts.
+  - The attribute scan `[^>]*` stopped at the first `>`, so
+    `<div @click="() => x" class="fixed inset-0" v-if="y">` was never counted. The scan is
+    now quote-aware.
+  - Writing the direct fixture test for those two found a THIRD: `\bfixed\b` matched
+    `class="not-fixed-here"`, because `-` is a word boundary. It is now a whole-token match.
+    `scanOverlays()` is a pure function, and the fixture test (arrow-in-attribute,
+    `v-model:open`, `>` inside a quoted attribute, inline `position:fixed`, an HTML-commented
+    mount, a JS-comment „hole") pins every shape; it also proves the JS strip WOULD have lost
+    the drawer.
+  - The count test's failure message names the three prose copies of „10 / 8": CLAUDE.md,
+    the trigger comment and this section.
+- `showBalancePayment` joins `NOT_SELF_RAISING` with its reason. A stale exclusion reds.
+- `NON_MOUNT_TERMS = { explainerGate }`, with its reason. That is the reverse direction: a
+  term with no surface behind it cannot hide either.
+- **The count, derived AND pinned.** The trigger's terms must EQUAL (mounts −
+  click-only) ∪ non-mount terms, with no duplicates and no click-only surface as a term.
+  The numbers are then pinned as numbers (10 mounts, 8 terms), so a diff has to change
+  them on purpose. That is what reds T6, where a new overlay arrives WITH its term and
+  every set check passes.
+
+Mutations, each applied to both the working tree and HEAD's copy, then restored
+`cmp`-identical:
+
+| # | mutation | NEW | HEAD |
+|---|---|---|---|
+| T1 | `&& !showInviteModal.value` added (a click-only 9th term) | ✔ red | ✘ green |
+| T2 | `<PaymentModal v-if="balancePayment" :open="showAutoPromo" />`, no term | ✔ red ×2 | ✘ green |
+| T3 | a teleported `<div class="fixed inset-0" v-if="showPromo">`, no term | ✔ red ×2 | ✘ green |
+| T4 | `&& !explainerGate.value` deleted | ✔ red | ✔ red |
+| T5 | `showVoucherModal` → `voucherOverlayOpen`, file-wide (behaviour unchanged) | **green** | ✘ red |
+| T6 | T2's overlay AND its term, together | ✔ red — the mount COUNT alone | ✘ green |
+
+T5 is the „count, not spelling" half, shown by measurement.
+
+⚠ The derivation text had three copies that named the four shapes. All three now carry a
+strike and a pointer: the trigger comment in `FriendPortalSession.vue`, CLAUDE.md, and
+PI-T10 §13 of this file.
+
+### 5. Item 18: admin invariance over a DERIVED admin surface
+
+The existing pin (`portal-shell.spec.js`, „no ADMIN view imports the three module-18
+libs") read a TYPED list of six views, and its regex named two of the three libs. It never
+read `LiveCycleDashboard`, the analytics views or `AdminCatalog`, and a TRANSITIVE import
+was invisible by construction (A1: green on HEAD).
+
+Now the roots are every `/admin…` route component in `router.js` (16 of them), parsed PER
+ROUTE, from its `path:` to the next one, so a `meta: {…}` / `props: {…}` before `component`
+cannot hide one. The component is read lazy (`() => import('./…')`) or static (an imported
+identifier), and the result is reconciled EXACTLY against the raw count of
+`path: '/admin` occurrences (review: it was a `>= 16` floor over one regex whose `[^}]*?`
+stopped at the first `}`). The surface is their `importClosure()`: 86 files, the shared
+components, `CycleTimeline.vue` and `BalanceBadge.vue` included. Four pins sit over it:
+1. No `lib/roasters|dates|portal-state.js` is reachable from it.
+2. No `components/neo/` file is reachable, and no friend-portal view either.
+3. No template class token is a `pp-*` utility, a `p2-*` class or a class from the
+   DERIVED theme vocabulary. Harvested: every static `class="…"`, plus the object KEYS of
+   every `:class`, quoted AND unquoted (review: the first version read quoted keys only; the
+   unquoted harvest reads `CycleTimeline`'s `{ now, next }` today and is gated on doing so).
+   NOT harvested, deliberately: string literals in `:class` ternaries/arrays, which cannot
+   be told apart from comparison operands (`dir === 'flat'` measured as a false `flat` in
+   `CoffeeAnalytics.vue`). The DOM pins in `catalog-admin`/`portal-balance` remain the net
+   for a runtime-chosen class. Four collisions
+   are documented with reasons: `grid`/`block` are Tailwind utilities; `ln`/`lbl` are
+   `CycleTimeline`'s own scoped classes. A positive control, the same harvest over the
+   friend closure, finds hundreds.
+4. `friends-theme.css` has no unprefixed selector, UC-DS-014 item 2's second half, which
+   was pinned nowhere. Only `@keyframes` steps and the A6 roots are exempt.
+
+`BalanceBadge.vue` „untouched" stays `portal-balance.spec.js` §7's `git diff main` pin.
+Result: **no violation today.** A1–A5 are the proof that each pin can fail:
+- A1: a transitive `lib/dates.js` import in `MarginChart.vue` → red (HEAD green);
+- A2: `class="banner"` in `LiveCycleDashboard` → red;
+- A3: `hover:text-pp-ink` → red;
+- A4: a `NeoIcon` import in `AdminFriends` → red;
+- A5: an unscoped `.badge{}` rule → red.
+
+### 6. The retired-file property audit
+
+Module 18 retired three spec files and one component:
+- `portal-cycles.spec.js` and `portal-share-row.spec.js`, both PI-T3;
+- `portal-transactions-modal.spec.js`, PI-T7, renamed to `portal-balance`;
+- `FriendTransactionsModal.vue`, PI-T7, which became `FriendTransactionList.vue`.
+
+Every row that PI-T3 §1 and PI-T7 §3 mark SURVIVES, KEPT or RETARGETED was checked against
+today's suite by TEST NAME. Each has a live test of the kind named:
+- the item-4 sub-line ×4, the ONE-request bound, logout and deferred-response drops →
+  `portal-menu` „PI-T3 · … the colleague count";
+- the share entry, no affordance off-open, failed count gates nothing → `portal-landing`
+  „two entry points, ONE dialog";
+- the gear's absence → `portal-subscription-invite`;
+- the landing's empty copy → `portal-landing` „Ponuka ešte nie je pripravená.";
+- the archive fold → `portal-history` + `portal-landing` „no archive fold";
+- PI-T7's rows, all 23 → `portal-balance`, including „`FriendTransactionsModal.vue` is
+  gone, and nothing imports it".
+
+Two findings:
+- ⚠ **PI-T3 §2's one homeless property is STILL homeless.** It is the count response
+  deferred past a second in-session `loadCycles`. `cycles` still has no in-session
+  reloader (`loadCycles()` stays deleted), so the kept `guestCountSeq` guard stays
+  unreachable.
+- ✔ **One property the PI-T3 table marked „retires" now has a home again.** The archive
+  fold's „does not survive a logout into the NEXT session" is §3's history stop (S2/S3).
+
+### 7. Edited e2e files: **4**
+
+`portal-fidelity` 9 → 19, `portal-shell` 29 → 32, `portal-profile-modal` 51 → ~~52~~ **53**
+(the review added the census fixture test), and `portal-session-boundary` 3 → 3 (the walk
+was rewritten). **2312 → ~~2326~~ 2327 tests, 92 → 92 files.** The counts were measured with `--list` against a `git archive HEAD` copy, per
+file.
+
+### 7b. The review round: five minors, and what each mutation proved
+
+App code was untouched in this round, so there was no full-suite re-run (the coordinator's
+call). Every mutation was applied from a scratchpad backup, `cmp`-verified, and restored
+`cmp`-identical. B1 was rebuilt and a clean build was restored afterwards.
+
+| # | mutation | new pin | the pre-review version |
+|---|---|---|---|
+| T7b | `<div @click="() => noop()" class="fixed inset-0 z-50" v-if="showArrowPromo">`, no term | ✔ red — „neither a trigger term nor a documented non-term: [showArrowPromo]" | ✘ `[^>]*` saw only ` @click="() =`, measured |
+| T7 | the same div flush against the profile modal | ✔ red — on the GATE's interleave rule („no token between … add one to GATE_TOKENS"), which runs first | — |
+| G1 | the drawer mount wrapped in `<!-- … -->` | ✔ red — gate: „`onMenuSelect` must survive" | — |
+| R1 | an admin route with `meta: {…}` BEFORE `component`, pointing at `FriendOrder.vue` | ✔ red ×3 — roasters/neo/theme classes reachable from admin | ✘ old regex: 16 roots, the new one absent, floor passes |
+| R2 | the same through a STATIC `component: AdminX` import | ✔ red ×3 | ✘ same |
+| A6 | `:class="{ banner: true }"` in `AdminVouchers.vue` | ✔ red — „`banner` is a friends-theme class" | ✘ the quoted-only harvest never saw it |
+| B1 | the tab-lived balance cache (§3) | ✔ red ×2 | ✘ identical-per-friend stub — blind by construction |
+
+⚠ The T7 row is a property, not a flaw: a new mount placed with no token between it and
+its neighbour reds on the GATE first. So an author meets „add one to GATE_TOKENS" before
+„classify it", and both fire in turn. T7b places the same shape between tokens to show the
+classification half on its own.
+
+### 8. The gate
+
+- `node --check`: no backend file changed. `npx playwright test --list`: **2326 tests in
+  92 files**.
+- Build: `frontend` → `backend/public`. Server: fresh template copy per run, seed with
+  `DB_PATH` (printed `explainer: pre-stamped 77 friend(s); 1 left unacknowledged`), all
+  five limiters at 100000, `--workers=1`. Box: 8-core, load 0.5–0.9 at each start, no
+  stray playwright or wait-loop processes.
+- **Targeted: 22 files asked, 22 ran** (`diff` empty). **827 passed / 0 failed / 0
+  skipped, 6.6 min.** The files: the six module-18 specs, items 4–16's files,
+  `cycle-stages` + `guest-status-shell` (the timeline), `order-locked` and `share-dialog`.
+  Server log: one CORS refusal, `api-security`'s own. The `WALKED_ROWS` coverage check
+  landed after that batch collected, so it was re-run alone: 3/3.
+- **FULL SUITE: 2322 passed / 0 failed / 4 skipped, 13.2 min, exit 0. 92 files listed,
+  92 ran.** The four skips are the documented ones: `forced-change-ui`'s `test.fixme`,
+  `magic-link-rate-limit`, `rate-limit-isolation`, `rate-limit`.
+  - ⚠ 13.2 min is between the idle ~12 and the loaded ~14. Load rose from 0.89 to 2.13
+    during the run, and nothing went red.
+  - Server log: 306 lines, and every error in it is a deliberate probe: 9 CORS
+    (`api-security`), 4 SSRF/URL refusals, 1 `FOREIGN KEY` (`image-upload`'s FK-fault
+    probe, named in `routes/products.js`), 1 `CHECK` (`nonstring-body-shape` T15's
+    `status: 'bogus'`), and 3 `multipart-malformed` 400s.
+  - ⚠ Grep for „malformed" hits those multipart lines. That is NOT `disk image is
+    malformed`: read the line before calling the DB corrupt.
+- Every mutation in §2–§5 was applied from a scratchpad backup, `cmp`-verified to have
+  changed the file, rebuilt when it was frontend code, run, then restored and
+  `cmp`-verified identical. A clean build was the last thing served.
+
+- **Review re-gate:** `--list` gives 2327 tests in 92 files (+1, the census fixture test).
+  Rebuilt, then a fresh DB + server. Four files asked, four ran, per-file counts equal to
+  `--list`: `portal-fidelity` 19, `portal-profile-modal` 53, `portal-session-boundary` 3,
+  `portal-shell` 32. **107 passed / 0 failed / 0 skipped**, 1.1 min, server log clean.
+  Edited e2e files are still **4**; the test count is now **2312 → 2327**.
+
+The pre-fix reds, which are the other half of the mutation evidence: own-order
+`.display` 19.8px, `.when` 17.25px, history total 16.2px, state-modal scrim 330 > 320,
+drawer 1016 > 271 and then 1194 > 320. F5 (a permanent footer column) reddened only „one
+row at 378px".
+
+### What PI-T12 LEAVES BEHIND (module 18 closes here)
+
+1. ⚠⚠ **The date-format PO question is still open** (§PI-T1 §1, PI-T4 §1). The closed
+   landing prints the same date in two formats, and `portal-landing` §5 pins both halves.
+   Whichever way the PO rules, exactly one of those expectations is the edit.
+2. **The spec text of item 13 was wrong about two of its four sites**, and it is amended
+   in place. A future A10 list is DERIVED from the canon, never from a spec sentence: grep
+   `portal2.jsx`/`portal2.css` for the element's `lineHeight`, and only a silent one is A10.
+3. **`noLayerOverflow()` is the modal-layer 320px instrument** (`portal-fidelity.spec.js`).
+   A spec measuring a dialog or the drawer should use that shape, not `documentElement`.
+   Other files' 320px dialog tests (`share-dialog`, `guest-payment-modal`,
+   `order-modals`) measure `.m-foot`/the scrim their own way and were NOT audited here.
+4. **The drawer walk names its rows** (`WALKED_ROWS`) and reds on an unknown one. A new
+   drawer item (WA-T*, GL-T6's standing link) adds a stop in
+   `portal-session-boundary.spec.js` in the same commit.
+5. **The auto-open counts are pinned numbers (10 mounts, 8 terms).** A new overlay on
+   `FriendPortalSession.vue` changes at least the mount count. Re-walk the derivation, then
+   edit the numbers; never edit the numbers alone.
+6. **PI-T3 §2's homeless property stays homeless**, on purpose. It stops being homeless
+   the day something reloads `cycles` in-session, and that row inherits the
+   `guestCountSeq` guard and owes the test.

@@ -108,10 +108,11 @@ const dotsLabel = computed(() => {
 
 <style scoped>
 /* Ported from `docs/design/friends-portal-redesign/friends/portal2.css:22-42`
-   (`.p2-tl` / `.p2-dots`), byte-equivalent apart from three deliberate changes:
-   the `.app` / `.modal-layer` prefixes are DROPPED (scoped styles, three skins),
-   every `var()` gained a fallback (the admin page defines no tokens), and the
-   `.p2-` prefix became `.cs-`. */
+   (`.p2-tl` / `.p2-dots`), byte-equivalent apart from ~~three~~ FOUR deliberate
+   changes: the `.app` / `.modal-layer` prefixes are DROPPED (scoped styles, three
+   skins), every `var()` gained a fallback (the admin page defines no tokens), the
+   `.p2-` prefix became `.cs-`, and — PI-T12 — `.when` gained the `line-height:normal`
+   the canon gets for free (see that rule). */
 .cs-tl {
   display: flex;
   flex-direction: column;
@@ -189,6 +190,17 @@ const dotsLabel = computed(() => {
   line-height: 1;
   padding-top: 5px;
 }
+/* ⚠ `line-height: normal` is the FOURTH deliberate change from the canon's bytes, and
+   it restores the canon's RESULT rather than departing from it. `portal2.css:34`
+   declares no line-height on `.when`, so the prototype (no Tailwind) computes the UA
+   default `normal`; here Tailwind preflight's `html{line-height:1.5}` reached it
+   through the host, and PI-T12's `portal-fidelity` pin measured 17.25px on every
+   `.when` line of the locked landing's vertical timeline — the A10 class of drift
+   (`friends-theme.css` §A10), on a class that list cannot name because it is this
+   component's. `.lbl` and `.desc` need nothing: the canon declares theirs (1.25 /
+   1.35) and they are ported. `.mk` is left alone on A10's `.tabbadge` reasoning: a
+   fixed 28px flex box centres its line, so the inherited value changes nothing
+   measurable. The admin header mounts only the COMPACT variant, which has no text. */
 .cs-tl .when {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
   font-size: 11.5px;
@@ -196,6 +208,7 @@ const dotsLabel = computed(() => {
   text-transform: uppercase;
   color: var(--ink-dim, rgba(10, 10, 10, 0.66));
   margin-top: 3px;
+  line-height: normal;
 }
 .cs-tl .desc {
   font-size: 13.5px;
