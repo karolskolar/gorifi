@@ -20,6 +20,23 @@
 // `money-rounding.spec.js`'s `independentQr()` and NOTHING else, and
 // `guest-payment-modal.spec.js` is not PL-T4's file at all. Retro-fitting them is a
 // one-row cleanup for whoever next holds a sanction on those files.
+//
+// ⚠ GP-T3 (20 §UC-GP-011 item 1) HELD THAT SANCTION for `guest-payment-modal.spec.js`:
+// its `readModules()` (byte-identical to `readQrModules()` below at the default
+// selector) and its `independentQr()` now come from HERE, with no assertion change
+// there, and `guest-packeta.spec.js` reuses both for the Packeta (total + fee) QR. The
+// spec text named a new `e2e/qr-helpers.js`; it was written before this file existed,
+// and a second QR helper module beside the first would be the fork this file was
+// created to stop. `money-rounding.spec.js`'s copy (a different signature — no IBAN
+// argument) is still untouched: no sanction covers it.
+//
+// ⚠ `independentQr()` IMPORTS the frontend's own `bysquare` + `qrcode` (the cross-tree
+// import every QR spec already makes — see `guest-payment-modal.spec.js`'s header).
+// It is still no NEW dependency: the e2e recipe builds `frontend/` first, so its
+// `node_modules` exists by construction. `qrMatrix()` keeps taking `QRCode` from its
+// caller, unchanged.
+import { encode, PaymentOptions, CurrencyCode, Version } from '../../frontend/node_modules/bysquare/lib/index.js'
+import QRCodeLib from '../../frontend/node_modules/qrcode/lib/index.js'
 
 /**
  * Scans the first `.qr img` on the page and returns `{ size, matrix }` — the module
@@ -81,7 +98,10 @@ export async function readQrModules(page, selector = '.qr img') {
 /**
  * The module grid of an encoded Pay-by-Square string, for comparison against
  * `readQrModules()`. `QRCode` is the CALLER's import — the frontend's own copy — so
- * this file adds no dependency of its own and the two sides cannot drift apart.
+ * the two sides cannot drift apart. ~~this file adds no dependency of its own~~ → since
+ * GP-T3 the FILE imports `bysquare` + `qrcode` from `frontend/node_modules` (for
+ * `independentQr()` below); still no new package, and `qrMatrix()` itself keeps taking
+ * its `QRCode` from the caller.
  */
 export function qrMatrix(QRCode, qrString) {
   const qr = QRCode.create(qrString, { errorCorrectionLevel: 'M' })
@@ -92,4 +112,40 @@ export function qrMatrix(QRCode, qrString) {
     rows.push(line)
   }
   return { size: qr.modules.size, matrix: rows.join('\n') }
+}
+
+/**
+ * The INDEPENDENT encode of a guest payment: the same inputs through the same two
+ * libraries, in Node, with no knowledge of the component or of
+ * `frontend/src/lib/payment-links.js`. `paymentDueDate` is "today" exactly as
+ * `PaymentModal.generateQr()` computes it. Moved verbatim from
+ * `guest-payment-modal.spec.js` (GP-T3) — including PL-T3's sanctioned `variableSymbol`
+ * + `beneficiaryName` parameters, whose `''`/`'Gorifi'` defaults keep it byte-identical
+ * to the shipped payload for a caller that passes neither.
+ *
+ * Returns `{ qrString, size, matrix }` — `matrix` compares against `readQrModules()`,
+ * `qrString` is what a spec `bysquare.decode()`s to prove the payload's contents.
+ */
+export function independentQr(amount, reference, iban, variableSymbol = '', beneficiaryName = 'Gorifi') {
+  const t = new Date()
+  const dateStr = t.getFullYear().toString()
+    + (t.getMonth() + 1).toString().padStart(2, '0')
+    + t.getDate().toString().padStart(2, '0')
+  const qrString = encode({
+    invoiceId: '',
+    payments: [{
+      type: PaymentOptions.PaymentOrder,
+      amount,
+      currencyCode: CurrencyCode.EUR,
+      paymentDueDate: dateStr,
+      variableSymbol,
+      constantSymbol: '',
+      specificSymbol: '',
+      originatorsReferenceInformation: '',
+      paymentNote: reference || '',
+      bankAccounts: [{ iban: iban.replace(/\s/g, ''), bic: '' }],
+      beneficiary: { name: beneficiaryName, street: '', city: '' },
+    }],
+  }, { version: Version['1.0.0'] })
+  return { qrString, ...qrMatrix(QRCodeLib, qrString) }
 }

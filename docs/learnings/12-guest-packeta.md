@@ -241,3 +241,125 @@ never stored (2) · M8 stored fee kept on `true` (3) · M9 the edit's e-mail rul
   `cycle.parcel_enabled` is 0 (rule 5). Show the e-mail input only when the loaded order has
   no `guest_email`; the server ignores it otherwise.
 - GP-T5: re-point the two remaining `setLiveFee()` calls (§12).
+
+---
+
+## GP-T3 — the checkout delivery choice, the hero badge, g-confirm's fee + point, the GuestSteps seam (2026-09-23)
+
+**What shipped.** `components/GuestDeliveryChoice.vue` (NEW — the ONE home of the radios +
+point for checkout AND GP-T4's edit mode), `lib/email-shape.js` (NEW — the client mirror of
+`helpers/mailer.js EMAIL_SHAPE`), `views/GuestOrder.vue` (the choice below Mobil, the e-mail
+label flip + help, the subtitle amount + tail, the payload keys, the three client messages,
+the reset on open, the fourth hero badge, g-confirm's fee line + point, `stepsPacketa` on
+all three `GuestSteps` mounts), `CartLineList.vue` (extras may carry a `testid` — additive),
+`e2e/helpers/qr-pixels.js` (+ `independentQr`). Spec: `guest-packeta.spec.js` +12 tests
+(53 total). No server change.
+
+### 14. The component owns PRESENTATION, the caller owns the PAYLOAD
+
+The checkout sends the delivery keys ONLY for Packeta (§UC-GP-003 item 5 — a via_host
+payload is byte-identical to the shipped one); GP-T4's edit PUT sends them ALWAYS
+(§UC-GP-007 item 9 — omitting them there means „untouched"). Two contracts, one
+component — so `GuestDeliveryChoice` exposes two v-models (`modelValue`
+`'via_host'|'packeta'`, `packetaAddress`) and nothing else: no emit of a payload, no
+validation, no error banner (each caller renders its own). ⚠ The caller guards with
+`isPacketa = parcelEnabled && method === 'packeta'`, never the raw ref: a stale
+`'packeta'` must never reach a payload or a label on a round that does not offer it.
+Pinned: choose Packeta → type a point → switch back → submit ⇒ keys exactly
+`guest_name, guest_phone, items`.
+
+### 15. „Renders nothing when parcels are off" is the whole byte-identity contract
+
+`<div v-if="parcelEnabled">` at the component root. A parcel-off modal's `.m-body`
+element children are exactly `div:guest-name, div:guest-phone, div:guest-email` (pinned by
+name, plus no radio, no `.field-help`, no „Spôsob prevzatia", the shipped label and
+subtitle). A `<!--v-if-->` comment node is the only trace — no shipped pin reads comment
+nodes. The subtitle's two tails are sibling `<template>`s on ONE line so the via_host text
+stays the shipped string (the condense trap: a newline between them would eat the space).
+
+### 16. One fee, one format: `EUR` on the radio AND the hero badge (orchestrator decision)
+
+§UC-GP-003 writes the radio's fee as `(+{fmtEur(parcelFee)})` AND says „`€` because a fee is
+a line, not a total" — `fmtEur` returns `EUR`, so the two halves contradict. ~~The first cut
+followed the prose and rendered `(+3.50 €)`.~~ → **ORCHESTRATOR DECISION (GP-T3 review):
+`(+3.50 EUR)` via `fmtEur`** — it is the spec's own formula, it matches FriendOrder's
+identical radio (`FriendOrder.vue:2685`, „(+X.XX EUR)"), and it matches the hero badge
+(`Packeta +3.50 EUR`, `portal2.jsx:160`'s `eur()` and the portal explainer's parcel badge):
+one fee, one format on the page. The `€`-on-lines rule stays for `CartLineList` lines —
+g-confirm's `Doručenie Packetou  3.50 €` is such a line. PO sign-off on staging covers both.
+
+### 17. The hero badge collides with NO shipped pin — the count is fixture-driven
+
+`guest-order-shell.spec.js:207` (`hero.locator('.badge')` = 3) and every GL-T4/T5 hero pin
+build their rounds WITHOUT `parcel_enabled` (default 0), so the fourth badge never renders
+there; the pre-open hero is a different card and gets no badge. No retarget needed. The new
+test pins count 4 on a parcel round with the shipped three unchanged in order.
+
+### 18. The `GuestSteps` seam — one computed, three mounts, and why the pre-open card stays off
+
+GL-T4's source pin „GuestOrder.vue does not pass packeta" was the sanctioned retarget: it now
+asserts all three mounts bind `:packeta="stepsPacketa"`. `stepsPacketa = !preopen &&
+parcelEnabled`. ⚠ The pre-open payload (19 §UC-GL-003) carries NO cycle — there is no open
+round through this token, so there is no parcel flag to read, and the clause stays off on
+that card. Turning it on there needs a server addition (e.g. the next planned round's
+`parcel_enabled` on `next`), which is a public-contract change this row does not make —
+PO/orchestrator question. Binding the SAME computed on the pre-open mount means only the
+computed changes if that flag ever lands.
+
+### 19. The shared QR helper already existed — `e2e/qr-helpers.js` was NOT created
+
+20 §UC-GP-011 names a new `e2e/qr-helpers.js`; it was written before PL-T4 created
+`e2e/helpers/qr-pixels.js` (`readQrModules` + `qrMatrix`), whose header even invites the next
+sanction-holder to retro-fit `guest-payment-modal.spec.js`. A second QR module beside it would
+be the fork that file exists to stop. So: `independentQr()` moved verbatim into
+`qr-pixels.js` (it now imports the frontend's `bysquare` + `qrcode`, the same cross-tree
+import every QR spec makes); `guest-payment-modal.spec.js` imports
+`readQrModules as readModules` + `independentQr` — its in-file `readModules` was
+byte-identical to `readQrModules` at the default selector. Zero assertion lines changed
+(`git diff | grep '^[-+]' | grep -c 'expect('` = 0). `money-rounding.spec.js`'s copy (a
+different signature) is still untouched — no sanction covers it.
+
+### 20. The pixel-QR for total + fee needs a NEGATIVE control
+
+The rendered code is compared bit for bit against `independentQr(28.4, …)`, decoded to
+amount 28.4 with the unchanged reference `G{id} / {name} / {cycle}` — and ALSO asserted
+unequal to the product-only encode (24.9). Without that control a component that ignored the
+fee would still pass whenever both sides were fed the same number.
+
+### 21. g-confirm's fee line is a `CartLineList` EXTRA, not new markup
+
+`deliveryExtras(order.delivery_fee)` (`lib/order-lines.js`, the friend cart's own mapping)
+feeds `:extras`; each extra may now carry `testid` (`confirm-delivery-fee`), rendered as
+`:data-testid="extra.testid || null"` so every shipped caller's `<li>` is unchanged. It
+renders `Doručenie Packetou` ↔ `3.50 €` after the items and only when the SERVER's stored
+fee is > 0; the sum is `payment.amount`. The point sits below the card as `.sub`
+„Balík vám doručí Packeta: {point}" with the point in a `data-user-copy` span.
+
+### 22. Test traps met
+
+- `locator('label.radiorow', { has: dialog.getByTestId(x) })` NEVER matches: `has` resolves
+  RELATIVE to the outer element, and a dialog-prefixed inner locator looks for a dialog
+  inside the label. Use `page.getByTestId(x)` as the inner locator.
+- g-confirm has TWO `.display` elements (the sum and the lead-capture card's „Chcete si
+  objednať sami?") — scope to the „Suma na úhradu" card.
+- The Platba modal auto-opens after a submit when the seed has an IBAN; close it before
+  reading g-confirm.
+
+### Mutations (fresh boot, `guest-packeta.spec.js -g GP-T3`)
+
+M1 delivery keys always sent (1 red — the via_host payload test) · M2 component renders when
+parcels are off (2 — parcel-off DOM + the one-home pin) · M3 e-mail label never flips (1) ·
+M4 subtitle without the fee (1) · M5 g-confirm fee extra dropped (1) · M6 client regex drifts
+from the mailer's (2 — the node mirror + the one-home pin; no rebuild needed) · M7 the three
+client messages skipped (1) · M8 the Platba modal fed `order.total` (2 — the pixel QR + the
+source pin) · M9 no reset on open (1) · M10 hero badge never renders (1) · M11 the cartbar
+gains the fee (2 — the PO product-only pin, behavioural + source). ⚠ A mutation harness that
+reverts with `replace(new, old, 1)` must assert `new` is UNIQUE: M4's `{{ fmtEur(cartTotal) }}`
+also matches the cartbar, the revert „restored" the wrong line, and five later mutations
+measured a corrupted tree (M11 was then added because that accident proved it reds).
+
+### Seams
+
+- GP-T4: mount `GuestDeliveryChoice` in edit mode (seed from `order.packeta_address`), import
+  `EMAIL_SHAPE` from `lib/email-shape.js`, build the ALWAYS-sent delivery block yourself.
+- WA-T1: the D6 sentence „Na toto číslo vám pošleme správu…" goes into this checkout modal.

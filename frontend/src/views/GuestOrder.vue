@@ -12,8 +12,11 @@ import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
 import CartLineList from '@/components/CartLineList.vue'
 import GuestSteps from '@/components/GuestSteps.vue'
 import GuestRoastersLine from '@/components/GuestRoastersLine.vue'
+import GuestDeliveryChoice from '@/components/GuestDeliveryChoice.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { fmtEur } from '@/lib/money'
+import { EMAIL_SHAPE } from '@/lib/email-shape'
+import { deliveryExtras } from '@/lib/order-lines'
 import { purposeOrder } from '@/lib/purposes'
 import { itemsLabel, weeksAwayLabel } from '@/lib/plural'
 import { fmtDay, daysUntil } from '@/lib/cycle-stages'
@@ -31,7 +34,9 @@ import {
 // Same product-card layout as FriendOrder.vue (incl. bakery variant grouping),
 // stripped of everything that needs an account: no login, no delivery/pickup
 // modal, no drafts, no auto-save. Checkout is name + mobile (+ optional email)
-// and one submit; the sub-order is created only by that submit.
+// and one submit; the sub-order is created only by that submit. Since GP-T3 (20
+// §UC-GP-003) a round that sends parcels also offers the delivery choice inside the
+// checkout modal (`GuestDeliveryChoice.vue`); a parcel-off round shows none of it.
 //
 // The grid itself lives in `components/GuestProductGrid.vue` and the cart maths in
 // `lib/guest-cart.js` (GSO-T4), shared with the status/edit screen at
@@ -45,8 +50,10 @@ import {
 // ⚠ THE SUBMIT IS UNTOUCHED BY THE RESTYLE. `api.js guestRequest()` sends NO auth
 // headers on any guest call — the URL token IS the credential (GSO-T3) — and the
 // payload below is byte-identical to the shipped one: trimmed name/phone, email
-// only when non-empty, `itemsPayload(cartItems)`. The GSO-T3 input bounds are
-// mirrored as `maxlength` on the three inputs and must stay.
+// only when non-empty, `itemsPayload(cartItems)` — plus, ONLY for a Packeta choice,
+// `use_parcel_delivery: true` + the trimmed point (GP-T3). The GSO-T3 input bounds are
+// mirrored as `maxlength` on the three inputs (and the point's 160 on its own, inside
+// the component) and must stay.
 //
 // The confirmation (g-confirm) was restyled by RD-GX-2 and no longer holds a
 // payment-reference row: the reference moved into the Platba modal (§UC-GX-005,
@@ -84,6 +91,34 @@ const guestName = ref('')
 const guestPhone = ref('')
 const guestEmail = ref('')
 
+// ——— 20 §UC-GP-003 — the delivery choice (GP-T3) ———
+// `cycle.parcel_enabled` (0/1) and `cycle.parcel_fee` (already rounded) ride on the
+// listing since GP-T1. The server re-reads both at submit — these are DISPLAY only.
+// `GuestDeliveryChoice` renders nothing when parcels are off, so a parcel-off round's
+// checkout modal is element-for-element today's.
+const parcelEnabled = computed(() => Number(cycle.value?.parcel_enabled) === 1)
+const parcelFee = computed(() => {
+  const n = Number(cycle.value?.parcel_fee)
+  return Number.isFinite(n) ? n : 0
+})
+const deliveryMethod = ref('via_host') // 'via_host' | 'packeta'
+const packetaAddress = ref('')
+// ⚠ Guarded on `parcelEnabled` too, so a stale 'packeta' can never reach a payload
+// or a label on a round that does not offer it.
+const isPacketa = computed(() => parcelEnabled.value && deliveryMethod.value === 'packeta')
+// The subtitle's amount — cart + fee. ⚠ The CARTBAR stays product-only (PO 2026-09-19):
+// it is the cart, not the invoice; the modal subtitle is where the charge is stated.
+const checkoutFee = computed(() => (isPacketa.value ? parcelFee.value : 0))
+
+// 19 §UC-GL-007 / GL-T4's seam — step 3's „…, alebo si ju nechajte poslať cez Packetu."
+// is true exactly when the guest could choose Packeta here. ONE computed for all three
+// `GuestSteps` mounts so none can drift. ⚠ The PRE-OPEN page has no round to read a
+// parcel flag from (its payload carries no `cycle` — 19 §UC-GL-003 — and `cycle` is
+// never loaded on that branch), so the clause stays off there until the server
+// publishes a flag for the next round; that is a server-contract addition this row
+// does not make (recorded in learnings 12, GP-T3).
+const stepsPacketa = computed(() => !preopen.value && parcelEnabled.value)
+
 // Confirmation state (§UC-GSO-003)
 const confirmation = ref(null) // { order, items, payment, status_url }
 const showPaymentModal = ref(false)
@@ -106,6 +141,13 @@ const guestCartLines = computed(() => cartItems.value.map((item) => ({
   quantity: item.quantity,
   amount: item.total,
 })))
+
+// 20 §UC-GP-004 — g-confirm's fee line: an EXTRA after the items (`lib/order-lines.js`
+// — the fee is never an item), from the SERVER's stored `delivery_fee`, never from the
+// cart. `0`/absent ⇒ no line at all, so a via_host confirmation is today's list.
+const confirmationExtras = computed(() => deliveryExtras(confirmation.value?.order?.delivery_fee)
+  .map((extra) => ({ ...extra, testid: 'confirm-delivery-fee' })))
+const confirmationPoint = computed(() => confirmation.value?.order?.packeta_address || '')
 
 const confirmationLines = computed(() => (confirmation.value?.items || []).map((item) => ({
   key: item.id,
@@ -329,6 +371,11 @@ function rememberWaitlist(optIn) {
 
 function openCheckout() {
   checkoutError.value = ''
+  // 20 §UC-GP-003 item 7 — every open starts at the default method with an empty
+  // point (guests have no profile to prefill from; name/phone/e-mail keep the
+  // shipped behaviour and survive a close/reopen).
+  deliveryMethod.value = 'via_host'
+  packetaAddress.value = ''
   showCheckout.value = true
 }
 
@@ -338,6 +385,14 @@ function validateIdentity() {
   if (!guestName.value.trim()) return 'Zadajte svoje meno.'
   const digits = guestPhone.value.replace(/\D/g, '')
   if (digits.length < 9) return 'Zadajte telefónne číslo (aspoň 9 číslic).'
+  // 20 §UC-GP-003 item 4 — Packeta only, in this position; the server re-checks
+  // (GP-T1: the same three rules, the mailer's `EMAIL_SHAPE` mirrored in `lib/`).
+  if (isPacketa.value) {
+    if (!packetaAddress.value.trim()) return 'Zadajte výdajné miesto Packety.'
+    const email = guestEmail.value.trim()
+    if (!email) return 'Pri doručení Packetou zadajte e-mail.'
+    if (!EMAIL_SHAPE.test(email)) return 'Zadajte platný e-mail.'
+  }
   return ''
 }
 
@@ -362,6 +417,14 @@ async function submitOrder() {
     }
     const email = guestEmail.value.trim()
     if (email) payload.guest_email = email
+    // 20 §UC-GP-003 item 5 — the delivery keys ONLY for Packeta. A via_host submit
+    // sends NEITHER key, so its payload stays byte-identical to the shipped one
+    // (`guest-order.spec.js` request-shape pins) — even after Packeta was chosen,
+    // typed into and switched away from.
+    if (isPacketa.value) {
+      payload.use_parcel_delivery = true
+      payload.packeta_address = packetaAddress.value.trim()
+    }
 
     const result = await api.submitGuestOrder(token.value, payload)
     const statusUrl = `${window.location.origin}${result.status_path}`
@@ -527,10 +590,11 @@ function goToStatus() {
         </div>
 
         <!-- ② „Ako to funguje" — the FULL `GuestSteps` (GL-T4's component, its default
-             layout). `packeta` stays off until GP-T3 (19 §Accepted risks). -->
+             layout). `packeta` = `stepsPacketa`, like the two open-page mounts (GP-T3) —
+             which is false on this branch: no round, no parcel flag (see its note). -->
         <div class="card" style="padding:16px" data-testid="preopen-steps">
           <div class="field-lbl" style="margin-bottom:12px">Ako to funguje</div>
-          <GuestSteps :host-name="preopenHost" />
+          <GuestSteps :host-name="preopenHost" :packeta="stepsPacketa" />
         </div>
 
         <!-- ③ „Dajte mi vedieť" — only when the server says the signup is possible
@@ -694,8 +758,16 @@ function goToStatus() {
                "bare `toFixed(2)`, the heading states the unit" rule is superseded, and
                `line-height:normal` moved into the component, which needs it for its
                own non-A10 column classes. -->
-          <CartLineList :items="confirmationLines" />
+          <CartLineList :items="confirmationLines" :extras="confirmationExtras" />
         </div>
+        <!-- 20 §UC-GP-004 — where the bag goes, below the card, only for a Packeta order.
+             The point is person-typed ⇒ `data-user-copy` (FUP-T22); the label is ours. -->
+        <div
+          v-if="confirmationPoint"
+          class="sub"
+          style="margin-top:-4px;overflow-wrap:anywhere;line-height:normal"
+          data-testid="confirm-packeta-address"
+        >Balík vám doručí Packeta: <span data-user-copy>{{ confirmationPoint }}</span></div>
 
         <!-- Shipped gate kept (§UC-GX-004 item 3): with neither IBAN nor Revolut
              there is nothing for the modal to open onto — the reference alone is a
@@ -793,7 +865,7 @@ function goToStatus() {
                  written as margins because the shipped hero is a block, not a flex
                  column. The detail is `v-if` (collapsed by default, not persisted) — a
                  closed toggle leaves no second step list in the DOM. -->
-            <GuestSteps compact :host-name="host?.first_name || ''" data-testid="guest-steps-compact" style="margin-top:12px" />
+            <GuestSteps compact :host-name="host?.first_name || ''" :packeta="stepsPacketa" data-testid="guest-steps-compact" style="margin-top:12px" />
             <div class="flex flex-wrap items-center justify-between gap-2" style="margin-top:12px">
               <GuestRoastersLine />
               <button
@@ -812,12 +884,17 @@ function goToStatus() {
               data-testid="guest-steps-detail"
               style="border-top:2px solid rgba(10,10,10,0.12);padding-top:12px;margin-top:12px"
             >
-              <GuestSteps :host-name="host?.first_name || ''" />
+              <GuestSteps :host-name="host?.first_name || ''" :packeta="stepsPacketa" />
             </div>
             <div class="flex flex-wrap gap-[6px] mt-3">
               <span class="badge acc">Login netreba</span>
               <span class="badge">Platba prevodom</span>
               <span class="badge acc-o">Tovar odovzdá {{ host?.first_name }}</span>
+              <!-- 20 §UC-GP-003 item 6 (PO 2026-09-19: YES) — a FOURTH badge, only when the
+                   round sends parcels; `portal2.jsx:160`'s „+{eur(fee)}" wording (a badge
+                   is not a line, so EUR — the explainer's badge reads the same). A
+                   parcel-off round keeps the shipped three (`guest-order-shell.spec.js`). -->
+              <span v-if="parcelEnabled" class="badge acc-o" data-testid="guest-hero-packeta">Packeta +{{ fmtEur(parcelFee) }}</span>
             </div>
             <!-- Prototype copy, replacing the shipped "Účet netreba. Vyberte si
                  tovar, na konci zadajte meno a telefón." — "Účet netreba" now lives
@@ -909,7 +986,8 @@ function goToStatus() {
          spec-verbatim "Zavrieť" footer buttons. Nothing in this footer may be
          named as a substring of another control in the same dialog either.
 
-         The three inputs keep the GSO-T3 bounds as `maxlength` (120 / 32 / 160) —
+         The three inputs keep the GSO-T3 bounds as `maxlength` (120 / 32 / 160 — and
+         the Packeta point, inside `GuestDeliveryChoice`, its own 160) —
          the server re-validates, but a silently truncated 200 000-char name is what
          the mirror prevents. -->
     <NeoModal
@@ -917,7 +995,10 @@ function goToStatus() {
       title="Dokončiť objednávku"
       @close="showCheckout = false"
     >
-      <template #subtitle>Suma na úhradu: <b class="mono" style="color:var(--ink)">{{ fmtEur(cartTotal) }}</b>. Platba prevodom, tovar vám odovzdá {{ host?.first_name }}.</template>
+      <!-- 20 §UC-GP-003 item 3 — the amount is cart + fee; the tail names who hands the
+           goods over. ⚠ ONE LINE: the two branches are `<template>`s so a via_host
+           subtitle stays byte-identical to the shipped one. -->
+      <template #subtitle>Suma na úhradu: <b class="mono" style="color:var(--ink)">{{ fmtEur(cartTotal + checkoutFee) }}</b>. Platba prevodom, <template v-if="isPacketa">balík vám doručí Packeta.</template><template v-else>tovar vám odovzdá {{ host?.first_name }}.</template></template>
 
       <!-- `.m-body` is itself a 12px-gap flex column, so each field is a bare
            wrapper with a native `label.field-lbl` (no `ui/label`) — the same
@@ -947,8 +1028,17 @@ function goToStatus() {
           maxlength="32"
         />
       </div>
+      <!-- 20 §UC-GP-003 item 1 — below Mobil, above E-mail (whose label depends on it).
+           Renders NOTHING on a parcel-off round. -->
+      <GuestDeliveryChoice
+        v-model="deliveryMethod"
+        v-model:packeta-address="packetaAddress"
+        :host-first-name="host?.first_name || ''"
+        :parcel-fee="parcelFee"
+        :parcel-enabled="parcelEnabled"
+      />
       <div>
-        <label class="field-lbl" for="guest-email">E-mail (nepovinné)</label>
+        <label class="field-lbl" for="guest-email">{{ isPacketa ? 'E-mail *' : 'E-mail (nepovinné)' }}</label>
         <input
           id="guest-email"
           v-model="guestEmail"
@@ -959,6 +1049,8 @@ function goToStatus() {
           inputmode="email"
           maxlength="160"
         />
+        <!-- 20 §UC-GP-003 item 2 (roadmap §19, recast) — only while Packeta is chosen. -->
+        <div v-if="isPacketa" class="field-help" data-testid="guest-email-help">Packeta vám naň pošle informácie o zásielke.</div>
       </div>
 
       <!-- Client-side messages verbatim (§UC-GX-003); server errors keep the

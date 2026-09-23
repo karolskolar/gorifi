@@ -2257,7 +2257,7 @@ test.describe('GL-T4 · source pins — one home for the roaster words, one icon
     }
   })
 
-  test('GuestSteps.vue: NeoIcon cup/box/hand, no <svg> of its own, `packeta` defaults to false; GuestOrder.vue does not pass it yet (GP-T3 does)', () => {
+  test('GuestSteps.vue: NeoIcon cup/box/hand, no <svg> of its own, `packeta` defaults to false; GuestOrder.vue binds it on every mount (GP-T3)', () => {
     const steps = src('components/GuestSteps.vue')
     expect(steps).toContain('NeoIcon')
     for (const name of ['cup', 'box', 'hand']) expect(steps).toContain(`icon: '${name}'`)
@@ -2272,7 +2272,15 @@ test.describe('GL-T4 · source pins — one home for the roaster words, one icon
     // GL-T5 retarget (19 §UC-GL-006 items 2–3): the pre-open page mounts the SAME two
     // components — the „Ako to funguje" card (full) and the hero's roasters line.
     expect((view.match(/<GuestSteps\b/g) || []).length, 'compact strip + the fold + the pre-open card').toBe(3)
-    expect(view, 'packeta stays OFF until GP-T3').not.toMatch(/<GuestSteps[^>]*packeta/)
+    // ⚠ SANCTIONED RETARGET (GP-T3, the GL-T4 seam — 19 §UC-GL-007 „module 20 flips it on
+    // when `cycle.parcel_enabled`"; PROGRESS GP-T3 row). Was: „packeta stays OFF until
+    // GP-T3" — `not.toMatch(/<GuestSteps[^>]*packeta/)`. Now EVERY mount (the compact
+    // strip, the fold and the pre-open card) binds the ONE computed `stepsPacketa`, so no
+    // mount can drift from the others; the component's default stays `false` (above).
+    const mounts = view.match(/<GuestSteps\b[^>]*>/g) || []
+    expect(mounts, 'all three GuestSteps mounts').toHaveLength(3)
+    for (const m of mounts) expect(m, 'every mount binds the one computed').toContain(':packeta="stepsPacketa"')
+    expect(view).toMatch(/const stepsPacketa = computed\(/)
     expect((view.match(/<GuestRoastersLine\b/g) || []).length, 'open hero + pre-open hero').toBe(2)
   })
 })

@@ -663,7 +663,7 @@ paths **read the row back** through `withDb`; ledger pins use the FUP-T17
   admin nested amount; `/unpaid` `amount`, `totals.total`; guest-links `totals.total`
   product-only.
 - **⚠ Pixel QR for a Packeta order:** reuse `readModules()` / `independentQr()` from
-  `guest-payment-modal.spec.js` — **extracted to `e2e/qr-helpers.js`** (sanctioned edit
+  `guest-payment-modal.spec.js` — **extracted to ~~`e2e/qr-helpers.js`~~** → `e2e/helpers/qr-pixels.js` (the existing shared QR home; learnings 12 §19) (sanctioned edit
   below; no assertion change there) — and assert the rendered modules equal the independent
   encode for `amount = total + fee`, the decoded `paymentNote` = `guestPaymentReference()`
   output (unchanged), `beneficiary.name = 'Gorifi'`.
@@ -696,7 +696,7 @@ the module-14 lesson):**
 | File | Edit | Why |
 |---|---|---|
 | `api-security.spec.js` | `ADMIN_ENDPOINTS` **+= `PATCH /api/guest-orders/1/delivery`** | standing CLAUDE.md rule (UC-GP-009). ⚠ No public guest route is new — nothing joins the zero-external-requests sweep. |
-| `guest-payment-modal.spec.js` | extract `readModules` + `independentQr` into `e2e/qr-helpers.js` and import them; **no assertion changes** | UC-GP-011 item 1 reuses the pixel-QR approach (01-architecture gate note) |
+| `guest-payment-modal.spec.js` | extract `readModules` + `independentQr` into ~~`e2e/qr-helpers.js`~~ → `e2e/helpers/qr-pixels.js` (the existing shared QR home; learnings 12 §19) and import them; **no assertion changes** | UC-GP-011 item 1 reuses the pixel-QR approach (01-architecture gate note) |
 | `guest-order-recovery.spec.js` | mail describe **+= constants** `MAIL_DELIVERY_LABEL`, `MAIL_PACKETA_LABEL` (additive, the two-place-edit convention of 14 §OPEN); existing constants untouched | UC-GP-004 mail rows |
 | `guest-distribution.spec.js` | expected **NO change** — every guest there is via_host; if the `distribution[]` key rename to `party.key` breaks a locator, retarget the locator only | UC-GP-010 additive contract |
 | `colleagues-panel.spec.js`, `guest-host-view.spec.js`, `guest-status.spec.js`, `guest-order.spec.js`, `guest-admin-view.spec.js` | expected **NO change** — all their fixtures are via_host and every payload change is additive | — |
@@ -817,6 +817,7 @@ five `RATE_LIMIT_*_MAX` raised, output to a file, `echo "EXIT: $?"`.
 - `OPEN:` Hero badge — show „Packeta +{fee}“ on the ordering page at all, or leave the
   fee to the checkout modal only? Default = show (portal2.jsx:160 shows the friend the
   same badge).
+- `OPEN:` **Pre-open steps card** (GP-T3, learnings 12 §18) — should the pre-open payload publish the next round's parcel flag so the pre-open `GuestSteps` card can show the Packeta clause? Off until decided.
 - `OPEN:` Should the guest see any Packeta-specific line in the **cartbar** (UC-GP-003 rule
   3 keeps the cartbar product-only and states the amount in the subtitle)? Default = no
   cartbar change.
@@ -837,7 +838,7 @@ parent); `routes/cycles.js` (`/distribution` Packeta guest parties, `kind`/`key`
 (admin), `lib/email-shape.js` (the mirrored regex); `views/GuestOrder.vue`,
 `views/GuestOrderStatus.vue`, `components/GuestSubOrders.vue`, `views/CycleDetail.vue`,
 `views/Distribution.vue`, `api.js` (`switchGuestDelivery(id)`).
-**e2e:** new `tests/guest-packeta.spec.js`, new `qr-helpers.js`; edits per UC-GP-011 §2.
+**e2e:** new `tests/guest-packeta.spec.js`, ~~new `qr-helpers.js`~~ → `e2e/helpers/qr-pixels.js` (the existing shared QR home; learnings 12 §19); edits per UC-GP-011 §2.
 **Docs on landing:** CLAUDE.md one-liners + `docs/learnings/02-guest-shared-orders.md`
 write-up (§Supersedes list).
 

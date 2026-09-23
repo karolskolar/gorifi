@@ -9,8 +9,9 @@ import { gotoCycle } from '../helpers/portal.js'
 // no gain: the e2e recipe already builds the frontend, so its `node_modules` is
 // present by construction. If this import ever fails, run `npm install` in
 // `frontend/` — do NOT weaken it into a `test.skip`, it guards money.
-import { encode, decode, PaymentOptions, CurrencyCode, Version } from '../../frontend/node_modules/bysquare/lib/index.js'
-import QRCode from '../../frontend/node_modules/qrcode/lib/index.js'
+import { decode } from '../../frontend/node_modules/bysquare/lib/index.js'
+// GP-T3 — the pixel reader + the independent encode live in the shared QR helper now.
+import { readQrModules as readModules, independentQr } from '../helpers/qr-pixels.js'
 import { makeAdmin } from '../helpers/admin.js'
 
 // RD-GX-2 — the shared "Platba" modal (06 §UC-GX-005) and the g-confirm screen
@@ -163,106 +164,18 @@ async function openFromStatus(page) {
   return d
 }
 
-/**
- * Reads the QR's module matrix off the RENDERED PIXELS of the <img>. Everything
- * here is derived from the image alone — the bounding box of the dark modules, the
- * module pitch from the 7-module top-left finder run, and the symbol size snapped
- * to the only legal series (21, 25, … ≡ 1 mod 4). Nothing about the expected
- * payload leaks in.
- */
-async function readModules(page) {
-  return page.evaluate(async () => {
-    const img = document.querySelector('.qr img')
-    if (!img) return { error: 'no img' }
-    if (!img.complete) await new Promise((r) => { img.onload = r })
-    const n = img.naturalWidth
-    const cv = document.createElement('canvas')
-    cv.width = n
-    cv.height = n
-    const cx = cv.getContext('2d')
-    cx.drawImage(img, 0, 0)
-    const px = cx.getImageData(0, 0, n, n).data
-    const dark = (x, y) => px[(y * n + x) * 4] < 128
-
-    let minX = n, minY = n, maxX = -1, maxY = -1
-    for (let y = 0; y < n; y++) {
-      for (let x = 0; x < n; x++) {
-        if (!dark(x, y)) continue
-        if (x < minX) minX = x
-        if (y < minY) minY = y
-        if (x > maxX) maxX = x
-        if (y > maxY) maxY = y
-      }
-    }
-    if (maxX < 0) return { error: 'all light' }
-
-    let run = 0
-    while (dark(minX + run, minY)) run++
-    const width = maxX - minX + 1
-    // The module pitch is fractional (a 45-module symbol painted into 234 px), so
-    // `width / pitch` lands near — not on — the true size. Snap it to the series.
-    const approx = width / (run / 7)
-    let size = 21
-    let best = Infinity
-    for (let s = 21; s <= 177; s += 4) {
-      const d = Math.abs(s - approx)
-      if (d < best) { best = d; size = s }
-    }
-    const step = width / size
-    const rows = []
-    for (let r = 0; r < size; r++) {
-      let line = ''
-      for (let c = 0; c < size; c++) {
-        line += dark(Math.round(minX + (c + 0.5) * step), Math.round(minY + (r + 0.5) * step)) ? '1' : '0'
-      }
-      rows.push(line)
-    }
-    return { size, matrix: rows.join('\n') }
-  })
-}
-
-/**
- * The independent encode: the same inputs through the same two libraries, in Node,
- * with no knowledge of the component. `paymentDueDate` is "today" exactly as
- * `PaymentModal.generateQr()` computes it.
- */
-// ⚠ SANCTIONED SPEC EDIT (PL-T3, 15 §UC-PL-004/D3 — the payload change this module's
-// §Testing & gate lists). The independent encode gains the two fields the payload gained:
-// the server-owned VARIABLE SYMBOL and the BENEFICIARY name (`creditorName || 'Gorifi'`).
-// Both are still stated HERE, independently of the app — the point of this function is
-// that it knows nothing about `lib/payment-links.js`. A default of `''`/`'Gorifi'` keeps
-// it byte-identical to the shipped payload for a caller that passes neither, which is
-// what the friend cart-bar case below still is.
-function independentQr(amount, reference, iban, variableSymbol = '', beneficiaryName = 'Gorifi') {
-  const t = new Date()
-  const dateStr = t.getFullYear().toString()
-    + (t.getMonth() + 1).toString().padStart(2, '0')
-    + t.getDate().toString().padStart(2, '0')
-  const qrString = encode({
-    invoiceId: '',
-    payments: [{
-      type: PaymentOptions.PaymentOrder,
-      amount,
-      currencyCode: CurrencyCode.EUR,
-      paymentDueDate: dateStr,
-      variableSymbol,
-      constantSymbol: '',
-      specificSymbol: '',
-      originatorsReferenceInformation: '',
-      paymentNote: reference || '',
-      bankAccounts: [{ iban: iban.replace(/\s/g, ''), bic: '' }],
-      beneficiary: { name: beneficiaryName, street: '', city: '' },
-    }],
-  }, { version: Version['1.0.0'] })
-  const qr = QRCode.create(qrString, { errorCorrectionLevel: 'M' })
-  const rows = []
-  for (let r = 0; r < qr.modules.size; r++) {
-    let line = ''
-    for (let c = 0; c < qr.modules.size; c++) line += qr.modules.get(r, c) ? '1' : '0'
-    rows.push(line)
-  }
-  return { qrString, size: qr.modules.size, matrix: rows.join('\n') }
-}
+// ⚠ SANCTIONED SPEC EDIT (GP-T3, 20 §UC-GP-011 item 1 — „extract `readModules` +
+// `independentQr` … and import them; NO assertion changes"). Both helpers moved,
+// byte for byte, into `../helpers/qr-pixels.js` (the one shared QR home PL-T4 created
+// — the spec's `e2e/qr-helpers.js` predates it, see that file's header), so the
+// Packeta (total + fee) QR in `guest-packeta.spec.js` is checked by the SAME code:
+//   · `readModules(page)` ≡ `readQrModules(page)` at its default `.qr img` selector —
+//     the pixel reader: dark bounding box, pitch from the 7-module finder run, size
+//     snapped to 21 + 4k; nothing about the expected payload leaks in;
+//   · `independentQr(amount, reference, iban, variableSymbol = '', beneficiaryName =
+//     'Gorifi')` — the same inputs through the same two libraries, in Node, with no
+//     knowledge of the component; PL-T3's two sanctioned parameters kept as they were.
+// Every call site below is unchanged.
 
 // ---------------------------------------------------------------------------
 // (A) the QR

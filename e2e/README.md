@@ -371,12 +371,14 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   settings (IBAN / Revolut username) **only if they are empty**, because guest
   confirmation needs them — a real environment's values are never overwritten.
 - `fixtures.js` — credentials/constants, overridable via env.
-- `helpers/qr-pixels.js` — `readQrModules(page)` + `qrMatrix(QRCode, qrString)`: reading a
+- `helpers/qr-pixels.js` — `readQrModules(page)` + `qrMatrix(QRCode, qrString)` +
+  `independentQr(amount, reference, iban, variableSymbol?, beneficiaryName?)` (GP-T3): reading a
   Pay-by-Square QR back off the RENDERED PIXELS, which is how every money path is pinned
   (01-architecture §Testing & gate). It lives OUTSIDE `tests/` on purpose — `testDir` is
   `./tests`, and a file there with no `test()` fails the run. `guest-payment-modal.spec.js`
-  and `money-rounding.spec.js` still carry their own older copies of the scanner; new specs
-  import this one (PL-T4, 15 §UC-PL-009 item 7).
+  imports its scanner and independent encode from here since GP-T3 (learnings 12 §19);
+  `money-rounding.spec.js` still carries its own older copy; new specs import this one
+  (PL-T4, 15 §UC-PL-009 item 7).
 - `tests/pickup-location-delete.spec.js` — FUP-T23: `DELETE /api/pickup-locations/:id`
   and the TWO-STORE rule. The route used to guard itself with `SELECT COUNT(*) FROM
   **orders** WHERE pickup_location_id = ?`, while `helpers/pickup.js` — the one home for

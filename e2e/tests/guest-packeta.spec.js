@@ -21,8 +21,14 @@ import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 import { makeAdmin } from '../helpers/admin.js'
-import { stripComments } from '../helpers/source-pins.js'
+import { stripComments, assertReadable, code as frontCode, HAS_SRC, NEEDS_SRC } from '../helpers/source-pins.js'
+// GP-T3 (20 §UC-GP-011 item 1) — the pixel-QR pair, shared with guest-payment-modal.spec.js.
+import { readQrModules, independentQr } from '../helpers/qr-pixels.js'
+import { decode as decodeBySquare } from '../../frontend/node_modules/bysquare/lib/index.js'
+// GP-T3 (20 §UC-GP-003 item 4) — the client mirror of the mailer's regex.
+import { EMAIL_SHAPE as CLIENT_EMAIL_SHAPE } from '../../frontend/src/lib/email-shape.js'
 import { BANNED } from '../helpers/vocabulary.js'
+import { collectAppCopy } from '../helpers/copy-sweep.js'
 import {
   withMailHarness, multipartFields, CAN_SPAWN_BACKEND, FAKE_MAILGUN_KEY, STUB_MAILGUN_DOMAIN,
 } from '../mailgun-harness.js'
@@ -1214,5 +1220,486 @@ test.describe('GP-T1 · source pins', () => {
       expect(s).not.toMatch(BANNED)
       expect(readBackend('routes/guest.js'), `the route really carries „${s}"`).toContain(s.replace(' (najviac 160 znakov)', ''))
     }
+  })
+})
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// §9 GP-T3 · 20 §UC-GP-003 (checkout delivery choice) + §UC-GP-004's g-confirm half
+// ═════════════════════════════════════════════════════════════════════════════
+// Real UI against the shared target: `scenario()` builds a parcel-capable (or, with
+// `parcel: false`, a parcel-off) open round, so no payload is mocked here — every
+// state this row renders is reachable. ⚠ DRAFT PO copy (staging sign-off, PO
+// 2026-09-19), hoisted so sign-off is a two-place edit (these + the two .vue files).
+const GP3_PHONE = { width: 378, height: 900 }
+const GP3_FEE_BADGE = 'Packeta +3.50 EUR'
+const GP3_GROUP_LBL = 'Spôsob prevzatia'
+const GP3_VIA_HOST = (host) => `Prevezmem od ${host}`
+// ORCHESTRATOR DECISION (GP-T3 review): `fmtEur` — one fee, one format with the hero badge.
+const GP3_PACKETA = 'Poslať Packetou (+3.50 EUR)'
+const GP3_POINT_LBL = 'Výdajné miesto Packeta *'
+const GP3_POINT_PH = 'napr. Z-BOX Hlavná 15, Bratislava'
+const GP3_POINT_HELP = (host) => `Názov Z-BOXu alebo pobočky a mesto. Balík vám doručí Packeta, nie ${host}.`
+const GP3_EMAIL_OPT = 'E-mail (nepovinné)'
+const GP3_EMAIL_REQ = 'E-mail *'
+const GP3_EMAIL_HELP = 'Packeta vám naň pošle informácie o zásielke.'
+const GP3_SUB_HOST = (amount, host) => `Suma na úhradu: ${amount}. Platba prevodom, tovar vám odovzdá ${host}.`
+const GP3_SUB_PACKETA = (amount) => `Suma na úhradu: ${amount}. Platba prevodom, balík vám doručí Packeta.`
+const GP3_MSG_POINT = 'Zadajte výdajné miesto Packety.'
+const GP3_MSG_EMAIL = 'Pri doručení Packetou zadajte e-mail.'
+const GP3_MSG_SHAPE = 'Zadajte platný e-mail.'
+const GP3_STEP3_OFF = (host) => `Od ${host}.`
+const GP3_STEP3_ON = (host) => `Od ${host}, alebo si ju nechajte poslať cez Packetu.`
+const GP3_CONFIRM_POINT = (point) => `Balík vám doručí Packeta: ${point}`
+
+async function gp3Page(page, label, opts = {}) {
+  const s = await scenario(label, opts)
+  await page.setViewportSize(opts.viewport || GP3_PHONE)
+  await page.goto(`/g/${s.link.token}`)
+  const hero = page.locator('.app .card.hl')
+  await expect(hero.locator('h1.h-screen')).toHaveText(s.cycle.name)
+  return { ...s, hero, first: s.host.name.split(' ')[0] }
+}
+
+async function gp3OpenCheckout(page, s) {
+  await page.getByTestId(`product-${s.product.id}`).getByTestId('inc-250g').click()
+  await page.getByTestId('open-checkout').click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.locator('.m-title')).toHaveText('Dokončiť objednávku')
+  return dialog
+}
+
+// The row label wraps the (clip-hidden) native radio — a tap on the ROW is the real
+// gesture (FriendOrder's RadioRow recipe), so that is what the tests click.
+// (`has` resolves RELATIVE to the row, so the inner locator must not carry the dialog.)
+const gp3Row = (dialog, testid) => dialog.locator('label.radiorow', { has: dialog.page().getByTestId(testid) })
+const gp3ChoosePacketa = (dialog) => gp3Row(dialog, 'guest-delivery-packeta').click()
+const gp3ChooseViaHost = (dialog) => gp3Row(dialog, 'guest-delivery-via-host').click()
+
+// `.m-body`'s element children, each named by the testid of the control it holds.
+const gp3BodyShape = (dialog) => dialog.locator('.m-body').evaluate((el) => [...el.children].map((c) => {
+  const own = c.getAttribute('data-testid')
+  if (own) return own
+  const inner = c.querySelector('[data-testid]')
+  return `${c.tagName.toLowerCase()}:${inner ? inner.getAttribute('data-testid') : c.className}`
+}))
+
+const isSubmit = (r) => r.method() === 'POST' && /\/api\/guest\/[^/]+\/orders$/.test(new URL(r.url()).pathname)
+
+test.describe('GP-T3 · 20 §UC-GP-003 — lib/email-shape.js is the mailer\'s regex', () => {
+  test('⚠ the client EMAIL_SHAPE mirrors backend/src/helpers/mailer.js EMAIL_SHAPE byte for byte (both imported in node)', async () => {
+    test.skip(!HAS_BACKEND_SRC, NEEDS_BACKEND_SRC)
+    const { EMAIL_SHAPE: SERVER } = await import(srcUrl('helpers/mailer.js'))
+    expect(SERVER, 'non-vacuity: the server really exports it').toBeInstanceOf(RegExp)
+    expect(CLIENT_EMAIL_SHAPE).toBeInstanceOf(RegExp)
+    expect(CLIENT_EMAIL_SHAPE.source).toBe(SERVER.source)
+    expect(CLIENT_EMAIL_SHAPE.flags).toBe(SERVER.flags)
+    // …and they agree on a matrix that exercises every class of the pattern.
+    const cases = ['a@b.sk', 'meno.priezvisko@firma.example.test', 'x', 'a@b', '@b.sk', 'a b@c.sk', 'a@b.c;d', 'a,b@c.sk', 'a@@b.sk', '']
+    const verdicts = cases.map((c) => [c, CLIENT_EMAIL_SHAPE.test(c)])
+    expect(verdicts).toEqual(cases.map((c) => [c, SERVER.test(c)]))
+    expect(verdicts.filter(([, ok]) => ok).length, 'non-vacuity: both verdicts occur').toBe(2)
+  })
+})
+
+test.describe('GP-T3 · 20 §UC-GP-003 — a parcel-OFF round renders today\'s page', () => {
+  test('no hero badge, no delivery controls, the shipped e-mail label and subtitle, step 3 without the clause', async ({ page }) => {
+    const s = await gp3Page(page, 'UiOff', { parcel: false })
+    const listing = await (await ctx.get(`/api/guest/${s.link.token}`)).json()
+    expect(listing.cycle.parcel_enabled, 'non-vacuity: parcels really are off').toBe(0)
+
+    await expect(s.hero.locator('.badge')).toHaveCount(3)
+    await expect(page.getByTestId('guest-hero-packeta')).toHaveCount(0)
+    await s.hero.getByTestId('guest-steps-toggle').click()
+    await expect(s.hero.getByTestId('guest-steps-detail').getByTestId('guest-step-detail').nth(2)).toHaveText(GP3_STEP3_OFF(s.first))
+
+    const dialog = await gp3OpenCheckout(page, s)
+    // ⚠ The DOM is element-for-element today's: exactly the three shipped fields.
+    expect(await gp3BodyShape(dialog)).toEqual(['div:guest-name', 'div:guest-phone', 'div:guest-email'])
+    await expect(dialog.getByTestId('guest-delivery-choice')).toHaveCount(0)
+    await expect(dialog.locator('input[type="radio"]')).toHaveCount(0)
+    await expect(dialog.getByTestId('guest-packeta-address')).toHaveCount(0)
+    await expect(dialog.getByText(GP3_GROUP_LBL)).toHaveCount(0)
+    await expect(dialog.locator('.field-help')).toHaveCount(0)
+    await expect(dialog.locator('label.field-lbl[for="guest-email"]')).toHaveText(GP3_EMAIL_OPT)
+    await expect(dialog.locator('.m-head .sub')).toHaveText(GP3_SUB_HOST('24.90 EUR', s.first))
+  })
+})
+
+test.describe('GP-T3 · 20 §UC-GP-003 — the delivery choice on a parcel-ON round', () => {
+  test('the hero gains a fourth `.badge.acc-o` „Packeta +{fee}" and step 3 gains its Packeta clause', async ({ page }) => {
+    const s = await gp3Page(page, 'UiHero')
+    const badges = s.hero.locator('.badge')
+    await expect(badges).toHaveCount(4)
+    await expect(badges.nth(3)).toHaveText(GP3_FEE_BADGE)
+    await expect(badges.nth(3)).toHaveClass(/\bacc-o\b/)
+    await expect(badges.nth(3)).toHaveAttribute('data-testid', 'guest-hero-packeta')
+    // The shipped three are untouched, in order.
+    await expect(badges.nth(0)).toHaveText('Login netreba')
+    await expect(badges.nth(2)).toHaveText(`Tovar odovzdá ${s.first}`)
+
+    await s.hero.getByTestId('guest-steps-toggle').click()
+    await expect(s.hero.getByTestId('guest-steps-detail').getByTestId('guest-step-detail').nth(2)).toHaveText(GP3_STEP3_ON(s.first))
+    // The compact strip renders no details either way.
+    await expect(s.hero.getByTestId('guest-steps-compact').getByTestId('guest-step-detail')).toHaveCount(0)
+  })
+
+  test('the choice sits below Mobil and above E-mail, defaults to via_host, and Packeta reveals the point + flips the e-mail label and subtitle', async ({ page }) => {
+    const s = await gp3Page(page, 'UiChoice')
+    const dialog = await gp3OpenCheckout(page, s)
+    expect(await gp3BodyShape(dialog)).toEqual(['div:guest-name', 'div:guest-phone', 'guest-delivery-choice', 'div:guest-email'])
+
+    const choice = dialog.getByTestId('guest-delivery-choice')
+    await expect(choice.locator('span.field-lbl')).toHaveText(GP3_GROUP_LBL)
+    await expect(choice.locator('label.radiorow')).toHaveText([GP3_VIA_HOST(s.first), GP3_PACKETA])
+    await expect(dialog.getByTestId('guest-delivery-via-host')).toBeChecked()
+    await expect(dialog.getByTestId('guest-delivery-packeta')).not.toBeChecked()
+    // The two radios are ONE native group (arrow keys, one Tab stop).
+    await expect(dialog.locator('input[type="radio"][name="guest-delivery-method"]')).toHaveCount(2)
+    await expect(dialog.getByTestId('guest-packeta-address')).toHaveCount(0)
+    await expect(dialog.locator('label.field-lbl[for="guest-email"]')).toHaveText(GP3_EMAIL_OPT)
+    await expect(dialog.locator('.m-head .sub')).toHaveText(GP3_SUB_HOST('24.90 EUR', s.first))
+
+    await gp3ChoosePacketa(dialog)
+    await expect(dialog.getByTestId('guest-delivery-packeta')).toBeChecked()
+    const point = dialog.getByTestId('guest-packeta-address')
+    await expect(point).toBeVisible()
+    await expect(point).toHaveClass('inp')
+    await expect(point).toHaveAttribute('maxlength', '160')
+    await expect(point).toHaveAttribute('placeholder', GP3_POINT_PH)
+    await expect(point).toHaveAttribute('id', 'guest-packeta-address')
+    await expect(dialog.locator('label.field-lbl[for="guest-packeta-address"]')).toHaveText(GP3_POINT_LBL)
+    await expect(choice.locator('.field-help')).toHaveText(GP3_POINT_HELP(s.first))
+
+    await expect(dialog.locator('label.field-lbl[for="guest-email"]')).toHaveText(GP3_EMAIL_REQ)
+    await expect(dialog.getByTestId('guest-email-help')).toHaveText(GP3_EMAIL_HELP)
+    await expect(dialog.getByTestId('guest-email')).toHaveAttribute('maxlength', '160')
+    await expect(dialog.locator('.m-head .sub')).toHaveText(GP3_SUB_PACKETA('28.40 EUR'))
+    await expect(dialog.locator('.m-head .sub b')).toHaveClass(/\bmono\b/)
+    // ⚠ PO: the cartbar stays PRODUCT-ONLY — it is the cart, not the invoice.
+    await expect(page.getByTestId('cart-total')).toHaveText('Celkom: 24.90 EUR')
+
+    // And back: nothing of the Packeta branch survives on screen.
+    await gp3ChooseViaHost(dialog)
+    await expect(dialog.getByTestId('guest-packeta-address')).toHaveCount(0)
+    await expect(dialog.getByTestId('guest-email-help')).toHaveCount(0)
+    await expect(dialog.locator('label.field-lbl[for="guest-email"]')).toHaveText(GP3_EMAIL_OPT)
+    await expect(dialog.locator('.m-head .sub')).toHaveText(GP3_SUB_HOST('24.90 EUR', s.first))
+  })
+
+  test('the modal resets to via_host and an empty point on every open (item 7)', async ({ page }) => {
+    const s = await gp3Page(page, 'UiReset')
+    let dialog = await gp3OpenCheckout(page, s)
+    await gp3ChoosePacketa(dialog)
+    await dialog.getByTestId('guest-packeta-address').fill('Z-BOX Stará 1, Trnava')
+    await dialog.getByRole('button', { name: 'Späť' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    await page.getByTestId('open-checkout').click()
+    dialog = page.getByRole('dialog')
+    await expect(dialog.getByTestId('guest-delivery-via-host')).toBeChecked()
+    await expect(dialog.getByTestId('guest-packeta-address')).toHaveCount(0)
+    await gp3ChoosePacketa(dialog)
+    await expect(dialog.getByTestId('guest-packeta-address')).toHaveValue('')
+  })
+
+  test('at 320px the Packeta branch overflows nothing — not the document, not the scrim, not the body', async ({ page }) => {
+    const s = await gp3Page(page, 'Ui320', { viewport: { width: 320, height: 700 } })
+    const dialog = await gp3OpenCheckout(page, s)
+    await gp3ChoosePacketa(dialog)
+    await expect(dialog.getByTestId('guest-packeta-address')).toBeVisible()
+    const over = await page.evaluate(() => {
+      const layer = document.querySelector('.modal-scrim')
+      const all = [layer, ...layer.querySelectorAll('*')]
+      return {
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        spills: all.filter((el) => el.scrollWidth - el.clientWidth > 1 && getComputedStyle(el).overflowX !== 'visible')
+          .map((el) => el.className || el.tagName),
+      }
+    })
+    expect(over.doc).toBe(0)
+    expect(over.spills, 'no scroller inside the modal layer absorbs a spill').toEqual([])
+  })
+
+  test('the three client messages fire WITHOUT a request, then a valid Packeta checkout goes out once', async ({ page }) => {
+    const s = await gp3Page(page, 'UiMsgs')
+    const posts = []
+    page.on('request', (r) => { if (isSubmit(r)) posts.push(r) })
+    const dialog = await gp3OpenCheckout(page, s)
+    await dialog.getByTestId('guest-name').fill('Zuzana Packetová')
+    await dialog.getByTestId('guest-phone').fill(uniquePhone())
+    await gp3ChoosePacketa(dialog)
+    const err = dialog.getByTestId('checkout-error')
+    const submitBtn = dialog.getByTestId('guest-submit')
+
+    await submitBtn.click()
+    await expect(err).toHaveText(GP3_MSG_POINT)
+    await dialog.getByTestId('guest-packeta-address').fill('    ')
+    await submitBtn.click()
+    await expect(err, 'a blank point is a missing point (trimmed)').toHaveText(GP3_MSG_POINT)
+
+    await dialog.getByTestId('guest-packeta-address').fill('Z-BOX Hlavná 15, Bratislava')
+    await submitBtn.click()
+    await expect(err).toHaveText(GP3_MSG_EMAIL)
+    await dialog.getByTestId('guest-email').fill('   ')
+    await submitBtn.click()
+    await expect(err).toHaveText(GP3_MSG_EMAIL)
+
+    for (const bad of ['x', 'a@b', 'a b@c.sk']) {
+      await dialog.getByTestId('guest-email').fill(bad)
+      await submitBtn.click()
+      await expect(err, `„${bad}" fails the mirrored EMAIL_SHAPE`).toHaveText(GP3_MSG_SHAPE)
+    }
+    // ⚠ Give a stray request time to be dispatched before counting its absence.
+    await page.waitForTimeout(500)
+    expect(posts, 'no message above cost a request').toHaveLength(0)
+    await expect(dialog.getByTestId('guest-submit'), 'non-vacuity: still on the modal').toBeVisible()
+
+    await dialog.getByTestId('guest-email').fill(`gp3.${uniq}.${++phoneSeq}@example.test`)
+    await submitBtn.click()
+    await expect(page.getByTestId('guest-confirmation')).toBeVisible()
+    expect(posts, 'non-vacuity: the gate counts real submits').toHaveLength(1)
+  })
+
+  test('⚠ a via_host submit on a parcel-ON round sends NO delivery keys — even after Packeta was chosen and typed into', async ({ page }) => {
+    const s = await gp3Page(page, 'UiViaHost')
+    const dialog = await gp3OpenCheckout(page, s)
+    await expect(dialog.getByTestId('guest-delivery-choice'), 'non-vacuity: the choice IS offered').toBeVisible()
+    await dialog.getByTestId('guest-name').fill('Zuzana Odovzdaná')
+    await dialog.getByTestId('guest-phone').fill(uniquePhone())
+    await gp3ChoosePacketa(dialog)
+    await dialog.getByTestId('guest-packeta-address').fill('Z-BOX Hlavná 15, Bratislava')
+    await gp3ChooseViaHost(dialog)
+
+    const [req, resp] = await Promise.all([
+      page.waitForRequest(isSubmit),
+      page.waitForResponse((r) => isSubmit(r.request())),
+      dialog.getByTestId('guest-submit').click(),
+    ])
+    const body = req.postDataJSON()
+    expect(Object.keys(body).sort(), 'the shipped payload, byte for byte').toEqual(['guest_name', 'guest_phone', 'items'])
+    expect(resp.status()).toBe(201)
+    const result = await resp.json()
+    expect(result.payment.amount).toBe(24.9)
+
+    const confirm = page.getByTestId('guest-confirmation')
+    await expect(confirm).toBeVisible()
+    // The Platba modal opens by itself (the seed configures an IBAN) — close it first.
+    await expect(page.getByRole('dialog').locator('.m-title')).toHaveText('Platba')
+    await page.getByRole('dialog').getByRole('button', { name: 'Zavrieť' }).first().click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    const card = confirm.locator('.card', { hasText: 'Suma na úhradu' })
+    await expect(card.locator('span.display')).toHaveText('24.90 EUR')
+    await expect(confirm.getByTestId('confirm-delivery-fee')).toHaveCount(0)
+    await expect(confirm.getByTestId('confirm-packeta-address')).toHaveCount(0)
+    await expect(card.locator('li.ln'), 'non-vacuity: the item line rendered').toHaveCount(1)
+    const row = guestRow(result.order.id)
+    if (row) {
+      expect(row.delivery_fee).toBe(0)
+      expect(row.packeta_address).toBeNull()
+    }
+  })
+
+  test('⚠ a Packeta checkout: payload keys, g-confirm fee line + point, the fee-inclusive amount, and the RENDERED QR encodes total + fee', async ({ page }) => {
+    const s = await gp3Page(page, 'UiPacketa')
+    const dialog = await gp3OpenCheckout(page, s)
+    await dialog.getByTestId('guest-name').fill('Zuzana Packetová')
+    await dialog.getByTestId('guest-phone').fill(uniquePhone())
+    await gp3ChoosePacketa(dialog)
+    await dialog.getByTestId('guest-packeta-address').fill('  Z-BOX Hlavná 15, Bratislava  ')
+    const email = `gp3.${uniq}.${++phoneSeq}@example.test`
+    await dialog.getByTestId('guest-email').fill(email)
+
+    const [req, resp] = await Promise.all([
+      page.waitForRequest(isSubmit),
+      page.waitForResponse((r) => isSubmit(r.request())),
+      dialog.getByTestId('guest-submit').click(),
+    ])
+    const body = req.postDataJSON()
+    expect(Object.keys(body).sort()).toEqual(['guest_email', 'guest_name', 'guest_phone', 'items', 'packeta_address', 'use_parcel_delivery'])
+    expect(body.use_parcel_delivery, 'a strict boolean (D1)').toBe(true)
+    expect(body.packeta_address, 'trimmed on the client too').toBe('Z-BOX Hlavná 15, Bratislava')
+    expect(body.guest_email).toBe(email)
+    expect(resp.status(), await resp.text()).toBe(201)
+    const result = await resp.json()
+    expect(result.payment.amount, '24.90 + 3.50').toBe(28.4)
+    expect(result.payment.iban, 'non-vacuity: the seed configures payment settings').toBeTruthy()
+
+    // The row, read back — the response is not evidence of what was stored.
+    const row = guestRow(result.order.id)
+    if (row) {
+      expect(row.total).toBe(24.9)
+      expect(row.delivery_fee).toBe(3.5)
+      expect(row.packeta_address).toBe('Z-BOX Hlavná 15, Bratislava')
+    }
+
+    // §UC-GSO-003: the Platba modal opens by itself — its QR is what a bank app scans.
+    const pay = page.getByRole('dialog')
+    await expect(pay.locator('.m-title')).toHaveText('Platba')
+    await expect(pay.getByAltText('Pay by Square QR')).toBeVisible()
+    const scanned = await readQrModules(page)
+    expect(scanned.error).toBeUndefined()
+    const expected = independentQr(
+      28.4,
+      result.payment.reference,
+      result.payment.iban,
+      result.payment.variable_symbol,
+      result.payment.creditor_name || 'Gorifi',
+    )
+    expect(scanned.size).toBe(expected.size)
+    expect(scanned.matrix, 'the scanned code IS the independent encode of total + fee').toBe(expected.matrix)
+    // Non-vacuity: a product-only encode is a DIFFERENT code — the fee is really in it.
+    const productOnly = independentQr(24.9, result.payment.reference, result.payment.iban,
+      result.payment.variable_symbol, result.payment.creditor_name || 'Gorifi')
+    expect(scanned.matrix).not.toBe(productOnly.matrix)
+    const decoded = decodeBySquare(expected.qrString).payments[0]
+    expect(decoded.amount).toBe(28.4)
+    // The reference is unchanged by the fee (R4.2) — SERVER-owned, never composed here.
+    expect(decoded.paymentNote).toBe(result.payment.reference)
+    expect(result.payment.reference).toBe(`G${result.order.id} / Zuzana Packetová / ${s.cycle.name}`)
+    expect(decoded.beneficiary.name).toBe(result.payment.creditor_name || 'Gorifi')
+
+    await pay.getByRole('button', { name: 'Zavrieť' }).first().click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    // g-confirm (§UC-GP-004): the fee is its OWN line after the items, and the sum is
+    // the server's fee-inclusive `payment.amount`.
+    const confirm = page.getByTestId('guest-confirmation')
+    const card = confirm.locator('.card', { hasText: 'Suma na úhradu' })
+    await expect(card.locator('span.display')).toHaveText('28.40 EUR')
+    const lines = card.locator('li.ln')
+    await expect(lines).toHaveCount(2)
+    const fee = card.getByTestId('confirm-delivery-fee')
+    await expect(fee).toHaveCount(1)
+    await expect(lines.nth(1), 'after the item line').toHaveAttribute('data-testid', 'confirm-delivery-fee')
+    await expect(fee.locator('.ln-name')).toHaveText('Doručenie Packetou')
+    await expect(fee.locator('.ln-amt')).toHaveText('3.50 €')
+    await expect(fee.locator('.ln-amt')).toHaveClass(/\bmono\b/)
+    const point = confirm.getByTestId('confirm-packeta-address')
+    await expect(point).toHaveText(GP3_CONFIRM_POINT('Z-BOX Hlavná 15, Bratislava'))
+    await expect(point).toHaveClass(/\bsub\b/)
+    // ⚠ The point is person-typed: marked for the copy sweep (FUP-T22), the label is not.
+    await expect(point.locator('[data-user-copy]')).toHaveText('Z-BOX Hlavná 15, Bratislava')
+  })
+})
+
+test.describe('GP-T3 · e2e-tester pass — keyboard, touch and the rendered-copy sweep', () => {
+  test('keyboard: arrow keys move the native radio group and check it, Space selects a focused radio, Tab then lands on the point field', async ({ page }) => {
+    const s = await gp3Page(page, 'UiKbd')
+    const dialog = await gp3OpenCheckout(page, s)
+    const viaHost = dialog.getByTestId('guest-delivery-via-host')
+    const packeta = dialog.getByTestId('guest-delivery-packeta')
+    await viaHost.focus()
+    await expect(viaHost).toBeFocused()
+
+    await page.keyboard.press('ArrowDown')
+    await expect(packeta, 'the arrow key moves the native group').toBeChecked()
+    await expect(packeta).toBeFocused()
+    await expect(dialog.getByTestId('guest-packeta-address'), 'the point field appears').toBeVisible()
+
+    await page.keyboard.press('ArrowUp')
+    await expect(viaHost, 'the arrow key cycles back').toBeChecked()
+    await expect(dialog.getByTestId('guest-packeta-address')).toHaveCount(0)
+
+    // Space on a freshly-focused radio checks it too — the OTHER documented gesture.
+    await packeta.focus()
+    await page.keyboard.press('Space')
+    await expect(packeta, 'Space selects the focused radio').toBeChecked()
+
+    // A same-`name` native group has exactly ONE Tab stop (the checked radio); Tab
+    // from it lands on the very next control, the point field.
+    await page.keyboard.press('Tab')
+    await expect(dialog.getByTestId('guest-packeta-address'), 'one Tab stop for the group, then the point field').toBeFocused()
+  })
+
+  test('A12: under `pointer: coarse` the Packeta point input computes 16px (no iOS focus zoom)', async ({ browser, baseURL }) => {
+    const coarse = await browser.newContext({ baseURL, viewport: GP3_PHONE, hasTouch: true, isMobile: true })
+    try {
+      const page = await coarse.newPage()
+      const s = await gp3Page(page, 'UiCoarse')
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches), 'non-vacuity: the context IS coarse').toBe(true)
+      const dialog = await gp3OpenCheckout(page, s)
+      await gp3ChoosePacketa(dialog)
+      await expect(dialog.getByTestId('guest-packeta-address')).toHaveCSS('font-size', '16px')
+    } finally {
+      await coarse.close()
+    }
+  })
+
+  test('the rendered copy sweep: the open Packeta checkout branch and g-confirm\'s fee + point line carry no „cyklus"/„kolo"', async ({ page }) => {
+    const s = await gp3Page(page, 'UiVocab')
+    const dialog = await gp3OpenCheckout(page, s)
+    await dialog.getByTestId('guest-name').fill('Zuzana Slovníková')
+    await dialog.getByTestId('guest-phone').fill(uniquePhone())
+    await gp3ChoosePacketa(dialog)
+    await dialog.getByTestId('guest-packeta-address').fill('Z-BOX Hlavná 15, Bratislava')
+    await dialog.getByTestId('guest-email').fill(`gp3.${uniq}.${++phoneSeq}@example.test`)
+
+    // ⚠ CLAUDE.md's `innerText` trap: it applies `text-transform`, and these field
+    // labels render UPPERCASE. Case-insensitive, same as `expectCleanCopy`'s idiom.
+    let copy = await page.evaluate(collectAppCopy())
+    expect(copy.toLowerCase(), 'non-vacuity: the Packeta branch really rendered').toContain('výdajné miesto packeta')
+    expect(BANNED.test(copy), `the open Packeta checkout carries a banned word:\n${copy}`).toBe(false)
+
+    await dialog.getByTestId('guest-submit').click()
+    await expect(page.getByTestId('guest-confirmation')).toBeVisible()
+    // The Platba modal auto-opens (the seed configures an IBAN) — close it before the sweep.
+    const pay = page.getByRole('dialog')
+    if (await pay.count()) {
+      await pay.getByRole('button', { name: 'Zavrieť' }).first().click()
+      await expect(page.getByRole('dialog')).toHaveCount(0)
+    }
+    copy = await page.evaluate(collectAppCopy())
+    expect(copy.toLowerCase(), 'non-vacuity: g-confirm really rendered the fee + point line').toContain('doručenie packetou')
+    expect(BANNED.test(copy), `g-confirm carries a banned word:\n${copy}`).toBe(false)
+  })
+})
+
+test.describe('GP-T3 · source pins — one home, and what this row must NOT touch', () => {
+  test('GuestDeliveryChoice.vue is the ONE home of the choice; GuestOrder.vue mounts it once and holds no copy', () => {
+    test.skip(!HAS_SRC, NEEDS_SRC)
+    const view = assertReadable('views/GuestOrder.vue', ['checkout-error', 'guest-email', 'GuestDeliveryChoice'])
+    expect(view.match(/<GuestDeliveryChoice\b/g) || [], 'one mount').toHaveLength(1)
+    expect(view).toMatch(/import GuestDeliveryChoice from '@\/components\/GuestDeliveryChoice\.vue'/)
+    for (const token of ['guest-packeta-address', 'Poslať Packetou', 'Prevezmem od', 'type="radio"']) {
+      expect(view, `„${token}" lives in the component, never in the view`).not.toContain(token)
+    }
+    const comp = assertReadable('components/GuestDeliveryChoice.vue', ['guest-packeta-address', 'parcelEnabled'])
+    expect(comp).toContain('maxlength="160"')
+    expect(comp, 'renders nothing when parcels are off').toMatch(/<div\s+v-if="parcelEnabled"/)
+    for (const s of [GP3_GROUP_LBL, 'Poslať Packetou', 'Prevezmem od', GP3_POINT_LBL, GP3_POINT_PH]) expect(comp).toContain(s)
+    for (const s of [GP3_GROUP_LBL, GP3_PACKETA, GP3_POINT_LBL, GP3_POINT_HELP('X'), GP3_EMAIL_HELP, GP3_MSG_POINT,
+      GP3_MSG_EMAIL, GP3_MSG_SHAPE, GP3_FEE_BADGE, GP3_SUB_PACKETA('1 EUR'), GP3_CONFIRM_POINT('X')]) {
+      expect(s, 'no „cyklus"/„kolo" in the new copy').not.toMatch(BANNED)
+    }
+  })
+
+  test('EMAIL_SHAPE has ONE client home, and the checkout imports it', () => {
+    test.skip(!HAS_SRC, NEEDS_SRC)
+    const view = assertReadable('views/GuestOrder.vue', ['checkout-error'])
+    expect(view).toMatch(/import \{ EMAIL_SHAPE \} from '@\/lib\/email-shape'/)
+    const lib = frontCode('lib/email-shape.js')
+    expect(lib, 'readability gate').toContain('export const EMAIL_SHAPE')
+    // No second spelling of the pattern anywhere in the frontend.
+    const hits = []
+    const walk = (dir) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, e.name)
+        if (e.isDirectory()) walk(full)
+        else if (/\.(vue|js)$/.test(e.name) && readFileSync(full, 'utf8').includes('[^\\s@,;]')) hits.push(relative(REPO_ROOT, full))
+      }
+    }
+    walk(join(REPO_ROOT, 'frontend', 'src'))
+    expect(hits).toEqual(['frontend/src/lib/email-shape.js'])
+  })
+
+  test('⚠ PaymentModal.vue knows nothing about the fee, and the cartbar total is the product sum', () => {
+    test.skip(!HAS_SRC, NEEDS_SRC)
+    const modal = assertReadable('components/PaymentModal.vue', ['amount', 'payBySquarePayload'])
+    for (const token of ['delivery_fee', 'parcel', 'Packet']) expect(modal, `PaymentModal must not know „${token}"`).not.toContain(token)
+    const view = assertReadable('views/GuestOrder.vue', ['cart-total'])
+    expect(view).toMatch(/data-testid="cart-total">Celkom: \{\{ fmtEur\(cartTotal\) \}\}</)
+    // The Platba modal is fed the SERVER's amount, never a client sum.
+    expect(view).toMatch(/:amount="confirmation\.payment\.amount"/)
   })
 })

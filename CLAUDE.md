@@ -461,6 +461,8 @@ append the full write-up to the matching learnings file and add at most one line
   number goes straight into a template — `toFixed(2)` at a call site would print „1.00 kg" on that screen alone.
   `CycleDetail`'s „max {limit}" badge is a DIFFERENT rule (unit switches at 1000 g, no rounding) — do not fold it in.
 - Preflight `svg{display:block}` breaks inline icon+text — fix at the call site with `inline-flex`.
+- `GuestDeliveryChoice.vue` is the ONE home of the guest delivery choice (checkout + GP-T4 edit): two v-models, renders nothing when parcels are off; the CALLER builds the payload (checkout: keys ONLY for Packeta, edit: always) off `parcelEnabled && method==='packeta'`, and `lib/email-shape.js` mirrors `mailer.js EMAIL_SHAPE` (node-pinned, GP-T3).
+- The e2e pixel-QR pair (`readQrModules`, `qrMatrix`, `independentQr`) has ONE home, `e2e/helpers/qr-pixels.js` — never a second QR helper file (GP-T3 did not create the spec's `e2e/qr-helpers.js`).
 - ⚠ The closed landing prints the SAME date twice, in TWO formats, and that is an open PO question, not a bug:
   the modal's card is `lib/dates.js fmtDayMonth` („3. 10.") and the warn banner is module 17's composed
   sentence („približne 3. októbra"). Never reconcile it at a call site; `portal-landing.spec.js` §5 pins both
@@ -468,7 +470,7 @@ append the full write-up to the matching learnings file and add at most one line
 - Guest surface (`GuestOrder.vue`, `GuestOrderStatus.vue`) deliberately lags the friend skin in places; it is
   not the reference when restyling.
 - `GuestShareDialog.vue` = standing section (`standing-link`, own `standingSeq`, the ONE native-share button, URL rendered by spec) THEN the per-cycle one; per-cycle assertions scope to `per-cycle-link`, whose loading `.sub` stays a DIRECT `.m-body` child (pinned) and whose error banner stays first (GL-T6b).
-- Nothing new inside a guest hero (`.card.hl`, `preopen-hero`) may carry `.badge` or `.mono`: shipped pins count/strict-resolve them. `GuestSteps`/`GuestRoastersLine` re-declare those rules in scoped classes, pinned computed-style-equal (GL-T4).
+- ~~Nothing new inside a guest hero (`.card.hl`, `preopen-hero`) may carry `.badge` or `.mono`~~ → nothing new may, **except 20 §UC-GP-003 item 6's parcel-only 4th badge (GP-T3); the shipped count pins hold only because their rounds are parcel-off (`parcel_enabled` DEFAULT 0)**: shipped pins count/strict-resolve them. `GuestSteps`/`GuestRoastersLine` re-declare those rules in scoped classes, pinned computed-style-equal (GL-T4).
 - The pre-open preview is `GuestProductGrid readonly` (GL-T5) — REMOVES steppers/stock bar/lightbox/tab stops (each JS-guarded); the `.p2-ro` fade is the CALLER's wrapper over strip AND cards; `gorifi_guest_waitlist` memory is `{at, whatsapp_opt_in, cycle_id}` and expires with the preview round (learnings 11 §GL-T5).
 
 ### Documentation discipline
