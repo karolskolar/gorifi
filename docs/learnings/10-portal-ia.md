@@ -610,7 +610,9 @@ which is a state a test cannot reach on purpose.
 
 So it is pinned in the SOURCE, per FILE (`FriendOrder` 1, `FriendPortalSession` 0,
 `FriendPortal` 0 — a total would let „moved from A to B" pass), plus the bridge itself
-(`defineExpose({ openShareDialog })` ↔ `landingOrder.value.openShareDialog()`).
+(`defineExpose({ openShareDialog })` ↔ ~~`landingOrder.value.openShareDialog()`~~ **GL-T6c:
+`shareHost.value.openShareDialog()`, `shareHost` = whichever of `landingOrder` / `lockedOrder` /
+`closedOrder` is mounted — learnings 11 §GL-T6c; the per-file counts are unchanged**).
 
 ⚠ **And the source-pin helper lifted from `portal-shell.spec.js` was BROKEN on a `.vue`
 file.** It strips `/* */` before `//`, and `FriendPortalSession.vue:56` carries the line

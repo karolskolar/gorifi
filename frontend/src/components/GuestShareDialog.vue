@@ -148,8 +148,11 @@ watch(() => props.open, async (isOpen) => {
 // never-in-the-DOM rule (FriendDetail.vue, GL-T6a).
 //
 // ⚠ Works with `cycleId = null` (module 18's menu entry for a closed round): this
-// watcher never reads the cycle. No trigger reaches that today — the drawer row and
-// the cartbar icon are `state === 'open'` only — so it is SOURCE-pinned.
+// watcher never reads the cycle. ~~No trigger reaches that today — the drawer row and
+// the cartbar icon are `state === 'open'` only — so it is SOURCE-pinned.~~ GL-T6c: the
+// drawer row reaches it on the locked / closed landings (`FriendOrder.vue shareCycleId`
+// is `null` on a readonly mount), behaviour-pinned in `portal-landing.spec.js` §3; the
+// source pin in `guest-standing-link.spec.js` stays as the component-level half.
 let standingSeq = 0
 const standingPath = ref('')
 const waitingCount = ref(0)

@@ -318,7 +318,9 @@ append the full write-up to the matching learnings file and add at most one line
   + `lib/guest-cart.js`, `CatScrollArrow.vue`, `ProductImageModal.vue`, `GuestShareDialog.vue`
   (⚠ exactly ONE mount on the friend surface — `FriendOrder.vue`; the session reaches it through
   `defineExpose({openShareDialog})`, never a second instance, and the rule is SOURCE-pinned per file in
-  `portal-landing.spec.js` because a closed second instance has no DOM signature — PI-T3),
+  `portal-landing.spec.js` because a closed second instance has no DOM signature — PI-T3; GL-T6c: via
+  `shareHost` = whichever of `landingOrder`/`lockedOrder`/`closedOrder` is mounted, so the drawer row works on
+  locked/closed too, and `FriendOrder`'s `shareCycleId` is `null` on a `readonly` mount ⇒ standing-only dialog),
   `FriendOrder.vue` (`mode='route'|'landing'`; the landing mounts it, never a fork — its landing wrapper is
   `display:contents` or `.cartbar`'s sticky clamps inside the subtree; `readonly` is LANDING-ONLY and is the
   ONE read-only catalogue rendering — `.p2-ro` on the CARDS wrapper only so `.cat-tabs` stays browsable, plus

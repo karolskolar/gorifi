@@ -330,7 +330,9 @@ const paymentReference = computed(() => {
 // its own `loadSeq`-guarded link state — 05 §UC-KG-006).
 //
 // Three triggers, one dialog: the Kolegovia panel's card (module 05), the
-// cartbar icon (§UC-PI-011), and the drawer row.
+// cartbar icon (§UC-PI-011), and the drawer row. ⚠ GL-T6c: the drawer row also
+// reaches the READ-ONLY mounts (closed catalogue, locked landing), whose dialog is
+// standing-only — see `shareCycleId`.
 const showShareModal = ref(false)
 
 /**
@@ -425,6 +427,27 @@ const guestSummary = ref({ count: 0, total: 0, pendingDelivery: 0, failed: false
 const activeCycleId = computed(() => (props.cycleId != null && props.cycleId !== '' ? props.cycleId : route.params.cycleId))
 
 const isLocked = computed(() => cycle.value?.status === 'planned' || cycle.value?.status === 'locked' || cycle.value?.status === 'completed')
+
+/**
+ * 19 §UC-GL-008 / GL-T6c — the round THE share dialog is about, or `null`.
+ *
+ * `null` ⇒ the dialog renders its STANDING section only (the per-cycle label and
+ * section are `v-if="cycleId"` inside `GuestShareDialog.vue`, source-pinned in
+ * `guest-standing-link.spec.js`). A per-cycle link is an invitation to ORDER into
+ * this round, so it is offered only on a mount a friend can order on: 05
+ * §UC-KG-002's „a round that is not open offers no per-cycle share" is kept — what
+ * GL-T6c adds is the cycle-INDEPENDENT link on the two read-only landings.
+ *
+ * ⚠ TWO terms, and the first is the one the landing relies on. `isReadonly` is a
+ * PROP (synchronous, known before any load), and the two mounts that reach this
+ * dialog while the round is not open — the closed catalogue and the locked landing
+ * — are exactly the two `readonly` ones. `isLocked` reads the LOADED cycle, so on its
+ * own it would hand the dialog the round's id until the order GET lands (and forever,
+ * if it fails). It stays as the deep link's half: `/cycle/:id` on a locked round has
+ * no trigger today (every Kolegovia share control is `!isLocked`), and this keeps it
+ * standing-only if one is ever added.
+ */
+const shareCycleId = computed(() => (isReadonly.value || isLocked.value ? null : activeCycleId.value))
 
 /**
  * „no quantity on this screen may change", the JS half.
@@ -2272,7 +2295,9 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
              ⚠ `state === 'open'` only: this whole `.actions` row is already
              `v-if="!isLocked"`, which is the same condition expressed on the cycle
              (04 §UC-FO-014 treats planned/locked/completed alike), so a locked or
-             closed round carries no share affordance — 05 §UC-KG-002.
+             closed round carries ~~no share affordance~~ no CARTBAR share icon (and
+             no per-cycle link — see `shareCycleId`; the drawer row still opens the
+             standing-only dialog, GL-T6c) — 05 §UC-KG-002.
 
              ⚠⚠ LANDING ONLY, AND THAT IS NOT A SIMPLIFICATION — it is what two
              IMMUTABLE specs require. `guest-host-view.spec.js:890,929` and
@@ -2491,11 +2516,16 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
       @close="showPaymentModal = false"
     />
 
-    <!-- Share with colleagues (guest link) — shared with FriendPortal -->
+    <!-- Share with colleagues (guest link) — THE one friend-surface instance.
+         ⚠ GL-T6c: `shareCycleId`, not `activeCycleId` — `null` on the read-only
+         landings (closed catalogue, locked round), where the drawer row now reaches
+         this instance and the dialog shows the STANDING link only. The name goes with
+         the id: a dialog that shows no per-cycle section must not name a round in its
+         subtitle either. -->
     <GuestShareDialog
       :open="showShareModal"
-      :cycle-id="activeCycleId"
-      :cycle-name="cycle?.name || ''"
+      :cycle-id="shareCycleId"
+      :cycle-name="shareCycleId ? (cycle?.name || '') : ''"
       @update:open="showShareModal = $event"
     />
 

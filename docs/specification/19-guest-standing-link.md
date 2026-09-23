@@ -544,7 +544,7 @@ two lines above 12 px.
 per-cycle link becomes the secondary, legacy section. Component API stays frozen (`open` / `cycleId` /
 `cycleName`, `update:open`); ~~the standing section works with `cycleId = null` (module 18's menu entry
 opens the dialog when no round is open)~~ **— CORRECTED by the GL-T6b review: the component supports
-`cycleId = null`, but that is source-pinned only: the drawer share item is `state === 'open'`-only (`FriendPortalSession.vue:1513,1539`), the ONE dialog instance lives in `FriendOrder.vue` bound to `activeCycleId`, and the closed landing has no `landingOrder` ref — so no UI path opens it with `cycleId = null`; the entry point is **GL-T6c**.**
+`cycleId = null`, ~~but that is source-pinned only: the drawer share item is `state === 'open'`-only (`FriendPortalSession.vue:1513,1539`), the ONE dialog instance lives in `FriendOrder.vue` bound to `activeCycleId`, and the closed landing has no `landingOrder` ref — so no UI path opens it with `cycleId = null`; the entry point is **GL-T6c**~~.** **— DONE by GL-T6c: the drawer row now opens the ONE instance on the locked and closed-with-catalogue landings, and `FriendOrder.vue` passes `cycleId = null` (`shareCycleId`) on its read-only mounts; a closed landing with no catalogue mounts no `FriendOrder` and keeps no row (recorded gap, learnings 11 §GL-T6c).**
 
 **Data:** on open, `api.getStandingGuestLink()` (`loadSeq`-guarded like the existing GET; both requests
 may run in parallel, each drops a stale result). `cycleId` present ⇒ the existing per-cycle GET runs too,
@@ -589,8 +589,9 @@ unchanged.
   it so.
 - The dialog stays `v-if`-mounted (the RD-KG-2 rule).
 
-**Acceptance criteria:** ~~opening the dialog with no open cycle shows the standing section and NOT the
-per-cycle section~~ **(GL-T6b review: source-pinned only: the drawer share item is `state === 'open'`-only (`FriendPortalSession.vue:1513,1539`), the ONE dialog instance lives in `FriendOrder.vue` bound to `activeCycleId`, and the closed landing has no `landingOrder` ref — so no UI path opens it with `cycleId = null`; the entry point is **GL-T6c**; GL-T6c owns this clause)**; with an open cycle both render in that order; the copy row value matches
+**Acceptance criteria:** opening the dialog with no open cycle shows the standing section and NOT the
+per-cycle section ~~**(GL-T6b review: source-pinned only: the drawer share item is `state === 'open'`-only (`FriendPortalSession.vue:1513,1539`), the ONE dialog instance lives in `FriendOrder.vue` bound to `activeCycleId`, and the closed landing has no `landingOrder` ref — so no UI path opens it with `cycleId = null`; the entry point is **GL-T6c**; GL-T6c owns this clause)**~~ **(RESTORED by GL-T6c — now
+behaviour-pinned in `portal-landing.spec.js` §3 from the drawer row on the locked and closed landings)**; with an open cycle both render in that order; the copy row value matches
 `/\/g\/[A-Z2-9]{14}$/`; the count line is absent at 0 and reads „1 človek čaká na váš odkaz“ after one
 waitlist submit; regenerate changes the row value and the old URL 404s; ~~every shipped share-dialog spec
 passes unmodified~~ **— CORRECTED by GL-T6b: every shipped share-dialog spec passes with ONLY the

@@ -331,7 +331,7 @@ CSS is part of the handoff).
 | 3 | Zostatok a platby | trailing badge: `span.badge.danger` `{fmtEur(balance)}` when `balance < -0.01`, else `span.badge.ok` `{fmtEur(balance)}`; while loading no badge | always | `/zostatok` |
 | 4 | Zdieľať s kolegami | **„{colleaguesLabel(count)} · {kg} kg cez váš odkaz“** (03 UC-FL-007 semantics: `totals.count` excludes cancelled; kg via `lib/kg.js kgLabel()`, the one home since FUP-T24 — ⚠ it returns the whole
   „X kg" string, so the template above reads „{colleaguesLabel(count)} · {kgLabel(g)} cez váš odkaz",
-  NOT „… {kg} kg" (that would render „0.25 kg kg"); count 0 ⇒ **„Pošlite odkaz kolegom“**) | `state === 'open'` only | opens `GuestShareDialog` (UC-PI-011) |
+  NOT „… {kg} kg" (that would render „0.25 kg kg"); count 0 ⇒ **„Pošlite odkaz kolegom“**) | ~~`state === 'open'` only~~ **GL-T6c (19 §UC-GL-008): open, locked, and closed WITH a catalogue — wherever a `FriendOrder` mount hosts the one dialog; on a non-open round it opens standing-only (`cycleId = null`), no count is fetched, sub = „Pošlite odkaz kolegom“; closed with no catalogue ⇒ no row (recorded gap, learnings 11 §GL-T6c)** | opens `GuestShareDialog` (UC-PI-011) |
 | 5 | Pozvať priateľa | **„Váš pozývací odkaz“** | always | `openInviteModal()` |
 | 6 | Ako to funguje | — | always | `/ako-to-funguje` |
 | 7 | Profil | **„Meno, telefón, Packeta, heslo“** | always | `openProfileModal()` |
@@ -354,7 +354,7 @@ The item whose view is current gets `.on` (only items 1/2/6 map to a view).
 - Slovak vy-form; the labels are the exact strings above (they become e2e pins).
 
 **Acceptance criteria:** items render in order 1–7 with the conditional 4th present only
-on an open round; „Odhlásiť sa“ returns to the login state; Tab cycles inside the drawer;
+on an open round **(GL-T6c: and on a locked / closed-with-catalogue one — see the table)**; „Odhlásiť sa“ returns to the login state; Tab cycles inside the drawer;
 Esc closes; `.app .p2-drawer` count 0 (teleported).
 
 ---
@@ -703,8 +703,12 @@ cartbar icon + the drawer item. The dialog itself is module 05's (UC-KG-006), un
   `:cycle-name`, `@update:open`); the session view opens it through a `defineExpose`d
   `openShareDialog()` on the embedded FriendOrder (the drawer item calls it); the cartbar
   icon sets the same flag. Accessible name of both triggers: **„Zdieľať s kolegami“**
-  (the cartbar icon via `aria-label`; the drawer item's `.lab` text). Both exist ONLY
-  when `state === 'open'` (locked/closed ⇒ count 0 — 05 UC-KG-002 rule).
+  (the cartbar icon via `aria-label`; the drawer item's `.lab` text). ~~Both exist ONLY
+  when `state === 'open'` (locked/closed ⇒ count 0 — 05 UC-KG-002 rule).~~ **GL-T6c
+  (19 §UC-GL-008): the CARTBAR icon exists only when `state === 'open'`; the DRAWER item
+  also exists on the locked / closed-with-catalogue landings, where it reaches the
+  read-only `FriendOrder` mount's instance (`shareHost`) and the dialog is standing-only
+  (`cycleId = null`) — 05 UC-KG-002 still holds for the PER-CYCLE link.**
 - The Kolegovia panel's own share card/buttons („Zdieľať odkaz“, „Zdieľať objednávku
   s kolegami“ — 05 UC-KG-001/002) are **unchanged** — three entry points, one dialog.
 - Escape closes the dialog (`role="dialog"` count 0), `loadSeq` guard inside the dialog is
@@ -712,7 +716,7 @@ cartbar icon + the drawer item. The dialog itself is module 05's (UC-KG-006), un
 - Standing copy of module 14 UC-GR-009 renders unchanged.
 
 **Acceptance criteria:** open round ⇒ cartbar icon + drawer item present; both open the
-dialog titled with the current cycle's name; URL stays `/`; locked ⇒ neither exists;
+dialog titled with the current cycle's name; URL stays `/`; ~~locked ⇒ neither exists~~ **GL-T6c: locked ⇒ no cartbar icon; the drawer item opens the standing-only dialog (learnings 11 §GL-T6c)**;
 ~~`share-dialog.spec.js` passes unmodified~~ **— SUPERSEDED by PI-T3 (2026-09-20). It
 could not: that file's entry point B is `openFromPortal()`, built on `portalCard()` =
 `div.card.p-4` + the cycle's `<h3>`, i.e. the CARD this UC retires. NINE call sites were
@@ -1247,8 +1251,9 @@ absence pin `[data-testid="profile-pencil"]` count 0.
 badges, archive, empty states, gear), `portal-share-row.spec.js` (share row, fan-out).
 Delete them; their protected PROPERTIES move: share entry contract + `@click.stop`-equivalent
 (URL stays `/`) → `portal-landing.spec.js`; the sequence guard on the colleague count
-(logout drop, second-load drop) → `portal-menu.spec.js` (drawer item 4 sub); locked/planned
-⇒ no share affordance → `portal-landing.spec.js`.
+(logout drop, second-load drop) → `portal-menu.spec.js` (drawer item 4 sub); ~~locked/planned
+⇒ no share affordance~~ → `portal-landing.spec.js` **(GL-T6c: now „no cartbar icon and no
+per-cycle link; the drawer row opens the standing-only dialog")**.
 
 **7. `portal-appbar.spec.js` — rewritten:** structure test → menu button + wordmark + view
 subtitle + one `.chip.acc` „Pozvať“ + lock chip rules + tickers per state (the
@@ -1365,7 +1370,7 @@ hostile text needed) and the drawer (row sub-line + header name). See learnings 
 
 **14. `portal-session-boundary.spec.js`:** the surface walk (252–307) → drawer-based:
 open every drawer item (history expand, balance, explainer incl. the checkbox, profile
-fold, invite, share when open), close, `logout(page)`; invariants 1–4 unchanged; the
+fold, invite, share ~~when open~~ **when the landing hosts the dialog — open, locked, closed-with-catalogue (GL-T6c)**), close, `logout(page)`; invariants 1–4 unchanged; the
 `setupSaving` Esc test unchanged. Header comment updated to name the drawer.
 ⚠ **DONE by PI-T12.** „The explainer incl. the checkbox" is TWO stops, not one: the
 „Už mi to neukazovať" checkbox renders only on the first-login GATE (`asGate`), never on

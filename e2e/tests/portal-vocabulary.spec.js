@@ -571,7 +571,8 @@ test.describe('PI-T11 · 18 §UC-PI-017 — the DOM sweep', () => {
         ['Moje objednávky', '1 objednávku · naposledy'])
       await expectExcluded(page, 'the drawer history line', cycle.name)
 
-      // „Zdieľať s kolegami" (open state only) opens the ONE GuestShareDialog.
+      // „Zdieľať s kolegami" opens the ONE GuestShareDialog (on an open round, as here,
+      // with its per-cycle section; GL-T6c added the standing-only locked/closed case).
       await drawer(page).locator('[data-menu-item="share"]').click()
       await expect(page.getByRole('dialog', { name: 'Zdieľať s kolegami' })).toBeVisible()
       await expectCleanCopy(page, 'the share dialog', ['Zdieľať s kolegami', 'Kolegovia si objednajú'])

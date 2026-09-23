@@ -158,21 +158,22 @@ async function rows(page) {
 // 1. The rows: order, labels, sub-lines, the conditional slot
 // ═════════════════════════════════════════════════════════════════════════════
 test.describe('PI-T2 · 18 §UC-PI-004 — the drawer rows', () => {
-  test('seven rows on an OPEN round, six otherwise — item 4 is the only conditional one', async ({ page }) => {
+  test('seven rows on an OPEN round AND on a locked one (GL-T6c) — item 4 is the only conditional one', async ({ page }) => {
     // ⚠ PI-T3 FILLED THE SLOT PI-T2 PINNED EMPTY, and this is the assertion that
-    // records it. §UC-PI-004's table makes item 4 („Zdieľať s kolegami") conditional
-    // on `state === 'open'` — 05 §UC-KG-002's rule that a locked or closed round
-    // offers no share affordance at all — so the row set has exactly two shapes and
-    // both are pinned here. A one-payload test would pass against a component that
-    // rendered the row unconditionally.
+    // records it. ⚠⚠ SANCTIONED EDIT, GL-T6c (19 §UC-GL-008 acceptance clause 1): item 4
+    // was `state === 'open'` only (05 §UC-KG-002 via §UC-PI-004); it is now shown
+    // wherever a `FriendOrder` mount can host the ONE share dialog — open, locked, and
+    // closed WITH a catalogue — and opens it standing-only when the round is not open.
+    // The locked half therefore flips from „row GONE" to „row present, zero-count sub";
+    // the one six-row shape left (closed, no catalogue) is pinned below, so the row set
+    // still has two shapes and a component rendering the row unconditionally still reds.
     const friend = await makeFriend('Rows')
     await signIn(page, friend)
     await stubBalance(page, -12.5)
     await stubCycles(page, [cycleRow({ n: 1, status: 'open', closes_at: '2026-09-12' })])
     await open(page)
 
-    await openMenu(page)
-    expect((await rows(page)).map((r) => r.label)).toEqual([
+    const SEVEN = [
       'Aktuálna ponuka',
       'Moje objednávky',
       'Zostatok a platby',
@@ -180,9 +181,11 @@ test.describe('PI-T2 · 18 §UC-PI-004 — the drawer rows', () => {
       'Pozvať priateľa',
       'Ako to funguje',
       'Profil',
-    ])
+    ]
+    await openMenu(page)
+    expect((await rows(page)).map((r) => r.label)).toEqual(SEVEN)
 
-    // The same friend, a round that is not open: the row is GONE, not disabled.
+    // The same friend, a LOCKED round: the row stays (GL-T6c).
     await stubCycles(page, [cycleRow({ n: 2, status: 'locked' })])
     await open(page)
     // ⚠ SANCTIONED EDIT, PI-T5 (18 §UC-PI-007, immutability case (a)): `cycleRow`
@@ -193,14 +196,20 @@ test.describe('PI-T2 · 18 §UC-PI-004 — the drawer rows', () => {
     // the closed landing; the row-set assertion is untouched.
     await dismissLandingState(page)
     await openMenu(page)
-    expect((await rows(page)).map((r) => r.label)).toEqual([
-      'Aktuálna ponuka',
-      'Moje objednávky',
-      'Zostatok a platby',
-      'Pozvať priateľa',
-      'Ako to funguje',
-      'Profil',
-    ])
+    const locked = await rows(page)
+    expect(locked.map((r) => r.label)).toEqual(SEVEN)
+    expect(locked.find((r) => r.label === 'Zdieľať s kolegami').sub, 'no count is fetched for a round that is not open')
+      .toBe('Pošlite odkaz kolegom')
+    await page.keyboard.press('Escape')
+
+    // Closed with NO catalogue (a planned round only): nothing mounts `FriendOrder`,
+    // so there is no instance to reach — the row is GONE, not disabled.
+    await stubCycles(page, [cycleRow({ n: 3, status: 'planned' })])
+    await open(page)
+    await dismissLandingState(page)
+    await expect(page.getByTestId('landing-empty'), 'non-vacuity: the no-catalogue branch').toBeVisible()
+    await openMenu(page)
+    expect((await rows(page)).map((r) => r.label)).toEqual(SEVEN.filter((l) => l !== 'Zdieľať s kolegami'))
     await expect(drawer(page).getByText('Zdieľať s kolegami')).toHaveCount(0)
   })
 
@@ -584,7 +593,7 @@ test.describe('PI-T3 · 18 §UC-PI-004 item 4 — the colleague count', () => {
       .toBeLessThan(order.indexOf('count'))
   })
 
-  test('no open round ⇒ no count request at all, and no row to put it on', async ({ page }) => {
+  test('no open round ⇒ no count request at all — the row (GL-T6c) carries the zero copy', async ({ page }) => {
     const friend = await makeFriend('Closed')
     await signIn(page, friend)
     await stubBalance(page, 0)
@@ -596,8 +605,13 @@ test.describe('PI-T3 · 18 §UC-PI-004 item 4 — the colleague count', () => {
     })
     await open(page, AT)
     await openMenu(page)
-    // Non-vacuity: the drawer really rendered — it just has no item 4.
-    expect((await rows(page)).length).toBe(6)
+    // ⚠ SANCTIONED EDIT, GL-T6c: 6 rows → 7. Item 4 now exists on a locked landing
+    // (19 §UC-GL-008 — it opens the standing-only dialog), so the non-vacuity gate
+    // becomes „the row rendered WITHOUT a count": the claim (no count request for a
+    // round that is not open) is unchanged and is still the assertion below.
+    const seen = await rows(page)
+    expect(seen.length).toBe(7)
+    expect(seen.find((r) => r.label === 'Zdieľať s kolegami').sub).toBe('Pošlite odkaz kolegom')
     await page.waitForTimeout(500)
     expect(asked, 'a closed/locked landing asks nobody about colleagues').toEqual([])
   })
@@ -1059,6 +1073,30 @@ test.describe('PI-T2 · 18 §UC-PI-004 — `NeoDrawer` on the modal layer', () =
     await page.keyboard.press('Enter')
     await expect(drawer(page)).toHaveCount(0)
     expect(new URL(page.url()).pathname, 'closing the menu navigates nowhere').toBe('/zostatok')
+  })
+
+  test('GL-T6c · the share row is keyboard-operable (Enter), and Escape closes the dialog it opens', async ({ page }) => {
+    // The generic row above proves Enter/Space work on a NAVIGATING row; „Zdieľať s
+    // kolegami" instead calls `shareHost.value.openShareDialog()` — a different
+    // handler on the same `.p2-mi` component — so it earns its own keyboard pass
+    // rather than inheriting the claim by resemblance.
+    const friend = await makeFriend('KeysShare')
+    await signIn(page, friend)
+    await stubBalance(page, 0)
+    await stubCycles(page, [cycleRow({ n: 26, status: 'open' })])
+    await open(page)
+
+    const menu = await openMenu(page)
+    await menu.getByRole('button', { name: 'Zdieľať s kolegami' }).focus()
+    await page.keyboard.press('Enter')
+    await expect(drawer(page)).toHaveCount(0)
+
+    const dialog = page.getByRole('dialog')
+    await expect(dialog, 'Enter on the row opened the dialog').toHaveCount(1)
+    await expect(dialog.locator('.m-title')).toHaveText('Zdieľať s kolegami')
+
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog'), 'Escape closes it').toHaveCount(0)
   })
 
   test('⚠ the drawer is SESSION state: it does not survive a logout into the next session', async ({ page }) => {

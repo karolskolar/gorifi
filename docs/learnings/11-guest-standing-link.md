@@ -888,8 +888,9 @@ the shipped body verbatim. API frozen; one mount (FriendOrder) unchanged.
   Failed rotation ⇒ its own `standing-regen-error` sentence, confirm + old URL kept (GL-T6a lesson).
   Both strings are DRAFT copy („Stály odkaz sa nepodarilo načítať: …" / „Nový stály odkaz sa
   nepodarilo vygenerovať: …").
-- ⚠ **`cycleId = null` has no reachable trigger** (drawer row + cartbar icon are `state === 'open'`
-  only; the Kolegovia card is on an order screen). The dialog supports it (the standing watcher never
+- ~~⚠ **`cycleId = null` has no reachable trigger** (drawer row + cartbar icon are `state === 'open'`
+  only; the Kolegovia card is on an order screen).~~ **— DONE by GL-T6c (below): the drawer row now
+  reaches the one instance on the locked / closed landings with `cycleId = null`.** The dialog supports it (the standing watcher never
   reads the cycle; every per-cycle node is `cycleId`-gated) and that is SOURCE-pinned. Wiring module
   18's closed-round menu entry is **GL-T6c** (PROGRESS.md) — it needs an entry point, since the one
   instance lives in `FriendOrder.vue`, and must keep the ONE-mount pin in `portal-landing.spec.js`.
@@ -917,5 +918,86 @@ rotation failure written to the READ error; watcher gated on `cycleId`; regenera
 
 ### Seams left for the next rows
 
-- **GL-T6c** — module 18's menu entry for a CLOSED/locked round (open the dialog with `cycleId = null`); the dialog is ready, the entry point is not.
+- ~~**GL-T6c** — module 18's menu entry for a CLOSED/locked round (open the dialog with `cycleId = null`); the dialog is ready, the entry point is not.~~ **DONE — see §GL-T6c.**
 - GL-T7: the new strings pass `BANNED` (the share-dialog sweep in `portal-vocabulary` covers them).
+
+## GL-T6c — the drawer share row on the locked / closed landings (19 §UC-GL-008 clause 1) (2026-09-23)
+
+### 1. Decision — reach the EXISTING instance, not relocate it (option (i))
+
+- **Relocation (option ii) was not available**, not merely larger: `/cycle/:id` mounts `FriendOrder.vue`
+  STANDALONE (router), and its Kolegovia card opens the dialog there. Moving the mount into
+  `FriendPortalSession.vue` would leave the deep link with none, so it would have to be TWO source
+  mounts — exactly the „moved from A to B" the per-file pin exists to refuse.
+- **What already existed:** every non-open landing that has anything to show mounts `FriendOrder`
+  read-only — the LOCKED landing (`ref="lockedOrder"`, PI-T5, always) and the CLOSED catalogue
+  (PI-T4, only when `catalogCycle` exists; it was ref-less). GL-T6c gave the closed mount its own
+  `ref="closedOrder"` and the session one `computed` `shareHost = landingOrder || lockedOrder ||
+  closedOrder` (the three mounts are mutually exclusive `v-if` branches). `requestShareDialog()` and the
+  pending-open `watch` read `shareHost`. `portal-landing.spec.js` §4's per-file mount counts are
+  UNCHANGED (FriendOrder 1 / session 0 / parent 0) and the profile-modal overlay census (10 mounts,
+  8 terms) is untouched — no mount was added or moved; the share dialog is click-raised, not a term.
+  ⚠ The `watch(shareHost, …)` sits AFTER `const lockedOrder` — `watch()` reads its source at setup, so
+  above that declaration it is a TDZ ReferenceError that blanks the session.
+- **Which cycle:** `null` on BOTH non-open landings, decided INSIDE `FriendOrder`:
+  `shareCycleId = isReadonly || isLocked ? null : activeCycleId`, and `cycleName` is `''` with it (a
+  dialog with no per-cycle section must not name a round in its subtitle). Spec basis: 05 §UC-KG-002 /
+  18 §UC-PI-011 — a per-cycle link invites ORDERING into that round, and none of the Kolegovia share
+  controls exist on a locked round either (`!isLocked`). The hand-over ticks on a locked round are
+  the Kolegovia TAB's (kept, PI-T5), not the dialog's. ⚠ `isReadonly` (a PROP) is the term the
+  landing relies on: `isLocked` reads the LOADED cycle, so alone it hands the dialog the round's id
+  until the order GET lands — and forever on the closed landing's stubbed rounds (measured, M6).
+- **Row condition (`shareRowShown`)**: open ⇒ shown; locked ⇒ `!!currentCycle`; closed ⇒
+  `!!catalogCycle`. ⚠ **RECORDED GAP:** a CLOSED landing with NO catalogue (no locked and no
+  completed round has ever existed — `landing-empty`) mounts no `FriendOrder`, so it has no instance
+  to reach and the row stays hidden there. Covering it needs a second dialog mount or a new mount
+  site, i.e. a change to the one-instance rule — a PO/orchestrator call, not this row's. In
+  production it is unreachable once the first round has ever locked.
+- **Sub-line:** unchanged code path — the colleague count is fetched for the OPEN round only, so a
+  non-open row reads „Pošlite odkaz kolegom" (no new copy). No standing GET is issued from the
+  session: it MINTS, and a drawer render would back-fill every friend's token.
+- **State-modal stacking:** the row chosen from ANOTHER view on a closed / no-order-locked round
+  goes to `/`, whose state modal raises once per session — it would stack a `LandingStateModal` and
+  the share dialog on one layer. The explicit request counts as the state modal's dismissal
+  (`dismissStateModal()` before the push); the slim banner that replaces the modal still carries its
+  sentence. On `/` itself the modal is necessarily dismissed already (its scrim covers the hamburger).
+- **Supersession** (each struck with a pointer here; the CARTBAR icon stays open-only — it is inside
+  `.actions`, `v-if="!isLocked"`):
+  - 18 §UC-PI-004: item 4's „`state === 'open'` only" (table) and its acceptance clause („the
+    conditional 4th present only on an open round");
+  - 18 §UC-PI-011: the business rule „Both exist ONLY when `state === 'open'`" AND its acceptance
+    criteria's „locked ⇒ neither exists" (the latter missed in the first pass, caught in review);
+  - 18 §UC-PI-019 item 6 („locked/planned ⇒ no share affordance") and item 14 („share when open");
+  - 19 §UC-GL-008: the Goal's GL-T6b „source-pinned only" note (struck, marked DONE) and acceptance
+    clause 1 (restored as true, the GL-T6b note kept struck);
+  - code comments: `GuestShareDialog.vue` („No trigger reaches that today…"), `FriendOrder.vue`'s
+    cartbar note („no share affordance" → no CARTBAR icon / no per-cycle link), and the session's
+    item-4 / `lockedOrder` / closed-mount notes.
+
+### 2. Pins changed (each carries a `SANCTIONED` comment)
+
+- `portal-landing.spec.js` §3 „⚠ a round that is not OPEN offers no share affordance at all" →
+  REWRITTEN as „…no cartbar icon, but the drawer row opens the STANDING-only dialog": locked +
+  closed, 7 rows, zero-count sub, standing URL rendered (the non-vacuity gate), no `per-cycle-label`
+  / `per-cycle-link`, no `.m-head .sub b`, one `.modal-layer`, URL `/`, and NO
+  `GET /api/guest-links/cycle/*` for the whole test.
+- `portal-landing.spec.js` PI-T4 „„Ako to funguje" dismisses AND navigates…": `.p2-mi` 6 → 7.
+- `portal-landing.spec.js` §4 bridge regex `landingOrder.value.openShareDialog()` →
+  `shareHost.value.openShareDialog()` + a pin on `shareHost`'s exact three-ref definition. Mount
+  counts untouched.
+- `portal-menu.spec.js` §1 „seven rows on an OPEN round, six otherwise" → „seven on open AND locked",
+  plus the closed-no-catalogue six-row shape (so an unconditional row still reds).
+- `portal-menu.spec.js` §1b „no open round ⇒ no count request…": rows 6 → 7, the row's sub is the
+  zero copy; the no-request assertion is unchanged.
+- Comment-only: `portal-session-boundary.spec.js` (header + §7 + the walk non-vacuity note),
+  `portal-vocabulary.spec.js:574`, `guest-standing-link.spec.js` GL-T6b source-pin note (struck).
+
+### 3. Tests + mutations
+
+New: `portal-landing.spec.js` „GL-T6c · from ANOTHER view on a closed round … does NOT stack the
+state modal" and „GL-T6c · ⚠ the ONE state without the share row: closed with NO catalogue";
+`guest-standing-link.spec.js` „GL-T6c · FriendOrder binds the dialog to `shareCycleId`" (source).
+HEAD (pre-implementation) reds 7 of the 22 selected tests. Mutations, each red then restored: the
+mount back on `activeCycleId`; the row back to `state === 'open'`; the closed mount without
+`ref="closedOrder"`; no `dismissStateModal()` in the pending path; the closed branch `return true`;
+the `isReadonly` term dropped.

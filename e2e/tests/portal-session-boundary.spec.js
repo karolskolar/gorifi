@@ -23,7 +23,8 @@ import { makeAdmin } from '../helpers/admin.js'
 // the cycle cards~~ **since PI-T12 (18 §UC-PI-019 item 14): every item of the
 // hamburger DRAWER** (history with a round expanded, „Zostatok a platby" with its
 // Platba modal, „Ako to funguje", Profil with its password fold, „Pozvať priateľa",
-// „Zdieľať s kolegami" when the landing's round is open) **plus the first-login
+// „Zdieľať s kolegami" when the landing can host the share dialog — open, and since
+// GL-T6c also locked / closed-with-catalogue) **plus the first-login
 // explainer GATE and its „Už mi to neukazovať" checkbox** — types a unique
 // `SENTINEL-<n>` into every field, ticks every control, logs out, logs a DIFFERENT
 // friend in, and walks the same surface again asserting four invariants that name
@@ -499,8 +500,9 @@ async function walkAuthenticated(page, { fill, snaps = [], label = '', gate = fa
   await dialog.getByRole('button', { name: 'Zavrieť' }).click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
 
-  // ── 7. „Zdieľať s kolegami" — drawer item 4, present only while the landing's
-  // round is OPEN (§UC-PI-004), hence the guard; it depends on the database's state,
+  // ── 7. „Zdieľať s kolegami" — drawer item 4, present while the landing can host
+  // the one share dialog (open, locked, or closed WITH a catalogue — GL-T6c widened
+  // §UC-PI-004's `state === 'open'`), hence the guard; it depends on the database's state,
   // not on this file's stubs (the stubbed round is completed and never outranks an
   // open one). The walk records whether it ran, and the modern test asserts it did.
   const menu = await openMenu(page)
@@ -617,8 +619,8 @@ test.describe('⚠ nothing crosses the session boundary (the whole friend surfac
     await walkAuthenticated(page, { fill: false, snaps, label: 'B', gate: true, self: b })
 
     // ⚠ Non-vacuity for the WALK itself (PI-T12): every drawer stop really produced a
-    // snapshot. „Zdieľať s kolegami" is the one conditional stop (the landing's round
-    // must be OPEN), and the gate database always has one — `seed.mjs`'s open
+    // snapshot. „Zdieľať s kolegami" is the one conditional stop (GL-T6c: the landing
+    // must host a `FriendOrder` — open, locked, or closed with a catalogue), and the gate database always has one — `seed.mjs`'s open
     // „E2E Test Cycle" — so on this target a missing share snapshot is a lost stop.
     expect(snaps.map((x) => x.label)).toEqual([
       'login-after-logout', 'B:explainer-gate', 'B:landing', 'B:drawer', 'B:history',

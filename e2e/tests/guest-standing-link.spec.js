@@ -3576,14 +3576,14 @@ test.describe('GL-T6b · 19 §UC-GL-008 — the host share dialog: standing sect
   })
 })
 
-test.describe('GL-T6b · source pins — cycleId = null, one mount', () => {
+test.describe('GL-T6b/T6c · source pins — cycleId = null, one mount', () => {
   test.skip(!HAS_FRONTEND_SRC, NEEDS_FRONTEND_SRC)
 
-  // ⚠ `cycleId = null` has NO reachable UI trigger today: the drawer row and the
-  // cartbar icon are `state === 'open'` only (18 §UC-PI-004/011) and the Kolegovia card
-  // lives on an order screen, which always has a cycle. §UC-GL-008 still requires the
-  // dialog to work with it (module 18's menu entry for a closed round), so the two
-  // properties that make it work are pinned in SOURCE: the standing read does not wait
+  // ~~⚠ `cycleId = null` has NO reachable UI trigger today~~ — SUPERSEDED by GL-T6c:
+  // the drawer row now reaches the one dialog on the locked and closed landings with
+  // `cycleId = null` (`FriendOrder.vue shareCycleId`), behaviour-pinned in
+  // `portal-landing.spec.js` §3 (standing URL rendered, per-cycle label/section and
+  // GET absent). These SOURCE pins stay as the component-level half: the standing read does not wait
   // on a cycle, and every per-cycle node is gated on `cycleId`.
   test('the standing read is not gated on cycleId; the per-cycle label and section are', () => {
     const raw = readFileSync(join(FRONTEND_SRC_DIR, 'components', 'GuestShareDialog.vue'), 'utf8')
@@ -3603,5 +3603,21 @@ test.describe('GL-T6b · source pins — cycleId = null, one mount', () => {
     const standingTag = template.match(/<div[^>]*data-testid="standing-link"[^>]*>/)
     expect(standingTag).not.toBeNull()
     expect(standingTag[0]).not.toMatch(/cycleId/)
+  })
+
+  // GL-T6c: the ONE mount (FriendOrder.vue) decides its own `cycleId` — `null` on a
+  // read-only landing mount, synchronously, from the PROP (a loaded-cycle-only test
+  // would hand the dialog the round's id until the order GET lands, or forever if it
+  // fails — the closed landing's stubbed rounds in portal-landing §3 are that case).
+  test('GL-T6c · FriendOrder binds the dialog to `shareCycleId`, null on a readonly mount', () => {
+    const raw = readFileSync(join(FRONTEND_SRC_DIR, 'views', 'FriendOrder.vue'), 'utf8')
+    const src = stripComments(raw)
+    expect(src.length, 'readability gate').toBeGreaterThan(raw.length * 0.3)
+    expect(src).toMatch(/const shareCycleId = computed\(\(\) => \(isReadonly\.value \|\| isLocked\.value \? null : activeCycleId\.value\)\)/)
+    const mount = src.match(/<GuestShareDialog[\s\S]*?\/>/)
+    expect(mount).not.toBeNull()
+    expect(mount[0]).toContain(':cycle-id="shareCycleId"')
+    expect(mount[0]).not.toContain('activeCycleId')
+    expect(mount[0], 'the name goes with the id').toContain(`:cycle-name="shareCycleId ? (cycle?.name || '') : ''"`)
   })
 })

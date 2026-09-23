@@ -1139,6 +1139,35 @@ const landingOrder = ref(null)
 const landingCartTotal = computed(() => Number(landingOrder.value?.cartTotal) || 0)
 
 /**
+ * The `FriendOrder.vue` instance the CLOSED landing mounts for its read-only
+ * catalogue (PI-T4) — GL-T6c's third bridge to the one share dialog. Like
+ * `lockedOrder`, a SEPARATE ref from `landingOrder`, whose other reader
+ * (`landingCartTotal`) means „the OPEN round's cart". `null` when the closed landing
+ * has no catalogue (`landing-empty`), which is the one state with no mount at all.
+ */
+const closedOrder = ref(null)
+
+
+/**
+ * Drawer item 4's condition — „is there an instance this row can reach?".
+ *
+ * ⚠ SUPERSEDES §UC-PI-004's „`state === 'open'` only" (GL-T6c, 19 §UC-GL-008 acceptance
+ * clause 1 and R9.4 „the host can copy the link any time"): the standing link is
+ * cycle-independent, so a round that is not open no longer hides the row — it hides
+ * the PER-CYCLE section, inside the dialog. ⚠ The ONE state still without the row is a
+ * closed landing with no catalogue (no locked and no completed round ever — `landing-
+ * empty`): nothing mounts `FriendOrder` there, and the one-instance rule forbids
+ * mounting a second dialog to cover it. Recorded as a gap (learnings 11 §GL-T6c), not
+ * papered over with a row that does nothing.
+ */
+const shareRowShown = computed(() => {
+  const l = landing.value
+  if (l.state === 'open') return true
+  if (l.state === 'locked') return !!l.currentCycle
+  return !!l.catalogCycle
+})
+
+/**
  * Drawer item 4's action (§UC-PI-011): open THE share dialog — the one instance,
  * which lives in `FriendOrder.vue`.
  *
@@ -1168,13 +1197,20 @@ const landingCartTotal = computed(() => Number(landingOrder.value?.cartTotal) ||
 const pendingShare = ref(false)
 
 async function requestShareDialog() {
-  if (landingOrder.value?.openShareDialog) {
-    landingOrder.value.openShareDialog()
+  if (shareHost.value?.openShareDialog) {
+    shareHost.value.openShareDialog()
     return
   }
-  // Already on the offer with no instance ⇒ the round is not open, so there is
-  // nothing to share and nothing to wait for.
+  // Already on the offer with no instance ⇒ the closed landing without a catalogue
+  // (the row is hidden there), so there is nothing to wait for.
   if (route.path === '/') return
+  // ⚠ GL-T6c: arriving on a closed / no-order-locked offer from another view would
+  // raise the landing's STATE modal (once per session) AND the share dialog the
+  // friend asked for — two `NeoModal`s stacked on one layer. The explicit request
+  // wins: it counts as the state modal's dismissal, and the slim banner that
+  // replaces the modal still says what the modal said. (On `/` itself the modal is
+  // necessarily dismissed already — its scrim covers the hamburger.)
+  if (landing.value.state !== 'open') dismissStateModal()
   pendingShare.value = true
   // `router.push` RESOLVES WITH a NavigationFailure rather than rejecting when a
   // guard cancels or redirects it — so the falsy check is the success case.
@@ -1182,11 +1218,6 @@ async function requestShareDialog() {
   if (failure) pendingShare.value = false
 }
 
-watch(landingOrder, (instance) => {
-  if (!instance || !pendingShare.value) return
-  pendingShare.value = false
-  instance.openShareDialog()
-})
 
 // ---------------------------------------------------------------------------
 // 18 §UC-PI-007 — THE LOCKED LANDING'S OWN-ORDER CARD (PI-T5)
@@ -1198,13 +1229,37 @@ watch(landingOrder, (instance) => {
  *
  * ⚠ `landingOrder` means „the OPEN landing's live order surface" and two readers
  * depend on that meaning: `landingCartTotal` feeds drawer item 1's „ · v košíku …"
- * clause, and `requestShareDialog()` treats „the instance exists" as „there is a
- * round to share". A read-only mount has an empty cart by construction and nothing
- * to share (§UC-PI-011: both share entry points are `state === 'open'` only), so
- * pointing that ref at one would answer both questions with a mount that cannot mean
- * them. PI-T4 made the same call for the closed catalogue and mounted it ref-less.
+ * clause, and ~~`requestShareDialog()` treats „the instance exists" as „there is a
+ * round to share"~~ (GL-T6c: it now asks `shareHost`, which includes THIS ref — the
+ * read-only mount's dialog is standing-only). A read-only mount has an empty cart by
+ * construction, so pointing `landingOrder` at one would answer the cart question with
+ * a mount that cannot mean it. PI-T4 made the same call for the closed catalogue
+ * (which GL-T6c gave its own `closedOrder` ref for the same reason).
  */
 const lockedOrder = ref(null)
+
+/**
+ * 19 §UC-GL-008 / GL-T6c — the mounted `FriendOrder` that holds THE share dialog on
+ * the current landing, whichever state it is in. Three refs, one instance at a time
+ * (the three mounts sit in mutually exclusive `v-if` branches), and ONE dialog in
+ * source — the `portal-landing.spec.js` §4 mount COUNTS are unchanged (FriendOrder 1,
+ * session 0, parent 0); only its bridge regex follows the call to `shareHost`.
+ *
+ * ⚠ On the open landing it is the live order surface and the dialog carries the
+ * round (per-cycle section included); on the two read-only mounts `FriendOrder`
+ * passes `cycleId = null` itself (`shareCycleId`), so the dialog is standing-only.
+ * The session decides WHICH instance, never what the dialog shows.
+ */
+const shareHost = computed(() => landingOrder.value || lockedOrder.value || closedOrder.value)
+
+// ⚠ Declared HERE, after all three refs, because `watch()` reads its source at setup
+// and a `const` above its declaration is in the TDZ. It was `watch(landingOrder, …)`
+// up with `requestShareDialog()` until GL-T6c widened it to the three mounts.
+watch(shareHost, (instance) => {
+  if (!instance || !pendingShare.value) return
+  pendingShare.value = false
+  instance.openShareDialog()
+})
 
 /**
  * §UC-PI-007 item 2's data — „renders from FriendOrder's loaded `order` (no second
@@ -1510,9 +1565,11 @@ const historySub = computed(() => {
  * the general rule is the one written as a rule. Implemented as the general rule;
  * the parenthetical reads as a miscount.
  *
- * ⚠ Item 4 („Zdieľať s kolegami") is CONDITIONAL on `state === 'open'` — 05
- * §UC-KG-002's rule that a locked or closed round offers no share affordance at all.
- * It is the only row that opens a dialog belonging to another component; see
+ * ⚠ Item 4 („Zdieľať s kolegami") is CONDITIONAL on `shareRowShown` — ~~`state ===
+ * 'open'`, 05 §UC-KG-002's „a locked or closed round offers no share affordance at
+ * all"~~ SUPERSEDED by GL-T6c (19 §UC-GL-008): the row now opens the standing-only
+ * dialog on the locked and closed landings too; KG-002 still holds for the PER-CYCLE
+ * link. It is the only row that opens a dialog belonging to another component; see
  * `requestShareDialog()`.
  */
 const menuItems = computed(() => {
@@ -1535,7 +1592,7 @@ const menuItems = computed(() => {
         // ⚠ `isInDebt`, not a fourth copy of the comparison (`lib/money.js`).
         : { text: fmtEur(balance.value), tone: isInDebt(balance.value) ? 'danger' : 'ok' },
     },
-    ...(landing.value.state === 'open'
+    ...(shareRowShown.value
       ? [{ key: 'share', icon: 'share', label: 'Zdieľať s kolegami', sub: shareSub.value }]
       : []),
     { key: 'invite', icon: 'invite', label: 'Pozvať priateľa', sub: 'Váš pozývací odkaz' },
@@ -2602,11 +2659,13 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
              strip stays live so every category is browsable.
 
              ⚠ NO `ref="landingOrder"`: that ref is the OPEN landing's bridge to
-             `openShareDialog()`/`cartTotal`, and a closed round has neither. Drawer
-             item 4 is `state === 'open'` only, so nothing reads it here — and
-             pointing it at a read-only mount would hand the share row a dead
-             instance. -->
+             `cartTotal`, and a closed round has no cart. ⚠ GL-T6c: its OWN ref,
+             `closedOrder`, is drawer item 4's bridge on this landing (`shareHost`) —
+             this mount's dialog is standing-only (`FriendOrder`'s `shareCycleId`
+             is `null` on a `readonly` mount), so the row reaches the one instance
+             without a second one being mounted here. -->
         <FriendOrder
+          ref="closedOrder"
           :key="`ro-${landing.catalogCycle.id}`"
           mode="landing"
           readonly

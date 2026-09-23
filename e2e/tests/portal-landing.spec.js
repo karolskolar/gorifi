@@ -15,8 +15,10 @@ import { makeAdmin } from '../helpers/admin.js'
 //
 //   HERE — the share dialog's ENTRY contract (it opens, it names the round it
 //   shares, and it does NOT navigate: module 03's `@click.stop` claim restated on
-//   the control that replaced the card's share button), and „a round that is not
-//   open offers no share affordance at all" (05 §UC-KG-002).
+//   the control that replaced the card's share button), and ~~„a round that is not
+//   open offers no share affordance at all" (05 §UC-KG-002)~~ — SUPERSEDED by GL-T6c
+//   (19 §UC-GL-008): a round that is not open offers no CARTBAR icon and no PER-CYCLE
+//   link, but the drawer row opens the standing-only dialog.
 //
 //   `portal-menu.spec.js` §1b — the colleague count's copy states, the bound on its
 //   fetch, and the session-scoping half of the `loadSeq` guard.
@@ -525,14 +527,24 @@ test.describe('PI-T3 · 18 §UC-PI-011 — two entry points, ONE dialog', () => 
     await expect(page.locator('.modal-layer')).toHaveCount(0)
   })
 
-  test('⚠ a round that is not OPEN offers no share affordance at all', async ({ page }) => {
-    // THE RETARGET of „locked and planned cycles carry no row and no share
-    // affordance" (05 §UC-KG-002). It runs against a STUBBED payload because this
-    // database carries ~135 open rounds — locking one cycle does not make the
-    // landing closed, it just makes the resolver pick the next one.
+  test('⚠ a round that is not OPEN: no cartbar icon, but the drawer row opens the STANDING-only dialog (GL-T6c)', async ({ page }) => {
+    // ⚠⚠ SANCTIONED REWRITE, GL-T6c (19 §UC-GL-008 acceptance clause 1 + R9.4 „the
+    // host can copy the link any time"). This test used to pin „a round that is not
+    // open offers no share affordance AT ALL" (05 §UC-KG-002 via 18 §UC-PI-004's
+    // `state === 'open'` row condition). Module 19's standing link is cycle-
+    // INDEPENDENT, so the drawer row now exists on the locked and closed landings and
+    // opens THE one dialog with `cycleId = null`. What KG-002 protects — no invitation
+    // to ORDER into a round that cannot take orders — is still pinned here, one layer
+    // down: no cartbar icon, no per-cycle label/section, no per-cycle GET, and the
+    // subtitle names no round. It runs against a STUBBED payload because this database
+    // carries ~135 open rounds — locking one cycle does not make the landing closed.
     const friend = await makeFriend('NoShare')
     await signIn(page, friend)
     await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+    const perCycleGets = []
+    page.on('request', (r) => {
+      if (r.method() === 'GET' && /\/api\/guest-links\/cycle\//.test(r.url())) perCycleGets.push(r.url())
+    })
 
     for (const [state, list] of [
       ['locked', [cycleRow({ n: 1, status: 'locked' })]],
@@ -544,29 +556,68 @@ test.describe('PI-T3 · 18 §UC-PI-011 — two entry points, ONE dialog', () => 
       await expect(page.getByTestId('portal-landing'), state)
         .toHaveAttribute('data-landing-state', state === 'locked' ? 'locked' : 'closed')
 
-      // ⚠ SANCTIONED EDIT, PI-T4 (18 §UC-PI-006, immutability case (a)) and now
-      // PI-T5 (§UC-PI-007): the landing opens its state modal by itself, and a
-      // NeoModal's scrim covers the appbar — so `openMenu()` below would time out on
-      // actionability rather than on anything this test is about. The claim („a round
-      // that is not open offers no share affordance") is unchanged; only the step
-      // that reaches the drawer is.
-      // ⚠ The condition is GONE, not inverted: PI-T4's note („the LOCKED half has no
-      // modal until PI-T5") expired with this row — `cycleRow` seeds `hasOrder: false`,
-      // which is exactly §UC-PI-007's „locked, NO own order" branch, i.e. the closed
-      // treatment with two different strings.
+      // ⚠ SANCTIONED EDIT, PI-T4/PI-T5 — the landing opens its state modal by itself
+      // and its scrim covers the appbar; `cycleRow` seeds `hasOrder: false`, so the
+      // locked half is §UC-PI-007's no-order variant with the same modal.
       await dismissLandingState(page)
 
       await expect(cartbarShare(page), `${state}: no cartbar icon`).toHaveCount(0)
+      // Nothing OUTSIDE the drawer answers to the name (the drawer is not open yet).
       await expect(page.getByRole('button', { name: 'Zdieľať s kolegami' }),
-        `${state}: nothing anywhere on the page`).toHaveCount(0)
+        `${state}: nothing on the page itself`).toHaveCount(0)
 
       const menu = await openMenu(page)
-      await expect(menu.getByText('Zdieľať s kolegami'), `${state}: no drawer row`).toHaveCount(0)
-      // …and the drawer did render, so this is an absence rather than an empty page.
-      await expect(menu.locator('.p2-mi')).toHaveCount(6)
-      await page.keyboard.press('Escape')
+      await expect(menu.locator('.p2-mi'), `${state}: seven rows`).toHaveCount(7)
+      await expect(menu.getByText('Zdieľať s kolegami'), `${state}: the drawer row`).toHaveCount(1)
+      // No open round ⇒ no colleague count was fetched ⇒ the zero copy.
+      await expect(menu.getByText('Pošlite odkaz kolegom')).toHaveCount(1)
+      await menu.getByRole('button', { name: 'Zdieľať s kolegami' }).click()
       await expect(drawer(page)).toHaveCount(0)
+
+      const dialog = page.getByRole('dialog')
+      await expect(dialog, `${state}: exactly one dialog`).toHaveCount(1)
+      await expect(dialog.locator('.m-title')).toHaveText('Zdieľať s kolegami')
+      // Non-vacuity for every absence below: the STANDING section really rendered.
+      await expect(dialog.getByTestId('standing-link-url')).toHaveText(/\/g\/[A-Z2-9]{14}$/)
+      await expect(dialog.getByTestId('per-cycle-label'), `${state}: no per-cycle label`).toHaveCount(0)
+      await expect(dialog.getByTestId('per-cycle-link'), `${state}: no per-cycle section`).toHaveCount(0)
+      // The dialog names no round it does not share (`shareCycleId ? name : ''`).
+      await expect(dialog.locator('.m-head .sub')).toBeVisible()
+      await expect(dialog.locator('.m-head .sub b'), `${state}: no round named`).toHaveCount(0)
+      await expect(page.locator('.modal-layer'), 'ONE teleported layer').toHaveCount(1)
+      expect(new URL(page.url()).pathname).toBe('/')
+
+      await page.keyboard.press('Escape')
+      await expect(page.getByRole('dialog')).toHaveCount(0)
     }
+    expect(perCycleGets, 'no per-cycle link was read for a round that is not open').toEqual([])
+  })
+
+  test('GL-T6c · from ANOTHER view on a closed round the row goes to `/`, opens the dialog, and does NOT stack the state modal', async ({ page }) => {
+    // The pending-open path (PI-T3) on a landing that raises its own state modal once
+    // per session: arriving from `/zostatok` would otherwise put the „Objednávky sú
+    // zatvorené" NeoModal and the share dialog on one layer. The explicit request
+    // counts as the state modal's dismissal; the slim banner still says the same.
+    const friend = await makeFriend('ClosedOther')
+    await signIn(page, friend)
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+    await stubCycles(page, [cycleRow({ n: 4, status: 'completed' })])
+    await open(page, '/zostatok')
+    await expect(landingStateModal(page), 'non-vacuity: not on the offer yet').toHaveCount(0)
+
+    await menuGo(page, 'Zdieľať s kolegami')
+    await expect(page).toHaveURL(/\/$/)
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByTestId('standing-link-url')).toHaveText(/\/g\/[A-Z2-9]{14}$/)
+    await expect(dialog, 'the share dialog alone').toHaveCount(1)
+    await expect(landingStateModal(page), 'the state modal did not stack').toHaveCount(0)
+    await expect(page.locator('.modal-layer')).toHaveCount(1)
+    await expect(dialog.getByTestId('per-cycle-link')).toHaveCount(0)
+
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    // …and what the modal would have said is still on the page.
+    await expect(page.getByTestId('landing-closed-banner')).toBeVisible()
   })
 
   test('a FAILED colleague count gates nothing — the row and the dialog still work', async ({ page }) => {
@@ -637,8 +688,16 @@ test.describe('PI-T3 · 18 §UC-PI-011 — exactly ONE `GuestShareDialog` mount'
     // …and the bridge really is the exposed opener rather than a copy of the state.
     expect(code('views/FriendOrder.vue'))
       .toMatch(/defineExpose\(\{[^}]*openShareDialog/)
+    // ⚠ SANCTIONED RETARGET, GL-T6c: `landingOrder.value.openShareDialog()` →
+    // `shareHost.value.openShareDialog()`. The drawer row now reaches the one instance on
+    // the locked and closed landings too, through `shareHost` = the one mounted
+    // `FriendOrder` of three mutually exclusive branches (`landingOrder` / `lockedOrder`
+    // / `closedOrder`). The claim — the session CALLS the exposed opener rather than
+    // holding dialog state — is unchanged, and the mount counts above are untouched.
     expect(code('views/FriendPortalSession.vue'))
-      .toMatch(/landingOrder\.value\.openShareDialog\(\)/)
+      .toMatch(/shareHost\.value\.openShareDialog\(\)/)
+    expect(code('views/FriendPortalSession.vue'))
+      .toMatch(/const shareHost = computed\(\(\) => landingOrder\.value \|\| lockedOrder\.value \|\| closedOrder\.value\)/)
     expect(code('views/FriendPortalSession.vue'),
       'no `shareCycle` ref survived the card it belonged to').not.toContain('shareCycle')
   })
@@ -972,7 +1031,10 @@ test.describe('PI-T4 · 18 §UC-PI-006 — the landing, closed state', () => {
     await expect(landingStateModal(page)).toHaveCount(0)
     await expect(closedBanner(page)).toBeVisible()
     const menu = await openMenu(page)
-    await expect(menu.locator('.p2-mi')).toHaveCount(6)
+    // ⚠ SANCTIONED EDIT, GL-T6c: 6 → 7. A closed landing WITH a catalogue now carries
+    // drawer item 4 (the standing link, 19 §UC-GL-008); the claim here — the drawer is
+    // reachable once the modal is dismissed — is unchanged.
+    await expect(menu.locator('.p2-mi')).toHaveCount(7)
     await page.keyboard.press('Escape')
     await expect(drawer(page)).toHaveCount(0)
   })
@@ -992,6 +1054,27 @@ test.describe('PI-T4 · 18 §UC-PI-006 — the landing, closed state', () => {
     await expect(page.locator('.app .cartbar')).toHaveCount(0)
     // Non-vacuity: the closed landing itself really did render.
     await expect(closedBanner(page)).toBeVisible()
+  })
+
+  test('GL-T6c · ⚠ the ONE state without the share row: closed with NO catalogue (nothing mounts `FriendOrder`)', async ({ page }) => {
+    // The recorded gap (learnings 11 §GL-T6c): the one share dialog lives in
+    // `FriendOrder.vue`, and this landing mounts none — so the row is hidden rather
+    // than offered as a control that does nothing. A second dialog mounted to cover it
+    // is what `portal-landing.spec.js` §4 forbids.
+    const friend = await makeFriend('NoCatShare')
+    await signIn(page, friend)
+    await page.route('**/api/friends/*/balance', (r) => r.fulfill({ json: { balance: 0, transactions: [] } }))
+    await stubCycles(page, [cycleRow({ n: 34, status: 'planned', opens_at: isoPlusDays(30) })])
+    await open(page)
+    await dismissLandingState(page)
+    // Non-vacuity: really the no-catalogue branch.
+    await expect(page.getByTestId('landing-empty')).toBeVisible()
+
+    const menu = await openMenu(page)
+    await expect(menu.locator('.p2-mi')).toHaveCount(6)
+    await expect(menu.getByText('Zdieľať s kolegami')).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await expect(drawer(page)).toHaveCount(0)
   })
 
   test('the READ-ONLY catalogue: faded cards, live tabs, no cartbar, no tabgroup, no stock bars', async ({ page }) => {
@@ -1459,6 +1542,34 @@ test.describe('PI-T5 · 18 §UC-PI-007 — the landing, locked state', () => {
     // tabgroup and nothing else.
     await expect(page.getByTestId('product-grid')).toHaveClass(/\bp2-ro\b/)
     await expect(page.getByTestId('own-order-card')).toHaveCount(0)
+  })
+
+  test('GL-T6c · locked WITH an own order: the Kolegovia tab stays, and the drawer row opens the standing-only dialog', async ({ page }) => {
+    // Flow 6 of the GL-T6c e2e pass: the tabgroup test above proves the Kolegovia
+    // TAB survives a locked round with a real submitted order; this proves the
+    // drawer's „Zdieľať s kolegami" ROW reaches the same `FriendOrder` mount and
+    // still opens the cycle-independent standing dialog — `shareCycleId` is `null`
+    // on `isLocked` regardless of `hasOrder`, so an own order must not smuggle the
+    // round's id back in.
+    const fx = await lockedRound('OwnShare')
+    await openLocked(page, fx)
+
+    await expect(ownCard(page), 'non-vacuity: a real own order is on the page').toBeVisible()
+    await expect(page.getByTestId('main-tab-guests'), 'the Kolegovia tab is still there').toBeVisible()
+    await expect(page.locator('.app .cartbar').getByRole('button', { name: 'Zdieľať s kolegami' }),
+      'no cartbar icon on a locked round').toHaveCount(0)
+
+    await menuGo(page, 'Zdieľať s kolegami')
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toHaveCount(1)
+    await expect(dialog.locator('.m-title')).toHaveText('Zdieľať s kolegami')
+    await expect(dialog.getByTestId('standing-link-url')).toHaveText(/\/g\/[A-Z2-9]{14}$/)
+    await expect(dialog.getByTestId('per-cycle-label'), 'no per-cycle section on an own order either').toHaveCount(0)
+    await expect(dialog.getByTestId('per-cycle-link')).toHaveCount(0)
+    await expect(dialog.locator('.m-head .sub b'), 'no round named').toHaveCount(0)
+
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog')).toHaveCount(0)
   })
 
   test('locked with NO own order ⇒ the SAME parametrised modal, two different strings', async ({ page }) => {
