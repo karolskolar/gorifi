@@ -200,7 +200,8 @@ test.describe('UC-FO-001 — brand chrome', () => {
     // Back chevron — a bare span in the prototype, given the house zero-pixel ARIA
     // layer here because it is the only in-page route back. `exact: true` matters:
     // Playwright matches accessible names as a case-insensitive SUBSTRING, and the
-    // fatal-error state renders a "Späť na zoznam cyklov" button.
+    // fatal-error state renders a "Späť na ponuku" button (18 §UC-PI-017; was
+    // "Späť na zoznam cyklov").
     const back = page.getByRole('button', { name: 'Späť', exact: true })
     await expect(back).toBeVisible()
     await expect(back.locator('svg')).toHaveCount(1)

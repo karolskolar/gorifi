@@ -171,7 +171,7 @@ function rowNote(tx) {
                    newline-bearing whitespace node between elements, which would
                    silently glue the date to the note. -->
               <span>{{ formatDate(tx.created_at) }}</span>
-              <span v-if="rowNote(tx)"> · {{ rowNote(tx) }}</span>
+              <span v-if="rowNote(tx)"> · <span data-user-copy>{{ rowNote(tx) }}</span></span>
             </span>
           </span>
           <span

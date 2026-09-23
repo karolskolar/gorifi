@@ -294,7 +294,8 @@ and this row made the sweep skip part of the page, so "it is green" was precisel
   whenever the target actually renders such a row, a pin on the real one. Against the shipped template it logs
   `[FUP-T22] target renders 1 person-supplied value(s) matching /prihlasovac/i — excluded as data`.
 
-**Seam for module 18.** PI-T11's planned `portal-vocabulary.spec.js` DOM sweep (`/cykl|\bkol(o|a|e|u|om|á|ách)\b/i`
+**Seam for module 18.** PI-T11's planned `portal-vocabulary.spec.js` DOM sweep (~~`/cykl|\bkol(o|a|e|u|om|á|ách)\b/i`~~ —
+shipped with `e2e/helpers/vocabulary.js BANNED`, PI-T11; it does import `copy-sweep.js`)
 over the friend surfaces) is the SAME class of guard and will meet the same problem the first time a friend, a
 product or a note is named unfortunately. It should import `e2e/helpers/copy-sweep.js` and mark the
 interpolations on the surfaces it sweeps, rather than grow a third copy of the collector.

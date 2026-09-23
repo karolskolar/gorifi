@@ -552,8 +552,9 @@ unchanged.
    `POST /guest-links/standing/regenerate` → copy row updates in place. No `has_orders` gate (UC-GL-001
    D2), so no blocked state exists here.
 3. **Native share** (`navigator.share`, when available) prefers the standing URL; `text` stays the
-   shipped `'Pridajte sa k mojej objednávke - {cycleName || 'objednávkový cyklus'}'` — ⚠ that fallback
-   string says „cyklus“; module 18's wording pass owns it (seam noted, not changed here).
+   shipped `'Pridajte sa k mojej objednávke - {cycleName || 'objednávka'}'` — ~~⚠ that fallback
+   string says „cyklus“; module 18's wording pass owns it~~ **DONE by PI-T11 (18 §UC-PI-017): the
+   fallback now reads „objednávka“.**
 4. **Per-cycle section** (everything shipped) moves BELOW, under `div.field-lbl` **„Odkaz len na túto
    objednávku“**, rendered only when `cycleId` is set. All of its elements, testids, copy, the
    `regen-blocked` / `regen-guidance` / `share-standing-copy` lines and the `.confirmbox` are untouched.
@@ -720,7 +721,7 @@ module milestone with `--workers=1`, all five `RATE_LIMIT_*_MAX` raised, output 
 - **Waitlist rows are contact data of non-members without a channel until module 21 lands**; until then
   the admin reaches them manually from the „Čakajúci hostia“ card. The two-round purge bounds retention.
 - **`opens_at` date variant is dark until module 17 lands** — the page degrades to `plan_note`/`unknown`.
-- **The share-sheet `text` still says „objednávkový cyklus“** in its fallback — module 18's wording pass.
+- ~~**The share-sheet `text` still says „objednávkový cyklus“** in its fallback — module 18's wording pass.~~ **DONE by PI-T11: „objednávka“.**
 - **Step 3's Packeta clause is gated off until module 20** (`packeta` prop) — named so 20 flips it, and
   nobody „fixes“ the missing clause early.
 - **CLAUDE.md staleness when this lands:** the Auth & boundaries bullet „`order_token` alone resolves a

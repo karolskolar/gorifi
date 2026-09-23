@@ -204,7 +204,8 @@ both the index AND `not.toBe()` the index the stale value would have produced.
 `\b` never fires after it. A ban that misses one of the four words it names is the one
 failure mode a ban cannot have. It also matches „okolo", which is module 18's own copy
 („Káva príde okolo {expected_date}", PO decision O2) — a false positive waiting for the
-first consumer to reuse the sweep. Shipped as **`/\bkol[oáa]|cykl/iu`**, and the spec file
+first consumer to reuse the sweep. Shipped as **`/\bkol[oáa]|cykl/iu`** (~~current~~ — superseded
+by PI-T11's `e2e/helpers/vocabulary.js BANNED`, which this one missed „kole"/„kolu" against), and the spec file
 carries a test that runs the regex over a bad list AND a good list, so the regex itself is
 evidence rather than faith. ~~Spec text not edited (copy/regex text is the PO's)~~ —
 **the spec WAS edited, by the orchestrator, at `17-cycle-stages.md:537`**: the broken regex
@@ -474,8 +475,10 @@ is case-insensitive. Measured, as a mutation.
 
 ### 5. The vocabulary ban has ONE regex home now
 
-`BANNED = /\bkol[oáa]|cykl/iu` moved from inside CS-T2's describe to module scope in
-`cycle-stages.spec.js`, because CS-T4 sweeps the rendered guest page with the same
+~~`BANNED = /\bkol[oáa]|cykl/iu` moved from inside CS-T2's describe to module scope in
+`cycle-stages.spec.js`~~ **— SUPERSEDED by PI-T11 (learnings 10 §PI-T11 §1): the one home is
+now `e2e/helpers/vocabulary.js BANNED`, a union regex that also catches „kole"/„kolu"/„kolám"/
+„kolami"/„kôl"; `cycle-stages.spec.js` imports it.** It first moved to module scope because CS-T4 sweeps the rendered guest page with the same
 ban. Two copies of a ban is how the two halves start banning different words; the
 shipped „the regex itself catches what it claims to catch" test is now the single
 proof for both readers.

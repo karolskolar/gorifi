@@ -67,7 +67,7 @@ import { kgLabel } from '@/lib/kg'
 import { fmtDate, fmtDayMonth, fmtWeekdayDayMonth, weeksUntil } from '@/lib/dates'
 // 18 §UC-PI-002 — the ONE home of "which round is this landing about, and in what
 // state". Never re-derive open/locked/closed beside it.
-import { resolveLanding } from '@/lib/portal-state'
+import { resolveLanding, nextTextIsNote } from '@/lib/portal-state'
 // 18 §UC-PI-008/010 — the money surfaces (PI-T7).
 //
 // ⚠⚠ ONE TRIGGER, ONE MOUNT, and this import block is where that is enforced.
@@ -1232,6 +1232,14 @@ function payOwnOrder() {
 }
 
 /**
+ * `landing.nextText` is the admin's `plan_note` verbatim (17's branch 2) — person-typed,
+ * so the two warn banners mark it `data-user-copy` (FUP-T22 / 18 §UC-PI-017) and leave
+ * 17's two app sentences readable to the vocabulary sweep. One home:
+ * `lib/portal-state.js nextTextIsNote()`, which `LandingStateModal.vue` also reads.
+ */
+const nextIsNote = computed(() => nextTextIsNote(landing.value.nextCycle, landing.value.nextOpening))
+
+/**
  * §UC-PI-007 item 4's next-round banner: „<b>Ďalšia objednávka</b> {short} — ponuku
  * si už môžete prezrieť nižšie."
  *
@@ -1478,13 +1486,17 @@ const shareSub = computed(() => {
   return `${colleaguesLabel(c.count)}${qty} cez váš odkaz`
 })
 
-/** Item 2's sub-line: „{n} objednávky · naposledy {cycleName}“, or „Zatiaľ žiadne“. */
+/** Item 2's sub-line: „{n} objednávky · naposledy {cycleName}“, or „Zatiaľ žiadne“ — as `{ text, data }`. */
 const historySub = computed(() => {
   const list = orderedCycles.value
-  if (!list.length) return 'Zatiaľ žiadne'
+  if (!list.length) return { text: 'Zatiaľ žiadne', data: '' }
   // `cycles` arrives `ORDER BY created_at DESC` (friends.js), so the first row
   // carrying an order is the most recent one.
-  return `${ordersAccusativeLabel(list.length)} · naposledy ${list[0].name}`
+  // ⚠ The cycle NAME is returned APART from the app text (PI-T11 review): it is admin
+  // free text, and `NeoDrawer.vue` renders it in its own `data-user-copy` span so the
+  // vocabulary sweep reads „3 objednávky · naposledy" and never the name (FUP-T22).
+  // Composing it into one string here made the whole sub-line unmarkable.
+  return { text: `${ordersAccusativeLabel(list.length)} · naposledy`, data: list[0].name }
 })
 
 /**
@@ -1506,7 +1518,10 @@ const historySub = computed(() => {
 const menuItems = computed(() => {
   const rows = [
     { key: 'shop', view: 'shop', icon: 'bag', label: 'Aktuálna ponuka', sub: shopSub.value },
-    { key: 'history', view: 'history', icon: 'list', label: 'Moje objednávky', sub: historySub.value },
+    {
+      key: 'history', view: 'history', icon: 'list', label: 'Moje objednávky',
+      sub: historySub.value.text, subData: historySub.value.data,
+    },
     {
       key: 'balance',
       view: 'balance',
@@ -2560,7 +2575,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
            line so the template's own indentation cannot become rendered whitespace. -->
       <div v-else class="banner warn slim" data-testid="landing-closed-banner">
         <span class="dot"></span>
-        <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Objednávky sú zatvorené.</b> {{ landing.nextText }}</div>
+        <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Objednávky sú zatvorené.</b> <span v-if="nextIsNote" data-user-copy>{{ landing.nextText }}</span><template v-else>{{ landing.nextText }}</template></div>
       </div>
 
       <!-- 3. THE DEBT BANNER (§UC-PI-008) — „shown in all three landing states". -->
@@ -2574,7 +2589,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
         <!-- The caption row is THIS view's (`portal2.jsx:288-290`), above the grid
              and outside `.p2-ro` so it keeps full contrast. -->
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
-          <span class="field-lbl" style="min-width:0;overflow-wrap:anywhere">Minulá ponuka · {{ landing.catalogCycle.name }}</span>
+          <span class="field-lbl" style="min-width:0;overflow-wrap:anywhere">Minulá ponuka · <span data-user-copy>{{ landing.catalogCycle.name }}</span></span>
           <span class="sub mono" style="white-space:nowrap;font-size:12px">len na prezretie</span>
         </div>
 
@@ -2683,7 +2698,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
                written out in `FriendOrder`'s `orderPickupText`). Absent entirely
                when the party has no target yet, rather than an empty badge. -->
           <div
-            v-if="lockedOwnOrder.pickupText"
+            v-if="lockedOwnOrder.pickup.data"
             style="border-top:2px solid rgba(10,10,10,0.12);margin-top:14px;padding-top:12px"
           >
             <!-- ⚠ `inline-flex` AT THE CALL SITE: `.badge` is `inline-block` and
@@ -2695,7 +2710,9 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
               data-testid="own-order-pickup"
             >
               <NeoIcon name="pin" />
-              <span style="min-width:0">{{ lockedOwnOrder.pickupText }}</span>
+              <!-- `pickup.text` is app copy („Packeta · "), `pickup.data` is typed
+                   (address / location name / note) — marked on its own (FUP-T22). -->
+              <span style="min-width:0">{{ lockedOwnOrder.pickup.text }}<span data-user-copy>{{ lockedOwnOrder.pickup.data }}</span></span>
             </span>
           </div>
 
@@ -2745,7 +2762,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
                indentation cannot become rendered whitespace. -->
         <div class="banner slim" data-testid="landing-next-round">
           <span class="dot"></span>
-          <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Ďalšia objednávka</b> <template v-if="nextRoundShort.kind === 'date'">približne <b>{{ nextRoundShort.date }}</b></template><template v-else-if="nextRoundShort.kind === 'note'">{{ nextRoundShort.note }}</template><template v-else>— dáme vedieť</template> — ponuku si už môžete prezrieť nižšie.</div>
+          <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Ďalšia objednávka</b> <template v-if="nextRoundShort.kind === 'date'">približne <b>{{ nextRoundShort.date }}</b></template><template v-else-if="nextRoundShort.kind === 'note'"><span data-user-copy>{{ nextRoundShort.note }}</span></template><template v-else>— dáme vedieť</template> — ponuku si už môžete prezrieť nižšie.</div>
         </div>
       </template>
 
@@ -2775,7 +2792,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
              must NOT be reformatted at this call site (learnings 10 §1). -->
         <div v-else class="banner warn slim" data-testid="landing-locked-banner">
           <span class="dot"></span>
-          <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Objednávky sú uzamknuté.</b> {{ landing.nextText }}</div>
+          <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Objednávky sú uzamknuté.</b> <span v-if="nextIsNote" data-user-copy>{{ landing.nextText }}</span><template v-else>{{ landing.nextText }}</template></div>
         </div>
       </template>
 
@@ -2785,7 +2802,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
              ⚠ Caption „Ponuka · {name}", NOT „Minulá ponuka · …": this round is the
              current one, it is simply no longer orderable. -->
       <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
-        <span class="field-lbl" style="min-width:0;overflow-wrap:anywhere">Ponuka · {{ landing.currentCycle.name }}</span>
+        <span class="field-lbl" style="min-width:0;overflow-wrap:anywhere">Ponuka · <span data-user-copy>{{ landing.currentCycle.name }}</span></span>
         <span class="sub mono" style="white-space:nowrap;font-size:12px">len na prezretie</span>
       </div>
 
@@ -2869,7 +2886,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
                  as a utility, so the canon's value survives only as a style attribute
                  (CLAUDE.md §Frontend). `overflow-wrap:anywhere` because a cycle name
                  is admin free text and `min-w-0` alone is not a wrapping rule. -->
-            <div class="display" style="font-size:20px;line-height:1;overflow-wrap:anywhere">{{ round.name }}</div>
+            <div class="display" style="font-size:20px;line-height:1;overflow-wrap:anywhere" data-user-copy>{{ round.name }}</div>
             <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
               <!-- ⚠ THE SHORT VOCABULARY, owned by `lib/history-badges.js` and
                    deliberately NOT module 17's long timeline labels — see that
@@ -3823,8 +3840,16 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
         <div class="text-center mb-5">
           <div class="text-4xl mb-2">🎁</div>
           <div class="text-xl font-bold mb-1.5">Máš voucher!</div>
+          <!-- ⚠ COPY-ONLY EDIT (18 §UC-PI-017's table). „z cyklu {name}" → the name in
+               PARENTHESES: the vocabulary rule bans „cyklus" on every friend surface,
+               and this modal is one. Everything else about this modal — its markup,
+               its ty-form, its shadcn look — is deliberately out of scope
+               (00-overview: the voucher modal is out of the restyle).
+               ⚠ `data-user-copy` on the NAME ONLY (FUP-T22): a cycle name is admin
+               free text, and this suite's own fixtures name cycles „… cyklus". The
+               sentence around it is app copy and must stay readable to the sweep. -->
           <div class="text-sm text-muted-foreground">
-            Za tvoju objednávku z cyklu <span class="font-semibold text-foreground">{{ currentVoucher.cycle_name }}</span> ti patrí zľavový voucher.
+            Za tvoju objednávku (<span class="font-semibold text-foreground" data-user-copy>{{ currentVoucher.cycle_name }}</span>) ti patrí zľavový voucher.
           </div>
         </div>
         <div class="bg-muted rounded-xl p-4 text-center mb-5">

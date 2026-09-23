@@ -424,7 +424,7 @@ them — resolved conflict 4).
   the dialog must emit `update:open(false)` from NeoModal's `close` event so the
   teleported layer unmounts.
 - Share-sheet payload (`nativeShare`): text stays
-  `` `Pridajte sa k mojej objednávke — ${cycleName || 'objednávkový cyklus'}` ``.
+  `` `Pridajte sa k mojej objednávke — ${cycleName || 'objednávka'}` `` (fallback was ~~'objednávkový cyklus'~~ until 18 §UC-PI-017, PI-T11).
   `OPEN:` the share-sheet `title` is currently `'Objednávka Gorifi'` — the handoff
   rebrands the surface to Podpultovka but specifies no share-sheet payload; should it
   become `'Objednávka Podpultovka'`? Needs a product decision (it is user-visible in

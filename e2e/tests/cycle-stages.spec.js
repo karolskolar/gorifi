@@ -11,6 +11,10 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 // `[data-user-copy]` subtree dropped.
 import { collectAppCopy } from '../helpers/copy-sweep.js'
 import { makeAdmin } from '../helpers/admin.js'
+// PI-T11: the vocabulary ban has ONE home now (`e2e/helpers/vocabulary.js`). It was
+// module-scoped here, never exported, while §UC-PI-017 carried a THIRD spelling — see
+// that file's header for the three-way diff and why the union is what it is.
+import { BANNED } from '../helpers/vocabulary.js'
 
 // CS-T1 — module 17 (cycle stages), 17 §UC-CS-001 / §UC-CS-002 / §UC-CS-003 /
 // §UC-CS-004. The BACKEND half of the stage model: three columns on
@@ -1431,7 +1435,13 @@ test.describe('CS-T2 · 17 §UC-CS-005 — `currentCycleFor`', () => {
 // same regex (§UC-CS-008). Two copies of a ban is how the two halves start banning
 // different words; the „the regex itself catches what it claims to catch" test
 // below is the single proof for both readers.
-const BANNED = /\bkol[oáa]|cykl/iu
+//
+// ⚠⚠ IMPORTED SINCE PI-T11, and module-scoped was not far enough: 18 §UC-PI-017 needed
+// the same ban for the FRIEND surface and carried a third spelling of it, so the one
+// home moved OUT of this file into `e2e/helpers/vocabulary.js`. The union it exports is
+// a superset of what this file used to ban on „kole"/„kolu" and a strict subset on
+// „kolaps"/„kolotoč" (which `\bkol[oáa]` matched and nothing here ever meant to ban) —
+// the two case tables below are what proves this file lost nothing it cared about.
 
 test.describe('CS-T2 · 17 §UC-CS-005 — no „kolo", no „cyklus", anywhere', () => {
   test.skip(!CS2_HAS_SRC, CS2_NEEDS_SRC)

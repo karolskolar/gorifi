@@ -85,3 +85,21 @@ export function resolveLanding(cycles, today = new Date()) {
     nextOpening,
   }
 }
+
+/**
+ * Is `nextOpening.text` the admin's `plan_note` VERBATIM — branch 2 of
+ * `nextOpeningText()` — rather than one of 17's two app sentences?
+ *
+ * ⚠ ONE home for a render decision two surfaces need (PI-T11 review): a `plan_note`
+ * is person-typed free text, so the closed/locked warn banners in
+ * `FriendPortalSession.vue` and `LandingStateModal.vue`'s card mark it
+ * `data-user-copy` (FUP-T22) — and ONLY it: branches 1 and 3 are app copy the
+ * vocabulary sweep must keep reading. It asks the returned object rather than
+ * re-deriving the branch, and it adds no key to `nextOpeningText()`'s pinned
+ * `{ date, inWeeks, text }` shape.
+ */
+export function nextTextIsNote(nextCycle, nextOpening) {
+  if (!nextCycle || !nextOpening || nextOpening.date) return false
+  const note = typeof nextCycle.plan_note === 'string' ? nextCycle.plan_note : ''
+  return note.trim() !== '' && nextOpening.text === note
+}

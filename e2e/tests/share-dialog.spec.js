@@ -547,6 +547,55 @@ test.describe('UC-KG-006 — native share', () => {
       url: `${origin}/g/${link.token}`,
     }])
   })
+
+  test('⚠ PI-T11 (18 §UC-PI-017) — the share-sheet TEXT falls back to "objednávka" when the cycle name is blank',
+    async ({ page }) => {
+      // No real cycle is ever unnamed, so the only way to reach `cycleName`'s own
+      // `|| 'objednávka'` branch (`nativeShare()`) is to blank the name IN THE PAYLOAD
+      // `FriendOrder.vue` reads it from — the `route.fetch()`-and-edit idiom
+      // (guest-status-shell.spec.js), never a hand-built stub, so every other field
+      // this screen needs stays real. This used to fall back to the retired
+      // "objednávkový cyklus" — pinned here so the copy-table edit stays proven, not
+      // merely read off the diff.
+      const host = await makeHost('blank')
+      const cycle = await makeCycle('blank')
+      const link = await shareLink(host, cycle.id)
+
+      await page.setViewportSize({ width: 378, height: 900 })
+      await signInAsHost(page, host)
+      await page.addInitScript(() => {
+        window.__shared = []
+        Object.defineProperty(navigator, 'share', {
+          configurable: true,
+          value: (data) => { window.__shared.push(data); return Promise.resolve() },
+        })
+      })
+      await page.route('**/api/orders/cycle/*/friend/*', async (route) => {
+        const res = await route.fetch()
+        const body = await res.json()
+        if (body?.cycle) body.cycle.name = ''
+        await route.fulfill({ response: res, body: JSON.stringify(body) })
+      })
+
+      await gotoPortal(page)
+      // The subtitle's bold name line shares the SAME `v-if="cycleName"` the share
+      // sheet reads — gone here too, non-vacuously (the good case above proves the
+      // line renders when a name IS there).
+      await landingShare(page).click()
+      const dialog = page.getByRole('dialog')
+      await expect(dialog).toBeVisible()
+      await expect(dialog.locator('.sub b')).toHaveCount(0)
+
+      const share = dialog.getByRole('button', { name: 'Zdieľať odkaz' })
+      await expect(share).toBeVisible()
+      await share.click()
+      const origin = await page.evaluate(() => window.location.origin)
+      expect(await page.evaluate(() => window.__shared)).toEqual([{
+        title: 'Objednávka Podpultovka',
+        text: 'Pridajte sa k mojej objednávke - objednávka',
+        url: `${origin}/g/${link.token}`,
+      }])
+    })
 })
 
 // ---------------------------------------------------------------------------

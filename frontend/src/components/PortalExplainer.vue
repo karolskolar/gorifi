@@ -139,19 +139,18 @@ onMounted(async () => {
 /**
  * „{name (address)} joined by ` · `, address omitted when null. Vyberáte pri
  * objednávke." — §UC-PI-012 item 4, verbatim.
+ *
+ * ⚠ PARTS, NOT ONE STRING (PI-T11 review): a location's name and address are admin
+ * free text, so the template renders each in its own `data-user-copy` span (FUP-T22 /
+ * 18 §UC-PI-017) and the vocabulary sweep reads only the app punctuation and the
+ * trailing sentence. The rendered text is byte-identical to the old joined string.
  */
-const pickupText = computed(() => {
-  const parts = locations.value
-    .map((l) => {
-      const name = typeof l?.name === 'string' ? l.name.trim() : ''
-      if (!name) return ''
-      const address = typeof l?.address === 'string' ? l.address.trim() : ''
-      return address ? `${name} (${address})` : name
-    })
-    .filter(Boolean)
-  if (!parts.length) return 'Odberné miesto si vyberáte pri objednávke.'
-  return `${parts.join(' · ')}. Vyberáte pri objednávke.`
-})
+const pickupParts = computed(() => locations.value
+  .map((l) => ({
+    name: typeof l?.name === 'string' ? l.name.trim() : '',
+    address: typeof l?.address === 'string' ? l.address.trim() : '',
+  }))
+  .filter((p) => p.name))
 
 /**
  * §UC-PI-012 item 4: the Packeta row's badge is „+{fmtEur(parcel_fee)}" when the
@@ -238,7 +237,9 @@ function done() {
               <b style="font-size:15px">Odberné miesto v Bratislave</b>
               <span class="badge ok" style="margin-left:auto;flex-shrink:0">zdarma</span>
             </div>
-            <div class="sub" style="font-size:13.5px;line-height:1.4;margin-top:3px">{{ pickupText }}</div>
+            <!-- ⚠ ONE LINE on purpose: Vue's `condense` mode drops a whitespace node that
+                 contains a newline, which would glue the parts together. -->
+            <div class="sub" style="font-size:13.5px;line-height:1.4;margin-top:3px" data-testid="explainer-pickup-line"><template v-if="pickupParts.length"><template v-for="(p, i) in pickupParts" :key="i">{{ i ? ' · ' : '' }}<span data-user-copy>{{ p.name }}</span><template v-if="p.address">{{ ' (' }}<span data-user-copy>{{ p.address }}</span>{{ ')' }}</template></template>{{ '. Vyberáte pri objednávke.' }}</template><template v-else>Odberné miesto si vyberáte pri objednávke.</template></div>
           </div>
         </div>
 

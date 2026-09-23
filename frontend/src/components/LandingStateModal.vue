@@ -41,6 +41,7 @@ import NeoModal from './neo/NeoModal.vue'
 import CycleTimeline from './CycleTimeline.vue'
 import { fmtDayMonth } from '../lib/dates.js'
 import { stageIndex } from '../lib/cycle-stages.js'
+import { nextTextIsNote } from '../lib/portal-state.js'
 
 const props = defineProps({
   // „Objednávky sú zatvorené" (§UC-PI-006) / „Objednávky sú uzamknuté" (PI-T5).
@@ -64,6 +65,9 @@ const props = defineProps({
 })
 
 defineEmits(['close', 'explainer'])
+
+/** The card body is the admin's `plan_note` verbatim ⇒ it is DATA (`data-user-copy`). */
+const textIsNote = computed(() => nextTextIsNote(props.nextCycle, props.nextOpening))
 
 /** True when there is a real opening date to set in display type. */
 const hasDate = computed(() => !!(props.nextOpening && props.nextOpening.date))
@@ -126,7 +130,7 @@ const activeCaption = computed(() => {
         class="display"
         style="font-size:22px;line-height:1.05;white-space:pre-line;overflow-wrap:anywhere"
         data-testid="next-round-text"
-      >{{ nextOpening.text }}</div>
+      ><span v-if="textIsNote" data-user-copy>{{ nextOpening.text }}</span><template v-else>{{ nextOpening.text }}</template></div>
     </div>
 
     <div>

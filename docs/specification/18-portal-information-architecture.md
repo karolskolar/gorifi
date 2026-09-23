@@ -1059,6 +1059,21 @@ reach a friend. Admin UI may keep „cyklus“.
 
 **Grep guard (must return NOTHING; joins the module's e2e as a Node test):**
 
+> ⚠⚠ **SUPERSEDED by PI-T11 (2026-09-23) — both the command and its file list below are kept as
+> history only.** The authoritative guard is the Node test in `portal-vocabulary.spec.js` §2:
+> `e2e/helpers/vocabulary.js importClosure()` DERIVES the file set as the import closure of the two
+> friend routes (`views/FriendPortal.vue`, `views/FriendOrder.vue`), strips comments with
+> `source-pins.js stripComments()`, and sweeps with `vocabulary.js BANNED`. Three reasons, all measured:
+> (1) **the literal `grep` does NOT return nothing** — its trailing `grep -vE ":[0-9]+:\s*(//|\*|<!--|\* )"`
+> recognises only a comment's FIRST line, so every continuation line of a multi-line `<!-- … -->`
+> that mentions „cyklus" is a hit; (2) **the list was wrong in both directions** — it named
+> `PickupLocationPicker.vue`, which is imported ONLY by the admin `CycleDetail.vue` and
+> `Distribution.vue` (not a friend surface; removed from the guard, and its absence from the closure
+> is pinned), and it omitted ≥ 15 friend-reachable files (`DebtBanner`, `PortalExplainer`,
+> `lib/history-badges.js`, `api.js`, …); (3) **the regex misses words it bans** — JS `\b` is
+> ASCII-only, so the trailing `\b` after `á` never fires and „kolá" passes, and the alternation lacks
+> „kolám"/„kolami"/„kôl". `BANNED` is the union with an explicit Slovak-letter boundary.
+
 ```
 grep -rniE "cykl|\bkol(o|a|e|u|om|á|ách)\b" \
   frontend/src/views/FriendPortal.vue frontend/src/views/FriendPortalSession.vue \
@@ -1082,8 +1097,10 @@ file, or it quietly stops covering the thing it was written for.
 
 (the trailing filter drops code comments — English „cycle“ never matches „cykl“ anyway;
 „kolegovia“ is excluded by the word boundary.) A DOM sweep in the new spec asserts
-`/cykl|\bkol(o|a|e|u|om|á|ách)\b/i` is absent from `document.body.innerText` on every
-view, state and modal of this module.
+~~`/cykl|\bkol(o|a|e|u|om|á|ách)\b/i`~~ **`e2e/helpers/vocabulary.js BANNED`** (PI-T11 — see the
+supersession note above) is absent from ~~`document.body.innerText`~~ **the APP copy —
+`e2e/helpers/copy-sweep.js collectAppCopy()`, i.e. `innerText` + `placeholder`/`title`/`aria-label`/`alt`
+with every `[data-user-copy]` subtree dropped (FUP-T22)** — on every view, state and modal of this module.
 
 **Copy edits mandated (friend surface):**
 
@@ -1107,6 +1124,8 @@ two REMAINING files when 19 lands. ⚠ A third, server-side: `backend/src/routes
 „Objednávanie v tomto cykle je už uzavreté." — left standing because
 `19-guest-standing-link.md:208` pins it as the shipped message; see the PO note in
 `docs/learnings/09-cycle-stages.md`.
+⚠ **And a FRIEND-facing server set, found in PI-T11's review and handed to GL-T7** (the row routes
+`guest-orders.js` strings to the GL/GP rows, so PI-T11 did not re-word them): `routes/guest-orders.js:197` („Cyklus je už uzavretý, objednávku kolegu už nie je možné odstrániť.") and `:238` („Cyklus bol práve uzavretý, …odstrániť.") — the HOST's `DELETE /api/guest-orders/:id` 409s (not-open + the lost-race re-check), which DO reach a friend: `GuestSubOrders.vue removeSubOrder()` → `error.value = e.message` → the `.banner.danger.slim` at `GuestSubOrders.vue:378-380` on the Kolegovia tab of `FriendOrder`; plus `:525`/`:562` („…zrušiť.") on `POST /api/guest-orders/:id/cancel`, which is `requireAdmin` (only `CycleDetail.vue` calls it via `cancelGuestOrderAdmin`) and so may keep „cyklus" by the audience rule — named so the sweep decides both halves on purpose.
 
 **Not covered (by design):** `routes/*.js` error strings a friend may see (e.g.
 `'Cyklus nie je otvorený'`-style 409s) — `OPEN:` sweep server messages returned to friend

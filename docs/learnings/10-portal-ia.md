@@ -1737,7 +1737,8 @@ looks like.
    It will need to extend the §7 importer-set assertion by one entry; the boundary half of
    that test is written so it does not have to be weakened.
 3. **PI-T11's vocabulary sweep gains `PortalExplainer.vue`** — its copy contains no
-   „kolo"/„cyklus" (checked with the `/\bkol[oáa]|cykl/iu` regex) and the personal note is
+   „kolo"/„cyklus" (checked with the then-current `/\bkol[oáa]|cykl/iu` regex; the ban's one home is now
+   `e2e/helpers/vocabulary.js BANNED`, PI-T11) and the personal note is
    APP copy, deliberately NOT `[data-user-copy]`.
 4. ⚠ **Four `OPEN:`s in §UC-PI-012/014 are now SHIPPED as their defaults**, all of them the
    PO's to polish later and none of them a call-site decision: the WhatsApp mention in
@@ -2553,3 +2554,166 @@ written down is not a lesson applied.** Both now cite test names.
    `ackExplainer()`. Three constants carry it today; a new card-login spec needs its own.
 6. **`friends.packeta_address` still has exactly ONE writer**, and the 160 lives with it
    (§4). A second writer means moving the bound, not copying it.
+
+## PI-T11 — the vocabulary rule, its guard, and the deep-link net (2026-09-23)
+
+18 §UC-PI-017 / §UC-PI-018. The work was done over two sessions. The first was interrupted
+before it could run its own gate. The second session audited that work against the
+edit table, finished it and gated it.
+
+### 1. ONE home for the ban: `e2e/helpers/vocabulary.js`
+When this task started, the ban existed in three spellings and no two of them banned the
+same words: the shipped `cycle-stages.spec.js` `/\bkol[oáa]|cykl/iu`, 17 §UC-CS-009
+`/kol[oáa]\b|cykl/i` and 18 §UC-PI-017 `/cykl|\bkol(o|a|e|u|om|á|ách)\b/i`. JS `\b` is
+ASCII-only, so both spec spellings miss „kolá", 17's also flags „okolo", and the shipped
+one misses „kole"/„kolu". `BANNED` is now the union, built with an explicit Slovak
+letter class in place of `\b`. It is NOT `/g`. `BANNED_CASES` is its proof table.
+`cycle-stages.spec.js` imports it and no longer keeps its own copy.
+⚠ The first cut's union still missed three plural forms, „kolám", „kolami" and „kôl". The
+review found them, and `BANNED` now covers all ten forms. `BANNED_CASES.bad` names the full
+paradigm and `portal-vocabulary` §1 pins it by IDENTITY, because a length gate had passed
+without those three. Every superseded copy of the old regex is struck with a pointer:
+CLAUDE.md, 17 §UC-CS-009, 18 §UC-PI-017, learnings 01/09 and PROGRESS. In PROGRESS that
+means the CS-T2 log entry (:1023) and this task's own PI-T11 row (:438). Round 1 of the
+review missed the row: its regex and its „Node grep guard" / „guard file list widens"
+wording were struck only in round 2. The copies still left are HISTORICAL records that
+name the old spellings in order to explain them: the `vocabulary.js` header, the
+„three spellings" test and the `cycle-stages.spec.js` comments.
+
+### 2. The source guard's file set is DERIVED, not typed
+`importClosure(FRIEND_SURFACE_ROOTS)` walks the imports reachable from `views/FriendPortal.vue`
+and `views/FriendOrder.vue`, then sweeps each file with its comments stripped
+(`source-pins.js stripComments`, the one strip). The spec's hand list was checked against
+this set:
+- The derived set contains every file on the hand list except `PickupLocationPicker.vue`.
+  That file is ADMIN-only and the spec listed it by mistake. The spec pins its absence.
+- The derived set also covers at least 15 files the list never named, e.g. `DebtBanner`,
+  `PortalExplainer`, `history-badges` and `api.js`.
+
+⚠ Run as written, the spec's literal `grep` still returns hits. They are lines inside
+multi-line `<!-- … -->` comments, which the grep's trailing `-vE` filter cannot recognise.
+The Node guard is the authoritative form. GL-T7 widens it by adding the two guest roots
+to `FRIEND_SURFACE_ROOTS`.
+
+### 3. Server messages — audience-scoped
+Only messages that reach a FRIEND were re-worded. Every status code was kept.
+- `orders.js validateCyclePassword` 404 → „Ponuka nebola nájdená". This helper serves the
+  deep link's GET, the cart PUT and the submit, and `FriendOrder` paints the message
+  verbatim.
+- The two host `guest-links.js` routes → the same 404 text.
+- The Packeta 400 → „Doručenie Packetou nie je pre túto objednávku dostupné", worded
+  exactly like module 20's guest twin (20 §5).
+- The voucher-accept ledger note → „Voucher za objednávku {name}". It renders on
+  `/zostatok`. Old stored rows keep their old text.
+
+The copies that stay are all admin-guarded: the orders pickup PATCH, the three admin
+`guest-links` routes, `vouchers /generate` and `/cycle/:id/friends`, the `products.js`
+duplicate 409 and all of `cycles.js`. `cycles.js /:id/public` and `/:id/auth` are
+friend-shaped, but no frontend code calls them (`getCyclePublic`/`authenticateCycle`
+have no caller), so they were left alone. `guest.js`/`guest-orders.js` → GL/GP rows.
+⚠ **Handed to GL-T7, named rather than kept quietly (review):** `guest-orders.js:197`/`:238`
+are the host's `DELETE /api/guest-orders/:id` 409s („Cyklus je už uzavretý / bol práve
+uzavretý, objednávku kolegu už nie je možné odstrániť."). They DO reach a friend:
+`GuestSubOrders.vue removeSubOrder()` → `error.value = e.message` → the `.banner.danger.slim`
+at `GuestSubOrders.vue:378-380` on the Kolegovia tab. `:525`/`:562` („…zrušiť.") are on
+`POST /:id/cancel`, which is `requireAdmin` and called only by `CycleDetail.vue`, so they
+may keep „cyklus". All four are named in the GL-T7 row and in 18 §UC-PI-017's hand-off
+list. The DOM sweep does not see the two host 409s: no fixture drives a refused removal.
+
+### 4. The DOM sweep, and `data-user-copy`
+`portal-vocabulary.spec.js` imports `helpers/copy-sweep.js` and has no copy of its own.
+The marked renders are listed below. After two review rounds they are every
+person-typed render found on the surfaces the sweep visits; ✓ means a POISONED fixture
+proves the mark:
+- cycle name:
+  - BrandChrome `.t` on the deep link ✓;
+  - the locked landing caption „Ponuka · …" ✓ and the closed one „Minulá ponuka · …"
+    (not poisoned: the closed stubs use neutral names);
+  - history rows ✓ (`PI11b kolo cyklus`);
+  - the voucher modal ✓;
+  - the share-dialog subtitle ✓;
+  - the drawer's „Moje objednávky" sub-line ✓.
+- BrandChrome `.s`, the friend name: not poisoned.
+- product name, description, composition, category and `alt`, and the `CartLineList`
+  name and purpose: not poisoned. Fixture product names are neutral.
+- the drawer friend name and the tx note: not poisoned.
+- pickup location name and address:
+  - in the pickup modal ✓ (the app-copy „Iné" stays readable, mutation-checked);
+  - on „Ako to funguje" ✓. `PortalExplainer.pickupParts` replaced a joined string; the
+    rendered text is byte-identical;
+- the own-order pickup badge ✓. `FriendOrder.orderPickupText` now returns
+  `{ text, data }`, so „Packeta · " stays app copy.
+- a colleague's `guest_name` ✓ (the live card; the cancelled-card twin at
+  `GuestSubOrders.vue:448` is marked but not driven).
+- `plan_note`, in all five places it renders:
+  - `landing-next-round` ✓;
+  - `landing-closed-banner` ✓ and `landing-locked-banner` ✓;
+  - the closed ✓ and locked ✓ state-modal card.
+
+Every ✓ is `expectExcluded()`: the value rendered, is marked, and the app sweep does not
+see it. Each ✓ added in review was mutation-checked by unmarking it, and each went red.
+
+The shapes behind the marks:
+- The history sub-line is `{ text, data }` → NeoDrawer's `sub` + `subData`, with ONE
+  render.
+- The plan-note decision has one home, `lib/portal-state.js nextTextIsNote()`.
+
+⚠ This is NOT a claim that every friend-facing render in the whole app is marked. The
+unpoisoned rows above are marked but unproved. A new surface joins the sweep, and its
+data joins the markers, together. §4.5 is the original exclusion proof, on the locked
+landing's caption.
+⚠ The sweep's `mustSay` gate is POLLED: `expect.poll`, then the ban runs on that same
+snapshot. One run went red when the deep link's appbar title painted before
+`FriendOrder` finished loading and the sweep read „Načítavam...". So the gate is also
+the „screen is ready" wait.
+
+### 5. The gate
+Targeted, `--workers=1`, fresh DB, all five limiters at 100000, idle box.
+- A 23-file batch: **888 passed**, 0 skipped. The files that ran match the files asked
+  for.
+- `portal-vocabulary`: 20 passed, 3 runs in a row after the poll fix.
+- A final run of `portal-vocabulary` + `order-shell` + `cycle-stages`: 158 passed.
+- Review round 1 re-gate, a 22-file batch: **648 passed**, 0 skipped. The files that
+  ran match the files asked for.
+- Review round 2 re-gate, fresh DB, **171 passed**:
+
+  | File | Passed |
+  |---|---|
+  | portal-vocabulary | 26 |
+  | portal-landing | 43 |
+  | portal-menu | 28 |
+  | portal-history | 15 |
+  | order-locked | 9 |
+  | order-shell | 14 |
+  | portal-explainer | 36 |
+
+  ⚠ A naive `grep -oE 'tests/…spec.js' | uniq -c` counts portal-explainer as **37**. The
+  extra hit is the reporter's stderr header for a `node:sqlite` ExperimentalWarning,
+  which repeats the test title, not a second run. `--list` says 36. Reconcile a count
+  against `--list` before believing it.
+
+### 6. Mutations
+Each mutation was applied, confirmed changed with `cmp`, rebuilt or the server
+restarted, run, then reverted:
+- (first pass, before the review fixes) „Späť na zoznam cyklov" in the source → the source guard reds.
+- „Späť na ponuku cyklov" in the build → the fatal-error DOM sweep reds on the ban.
+- `data-user-copy` dropped from BrandChrome's `.t` → the poisoned deep-link sweep reds.
+- The orders 404 reverted to „Cyklus nebol najdeny" → §3 and the fatal-error banner red
+  (2 tests).
+- `collectAppCopy` returning '' → 9 of 10 DOM/deep-link tests red on the non-vacuity gate.
+- Review round 1 — unmarking each of these went red:
+  - NeoDrawer `subData`;
+  - the LandingStateModal note;
+  - the closed-banner note;
+  - GuestSubOrders `guest_name`;
+  - the GuestShareDialog name;
+  - the pickup-modal name.
+
+  Two more reds: marking „Iné" unconditionally (the screen-read gate), and `BANNED`
+  without `ami|ám` („the ban catches „kolám"").
+- Review round 2 — unmarking each of these went red, and each failure's offender line
+  names the poisoned value:
+  - the `landing-locked-banner` note;
+  - the `landing-next-round` note;
+  - the own-order pickup `data`;
+  - the explainer location name.

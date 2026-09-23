@@ -557,7 +557,9 @@ every changed backend file, then Playwright.
    - **Lib derivation (UC-CS-005):** `import('../../frontend/src/lib/cycle-stages.js')`
      directly (plain ESM, only `./plural.js`): the `stageIndex` table, `fmtDay`,
      `inWeeksText` declensions, `nextOpeningText` branches, `openUntilText`,
-     `currentCycleFor` precedence; a regex sweep ~~`/kol[oáa]\b|cykl/i`~~ `/\bkol[oáa]|cykl/iu`
+     `currentCycleFor` precedence; a regex sweep ~~`/kol[oáa]\b|cykl/i`~~ ~~`/\bkol[oáa]|cykl/iu`~~ **`e2e/helpers/vocabulary.js
+     BANNED`** (PI-T11 — the ONE home of the ban, a union that also catches „kole"/„kolu"/„kolám"/
+     „kolami"/„kôl" and no longer false-matches „kolaps"; `cycle-stages.spec.js` imports it)
      over every string the module exports or builds ⇒ zero matches (non-vacuous: ≥ 6 labels
      checked). ⚠ **The struck regex is BROKEN IN BOTH DIRECTIONS** (CS-T2, 2026-09-20,
      measured): a trailing `\b` after `á` never fires, because `á` is outside ASCII `\w`, so

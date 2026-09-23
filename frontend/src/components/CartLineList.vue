@@ -88,14 +88,14 @@ function fmt(amount) {
 <template>
   <ul class="lines">
     <template v-for="group in groups" :key="group.purpose">
-      <li class="ln-group"><span class="badge acc-o">{{ group.purpose }}</span></li>
+      <li class="ln-group"><span class="badge acc-o" data-user-copy>{{ group.purpose }}</span></li>
       <li
         v-for="item in group.items"
         :key="item.key"
         class="ln"
         :data-testid="lineTestid"
       >
-        <span class="ln-name" :title="item.name">{{ item.name }}</span>
+        <span class="ln-name" :title="item.name" data-user-copy>{{ item.name }}</span>
         <span class="mono ln-qty">{{ item.quantity }}×</span>
         <span class="mono ln-size">{{ item.size }}</span>
         <span class="mono ln-amt">{{ fmt(item.amount) }}</span>

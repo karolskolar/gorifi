@@ -941,7 +941,11 @@ test.describe('UC-FO-011 — the Hotovo! success modal', () => {
   })
 
   test('⚠ the SAME subtitle on both paths (resolved conflict #4)', async ({ page }) => {
-    const SUB = 'Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia cyklu.'
+    // ⚠ RE-POINTED by PI-T11 (18 §UC-PI-017's copy table): „…až do uzamknutia cyklu."
+    // → „…až do uzamknutia objednávok.". The property this test protects — ONE subtitle
+    // on both the first-submit and the update path (04 resolved conflict #4) — is
+    // unchanged; only the string it is stated in moved.
+    const SUB = 'Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia objednávok.'
     const cycle = await makeCycle('H2')
     const p = await addProduct(cycle.id, { name: `H2 Kava ${uniq}`, purpose: 'Espresso', price_250g: 7 })
     await seedCart(cycle.id, [{ product_id: p.id, variant: '250g', quantity: 1 }])

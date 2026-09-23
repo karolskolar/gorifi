@@ -40,7 +40,11 @@ const props = defineProps({
   // „{code} · člen od 2024" row is demo data and is deliberately NOT ported.
   friendName: { type: String, default: '' },
   // The menu rows, in render order. Shape per row:
-  //   { key, icon, label, sub?, badge?: { text, tone: 'danger'|'ok' }, on?: bool }
+  //   { key, icon, label, sub?, subData?, badge?: { text, tone: 'danger'|'ok' }, on?: bool }
+  // ⚠ `subData` is PERSON-TYPED text appended to `sub` after one space (today: the
+  // „Moje objednávky" row's last cycle name). It renders in its own `data-user-copy`
+  // span (FUP-T22 / 18 §UC-PI-017) so the vocabulary sweep reads the app half only.
+  // Anything a person typed goes in `subData`, never composed into `sub`.
   // The DATA lives in `FriendPortalSession.vue` (the session-boundary rule); the
   // MARKUP and the keyboard layer live here, once, so a new row cannot ship with
   // a different `role`/`tabindex`/Enter-Space contract from the other six.
@@ -92,7 +96,7 @@ function choose(key) {
           <div class="p2-dh">
             <div style="flex: 1; min-width: 0">
               <div class="display" style="font-size: 25px; line-height: 1.1">Pod<span style="color:var(--accent)">pult</span>ovka</div>
-              <div v-if="friendName" data-testid="drawer-friend-name" style="margin-top: 8px; font-weight: 700; font-size: 15px; line-height: normal">{{ friendName }}</div>
+              <div v-if="friendName" data-testid="drawer-friend-name" data-user-copy style="margin-top: 8px; font-weight: 700; font-size: 15px; line-height: normal">{{ friendName }}</div>
             </div>
             <span
               class="p2-icobtn"
@@ -124,7 +128,7 @@ function choose(key) {
               <span class="ic"><NeoIcon :name="item.icon" /></span>
               <div style="flex: 1; min-width: 0">
                 <div class="lab">{{ item.label }}</div>
-                <div v-if="item.sub" class="sub">{{ item.sub }}</div>
+                <div v-if="item.sub" class="sub">{{ item.sub }}<template v-if="item.subData">{{ ' ' }}<span data-user-copy>{{ item.subData }}</span></template></div>
               </div>
               <span v-if="item.badge" class="badge" :class="item.badge.tone">{{ item.badge.text }}</span>
               <!-- The chevron's colour is INLINE, exactly as the prototype writes

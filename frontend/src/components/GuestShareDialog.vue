@@ -179,7 +179,7 @@ async function nativeShare() {
   try {
     await navigator.share({
       title: 'Objednávka Podpultovka',
-      text: `Pridajte sa k mojej objednávke - ${props.cycleName || 'objednávkový cyklus'}`,
+      text: `Pridajte sa k mojej objednávke - ${props.cycleName || 'objednávka'}`,
       url: guestUrl.value
     })
   } catch (e) {
@@ -216,7 +216,8 @@ async function nativeShare() {
          an unlabelled URL cannot be verified by the host (GSO-T2; pinned by
          `toContainText(cycleBName)`). -->
     <template #subtitle>
-      <template v-if="cycleName"><b style="color: var(--ink)">{{ cycleName }}</b><br></template>Kolegovia si objednajú cez váš odkaz — bez registrácie. Zásielku prevezmete vy a odovzdáte im ju.
+      <!-- `data-user-copy` on the NAME only (FUP-T22): a cycle name is admin free text. -->
+      <template v-if="cycleName"><b style="color: var(--ink)" data-user-copy>{{ cycleName }}</b><br></template>Kolegovia si objednajú cez váš odkaz — bez registrácie. Zásielku prevezmete vy a odovzdáte im ju.
     </template>
 
     <!-- 1. Error — first in the body in EVERY state, so a failure is never read

@@ -105,7 +105,7 @@ router.post('/cycle/:cycleId', (req, res) => {
   if (host.error) return res.status(host.status).json({ error: host.error });
 
   const cycle = getCycle(req.params.cycleId);
-  if (!cycle) return res.status(404).json({ error: 'Cyklus nebol nájdený' });
+  if (!cycle) return res.status(404).json({ error: 'Ponuka nebola nájdená' });
 
   const existing = db.prepare(
     'SELECT id FROM guest_order_links WHERE host_friend_id = ? AND cycle_id = ?'
@@ -166,7 +166,7 @@ router.get('/cycle/:cycleId', (req, res) => {
   if (host.error) return res.status(host.status).json({ error: host.error });
 
   const cycle = getCycle(req.params.cycleId);
-  if (!cycle) return res.status(404).json({ error: 'Cyklus nebol nájdený' });
+  if (!cycle) return res.status(404).json({ error: 'Ponuka nebola nájdená' });
 
   // Scoped to the authenticated friend, so one host can never read another's link.
   const link = db.prepare(

@@ -60,7 +60,8 @@
 4. **Success-modal copy.** The repo distinguishes "Vaša objednávka bola úspešne
    odoslaná!" vs "Vaša objednávka bola aktualizovaná!". The prototype uses one static
    subtitle for both paths. Prototype copy is final → both first submit and update show
-   **"Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia cyklu."**; the
+   ~~"…až do uzamknutia cyklu."~~ **"Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia objednávok."**
+   (re-worded by 18 §UC-PI-017, PI-T11); the
    "aktualizovaná" variant is **dropped**.
 5. **Dirty-warning dismissability.** The prototype's cartbar warning has no close
    affordance; the shipped behavior (CLAUDE.md 2026-02-03) lets the user dismiss it, and
@@ -124,7 +125,7 @@ the auth restore this view depends on) landed.
    `flex:1` (prototype inline layout).
 4. Loading state: centered `.sub` text "Načítavam..." (copy unchanged). Fatal error
    state (error && !friend): `.banner.danger` with `<b>Chyba:</b> {error}` + a
-   `.btn` "Späť na zoznam cyklov" → `goBack()`.
+   `.btn` ~~"Späť na zoznam cyklov"~~ **"Späť na ponuku"** (18 §UC-PI-017/018) → `goBack()`.
 5. `document.title` logic, `onMounted` auth restore/redirect, `loadOrderData()`,
    pickup-locations + payment-settings fetches: **unchanged**.
 
@@ -680,7 +681,7 @@ the profile default updates only when the checkbox was ticked.
 **Goal:** the post-submit modal with inline payment.
 
 **Composition:** `NeoModal`, `closable`, `title="Hotovo!"`,
-`subtitle="Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia cyklu."`
+`subtitle="Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia objednávok."` (was „…cyklu.", 18 §UC-PI-017)
 (both paths — resolved conflict #4). Footer: `button.btn` "OK".
 
 **Body (top to bottom; payment block only when `hasPaymentSettings`):**

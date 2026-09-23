@@ -365,8 +365,10 @@ append the full write-up to the matching learnings file and add at most one line
   `stage`, and that order is the ONLY thing hiding the three stale-/reset-stage transitions CS-T1
   measured (learnings 09 §10); invert it and all three reach the friend with nothing going red. No
   string in the lib or the component may contain „kolo"/„kolá"/„cyklus"/„cykl" (sweep regex
-  `/\bkol[oáa]|cykl/iu` — the spec's `kol[oáa]\b` misses „kolá" and false-positives „okolo") — ONE
-  module-scoped `BANNED` in `cycle-stages.spec.js`, shared by the lib harvest and CS-T4's
+  ~~`/\bkol[oáa]|cykl/iu` — the spec's `kol[oáa]\b` misses „kolá" and false-positives „okolo") — ONE
+  module-scoped `BANNED` in `cycle-stages.spec.js`~~ **— SUPERSEDED by PI-T11: the ONE home is
+  `e2e/helpers/vocabulary.js BANNED` (see the PI-T11 rule below), imported by `cycle-stages.spec.js`
+  and `portal-vocabulary.spec.js`**, shared by the lib harvest and CS-T4's
   rendered-page sweep. The guest read-only sentence is „Objednávky sú uzavreté, objednávku už nie je
   možné upraviť." (CS-T4 dropped „cykle"). ⚠ THREE guest-facing „cyklus" strings survive
   deliberately, and the read-view sweep sees none of them: `routes/guest.js:216` („…v tomto cykle je
@@ -417,6 +419,7 @@ append the full write-up to the matching learnings file and add at most one line
 - A spec that greps `.vue` SOURCE must strip `//` comments BEFORE `/* */`: `@/components/ui/*` in a line
   comment opens a fake block comment that swallowed 16 709 chars and turned a source pin green (PI-T3).
   Every absence pin needs a readability gate (stripped length vs raw) beside it.
+- The „cyklus/kolo" ban has ONE regex, `e2e/helpers/vocabulary.js BANNED` (union of three spellings, all ten case forms incl. „kôl"/„kolám"/„kolami"; JS `\b` is ASCII-only), and the friend source guard's file set is the router's IMPORT CLOSURE (`importClosure()`), never a typed list — a new friend component is guarded by being imported (PI-T11).
 - A rendered-copy sweep reads the app's OWN copy: `e2e/helpers/copy-sweep.js` (one home, text + `placeholder`/
   `title`/`aria-label`/`alt`) drops every `[data-user-copy]` subtree, and a view marks the person-typed
   interpolation — never the app copy beside it. The test template has a friend NAMED `Prihlasovacie.meno`; a

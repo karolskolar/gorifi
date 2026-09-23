@@ -424,7 +424,7 @@ async function removeSubOrder(subOrder) {
         >
           <span class="chev" :class="{ open: !isCollapsed(subOrder) }" style="margin-top:3px"><NeoIcon name="chev" /></span>
           <span style="display:block;min-width:0">
-            <span style="display:block;font-weight:800;font-size:15.5px">{{ subOrder.guest_name }}</span>
+            <span style="display:block;font-weight:800;font-size:15.5px" data-user-copy>{{ subOrder.guest_name }}</span>
             <span class="mono sub" style="display:block;font-size:12px">{{ subOrder.guest_phone }}</span>
             <!-- Folded, this is the only thing left saying how much is hidden. -->
             <span
@@ -445,7 +445,7 @@ async function removeSubOrder(subOrder) {
         <div v-else style="display:flex;gap:8px;align-items:flex-start;min-width:0;line-height:normal">
           <span class="chev" style="margin-top:3px"><NeoIcon name="chev" /></span>
           <div style="min-width:0">
-            <div style="font-weight:800;font-size:15.5px">{{ subOrder.guest_name }}</div>
+            <div style="font-weight:800;font-size:15.5px" data-user-copy>{{ subOrder.guest_name }}</div>
             <div class="mono sub" style="font-size:12px">{{ subOrder.guest_phone }}</div>
             <!-- Permanent on a cancelled row: it is the only record left on screen
                  of how big the called-off order was. -->

@@ -208,7 +208,7 @@ const showSuccessModal = ref(false)
 // ⚠ `successModalMessage` ("Vaša objednávka bola úspešne odoslaná!" /
 // "…bola aktualizovaná!") is RETIRED, for the same reason `successMessage` was one
 // row earlier: 04 resolved conflict #4 gives the success modal ONE subtitle on both
-// paths — "Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia cyklu." —
+// paths — "Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia objednávok." —
 // so the ref had a writer, a reader and no remaining variation to carry.
 // `wasAlreadySubmitted` in `doSubmitOrder()` went with it; nothing else read it.
 const showCancelModal = ref(false)
@@ -587,13 +587,19 @@ const orderPickup = ref(null)
  * never from this view's `pickupLocations` list: that list is the public, ACTIVE-only
  * picker feed, so a location soft-deleted after this order chose it would leave the
  * badge blank on a party whose pickup is perfectly well defined.
+ *
+ * ⚠ `{ text, data }`, NOT one string (PI-T11 review, the drawer `historySub` shape):
+ * `text` is APP copy („Packeta · " or nothing) and `data` is what a PERSON typed — the
+ * Packeta address, the admin's location name, the free-text note. The session renders
+ * `data` in its own `data-user-copy` span (FUP-T22 / 18 §UC-PI-017), so the vocabulary
+ * sweep reads the app half and never the typed one. `data === ''` ⇒ no target yet.
  */
 const orderPickupText = computed(() => {
   const row = order.value
-  if (!row) return ''
-  if (row.packeta_address) return `Packeta · ${row.packeta_address}`
-  if (orderPickup.value?.pickup_location_name) return orderPickup.value.pickup_location_name
-  return orderPickup.value?.pickup_location_note || row.pickup_location_note || ''
+  if (!row) return { text: '', data: '' }
+  if (row.packeta_address) return { text: 'Packeta · ', data: row.packeta_address }
+  if (orderPickup.value?.pickup_location_name) return { text: '', data: orderPickup.value.pickup_location_name }
+  return { text: '', data: orderPickup.value?.pickup_location_note || row.pickup_location_note || '' }
 })
 
 /**
@@ -624,7 +630,7 @@ const ownOrder = computed(() => {
     purposeOrder: availablePurposes.value,
     total: paymentTotal.value,
     paid: !!order.value.paid,
-    pickupText: orderPickupText.value,
+    pickup: orderPickupText.value,
     canPay: hasPaymentSettings.value,
   }
 })
@@ -1416,11 +1422,11 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
 
          The back chevron carries the house zero-pixel ARIA layer (role + tabindex
          + Enter/Space): it is a bare `<span>` in the prototype, and it is the only
-         in-page route back to the cycle list — the control it replaced was a real
+         in-page route back to the landing (`/`) — the control it replaced was a real
          `<button>`, so leaving it pointer-only would be a regression. Its label is
-         "Späť", NOT "Späť na zoznam cyklov": the fatal-error state renders a button
-         with that exact text, and Playwright matches accessible names as a
-         case-insensitive SUBSTRING unless `exact: true`. -->
+         exactly "Späť", NOT the fatal-error button's "Späť na ponuku" (18
+         §UC-PI-017/018): that button's text CONTAINS "Späť", and Playwright matches
+         accessible names as a case-insensitive SUBSTRING unless `exact: true`. -->
     <!-- ⚠ ROUTE MODE ONLY (§UC-PI-005: „no `.app` root, no `BrandChrome`"). The
          landing's chrome is the portal's own appbar + drawer (§UC-PI-003/004), one
          instance across all three auth states — a second `BrandChrome` beneath it
@@ -1753,6 +1759,21 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
           role="tablist"
           aria-label="Kategórie produktov"
         >
+          <!-- ⚠ `data-user-copy` (FUP-T22 / 18 §UC-PI-017) — EIGHT of them in this file,
+               and they are one rule, not eight decisions: the category tab; the bakery
+               card's name block; a tasting note (`description1`); a composition; the
+               coffee photo (its `alt`/`aria-label` carry the product name); the coffee
+               card's name block (name, roast type, roastery); and, in the pickup modal,
+               a location's name (not the trailing app-copy „Iné") and its address. All
+               are free text a PERSON typed. (The deep link's appbar cycle name and
+               friend name are marked in `BrandChrome.vue`'s fallback, not here.)
+               `e2e/helpers/copy-sweep.js` drops these
+               subtrees before `portal-vocabulary.spec.js` asserts what the APP calls
+               things, because this suite's own fixtures create cycles named „… cyklus"
+               and a sweep that reddens on DATA gets „repaired" by narrowing the regex —
+               the one forbidden repair. Mark the interpolation, never the copy beside
+               it: „Zloženie", the stock bar's labels and every button here are app copy
+               and must stay readable to the sweep. -->
           <span
             v-for="purpose in availablePurposes"
             :key="purpose"
@@ -1764,6 +1785,7 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
             @click="(e) => { snapTab(e); activeTab = purpose }"
             @keydown.enter.prevent="activeTab = purpose"
             @keydown.space.prevent="activeTab = purpose"
+            data-user-copy
           >{{ purpose }}</span>
           <!-- Scroll affordance. The theme's own signal is the 28px `::after`
                fade, which reads as a soft edge rather than "there is more" — the
@@ -1843,7 +1865,7 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
                      the canon exactly — 20 and 181.
                      The COFFEE card needs nothing: its `<h3>` is block-level, so
                      no strut is involved (measured: zero delta on both cards). -->
-                <div class="min-w-0" style="overflow-wrap:anywhere;line-height:normal">
+                <div class="min-w-0" style="overflow-wrap:anywhere;line-height:normal" data-user-copy>
                   <!-- `<h3>`, not the spec block's `span`: 04 §UC-FO-015 pins the
                        product name as `getByRole('heading', …)` for
                        `guest-host-view.spec.js`, and that pin outranks the element
@@ -1865,11 +1887,11 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
                 >{{ product._variants[0].weight_grams }} g</span>
               </div>
 
-              <div v-if="product.description1" class="sub" style="font-size:13px;margin-top:6px">{{ product.description1 }}</div>
+              <div v-if="product.description1" class="sub" style="font-size:13px;margin-top:6px" data-user-copy>{{ product.description1 }}</div>
 
               <details v-if="product.composition" style="margin-top:8px">
                 <summary class="sub" style="cursor:pointer;font-size:13px">Zloženie</summary>
-                <div class="sub" style="font-size:13px;margin-top:4px">{{ product.composition }}</div>
+                <div class="sub" style="font-size:13px;margin-top:4px" data-user-copy>{{ product.composition }}</div>
               </details>
 
               <!-- Column rule and the 368px floor: see the coffee grid below. -->
@@ -1937,6 +1959,7 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
                   :src="product.image"
                   :alt="product.name"
                   :aria-label="`Zobraziť fotku: ${product.name}`"
+                  data-user-copy
                   role="button"
                   tabindex="0"
                   class="w-[58px] sm:w-[70px] shrink-0 self-start"
@@ -1956,7 +1979,7 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
                      `description1`/`description2` are equally free text. Same class
                      of hole RD-FL-4 closed on `plan_note`; pinned with a long
                      unbreakable fixture name in `order-product-card.spec.js`. -->
-                <div class="flex-1 min-w-0" style="overflow-wrap:anywhere">
+                <div class="flex-1 min-w-0" style="overflow-wrap:anywhere" data-user-copy>
                   <h3 class="display text-[19px] sm:text-[21px]" style="line-height:.95">{{ product.name }}</h3>
                   <div v-if="product.roast_type || product.roastery" class="flex flex-wrap gap-[6px] mt-2">
                     <span v-if="product.roast_type" class="badge" style="font-size:11px;padding:2px 7px">{{ product.roast_type }}</span>
@@ -2386,7 +2409,7 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
     <NeoModal
       v-if="showSuccessModal"
       title="Hotovo!"
-      subtitle="Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia cyklu."
+      subtitle="Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia objednávok."
       @close="handleSuccessModalClose"
     >
       <!-- Payment block only when the admin configured payment settings at all;
@@ -2682,7 +2705,12 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
                "Lego domaDúbravka". Without a newline the same node condenses to a
                single space and is KEPT, which is what the prototype's JSX does. -->
           <span style="min-width:0;font-size:14px;line-height:normal">
-            <b>{{ opt.label }}</b> <span v-if="opt.sub" class="sub">{{ opt.sub }}</span>
+            <!-- ⚠ `data-user-copy` (FUP-T22 / 18 §UC-PI-017): a location's name and
+                 address are admin free text. The trailing „Iné" row (`value: null`) is
+                 APP copy and stays readable to the sweep — hence the conditional. The
+                 DELIVERY-method rows above („Osobný odber", „Doručenie Packetou") are
+                 app literals from `deliveryMethodOptions` and are NOT marked. -->
+            <b :data-user-copy="opt.value === null ? null : ''">{{ opt.label }}</b> <span v-if="opt.sub" class="sub" data-user-copy>{{ opt.sub }}</span>
           </span>
         </label>
         <!-- The note is a SIBLING of the "Iné" row, not a child of its label

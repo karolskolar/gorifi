@@ -21,7 +21,14 @@ const router = Router();
 function validateCyclePassword(req, cycleId) {
   const cycle = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(cycleId);
   if (!cycle) {
-    return { error: 'Cyklus nebol najdeny', status: 404 };
+    // ⚠ VOCABULARY (18 §UC-PI-017): this message is FRIEND-FACING — the three routes
+    // that call this helper are the deep link's own GET, the cart PUT and the submit,
+    // and `FriendOrder.vue` paints the text verbatim in its fatal-error banner. So it
+    // says „ponuka", the word the appbar and „Späť na ponuku" already use. The
+    // admin-guarded 404s further down this file (the pickup PATCH) keep „Cyklus" —
+    // audience-scoped, like `sanitizeFriend`'s field rules, so a grep for the old
+    // string still finds hits and that is the rule working.
+    return { error: 'Ponuka nebola nájdená', status: 404 };
   }
 
   // Try Bearer token first (new token-based auth)
@@ -388,7 +395,9 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
   if (use_parcel_delivery) {
     // Validate parcel is enabled for this cycle
     if (!cycle.parcel_enabled) {
-      return res.status(400).json({ error: 'Doručenie Packetou nie je pre tento cyklus dostupné' });
+      // ⚠ VOCABULARY (18 §UC-PI-017) — friend-facing 400, status unchanged. Worded
+      // exactly like module 20's guest twin (20 §5), so the two routes say one thing.
+      return res.status(400).json({ error: 'Doručenie Packetou nie je pre túto objednávku dostupné' });
     }
     // ⚠ FUP-T12: the type guard is folded into the route's EXISTING required rule —
     // same status, same message. `?.` only covers null/undefined, so a number or an

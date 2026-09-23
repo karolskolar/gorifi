@@ -104,8 +104,8 @@
    leaves both columns untouched (API-additive — the shipped items-only PUT keeps working
    byte-identically).
 5. **New guest-facing copy never says „cyklus“** (roadmap §16 R1.6, module 18) — so the
-   friend route's `'Doručenie Packetou nie je pre tento cyklus dostupné'` is NOT copied
-   verbatim; the guest string is `'Doručenie Packetou nie je pre túto objednávku dostupné'`.
+   friend route's ~~`'Doručenie Packetou nie je pre tento cyklus dostupné'`~~ is NOT copied
+   verbatim (⚠ PI-T11 re-worded the friend route to the guest string below, so the two now match); the guest string is `'Doručenie Packetou nie je pre túto objednávku dostupné'`.
    Shipped guest strings that already say „cyklus“ are left alone (not this module's).
 
 ---
