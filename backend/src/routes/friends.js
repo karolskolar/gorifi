@@ -8,6 +8,9 @@ import { getPlaceholderCycleId } from '../helpers/friend-create.js';
 import { bindValue } from '../helpers/bind-value.js';
 import { roundMoney } from '../helpers/pricing.js';
 import { balancePaymentBlock } from '../helpers/payment.js';
+// 19 §UC-GL-001 + PO 2026-09-19 — the admin half of the STANDING guest link. The same
+// payload composers the host routes in guest-links.js use: one helper, two guards.
+import { standingPayload, regeneratedPayload, sendStanding } from '../helpers/standing-link.js';
 // 10 §UC-GA-002. Imported here (rather than only where tokens are verified) so the
 // module's ONE boot line prints at server start — it is the only audit signal that the
 // `GOOGLE_AUTH_TEST_MODE` seam is off in production.
@@ -38,6 +41,22 @@ function sanitizeFriend(friend) {
   // endpoints INHERIT this strip rule (11 §UC-FC-005 ships it first); it is
   // load-bearing, not dead code.
   delete friend.google_sub;
+  // ⚠ 19 §UC-GL-001 (GL-T1): the host's STANDING guest-link token. It is a bearer
+  // credential of the public guest surface — whoever holds it can order under this
+  // host's name — so it is `invite_code`'s class exactly, and stripped here for the
+  // same reason: every `SELECT *` route below would otherwise publish it (the friend's
+  // own `GET /:id/profile` included, and 19 says the friend's own payloads „do not
+  // gain the token"). Like `invite_code` (`invitations.js GET /my-code`) it has
+  // DEDICATED publishing routes instead — FOUR, every route that answers
+  // `standing.token`: the host's `GET /api/guest-links/standing` and
+  // `POST /api/guest-links/standing/regenerate`, and the admin's
+  // `GET /api/friends/:id/guest-link/standing` and `POST …/standing/regenerate` below.
+  // Both GETs mint lazily — a raw `null` in the admin list would be a „not created
+  // yet" state D1 says the link does not have.
+  // (19's „`sanitizeFriend` needs no change" is superseded by this line: its premise —
+  // „not a login credential" — is true, but this function also strips `invite_code`,
+  // which is not one either. Credential of ANY surface is the rule it applies.)
+  delete friend.guest_link_token;
   return friend;
 }
 
@@ -1914,6 +1933,42 @@ router.delete('/:id/google', requireAdmin, (req, res) => {
   // not. Do not "harmonise" the two without a spec change.
   const updated = db.prepare('SELECT * FROM friends WHERE id = ?').get(req.params.id);
   res.json(sanitizeFriend(updated));
+});
+
+// ---------------------------------------------------------------------------
+// THE STANDING GUEST LINK, ADMIN HALF — 19 §UC-GL-001 as amended by the PO decision of
+// 2026-09-19 („Admin powers over standing tokens = YES — read + regenerate"). ADMIN
+// only: `requireAdmin` on each route's own line, because `/api/friends` is a MIXED
+// mount. Both routes are in `ADMIN_ENDPOINTS` (e2e/tests/api-security.spec.js); the
+// HOST's own pair on /api/guest-links/standing is in `FRIEND_IDENTITY_ENDPOINTS`, and
+// an admin token is not host identity there, just as a friend Bearer is nothing here.
+//
+// ONE HELPER, TWO GUARDS: the bodies are `helpers/standing-link.js`
+// `standingPayload()` / `regeneratedPayload()`, byte-for-byte the host's shapes, so a
+// regenerate from either side keeps the per-cycle links, every sub-order and every
+// `order_token` byte-identical (the helper writes ONE column).
+//
+// ⚠ The admin READ mints lazily too (D1 — the link has no „not created" state): the
+// case the PO asked for is a host who cannot reach their own dialog, and a read that
+// answered „none yet" would leave the admin nothing to forward. ⚠ Once GL-T6 renders
+// this on AdminFriends' friend detail, every detail the admin opens mints that
+// friend's token — a GRADUAL BACK-FILL of the admin-browsed population. Recorded for
+// GL-T6/PO (learnings 11 §Seams); behaviour deliberately unchanged here.
+// ⚠ RULE 1 (19 §UC-GL-001, „Minting requires an ACTIVE host") — enforced in the helper,
+// so it holds here too: an INACTIVE friend with NO token is never minted one, by the
+// read OR by regenerate — both answer 409 `reason:'inactive_host'`, the per-cycle admin
+// CREATE's refusal (guest-links.js), because a fresh token for a deactivated host is a
+// URL that 410s for every guest (19 §UC-GL-002 rule 3). An inactive friend WITH a
+// token: the read returns it and regenerate ROTATES it — the per-cycle admin
+// REGENERATE's precedent: killing a leaked URL of a deactivated host is where
+// revocation matters most.
+// ⚠ Neither route reads `req.body`. Synchronous (GA-T8).
+router.get('/:id/guest-link/standing', requireAdmin, (req, res) => {
+  sendStanding(res, standingPayload(req.params.id));
+});
+
+router.post('/:id/guest-link/standing/regenerate', requireAdmin, (req, res) => {
+  sendStanding(res, regeneratedPayload(req.params.id));
 });
 
 // Delete friend (blocked if balance is non-zero) (admin)

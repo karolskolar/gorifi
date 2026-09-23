@@ -36,6 +36,11 @@ function generateInviteCode() {
 // Generate a guest share-link token. 14 chars over the same CSPRNG alphabet
 // (~70 bits) — comfortably above the 12-char floor the guest-orders design
 // sets, because the token is the only thing protecting the link (SEC-S2).
+// ⚠ A LINK token (per-cycle `guest_order_links.token` or a host's standing
+// `friends.guest_link_token`) is minted through `helpers/standing-link.js
+// uniqueGuestToken()`, which checks BOTH spaces (19 §UC-GL-001) — never by calling
+// this with a one-table retry. `routes/guest.js`'s `uniqueOrderToken()` is the other
+// caller, for `guest_orders.order_token`, a different space.
 function generateGuestToken() {
   return randomCode(14);
 }
@@ -869,6 +874,42 @@ function initDb() {
     // Column already exists, ignore
   }
 
+  // Migration: 19 §UC-GL-001 (GL-T1) — the host's STANDING guest link, one
+  // cycle-independent `/g/:token` per host. NULL means „not minted yet": the token is
+  // minted lazily by the host's first `GET /api/guest-links/standing` (D1), so there is
+  // NO back-fill — a back-fill would mint a door for every friend who never shares.
+  //
+  // ⚠ ONE HOME for every write: `helpers/standing-link.js` (ensure + regenerate — the
+  // only two writers in backend/src). It is `invite_code`'s class: a credential of the
+  // public guest surface, stripped by `sanitizeFriend`, never selected by
+  // `routes/guest.js`'s LINK_SELECT.
+  //
+  // ⚠ ALTER ONLY, NOT ALSO IN THE `CREATE TABLE IF NOT EXISTS friends` ABOVE — the
+  // PI-T9 convention stated at `explainer_seen_at` just above (that CREATE is the
+  // original 2024 shape and every later column arrives by ALTER; a fresh database runs
+  // this ALTER too). 19 §UC-GL-001 says the same: „`friends` has no fresh CREATE path
+  // for it". `guest-standing-link.spec.js` §1 proves both the fresh and the
+  // pre-existing-database path.
+  try {
+    db.run('ALTER TABLE friends ADD COLUMN guest_link_token TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // ⚠ Its OWN try/catch, deliberately NOT folded into the ALTER above (the GA-T1
+  // lesson at idx_friends_google_sub): on an already-migrated database the ALTER throws
+  // „duplicate column", and a shared catch would skip this CREATE INDEX — leaving the
+  // index on freshly created databases only. A bare ALTER cannot carry UNIQUE (19
+  // resolved conflict 4), so this index IS the storage-layer half of the uniqueness.
+  // SQLite unique indexes ignore NULLs, so unminted friends never collide. ⚠ The
+  // failure is LOGGED, not swallowed silently: a skipped unique index leaves the app's
+  // check as the only defence (the GA-T5 lesson), and that must be visible.
+  try {
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_friends_guest_link_token ON friends(guest_link_token)');
+  } catch (e) {
+    console.error('Migration error (idx_friends_guest_link_token):', e.message);
+  }
+
   // Create invitations table
   db.run(`
     CREATE TABLE IF NOT EXISTS invitations (
@@ -1101,6 +1142,50 @@ function initDb() {
       FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
     )
   `);
+
+  // The guest WAITLIST (19 §UC-GL-004) — „Dajte mi vedieť" contacts left on the
+  // pre-open page, one row per (host, phone). A NEW table, so CREATE only (the GSO-T2
+  // guest-tables rule); a later task adds a migration for it only for a column that is
+  // genuinely new once this table is in prod.
+  //
+  // ⚠ INERT FROM GL-T1 UNTIL GL-T3: no writer exists yet. It is created now so the
+  // host's `waiting_count` (helpers/standing-link.js `waitingCount()`) counts the real
+  // table from the first day, never a placeholder. Writers, when they land: GL-T3's
+  // public `POST /api/guest/:token/waitlist` (INSERT/UPDATE), the two purges
+  // (UC-GL-005: on order, after two completions), the admin DELETE (UC-GL-009), and
+  // module 21 — the ONLY writer of `notified_at`.
+  //
+  // `cycle_id` = the LAST closed round at signup, the anchor of the two-round purge
+  // (PO 2026-09-19: as specified); NULL when no round existed yet. `phone` is as
+  // entered, `phone_e164` derived by `helpers/phone.js toE164()` (GL-T3) and NULL when
+  // it does not normalise. `whatsapp_opt_in` DEFAULTs to 1 at the storage layer, but
+  // the route writes it explicitly — an unticked consent is stored 0 (PO).
+  db.run(`
+    CREATE TABLE IF NOT EXISTS guest_waitlist (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      host_friend_id INTEGER NOT NULL,
+      cycle_id INTEGER,
+      name TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      phone_e164 TEXT,
+      whatsapp_opt_in INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      notified_at DATETIME,
+      FOREIGN KEY (host_friend_id) REFERENCES friends(id) ON DELETE CASCADE,
+      FOREIGN KEY (cycle_id) REFERENCES order_cycles(id) ON DELETE SET NULL
+    )
+  `);
+
+  // The idempotency key of the waitlist write (UC-GL-004 rule 4): one row per
+  // (host, phone_e164). PARTIAL, so rows whose phone does not normalise never collide —
+  // GL-T3 dedupes those on the raw string in the app. A partial index cannot live
+  // inside the CREATE TABLE, hence its own statement; own try/catch, LOGGED, for the
+  // same reason as idx_friends_guest_link_token above.
+  try {
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_guest_waitlist_host_e164 ON guest_waitlist(host_friend_id, phone_e164) WHERE phone_e164 IS NOT NULL');
+  } catch (e) {
+    console.error('Migration error (idx_guest_waitlist_host_e164):', e.message);
+  }
 
   // ===================================================================
   // Coffee product catalog (module 12, PC-T1 — 12 §UC-PC-001). One row per

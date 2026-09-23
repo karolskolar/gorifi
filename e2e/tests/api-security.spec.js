@@ -87,6 +87,15 @@ const ADMIN_ENDPOINTS = [
   { method: 'get', path: '/api/guest-links/cycle/1/all' },
   { method: 'post', path: '/api/guest-links/cycle/1/host/1' },
   { method: 'post', path: '/api/guest-links/cycle/1/host/1/regenerate' },
+  // 19 §UC-GL-001 as amended by the PO decision of 2026-09-19 (GL-T1): the ADMIN half
+  // of a host's STANDING guest link — read (mints lazily) + regenerate. On the MIXED
+  // /api/friends mount, so the guard is per-route. The regenerate retires the host's
+  // standing URL for every new visitor, and the read hands out a working guest
+  // credential, so anonymous must never reach either. ⚠ The HOST's own pair
+  // (`/api/guest-links/standing[/regenerate]`) is in `FRIEND_IDENTITY_ENDPOINTS` below —
+  // one helper, two guards, two sweeps.
+  { method: 'get', path: '/api/friends/1/guest-link/standing' },
+  { method: 'post', path: '/api/friends/1/guest-link/standing/regenerate' },
   // 07 §UC-IA-008 item 1: the approval endpoint MINTS A LOGIN for a new friend, and
   // it lives on the MIXED /api/invitations mount (GET /code/:code and POST /register
   // are public), so its guard is per-route rather than on the mount. Anonymous must
@@ -274,6 +283,14 @@ const FRIEND_IDENTITY_ENDPOINTS = [
   // anonymous caller gets 401 rather than the 404 an id that does not exist on the
   // target would otherwise produce.
   { method: 'post', path: '/api/friends/1/explainer-seen' },
+  // GL-T1 — 19 §UC-GL-001 / §UC-GL-011 item 1. The host's STANDING guest link: the
+  // lazy-minting read and the in-place rotation. HOST identity (`requireHost()`), so
+  // they belong here and NEVER in `ADMIN_ENDPOINTS`: an admin token is not host
+  // identity, and bare shared-password auth resolves no host (401 in both modes). The
+  // admin's own read/regenerate is a DIFFERENT path on /api/friends/:id (above).
+  // ⚠ The guard runs first, so an anonymous caller never reaches the mint.
+  { method: 'get', path: '/api/guest-links/standing' },
+  { method: 'post', path: '/api/guest-links/standing/regenerate' },
 ]
 
 test.describe('API security — friend-identity authorization', () => {

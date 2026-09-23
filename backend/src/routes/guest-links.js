@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import db, { generateGuestToken } from '../db/schema.js';
+import db from '../db/schema.js';
 import { requireHost } from '../middleware/friend-auth.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { loadSubOrders, linkTotals } from '../helpers/guest-orders.js';
+import { uniqueGuestToken, standingPayload, regeneratedPayload, sendStanding } from '../helpers/standing-link.js';
 
 const router = Router();
 
@@ -14,6 +15,10 @@ const router = Router();
 //     POST   /cycle/:cycleId                  create-or-regenerate own link
 //     GET    /cycle/:cycleId                  own link + own sub-orders
 //     PATCH  /:id                             deactivate / reactivate own link
+//     GET    /standing                        own STANDING link, minted lazily (19 §UC-GL-001, D1)
+//     POST   /standing/regenerate             rotate own standing token (no `has_orders` gate, D2)
+//   (the ADMIN half of the standing link lives on /api/friends/:id/guest-link/standing —
+//    PO 2026-09-19 — because it is keyed on a friend, not on a cycle; same helper.)
 //   ADMIN-only (`requireAdmin`, 14 §UC-GR-004)
 //     GET    /cycle/:cycleId/all                        every host's link
 //     POST   /cycle/:cycleId/host/:friendId             create-if-missing
@@ -65,14 +70,11 @@ function getLink(id) {
   return db.prepare(`SELECT ${LINK_COLUMNS} FROM guest_order_links WHERE id = ?`).get(id);
 }
 
-// Unique token, with a collision retry against the `token UNIQUE` constraint.
-function uniqueToken() {
-  let token = generateGuestToken();
-  while (db.prepare('SELECT id FROM guest_order_links WHERE token = ?').get(token)) {
-    token = generateGuestToken();
-  }
-  return token;
-}
+// ⚠ Per-cycle tokens are minted by `helpers/standing-link.js uniqueGuestToken()`
+// (19 §UC-GL-001). It REPLACED this file's private `uniqueToken`, whose collision
+// retry checked `guest_order_links.token` only: from GL-T2 on `/g/:token` resolves a
+// per-cycle token AND a host's standing `friends.guest_link_token` through one
+// resolver, so a value must be unique across BOTH spaces — one generator, one check.
 
 // The host's sub-orders under a link, plus their running total, live in
 // helpers/guest-orders.js — GSO-T5 enriched each row with its `items` (the
@@ -146,14 +148,14 @@ router.post('/cycle/:cycleId', (req, res) => {
     // existing sub-order with it — the token is swapped instead. A previously
     // deactivated link is reactivated by re-sharing.
     db.prepare('UPDATE guest_order_links SET token = ?, active = 1 WHERE id = ?')
-      .run(uniqueToken(), existing.id);
+      .run(uniqueGuestToken(), existing.id);
     const link = getLink(existing.id);
     return res.json({ link, regenerated: true, ...loadSubOrders(link.id) });
   }
 
   const result = db.prepare(
     'INSERT INTO guest_order_links (token, host_friend_id, cycle_id, active) VALUES (?, ?, ?, 1)'
-  ).run(uniqueToken(), host.friendId, cycle.id);
+  ).run(uniqueGuestToken(), host.friendId, cycle.id);
 
   const link = getLink(result.lastInsertRowid);
   res.status(201).json({ link, regenerated: false, ...loadSubOrders(link.id) });
@@ -174,6 +176,61 @@ router.get('/cycle/:cycleId', (req, res) => {
   ).get(host.friendId, cycle.id);
 
   res.json({ link, ...loadSubOrders(link?.id) });
+});
+
+// ---------------------------------------------------------------------------
+// THE STANDING LINK — 19 §UC-GL-001. HOST-only, `requireHost()` identity: the host is
+// the Bearer session and NEVER a body field (SEC-A1) — neither route reads `req.body`
+// at all, so nothing smuggled into one can name another friend or a token.
+//
+// ⚠ NO MODERN-MODE 409 GUARD, and that is a decision, not an omission. CLAUDE.md's
+// GA-T5 rule covers routes that write a LOGIN credential (password, username, Google
+// link): under legacy auth the shared password can mint anyone's session, so such a
+// write is account takeover. A standing token authenticates NOBODY as the friend — it
+// opens the public guest surface only, exactly like the per-cycle token that
+// `POST /cycle/:cycleId` above has always minted and rotated with no mode guard. A
+// guard here would also 409 every host while production runs `auth_mode = legacy`,
+// i.e. ship the feature to nobody. `requireHost()` already refuses the bare shared
+// password (no friendId ⇒ 401) in BOTH modes.
+//
+// Rule 1 (an ACTIVE host mints): deactivating a friend deletes their sessions in the
+// same transaction (friends.js admin PATCH), so a deactivated host's Bearer 401s here
+// before anything is read. The rule itself lives in `helpers/standing-link.js`, so the
+// admin's routes on /api/friends/:id/guest-link/standing are held to it too: an
+// inactive friend with NO token gets 409 `inactive_host` (no mint), while one WITH a
+// token can still be read and rotated — revocation matters most there.
+//
+// Both handlers are synchronous (GA-T8); the payloads are composed by
+// `helpers/standing-link.js`, shared verbatim with the admin routes.
+//
+// ⚠ Registered BEFORE `PATCH /:id`. There is no `GET /:id` or `POST /:id/…` on this
+// router, so nothing collides today; keeping literal segments above parameter routes
+// makes that hold for whatever is added next.
+
+// GET /guest-links/standing — the host's standing link, minted on the first call.
+// ⚠ The ONE deliberate write inside a GET in this router (D1): R9.4 says the host can
+// copy the link „any time", so it has no „not yet created" state on the host side.
+// `created` is true only on the call that minted.
+router.get('/standing', (req, res) => {
+  const host = requireHost(req);
+  if (host.error) return res.status(host.status).json({ error: host.error });
+
+  // Both refusals are unreachable for a live session — `friend_sessions` cascade on a
+  // friend DELETE, and deactivation deletes them — but they are mapped by the ONE
+  // `sendStanding` both routers share, so a vanished row is a 404, never a TypeError.
+  sendStanding(res, standingPayload(host.friendId));
+});
+
+// POST /guest-links/standing/regenerate — rotate the host's standing token in place.
+// ⚠ NO `has_orders` GATE (D2) — the per-cycle link above keeps its own token, and
+// every sub-order resolves by `order_token` alone (14 D2), so rotating strands nobody
+// who has ordered; it closes the door on whoever holds the OLD standing URL and has
+// not, which is the point after a leak. Nothing but `friends.guest_link_token` moves.
+router.post('/standing/regenerate', (req, res) => {
+  const host = requireHost(req);
+  if (host.error) return res.status(host.status).json({ error: host.error });
+
+  sendStanding(res, regeneratedPayload(host.friendId));
 });
 
 // PATCH /guest-links/:id — deactivate (default) or reactivate the host's own
@@ -268,7 +325,7 @@ router.post('/cycle/:cycleId/host/:friendId', requireAdmin, (req, res) => {
 
   const result = db.prepare(
     'INSERT INTO guest_order_links (token, host_friend_id, cycle_id, active) VALUES (?, ?, ?, 1)'
-  ).run(uniqueToken(), friend.id, cycle.id);
+  ).run(uniqueGuestToken(), friend.id, cycle.id);
 
   res.status(201).json({ link: getLink(result.lastInsertRowid), created: true });
 });
@@ -319,7 +376,7 @@ router.post('/cycle/:cycleId/host/:friendId/regenerate', requireAdmin, (req, res
   }
 
   db.prepare('UPDATE guest_order_links SET token = ? WHERE id = ?')
-    .run(uniqueToken(), existing.id);
+    .run(uniqueGuestToken(), existing.id);
 
   res.json({ link: getLink(existing.id), regenerated: true });
 });

@@ -56,6 +56,7 @@ cd frontend && npm run dev     # :5173
 | Distribution pipeline: hand-over, the board, the outbox enqueue, the cycle header (module 16) | `docs/learnings/08-distribution-pipeline.md` |
 | Portal IA: the four friend routes, `resolveLanding`, `lib/dates.js`, the `portal-landing` gate, the appbar per state + the drawer / `useModalLayer()`, the „Ako to funguje" explainer + `lib/roasters.js`, the first-login gate + `explainer_seen_at` (module 18) | `docs/learnings/10-portal-ia.md` |
 | Cycle stages: the three `order_cycles` columns, `markCycleReady()`, the `POST/PATCH /cycles` contract, `lib/cycle-stages.js` + `CycleTimeline.vue`, the admin date/stage controls, the guest „Kde je vaša káva" card (module 17) | `docs/learnings/09-cycle-stages.md` |
+| Standing guest link: `friends.guest_link_token`, `helpers/standing-link.js`, the host + admin standing routes, `guest_waitlist`, `waiting_count`, cross-space token uniqueness (module 19) | `docs/learnings/11-guest-standing-link.md` |
 
 Specs: `docs/specification/*.md`, `docs/superpowers/specs/*.md`. Spec text that cites "CLAUDE.md GSO-T3" /
 "CLAUDE.md 2026-08-07" etc. now resolves to these files (search by task id or date). When you finish a task,
@@ -84,6 +85,12 @@ append the full write-up to the matching learnings file and add at most one line
   attributes (compose the URL in JS at click time). Every miss answers the same uniform 404 (no oracle).
 - `sanitizeFriend` strips CREDENTIALS only; audience-scoped fields (e.g. `display_name`) are deleted in their
   route. `friends.invite_code` never reaches a friend or guest payload — the guest CTA has its own endpoint for that.
+- `friends.guest_link_token` (19 standing link) is `invite_code`'s class: stripped by `sanitizeFriend`, never in
+  `routes/guest.js` LINK_SELECT, published ONLY by the FOUR standing routes — host `GET /guest-links/standing` +
+  `POST …/standing/regenerate`, admin `GET /friends/:id/guest-link/standing` + `POST …/regenerate` (both GETs mint
+  lazily; an inactive friend is never MINTED one, 409 `inactive_host`, but may be rotated); `helpers/standing-link.js`
+  is its only writer and mints EVERY link token (`uniqueGuestToken()`, unique across BOTH spaces — never a one-table
+  retry). No modern-mode guard: not a login credential. ⚠ Not in the e2e scrub yet — BLOCKING on GL-T6 (GL-T1).
 - Rate limits: FIVE separate buckets in `middleware/rate-limit.js` (`auth`, `abuse`, `guestRead`, `guestWrite`,
   `magicLink`). Never collapse them.
 - CSP is copied in THREE files (`deploy/nginx-gorifi.conf`, `deploy/nginx-gorifi-staging.conf`,

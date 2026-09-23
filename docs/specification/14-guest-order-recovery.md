@@ -255,7 +255,9 @@ create-if-missing:
   row is returned untouched: ⚠ **the token is NEVER regenerated and `active` is
   NEVER written** by this route (see the non-capability below). An inactive existing
   link is returned with `active: 0` so the admin sees the state.
-- No link ⇒ INSERT via the existing `uniqueToken()` with `active = 1` ⇒
+- No link ⇒ INSERT via ~~the existing `uniqueToken()`~~ **`helpers/standing-link.js uniqueGuestToken()` —
+  guest-links.js's private `uniqueToken()` was REPLACED by it in GL-T1 (19 §UC-GL-001), because a link token
+  must now be unique across BOTH `guest_order_links.token` and `friends.guest_link_token`** with `active = 1` ⇒
   **201 `{ link, created: true }`**. The host sees it on their next dialog open
   (`GET /guest-links/cycle/:id` returns it) — no notification mechanism exists or is
   added.

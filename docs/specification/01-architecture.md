@@ -166,7 +166,9 @@ spec, so this documents the **existing** system, not a greenfield design.
 - **Roadmap October 2026:** hand-over PATCH/bulk, distribution board read, cycle stage
   PATCH, notifications (compose/release/read), WhatsApp settings + pairing, waitlist read
   are **admin** (`requireAdmin` + `ADMIN_ENDPOINTS`). Standing-link creation/regeneration
-  and the „kto čaká“ count are **host** (`requireHost`). Pre-open page read and the
+  and the „kto čaká“ count are **host** (`requireHost`) — **plus admin read + regenerate of a
+  host's standing link (PO 2026-09-19; GL-T1: `GET/POST /api/friends/:id/guest-link/standing[/regenerate]`,
+  `requireAdmin` + `ADMIN_ENDPOINTS`, the same helper as the host pair).** Pre-open page read and the
   waitlist write are **public** guest routes in `routes/guest.js` (token = credential,
   `guestRead`/`guestWrite` buckets, uniform 404, hostile-input bounds) and never join
   `ADMIN_ENDPOINTS`. Payment links, timeline and the explainer are read-only friend/guest

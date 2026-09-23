@@ -27,8 +27,9 @@
 > the ordering page, may leave a waitlist contact; never sees a per-cycle token, a host's `invite_code`
 > or any other guest's data. **Friend (host)** — Bearer session via `requireHost()`; reads/regenerates
 > their own standing link; sees the waitlist as a COUNT only (never names or phones). **Admin** — reads
-> the full waitlist and deletes rows; keeps module 14's per-cycle link powers unchanged; gains no write
-> on standing tokens in v1 (see §OPEN).
+> the full waitlist and deletes rows; keeps module 14's per-cycle link powers unchanged; ~~gains no write
+> on standing tokens in v1 (see §OPEN)~~ **reads + regenerates a host's standing token (PO 2026-09-19;
+> shipped by GL-T1 as `GET/POST /api/friends/:id/guest-link/standing[/regenerate]`).**
 > Sources: `docs/superpowers/specs/2026-09-03-roadmap-requirements.md` §17 (F9, R9.1–R9.4 + the privacy
 > line — the NEWEST source, wins every conflict), §16 rows Q3.a (3-step guest explainer, default 3), Q3.b
 > (no public page — the guest link carries the explainer), Q4.c (guest may order even when the host
@@ -43,8 +44,8 @@
 > (rate-limit buckets, the 410-cacheable lesson, GSO invariants); repo `CLAUDE.md` (Auth & boundaries —
 > `routes/guest.js` is PUBLIC hostile input with bounds, five buckets, uniform 404, `invite_code` never in
 > guest payloads, GA-T8 synchronous handlers); code `backend/src/routes/guest.js` (`resolveLink`,
-> `validateIdentity`, `statusPayload`, `firstName`), `routes/guest-links.js` (`uniqueToken`, the MIXED
-> router contract), `db/schema.js` (`generateGuestToken`, `guest_order_links`), `middleware/rate-limit.js`,
+> `validateIdentity`, `statusPayload`, `firstName`), `routes/guest-links.js` (`uniqueToken` — replaced by
+> `helpers/standing-link.js uniqueGuestToken()` in GL-T1 —, the MIXED router contract), `db/schema.js` (`generateGuestToken`, `guest_order_links`), `middleware/rate-limit.js`,
 > `frontend/src/views/GuestOrder.vue`, `components/GuestShareDialog.vue`, `GuestBrandHeader.vue`,
 > `e2e/tests/self-hosted-fonts.spec.js` (the zero-external-requests sweep). The most recent decision wins
 > on conflict.
@@ -125,13 +126,18 @@ body field (SEC-A1):**
 
 | Route | Behaviour |
 |---|---|
-| `GET /api/guest-links/standing` | `ensureStandingToken(host.friendId)` (⚠ the ONE deliberate write inside a GET in this router — recorded as D1: R9.4 says the host can copy the link „any time“, so the link has no „not yet created“ state on the host side) → `{ standing: { token, url_path, created: <bool, true only on the call that minted> }, waiting_count: <int>, current: { cycle_id, name, status } | null }`. `waiting_count` per UC-GL-008 rule 1. `current` = the open cycle per UC-GL-002 rule 2, or null. |
+| `GET /api/guest-links/standing` | `ensureStandingToken(host.friendId)` (⚠ the ONE deliberate write inside a GET in this router — recorded as D1: R9.4 says the host can copy the link „any time“, so the link has no „not yet created“ state on the host side) → `{ standing: { token, url_path, created: <bool, true only on the call that minted> }, waiting_count: <int>, current: { cycle_id, name, status } | null }`. `waiting_count` per UC-GL-008 rule 1 **(GL-T1: UC-GL-008 has no numbered rule. The count is the host's `guest_waitlist` rows with `notified_at IS NULL` — the people who asked to be told and have not been told yet. This spec implies that reading three times: UC-GL-004 rule 4 RE-ARMS a row on re-signup by resetting `notified_at = NULL`, which only means something if NULL is „still waiting"; UC-GL-010's segment is `WHERE w.notified_at IS NULL`, and 21 §UC-WA-007's acceptance says that after release „the segment then counts 0"; and the copy the count feeds (UC-GL-008 item 1) is „N ľudí čaká na váš odkaz". A notified row stays visible to the admin until a purge (UC-GL-005). One home: `helpers/standing-link.js waitingCount()`)**. `current` = the open cycle per UC-GL-002 rule 2, or null. |
 | `POST /api/guest-links/standing/regenerate` | `regenerateStandingToken` → `200 { standing: { token, url_path }, regenerated: true, waiting_count }`. **No `has_orders` gate** (D2): rotating the standing token strands nobody — every created sub-order resolves by `order_token` alone (14 D2), and the per-cycle link stays valid under its own token, so colleagues mid-order who followed the per-cycle URL are unaffected; colleagues who followed the STANDING URL and have not ordered yet lose the door, which is the point of regenerating after a leak. |
 
 - Both handlers are synchronous (no `async`/`await` — the GA-T8 rule).
 - The friend's OWN payloads (`GET /api/friends/me`-style profile routes) do not gain the token; the
-  standing route is its only publishing surface on the friend side. `sanitizeFriend` needs no change
-  (the token is not a login credential), but ⚠ **no guest payload may ever carry
+  standing route is its only publishing surface on the friend side **(GL-T1: the standing route PAIR — `GET` and
+  `POST …/regenerate` both answer `standing.token`; with the admin pair, FOUR publishing routes in all)**. ~~`sanitizeFriend` needs no change
+  (the token is not a login credential)~~ **SUPERSEDED by GL-T1: `sanitizeFriend` DOES strip it.
+  `GET /api/friends/:id/profile` is `SELECT *` → `sanitizeFriend`, so „no change" would have published
+  the token on the friend's own profile, contradicting the sentence before it. „Not a login credential"
+  is true but is not the function's test — it also strips `invite_code`, which is not one either; it
+  strips credentials of ANY surface, and the admin reads the token through its own route below.** And ⚠ **no guest payload may ever carry
   `friends.guest_link_token`** — the `LINK_SELECT` in `routes/guest.js` must not add it, exactly like
   `friends.invite_code` (CLAUDE.md). The guest already holds the URL they followed; the server never
   echoes a token back.
@@ -144,7 +150,10 @@ body field (SEC-A1):**
 
 1. Minting requires an ACTIVE host: `requireHost()` already rejects a deactivated friend's session; a
    deactivated host's existing token stays in the row but resolves 410 (UC-GL-002 rule 4) — mirroring the
-   per-cycle `host_active` gate.
+   per-cycle `host_active` gate. **GL-T1 (review decision): the rule is enforced in `helpers/standing-link.js`
+   for EVERY caller, not only by the host session — the admin routes (PO block) answer 409
+   `reason:'inactive_host'` for an inactive friend with NO token (read or regenerate; nothing is minted),
+   while an inactive friend's EXISTING token stays readable and rotatable (revocation).**
 2. Two consecutive `GET`s return the same token (`created: true` then `false`); the row is never
    re-minted by a read.
 3. Regeneration is in place on the `friends` row; the old token answers 404 to a new visitor the next
@@ -755,6 +764,8 @@ module milestone with `--workers=1`, all five `RATE_LIMIT_*_MAX` raised, output 
   by the admin's per-cycle create route, which the standing resolver materialises identically. Should the
   admin be able to read/regenerate a host's standing link (e.g. a host who lost access)? Default: not in
   v1; add as `GET/POST /guest-links/standing/host/:friendId[/regenerate]` under `requireAdmin` if asked.
+  **→ RESOLVED YES (PO 2026-09-19, block below); GL-T1 shipped it on the PO's path
+  `/api/friends/:id/guest-link/standing[/regenerate]`, NOT the `/guest-links/standing/host/…` sketch here.**
 - `OPEN:` **Preview size** — 12 products (this spec). The prototype shows 2 per category tab; a per-tab
   cap needs the tabs' purposes server-side. Default stands unless the PO wants the full last catalogue.
 - `OPEN:` **`cycle_id` semantics for the two-round purge** — this spec keys it to the last closed round at

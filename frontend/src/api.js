@@ -346,6 +346,12 @@ export const api = {
   // path from module 10's friend-owned `/friends/:id/google-link`; never merge them.
   // No body: the route names its two columns itself and ignores anything sent.
   adminUnlinkFriendGoogle: (id) => adminRequest(`/friends/${id}/google`, { method: 'DELETE' }),
+  // 19 PO 2026-09-19 — the ADMIN half of a host's standing guest link (read mints
+  // lazily, like the host's own; regenerate rotates only the standing token). Same
+  // payload shapes as `getStandingGuestLink` / `regenerateStandingGuestLink`.
+  adminGetFriendStandingLink: (id) => adminRequest(`/friends/${id}/guest-link/standing`),
+  adminRegenerateFriendStandingLink: (id) =>
+    adminRequest(`/friends/${id}/guest-link/standing/regenerate`, { method: 'POST' }),
 
   // 10 §UC-GA-004 — the FRIEND-OWNED half, called from the §UC-GA-006 post-login
   // prompt (and, from GA-T7, the profile modal). ⚠ Not `adminRequest`: both routes are
@@ -556,6 +562,13 @@ export const api = {
   getGuestLink: (cycleId) => request(`/guest-links/cycle/${cycleId}`),
   createGuestLink: (cycleId) => request(`/guest-links/cycle/${cycleId}`, { method: 'POST' }),
   setGuestLinkActive: (id, active) => request(`/guest-links/${id}`, { method: 'PATCH', body: { active } }),
+  // 19 §UC-GL-001 — the host's STANDING link (one cycle-independent `/g/:token`).
+  // The GET mints it on first call (`standing.created` is true only then) and answers
+  // `{ standing: { token, url_path, created }, waiting_count, current }`; the POST
+  // rotates it and answers `{ standing: { token, url_path }, regenerated, waiting_count }`.
+  // `waiting_count` is a COUNT only — the payload carries no waitlist names or phones.
+  getStandingGuestLink: () => request('/guest-links/standing'),
+  regenerateStandingGuestLink: () => request('/guest-links/standing/regenerate', { method: 'POST' }),
 
   // Guest sub-orders, host side. `delivered` is the HOST's flag (the hand-over
   // checklist); `paid` is the ADMIN's and the host only ever reads it, so there
