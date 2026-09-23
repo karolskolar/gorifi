@@ -305,8 +305,10 @@ test.describe('PL-T1 §UC-PL-001 — the one home for a variable symbol', () => 
     expect(helperProbe.settings).toEqual({ iban: '', revolut_username: '', creditor_name: '' })
   })
 
-  // ⚠ MODULE-20 SEAM. `amount` is `order.total` TODAY. GP-T1 changes that ONE line in
-  // `helpers/payment.js` to `total + delivery_fee` and this expectation moves with it.
+  // ⚠ MODULE-20 SEAM — ~~`amount` is `order.total` TODAY~~ DISCHARGED by GP-T1: the one
+  // line in `helpers/payment.js` is now `roundMoney(total + delivery_fee)`. This fixture
+  // carries no `delivery_fee` (a via_host row), so the expectation is unchanged; the fee
+  // case is pinned in guest-packeta.spec.js §1.
   test('guestPaymentBlock() composes the one guest payment block', () => {
     expect(helperProbe.block).toEqual({
       amount: 12.5,
@@ -758,7 +760,10 @@ test.describe('PL-T2 §UC-PL-003 item 1 — the guest payment block has ONE comp
     expect(Object.keys(created.payment), 'the block grew, in place, by exactly two keys').toEqual([
       'amount', 'reference', 'variable_symbol', 'iban', 'revolut_username', 'creditor_name',
     ])
-    // `amount` is still `order.total` (the module-20 seam has NOT moved).
+    // ~~`amount` is still `order.total` (the module-20 seam has NOT moved).~~ GP-T1 moved
+    // it to `total + delivery_fee`; this fixture is via_host (fee 0), so it still equals
+    // `order.total` — pinned as that, with the fee the equality rests on.
+    expect(created.order.delivery_fee, 'a via_host fixture').toBe(0)
     expect(created.payment.amount).toBe(created.order.total)
   })
 

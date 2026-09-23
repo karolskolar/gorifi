@@ -57,6 +57,7 @@ cd frontend && npm run dev     # :5173
 | Portal IA: the four friend routes, `resolveLanding`, `lib/dates.js`, the `portal-landing` gate, the appbar per state + the drawer / `useModalLayer()`, the „Ako to funguje" explainer + `lib/roasters.js`, the first-login gate + `explainer_seen_at` (module 18) | `docs/learnings/10-portal-ia.md` |
 | Cycle stages: the three `order_cycles` columns, `markCycleReady()`, the `POST/PATCH /cycles` contract, `lib/cycle-stages.js` + `CycleTimeline.vue`, the admin date/stage controls, the guest „Kde je vaša káva" card (module 17) | `docs/learnings/09-cycle-stages.md` |
 | Standing guest link: `friends.guest_link_token`, `helpers/standing-link.js`, the host + admin standing routes, `guest_waitlist`, `waiting_count`, cross-space token uniqueness (module 19) | `docs/learnings/11-guest-standing-link.md` |
+| Guest Packeta: `guest_orders.delivery_fee` / `packeta_address` / `delivery_fee_paid`, the submit's delivery block, `guestPaymentBlock().amount = total + fee`, the mail fee/point rows (module 20) | `docs/learnings/12-guest-packeta.md` |
 
 Specs: `docs/specification/*.md`, `docs/superpowers/specs/*.md`. Spec text that cites "CLAUDE.md GSO-T3" /
 "CLAUDE.md 2026-08-07" etc. now resolves to these files (search by task id or date). When you finish a task,
@@ -74,7 +75,7 @@ append the full write-up to the matching learnings file and add at most one line
   `admin_google_subs_corrupt` before any overwrite — never clobber a parked copy, never park a merely filtered array.
 - `routes/invitations.js` and `/api/guest-orders` are MIXED mounts — gate per route, never wrap the mount.
   `routes/guest.js` (`/api/guest`) is PUBLIC: the URL token is the credential and it is the app's only
-  unauthenticated write. Treat it as hostile input (bounds: ≤100 lines, qty ≤100, name 120 / phone 32 / email 160).
+  unauthenticated write. Treat it as hostile input (bounds: ≤100 lines, qty ≤100, name 120 / phone 32 / email 160 / Packeta point 160).
   Public guest routes must never join `ADMIN_ENDPOINTS`.
 - Host identity = Bearer session via `requireHost()`; never read `friend_id` from a body (SEC-A1 IDOR).
   `requireFriendOwner` yields `friendId: null` under shared-password auth — ownership guards are meaningless
@@ -226,9 +227,13 @@ append the full write-up to the matching learnings file and add at most one line
 - Guest aggregates: CYCLE-level totals include guests; per-FRIEND aggregates never do. Merge the guest half in
   JS, never as a second `LEFT JOIN` on `orders` (row multiplication corrupts `orders_count`); cycle-level guest
   counts use correlated subqueries. Guest kg lives in its own map (`guestKgMap`) — folding it in doubles money.
-- Guest cancel = `status='cancelled'`, `total=0`, item rows KEPT; every consumer filters on status. `cancelled`
-  is terminal. Destructive guest edits require a literal `items: []`. A paid sub-order is frozen for item edits
+- Guest cancel = `status='cancelled'`, `total=0`, `delivery_fee=0` (GP-T1), item rows AND `packeta_address` KEPT;
+  every consumer filters on status. `cancelled` is terminal. Destructive guest edits require a literal `items: []`. A paid sub-order is frozen for item edits
   (`items_editable`) but cancellable → refund queue; host DELETE refuses 409 `paid`.
+- Guest Packeta (module 20): `packeta_address IS NOT NULL` is THE marker (never `delivery_fee > 0`); `total` stays
+  product-only, the fee is `roundMoney(cycle.parcel_fee)` re-read inside the submit tx; `use_parcel_delivery` is a
+  STRICT boolean; `delivery_fee_paid` has TWO writers — the soft cancel + the paid toggle, frozen at the first of {paid, cancel}
+  (~~ONE writer~~, orchestrator 2026-09-23 pending PO; learnings 12 §6).
 - `delivered` is host-only, `paid` admin-only. Name literal columns; never spread a request body into an UPDATE.
 - Share-link regeneration UPDATEs the token in place (DELETE+INSERT cascades away every sub-order).
 - Pickup: `orders` row if one exists (any status), else `guest_order_links`; no cycle-open gate; exactly one of

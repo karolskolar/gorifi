@@ -286,16 +286,37 @@ router.patch('/:id/paid', requireAdmin, (req, res) => {
 
   // Two literal statements, for the same two reasons as the delivered toggle: the
   // timestamp rule ("set on tick, CLEARED on untick") cannot be got half-right,
-  // and NOTHING outside these two columns can be written from here. The request
+  // and NOTHING outside these three columns (`paid`, `paid_at`, `delivery_fee_paid`)
+  // can be written from here. The request
   // body is never spread into SQL, so a `delivered: 1` (the HOST's flag), a
   // `status`, `total`, `guest_name` or `link_id` smuggled into this body lands
   // nowhere. `paid_at` is server time, never the caller's.
+  //
+  // `delivery_fee_paid` (GP-T1) is „the fee part of what the guest was asked to pay,
+  // frozen at the FIRST of {paid, cancel}" — ~~written ONLY by this route~~ it has TWO
+  // writers since the GP-T1 review (orchestrator decision 2026-09-23, pending PO;
+  // learnings 12 §6): this toggle and `softCancelGuestOrder`. The refund („items + fee",
+  // GP-T5's `/unpaid`) reads it because cancel zeroes the live fee.
+  //   paid=1: `COALESCE(delivery_fee_paid, delivery_fee)` — an existing snapshot ALWAYS
+  //           wins (a cancel froze it, or an earlier tick did); a live row with none
+  //           copies the current fee.
+  //   paid=0: NULL on a LIVE row (nothing was paid; the next tick re-copies whatever the
+  //           fee then is) but KEPT on a CANCELLED row — there the live fee is 0 and the
+  //           snapshot is the only record of it, so a re-tick must be able to restore it.
   if (paid) {
-    db.prepare('UPDATE guest_orders SET paid = 1, paid_at = CURRENT_TIMESTAMP WHERE id = ?')
-      .run(row.id);
+    db.prepare(`
+      UPDATE guest_orders
+      SET paid = 1, paid_at = CURRENT_TIMESTAMP,
+          delivery_fee_paid = COALESCE(delivery_fee_paid, delivery_fee)
+      WHERE id = ?
+    `).run(row.id);
   } else {
-    db.prepare('UPDATE guest_orders SET paid = 0, paid_at = NULL WHERE id = ?')
-      .run(row.id);
+    db.prepare(`
+      UPDATE guest_orders
+      SET paid = 0, paid_at = NULL,
+          delivery_fee_paid = CASE WHEN status = 'cancelled' THEN delivery_fee_paid ELSE NULL END
+      WHERE id = ?
+    `).run(row.id);
   }
 
   res.json(mutationPayload(row));
@@ -552,8 +573,8 @@ router.post('/:id/cancel', requireAdmin, (req, res) => {
     if (cycle?.status !== 'open') return { conflict: 'closed' };
     const current = db.prepare('SELECT id FROM guest_orders WHERE id = ?').get(row.id);
     if (!current) return { conflict: 'gone' };
-    // ONE shared write (helpers/guest-orders.js). Only two columns are ever named
-    // there, so no request body can reach `paid`, `delivered`, `link_id` or the
+    // ONE shared write (helpers/guest-orders.js). Only four columns are ever named
+    // there (`status`, `total`, `delivery_fee`, `delivery_fee_paid` — see its comment), so no request body can reach `paid`, `delivered`, `link_id` or the
     // guest's identity from here.
     return { changed: softCancelGuestOrder(row.id) };
   });

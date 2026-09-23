@@ -137,14 +137,14 @@ export function balancePaymentBlock(friend) {
 export function guestPaymentBlock(order, cycleName) {
   const settings = paymentSettings();
   return {
-    // ⚠⚠ MODULE-20 SEAM (GP-T1). THIS ONE LINE becomes
-    //     `amount: roundMoney(order.total + (order.delivery_fee || 0))`
-    // when guests gain a Packeta delivery fee (20 §UC-GP-004). `orders.total` stays
-    // PRODUCT-ONLY on every write, for friends and guests alike, so the fee is added
-    // HERE and nowhere else — no second file computes a guest amount, which is the
-    // whole reason this block has one home. Until then: `total`, byte-identical to
-    // the two hand-written blocks this replaced.
-    amount: order.total,
+    // ⚠⚠ MODULE-20 SEAM — DISCHARGED by GP-T1 (20 §UC-GP-004): the amount to pay is
+    // `total + delivery_fee`. `guest_orders.total` stays PRODUCT-ONLY on every write,
+    // for friends and guests alike, so the Packeta fee is added HERE and nowhere else
+    // — no second file computes a guest amount, which is the whole reason this block
+    // has one home. For a via_host order the fee is 0 and this equals `order.total`
+    // (already `roundMoney`ed at the write), so every shipped pin holds. A cancelled
+    // order has `total = 0` AND `delivery_fee = 0` (softCancelGuestOrder) ⇒ 0.
+    amount: roundMoney((order.total || 0) + (order.delivery_fee || 0)),
     reference: guestPaymentReference(order, cycleName),
     variable_symbol: guestOrderVariableSymbol(order.id),
     iban: settings.iban,

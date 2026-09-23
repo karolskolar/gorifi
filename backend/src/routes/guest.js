@@ -9,7 +9,7 @@ import { guestPaymentBlock } from '../helpers/payment.js';
 // 14 §UC-GR-011 — the guest order-confirmation mail. Module 08's seam, consumed
 // through the seam exactly: no layer change, no new block type, no new dependency.
 import { renderEmail } from '../helpers/email-templates.js';
-import { sendMail } from '../helpers/mailer.js';
+import { sendMail, EMAIL_SHAPE } from '../helpers/mailer.js';
 import { resolveLoginUrl } from '../helpers/credentials-message.js';
 // 19 §UC-GL-002: the link-token generator for BOTH spaces (the get-or-create below
 // mints a per-cycle row) and „the current round".
@@ -84,6 +84,10 @@ const MAX_ITEM_QUANTITY = 100;
 const MAX_NAME_LENGTH = 120;
 const MAX_PHONE_LENGTH = 32;
 const MAX_EMAIL_LENGTH = 160;
+// 20 §UC-GP-002 — the free-text Packeta point (Z-BOX / branch + town). The same 160 as
+// `friends.packeta_address` (the profile PATCH's bound); mirrored as `maxlength` in
+// GP-T3's `GuestDeliveryChoice.vue`.
+const MAX_PACKETA_ADDRESS_LENGTH = 160;
 
 // Trimmed text out of an attacker-controlled body field. Returns:
 //   ''    — field absent (null/undefined)
@@ -176,6 +180,59 @@ const WAITLIST_IDENTITY_FIELDS = { name: 'name', phone: 'phone' };
 
 // Only the host's first name is published to strangers — the guest needs to know
 // whose order they are joining, not the host's contact details.
+// The two parcel flags every guest `cycle` block publishes (listing + status payload),
+// in ONE place so the two blocks cannot drift. `parcel_fee` goes through
+// `roundMoney()` — it is already rounded at the admin write (`cycles.js`), and the
+// published figure must be the one the submit will charge.
+function publishedParcelFlags(cycle) {
+  return {
+    parcel_enabled: cycle.parcel_enabled ? 1 : 0,
+    parcel_fee: roundMoney(Number(cycle.parcel_fee) || 0),
+  };
+}
+
+// 20 §UC-GP-002 — the delivery choice out of an attacker-controlled body. Returns
+// `{ error, field }` (a ready 400 payload) or `{ delivery: { packeta, address } }`.
+//
+// ⚠ STRICT TYPE GATE on `use_parcel_delivery` (D1): absent / `null` / `false` ⇒
+// „Prevezmem od {host}", boolean `true` ⇒ Packeta, ANYTHING else (`'true'`, `1`,
+// `[true]`, `{}`) ⇒ 400. The friend route coerces truthily; a PUBLIC write does not.
+// ⚠ Parcel availability is checked BEFORE the address (rule 1), and the address's
+// `typeof === 'string'` check comes before `.trim()` (the FUP-T12 fold: a number or an
+// object never reaches a string method). ⚠ The e-mail requirement is NOT here — the
+// submit and the edit (GP-T2) disagree about where the e-mail comes from, so each
+// caller applies its own (`validateIdentity()` is shared with the invite CTA and stays
+// UNCHANGED, D9).
+// ⚠ Guest-facing copy says „objednávka", never „cyklus" (resolved conflict 5 / D10).
+const DELIVERY_METHOD_ERROR = 'Neplatný spôsob prevzatia';
+const PARCEL_UNAVAILABLE_ERROR = 'Doručenie Packetou nie je pre túto objednávku dostupné';
+const PACKETA_ADDRESS_MISSING_ERROR = 'Zadajte výdajné miesto Packety';
+const PACKETA_ADDRESS_TOO_LONG_ERROR =
+  `Výdajné miesto je príliš dlhé (najviac ${MAX_PACKETA_ADDRESS_LENGTH} znakov)`;
+const PACKETA_EMAIL_MISSING_ERROR = 'Pri doručení Packetou zadajte e-mail';
+
+function validateDeliveryChoice(body, cycle) {
+  const flag = body?.use_parcel_delivery;
+  if (flag === undefined || flag === null || flag === false) {
+    return { delivery: { packeta: false, address: null } };
+  }
+  if (flag !== true) {
+    return { error: DELIVERY_METHOD_ERROR, field: 'use_parcel_delivery' };
+  }
+  if (!cycle.parcel_enabled) {
+    return { error: PARCEL_UNAVAILABLE_ERROR, field: 'use_parcel_delivery' };
+  }
+  const raw = body.packeta_address;
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return { error: PACKETA_ADDRESS_MISSING_ERROR, field: 'packeta_address' };
+  }
+  const address = raw.trim();
+  if (address.length > MAX_PACKETA_ADDRESS_LENGTH) {
+    return { error: PACKETA_ADDRESS_TOO_LONG_ERROR, field: 'packeta_address' };
+  }
+  return { delivery: { packeta: true, address } };
+}
+
 function firstName(name) {
   return String(name || '').trim().split(/\s+/)[0] || '';
 }
@@ -200,7 +257,7 @@ function findLinkById(linkId) {
 
 function findCycle(cycleId) {
   return db.prepare(
-    'SELECT id, name, status, type, expected_date, plan_note, markup_ratio, opens_at, closes_at, stage FROM order_cycles WHERE id = ?'
+    'SELECT id, name, status, type, expected_date, plan_note, markup_ratio, opens_at, closes_at, stage, parcel_enabled, parcel_fee FROM order_cycles WHERE id = ?'
   ).get(cycleId);
 }
 
@@ -454,6 +511,11 @@ function orderListing({ link, cycle }) {
       opens_at: cycle.opens_at,
       closes_at: cycle.closes_at,
       stage: cycle.stage,
+      // GP-T1 (20 §UC-GP-001): whether this round sends parcels and what one costs.
+      // Not secrecy — both are already public on `GET /api/cycles/:id/public`. DISPLAY
+      // only: the submit re-reads the cycle row server-side and never trusts a client
+      // fee.
+      ...publishedParcelFlags(cycle),
     },
     host: { first_name: firstName(link.host_name) },
     products,
@@ -498,7 +560,7 @@ function uniqueOrderToken() {
 function loadOrder(id) {
   return db.prepare(`
     SELECT id, link_id, order_token, guest_name, guest_phone, guest_email, status, total,
-           paid, paid_at, delivered, delivered_at, created_at
+           paid, paid_at, delivered, delivered_at, created_at, delivery_fee, packeta_address
     FROM guest_orders WHERE id = ?
   `).get(id);
 }
@@ -623,7 +685,7 @@ function resolveGuestOrderByOrderToken(orderToken) {
   const notFound = { status: 404, error: 'Táto objednávka neexistuje' };
   const order = db.prepare(`
     SELECT id, link_id, order_token, guest_name, guest_phone, guest_email, status, total,
-           paid, paid_at, delivered, delivered_at, created_at
+           paid, paid_at, delivered, delivered_at, created_at, delivery_fee, packeta_address
     FROM guest_orders WHERE order_token = ?
   `).get(String(orderToken || ''));
   if (!order) return notFound;
@@ -696,6 +758,11 @@ function statusPayload(link, cycle, order) {
       opens_at: cycle.opens_at,
       closes_at: cycle.closes_at,
       stage: cycle.stage,
+      // GP-T1 (20 §UC-GP-001): whether this round sends parcels and what one costs.
+      // Not secrecy — both are already public on `GET /api/cycles/:id/public`. DISPLAY
+      // only: the submit re-reads the cycle row server-side and never trusts a client
+      // fee.
+      ...publishedParcelFlags(cycle),
     },
     host: { first_name: firstName(link.host_name) },
     order,
@@ -928,6 +995,10 @@ const MAIL_VARIABLE_SYMBOL_LABEL = 'Variabilný symbol';
 const MAIL_IBAN_LABEL = 'IBAN';
 const MAIL_REVOLUT_LABEL = 'Revolut';
 const MAIL_AMOUNT_LABEL = 'Suma';
+// 20 §UC-GP-004 (GP-T1) — ADDITIVE; the existing constants and their spec mirrors are
+// untouched. The fee is its own row, never an item line; the point follows `Spolu`.
+const MAIL_DELIVERY_LABEL = 'Doručenie Packetou';
+const MAIL_PACKETA_LABEL = 'Výdajné miesto';
 const MAIL_SAVE_LINK = 'Stav objednávky uvidíte na tomto odkaze - uložte si ho:';
 
 function eur(value) {
@@ -984,7 +1055,25 @@ function deliverOrderConfirmation(req, { order, items, payment }) {
     // (15 §UC-PL-005/006); this mail carries the symbol as text and nothing more.
     if (payment.iban) paymentRows.push({ label: MAIL_IBAN_LABEL, value: payment.iban });
     if (payment.revolut_username) paymentRows.push({ label: MAIL_REVOLUT_LABEL, value: payment.revolut_username });
-    paymentRows.push({ label: MAIL_AMOUNT_LABEL, value: `${eur(order.total)} EUR` });
+    // ⚠ The amount to pay is `payment.amount` (= total + delivery_fee, the ONE
+    // composer). For a via_host order that equals `order.total`, so the shipped mail
+    // is byte-identical; a Packeta order's `Spolu`/`Suma` include the fee.
+    paymentRows.push({ label: MAIL_AMOUNT_LABEL, value: `${eur(payment.amount)} EUR` });
+
+    // 20 §UC-GP-004: the fee row after the item lines and before `Spolu` (only when a
+    // fee was charged), and the Packeta point after `Spolu` (whenever it IS Packeta —
+    // `packeta_address` is the marker, a fee of 0 is legal). `€` on the fee line (a
+    // line), `EUR` on the totals.
+    const orderRows = [
+      ...itemLines.map((line) => ({ label: line.qty, value: line.rest })),
+      ...(order.delivery_fee > 0
+        ? [{ label: MAIL_DELIVERY_LABEL, value: `${eur(order.delivery_fee)} €` }]
+        : []),
+      { label: MAIL_TOTAL_LABEL, value: `${eur(payment.amount)} EUR` },
+      ...(order.packeta_address
+        ? [{ label: MAIL_PACKETA_LABEL, value: order.packeta_address }]
+        : []),
+    ];
 
     // The plain part carries ALL of the same content including the bare URL — the
     // deliverability baseline (the mailer drops `html` without `text`).
@@ -993,7 +1082,7 @@ function deliverOrderConfirmation(req, { order, items, payment }) {
       '',
       MAIL_ORDER_HEADING,
       ...itemLines.map((line) => `${line.qty} ${line.rest}`),
-      `${MAIL_TOTAL_LABEL}: ${eur(order.total)} EUR`,
+      ...orderRows.slice(itemLines.length).map((row) => `${row.label}: ${row.value}`),
       '',
       MAIL_PAYMENT_HEADING,
       ...paymentRows.map((row) => `${row.label}: ${row.value}`),
@@ -1012,10 +1101,7 @@ function deliverOrderConfirmation(req, { order, items, payment }) {
         { type: 'paragraph', text: MAIL_ORDER_HEADING },
         {
           type: 'kv',
-          rows: [
-            ...itemLines.map((line) => ({ label: line.qty, value: line.rest })),
-            { label: MAIL_TOTAL_LABEL, value: `${eur(order.total)} EUR` },
-          ],
+          rows: orderRows,
         },
         { type: 'paragraph', text: MAIL_PAYMENT_HEADING },
         { type: 'kv', rows: paymentRows },
@@ -1086,6 +1172,29 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
   }
   const { name: guestName, phone: guestPhone, email: guestEmail } = validated.identity;
 
+  // 20 §UC-GP-002 — the delivery block, AFTER identity and BEFORE pricing (rule 1).
+  // A standing-token submit reaches here through the same `resolveEntry` and the same
+  // `cycle` row, so it gets the identical contract.
+  const chosen = validateDeliveryChoice(req.body, cycle);
+  if (chosen.error) {
+    return res.status(400).json({ error: chosen.error, field: chosen.field });
+  }
+  const { delivery } = chosen;
+  // R4.3 — Packeta ⇒ an e-mail is REQUIRED (Packeta mails the guest about the parcel).
+  // A SEPARATE check after the shared `validateIdentity()`, which stays unchanged
+  // (D9: it is also the invite CTA's validator). The shape is the mailer's own
+  // `EMAIL_SHAPE` — one home — so an address accepted here is one the confirmation
+  // mail will actually try. A via_host submit keeps today's optional, unshaped e-mail
+  // (§Accepted risks).
+  if (delivery.packeta) {
+    if (!guestEmail) {
+      return res.status(400).json({ error: PACKETA_EMAIL_MISSING_ERROR, field: 'guest_email' });
+    }
+    if (!EMAIL_SHAPE.test(guestEmail)) {
+      return res.status(400).json({ error: 'Neplatný e-mail', field: 'guest_email' });
+    }
+  }
+
   // Bounds + snapshot pricing, shared with the edit (PUT) below.
   const priced = priceRequestedItems(req.body, cycle, markupRatio);
   if (priced.error) {
@@ -1111,13 +1220,22 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
   const create = db.transaction(() => {
     // Re-read the status inside the transaction: the admin may have locked the
     // cycle while this request was being validated.
-    const current = db.prepare('SELECT status FROM order_cycles WHERE id = ?').get(cycle.id);
+    //
+    // ⚠ `parcel_fee` is re-read HERE, with the status (20 §UC-GP-002 rule 2): the fee
+    // charged is the row's value at the moment of the write, never the one the
+    // resolver read earlier and never a client figure. `roundMoney` (pricing.js, one
+    // home) — an unrounded fee would seed the QR drift the friend route warns about.
+    const current = db.prepare('SELECT status, parcel_fee FROM order_cycles WHERE id = ?').get(cycle.id);
     if (current?.status !== 'open') return { conflict: true };
 
+    // Literal columns (never a spread body). Packeta: the fee + the trimmed point;
+    // otherwise 0 / NULL. `total` is written exactly as before — product-only.
+    const deliveryFee = delivery.packeta ? roundMoney(Number(current.parcel_fee) || 0) : 0;
     const result = db.prepare(`
-      INSERT INTO guest_orders (link_id, order_token, guest_name, guest_phone, guest_email, status, total)
-      VALUES (?, ?, ?, ?, ?, 'submitted', 0)
-    `).run(link.id, uniqueOrderToken(), guestName, guestPhone, guestEmail);
+      INSERT INTO guest_orders (link_id, order_token, guest_name, guest_phone, guest_email, status, total,
+                                delivery_fee, packeta_address)
+      VALUES (?, ?, ?, ?, ?, 'submitted', 0, ?, ?)
+    `).run(link.id, uniqueOrderToken(), guestName, guestPhone, guestEmail, deliveryFee, delivery.address);
     const guestOrderId = result.lastInsertRowid;
 
     const total = replaceItems(guestOrderId, lines);

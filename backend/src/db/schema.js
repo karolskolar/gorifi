@@ -1106,6 +1106,9 @@ function initDb() {
       delivered INTEGER DEFAULT 0,
       delivered_at DATETIME,
       handed_over_at DATETIME,
+      delivery_fee REAL DEFAULT 0,
+      packeta_address TEXT,
+      delivery_fee_paid REAL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (link_id) REFERENCES guest_order_links(id) ON DELETE CASCADE
     )
@@ -1123,6 +1126,40 @@ function initDb() {
   // hand-over stamp is ADMIN-owned and is the distribution pipeline's stage 3.
   try {
     db.run('ALTER TABLE guest_orders ADD COLUMN handed_over_at DATETIME');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Module 20 (GP-T1, 20 §UC-GP-001) — guest Packeta. CREATE above AND these ALTERs:
+  // `guest_orders` is in prod, where the CREATE is a no-op (the `handed_over_at` rule).
+  //
+  // - `delivery_fee`    the parcel fee charged for THIS sub-order, copied from
+  //                     `order_cycles.parcel_fee` through `roundMoney()` at write time;
+  //                     0 when not Packeta; NEVER part of `total` (product-only).
+  // - `packeta_address` the free-text point (≤ 160, trimmed); NULL when not Packeta.
+  //                     ⚠ THE Packeta marker: `packeta_address IS NOT NULL` ⇔ a Packeta
+  //                     bag. `delivery_fee > 0` is NOT (a fee of 0 is legal, and cancel
+  //                     zeroes the fee while KEEPING the address — UC-GP-006).
+  // - `delivery_fee_paid` the paid SNAPSHOT (orchestrator clarification of the PO
+  //                     decision 2026-09-19): ~~written ONLY by the admin paid toggle~~
+  //                     → SUPERSEDED (orchestrator 2026-09-23, pending PO; learnings 12
+  //                     §6): the fee part of what the guest was asked to pay, frozen at
+  //                     the FIRST of {paid, cancel} — TWO writers, `softCancelGuestOrder`
+  //                     and the admin paid toggle. Cancel zeroes the live fee, so the
+  //                     refund („items + fee") reads this column instead.
+  //                     No back-fill: NULL on every existing row (all of them via_host).
+  try {
+    db.run('ALTER TABLE guest_orders ADD COLUMN delivery_fee REAL DEFAULT 0');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.run('ALTER TABLE guest_orders ADD COLUMN packeta_address TEXT');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.run('ALTER TABLE guest_orders ADD COLUMN delivery_fee_paid REAL');
   } catch (e) {
     // Column already exists, ignore
   }

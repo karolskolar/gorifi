@@ -2705,6 +2705,12 @@ const MAIL_IBAN_LABEL = 'IBAN'
 // asserted. Both halves fixed: the constant below and `setRevolut()` in the body test.
 const MAIL_REVOLUT_LABEL = 'Revolut'
 const MAIL_AMOUNT_LABEL = 'Suma'
+// 20 §UC-GP-004 (GP-T1) — ADDITIVE, the two-place-edit convention: the Packeta fee row
+// and the point row. A via_host order (every fixture in this file) carries NEITHER, so
+// its mail stays byte-identical to the shipped one; guest-packeta.spec.js pins the
+// Packeta mail that does.
+const MAIL_DELIVERY_LABEL = 'Doručenie Packetou'
+const MAIL_PACKETA_LABEL = 'Výdajné miesto'
 // Reuses the confirmation screen's own signed line, recast declaratively — one voice
 // for one fact across mail and screen (plain hyphen, as on the screen).
 const MAIL_SAVE_LINK = 'Stav objednávky uvidíte na tomto odkaze - uložte si ho:'
@@ -2863,6 +2869,11 @@ test.describe('UC-GR-011 — the guest order-confirmation mail', () => {
         `2× GR mailbody ${uniq} (250g) - 15.20 €`
       )
       expect(fields.text, 'the total, EUR on totals').toContain(`${MAIL_TOTAL_LABEL}: 15.20 EUR`)
+      // 20 §UC-GP-004: a via_host order has no fee row and no point row (the Spolu
+      // line above is the non-vacuity gate — the order block WAS read).
+      expect(fields.text, 'via_host: no Packeta fee row').not.toContain(`${MAIL_DELIVERY_LABEL}:`)
+      expect(fields.text, 'via_host: no Packeta point row').not.toContain(`${MAIL_PACKETA_LABEL}:`)
+      expect(fields.html).not.toContain(MAIL_DELIVERY_LABEL)
       expect(fields.text).toContain(MAIL_PAYMENT_HEADING)
       // ⚠ The SHARED formatter — the guest's mail and the admin's unpaid overview can
       // never disagree about the reference (the GSO-T6 one-formatter rule).

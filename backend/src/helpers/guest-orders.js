@@ -47,10 +47,19 @@ import { roundMoney } from './pricing.js';
 // the board and missing from the host's view of the same bag. It is ADMIN-written
 // (DP-T3/DP-T4) and read-only everywhere else, and it is NOT `delivered_at`: the
 // host's "delivered" tick keeps its own meaning and its own column.
+//
+// ⚠ `delivery_fee` + `packeta_address` (GP-T1, 20 §UC-GP-001) join it for the same
+// reason: host view, both admin surfaces and every mutation payload carry them at
+// once. `packeta_address IS NOT NULL` is THE Packeta marker (a fee of 0 is legal, and
+// cancel zeroes the fee while keeping the address). `delivery_fee` is NEVER folded
+// into `total` — `total` stays product-only; the amount to pay is `total +
+// delivery_fee`, composed by `helpers/payment.js guestPaymentBlock()` (UC-GP-004).
+// `delivery_fee_paid` (the paid/cancel snapshot, learnings 12 §6) is deliberately NOT here: it
+// is the refund's input, read by the one surface that needs it (GP-T5's `/unpaid`).
 const GUEST_ORDER_FIELDS = [
   'id', 'link_id', 'guest_name', 'guest_phone', 'guest_email', 'status', 'total',
   'paid', 'paid_at', 'delivered', 'delivered_at', 'handed_over_at', 'created_at',
-  'order_token',
+  'order_token', 'delivery_fee', 'packeta_address',
 ];
 
 const GUEST_ORDER_COLUMNS = GUEST_ORDER_FIELDS.join(', ');
@@ -218,14 +227,32 @@ export function cycleSubOrdersByHost(cycleId) {
 // refund amount (`total` is 0 by then, so it is recomputed from these rows) and the
 // record of what was ordered and then called off.
 //
-// `paid` / `paid_at` / `delivered` / `delivered_at` are untouched by construction:
-// only two columns are ever named here.
+// `delivery_fee = 0` (GP-T1, 20 §UC-GP-006 / R4.7): a cancelled sub-order owes
+// nothing, fee included, on all three doors at once — which is why it lives HERE.
+// ⚠ `packeta_address` is deliberately KEPT (the record, exactly like the item rows):
+// the refund needs to know a fee was involved, and every consumer filters on
+// `status` BEFORE it classifies a Packeta bag.
+//
+// ⚠ `delivery_fee_paid = COALESCE(delivery_fee_paid, delivery_fee)` — this is one of
+// the snapshot's TWO writers (orchestrator decision 2026-09-23, pending PO; learnings 12
+// §6). The snapshot is „the fee part of what the guest was asked to pay, frozen at the
+// FIRST of {paid, cancel}". Cancel zeroes the live fee, so without freezing it HERE a
+// guest who paid and was then cancelled BEFORE the admin ticked `paid` would be
+// refunded items only. SQLite evaluates every SET expression against the OLD row, so
+// `delivery_fee` on the right-hand side is the pre-cancel fee even though the same
+// statement zeroes it; an existing snapshot (paid first) always wins.
+//
+// `paid` / `paid_at` / `delivered` / `delivered_at` / `guest_email` /
+// `packeta_address` are untouched by construction: only four columns are ever named
+// here.
 //
 // The WHERE predicate makes the write itself idempotent, so two doors racing (a
 // guest emptying their cart while the admin cancels) cannot double-apply.
 export function softCancelGuestOrder(id) {
   return db.prepare(`
-    UPDATE guest_orders SET status = 'cancelled', total = 0
+    UPDATE guest_orders
+    SET status = 'cancelled', total = 0, delivery_fee = 0,
+        delivery_fee_paid = COALESCE(delivery_fee_paid, delivery_fee)
     WHERE id = ? AND COALESCE(status, 'submitted') <> 'cancelled'
   `).run(id).changes;
 }
