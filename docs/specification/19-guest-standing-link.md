@@ -660,8 +660,12 @@ PUBLIC and must NOT join `ADMIN_ENDPOINTS` (the `/api/guest/o/…` precedent).
 - `guest-invite-dead.spec.js` `COPY.closed` + the `deadLink(…, 'closed')` variant (:379-383, :403-405,
   :428-431) ⇒ the locked-cycle link renders `preopen-hero` with „Objednávky sú zatvorené“ and NO
   `guest-unavailable` card; the `notfound` and `inactive` variants stay verbatim.
-- Everything else in `guest-order`, `guest-status`, `guest-host-view`, `guest-admin-view`,
-  `guest-order-recovery`, `share-dialog`, `guest-link`, `guest-order-shell` passes UNMODIFIED — the
+- ~~Everything else in `guest-order`, `guest-status`, `guest-host-view`, `guest-admin-view`,
+  `guest-order-recovery`, `share-dialog`, `guest-link`, `guest-order-shell` passes UNMODIFIED~~
+  **CORRECTED by GL-T2 (orchestrator sanction 2026-09-23): two more assertions pinned the retired
+  listing 410 as a side fact and are retargeted to 200 `page:'preopen'` (§UC-GL-002 rule 4 / D7) —
+  `guest-status.spec.js:598` and `guest-order-recovery.spec.js:1296` (+ a submit-409 counter-pin);
+  see learnings 11 GL-T2 §9. Everything else in those files passes unmodified** — the
   open-state chip/subtitle/ticker pins hold (resolved conflict 2), the dialog's per-cycle section is
   untouched (UC-GL-008), and standing-token visitors create ordinary rows.
 
@@ -726,7 +730,9 @@ module milestone with `--workers=1`, all five `RATE_LIMIT_*_MAX` raised, output 
   while the round was open. Accepted.
 - **A public GET writes a row** (get-or-create of the per-cycle link, UC-GL-002 rule 3) — only for a valid
   standing token of an active host with an open round; the row is inert data the host's own POST would
-  create identically. Rides `guestReadLimiter`.
+  create identically. Rides `guestReadLimiter`. **(GL-T2:) the SUBMIT (`POST …/orders`, `guestWriteLimiter`)
+  gets-or-creates the same row BEFORE identity/items validation, so a rejected standing submit may still leave
+  that (identical, inert) row behind — same bound: a valid standing token, an active host, an open round.**
 - **Waitlist rows are contact data of non-members without a channel until module 21 lands**; until then
   the admin reaches them manually from the „Čakajúci hostia“ card. The two-round purge bounds retention.
 - **`opens_at` date variant is dark until module 17 lands** — the page degrades to `plan_note`/`unknown`.

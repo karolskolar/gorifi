@@ -662,7 +662,7 @@ test.describe('Regenerated link (the case GSO-T4 left open — CLOSED by module 
     expect((await canonical.json()).order.id).toBe(created.order.id)
 
     // ⚠ THE COUNTER-PIN: regeneration keeps its whole revocation purpose on the
-    // ORDERING surface (`resolveLink` is untouched). The two credentials have
+    // ORDERING surface (`resolveEntry`, formerly `resolveLink`, still 404s a retired token). The two credentials have
     // different lifetimes — the retired link lists nothing and takes no new
     // sub-orders, so a leaked link still cannot be ordered through.
     expect((await ctx.get(`/api/guest/${link.token}`)).status(), 'the retired token lists nothing').toBe(404)

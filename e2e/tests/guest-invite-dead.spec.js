@@ -379,6 +379,12 @@ test.describe('RD-GX-4 · g-dead, three variants (§UC-GX-010)', () => {
       title: 'Odkaz už nie je aktívny',
       text: 'Kolega, ktorý objednávku organizuje, tento odkaz deaktivoval.',
     },
+    // ⚠ SANCTIONED RETARGET (19 §UC-GL-011 item 2 — GL-T2): the `closed` variant is
+    // RETIRED. The listing no longer answers 410 `closed` (19 resolved conflict 1), so
+    // a live link on a cycle that locked renders the PRE-OPEN state instead, and
+    // GuestOrder.vue's branch + copy for it are removed (§UC-GL-006 business rules).
+    // The retired copy is KEPT here only as an absence probe: the 5xx test below
+    // loops over every COPY entry, and the retarget asserts it is gone too.
     closed: {
       title: 'Objednávanie je uzavreté',
       text: 'Cyklus sa medzičasom uzamkol — objednávky už neprijímame.',
@@ -428,13 +434,30 @@ test.describe('RD-GX-4 · g-dead, three variants (§UC-GX-010)', () => {
     // title restated, plus a duplicate of the closing line below it.
     await expect(card).not.toContainText('Požiadajte kolegu o nový.')
 
-    // 410 `closed` — a LIVE link on a cycle that locked.
-    await page.goto(`/g/${(await deadLink('deadlock', 'closed')).token}`)
-    await expect(card).toContainText(COPY.closed.title)
-    await expect(card).toContainText(COPY.closed.text)
-
-    // The closing line is on all three, and the ordering surface is on none of them.
+    // The closing line is on both dead variants, and the ordering surface on neither.
     await expect(card).toContainText('Ak ste odkaz dostali od kolegu, požiadajte ho o nový.')
+    await expect(page.getByTestId('open-checkout')).toHaveCount(0)
+
+    // ⚠ SANCTIONED RETARGET (19 §UC-GL-011 item 2): a LIVE link on a cycle that
+    // locked was the 410 `closed` dead card; it is now the pre-open page — the
+    // `preopen-hero`, and NO `guest-unavailable` card.
+    const locked = await deadLink('deadlock', 'closed')
+    const payload = await (await ctx.get(`/api/guest/${locked.token}`)).json()
+    expect(payload.page, 'non-vacuity: the server answers the pre-open payload').toBe('preopen')
+    await page.goto(`/g/${locked.token}`)
+    const hero = page.getByTestId('preopen-hero')
+    await expect(hero).toBeVisible()
+    await expect(hero.locator('.badge')).toHaveText('Zatvorené')
+    // ⚠ The spec's retarget names „Objednávky sú zatvorené" — true only when NO newer
+    // round is open on the target. When one is (the usual state of a shared e2e DB),
+    // §UC-GL-006 item 2's `open_elsewhere` headline applies instead, so the expected
+    // headline is read off the payload the page itself receives.
+    await expect(hero.locator('h1')).toHaveText(
+      payload.next.kind === 'open_elsewhere' ? 'Táto objednávka je už uzavretá' : 'Objednávky sú zatvorené'
+    )
+    await expect(card).toHaveCount(0)
+    await expect(page.getByText(COPY.closed.title)).toHaveCount(0)
+    await expect(page.getByText(COPY.closed.text)).toHaveCount(0)
     await expect(page.getByTestId('open-checkout')).toHaveCount(0)
   })
 

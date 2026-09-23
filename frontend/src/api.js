@@ -118,7 +118,8 @@ async function request(endpoint, options = {}) {
 // X-Friends-Password and no X-Admin-Token — a token left in localStorage by a
 // previous admin session must not change what a guest sees or can do.
 // The HTTP status is attached to the thrown error because the guest page has to
-// tell 404 (no such link) from 410 (closed) from 409 (locked while shopping).
+// tell 404 (no such link) from 410 (~~closed~~ deactivated — a closed cycle is a 200
+// `page:'preopen'` since 19 §UC-GL-002) from 409 (locked while shopping).
 // ONE HOME for the guest sub-order endpoint (14 §UC-GR-001/003). Three call sites
 // (status GET, edit PUT, invite-request POST) reach the same order two ways, so the
 // choice is made here rather than three times:

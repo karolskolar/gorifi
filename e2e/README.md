@@ -27,7 +27,8 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   closed cycle must not swap in its link (and its buttons must not act on it).
 - `tests/guest-order.spec.js` — GSO-T3: the public guest ordering surface
   (`GET /api/guest/:token`, `POST /api/guest/:token/orders`) — link resolution
-  (200 / 410 deactivated / 410 non-open cycle / 404 unknown token), identity
+  (200 / 410 deactivated / ~~410 non-open cycle~~ 200 `page:'preopen'` on a non-open
+  cycle, 19 §UC-GL-002 / 404 unknown token), identity
   validation (name + mobile required, ≥9 digits), a successful submit with
   frozen marked-up prices + `order_token` + payment info, the 409 lock race,
   and the **stock-limit UNION in both directions** (a guest order shrinks the
@@ -45,7 +46,8 @@ public-flow smoke tests and the admin login/guard/logout UI flow.
   released** while the item rows are KEPT (so the release is proven to come from
   the `<> 'cancelled'` status predicate in `helpers/stock.js`, not from deletion),
   and a locked cycle makes the page read-only — `GET` still 200s while the
-  product listing 410s, `PUT` 409s. Because cancelling is irreversible, one test
+  product listing ~~410s~~ answers the pre-open page (200 `page:'preopen'`, 19
+  §UC-GL-002 — GL-T2), `PUT` 409s. Because cancelling is irreversible, one test
   pins down that **only** a literal `items: []` triggers it: `PUT {}`, a bodyless
   `PUT`, a non-array `items`, and a non-empty `items` in which nothing prices are
   all non-destructive 400s. Plus the `excludeGuestOrderId` seam (a re-save at the

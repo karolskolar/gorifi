@@ -80,6 +80,10 @@ append the full write-up to the matching learnings file and add at most one line
   `requireFriendOwner` yields `friendId: null` under shared-password auth — ownership guards are meaningless
   while the shared password can mint anyone's session, so any route that WRITES a credential needs the
   modern-mode 409 guard (GA-T5). An admin token is not host identity.
+- `/g/:token` is a per-cycle `guest_order_links.token` OR a standing `friends.guest_link_token`, resolved by ONE
+  `routes/guest.js resolveEntry()` (19 §UC-GL-002, GL-T2): a standing hit GETS-OR-CREATES the host's per-cycle row
+  for the newest open round (never echoes either token), a legacy hit on a non-open cycle is the STALE pre-open page
+  and never resolves to a newer round (D7); the listing's only 410 is `inactive`, submit keeps 409 `closed`.
 - `order_token` alone resolves a guest order (module 14); `routes/guest.js` is the ONLY place it authenticates.
   It is published to host/admin surfaces via the shared `GUEST_ORDER_FIELDS` but never rendered into DOM
   attributes (compose the URL in JS at click time). Every miss answers the same uniform 404 (no oracle).
@@ -380,11 +384,12 @@ append the full write-up to the matching learnings file and add at most one line
   `e2e/helpers/vocabulary.js BANNED` (see the PI-T11 rule below), imported by `cycle-stages.spec.js`
   and `portal-vocabulary.spec.js`**, shared by the lib harvest and CS-T4's
   rendered-page sweep. The guest read-only sentence is „Objednávky sú uzavreté, objednávku už nie je
-  možné upraviť." (CS-T4 dropped „cykle"). ⚠ THREE guest-facing „cyklus" strings survive
-  deliberately, and the read-view sweep sees none of them: `routes/guest.js:216` („…v tomto cykle je
-  už uzavreté.", served on BOTH a 409 from `POST …/orders` — which DOES render, via
-  `GuestOrder.vue`'s `checkout-error` banner — and a 410 from `GET /:token`, whose text the view
-  discards; module 19 §208 pins it as the shipped message), `GuestOrder.vue:170` and
+  možné upraviť." (CS-T4 dropped „cykle"). ⚠ ~~THREE~~ **TWO (GL-T2)** guest-facing „cyklus" strings survive
+  deliberately, and the read-view sweep sees none of them: `routes/guest.js` `CLOSED` („…v tomto cykle je
+  už uzavreté.", served on ~~BOTH~~ a 409 from `POST …/orders` — which DOES render, via
+  `GuestOrder.vue`'s `checkout-error` banner — ~~and a 410 from `GET /:token`~~ **the listing never
+  answers `closed` since GL-T2, 19 resolved conflict 1**; module 19 §208 pins it as the shipped message),
+  ~~`GuestOrder.vue:170`~~ **(REMOVED by GL-T2 with the dead `closed` card variant, 19 §UC-GL-006)** and
   `GuestProductGrid.vue:76` (the latter renders inside `GuestOrderStatus.vue`'s own EDIT mode, so
   §UC-CS-008's „no „kolo"/„cyklus" on the page" holds for the READ view only). Owned by
   `18-portal-information-architecture.md`'s hand-off list; PO decision pending.

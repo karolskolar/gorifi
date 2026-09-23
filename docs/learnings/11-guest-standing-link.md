@@ -246,3 +246,148 @@ production, and only once production already has the column.
   untouched). One line recorded on the FUP-T4 row.
 - Module 21: `{odkaz}` = `standingUrlPath(ensureStandingToken(host_friend_id))` — both return
   STRINGS (`''` / `null` on a miss), exactly the UC-GL-010 composition.
+
+---
+
+## GL-T2 — `resolveEntry()`, the per-cycle get-or-create, the pre-open payload, the placeholder (2026-09-23)
+
+**What shipped.** `routes/guest.js`: `resolveLink(token, closedStatus)` is REPLACED by
+`resolveEntry(token, { forSubmit })` over both token spaces; a standing hit gets-or-creates
+the host's `guest_order_links` row for „the current round" (`currentOpenCycle()`, unwidened);
+`GET /api/guest/:token` answers the pre-open payload (`page:'preopen'`, UC-GL-003) for every
+non-orderable state and sends `Cache-Control: no-store` on EVERY answer; the handler body is
+one pure `listingResponse(token)` (exported, with `resolveEntry`, for the spec's probes only).
+`GuestOrder.vue` gains a MINIMAL `preopen` state (`data-testid="preopen-hero"`: badge, headline,
+host sentence, `next` sentence) and loses the dead card's `closed` variant. `guest-links.js`:
+comments only. 19 new tests in `guest-standing-link.spec.js` + the GL-T1 regenerate pin's
+„new token resolves" half; the two sanctioned retargets.
+
+### 1. The resolution table, as shipped
+
+| token hit | state | listing `GET` | submit `POST …/orders` |
+|---|---|---|---|
+| neither space | — | 404 uniform `{error}` | 404 |
+| per-cycle | link or host inactive | 410 `inactive` | 410 |
+| per-cycle | cycle missing | 404 | 404 |
+| per-cycle | cycle open | 200 live listing (byte-identical) | proceeds |
+| per-cycle | cycle NOT open | 200 preopen, `stale_cycle`, `open_elsewhere` iff any round is open | 409 `closed` |
+| standing | host inactive | 410 `inactive`, **no row created** | 410 |
+| standing | no open round | 200 preopen, `stale_cycle: null` | 409 `closed` |
+| standing | open round, host's row inactive | 410 `inactive` (D4), row untouched | 410 |
+| standing | open round | 200 live listing of the NEWEST open round; row got-or-created | proceeds on that row |
+
+The inactive-host gate on a standing hit is checked BEFORE the get-or-create. Without it the
+JOIN's `host_active` would still 410 the visit — the mutant is invisible in the status code —
+but it would have WRITTEN a row for a deactivated host first. Only the read-back
+(`adminLinksFor(...) === []`) sees that; the status assertion alone passes the mutant.
+
+### 2. ⚠ The UNIQUE fallthrough cannot be forced with a trigger
+
+The obvious way to force the (unreachable-under-`instances:1`) race — a TEMP `BEFORE INSERT`
+trigger that inserts the „winner" row — does not work: the trigger's INSERT is part of the
+failing statement, so SQLite rolls it back WITH the constraint failure, the re-SELECT finds
+nothing and the resolver (correctly) re-throws. Measured: the first version of the test went
+red for that reason with the code right. The working probe patches `db.prepare` on the shared
+`dbHelpers` object (routes read it at call time): the FIRST `(host_friend_id, cycle_id)` SELECT
+returns `null` and inserts the winner at that moment — the exact window between the check and
+the write. A `armedLeft === false` non-vacuity gate proves the forced miss happened. Mutant
+„re-throw every constraint error" reds exactly that test.
+
+The fallthrough adopts only a row the re-SELECT can SEE; any other constraint error (a token
+clash `uniqueGuestToken()` exists to prevent) is re-thrown, never turned into an `undefined`
+link.
+
+### 3. Why most of the matrix is a PROBE — „current round" and „next planned" are GLOBAL
+
+The shared e2e target always has many open and planned cycles (every spec's `makeCycle`), so
+„a standing token with no open round", „no planned round ⇒ `unknown`" and „a stale link with
+nothing open elsewhere" are unreachable over HTTP without closing other files' rounds. They
+run in throwaway boots that import `listingResponse()` / `resolveEntry()` (the GL-T1 probe,
+extended with a `guest` import — same `schema.js` module instance, so the probe's `db` IS the
+router's). What only HTTP can prove — the `no-store` header, the status/body plumbing, the
+host view seeing the got-or-created row, stock counting a standing sub-order — is pinned
+against the server, each row on its own fixture. ⚠ An HTTP test is deterministic here only for
+facts about the NEWEST cycle: a test that creates its cycle last owns „the current round" and
+„the newest closed round" (the preview) for as long as it runs `--workers=1`.
+
+### 4. `no-store` on the refusals too
+
+Rule 5 says „on this response and on the live listing". It is set on EVERY answer of the
+handler, 404/410 included: the `guest-invite-dead.spec.js` incident was a cached **410**, i.e.
+the refusal is exactly the answer most likely to be re-served stale. One line, first in the
+handler.
+
+### 5. ⚠ `stale` is NOT a `next.kind` — the row's list vs the spec's shape
+
+The PROGRESS row lists `next` kinds „planned_date/planned_note/unknown/open_elsewhere/stale".
+19 §UC-GL-003's shape has FOUR kinds, and the stale variant is `stale_cycle` (non-null only for
+a legacy token), orthogonal to `next`: a stale link with nothing open elsewhere still reports
+the next PLANNED round. Implemented per the spec's shape; **accepted by the orchestrator
+(2026-09-23) — „stale" is struck from the row's kind list with a pointer.**
+
+### 6. The dead card's `closed` variant is gone — and with it one of the „cyklus" strings
+
+`GuestOrder.vue:170` („Cyklus sa medzičasom uzamkol …") was one of the three guest „cyklus"
+strings CLAUDE.md, `e2e/helpers/vocabulary.js`, 18's hand-off list and learnings 09 named.
+§UC-GL-006 removes the branch (the listing cannot answer 410 `closed` any more), so every copy
+of that inventory is rewritten to TWO (strike + pointer). The server string „Objednávanie
+v tomto cykle je už uzavreté." survives as the submit 409 `CLOSED` only — its „also a 410 on
+GET" half is retired. The new placeholder copy is swept with the ONE `BANNED` regex, rendered.
+
+### 7. The retarget text in 19 §UC-GL-011 holds only on an EMPTY target
+
+„the locked-cycle link renders `preopen-hero` with „Objednávky sú zatvorené"" — on the shared
+target a newer round is almost always open, so §UC-GL-006's `open_elsewhere` headline („Táto
+objednávka je už uzavretá") applies. Both the sanctioned `guest-invite-dead` retarget and the
+new UI test read the expected headline off the payload the page itself receives, which stays
+right under GL-T5's full page too.
+
+### 8. The placeholder is deliberately thin
+
+Badge „Zatvorené", the kind's headline, the host sentence and the `next` sentence —
+`planned_date` uses module 17's LONG `fmtDay()` („3. októbra"), so the date variant renders from
+day one; the „(o N týždňov)" parenthesis is GL-T5's `weeksAwayLabel()`. No ticker flip, no
+steps, no roasters line, no waitlist form, no preview, no `document.title` — all GL-T5. The
+host name is marked `data-user-copy` (FUP-T22) for the day the guest views join a sweep.
+
+### 9. ⚠ The sanctioned-retarget list was INCOMPLETE — two more files pin the retired 410
+
+19 §UC-GL-011 item 2 says „everything else in … `guest-status`, … `guest-order-recovery` …
+passes UNMODIFIED". Measured, it does not: two tests assert the listing's 410 on a non-open
+cycle as a SIDE fact, and both go red (200) under the spec's own rule:
+- `guest-status.spec.js:598` — „listing closes" `toBe(410)` inside the locked-status-URL test;
+- `guest-order-recovery.spec.js:1296` — „Inert … `resolveLink` 410s a non-open cycle" inside
+  the admin-create-on-a-locked-cycle test.
+~~Neither is in the row's sanctioned list, so neither was edited; both are reported for an
+orchestrator sanction~~ **SANCTIONED by the orchestrator (2026-09-23) and retargeted to `200` +
+`page: 'preopen'` (+ `products` absent); the recovery test also gained the submit-409 `closed`
+counter-pin, so it still proves the inert link grants no ordering. 19 §UC-GL-011's „passes
+UNMODIFIED" is struck with a pointer.** ⚠ The lesson is the
+GL-T1 one again: a supersession map written from the spec's viewpoint misses assertions whose
+SUBJECT is something else — grep `e2e/` for the retired status, not for the test titles.
+
+### 10. Review round (APPROVE with minors)
+
+- `stock_limit_g` is STRIPPED from preview products (added to `PREOPEN_FORBIDDEN_KEYS`; the
+  probe's rows carry 1000 in the DB, so the absence is not vacuous).
+- Every submit-409 counter-pin now reads back „zero sub-orders" through the host view.
+- The preview probe's „an OLDER completed cycle must not win" half was vacuous (that cycle
+  had no products, so nothing could leak); it now has one.
+- Accepted risk added to 19 §Accepted risks: a standing SUBMIT gets-or-creates the per-cycle
+  row BEFORE validation, so a rejected submit (bad phone, empty cart) may leave the inert row
+  a page load would have created anyway.
+- Stale „the listing 410s on a non-open cycle" copies struck with pointers (README ×2,
+  `api.js`, `GuestProductGrid.vue`, 14 ×2, learnings 09, two spec headers/comments), and the
+  name-only `resolveLink` references now say „formerly `resolveLink`".
+
+### Seams left for the next rows
+
+- GL-T3 (`POST /:token/waitlist`): call `resolveEntry(token)` (no `forSubmit`) and map
+  `kind:'order'` and `preopen` with `openCycle` to the 409 `open`; `cycle_id` = `lastClosedCycle()`
+  — THAT function, never a second copy of the query.
+- GL-T5: replaces the `preopen` template block; keeps `preopen-hero`; owns the
+  `self-hosted-fonts.spec.js` `/g/:token (preopen)` row (a legacy token on a locked cycle is the
+  cheapest fixture — it is preopen on any target).
+- `preview` is the newest locked/completed cycle GLOBALLY (the spec's rule), so a stale link can
+  preview a different round than its own `stale_cycle`. ~~`stock_limit_g` still rides the product
+  columns~~ **stripped on review (§10)**; availability does not ride either.

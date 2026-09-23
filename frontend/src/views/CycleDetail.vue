@@ -690,7 +690,7 @@ function hostLink(order) {
 }
 
 // A link under a deactivated host 410s for every guest even while `active = 1`
-// (routes/guest.js `resolveLink`), so the marker has to answer BOTH halves —
+// (routes/guest.js `resolveEntry`, formerly `resolveLink`), so the marker has to answer BOTH halves —
 // otherwise the admin forwards a URL that is dead for a reason the row never said.
 function isHostLinkDead(link) {
   return !link || !link.active || !link.host_active
@@ -731,7 +731,7 @@ async function createHostLink(order) {
 // the GSO-T5 mistake module 14 exists to remove.
 //
 // What it does and does not do, because the confirm copy below promises both:
-//   · the OLD `/g/:token` stops taking NEW orders (`resolveLink` 404s it);
+//   · the OLD `/g/:token` stops taking NEW orders (`resolveEntry`, formerly `resolveLink`, 404s it);
 //   · every colleague order ALREADY placed keeps working — they resolve by
 //     `order_token` alone (§UC-GR-001/002), which is what made amending D3 safe;
 //   · `active` is NOT touched server-side, so a revoked link stays revoked. This is

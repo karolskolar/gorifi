@@ -166,7 +166,8 @@ exact state).
   standalone credential of identical entropy (resolved conflict 2), so resolving it
   under a foreign link half grants nothing the canonical form does not.
 - **Regeneration keeps its whole purpose on the ORDERING surface:** `resolveLink()`
-  (guest.js:182-207) is untouched, so `/g/:oldToken` (listing) and
+  (guest.js:182-207; ~~untouched~~ rewritten as `resolveEntry()` by 19 §UC-GL-002 — a retired
+  token is still the uniform 404), so `/g/:oldToken` (listing) and
   `POST /:oldToken/orders` (new submits) still 404 after a regeneration — nobody new
   can order through a leaked link. Only links to *already-created* orders survive it.
 - **SPA route `/g/:token/o/:orderToken` stays registered** (router.js:25-29) and its
@@ -262,7 +263,8 @@ create-if-missing:
   (`GET /guest-links/cycle/:id` returns it) — no notification mechanism exists or is
   added.
 - No cycle-status gate, mirroring the host's own POST (guest-links.js:40-68 checks
-  only existence) — a link for a non-open cycle is inert anyway (`resolveLink` 410s).
+  only existence) — a link for a non-open cycle is inert anyway (~~`resolveLink` 410s~~ — since 19 §UC-GL-002
+  `resolveEntry`, formerly `resolveLink`, answers the pre-open page and a submit 409s `closed`).
 
 **Explicit NON-capability — ⚠ AMENDED 2026-08-31 (PO decision, D12; see UC-GR-012).**
 As originally written this paragraph said the admin has **no regenerate and no

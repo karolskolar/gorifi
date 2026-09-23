@@ -628,7 +628,7 @@ response is authoritative — GSO-T3 contract; prototype copy replaces the raw s
 |---|---|---|
 | **404** (unknown token) | Odkaz neexistuje | Tento odkaz sme nenašli. Skontrolujte, či je skopírovaný celý. |
 | **410, `reason:'inactive'`** (link deactivated OR host deactivated) | Odkaz už nie je aktívny | Kolega, ktorý objednávku organizuje, tento odkaz deaktivoval. |
-| **410, `reason:'closed'`** (cycle no longer open) | Objednávanie je uzavreté | Cyklus sa medzičasom uzamkol — objednávky už neprijímame. |
+| ~~**410, `reason:'closed'`** (cycle no longer open)~~ | ~~Objednávanie je uzavreté~~ | ~~Cyklus sa medzičasom uzamkol — objednávky už neprijímame.~~ **SUPERSEDED by 19 §UC-GL-002 (GL-T2): the listing never answers 410 `closed`; a non-open cycle renders the pre-open page (`preopen-hero`, 19 §UC-GL-006) and this variant's branch + copy are removed from `GuestOrder.vue`.** |
 | anything else (network, 5xx) | Objednávka nie je dostupná (shipped fallback, kept) | server `e.message` |
 
 Common closing line on all variants: **"Ak ste odkaz dostali od kolegu, požiadajte ho
@@ -638,7 +638,8 @@ o nový."**
   that statement is about the **status page**, whose payload only clears `editable` —
   and the status page correspondingly never routes here; it shows the read-only banner
   (UC-GX-006) instead. On `/g/:token` the discrimination above is safe because the
-  server names the reason explicitly (404 / 410-`inactive` / 410-`closed`).
+  server names the reason explicitly (404 / 410-`inactive` / ~~410-`closed`~~ — retired by 19
+  §UC-GL-002).
 
 **Status-page 404 (`data-testid="guest-status-unavailable"`, the pair does not
 resolve — GSO-T4's 404-only read resolver, incl. a cross-link `orderToken`):** same

@@ -45,7 +45,9 @@ import {
 //      (GSO-T3, `backend/src/routes/guest.js withMarkup`), and multiplying here
 //      would double it.
 //   4. NO `:disabled` on the stepper. A guest grid is only ever rendered on an
-//      orderable surface — a locked cycle 410s the listing on `/g/:token`, and the
+//      orderable surface — a locked cycle ~~410s the listing~~ gets the pre-open
+//      page on `/g/:token` (19 §UC-GL-002, no grid in GL-T2's placeholder; GL-T5's
+//      read-only preview EXTENDS this grid with a `readonly` prop), and the
 //      status page publishes `products` only when `editable` (GSO-T4). There is no
 //      "locked but visible" state for this grid to render.
 //   5. This component owns its tab strip, so the strip and the card list are its

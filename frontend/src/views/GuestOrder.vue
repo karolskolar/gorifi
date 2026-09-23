@@ -13,6 +13,7 @@ import CartLineList from '@/components/CartLineList.vue'
 import { fmtEur } from '@/lib/money'
 import { purposeOrder } from '@/lib/purposes'
 import { itemsLabel } from '@/lib/plural'
+import { fmtDay } from '@/lib/cycle-stages'
 import {
   availabilityMap,
   cartLines,
@@ -57,6 +58,10 @@ const GUEST_STORAGE_KEY = 'gorifi_guest_orders'
 
 const loading = ref(true)
 const unavailable = ref(null) // { status, reason, message } when the link is dead
+// 19 §UC-GL-003 — the pre-open payload (`page: 'preopen'`) when nothing is orderable
+// through this token: a standing link with no open round, or a per-cycle link whose
+// cycle is not open. `null` in every other state.
+const preopen = ref(null)
 const cycle = ref(null)
 const host = ref(null)
 const products = ref([])
@@ -118,15 +123,21 @@ onMounted(load)
 async function load() {
   loading.value = true
   unavailable.value = null
+  preopen.value = null
   try {
     const data = await api.getGuestOrderPage(token.value)
+    if (data?.page === 'preopen') {
+      preopen.value = data
+      return
+    }
     cycle.value = data.cycle
     host.value = data.host
     products.value = data.products || []
     availability.value = availabilityMap(data.availability)
   } catch (e) {
-    // 404 = no such link, 410 = deactivated or cycle closed. Both dead ends, but
-    // they need different wording.
+    // 404 = no such link, 410 = deactivated (link or host). Both dead ends, but
+    // they need different wording. (A closed cycle is no longer a 410 — it is the
+    // pre-open payload above, 19 §UC-GL-002.)
     unavailable.value = {
       status: e.status || 0,
       reason: e.reason || null,
@@ -144,9 +155,12 @@ async function load() {
 // "Odkaz už nie je aktívny" was the server's own sentence repeated as its own
 // explanation.
 //
-// ⚠ The three variants are safe to discriminate HERE and nowhere else. The server
-// names the reason explicitly on this route (404 unknown / 410 `inactive` / 410
-// `closed`, GSO-T3), so the page is reading a fact, not guessing. GSO-T10's "the
+// ⚠ The variants are safe to discriminate HERE and nowhere else. The server
+// names the reason explicitly on this route (404 unknown / 410 `inactive`, GSO-T3),
+// so the page is reading a fact, not guessing. ~~410 `closed`~~ — the third variant
+// is REMOVED (19 §UC-GL-006 business rules): the listing never answers it any more,
+// a non-open cycle renders the pre-open state instead, so its copy and its branch
+// were dead code. GSO-T10's "the
 // page cannot distinguish a lock from a dead link" is about the STATUS page, whose
 // payload only clears `editable` — and that page correspondingly never routes to a
 // dead card, it shows the read-only banner (§UC-GX-006).
@@ -159,7 +173,6 @@ const unavailableTitle = computed(() => {
   if (!unavailable.value) return ''
   if (unavailable.value.status === 404) return 'Odkaz neexistuje'
   if (unavailable.value.reason === 'inactive') return 'Odkaz už nie je aktívny'
-  if (unavailable.value.reason === 'closed') return 'Objednávanie je uzavreté'
   return 'Objednávka nie je dostupná'
 })
 
@@ -167,8 +180,31 @@ const unavailableText = computed(() => {
   if (!unavailable.value) return ''
   if (unavailable.value.status === 404) return 'Tento odkaz sme nenašli. Skontrolujte, či je skopírovaný celý.'
   if (unavailable.value.reason === 'inactive') return 'Kolega, ktorý objednávku organizuje, tento odkaz deaktivoval.'
-  if (unavailable.value.reason === 'closed') return 'Cyklus sa medzičasom uzamkol — objednávky už neprijímame.'
   return unavailable.value.message
+})
+
+// ================= pre-open (19 §UC-GL-006) — GL-T2's MINIMAL placeholder =================
+// ⚠ GL-T5 REPLACES this block with the full `GLink2 Zatvorené` transcription (steps,
+// roasters line, waitlist form, faded preview, closed chrome, document.title) and
+// KEEPS the `preopen-hero` testid. What is here is only what the payload already
+// decides: the badge, the headline, the host sentence and the `next` sentence.
+//
+// DRAFT copy (19 §OPEN → PO sign-off on staging), vy-form, no „kolo"/„cyklus".
+// The `planned_date` date is module 17's LONG form (`fmtDay`, „3. októbra") — 17's
+// `opens_at` is live, so this variant renders from day one. GL-T5 adds the
+// „(o N týždňov)" parenthesis through its own `weeksAwayLabel()`.
+const preopenStale = computed(() => preopen.value?.next?.kind === 'open_elsewhere')
+const preopenTitle = computed(() => (preopenStale.value ? 'Táto objednávka je už uzavretá' : 'Objednávky sú zatvorené'))
+const preopenHost = computed(() => preopen.value?.host?.first_name || '')
+const preopenNextText = computed(() => {
+  const next = preopen.value?.next
+  if (!next) return ''
+  if (next.kind === 'planned_date') {
+    const day = fmtDay(next.opens_at)
+    if (day) return `Ďalšia objednávka sa otvorí približne ${day}.`
+  }
+  if (next.kind === 'planned_note' && next.plan_note) return `Ďalšia objednávka: ${next.plan_note}`
+  return 'O ďalšej objednávke dáme vedieť.'
 })
 
 function openCheckout() {
@@ -285,9 +321,10 @@ function goToStatus() {
        is a uniform `--bg` everywhere. -->
   <div class="app flex flex-col">
     <!-- ======================= g-dead (§UC-GX-010) =======================
-         Dead link: unknown, deactivated (link or host), or a cycle that is no
-         longer open. Three copy variants off the SERVER's own reason code, plus
-         the shipped fallback — see the `unavailableText` note in the script.
+         Dead link: unknown, or deactivated (link or host). Two copy variants off
+         the SERVER's own reason code, plus the shipped fallback — see the
+         `unavailableText` note in the script. (A cycle that is no longer open is
+         the pre-open state below since 19 §UC-GL-002, not a dead card.)
 
          The card FLOATS: the zone takes `flex-1` and centres on both axes, so on
          a tall viewport the card sits in the middle of the halftone background
@@ -329,6 +366,30 @@ function goToStatus() {
           <h1 class="h-screen text-[32px] sm:text-[38px]">{{ unavailableTitle }}</h1>
           <div class="sub" style="font-size:14px">{{ unavailableText }}</div>
           <div class="sub" style="font-size:13.5px">Ak ste odkaz dostali od kolegu, požiadajte ho o nový.</div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ======================= pre-open (19 §UC-GL-006) =======================
+         GL-T2's MINIMAL placeholder — see the script note. No cartbar, no checkout,
+         no invite CTA in this state (§UC-GL-006 item 6): the page has nothing to
+         order. The token is never composed into the DOM (the payload has none). -->
+    <template v-else-if="preopen">
+      <GuestBrandHeader subtitle="Objednávka cez odkaz" />
+
+      <div class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 flex flex-col gap-[14px] flex-1">
+        <div class="card hl p-4 sm:p-5" data-testid="preopen-hero" style="line-height:normal">
+          <span class="badge">Zatvorené</span>
+          <h1 class="h-screen text-[30px] sm:text-[38px]" style="margin-top:10px">{{ preopenTitle }}</h1>
+          <div v-if="preopenStale" class="sub" style="margin-top:8px;font-size:14.5px" data-testid="preopen-next">
+            <span data-user-copy>{{ preopenHost }}</span> má práve otvorenú novú objednávku. Požiadajte <span data-user-copy>{{ preopenHost }}</span> o aktuálny odkaz.
+          </div>
+          <template v-else>
+            <div class="sub" style="margin-top:8px;font-size:14.5px">
+              <b style="color:var(--ink)" data-user-copy>{{ preopenHost }}</b> vás pozýva do spoločnej objednávky výberovej kávy.
+            </div>
+            <div class="sub" style="margin-top:6px;font-size:14.5px" data-testid="preopen-next">{{ preopenNextText }}</div>
+          </template>
         </div>
       </div>
     </template>

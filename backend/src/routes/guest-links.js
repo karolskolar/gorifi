@@ -39,7 +39,8 @@ const router = Router();
 // incident this whole module exists for. Since GR-T1/GR-T2 a guest's order resolves
 // by `order_token` ALONE (§UC-GR-001/002, D1/D2), so NO regeneration — the host's
 // or the admin's — can strand an already-created order any more. What regeneration
-// still does is stop NEW orders through the old URL (`resolveLink` 404s it), which
+// still does is stop NEW orders through the old URL (`resolveEntry` — formerly
+// `resolveLink` — 404s it), which
 // is a deliberate revocation act rather than collateral damage.
 //
 // THE SECOND REASON STANDS, UNAMENDED: an admin REACTIVATE would republish a link
@@ -276,7 +277,7 @@ router.get('/cycle/:cycleId/all', requireAdmin, (req, res) => {
   if (!cycle) return res.status(404).json({ error: 'Cyklus nebol nájdený' });
 
   // `host_active` is joined in because a link under a deactivated host 410s for
-  // every guest (routes/guest.js resolveLink) — the admin must see that the URL is
+  // every guest (routes/guest.js resolveEntry, formerly resolveLink) — the admin must see that the URL is
   // dead even though the link row itself still says active = 1.
   const links = db.prepare(`
     SELECT ${LINK_COLUMNS_L}, f.name AS host_name, f.active AS host_active
@@ -298,7 +299,8 @@ router.get('/cycle/:cycleId/all', requireAdmin, (req, res) => {
 // smuggled into the request body can land.
 //
 // No cycle-status gate, mirroring the host's own POST above (existence only): a
-// link for a non-open cycle is inert anyway, since `resolveLink` 410s it.
+// link for a non-open cycle takes no orders anyway: `resolveEntry` (formerly
+// `resolveLink`, which 410'd it) answers it with the pre-open page since 19 §UC-GL-002.
 router.post('/cycle/:cycleId/host/:friendId', requireAdmin, (req, res) => {
   const cycle = getCycle(req.params.cycleId);
   if (!cycle) return res.status(404).json({ error: 'Cyklus nebol nájdený' });

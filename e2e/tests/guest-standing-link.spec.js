@@ -16,11 +16,20 @@
 //   • admin `GET /api/friends/:id/guest-link/standing` and `POST …/regenerate` — ONE
 //     helper, TWO guards.
 //
-// ⚠ What GL-T1 does NOT do: resolve a standing token on `/g/:token`. That is GL-T2's
+// ~~⚠ What GL-T1 does NOT do: resolve a standing token on `/g/:token`. That is GL-T2's
 // `resolveEntry()`. Until it lands EVERY standing token answers the uniform 404, so
 // the „old token 404s after regenerate" pin below is forward-compatible rather than
-// discriminating today — the discriminating half of the regenerate contract in this
-// row is „nothing else moves", proven by reading the rows back.
+// discriminating today~~ — **GL-T2 landed it: the regenerate pin now also proves the
+// NEW token resolves (200), so „old 404s" is discriminating.** The other half of the
+// regenerate contract is still „nothing else moves", proven by reading the rows back.
+//
+// GL-T2 — 19 §UC-GL-002 (the resolver over BOTH token spaces, get-or-create of the
+// per-cycle row) + §UC-GL-003 (the pre-open payload) + GuestOrder.vue's MINIMAL
+// `preopen-hero` placeholder (GL-T5 replaces it and keeps the testid). Its tests are
+// the `GL-T2 ·` describes at the end of this file: throwaway-boot probes that import
+// `routes/guest.js`'s pure `listingResponse()`/`resolveEntry()` for the DB states the
+// shared target never reaches (NO open round anywhere; no planned round), the API
+// matrix against the running server, and a UI pass.
 //
 // Three kinds of test:
 //   §1–§2  THROWAWAY-BOOT probes (the GA-T1 / ML-T1 idiom): `schema.js` and the helper
@@ -44,6 +53,7 @@ import { fileURLToPath } from 'node:url'
 import { ADMIN_PASSWORD, FRIENDS_PASSWORD } from '../fixtures.js'
 import { makeAdmin } from '../helpers/admin.js'
 import { stripComments } from '../helpers/source-pins.js'
+import { BANNED } from '../helpers/vocabulary.js'
 
 const DB_PATH = process.env.DB_PATH || ''
 const NEEDS_DB = 'needs direct DB access — set DB_PATH to the database the server runs on'
@@ -53,6 +63,7 @@ const HAS_BACKEND_SRC = existsSync(join(BACKEND_SRC, 'db', 'schema.js'))
 const NEEDS_BACKEND_SRC = 'needs the backend source beside e2e/ (skipped against a deployment)'
 const SCHEMA_URL = 'file://' + join(BACKEND_SRC, 'db', 'schema.js')
 const HELPER_URL = 'file://' + join(BACKEND_SRC, 'helpers', 'standing-link.js')
+const GUEST_ROUTES_URL = 'file://' + join(BACKEND_SRC, 'routes', 'guest.js')
 
 // SEC-S2: the standing token comes from `generateGuestToken()` — 14 chars over the
 // unambiguous CSPRNG alphabet, exactly like the per-cycle token.
@@ -74,7 +85,7 @@ const WAITLIST_COLS = [
 // `crypto.randomInt` — `schema.js` calls it through the same module object at call
 // time, which is the only way to force a token collision on purpose.
 // ═════════════════════════════════════════════════════════════════════════════
-function probe(dbFile, body, { helper = false } = {}) {
+function probe(dbFile, body, { helper = false, guest = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'gl-t1-probe-'))
   const script = join(dir, 'probe.mjs')
   writeFileSync(
@@ -82,6 +93,9 @@ function probe(dbFile, body, { helper = false } = {}) {
     "import crypto from 'node:crypto';\n" +
       `import db from '${SCHEMA_URL}';\n` +
       (helper ? `import * as sl from '${HELPER_URL}';\n` : 'const sl = null;\n') +
+      // GL-T2: the guest router's pure listing core (`listingResponse`, `resolveEntry`).
+      // It imports the SAME schema.js module instance, so `db` below is its database.
+      (guest ? `import * as guest from '${GUEST_ROUTES_URL}';\n` : 'const guest = null;\n') +
       `const out = (() => {\n${body}\n})();\n` +
       `console.log('@@PROBE@@' + JSON.stringify(out));\n`
   )
@@ -757,6 +771,13 @@ test.describe('GL-T1 · 19 §UC-GL-001 — host POST /api/guest-links/standing/r
     expect(garbage.status()).toBe(404)
     const messages = new Set([(await old.json()).error, (await garbage.json()).error])
     expect([...messages], 'one message for every miss — no oracle about which space a string belongs to').toEqual([GUEST_404])
+
+    // GL-T2 — the half that makes the 404 above DISCRIMINATING: the NEW token is a
+    // working door (the listing or the pre-open page, whichever state the shared
+    // target is in — both are 200), and it is never echoed back.
+    const fresh = await ctx.get(`/api/guest/${body.standing.token}`)
+    expect(fresh.status(), 'the rotated token resolves').toBe(200)
+    expect(await fresh.text(), 'and the guest body never carries it').not.toContain(body.standing.token)
   })
 
   test('⚠ NOTHING ELSE MOVES: the per-cycle links (token + active), every sub-order and every order_token are byte-identical — host AND admin paths', async () => {
@@ -1134,5 +1155,675 @@ test.describe('GL-T1 · source pins', () => {
     expect(m[1], 'non-vacuity: it is the link SELECT').toContain('gl.token')
     expect(m[1]).not.toContain('guest_link_token')
     expect(m[1], 'nor a star that would sweep it in').not.toMatch(/\bf\.\*/)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GL-T2 — 19 §UC-GL-002 (resolveEntry over BOTH token spaces) + §UC-GL-003 (the
+// pre-open payload) + the MINIMAL `preopen-hero` placeholder.
+//
+// ⚠ WHY SO MUCH OF THIS IS A PROBE. „The current round" and „the next planned round"
+// are GLOBAL facts, and the shared e2e target always holds many open and planned
+// cycles (every spec's `makeCycle`). So „a standing token with NO open round", „no
+// planned round ⇒ `unknown`" and „a stale link with nothing open elsewhere" are
+// unreachable over HTTP without closing other files' rounds under them. The probes
+// import `routes/guest.js`'s pure `listingResponse()` / `resolveEntry()` against a
+// throwaway database instead; the HTTP handler's own lines (the `no-store` header,
+// the status/body plumbing) are pinned against the running server below.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const PREOPEN_KEYS = ['host', 'next', 'page', 'preview', 'stale_cycle', 'waitlist']
+const NEXT_KEYS = ['cycle_name', 'kind', 'opens_at', 'plan_note']
+// UC-GL-003 rule 4 / acceptance — keys the pre-open body must NEVER carry.
+const PREOPEN_FORBIDDEN_KEYS = ['iban', 'revolut_username', 'token', 'invite_code', 'availability', 'guest_link_token', 'payment', 'stock_limit_g']
+
+// A throwaway DB with ONE anchor cycle (friends.cycle_id is the 2024 NOT NULL FK —
+// learnings 11 §10: never delete the anchor, it CASCADES the friends away). The
+// anchor is `completed` unless a test says otherwise, so it IS „the last round"
+// until a newer locked/completed cycle exists.
+const GL2_FIXTURE = (anchorStatus = 'completed') => `
+  db.run("INSERT INTO order_cycles (name, status) VALUES ('anchor', '${anchorStatus}')");
+  const anchor = db.get('SELECT id FROM order_cycles ORDER BY id DESC LIMIT 1').id;
+  const mkF = (n, active = 1) => db.run(
+    'INSERT INTO friends (name, cycle_id, access_token, active) VALUES (?, ?, ?, ?)', [n, anchor, 'acc-' + n, active]).lastInsertRowid;
+  const cyc = (name, status, extra = {}) => db.run(
+    'INSERT INTO order_cycles (name, status, opens_at, plan_note, markup_ratio) VALUES (?, ?, ?, ?, ?)',
+    [name, status, extra.opens_at ?? null, extra.plan_note ?? null, extra.markup ?? 1.0]).lastInsertRowid;
+  const links = (hostId) => db.all('SELECT id, token, cycle_id, active FROM guest_order_links WHERE host_friend_id = ? ORDER BY id', [hostId]);
+  const L = (t) => guest.listingResponse(t);
+`
+
+test.describe('GL-T2 · 19 §UC-GL-003 — the pre-open payload (throwaway boot)', () => {
+  test.skip(!HAS_BACKEND_SRC, NEEDS_BACKEND_SRC)
+
+  test('a STANDING token with no open round ⇒ 200 preopen; `next` walks unknown → planned_note → planned_date (earliest dated first); submit ⇒ 409 closed; nothing is created', () => {
+    const { file, cleanup } = tempDb()
+    try {
+      const out = probe(file, GL2_FIXTURE() + `
+        const host = mkF('Janka Hostiteľová');
+        const tok = sl.ensureStandingToken(host);
+        const r = {};
+        r.none = L(tok);
+        const blank = cyc('blank', 'planned');
+        r.blank = L(tok);
+        db.run('DELETE FROM order_cycles WHERE id = ?', [blank]);
+        cyc('note only', 'planned', { plan_note: 'po Vianociach' });
+        r.note = L(tok);
+        cyc('dated later', 'planned', { opens_at: '2026-11-20' });
+        r.dated = L(tok);
+        cyc('dated sooner', 'planned', { opens_at: '2026-11-05', plan_note: 'aj poznámka' });
+        r.sooner = L(tok);
+        // Neither a locked nor a completed cycle is „planned": a newer locked one changes
+        // the PREVIEW, never \`next\`.
+        cyc('newer locked', 'locked');
+        r.afterLocked = L(tok);
+        r.submit = guest.resolveEntry(tok, { forSubmit: true });
+        r.links = links(host);
+        r.tok = tok;
+        return r;
+      `, { helper: true, guest: true })
+
+      const none = out.none
+      expect(none.status).toBe(200)
+      expect(Object.keys(none.body).sort(), 'the payload keys, exactly').toEqual(PREOPEN_KEYS)
+      expect(none.body.page).toBe('preopen')
+      expect(none.body.host, 'first name only (firstName(), the shipped rule)').toEqual({ first_name: 'Janka' })
+      expect(Object.keys(none.body.next).sort()).toEqual(NEXT_KEYS)
+      expect(none.body.next, 'no planned cycle at all').toEqual({ kind: 'unknown', opens_at: null, plan_note: null, cycle_name: null })
+      expect(none.body.stale_cycle, 'a standing token is never stale (rule 6)').toBe(null)
+      expect(none.body.waitlist).toEqual({ available: true })
+
+      expect(out.blank.body.next, 'a planned cycle with neither a date nor a note is still `unknown`')
+        .toEqual({ kind: 'unknown', opens_at: null, plan_note: null, cycle_name: 'blank' })
+      expect(out.note.body.next).toEqual({ kind: 'planned_note', opens_at: null, plan_note: 'po Vianociach', cycle_name: 'note only' })
+      expect(out.dated.body.next, 'a DATED planned cycle beats an undated one with a lower id')
+        .toEqual({ kind: 'planned_date', opens_at: '2026-11-20', plan_note: null, cycle_name: 'dated later' })
+      expect(out.sooner.body.next, 'the EARLIEST date wins; its plan_note rides along')
+        .toEqual({ kind: 'planned_date', opens_at: '2026-11-05', plan_note: 'aj poznámka', cycle_name: 'dated sooner' })
+      expect(out.afterLocked.body.next.cycle_name, 'a locked cycle is not „next"').toBe('dated sooner')
+      expect(out.afterLocked.body.preview.cycle.name, '…it is the preview').toBe('newer locked')
+
+      expect(out.submit, 'rule 5 — the lock-race contract, for the standing space too').toEqual({
+        status: 409, error: 'Objednávanie v tomto cykle je už uzavreté.', reason: 'closed',
+      })
+      expect(out.links, 'no open round ⇒ the standing visit created NO per-cycle row').toEqual([])
+
+      for (const r of [out.none, out.note, out.dated, out.sooner]) {
+        const text = JSON.stringify(r.body)
+        for (const key of PREOPEN_FORBIDDEN_KEYS) expect(text, `no "${key}" key`).not.toContain(`"${key}"`)
+        expect(text, 'the standing token is never echoed back').not.toContain(out.tok)
+      }
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('`preview` = the NEWEST locked/completed cycle, ≤ 12 ACTIVE products, marked up, no availability; null when no round has closed', () => {
+    const { file, cleanup } = tempDb()
+    try {
+      const out = probe(file, GL2_FIXTURE() + `
+        const host = mkF('Peter');
+        const tok = sl.ensureStandingToken(host);
+        const r = {};
+        r.anchorOnly = L(tok).body.preview;
+        r.anchor = anchor;
+        const ins = db.prepare('INSERT INTO products (cycle_id, name, purpose, price_250g, active, stock_limit_g) VALUES (?, ?, ?, ?, ?, ?)');
+        // An OLDER completed cycle WITH products (lower id than the locked one below):
+        // it must not win „the newest locked/completed" — and it can, if the predicate
+        // or the ordering drifts, because it has something to show.
+        const older = cyc('older round', 'completed');
+        ins.run(older, 'ZZ older bean', 'Espresso', 8, 1, 500);
+        const last = cyc('last round', 'locked', { markup: 1.25 });
+        // 13 active (names chosen so the ORDER BY purpose, name is checkable) + 1 inactive.
+        for (let i = 0; i < 13; i++) ins.run(last, 'Bean ' + String(i).padStart(2, '0'), i % 2 ? 'Filter' : 'Espresso', 8, 1, 1000);
+        ins.run(last, 'AAA hidden', 'Espresso', 8, 0, null);
+        r.body = L(tok).body;
+        r.last = last;
+        return r;
+      `, { helper: true, guest: true })
+      expect(out.anchorOnly, 'the anchor is the only closed round and it has no products').toEqual({ cycle: { id: out.anchor, name: 'anchor' }, products: [] })
+      const pv = out.body.preview
+      expect(pv.cycle).toEqual({ id: out.last, name: 'last round' })
+      expect(pv.products.length, 'bounded — a public read of historical data').toBe(12)
+      expect(pv.products.map((p) => p.name), 'never the inactive product').not.toContain('AAA hidden')
+      expect(pv.products.every((p) => p.price_250g === 10), 'withMarkup(): 8 × 1.25, exactly as the live listing').toBe(true)
+      const order = pv.products.map((p) => `${p.purpose}|${p.name}`)
+      expect(order, 'ORDER BY p.purpose, p.name').toEqual([...order].sort())
+      expect(JSON.stringify(out.body), 'no availability anywhere').not.toContain('availability')
+      expect(pv.products.map((p) => p.name), 'the OLDER completed round does not leak in').not.toContain('ZZ older bean')
+      // Review decision: the stock caps of a closed round are stripped (these rows DO carry
+      // stock_limit_g = 1000 in the DB, so the absence is not vacuous).
+      expect(pv.products.some((p) => Object.prototype.hasOwnProperty.call(p, 'stock_limit_g')), 'no stock_limit_g on a preview product').toBe(false)
+      expect(pv.products.every((p) => Object.prototype.hasOwnProperty.call(p, 'price_250g')), 'non-vacuity: the rows are the priced product rows').toBe(true)
+
+      const nullCase = tempDb()
+      try {
+        const none = probe(nullCase.file, GL2_FIXTURE('planned') + `
+          return L(sl.ensureStandingToken(mkF('Eva'))).body;
+        `, { helper: true, guest: true })
+        expect(none.preview, 'no locked/completed cycle ⇒ preview null (the page hides the block)').toBe(null)
+        expect(none.next.kind).toBe('unknown')
+      } finally {
+        nullCase.cleanup()
+      }
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+test.describe('GL-T2 · 19 §UC-GL-002 — resolveEntry (throwaway boot)', () => {
+  test.skip(!HAS_BACKEND_SRC, NEEDS_BACKEND_SRC)
+
+  test('standing + open ⇒ GET-OR-CREATE one per-cycle row for THE NEWEST open round; a second visit reuses it; the row\'s token is a fresh one, not the standing token', () => {
+    const { file, cleanup } = tempDb()
+    try {
+      const out = probe(file, GL2_FIXTURE() + `
+        console.warn = () => {};
+        const host = mkF('Mária');
+        const tok = sl.ensureStandingToken(host);
+        const o1 = cyc('open one', 'open');
+        const r = {};
+        const a = guest.resolveEntry(tok);
+        r.a = { kind: a.kind, cycle: a.cycle?.id, link: a.link?.id, token: a.link?.token, host: a.link?.host_friend_id };
+        const b = guest.resolveEntry(tok);
+        r.b = { kind: b.kind, link: b.link?.id };
+        r.afterTwo = links(host);
+        const o2 = cyc('open two', 'open');
+        const c = guest.resolveEntry(tok, { forSubmit: true });
+        r.c = { kind: c.kind, cycle: c.cycle?.id };
+        r.afterThree = links(host);
+        r.listing = L(tok);
+        r.ids = { o1, o2 };
+        r.tok = tok;
+        r.host = host;
+        return r;
+      `, { helper: true, guest: true })
+      expect(out.a.kind).toBe('order')
+      expect(out.a.cycle).toBe(out.ids.o1)
+      expect(out.a.host, 'the row is the HOST\'s own').toBe(out.host)
+      expect(out.a.token, 'a fresh per-cycle token').toMatch(TOKEN_RE)
+      expect(out.a.token, '…never the standing token').not.toBe(out.tok)
+      expect(out.b).toEqual({ kind: 'order', link: out.a.link })
+      expect(out.afterTwo.map((l) => [l.id, l.cycle_id, l.active]), 'ONE row after two visits').toEqual([[out.a.link, out.ids.o1, 1]])
+      expect(out.c, 'two open rounds ⇒ the NEWEST (rule 2), also for a submit').toEqual({ kind: 'order', cycle: out.ids.o2 })
+      expect(out.afterThree.length, 'a second round gets its own row').toBe(2)
+      expect(out.listing.status).toBe(200)
+      expect(out.listing.body.cycle.id, 'the listing is the open round').toBe(out.ids.o2)
+      const text = JSON.stringify(out.listing.body)
+      expect(text, 'no `token` key in the listing').not.toContain('"token"')
+      expect(text, 'no standing token').not.toContain(out.tok)
+      expect(text, 'no per-cycle token either — a standing visitor never learns the per-cycle URL').not.toContain(out.afterThree[1].token)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('⚠ the UNIQUE fallthrough: a row that appears between the SELECT and the INSERT is ADOPTED, never a 500', () => {
+    // The race is unreachable under `instances: 1` (rule 8), so it is FORCED — at the
+    // exact window: the resolver's FIRST (host, cycle) SELECT is made to miss, and the
+    // „winner" row is inserted at that moment, so our INSERT then fails
+    // `UNIQUE(host_friend_id, cycle_id)` and the resolver must fall through to the
+    // re-SELECT and hand back the winner. (`db.prepare` is patched on the shared
+    // dbHelpers object, which routes/guest.js reads at call time.) ⚠ A TEMP trigger
+    // cannot do this: its INSERT is part of the failing statement and is rolled back
+    // WITH it — measured, the first version of this test.
+    const { file, cleanup } = tempDb()
+    try {
+      const out = probe(file, GL2_FIXTURE() + `
+        const host = mkF('Rýchla');
+        const tok = sl.ensureStandingToken(host);
+        const open = cyc('race', 'open');
+        const realPrepare = db.prepare;
+        let armed = true;
+        db.prepare = (sql) => {
+          if (armed && sql.includes('WHERE gl.host_friend_id = ? AND gl.cycle_id = ?')) {
+            armed = false;
+            return { get: (h, c) => {
+              realPrepare("INSERT INTO guest_order_links (token, host_friend_id, cycle_id, active) VALUES ('WINNERWINNER22', ?, ?, 1)").run(h, c);
+              return undefined;
+            } };
+          }
+          return realPrepare(sql);
+        };
+        let res;
+        try {
+          const r = guest.resolveEntry(tok);
+          res = { kind: r.kind, token: r.link?.token, status: r.status };
+        } catch (e) {
+          res = { threw: String(e.message) };
+        }
+        db.prepare = realPrepare;
+        return { res, armedLeft: armed, rows: links(host) };
+      `, { helper: true, guest: true })
+      expect(out.armedLeft, 'non-vacuity: the forced miss really happened').toBe(false)
+      expect(out.res, 'the winner is adopted').toEqual({ kind: 'order', token: 'WINNERWINNER22' })
+      expect(out.rows.map((r) => r.token), 'and it is the only row').toEqual(['WINNERWINNER22'])
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('the refusals: inactive host ⇒ 410 (nothing created); deactivated round link ⇒ 410 (D4); unknown ⇒ the one 404', () => {
+    const { file, cleanup } = tempDb()
+    try {
+      const out = probe(file, GL2_FIXTURE() + `
+        const off = mkF('Neaktívna');
+        const offTok = sl.ensureStandingToken(off);
+        db.run('UPDATE friends SET active = 0 WHERE id = ?', [off]);
+        const on = mkF('Aktívna');
+        const onTok = sl.ensureStandingToken(on);
+        const open = cyc('open', 'open');
+        const r = {};
+        r.inactiveHost = L(offTok);
+        r.inactiveHostSubmit = guest.resolveEntry(offTok, { forSubmit: true });
+        r.inactiveRows = links(off);
+        // The host's own row for the round, deactivated by the host (PATCH active = 0).
+        db.run("INSERT INTO guest_order_links (token, host_friend_id, cycle_id, active) VALUES ('ROUNDOFFROUND2', ?, ?, 0)", [on, open]);
+        r.roundOff = L(onTok);
+        r.roundOffSubmit = guest.resolveEntry(onTok, { forSubmit: true });
+        r.roundRows = links(on);
+        r.unknown = L('ZZZZZZZZZZZZZZ');
+        r.empty = L('');
+        return r;
+      `, { helper: true, guest: true })
+      const INACTIVE = { error: 'Tento odkaz už nie je aktívny. Požiadajte kolegu o nový.', reason: 'inactive' }
+      expect(out.inactiveHost).toEqual({ status: 410, body: INACTIVE })
+      expect(out.inactiveHostSubmit).toEqual({ status: 410, ...INACTIVE })
+      expect(out.inactiveRows, 'a deactivated host\'s standing token opens NO door and writes nothing').toEqual([])
+      expect(out.roundOff, 'D4 — the round\'s own flag still decides').toEqual({ status: 410, body: INACTIVE })
+      expect(out.roundOffSubmit.status).toBe(410)
+      expect(out.roundRows.map((l) => [l.token, l.active]), 'and the standing visit never re-arms it').toEqual([['ROUNDOFFROUND2', 0]])
+      expect(out.unknown).toEqual({ status: 404, body: { error: GUEST_404 } })
+      expect(out.empty).toEqual({ status: 404, body: { error: GUEST_404 } })
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('⚠ D7 — a LEGACY token on a non-open cycle is STALE: preopen with stale_cycle, open_elsewhere when a newer round is open, and it never resolves to (or creates a row on) that round', () => {
+    const { file, cleanup } = tempDb()
+    try {
+      const out = probe(file, GL2_FIXTURE() + `
+        console.warn = () => {};
+        const host = mkF('Zuzana Stará');
+        const old = cyc('old round', 'open');
+        db.run("INSERT INTO guest_order_links (token, host_friend_id, cycle_id, active) VALUES ('LEGACYLEGACY22', ?, ?, 1)", [host, old]);
+        const r = {};
+        r.open = guest.resolveEntry('LEGACYLEGACY22').kind;
+        db.run("UPDATE order_cycles SET status = 'locked' WHERE id = ?", [old]);
+        cyc('coming', 'planned', { opens_at: '2026-12-01' });
+        r.lockedNothingOpen = L('LEGACYLEGACY22');
+        const newer = cyc('new round', 'open');
+        r.lockedNewerOpen = L('LEGACYLEGACY22');
+        r.submit = guest.resolveEntry('LEGACYLEGACY22', { forSubmit: true });
+        db.run("UPDATE order_cycles SET status = 'planned' WHERE id = ?", [old]);
+        r.planned = L('LEGACYLEGACY22');
+        r.rows = links(host);
+        r.ids = { old, newer };
+        return r;
+      `, { helper: true, guest: true })
+      expect(out.open, 'while its cycle is open the legacy link is the shipped order page').toBe('order')
+
+      const a = out.lockedNothingOpen
+      expect(a.status).toBe(200)
+      expect(a.body.page).toBe('preopen')
+      expect(a.body.stale_cycle, 'rule 6 — {id, name} only').toEqual({ id: out.ids.old, name: 'old round' })
+      expect(a.body.next, 'nothing open elsewhere ⇒ the planned round, like a standing token').toEqual({ kind: 'planned_date', opens_at: '2026-12-01', plan_note: null, cycle_name: 'coming' })
+      expect(a.body.waitlist.available).toBe(true)
+
+      const b = out.lockedNewerOpen
+      expect(b.status).toBe(200)
+      expect(b.body.page).toBe('preopen')
+      expect(b.body.next, 'open_elsewhere: the OPEN round\'s name, no date, no note').toEqual({ kind: 'open_elsewhere', opens_at: null, plan_note: null, cycle_name: 'new round' })
+      expect(b.body.waitlist, 'no contacts for a round already in progress').toEqual({ available: false })
+      expect(b.body.stale_cycle).toEqual({ id: out.ids.old, name: 'old round' })
+      expect(JSON.stringify(b.body), 'NEVER the newer round\'s catalogue').not.toContain(`"cycle":{"id":${out.ids.newer}`)
+
+      expect(out.submit.status, 'submit through a stale link ⇒ 409 closed').toBe(409)
+      expect(out.submit.reason).toBe('closed')
+      expect(out.planned.body.page, 'planned counts as not open too').toBe('preopen')
+      expect(out.rows.map((r) => r.cycle_id), 'the legacy token created NOTHING on the newer round').toEqual([out.ids.old])
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GL-T2 · API against the running server — one token/fixture per matrix row (the
+// cached-410 lesson), and every write claim read back.
+// ═════════════════════════════════════════════════════════════════════════════
+async function adminLinksFor(cycleId, hostId) {
+  const res = await admin(`/api/guest-links/cycle/${cycleId}/all`)
+  expect(res.status(), 'admin link list').toBe(200)
+  return (await res.json()).links.filter((l) => l.host_friend_id === hostId)
+}
+
+function sqliteTs(value) {
+  // `created_at` is SQLite CURRENT_TIMESTAMP — UTC, second resolution, no zone.
+  return Date.parse(String(value).replace(' ', 'T') + 'Z')
+}
+
+test.describe('GL-T2 · 19 §UC-GL-002 — the resolver matrix over HTTP', () => {
+  test('standing + open round ⇒ 200 listing of THAT round, no token in the body, no-store; the host then sees a row created by the visit; a second visit adds none', async () => {
+    const host = await makeHost('GoOpen')
+    const s = (await standing(host)).standing.token
+    // Created last ⇒ the newest open cycle on the target ⇒ „the current round".
+    const cycle = await makeCycle('GoOpen')
+    const product = await addProduct(cycle.id, 'GoOpen')
+    expect((await adminLinksFor(cycle.id, host.id)), 'non-vacuity: no row before the visit').toEqual([])
+
+    const before = Math.floor(Date.now() / 1000) * 1000
+    const res = await ctx.get(`/api/guest/${s}`)
+    expect(res.status()).toBe(200)
+    expect(res.headers()['cache-control'], 'rule 5 — the live listing is no-store too').toContain('no-store')
+    const text = await res.text()
+    const body = JSON.parse(text)
+    expect(body.cycle.id, 'the open round').toBe(cycle.id)
+    expect(body.products.map((p) => p.id)).toContain(product.id)
+    expect(body.host.first_name, 'the host\'s first name').toBe(host.name.split(' ')[0])
+    expect(body).not.toHaveProperty('page')
+    expect(text, 'no `token` key anywhere').not.toContain('"token"')
+    expect(text, 'the standing token is never echoed').not.toContain(s)
+
+    const view = await hostView(host, cycle.id)
+    expect(view.link, 'the host now HAS a per-cycle link for the round').toBeTruthy()
+    expect(sqliteTs(view.link.created_at), 'created by the visit').toBeGreaterThanOrEqual(before)
+    expect(text, 'and the listing never carried ITS token').not.toContain(view.link.token)
+
+    expect((await ctx.get(`/api/guest/${s}`)).status()).toBe(200)
+    const rows = await adminLinksFor(cycle.id, host.id)
+    expect(rows.map((l) => l.id), 'a second visit creates no second row').toEqual([view.link.id])
+  })
+
+  test('standing reuses the row the HOST already created — same id, same token, same active flag', async () => {
+    const host = await makeHost('GoReuse')
+    const cycle = await makeCycle('GoReuse')
+    await addProduct(cycle.id, 'GoReuse')
+    const own = await shareLink(host, cycle.id)
+    const s = (await standing(host)).standing.token
+    expect((await ctx.get(`/api/guest/${s}`)).status()).toBe(200)
+    const rows = await adminLinksFor(cycle.id, host.id)
+    expect(rows.map((l) => [l.id, l.token, l.active])).toEqual([[own.id, own.token, 1]])
+  })
+
+  test('a sub-order submitted through the STANDING URL lands under the host\'s per-cycle row: host view, status URL, and stock (helpers/stock.js) all see it', async () => {
+    const host = await makeHost('GoSubmit')
+    const s = (await standing(host)).standing.token
+    const cycle = await makeCycle('GoSubmit')
+    const pr = await admin('/api/products', {
+      method: 'post',
+      data: { cycle_id: cycle.id, name: `GL2 Limited ${uniq}`, purpose: 'Espresso', price_250g: 8, stock_limit_g: 1000 },
+    })
+    expect(pr.status()).toBe(201)
+    const product = await pr.json()
+
+    // No page load first: the SUBMIT gets-or-creates the row too.
+    const created = await submitGuest(s, product.id, 'Kolega Stály')
+    expect(created.status_path).toBe(`/g/o/${created.order.order_token}`)
+    expect(JSON.stringify(created), 'the 201 carries no link token').not.toContain(s)
+
+    const view = await hostView(host, cycle.id)
+    expect(view.guest_orders.map((o) => o.id), 'the host view lists it').toEqual([created.order.id])
+    expect((await ctx.get(`/api/guest/o/${created.order.order_token}`)).status(), 'the status URL resolves').toBe(200)
+
+    const listing = await (await ctx.get(`/api/guest/${s}`)).json()
+    const a = listing.availability.find((x) => x.product_id === product.id)
+    expect(a, 'the product is stock-limited').toBeTruthy()
+    expect(a.ordered_g, 'the guest grams are counted (stock UNION own+guest)').toBe(250)
+    expect(a.remaining_g).toBe(750)
+    // …and through the per-cycle token the host view publishes, the SAME numbers.
+    const viaLink = await (await ctx.get(`/api/guest/${view.link.token}`)).json()
+    expect(viaLink.availability.find((x) => x.product_id === product.id)).toEqual(a)
+  })
+
+  test('standing + the round\'s link DEACTIVATED by the host ⇒ 410 inactive (D4) — the listing and the submit, no-store, and the flag stays 0', async () => {
+    const host = await makeHost('GoRoundOff')
+    const cycle = await makeCycle('GoRoundOff')
+    const product = await addProduct(cycle.id, 'GoRoundOff')
+    const own = await shareLink(host, cycle.id)
+    expect((await ctx.patch(`/api/guest-links/${own.id}`, { headers: host.auth, data: { active: false } })).status()).toBe(200)
+    const s = (await standing(host)).standing.token
+
+    const res = await ctx.get(`/api/guest/${s}`)
+    expect(res.status()).toBe(410)
+    expect(res.headers()['cache-control'], 'refusals are no-store too').toContain('no-store')
+    expect(await res.json()).toEqual({ error: 'Tento odkaz už nie je aktívny. Požiadajte kolegu o nový.', reason: 'inactive' })
+    const sub = await ctx.post(`/api/guest/${s}/orders`, {
+      data: { guest_name: 'Kolega', guest_phone: '0905 111 222', items: [{ product_id: product.id, variant: '250g', quantity: 1 }] },
+    })
+    expect(sub.status()).toBe(410)
+    const rows = await adminLinksFor(cycle.id, host.id)
+    expect(rows.map((l) => [l.id, l.active]), 'read back: still the one row, still deactivated').toEqual([[own.id, 0]])
+    expect((await hostView(host, cycle.id)).guest_orders, 'and no sub-order was written').toEqual([])
+  })
+
+  test('a DEACTIVATED host\'s standing token ⇒ 410 inactive, and the visit creates no row — read back', async () => {
+    const host = await makeHost('GoHostOff')
+    const s = (await standing(host)).standing.token
+    const cycle = await makeCycle('GoHostOff')
+    await addProduct(cycle.id, 'GoHostOff')
+    expect((await admin(`/api/friends/${host.id}`, { method: 'patch', data: { active: false } })).status()).toBe(200)
+
+    const res = await ctx.get(`/api/guest/${s}`)
+    expect(res.status()).toBe(410)
+    expect((await res.json()).reason).toBe('inactive')
+    expect(await adminLinksFor(cycle.id, host.id), 'no door, no row').toEqual([])
+    // Non-vacuity: re-activate and the same token opens (and only NOW creates) the row.
+    expect((await admin(`/api/friends/${host.id}`, { method: 'patch', data: { active: true } })).status()).toBe(200)
+    expect((await ctx.get(`/api/guest/${s}`)).status()).toBe(200)
+    expect((await adminLinksFor(cycle.id, host.id)).length).toBe(1)
+  })
+
+  test('⚠ D7 — a legacy link on a LOCKED cycle while a newer round is open ⇒ 200 preopen `open_elsewhere` + stale_cycle, no waitlist, no-store; it creates nothing on the newer round; submit ⇒ 409 closed', async () => {
+    const host = await makeHost('GoStale')
+    const old = await makeCycle('GoStale old')
+    const product = await addProduct(old.id, 'GoStale')
+    const link = await shareLink(host, old.id)
+    expect((await admin(`/api/cycles/${old.id}`, { method: 'patch', data: { status: 'locked' } })).status()).toBe(200)
+    const newer = await makeCycle('GoStale new')
+
+    const res = await ctx.get(`/api/guest/${link.token}`)
+    expect(res.status()).toBe(200)
+    expect(res.headers()['cache-control']).toContain('no-store')
+    const text = await res.text()
+    const body = JSON.parse(text)
+    expect(Object.keys(body).sort()).toEqual(PREOPEN_KEYS)
+    expect(body.page).toBe('preopen')
+    expect(body.stale_cycle).toEqual({ id: old.id, name: old.name })
+    expect(body.next).toEqual({ kind: 'open_elsewhere', opens_at: null, plan_note: null, cycle_name: newer.name })
+    expect(body.waitlist).toEqual({ available: false })
+    expect(body.host).toEqual({ first_name: host.name.split(' ')[0] })
+    for (const key of PREOPEN_FORBIDDEN_KEYS) expect(text, `no "${key}" key`).not.toContain(`"${key}"`)
+    expect(text, 'the legacy token is not echoed').not.toContain(link.token)
+
+    expect(await adminLinksFor(newer.id, host.id), 'the legacy token never resolves to — or creates a row on — the newer round').toEqual([])
+    const sub = await ctx.post(`/api/guest/${link.token}/orders`, {
+      data: { guest_name: 'Kolega', guest_phone: '0905 111 333', items: [{ product_id: product.id, variant: '250g', quantity: 1 }] },
+    })
+    expect(sub.status()).toBe(409)
+    expect((await sub.json()).reason).toBe('closed')
+    // Read back: the refused submit wrote no sub-order — on the stale round or the newer one.
+    const oldView = await hostView(host, old.id)
+    expect(oldView.link?.id, 'non-vacuity: the host view is the legacy link').toBe(link.id)
+    expect(oldView.guest_orders, 'no sub-order on the stale round').toEqual([])
+    expect((await hostView(host, newer.id)).guest_orders, 'nor on the newer round').toEqual([])
+  })
+
+  test('the pre-open `preview` over HTTP: the newest closed round, ≤ 12 products, marked-up prices, no availability', async () => {
+    const host = await makeHost('GoPreview')
+    const cycle = await makeCycle('GoPreview')
+    expect((await admin(`/api/cycles/${cycle.id}`, { method: 'patch', data: { markup_ratio: 1.25 } })).status()).toBe(200)
+    for (let i = 0; i < 13; i++) await addProduct(cycle.id, `Prev${String(i).padStart(2, '0')}`)
+    const link = await shareLink(host, cycle.id)
+    // Locked LAST ⇒ the newest locked/completed cycle on the target ⇒ the preview.
+    expect((await admin(`/api/cycles/${cycle.id}`, { method: 'patch', data: { status: 'locked' } })).status()).toBe(200)
+
+    const body = await (await ctx.get(`/api/guest/${link.token}`)).json()
+    expect(body.page).toBe('preopen')
+    expect(body.preview.cycle).toEqual({ id: cycle.id, name: cycle.name })
+    expect(body.preview.products.length).toBe(12)
+    expect(body.preview.products.every((p) => p.price_250g === 10), '8 × 1.25').toBe(true)
+    expect(body).not.toHaveProperty('availability')
+  })
+
+  test('uniform 404 — garbage, a RETIRED per-cycle token and a RETIRED standing token answer one message (no oracle about the space)', async () => {
+    const host = await makeHost('Go404')
+    const cycle = await makeCycle('Go404')
+    await addProduct(cycle.id, 'Go404')
+    const link = await shareLink(host, cycle.id)
+    // The host's second POST on the same round regenerates the per-cycle token in place.
+    const reg = await ctx.post(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })
+    expect(reg.status(), 'per-cycle regenerate').toBe(200)
+    expect((await reg.json()).regenerated, 'non-vacuity: it really rotated').toBe(true)
+    const oldStanding = (await standing(host)).standing.token
+    const fresh = (await regenerate(host)).standing.token
+
+    const answers = []
+    for (const t of ['ZZZZZZZZZZZZZZ', link.token, oldStanding]) {
+      const r = await ctx.get(`/api/guest/${t}`)
+      expect(r.status(), t).toBe(404)
+      expect(r.headers()['cache-control']).toContain('no-store')
+      answers.push(JSON.stringify(await r.json()))
+    }
+    expect(new Set(answers).size, 'one body for every miss').toBe(1)
+    expect(JSON.parse(answers[0])).toEqual({ error: GUEST_404 })
+    // Non-vacuity: the live tokens of both spaces DO resolve.
+    expect((await ctx.get(`/api/guest/${(await reg.json()).link.token}`)).status()).toBe(200)
+    expect((await ctx.get(`/api/guest/${fresh}`)).status()).toBe(200)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GL-T2 · UI — the MINIMAL `preopen-hero` placeholder (GL-T5 replaces the content
+// and KEEPS the testid). The kind-specific sentences are driven by a fulfilled
+// payload, because the shared target's kind is not ours to choose (see above); one
+// test runs against the real server.
+// ═════════════════════════════════════════════════════════════════════════════
+const GL2_PHONE = { width: 378, height: 900 }
+const GL2_PHONE_320 = { width: 320, height: 900 }
+
+function preopenBody(next, extra = {}) {
+  return {
+    page: 'preopen',
+    host: { first_name: 'Janka' },
+    next: { opens_at: null, plan_note: null, cycle_name: null, ...next },
+    stale_cycle: null,
+    preview: null,
+    waitlist: { available: next.kind !== 'open_elsewhere' },
+    ...extra,
+  }
+}
+
+test.describe('GL-T2 · GuestOrder.vue — the preopen-hero placeholder', () => {
+  test('a legacy link on a LOCKED cycle renders the preopen hero, NOT the dead card, and nothing orderable', async ({ page }) => {
+    const host = await makeHost('UiStale')
+    const cycle = await makeCycle('UiStale')
+    await addProduct(cycle.id, 'UiStale')
+    const link = await shareLink(host, cycle.id)
+    expect((await admin(`/api/cycles/${cycle.id}`, { method: 'patch', data: { status: 'locked' } })).status()).toBe(200)
+    const api = await (await ctx.get(`/api/guest/${link.token}`)).json()
+    expect(api.page, 'non-vacuity: the server answers the pre-open payload').toBe('preopen')
+
+    await page.setViewportSize(GL2_PHONE)
+    await page.goto(`/g/${link.token}`)
+    const hero = page.getByTestId('preopen-hero')
+    await expect(hero).toBeVisible()
+    await expect(hero.locator('.badge')).toHaveText('Zatvorené')
+    // Which headline depends on the shared target's state (is a newer round open?),
+    // so it is read off the payload the page itself received.
+    const stale = api.next.kind === 'open_elsewhere'
+    await expect(hero.locator('h1')).toHaveText(stale ? 'Táto objednávka je už uzavretá' : 'Objednávky sú zatvorené')
+    await expect(hero).toContainText(host.name.split(' ')[0])
+    await expect(page.getByTestId('guest-unavailable')).toHaveCount(0)
+    await expect(page.getByTestId('open-checkout')).toHaveCount(0)
+    await expect(page.getByTestId('cartbar')).toHaveCount(0)
+    expect(await page.content(), 'the token is never composed into the DOM').not.toContain(link.token)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0)
+  })
+
+  test('the four `next` sentences: planned_date (module 17 long date), planned_note (verbatim), unknown, open_elsewhere (name twice, no gendered pronoun)', async ({ page }) => {
+    await page.setViewportSize(GL2_PHONE)
+    const TOKEN = 'PREOPENMOCKED2'
+    const cases = [
+      [preopenBody({ kind: 'planned_date', opens_at: '2026-10-03', cycle_name: 'X' }), 'Objednávky sú zatvorené', 'Ďalšia objednávka sa otvorí približne 3. októbra.'],
+      [preopenBody({ kind: 'planned_note', plan_note: 'po Vianociach', cycle_name: 'X' }), 'Objednávky sú zatvorené', 'Ďalšia objednávka: po Vianociach'],
+      [preopenBody({ kind: 'unknown' }), 'Objednávky sú zatvorené', 'O ďalšej objednávke dáme vedieť.'],
+      [preopenBody({ kind: 'open_elsewhere', cycle_name: 'Nové' }, { stale_cycle: { id: 1, name: 'Staré' } }), 'Táto objednávka je už uzavretá', 'Janka má práve otvorenú novú objednávku. Požiadajte Janka o aktuálny odkaz.'],
+    ]
+    for (const [body, title, sentence] of cases) {
+      await page.unroute(`**/api/guest/${TOKEN}`)
+      await page.route(`**/api/guest/${TOKEN}`, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) }))
+      await page.goto(`/g/${TOKEN}`)
+      const hero = page.getByTestId('preopen-hero')
+      await expect(hero.locator('h1'), body.next.kind).toHaveText(title)
+      await expect(page.getByTestId('preopen-next'), body.next.kind).toHaveText(sentence)
+      if (body.next.kind !== 'open_elsewhere') await expect(hero).toContainText('Janka vás pozýva do spoločnej objednávky výberovej kávy.')
+      // The ONE vocabulary regex (PI-T11). The guest files are not in the friend
+      // source guard yet (GL-T7), so the new copy is swept here, rendered.
+      expect(await hero.innerText(), 'no „cyklus"/„kolo" in the new guest copy').not.toMatch(BANNED)
+    }
+  })
+
+  test('no horizontal overflow at 320px, for the two longest sentences and a long host name', async ({ page }) => {
+    await page.setViewportSize(GL2_PHONE_320)
+    const TOKEN = 'PREOPENMOCKED320'
+    const longHost = { first_name: 'Alžbeta-Kristínamária Novosadová' }
+    const cases = [
+      // planned_date's sentence is the longest of the three non-stale variants.
+      preopenBody({ kind: 'planned_date', opens_at: '2026-10-03', cycle_name: 'X' }, { host: longHost }),
+      // open_elsewhere repeats the host name twice in one sentence.
+      preopenBody({ kind: 'open_elsewhere', cycle_name: 'Nové' }, { host: longHost, stale_cycle: { id: 1, name: 'Staré' } }),
+    ]
+    for (const body of cases) {
+      await page.unroute(`**/api/guest/${TOKEN}`)
+      await page.route(`**/api/guest/${TOKEN}`, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) }))
+      await page.goto(`/g/${TOKEN}`)
+      await expect(page.getByTestId('preopen-hero')).toBeVisible()
+      expect(
+        await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth),
+        body.next.kind,
+      ).toBeLessThanOrEqual(0)
+    }
+  })
+
+  test('the dead card still renders for 404 and 410 inactive (§UC-GL-006 business rules)', async ({ page }) => {
+    await page.setViewportSize(GL2_PHONE)
+    await page.goto('/g/NOTAREALTOKEN22')
+    await expect(page.getByTestId('guest-unavailable')).toContainText('Odkaz neexistuje')
+    await expect(page.getByTestId('preopen-hero')).toHaveCount(0)
+
+    const host = await makeHost('UiDead')
+    const s = (await standing(host)).standing.token
+    expect((await admin(`/api/friends/${host.id}`, { method: 'patch', data: { active: false } })).status()).toBe(200)
+    await page.goto(`/g/${s}`)
+    await expect(page.getByTestId('guest-unavailable')).toContainText('Odkaz už nie je aktívny')
+    await expect(page.getByTestId('preopen-hero')).toHaveCount(0)
+  })
+
+  test('a STANDING link with an open round renders the ordinary order page (the shipped hero + cartbar)', async ({ page }) => {
+    const host = await makeHost('UiOpen')
+    const s = (await standing(host)).standing.token
+    const cycle = await makeCycle('UiOpen')
+    await addProduct(cycle.id, 'UiOpen')
+    await page.setViewportSize(GL2_PHONE)
+    await page.goto(`/g/${s}`)
+    await expect(page.getByRole('heading', { name: cycle.name })).toBeVisible()
+    await expect(page.getByTestId('open-checkout')).toBeVisible()
+    await expect(page.getByTestId('preopen-hero')).toHaveCount(0)
+  })
+})
+
+test.describe('GL-T2 · source pins', () => {
+  test.skip(!HAS_BACKEND_SRC, NEEDS_BACKEND_SRC)
+
+  test('the standing lookup lives in resolveEntry (a lookup, never a SELECTed column), resolveLink is gone, and the per-cycle mint goes through uniqueGuestToken()', () => {
+    const src = readableBackend('routes/guest.js', ['function resolveEntry', 'function getOrCreateCycleLink', "res.set('Cache-Control', 'no-store')"])
+    expect(src, 'the replaced resolver is gone').not.toMatch(/function\s+resolveLink\b/)
+    expect((src.match(/guest_link_token/g) || []).length, 'exactly ONE mention: the WHERE of the lookup').toBe(1)
+    expect(src).toMatch(/SELECT id, name, active FROM friends WHERE guest_link_token = \?/)
+    expect(src, 'the get-or-create INSERT takes its token from the shared helper').toMatch(/INSERT INTO guest_order_links[^;]*\)\s*\.run\(uniqueGuestToken\(\)/)
+    expect(src.match(/\basync\b|\bawait\b/g), 'still zero concurrency keywords (UC-GR-011, rule 8)').toBe(null)
   })
 })

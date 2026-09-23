@@ -610,7 +610,7 @@ test.describe('UC-GR-001/002 — order_token alone is the credential', () => {
     await refreshAdminToken()
     const { host, cycle, link, created, orderToken } = await orderScenario('readonly')
 
-    // Locked cycle — the GSO-T4 asymmetry: the listing 410s, the status URL must not.
+    // Locked cycle — the GSO-T4 asymmetry: the listing ~~410s~~ closes (pre-open page, 19 §UC-GL-002), the status URL must not.
     await setCycleStatus(cycle.id, 'locked')
     const locked = await ctx.get(canonicalPath(orderToken))
     expect(locked.status()).toBe(200)
@@ -619,7 +619,8 @@ test.describe('UC-GR-001/002 — order_token alone is the credential', () => {
     expect(lockedBody.items_editable).toBe(false)
     expect(lockedBody.payment.reference).toBe(`G${created.order.id} / ${IDENTITY.guest_name} / ${cycle.name}`)
     // …and the orderable listing is NOT published while un-editable (that is what
-    // stops the status GET leaking what a locked cycle 410s).
+    // stops the status GET leaking what a locked cycle's listing withholds — ~~410s~~,
+    // the pre-open page since 19 §UC-GL-002).
     expect(lockedBody.products, 'no product grid while not editable').toBeUndefined()
     expect(lockedBody.availability).toBeUndefined()
 
@@ -1290,10 +1291,28 @@ test.describe('UC-GR-004 — admin reads + creates host share links', () => {
     const host = await makeHost('linklocked')
     await setCycleStatus(cycle.id, 'locked')
 
+    const product = await addProduct(cycle.id, { name: `Linklocked Coffee ${uniq}`, purpose: 'Espresso', price_250g: 10 })
     const res = await adminCreateLink(cycle.id, host.id)
     expect(res.status()).toBe(201)
-    // Inert, as the spec says: `resolveLink` 410s a non-open cycle.
-    expect((await ctx.get(`/api/guest/${(await res.json()).link.token}`)).status()).toBe(410)
+    const token = (await res.json()).link.token
+    // Inert, as the spec says. SANCTIONED RETARGET (GL-T2, 19 §UC-GL-002 rule 4 / D7): the listing was 410; it is now 200 `page:'preopen'`.
+    const listing = await ctx.get(`/api/guest/${token}`)
+    expect(listing.status()).toBe(200)
+    const listingBody = await listing.json()
+    expect(listingBody.page, 'a non-open cycle lists the pre-open page').toBe('preopen')
+    expect(listingBody.products, 'no orderable catalogue').toBeUndefined()
+    // Counter-pin (rule 5): still INERT for ordering — a submit through it is the 409 `closed`.
+    const submit = await ctx.post(`/api/guest/${token}/orders`, {
+      data: { ...IDENTITY, items: [{ product_id: product.id, variant: '250g', quantity: 1 }] },
+    })
+    expect(submit.status(), 'the link grants no ordering').toBe(409)
+    expect((await submit.json()).reason).toBe('closed')
+    // Read back: the refused submit wrote no sub-order on that cycle.
+    const view = await ctx.get(`/api/guest-links/cycle/${cycle.id}`, { headers: host.auth })
+    expect(view.status()).toBe(200)
+    const viewBody = await view.json()
+    expect(viewBody.link?.token, 'non-vacuity: the host view is the admin-created link').toBe(token)
+    expect(viewBody.guest_orders, 'no sub-order written').toEqual([])
   })
 
   test('BOTH auth directions: the new admin routes refuse anonymous and friend tokens; the three host routes refuse an admin token', async () => {

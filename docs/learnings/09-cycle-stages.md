@@ -504,7 +504,9 @@ proof for both readers.
   (`guest.js:763`) and that message DOES reach a guest's screen — `GuestOrder.vue` assigns
   it to `checkoutError` and renders it in the `checkout-error` banner — while
   `GET /api/guest/:token` answers **410** (`guest.js:538`), whose message `GuestOrder.vue`
-  discards in favour of its own copy. So it is reachable, it is a PUT-independent path, and
+  discards in favour of its own copy. (~~410 on GET~~ **SUPERSEDED by 19 §UC-GL-002 / GL-T2:
+  `resolveEntry`, formerly `resolveLink`, answers the listing of a non-open cycle with 200
+  `page:'preopen'`; the string is served by the submit 409 only.**) So it is reachable, it is a PUT-independent path, and
   the only reason the sweep misses it is that the sweep loads the READ view of a resolvable
   link, never a refused write.
 
@@ -517,7 +519,9 @@ proof for both readers.
   §UC-CS-008's „the page contains neither „kolo" nor „cyklus"" is true **of the read view
   only**. Leaving all three is still right — `18-portal-information-architecture.md`'s
   hand-off list already owns the two client ones and 19 §208 pins the server one — but the
-  PO decision has to be made on the real inventory, which is THREE strings plus a read-view
+  PO decision has to be made on the real inventory, which is THREE strings (**TWO since GL-T2:
+  `GuestOrder.vue:170` went with the dead `closed` card, and the server string is served by
+  the submit 409 only — see `11-guest-standing-link.md` GL-T2 §6**) plus a read-view
   caveat, not one.
 
 The supersession was written into every copy: `06-guest-flow.md:48` (conflict #1) and
@@ -585,7 +589,8 @@ finish, each with an owner, so the chain does not end at „the next row inherit
    Today it is invisible **because of one test** — the `status`-before-`stage` pin — and
    §UC-CS-005's seven-row acceptance table is a fixed point of that inversion, so the
    obvious test would not have caught it.
-2. ⚠ **THREE guest-facing „cyklus" strings survive the module's own vocabulary ban**
+2. ⚠ **THREE guest-facing „cyklus" strings survive the module's own vocabulary ban** (~~three~~
+   **two since GL-T2** — `GuestOrder.vue:170` was removed with the `closed` card variant)
    (`routes/guest.js:216`, `GuestOrder.vue:170`, `GuestProductGrid.vue:76`). Leaving them
    is correct — 19 §208 pins the server one and 18's hand-off list owns the two client ones
    — but §UC-CS-008's „the page contains neither „kolo" nor „cyklus"" is therefore true of

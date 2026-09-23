@@ -11,6 +11,9 @@ import { guestPaymentBlock } from '../helpers/payment.js';
 import { renderEmail } from '../helpers/email-templates.js';
 import { sendMail } from '../helpers/mailer.js';
 import { resolveLoginUrl } from '../helpers/credentials-message.js';
+// 19 §UC-GL-002: the link-token generator for BOTH spaces (the get-or-create below
+// mints a per-cycle row) and „the current round".
+import { uniqueGuestToken, currentOpenCycle } from '../helpers/standing-link.js';
 
 const router = Router();
 
@@ -37,9 +40,11 @@ const router = Router();
 //
 // Status codes, deliberately distinct so the page can say the right thing:
 //   404 — no such token (typo / never existed / revoked beyond recognition)
-//   410 — the token is real but the door is closed: link deactivated, or the
-//         cycle is not `open` (spec is explicit about 410 on GET)
-//   409 — the cycle closed between loading the page and submitting (lock race)
+//   410 — the token is real but the door is closed: link or host deactivated
+//         (~~or the cycle is not `open`~~ — SUPERSEDED by 19 §UC-GL-002: a non-open
+//         cycle is now a 200 `page: 'preopen'` on the listing; see resolveEntry)
+//   409 — the cycle closed between loading the page and submitting (lock race),
+//         and any submit that resolves to the pre-open state
 //   400 — identity validation, empty cart, stock limits
 
 // PC-T8 (12 §UC-PC-012 image fallback): `image` COALESCEs to the catalog
@@ -189,35 +194,267 @@ function findCycle(cycleId) {
   ).get(cycleId);
 }
 
-// Resolve a token to an orderable (link, cycle) pair.
-// `closedStatus` is the status to report when the cycle is not open: 410 for the
-// listing (the door was already shut when the guest arrived), 409 for a submit
-// (the door shut while they were shopping).
-function resolveLink(token, closedStatus) {
-  const link = findLink(token);
-  if (!link) {
-    return { status: 404, error: 'Tento odkaz na objednávku neexistuje' };
+// ═══════════════════════════════════════════════════════════════════════════
+// resolveEntry(token, { forSubmit }) — 19 §UC-GL-002. It REPLACED GSO-T3's
+// `resolveLink(token, closedStatus)`. ONE resolver over BOTH token spaces:
+//
+//   1. `guest_order_links.token` (a per-cycle, „legacy" link) first, then
+//      `friends.guest_link_token` (the host's STANDING link). Both miss ⇒ the ONE
+//      uniform 404 — same message and shape whichever table was consulted, so the
+//      endpoint is no oracle about which space a string belongs to.
+//   2. A STANDING hit resolves to the host's per-cycle row for „the current round"
+//      (`currentOpenCycle()`), which it GETS OR CREATES — so every shipped mechanism
+//      downstream (stock, pricing, sub-orders, pickup store, host/admin views,
+//      distribution, aggregation, rewards, recovery) sees an ordinary row and nothing
+//      else in this file needed a second code path. No open round ⇒ the pre-open page.
+//   3. A LEGACY hit on a cycle that is not open ⇒ the pre-open page in its STALE
+//      variant, never the newer round (D7: an old per-cycle link must not become an
+//      evergreen door). It creates nothing.
+//
+// Returns `{ kind: 'order', link, cycle }`, `{ kind: 'preopen', host, staleCycle,
+// openCycle }` (`openCycle` = the open round a stale link does NOT resolve to, or
+// null — `openElsewhere` in the spec is `!!openCycle`), or a refusal
+// `{ status, error, reason? }`.
+//
+// `forSubmit: true` (the submit route) turns a pre-open outcome into the shipped 409
+// `closed` — the lock-race contract is unchanged for both spaces (rule 5).
+//
+// ⚠ The standing token is looked up HERE and nowhere else in this file. It is never
+// SELECTed into a payload: `LINK_SELECT` must not carry it (a source pin in
+// guest-standing-link.spec.js reads that template literal), and the per-cycle row's
+// OWN token never reaches a standing visitor either — no payload in this file carries
+// a link token, and the page keeps calling the API with the token it was opened
+// with. So a standing visitor cannot learn the per-cycle URL, and rotating the
+// standing token fully revokes it for new visitors (UC-GL-001 rule 3).
+// ═══════════════════════════════════════════════════════════════════════════
+
+const NOT_FOUND = Object.freeze({ status: 404, error: 'Tento odkaz na objednávku neexistuje' });
+// A deactivated link OR a deactivated host both close the door. The host is the one
+// who hands the goods over and who every friend order path already refuses when
+// inactive (orders.js), so their link must not keep taking new sub-orders — and
+// consuming stock — after they can no longer log in. Existing sub-orders survive
+// either case; only new visits break. The standing token inherits BOTH gates (D4,
+// UC-GL-002 rule 3): it is a resolver, not a second door around them.
+const INACTIVE = Object.freeze({
+  status: 410,
+  error: 'Tento odkaz už nie je aktívny. Požiadajte kolegu o nový.',
+  reason: 'inactive',
+});
+// The submit's lock race (UC-GL-002 rule 5). ⚠ The ONLY remaining caller is the
+// submit: the LISTING no longer answers `closed` at all (19 resolved conflict 1 —
+// a non-open cycle is the pre-open page), so this string now renders only through
+// GuestOrder.vue's `checkout-error` banner.
+const CLOSED = Object.freeze({
+  status: 409,
+  error: 'Objednávanie v tomto cykle je už uzavreté.',
+  reason: 'closed',
+});
+
+// The standing half of rule 1: a LOOKUP by the token, never a column in a payload.
+// `id`/`name`/`active` only — the host's first name is all a stranger is shown.
+function findStandingHost(token) {
+  return db.prepare('SELECT id, name, active FROM friends WHERE guest_link_token = ?').get(token);
+}
+
+function findLinkForHostCycle(hostFriendId, cycleId) {
+  return db.prepare(`${LINK_SELECT} WHERE gl.host_friend_id = ? AND gl.cycle_id = ?`).get(hostFriendId, cycleId);
+}
+
+// GET-OR-CREATE the host's per-cycle row for a standing visitor (rule 3). The INSERT
+// is the host's own `POST /guest-links/cycle/:id` statement verbatim, so a row born
+// here is indistinguishable from one the host created — the host view, the admin
+// view and the pickup store (`helpers/pickup.js`) all read it as theirs.
+//
+// ⚠ CHECK-THEN-WRITE, safe ONLY under `instances: 1` + this handler being
+// synchronous (CLAUDE.md, GA-T8): nothing can run between the SELECT and the INSERT.
+// `UNIQUE(host_friend_id, cycle_id)` is the DB-side backstop — should a second
+// process ever race this (cluster mode), its `SQLITE_CONSTRAINT*` falls through to
+// the re-SELECT, which then finds the winner's row. A constraint error the re-SELECT
+// cannot explain (a token clash `uniqueGuestToken()` is there to prevent) is
+// re-thrown, never swallowed into an `undefined` link.
+function getOrCreateCycleLink(hostFriendId, cycleId) {
+  const existing = findLinkForHostCycle(hostFriendId, cycleId);
+  if (existing) return existing;
+  try {
+    db.prepare(
+      'INSERT INTO guest_order_links (token, host_friend_id, cycle_id, active) VALUES (?, ?, ?, 1)'
+    ).run(uniqueGuestToken(), hostFriendId, cycleId);
+  } catch (e) {
+    if (!(typeof e?.code === 'string' && e.code.startsWith('SQLITE_CONSTRAINT'))) throw e;
+    const winner = findLinkForHostCycle(hostFriendId, cycleId);
+    if (winner) return winner;
+    throw e;
   }
-  // A deactivated link OR a deactivated host both close the door. The host is
-  // the one who hands the goods over and who every friend order path already
-  // refuses when inactive (orders.js), so their link must not keep taking new
-  // sub-orders — and consuming stock — after they can no longer log in.
-  // Existing sub-orders survive either case; only new visits break.
-  if (!link.active || !link.host_active) {
-    return { status: 410, error: 'Tento odkaz už nie je aktívny. Požiadajte kolegu o nový.', reason: 'inactive' };
+  return findLinkForHostCycle(hostFriendId, cycleId);
+}
+
+function orderOrPreopen(entry, forSubmit) {
+  if (entry.kind === 'preopen' && forSubmit) return CLOSED;
+  return entry;
+}
+
+function resolveStanding(host, forSubmit) {
+  if (!host.active) return INACTIVE;
+  const open = currentOpenCycle();
+  if (!open) {
+    return orderOrPreopen({ kind: 'preopen', host: { name: host.name }, staleCycle: null, openCycle: null }, forSubmit);
   }
+  const link = getOrCreateCycleLink(host.id, open.id);
+  // D4: the round's own `active` flag still decides. A host who deactivated this
+  // round's link said „no new colleague orders this round", and the standing URL
+  // must not route around that. (`host_active` is re-read with the row — the same
+  // gate, from the same JOIN, as a legacy hit.)
+  if (!link.active || !link.host_active) return INACTIVE;
   const cycle = findCycle(link.cycle_id);
-  if (!cycle) {
-    return { status: 404, error: 'Tento odkaz na objednávku neexistuje' };
+  if (!cycle) return NOT_FOUND;
+  return { kind: 'order', link, cycle };
+}
+
+function resolveLegacy(link, forSubmit) {
+  if (!link.active || !link.host_active) return INACTIVE;
+  const cycle = findCycle(link.cycle_id);
+  if (!cycle) return NOT_FOUND;
+  if (cycle.status === 'open') return { kind: 'order', link, cycle };
+  // D7 — the STALE variant. The legacy token creates nothing and resolves to nothing
+  // newer; it only learns WHETHER a newer round is open (`open_elsewhere`), so the
+  // page can say „ask the host for the current link" instead of offering a waitlist.
+  return orderOrPreopen({
+    kind: 'preopen',
+    host: { name: link.host_name },
+    staleCycle: { id: cycle.id, name: cycle.name },
+    openCycle: currentOpenCycle(),
+  }, forSubmit);
+}
+
+function resolveEntry(token, { forSubmit = false } = {}) {
+  const value = String(token || '');
+  const link = findLink(value);
+  if (link) return resolveLegacy(link, forSubmit);
+  const host = findStandingHost(value);
+  if (host) return resolveStanding(host, forSubmit);
+  return NOT_FOUND;
+}
+
+// ── The pre-open payload (19 §UC-GL-003) ─────────────────────────────────────
+// Everything the pre-open page renders, in one read. ⚠ Strictly LESS than the live
+// listing (rule 4): no payment settings, no host contact data, no link token of
+// either space, no `invite_code`, no availability, no counts of other guests.
+
+// A read of historical data on a public route — bounded (rule 2, PO 2026-09-19).
+const PREVIEW_LIMIT = 12;
+
+// Rule 1 — the next planned round: dated ones first (earliest date), then undated,
+// id breaking ties. `opens_at` is module 17's column, shipped (CS-T1) and selected
+// unguarded by `findCycle()` above, so no `PRAGMA table_info` guard is needed here.
+function nextPlannedCycle() {
+  return db.prepare(`
+    SELECT id, name, opens_at, plan_note FROM order_cycles
+    WHERE status = 'planned'
+    ORDER BY (opens_at IS NULL), opens_at ASC, id ASC
+    LIMIT 1
+  `).get();
+}
+
+// Rule 2 — „the last round": the newest locked or completed cycle. Also the cycle a
+// waitlist signup is keyed to — GL-T3's POST …/waitlist (UC-GL-004 rule 3) must
+// read THIS function, never a second copy of the query.
+function lastClosedCycle() {
+  return db.prepare(`
+    SELECT id, name, markup_ratio FROM order_cycles
+    WHERE status IN ('locked', 'completed')
+    ORDER BY id DESC
+    LIMIT 1
+  `).get();
+}
+
+function preopenNext(openCycle) {
+  if (openCycle) {
+    return { kind: 'open_elsewhere', opens_at: null, plan_note: null, cycle_name: openCycle.name };
   }
-  if (cycle.status !== 'open') {
-    return {
-      status: closedStatus,
-      error: 'Objednávanie v tomto cykle je už uzavreté.',
-      reason: 'closed',
-    };
+  const planned = nextPlannedCycle();
+  if (!planned) return { kind: 'unknown', opens_at: null, plan_note: null, cycle_name: null };
+  const opensAt = planned.opens_at || null;
+  const planNote = planned.plan_note || null;
+  let kind = 'unknown';
+  if (opensAt) kind = 'planned_date';
+  else if (planNote) kind = 'planned_note';
+  return { kind, opens_at: opensAt, plan_note: planNote, cycle_name: planned.name };
+}
+
+function preopenPreview() {
+  const cycle = lastClosedCycle();
+  if (!cycle) return null;
+  const markupRatio = cycle.markup_ratio || 1.0;
+  // The shipped listing query, capped. Prices through `withMarkup()` exactly as the
+  // live listing (the prototype shows priced, disabled cards) — and NO availability.
+  // ⚠ `stock_limit_g` is STRIPPED (review decision, GL-T2): rule 2 says „no
+  // `stock_limit_g` semantics on the client", and a closed round's stock caps are
+  // nothing a stranger needs — the preview carries strictly less than the listing.
+  const products = db.prepare(
+    `SELECT ${PRODUCT_COLUMNS} FROM ${PRODUCT_JOIN} WHERE p.cycle_id = ? AND p.active = 1 ORDER BY p.purpose, p.name LIMIT ?`
+  ).all(cycle.id, PREVIEW_LIMIT).map((product) => {
+    const { stock_limit_g: _omitted, ...rest } = withMarkup(product, markupRatio);
+    return rest;
+  });
+  return { cycle: { id: cycle.id, name: cycle.name }, products };
+}
+
+function preopenPayload({ host, staleCycle, openCycle }) {
+  const next = preopenNext(openCycle);
+  return {
+    page: 'preopen',
+    host: { first_name: firstName(host.name) },
+    next,
+    stale_cycle: staleCycle ? { id: staleCycle.id, name: staleCycle.name } : null,
+    preview: preopenPreview(),
+    // Rule 3: while a round is open the guest should be ordering, not waiting — and a
+    // stale link must not collect contacts for a round already in progress. The
+    // SERVER decides the form's presence (GL-T3's POST enforces the same condition).
+    waitlist: { available: next.kind !== 'open_elsewhere' },
+  };
+}
+
+// The LIVE listing — the shipped payload, byte-identical (UC-GL-002: „byte-identical
+// downstream behaviour").
+function orderListing({ link, cycle }) {
+  const markupRatio = cycle.markup_ratio || 1.0;
+  const products = db.prepare(
+    `SELECT ${PRODUCT_COLUMNS} FROM ${PRODUCT_JOIN} WHERE p.cycle_id = ? AND p.active = 1 ORDER BY p.purpose, p.name`
+  ).all(cycle.id).map((product) => withMarkup(product, markupRatio));
+
+  return {
+    cycle: {
+      id: cycle.id,
+      name: cycle.name,
+      status: cycle.status,
+      type: cycle.type,
+      expected_date: cycle.expected_date,
+      plan_note: cycle.plan_note,
+      // CS-T1 (17 §UC-CS-004): the three stage-model fields ride the payload the
+      // guest already fetches, so their timeline needs no second request. Read-only
+      // and not sensitive — no admin-only column joins them.
+      opens_at: cycle.opens_at,
+      closes_at: cycle.closes_at,
+      stage: cycle.stage,
+    },
+    host: { first_name: firstName(link.host_name) },
+    products,
+    // Stock limits count friend orders AND other guests' sub-orders.
+    availability: cycleAvailability(cycle.id),
+  };
+}
+
+// `GET /:token`'s whole answer as `{ status, body }` — a pure function of the token
+// and the database, so e2e/tests/guest-standing-link.spec.js can drive it in a
+// throwaway boot for the DB states the shared e2e target never reaches (no open
+// round at all; no planned round).
+function listingResponse(token) {
+  const resolved = resolveEntry(token);
+  if (resolved.status) {
+    return { status: resolved.status, body: { error: resolved.error, reason: resolved.reason } };
   }
-  return { link, cycle };
+  if (resolved.kind === 'preopen') return { status: 200, body: preopenPayload(resolved) };
+  return { status: 200, body: orderListing(resolved) };
 }
 
 // ⚠ ONE HOME (15 §UC-PL-001/003). This file composes NO payment data of its own any
@@ -339,9 +576,10 @@ function replaceItems(guestOrderId, lines) {
 }
 
 // Resolve a sub-order from its `order_token` ALONE — WITHOUT any of the
-// open/active gating `resolveLink` applies (14 §UC-GR-001).
+// open/active gating `resolveEntry` applies (14 §UC-GR-001; it was `resolveLink`
+// until 19 §UC-GL-002 — this function is untouched by that rewrite, rule 6).
 //
-// That asymmetry is the point of §UC-GSO-004: the product listing is 410 once the
+// That asymmetry is the point of §UC-GSO-004: the product listing stops once the
 // cycle closes or the host deactivates the link, but the guest must still be able
 // to open their own status URL and see what they ordered, what it costs and the
 // payment reference. Read stays open; the write half re-applies the gates.
@@ -354,7 +592,7 @@ function replaceItems(guestOrderId, lines) {
 // the Martina Tomašová incident: she had paid, and her order sat in the DB
 // unreachable by her, the host and the admin alike. The share link and the
 // per-order URL are two credentials with DIFFERENT LIFETIMES: regeneration must
-// keep revoking the former (see `resolveLink`, untouched — a retired link still
+// keep revoking the former (see `resolveEntry`, formerly `resolveLink` — a retired link still
 // lists nothing and takes no new sub-orders) without killing the latter.
 //
 // Nothing is weakened by the change: `order_token` comes from the same
@@ -477,7 +715,9 @@ function statusPayload(link, cycle, order) {
   if (editable) {
     // The edit screen reuses the ordering grid, so it needs the same product +
     // availability data — but only while editing is actually possible. A locked
-    // cycle publishes no orderable product list (its listing endpoint is 410).
+    // cycle publishes no orderable product list (its listing endpoint answers the
+    // pre-open page instead, 19 §UC-GL-003 — whose read-only preview carries no
+    // availability either).
     const markupRatio = cycle.markup_ratio || 1.0;
     payload.products = db.prepare(
       `SELECT ${PRODUCT_COLUMNS} FROM ${PRODUCT_JOIN} WHERE p.cycle_id = ? AND p.active = 1 ORDER BY p.purpose, p.name`
@@ -534,38 +774,21 @@ router.post('/o/:orderToken/invite-request', guestWriteLimiter, (req, res) => {
 // No payment details here: Decision 1 gives the guest the IBAN, but only once
 // they have a sub-order to pay for (see the submit response). An anonymous
 // product listing must not carry it.
+//
+// 19 §UC-GL-002/003: 200 with the live listing (`kind: 'order'`), 200 with
+// `page: 'preopen'` when nothing is orderable (a standing token with no open round,
+// or a legacy token whose cycle is not open — the 410 `closed` of GSO-T3 is
+// RETIRED), 404 unknown, 410 `inactive`.
+//
+// ⚠ `Cache-Control: no-store` on EVERY answer of this handler (rule 5, D8). The
+// guest-invite-dead.spec.js incident: Chromium served a cached 410 after the
+// server's answer had changed. A guest who bookmarked the standing URL and comes
+// back once the round opened must get the live page, not yesterday's „zatvorené" —
+// and the refusals are the answers most likely to be re-served stale.
 router.get('/:token', guestReadLimiter, (req, res) => {
-  const resolved = resolveLink(req.params.token, 410);
-  if (resolved.error) {
-    return res.status(resolved.status).json({ error: resolved.error, reason: resolved.reason });
-  }
-  const { link, cycle } = resolved;
-  const markupRatio = cycle.markup_ratio || 1.0;
-
-  const products = db.prepare(
-    `SELECT ${PRODUCT_COLUMNS} FROM ${PRODUCT_JOIN} WHERE p.cycle_id = ? AND p.active = 1 ORDER BY p.purpose, p.name`
-  ).all(cycle.id).map((product) => withMarkup(product, markupRatio));
-
-  res.json({
-    cycle: {
-      id: cycle.id,
-      name: cycle.name,
-      status: cycle.status,
-      type: cycle.type,
-      expected_date: cycle.expected_date,
-      plan_note: cycle.plan_note,
-      // CS-T1 (17 §UC-CS-004): the three stage-model fields ride the payload the
-      // guest already fetches, so their timeline needs no second request. Read-only
-      // and not sensitive — no admin-only column joins them.
-      opens_at: cycle.opens_at,
-      closes_at: cycle.closes_at,
-      stage: cycle.stage,
-    },
-    host: { first_name: firstName(link.host_name) },
-    products,
-    // Stock limits count friend orders AND other guests' sub-orders.
-    availability: cycleAvailability(cycle.id),
-  });
+  res.set('Cache-Control', 'no-store');
+  const { status, body } = listingResponse(req.params.token);
+  res.status(status).json(body);
 });
 
 // ---------------------------------------------------------------------------
@@ -759,9 +982,12 @@ function deliverOrderConfirmation(req, { order, items, payment }) {
 
 // POST /guest/:token/orders — submit a guest sub-order.
 router.post('/:token/orders', guestWriteLimiter, (req, res) => {
-  // A submit into a closed cycle is the lock race → 409 (not 410).
-  const resolved = resolveLink(req.params.token, 409);
-  if (resolved.error) {
+  // A submit into a closed cycle is the lock race → 409 (not 410) — for BOTH token
+  // spaces (19 §UC-GL-002 rule 5): `forSubmit` turns the pre-open state into 409
+  // `closed`. A standing token with an open round lands here on the host's per-cycle
+  // row (got or created), so the sub-order hangs off an ordinary link.
+  const resolved = resolveEntry(req.params.token, { forSubmit: true });
+  if (resolved.status) {
     return res.status(resolved.status).json({ error: resolved.error, reason: resolved.reason });
   }
   const { link, cycle } = resolved;
@@ -1195,5 +1421,9 @@ router.post('/:token/orders/:orderToken/invite-request', guestWriteLimiter, (req
   }
   handleInviteRequest(req, res, resolved);
 });
+
+// The listing's pure core, for guest-standing-link.spec.js's throwaway-boot probes
+// only (DB states the shared e2e target cannot reach). No other module imports it.
+export { listingResponse, resolveEntry };
 
 export default router;
