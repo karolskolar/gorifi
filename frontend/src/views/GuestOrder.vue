@@ -10,6 +10,8 @@ import PaymentModal from '@/components/PaymentModal.vue'
 import GuestProductGrid from '@/components/GuestProductGrid.vue'
 import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
 import CartLineList from '@/components/CartLineList.vue'
+import GuestSteps from '@/components/GuestSteps.vue'
+import GuestRoastersLine from '@/components/GuestRoastersLine.vue'
 import { fmtEur } from '@/lib/money'
 import { purposeOrder } from '@/lib/purposes'
 import { itemsLabel } from '@/lib/plural'
@@ -69,6 +71,10 @@ const availability = ref({})
 
 const cart = ref({}) // { `${productId}-${variant}`: quantity }
 const activeTab = ref('')
+
+// 19 §UC-GL-007 item 2 — the open hero's „Viac o tom, ako to funguje" fold. Collapsed
+// on every load; deliberately NOT persisted (no storage, no query param).
+const showHow = ref(false)
 
 const showCheckout = ref(false)
 const submitting = ref(false)
@@ -549,6 +555,35 @@ function goToStatus() {
             >
               <NeoIcon name="cal" />
               <span>Objednávka do: {{ cycle.expected_date }}</span>
+            </div>
+            <!-- 19 §UC-GL-007 (GL-T4) — the 3-step strip, the roasters row and the
+                 „Viac o tom, ako to funguje" toggle: below the „Spoločná objednávka ·
+                 organizuje" line (and its deadline, which belongs to it) and ABOVE the
+                 badge row (PO: the open-state chrome and the badge row stay as SHIPPED,
+                 19 D6). The 12px steps are the prototype's `gap:12` hero rhythm,
+                 written as margins because the shipped hero is a block, not a flex
+                 column. The detail is `v-if` (collapsed by default, not persisted) — a
+                 closed toggle leaves no second step list in the DOM. -->
+            <GuestSteps compact :host-name="host?.first_name || ''" data-testid="guest-steps-compact" style="margin-top:12px" />
+            <div class="flex flex-wrap items-center justify-between gap-2" style="margin-top:12px">
+              <GuestRoastersLine />
+              <button
+                type="button"
+                class="btn ghost sm"
+                style="color:var(--accent);font-weight:700;padding:0"
+                data-testid="guest-steps-toggle"
+                :aria-expanded="showHow ? 'true' : 'false'"
+                :aria-controls="showHow ? 'guest-steps-detail' : null"
+                @click="showHow = !showHow"
+              >{{ showHow ? 'Skryť' : 'Viac o tom, ako to funguje' }}</button>
+            </div>
+            <div
+              v-if="showHow"
+              id="guest-steps-detail"
+              data-testid="guest-steps-detail"
+              style="border-top:2px solid rgba(10,10,10,0.12);padding-top:12px;margin-top:12px"
+            >
+              <GuestSteps :host-name="host?.first_name || ''" />
             </div>
             <div class="flex flex-wrap gap-[6px] mt-3">
               <span class="badge acc">Login netreba</span>

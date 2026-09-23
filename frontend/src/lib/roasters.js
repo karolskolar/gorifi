@@ -6,10 +6,14 @@
 //     · `components/PortalExplainer.vue`  — „Kto sme a odkiaľ je káva" (§UC-PI-012 item 5)
 //     · `views/FriendOrder.vue`           — the product card's roastery badge + its
 //                                           popover (§UC-PI-014)
-//     · `components/GuestRoastersLine.vue` — module 19 §UC-GL-007, GL-T4. It imports
-//                                           THIS file; a second copy of the texts on
-//                                           the guest surface is the defect this
-//                                           module exists to prevent.
+//     · `components/GuestRoastersLine.vue` — module 19 §UC-GL-007, GL-T4 (SHIPPED).
+//                                           It imports THIS file — labels, badge
+//                                           classes AND the `short` parenthesis; a
+//                                           second copy of the texts on the guest
+//                                           surface is the defect this module exists
+//                                           to prevent. Mounted on the open guest hero
+//                                           (`GuestOrder.vue`) and, from GL-T5, on the
+//                                           pre-open hero.
 //
 //   MUST NOT import this file:
 //     · EVERY ADMIN SURFACE (`views/Admin*.vue`, `components/analytics/*`,
@@ -48,6 +52,13 @@
  *                badge), `acc-o` for Robo. §UC-PI-014: an unknown roastery keeps
  *                today's `acc-o`, which is the CALLER's fallback, not a row here.
  * - `text`       the description, shown in the explainer card and in the popover.
+ * - `short`      the PARENTHESIS after the badge on the guest roasters line (19
+ *                §UC-GL-007 rule 4, prototype `G2Roasters`: „Káva od [Goriffee]
+ *                (pražiareň) a [Robo] (domáci pražič, SCA výbery).") — GL-T4. Added HERE,
+ *                not typed into `GuestRoastersLine.vue`, because 19 names this file the
+ *                one home of the Goriffee / Robo texts: a second, shorter description in
+ *                a component is the second copy this module exists to prevent. PO copy
+ *                (Q13.a) — reproduce, never improve.
  */
 export const ROASTERS = [
   {
@@ -55,14 +66,16 @@ export const ROASTERS = [
     match: /^goriffee$/i,
     label: 'Goriffee',
     badgeClass: '',
-    text: 'Pražiareň — stály základ ponuky. Espresso aj filter, čerstvo pražené na objednávku.'
+    text: 'Pražiareň — stály základ ponuky. Espresso aj filter, čerstvo pražené na objednávku.',
+    short: 'pražiareň'
   },
   {
     key: 'robo',
     match: /^robo$/i,
     label: 'Robo',
     badgeClass: 'acc-o',
-    text: 'Domáci pražič. Hľadá zelenú kávu s vysokým hodnotením SCA (Specialty Coffee Association) a praží ju sám, v malých dávkach — všetko pod jeho značkou je ručne pražené doma.'
+    text: 'Domáci pražič. Hľadá zelenú kávu s vysokým hodnotením SCA (Specialty Coffee Association) a praží ju sám, v malých dávkach — všetko pod jeho značkou je ručne pražené doma.',
+    short: 'domáci pražič, SCA výbery'
   }
 ]
 

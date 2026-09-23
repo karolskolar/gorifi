@@ -717,8 +717,14 @@ test.describe('PI-T8 · 18 §UC-PI-014 — `lib/roasters.js` has one home and on
     // A boundary guard that misses the house style is not a guard.
     const IMPORTS_ROASTERS = /(?:from|import\()\s*['"][^'"]*lib\/roasters(?:\.js)?['"]/
     const importers = files.filter((rel) => IMPORTS_ROASTERS.test(readFileSync(join(SRC, rel), 'utf8')))
-    expect(importers.sort(), 'the two consumers PI-T8 ships; GL-T4 adds GuestRoastersLine.vue')
-      .toEqual([join('components', 'PortalExplainer.vue'), join('views', 'FriendOrder.vue')].sort())
+    // GL-T4 (19 §UC-GL-007) added the THIRD named consumer, `GuestRoastersLine.vue` —
+    // added to the exact set, the sweep itself unchanged (never loosened).
+    expect(importers.sort(), 'the two consumers PI-T8 ships + GL-T4\'s GuestRoastersLine.vue')
+      .toEqual([
+        join('components', 'PortalExplainer.vue'),
+        join('views', 'FriendOrder.vue'),
+        join('components', 'GuestRoastersLine.vue'),
+      ].sort())
 
     // …stated as the BOUNDARY as well as the list, so a third friend-surface consumer
     // (GL-T4's guest line) does not have to weaken the rule to land: no admin file,

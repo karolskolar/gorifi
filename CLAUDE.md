@@ -455,6 +455,7 @@ append the full write-up to the matching learnings file and add at most one line
   halves, so whichever way the PO rules, exactly one of those expectations is the edit (PI-T1 §1, PI-T4).
 - Guest surface (`GuestOrder.vue`, `GuestOrderStatus.vue`) deliberately lags the friend skin in places; it is
   not the reference when restyling.
+- Nothing new inside a guest hero (`.card.hl`, `preopen-hero`) may carry `.badge` or `.mono`: shipped pins count/strict-resolve them. `GuestSteps`/`GuestRoastersLine` re-declare those rules in scoped classes, pinned computed-style-equal (GL-T4).
 
 ### Documentation discipline
 - A rule stated as a guard/grep must enumerate EVERY file that edits the column, and a superseded claim must be

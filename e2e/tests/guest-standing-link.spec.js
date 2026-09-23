@@ -31,6 +31,11 @@
 // shared target never reaches (NO open round anywhere; no planned round), the API
 // matrix against the running server, and a UI pass.
 //
+// GL-T4 — 19 §UC-GL-007: `GuestSteps.vue` + `GuestRoastersLine.vue` on the OPEN hero
+// (compact strip, roasters row, „Viac o tom, ako to funguje" fold). Its tests are the
+// `GL-T4 ·` describes at the end: real per-test fixtures, geometry + computed style,
+// 320/378px, the CSP request watch, and frontend source pins.
+//
 // Three kinds of test:
 //   §1–§2  THROWAWAY-BOOT probes (the GA-T1 / ML-T1 idiom): `schema.js` and the helper
 //          are imported by a child `node` against a temp DB file, so the migration can
@@ -1825,5 +1830,438 @@ test.describe('GL-T2 · source pins', () => {
     expect(src).toMatch(/SELECT id, name, active FROM friends WHERE guest_link_token = \?/)
     expect(src, 'the get-or-create INSERT takes its token from the shared helper').toMatch(/INSERT INTO guest_order_links[^;]*\)\s*\.run\(uniqueGuestToken\(\)/)
     expect(src.match(/\basync\b|\bawait\b/g), 'still zero concurrency keywords (UC-GR-011, rule 8)').toBe(null)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GL-T4 · 19 §UC-GL-007 — the 3-step guest explainer on the OPEN hero
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// `GuestSteps.vue` (compact / full, `packeta` default OFF) + `GuestRoastersLine.vue`
+// (imports `lib/roasters.js`) + the open hero's strip, roasters row and „Viac o tom,
+// ako to funguje" toggle. The pre-open page's FULL mount is GL-T5's (it reuses both
+// components); these tests measure the open hero only.
+//
+// ⚠ TWO CANON DEVIATIONS are pinned here, not merely recorded: the step dot is not
+// `.mono` and the roaster badges are not `.badge`, because `guest-order-shell.spec.js`
+// (UNMODIFIED, 19 §UC-GL-011 item 2) counts `hero.locator('.badge')` = 3 and resolves
+// `hero.locator('.mono')` strictly. The tests below prove BOTH halves: the shipped
+// counts still hold with the fold OPEN (the worst case), and the substitutes are
+// computed-style-equal to the real classes, so the deviation is a selector, not pixels.
+const GL4_STEPS = ['Objednáte', 'Zabalíme', 'Prevezmete']
+const GL4_DETAILS = [
+  'Vyberiete kávu, zadáte meno a mobil. Bez registrácie.',
+  'Kávu nakúpime v pražiarni a zabalíme. Vtedy zaplatíte cez QR alebo Revolut.',
+]
+const GL4_TOGGLE_OPEN = 'Viac o tom, ako to funguje'
+const GL4_TOGGLE_CLOSE = 'Skryť'
+const GL4_ROASTERS_LIB = join(REPO_ROOT, 'frontend', 'src', 'lib', 'roasters.js')
+const FRONTEND_SRC_DIR = join(REPO_ROOT, 'frontend', 'src')
+const HAS_FRONTEND_SRC = existsSync(join(FRONTEND_SRC_DIR, 'views', 'GuestOrder.vue'))
+const NEEDS_FRONTEND_SRC = 'needs the frontend source beside e2e/ (skipped against a deployment)'
+
+// One hermetic OPEN link per test: its own host, cycle (Goriffee + Robo products) and
+// per-cycle token. Returns what the page needs to be asserted against.
+async function gl4OpenPage(page, label, viewport = GL2_PHONE, { expectedDate = null } = {}) {
+  const host = await makeHost(label)
+  const cycle = await makeCycle(label)
+  if (expectedDate) {
+    expect((await admin(`/api/cycles/${cycle.id}`, { method: 'patch', data: { expected_date: expectedDate } })).status()).toBe(200)
+  }
+  for (const roastery of ['Goriffee', 'Robo']) {
+    const res = await admin('/api/products', {
+      method: 'post',
+      data: { cycle_id: cycle.id, name: `GL4 ${roastery} ${label} ${uniq}`, purpose: 'Espresso', roastery, price_250g: 9 },
+    })
+    expect(res.status(), 'product create').toBe(201)
+  }
+  const link = await shareLink(host, cycle.id)
+  await page.setViewportSize(viewport)
+  await page.goto(`/g/${link.token}`)
+  const hero = page.locator('.app .card.hl')
+  await expect(hero.locator('h1.h-screen')).toHaveText(cycle.name)
+  return { host, cycle, link, hero, first: host.name.split(' ')[0] }
+}
+
+const hOverflow = (page) => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+
+test.describe('GL-T4 · 19 §UC-GL-007 — the open hero: compact strip, roasters row, toggle', () => {
+  test('the compact strip sits inside the hero, BELOW the „organizuje" line and ABOVE the badge row — three titles, numbered, one glyph each, no details', async ({ page }) => {
+    const { hero } = await gl4OpenPage(page, 'Strip')
+    const strip = hero.getByTestId('guest-steps-compact')
+    await expect(strip).toHaveCount(1)
+    await expect(strip.getByTestId('guest-step')).toHaveCount(3)
+    await expect(strip.getByTestId('guest-step-title')).toHaveText(GL4_STEPS)
+    await expect(strip.getByTestId('guest-step-n')).toHaveText(['1', '2', '3'])
+    for (let i = 0; i < 3; i++) {
+      // An unknown NeoIcon name renders NOTHING, silently — so each glyph is counted.
+      await expect(strip.getByTestId('guest-step').nth(i).locator('svg'), `step ${i + 1} glyph`).toHaveCount(1)
+    }
+    await expect(strip.getByTestId('guest-step-detail'), 'compact = titles only').toHaveCount(0)
+
+    // Order, by DOM position AND by geometry (a CSS `order` could lie about one).
+    const order = await hero.evaluate((el) => {
+      const sub = [...el.querySelectorAll('.sub')].find((n) => n.textContent.includes('Spoločná objednávka · organizuje'))
+      const strip = el.querySelector('[data-testid="guest-steps-compact"]')
+      const roasters = el.querySelector('[data-testid="guest-roasters"]')
+      const badge = el.querySelector('.badge')
+      const before = (a, b) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+      const r = (n) => n.getBoundingClientRect()
+      return {
+        found: [sub, strip, roasters, badge].every(Boolean),
+        dom: [before(sub, strip), before(strip, roasters), before(roasters, badge)],
+        geo: [r(sub).bottom <= r(strip).top, r(strip).bottom <= r(roasters).top, r(roasters).bottom <= r(badge).top],
+        badgeText: badge.textContent.trim(),
+      }
+    })
+    expect(order.found, 'all four landmarks are in the hero').toBe(true)
+    expect(order.badgeText, 'the first `.badge` is the shipped row, not a roaster').toBe('Login netreba')
+    expect(order.dom, 'organizuje → strip → roasters → badge row, in the DOM').toEqual([true, true, true])
+    expect(order.geo, '…and on screen').toEqual([true, true, true])
+
+    // Compact geometry: one ROW (same top), left to right, 34px tiles, 14px titles.
+    const geo = await strip.evaluate((el) => [...el.querySelectorAll('[data-testid="guest-step"]')].map((s) => {
+      const tile = s.firstElementChild.getBoundingClientRect()
+      const title = s.querySelector('[data-testid="guest-step-title"]')
+      return { top: Math.round(tile.top), left: tile.left, w: tile.width, h: tile.height, fs: getComputedStyle(title).fontSize }
+    }))
+    expect(new Set(geo.map((g) => g.top)).size, 'three columns on one row').toBe(1)
+    expect(geo[0].left < geo[1].left && geo[1].left < geo[2].left).toBe(true)
+    for (const g of geo) {
+      expect([g.w, g.h], 'compact tile 34×34').toEqual([34, 34])
+      expect(g.fs).toBe('14px')
+    }
+  })
+
+  test('the toggle reveals the FULL layout under a 2px divider and flips its label; it collapses again; a reload starts collapsed (not persisted)', async ({ page }) => {
+    const { hero, first } = await gl4OpenPage(page, 'Toggle')
+    const toggle = hero.getByTestId('guest-steps-toggle')
+    const detail = hero.getByTestId('guest-steps-detail')
+    await expect(toggle).toHaveText(GL4_TOGGLE_OPEN)
+    await expect(toggle).toHaveClass(/\bbtn\b/)
+    await expect(toggle).toHaveClass(/\bghost\b/)
+    await expect(toggle).toHaveClass(/\bsm\b/)
+    await expect(toggle).toHaveCSS('color', 'rgb(255, 45, 135)')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(detail, 'collapsed by default').toHaveCount(0)
+
+    await toggle.click()
+    await expect(toggle).toHaveText(GL4_TOGGLE_CLOSE)
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(toggle).toHaveAttribute('aria-controls', 'guest-steps-detail')
+    await expect(detail).toBeVisible()
+    await expect(detail).toHaveCSS('border-top-width', '2px')
+    await expect(detail.getByTestId('guest-step-title')).toHaveText(GL4_STEPS)
+    // ⚠ `packeta` DEFAULTS OFF (GP-T3 flips it): step 3 ends after „Od {host}."
+    await expect(detail.getByTestId('guest-step-detail')).toHaveText([...GL4_DETAILS, `Od ${first}.`])
+    await expect(detail, 'no Packeta clause before module 20').not.toContainText('Packet')
+    // The full layout: a vertical list, 44px tiles, 19px titles.
+    const geo = await detail.evaluate((el) => [...el.querySelectorAll('[data-testid="guest-step"]')].map((s) => {
+      const tile = s.firstElementChild.getBoundingClientRect()
+      return { top: tile.top, left: Math.round(tile.left), w: tile.width, fs: getComputedStyle(s.querySelector('[data-testid="guest-step-title"]')).fontSize }
+    }))
+    expect(new Set(geo.map((g) => g.left)).size, 'one column').toBe(1)
+    expect(geo[0].top < geo[1].top && geo[1].top < geo[2].top).toBe(true)
+    for (const g of geo) {
+      expect(g.w, 'full tile 44').toBe(44)
+      expect(g.fs).toBe('19px')
+    }
+    // The strip stays while the detail is open (the prototype keeps both).
+    await expect(hero.getByTestId('guest-steps-compact')).toBeVisible()
+
+    await toggle.click()
+    await expect(toggle).toHaveText(GL4_TOGGLE_OPEN)
+    await expect(detail).toHaveCount(0)
+
+    // Not persisted: open it, reload, it is closed again.
+    await toggle.click()
+    await expect(detail).toBeVisible()
+    await page.reload()
+    await expect(hero.getByTestId('guest-steps-toggle')).toHaveText(GL4_TOGGLE_OPEN)
+    await expect(hero.getByTestId('guest-steps-detail')).toHaveCount(0)
+  })
+
+  test('the toggle is a real button: reachable by Tab and operable by both Enter and Space', async ({ page }) => {
+    const { hero } = await gl4OpenPage(page, 'Keys')
+    const toggle = hero.getByTestId('guest-steps-toggle')
+    const detail = hero.getByTestId('guest-steps-detail')
+    // A native <button> gets Tab order and Enter/Space activation from the element
+    // itself, not from a hand-rolled key handler — the CLAUDE.md "disabled doesn't
+    // stop a dispatched click" class of gap has a keyboard-access cousin here.
+    expect(await toggle.evaluate((n) => n.tagName), 'a native <button>').toBe('BUTTON')
+    expect(await toggle.evaluate((n) => n.tabIndex), 'not pulled out of the tab order').toBeGreaterThanOrEqual(0)
+
+    // Walk Tab from the top of the document until the toggle itself is the active
+    // element — proves it is genuinely reachable in sequence, not merely present.
+    await page.evaluate(() => document.body.focus())
+    let reached = false
+    for (let i = 0; i < 40 && !reached; i++) {
+      await page.keyboard.press('Tab')
+      reached = await toggle.evaluate((n) => n === document.activeElement)
+    }
+    expect(reached, 'Tab reaches the toggle within 40 presses').toBe(true)
+
+    await page.keyboard.press('Enter')
+    await expect(toggle).toHaveText(GL4_TOGGLE_CLOSE)
+    await expect(detail).toBeVisible()
+
+    await expect(toggle, 'focus stays on the toggle after activating it').toBeFocused()
+    await page.keyboard.press('Space')
+    await expect(toggle).toHaveText(GL4_TOGGLE_OPEN)
+    await expect(detail).toHaveCount(0)
+  })
+
+  test('the step tile + numbered dot match the prototype: 3px ink border, radius 10, 3px 3px 0 shadow, 20px magenta dot at the top-left corner', async ({ page }) => {
+    // `expectedDate` ⇒ the deadline `.mono` renders: the dot is measured AGAINST it.
+    const { hero } = await gl4OpenPage(page, 'Tile', GL2_PHONE, { expectedDate: '3. október 2026' })
+    await hero.getByTestId('guest-steps-toggle').click()
+    for (const scope of [hero.getByTestId('guest-steps-compact'), hero.getByTestId('guest-steps-detail')]) {
+      const m = await scope.getByTestId('guest-step').first().evaluate((s) => {
+        const tile = s.firstElementChild
+        const dot = s.querySelector('[data-testid="guest-step-n"]')
+        const t = getComputedStyle(tile)
+        const d = getComputedStyle(dot)
+        const tr = tile.getBoundingClientRect()
+        const dr = dot.getBoundingClientRect()
+        return {
+          border: [t.borderTopWidth, t.borderTopStyle, t.borderTopColor, t.borderTopLeftRadius],
+          shadow: t.boxShadow,
+          bg: t.backgroundColor,
+          dot: [dr.width, dr.height, d.backgroundColor, d.borderTopWidth, d.borderTopLeftRadius, d.fontSize, d.fontWeight],
+          offset: [Math.round(dr.left - tr.left), Math.round(dr.top - tr.top)],
+          pos: [d.position, d.top, d.left],
+          face: [d.fontFamily, parseFloat(d.letterSpacing) / parseFloat(d.fontSize)],
+          realMono: (() => {
+            const mono = document.querySelectorAll('.app .card.hl .mono')
+            if (mono.length !== 1) return null
+            const r = getComputedStyle(mono[0])
+            return [r.fontFamily, parseFloat(r.letterSpacing) / parseFloat(r.fontSize)]
+          })(),
+          isMonoClass: dot.classList.contains('mono'),
+        }
+      })
+      expect(m.border).toEqual(['3px', 'solid', 'rgb(10, 10, 10)', '10px'])
+      expect(m.shadow).toBe('rgb(10, 10, 10) 3px 3px 0px 0px')
+      expect(m.bg).toBe('rgb(255, 255, 255)')
+      expect(m.dot).toEqual([20, 20, 'rgb(255, 45, 135)', '2px', '999px', '10.5px', '700'])
+      // Canon `top:-9, left:-9` — measured from the tile's PADDING edge, so 3px of
+      // border puts the dot 6px outside the tile's outer box.
+      expect(m.pos).toEqual(['absolute', '-9px', '-9px'])
+      expect(m.offset, 'the dot hangs off the tile corner').toEqual([-6, -6])
+      // The canon's `.mono` face, WITHOUT the class (the shell spec's strict `.mono`) —
+      // measured against the hero's OWN deadline `.mono`, so a theme change to `.mono`
+      // that the scoped copy misses goes red here. letter-spacing is em-relative
+      // (`.01em` at 12.5px vs 10.5px), so it is compared per em.
+      expect(m.realMono, 'non-vacuity: exactly one real `.mono` (the deadline) to measure against').not.toBeNull()
+      expect(m.face[0]).toBe(m.realMono[0])
+      expect(m.face[1]).toBeCloseTo(m.realMono[1], 4)
+      expect(m.isMonoClass).toBe(false)
+    }
+  })
+
+  test('the roasters line: „Káva od [Goriffee] (pražiareň) a [Robo] (domáci pražič, SCA výbery)." — every roaster word from lib/roasters.js, badges pixel-equal to a real `.badge`', async ({ page }) => {
+    const { hero } = await gl4OpenPage(page, 'Roasters')
+    const line = hero.getByTestId('guest-roasters')
+    await expect(line).toHaveCount(1)
+    const runs = await line.evaluate((el) => [...el.children].map((c) => c.textContent.trim()))
+    expect(runs).toEqual(['Káva od', 'Goriffee', '(pražiareň) a', 'Robo', '(domáci pražič, SCA výbery).'])
+
+    // The words are the LIBRARY's (one home, 18 §UC-PI-014): read it and compare.
+    const lib = await import('file://' + GL4_ROASTERS_LIB)
+    expect(lib.ROASTERS.map((r) => r.label)).toEqual(['Goriffee', 'Robo'])
+    expect(lib.ROASTERS.map((r) => r.short)).toEqual(['pražiareň', 'domáci pražič, SCA výbery'])
+    expect(runs.filter((_, i) => i % 2 === 1)).toEqual(lib.ROASTERS.map((r) => r.label))
+
+    // Line style (canon: `.sub` 13px) and the two badges vs the hero's own real `.badge`.
+    await expect(line).toHaveCSS('font-size', '13px')
+    await expect(line).toHaveCSS('display', 'flex')
+    const cmp = await hero.evaluate((el) => {
+      const keys = ['fontFamily', 'fontWeight', 'letterSpacing', 'textTransform', 'borderTopWidth', 'borderTopStyle',
+        'borderTopColor', 'borderTopLeftRadius', 'whiteSpace', 'color', 'display', 'lineHeight', 'backgroundColor']
+      const pick = (n) => Object.fromEntries(keys.map((k) => [k, getComputedStyle(n)[k]]))
+      const real = [...el.querySelectorAll('.badge')].find((b) => b.textContent.trim() === 'Platba prevodom')
+      const mine = [...el.querySelectorAll('[data-testid="guest-roaster-badge"]')]
+      return {
+        real: pick(real),
+        mine: mine.map(pick),
+        sizes: mine.map((n) => [getComputedStyle(n).fontSize, getComputedStyle(n).paddingTop, getComputedStyle(n).paddingLeft]),
+        classes: mine.map((n) => [...n.classList].filter((c) => !c.startsWith('data-'))),
+        realAccO: getComputedStyle([...el.querySelectorAll('.badge.acc-o')][0]).backgroundColor,
+      }
+    })
+    // letter-spacing is em-relative: 12px × .04 on the real badge vs 11px × .04 here.
+    // backgroundColor: Goriffee is the PLAIN badge, so it must equal „Platba prevodom"'s;
+    // Robo is `acc-o`, compared against the theme's real `.badge.acc-o` below.
+    const { letterSpacing: realLs, backgroundColor: realBg, ...realRest } = cmp.real
+    expect(realBg, 'non-vacuity: the reference badge was measured').toBeTruthy()
+    for (const m of cmp.mine) {
+      const { letterSpacing, backgroundColor, ...rest } = m
+      expect(rest, 'same face/weight/case/border/colour/display/line-height as a theme `.badge`').toEqual(realRest)
+      expect(parseFloat(letterSpacing) / 11).toBeCloseTo(parseFloat(realLs) / 12, 3)
+    }
+    const bgs = cmp.mine.map((m) => m.backgroundColor)
+    expect(cmp.sizes, 'the prototype\'s inline 11px / 2px 7px').toEqual([['11px', '2px', '7px'], ['11px', '2px', '7px']])
+    expect(bgs[0], 'Goriffee = the plain badge, measured').toBe(realBg)
+    expect(bgs[1], 'Robo = the acc-o fill, identical to the theme\'s').toBe(cmp.realAccO)
+    // ⚠ The deviation, pinned: NOT `.badge` (see the describe header).
+    for (const c of cmp.classes) expect(c).not.toContain('badge')
+    expect(cmp.classes[1]).toContain('acc-o')
+  })
+
+  test('⚠ the SHIPPED hero pins still hold with the fold OPEN: exactly three `.badge` and exactly one `.mono` (the deadline) in the hero', async ({ page }) => {
+    const { hero } = await gl4OpenPage(page, 'Pins', GL2_PHONE, { expectedDate: '3. október 2026' })
+    await hero.getByTestId('guest-steps-toggle').click()
+    // Non-vacuity: the fold IS open, so every step element this row adds is in the DOM.
+    await expect(hero.getByTestId('guest-step')).toHaveCount(6)
+    await expect(hero.getByTestId('guest-roaster-badge')).toHaveCount(2)
+    await expect(hero.locator('.badge')).toHaveCount(3)
+    await expect(hero.locator('.badge').nth(0)).toHaveText('Login netreba')
+    // The shell spec resolves `hero.locator('.mono')` STRICTLY — one element or a throw.
+    await expect(hero.locator('.mono')).toHaveCount(1)
+    await expect(hero.locator('.mono')).toHaveText('Objednávka do: 3. október 2026')
+  })
+})
+
+test.describe('GL-T4 · 19 §UC-GL-007 — phone floor, CSP, vocabulary', () => {
+  for (const width of [320, 378]) {
+    test(`${width}px: no horizontal overflow with the fold open, and no compact title wraps onto a second line`, async ({ page }) => {
+      const { hero } = await gl4OpenPage(page, `W${width}`, { width, height: 900 }, { expectedDate: '3. október 2026' })
+      await hero.getByTestId('guest-steps-toggle').click()
+      await expect(hero.getByTestId('guest-steps-detail')).toBeVisible()
+      expect(await hOverflow(page), 'document').toBeLessThanOrEqual(0)
+      const m = await hero.evaluate((el) => {
+        const heroBox = el.getBoundingClientRect()
+        const outside = [...el.querySelectorAll('[data-testid^="guest-"]')].filter((n) => {
+          const r = n.getBoundingClientRect()
+          return r.right > heroBox.right + 0.5 || r.left < heroBox.left - 0.5
+        }).map((n) => n.dataset.testid)
+        const titles = [...el.querySelectorAll('[data-testid="guest-steps-compact"] [data-testid="guest-step-title"]')].map((t) => {
+          const fs = parseFloat(getComputedStyle(t).fontSize)
+          const range = document.createRange()
+          range.selectNodeContents(t)
+          // One line box per title: every client rect of its text shares one top.
+          const tops = new Set([...range.getClientRects()].map((r) => Math.round(r.top)))
+          return { fs, lines: tops.size, spill: t.scrollWidth > t.clientWidth + 0.5 }
+        })
+        return { outside, titles }
+      })
+      expect(m.outside, 'nothing this row adds paints outside the hero').toEqual([])
+      expect(m.titles).toHaveLength(3)
+      for (const t of m.titles) {
+        expect(t.fs, 'above 12px').toBeGreaterThan(12)
+        expect(t.lines, 'one line').toBe(1)
+        expect(t.spill, 'and it does not spill its column').toBe(false)
+      }
+    })
+  }
+
+  test('320px: no horizontal overflow with the fold CLOSED — the default state, and the one most specs hit', async ({ page }) => {
+    const { hero } = await gl4OpenPage(page, 'W320Closed', GL2_PHONE_320, { expectedDate: '3. október 2026' })
+    await expect(hero.getByTestId('guest-steps-detail'), 'closed by default').toHaveCount(0)
+    expect(await hOverflow(page), 'document').toBeLessThanOrEqual(0)
+    const outside = await hero.evaluate((el) => {
+      const heroBox = el.getBoundingClientRect()
+      return [...el.querySelectorAll('[data-testid^="guest-"]')].filter((n) => {
+        const r = n.getBoundingClientRect()
+        return r.right > heroBox.right + 0.5 || r.left < heroBox.left - 0.5
+      }).map((n) => n.dataset.testid)
+    })
+    expect(outside, 'nothing this row adds paints outside the hero, fold closed').toEqual([])
+  })
+
+  test('320px: a long host name wraps inside step 3\'s detail (overflow-wrap:anywhere), never out of it', async ({ page }) => {
+    const host = await makeHost('LongName')
+    const cycle = await makeCycle('LongName')
+    await addProduct(cycle.id, 'LongName')
+    const link = await shareLink(host, cycle.id)
+    const body = await (await ctx.get(`/api/guest/${link.token}`)).json()
+    expect(body.host?.first_name, 'non-vacuity: the payload carries the name the page interpolates').toBeTruthy()
+    const LONG = 'Z'.repeat(60)
+    await page.route(`**/api/guest/${link.token}`, (route) => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ ...body, host: { ...body.host, first_name: LONG } }),
+    }))
+    await page.setViewportSize(GL2_PHONE_320)
+    await page.goto(`/g/${link.token}`)
+    const hero = page.locator('.app .card.hl')
+    await hero.getByTestId('guest-steps-toggle').click()
+    const step3 = hero.getByTestId('guest-steps-detail').getByTestId('guest-step-detail').nth(2)
+    await expect(step3).toHaveText(`Od ${LONG}.`)
+    const m = await step3.evaluate((n) => {
+      const box = n.closest('[data-testid="guest-steps-detail"]').getBoundingClientRect()
+      const range = document.createRange()
+      range.selectNodeContents(n)
+      const rects = [...range.getClientRects()]
+      return { right: Math.max(...rects.map((r) => r.right)), limit: box.right, lines: new Set(rects.map((r) => Math.round(r.top))).size }
+    })
+    expect(m.lines, 'it wrapped').toBeGreaterThan(1)
+    expect(m.right, 'inside the detail box').toBeLessThanOrEqual(m.limit + 0.5)
+    // The name is the PERSON's copy, marked for the rendered-copy sweep (FUP-T22).
+    await expect(step3.locator('[data-user-copy]')).toHaveText(LONG)
+  })
+
+  test('no third-party request on load or on toggling — the glyphs are inline SVG (CSP)', async ({ page, baseURL }) => {
+    const origin = new URL(baseURL || process.env.BASE_URL || 'http://localhost:3997').origin
+    const external = []
+    const all = []
+    page.on('request', (req) => {
+      const url = req.url()
+      if (!/^https?:/i.test(url)) return
+      all.push(url)
+      if (new URL(url).origin !== origin) external.push(url)
+    })
+    const { hero } = await gl4OpenPage(page, 'Csp')
+    await hero.getByTestId('guest-steps-toggle').click()
+    await expect(hero.getByTestId('guest-steps-detail').locator('svg')).toHaveCount(3)
+    await page.waitForLoadState('networkidle')
+    expect(all.length, 'non-vacuity: the listener saw the page load').toBeGreaterThan(0)
+    expect(external).toEqual([])
+    // Every step glyph is an inline <svg>, never an <img>/background fetch.
+    await expect(hero.locator('[data-testid="guest-step"] img')).toHaveCount(0)
+  })
+
+  test('the new copy carries no „cyklus"/„kolo" (the ONE regex, PI-T11)', async ({ page }) => {
+    const { hero } = await gl4OpenPage(page, 'Vocab')
+    await hero.getByTestId('guest-steps-toggle').click()
+    const text = await hero.innerText()
+    expect(text, 'non-vacuity: the swept text holds the new copy').toContain('ZABALÍME')
+    expect(text).toContain('SCA výbery')
+    expect(text).not.toMatch(BANNED)
+  })
+})
+
+test.describe('GL-T4 · source pins — one home for the roaster words, one icon module, packeta OFF', () => {
+  test.skip(!HAS_FRONTEND_SRC, NEEDS_FRONTEND_SRC)
+
+  const src = (rel) => {
+    const raw = readFileSync(join(FRONTEND_SRC_DIR, rel), 'utf8')
+    const stripped = stripComments(raw)
+    expect(stripped.length, `${rel} survived the comment strip`).toBeGreaterThan(200)
+    return stripped
+  }
+
+  test('GuestRoastersLine.vue IMPORTS lib/roasters.js and types none of its words', () => {
+    const line = src('components/GuestRoastersLine.vue')
+    expect(line).toMatch(/import\s*\{\s*ROASTERS\s*\}\s*from\s*['"][^'"]*lib\/roasters(?:\.js)?['"]/)
+    expect(line, 'readability gate: the template is in the stripped text').toContain('guest-roaster-badge')
+    for (const word of ['Goriffee', 'Robo', 'pražiareň', 'domáci pražič', 'SCA']) {
+      expect(line, `„${word}" comes from the library, never typed here`).not.toContain(word)
+    }
+  })
+
+  test('GuestSteps.vue: NeoIcon cup/box/hand, no <svg> of its own, `packeta` defaults to false; GuestOrder.vue does not pass it yet (GP-T3 does)', () => {
+    const steps = src('components/GuestSteps.vue')
+    expect(steps).toContain('NeoIcon')
+    for (const name of ['cup', 'box', 'hand']) expect(steps).toContain(`icon: '${name}'`)
+    expect(steps, 'no inline SVG outside the ONE icon module').not.toContain('<svg')
+    expect(steps).toMatch(/packeta:\s*\{\s*type:\s*Boolean,\s*default:\s*false\s*\}/)
+    expect(steps, 'the clause is the prototype\'s, byte for byte').toContain("', alebo si ju nechajte poslať cez Packetu.'")
+    const icons = src('components/neo/icons.js')
+    for (const name of ['cup', 'box', 'hand']) expect(icons).toMatch(new RegExp(`\\n\\s{2}${name}:\\s*\\{`))
+
+    const view = src('views/GuestOrder.vue')
+    expect(view, 'readability gate').toContain('guest-steps-toggle')
+    expect((view.match(/<GuestSteps\b/g) || []).length, 'compact strip + the fold').toBe(2)
+    expect(view, 'packeta stays OFF until GP-T3').not.toMatch(/<GuestSteps[^>]*packeta/)
+    expect((view.match(/<GuestRoastersLine\b/g) || []).length).toBe(1)
   })
 })

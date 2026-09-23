@@ -519,3 +519,93 @@ database" migration proof would then only half hold.
   ARRAY stringifies and parses (`['0905123456','x']` ⇒ `+421905123456`) — callers pass
   validated strings; pinned as written.
 
+
+## GL-T4 — `GuestSteps.vue`, `GuestRoastersLine.vue`, the open hero's strip + fold (2026-09-23)
+
+19 §UC-GL-007. Two new components, one extended library field, one hero edit. No backend.
+
+### 1. What shipped
+
+- `components/GuestSteps.vue` — props `compact` (Boolean), `hostName` (String), `packeta`
+  (Boolean, **default `false`** — GP-T3 flips it when `cycle.parcel_enabled`). The three step
+  texts are constants IN the component (19: guest-specific). Step 3 = „Od {host}." until
+  `packeta`, then the prototype sentence byte for byte (`PACKETA_CLAUSE`). The host name renders
+  in its own `data-user-copy` span. Testids: `guest-step`, `guest-step-n`, `guest-step-title`,
+  `guest-step-detail` (full layout only).
+- `components/GuestRoastersLine.vue` — no props, no products: it names every `ROASTERS` entry in
+  library order (19 transcribes it as a fixed sentence). Testids `guest-roasters`,
+  `guest-roaster-badge`. Imports `../lib/roasters.js`; types none of the roaster words (pinned).
+- `lib/roasters.js` gains a `short` field per entry (`'pražiareň'`, `'domáci pražič, SCA
+  výbery'`) — the parenthesis of the roasters line. Added to the ONE home rather than typed into
+  the component. `portal-explainer.spec.js` §2 maps `[key,label,badgeClass]`, so the new field
+  breaks nothing there.
+- `GuestOrder.vue` open hero: after the „organizuje" line AND its deadline row, before the badge
+  row: `<GuestSteps compact data-testid="guest-steps-compact">`, then a flex-wrap row
+  (`GuestRoastersLine` + `button.btn.ghost.sm` `guest-steps-toggle`, accent, `padding:0`,
+  `aria-expanded`, `aria-controls` only while open), then `v-if="showHow"` detail
+  (`guest-steps-detail`, `border-top:2px solid rgba(10,10,10,.12)`, full `GuestSteps`). `showHow`
+  is a plain `ref(false)` — not persisted. Badge row, helper sentence, `plan_note` untouched (D6).
+- `NeoIcon` needed NOTHING: `cup`/`box`/`hand` already exist in `neo/icons.js` (PI-T8's I2 set).
+  The row's „NeoIcon gains cup/box/hand" was satisfied by PI-T8; 19's „if absent" applied.
+
+### 2. ⚠ The two canon deviations — a selector, not pixels
+
+The prototype's step dot is `className="mono"` and the roaster badges are `className="badge"`.
+Both would break SHIPPED pins that 19 §UC-GL-011 item 2 says pass unmodified, because both new
+elements sit INSIDE `.card.hl`:
+
+- `guest-order-shell.spec.js:202` resolves `hero.locator('.mono')` (the deadline) — Playwright
+  strict mode: three more `.mono` dots = a strict-mode violation;
+- `guest-order-shell.spec.js:207` counts `hero.locator('.badge')` = 3;
+- (GL-T5's hero) `guest-invite-dead.spec.js:450` / `guest-standing-link.spec.js` GL-T2 resolve
+  `preopen-hero .badge` strictly („Zatvorené") — the roasters line goes into THAT hero next.
+
+So the dot is `.gs-n` with `.mono`'s two declarations (`font-family:var(--font-mono)`,
+`letter-spacing:.01em`) and the badges are `.gr-badge` with the theme `.badge` rule + the
+prototype's inline 11px / `2px 7px` + A10's `line-height:normal`; `acc-o`'s fill is re-declared
+as `.gr-badge.acc-o`. The GL-T4 tests pin BOTH halves: the shipped counts hold with the fold
+OPEN (3 `.badge`, exactly 1 `.mono`), and the substitutes are computed-style-equal to the
+hero's own real `.badge` (face, weight, case, border, radius, colour; letter-spacing compared
+per-em since the sizes differ; Robo's fill equals the real `.badge.acc-o`'s). Review minors
+(applied): the badge comparison also covers `display`, `lineHeight` and `backgroundColor`
+against the real „Platba prevodom" `.badge` (no literal colour), and the dot's `fontFamily` +
+per-em `letterSpacing` are measured against the hero's own deadline `.mono` (no font regex) —
+mutating `.gr-badge` line-height or `.gs-n` letter-spacing now reds. Mutations adding
+`mono` / `badge` back each red `guest-order-shell` AND the GL-T4 pins.
+
+### 3. Measured details worth knowing
+
+- The dot's canon `top:-9;left:-9` is from the tile's PADDING edge: with the 3px border it sits
+  **6px** outside the tile's outer box (the first test expected -9 and was wrong).
+- The canon DECLARES line-heights for the titles (1) and details (1.4) — used verbatim (PI-T12).
+- `overflow-wrap:anywhere` is on the DETAIL only: a 60-char unbreakable host name wraps inside
+  step 3 at 320px. Titles deliberately get none — breaking „PREVEZMETE" mid-word is exactly what
+  §UC-GL-007's 320px criterion forbids. Measured at 320 and 378: each compact title is one line
+  box (Range client-rect tops), 14px, no spill; nothing this row adds paints outside the hero.
+- The roasters line's text runs are explicit `<span>` flex items (the prototype's anonymous
+  items), so the 6px gap, not a space, separates them — `textContent` of the line therefore
+  has no spaces between runs; assert per child, never the concatenation.
+
+### 4. Tests (`guest-standing-link.spec.js`, three `GL-T4 ·` describes, 12 tests)
+
+Open hero (5): position (DOM order AND geometry: organizuje → strip → roasters → badge row; first
+`.badge` is still „Login netreba"), compact geometry; toggle open/close/label/aria/not persisted +
+full layout geometry + „Od {host}." with no „Packet"; tile + dot fidelity in both layouts; roasters
+line runs vs the library + computed-style equality; shipped pins with the fold open. Phone/CSP/
+vocabulary (5): 320 + 378 overflow/one-line titles, long unbreakable host name, zero third-party
+requests with a non-vacuity count, `BANNED` over the hero text with non-vacuity. Source pins (2).
+`portal-explainer.spec.js` §7: the importer SET gains `components/GuestRoastersLine.vue` (sweep
+regex and allow-list unchanged).
+
+Mutations run (each red, then restored): `packeta` default true; dot `class="mono"`; badge
+`class="badge"`; fold open by default; strip MOVED below the badge row; roaster texts copied
+into the component (source pin + §7 importer set); `overflow-wrap` removed from the detail.
+
+### Seams left for the next rows
+
+- GL-T5: mount `<GuestSteps :host-name="…" />` (FULL, the default) inside the „Ako to funguje"
+  card and `<GuestRoastersLine />` at the end of `preopen-hero`. Neither takes more props. The
+  `.badge`/`.mono` deviation above is what keeps `preopen-hero .badge` strict-resolvable.
+- GP-T3: pass `:packeta="Boolean(cycle?.parcel_enabled)"` on BOTH `GuestSteps` mounts in the open
+  hero (and GL-T5's). The GL-T4 source pin „`GuestOrder.vue` does not pass `packeta`" is the
+  sanctioned retarget for that row.
