@@ -14,6 +14,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import BalanceBadge from '@/components/BalanceBadge.vue'
 import GuestLinkRowControls from '@/components/GuestLinkRowControls.vue'
 import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
+import GuestDeliverySwitch from '@/components/GuestDeliverySwitch.vue'
 import CycleTimeline from '@/components/CycleTimeline.vue'
 import { planLineText, allPartiesHandedOver } from '../lib/distribution-plan'
 // ⚠ READ-ONLY CONSUMPTION ONLY (17 §UC-CS-007). The step model, its six labels and
@@ -602,6 +603,30 @@ function firstName(name) {
 
 function isGuestCancelled(subOrder) {
   return (subOrder.status || 'submitted') === 'cancelled'
+}
+
+// 20 §UC-GP-001 — `packeta_address` IS the Packeta marker (never the fee: a fee of 0 is
+// legal, and a cancelled row keeps its address with a zeroed fee).
+function isGuestPacketa(subOrder) {
+  return !!subOrder.packeta_address
+}
+
+// GP-T5 (20 §UC-GP-009) — the admin switched a guest back to „cez {host}". Patched IN
+// PLACE from the response (the GSO-T1 per-row rule — never a full reload per tap); the
+// pending/confirm state is per row inside `GuestDeliverySwitch.vue`, keyed by
+// `guest_orders.id`. Then the two derived reads follow: the receivables card (the
+// amount owed drops by the fee) and the header's plan line (the bag left Packeta).
+function onGuestDeliveryUpdated(subOrder, data) {
+  const row = data?.guest_order
+  if (row) {
+    subOrder.packeta_address = row.packeta_address
+    subOrder.delivery_fee = row.delivery_fee
+  } else if (data?.cleared_parcel) {
+    subOrder.packeta_address = null
+    subOrder.delivery_fee = 0
+  }
+  loadGuestUnpaid()
+  loadDistributionPlan()
 }
 
 async function toggleGuestPaid(subOrder) {
@@ -2307,6 +2332,17 @@ function getStatusVariant(status) {
                       <div class="text-xs text-muted-foreground">
                         {{ row.guest_phone }}<span v-if="row.guest_email"> · {{ row.guest_email }}</span>
                       </div>
+                      <!-- 20 §UC-GP-009 — a Packeta guest: the red badge + the point
+                           (the phone is the line above). `packeta` is the server's
+                           marker (`packeta_address IS NOT NULL`). -->
+                      <div
+                        v-if="row.packeta"
+                        class="mt-0.5 flex flex-wrap items-center gap-2"
+                        :data-testid="`guest-unpaid-packeta-${row.id}`"
+                      >
+                        <Badge variant="outline" class="text-xs border-red-400 text-red-600 bg-red-50">Packeta</Badge>
+                        <span class="text-xs text-muted-foreground" style="overflow-wrap:anywhere">📦 {{ row.packeta_address }}</span>
+                      </div>
                       <!-- 15 §UC-PL-008 — the VS first, then the human reference: the
                            admin reading a statement line "VS 9000123" finds the row by the
                            symbol, and still has the name-bearing reference beside it for
@@ -2319,7 +2355,16 @@ function getStatusVariant(status) {
                            value across all four sites this row added. -->
                       <div class="text-xs font-mono text-muted-foreground"><span v-if="row.variable_symbol">VS {{ row.variable_symbol }} · </span>{{ row.reference }}</div>
                     </div>
-                    <div class="font-semibold">{{ formatPrice(row.amount) }}</div>
+                    <div class="text-right">
+                      <div class="font-semibold" :data-testid="`guest-unpaid-amount-${row.id}`">{{ formatPrice(row.amount) }}</div>
+                      <!-- UC-GP-004 — the live amount is products + the fee; the same
+                           breakdown the orders tab prints. -->
+                      <div
+                        v-if="row.delivery_fee"
+                        class="text-xs text-muted-foreground"
+                        :data-testid="`guest-unpaid-breakdown-${row.id}`"
+                      >({{ formatPrice(row.total) }} + {{ formatPrice(row.delivery_fee) }} doručenie)</div>
+                    </div>
                   </div>
                 </div>
               </template>
@@ -2350,6 +2395,17 @@ function getStatusVariant(status) {
                       <div class="text-xs text-muted-foreground">
                         {{ row.guest_phone }}<span v-if="row.guest_email"> · {{ row.guest_email }}</span>
                       </div>
+                      <!-- 20 §UC-GP-009 — a Packeta guest: the red badge + the point
+                           (the phone is the line above). `packeta` is the server's
+                           marker (`packeta_address IS NOT NULL`). -->
+                      <div
+                        v-if="row.packeta"
+                        class="mt-0.5 flex flex-wrap items-center gap-2"
+                        :data-testid="`guest-refund-packeta-${row.id}`"
+                      >
+                        <Badge variant="outline" class="text-xs border-red-400 text-red-600 bg-red-50">Packeta</Badge>
+                        <span class="text-xs text-muted-foreground" style="overflow-wrap:anywhere">📦 {{ row.packeta_address }}</span>
+                      </div>
                       <!-- 15 §UC-PL-008 — the VS first, then the human reference: the
                            admin reading a statement line "VS 9000123" finds the row by the
                            symbol, and still has the name-bearing reference beside it for
@@ -2362,7 +2418,20 @@ function getStatusVariant(status) {
                            value across all four sites this row added. -->
                       <div class="text-xs font-mono text-muted-foreground"><span v-if="row.variable_symbol">VS {{ row.variable_symbol }} · </span>{{ row.reference }}</div>
                     </div>
-                    <div class="font-semibold">{{ formatPrice(row.amount) }}</div>
+                    <div class="text-right">
+                      <div class="font-semibold" :data-testid="`guest-refund-amount-${row.id}`">{{ formatPrice(row.amount) }}</div>
+                      <!-- UC-GP-006, AMENDED (PO 2026-09-19 + learnings 12 §6/§31): the
+                           refund amount ALREADY includes the fee the guest paid while the
+                           order was still Packeta — `refund_fee` is exactly that part
+                           (server-computed; 0 once the admin's switch settled it).
+                           ~~„+ poplatok za doručenie Packetou (suma podľa objednávky)"~~ —
+                           adding it by hand would refund it twice. PO DRAFT copy. -->
+                      <div
+                        v-if="row.refund_fee > 0"
+                        class="text-xs text-muted-foreground"
+                        :data-testid="`guest-refund-packeta-note-${row.id}`"
+                      >vrátane {{ formatPrice(row.refund_fee) }} uhradeného poplatku za doručenie Packetou</div>
+                    </div>
                   </div>
                 </div>
               </template>
@@ -2716,6 +2785,24 @@ function getStatusVariant(status) {
                             <span class="font-medium text-sm">{{ sub.guest_name }}</span>
                             <span class="text-xs text-muted-foreground">{{ sub.guest_phone }}</span>
                             <span v-if="sub.guest_email" class="text-xs text-muted-foreground">{{ sub.guest_email }}</span>
+                            <!-- 20 §UC-GP-009 — a Packeta guest: the shipped friend
+                                 Packeta badge colours, and the point. Kept on a
+                                 CANCELLED row too (the record — the address survives
+                                 the cancel, exactly like the host card). -->
+                            <Badge
+                              v-if="isGuestPacketa(sub)"
+                              variant="outline"
+                              class="text-xs border-red-400 text-red-600 bg-red-50"
+                              :data-testid="`guest-packeta-badge-${sub.id}`"
+                            >
+                              Packeta
+                            </Badge>
+                            <span
+                              v-if="isGuestPacketa(sub)"
+                              class="text-xs text-muted-foreground"
+                              style="overflow-wrap:anywhere"
+                              :data-testid="`guest-packeta-address-${sub.id}`"
+                            >📦 {{ sub.packeta_address }}</span>
                           </div>
                           <div v-if="sub.items && sub.items.length > 0" class="mt-0.5 text-xs text-muted-foreground">
                             {{ guestItemCountLabel(sub) }}
@@ -2748,6 +2835,16 @@ function getStatusVariant(status) {
                               :data-testid="`guest-cancel-${sub.id}`"
                               @click="guestCancelConfirmId = sub.id"
                             >Zrušiť</button>
+                            <!-- GP-T5 — the ONE correction control (shared with GP-T6's
+                                 Distribution row). LIVE Packeta rows only: a cancelled
+                                 row 409s server-side and its fee is already 0. -->
+                            <GuestDeliverySwitch
+                              v-if="isGuestPacketa(sub) && !isGuestCancelled(sub)"
+                              :guest-order-id="sub.id"
+                              :host-name="firstName(order.friend_name)"
+                              :delivery-fee="sub.delivery_fee || 0"
+                              @updated="(data) => onGuestDeliveryUpdated(sub, data)"
+                            />
                           </div>
 
                           <div
@@ -2817,7 +2914,17 @@ function getStatusVariant(status) {
                       </div>
                     </TableCell>
                     <TableCell class="text-right text-sm">
-                      {{ formatPrice(sub.total) }}
+                      <!-- 20 §UC-GP-004 — the amount to pay = products + the fee, with
+                           the friend rows' own breakdown sub-line. `total` stays
+                           product-only on the row. -->
+                      <span :data-testid="`guest-amount-${sub.id}`">{{ formatPrice((sub.total || 0) + (sub.delivery_fee || 0)) }}</span>
+                      <div
+                        v-if="sub.delivery_fee"
+                        class="text-xs text-muted-foreground"
+                        :data-testid="`guest-amount-breakdown-${sub.id}`"
+                      >
+                        ({{ formatPrice(sub.total) }} + {{ formatPrice(sub.delivery_fee) }} doručenie)
+                      </div>
                       <!-- The guest scheme (`9` + the padded sub-order id) — a different
                            id space from the host's order above it, which is exactly why
                            the two are prefixed apart (15 §UC-PL-001). -->

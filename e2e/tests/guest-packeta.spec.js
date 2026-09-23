@@ -621,15 +621,19 @@ function refundAmount(id) {
   const items = withDb((db) =>
     db.prepare('SELECT price, quantity FROM guest_order_items WHERE guest_order_id = ?').all(Number(id)))
   const itemsAmount = items.reduce((sum, it) => sum + it.price * it.quantity, 0)
-  return Math.round((itemsAmount + (row.paid ? row.delivery_fee_paid || 0 : 0)) * 100) / 100
+  // ⚠ GP-T5 review (orchestrator decision 2026-09-23, PENDING PO; learnings 12 §31): the
+  // snapshot counts only while the order is STILL Packeta — the admin's switch to „cez
+  // {host}" settles a paid fee (it NULLs the address; a cancel keeps it).
+  return Math.round((itemsAmount + (row.paid && row.packeta_address ? row.delivery_fee_paid || 0 : 0)) * 100) / 100
 }
-// Test-side fixture write. ⚠ RE-POINTED by GP-T2 (learnings 12 §6/§9): wherever the
-// sequence changes the fee of an UNPAID row it now goes through the real writer — the
-// edit PUT carrying `use_parcel_delivery: true` after the admin moved `parcel_fee`
-// (`repriceByEdit()`). What is LEFT here are the steps that change the fee of a PAID
-// row: the edit cannot reach that state (D2 — a paid row's method is frozen with its
-// items, 409 `paid`, pinned right beside each call), so only GP-T5's delivery PATCH
-// (which zeroes it) will be a real writer there — re-point those at it when it lands.
+// ~~Test-side fixture write (`setLiveFee()`, a node:sqlite UPDATE of the live fee).~~
+// → FULLY RE-POINTED at real writers. GP-T2 (learnings 12 §6/§9): an UNPAID row's fee
+// moves through the edit PUT carrying `use_parcel_delivery: true` after the admin moved
+// `parcel_fee` (`repriceByEdit()`). GP-T5 (learnings 12 §GP-T5): a PAID row's fee — which
+// the edit cannot reach (D2, 409 `paid`, pinned by `paidEditRefused()` beside each call)
+// — moves through the admin delivery PATCH (`switchViaHost()`), which zeroes it. A fee
+// changed to 0 is still a live fee change, and it is the DISCRIMINATING direction for
+// both COALESCE writers: a plain copy would freeze 0 and the refund would lose the fee.
 async function repriceByEdit(s, o, fee) {
   expect((await admin(`/api/cycles/${s.cycle.id}`, { method: 'patch', data: { parcel_fee: fee } })).status()).toBe(200)
   const res = await ctx.put(`/api/guest/o/${o.order.order_token}`, {
@@ -643,13 +647,14 @@ async function paidEditRefused(s, o) {
   })
   expect(res.status(), 'a PAID row cannot be repriced by the edit (D2)').toBe(409)
 }
-function setLiveFee(id, fee) {
-  const db = new DatabaseSync(DB_PATH)
-  try {
-    db.prepare('UPDATE guest_orders SET delivery_fee = ? WHERE id = ?').run(fee, Number(id))
-  } finally {
-    db.close()
-  }
+// GP-T5 (20 §UC-GP-009) — the admin's delivery correction, the real writer of a PAID
+// row's live fee (it zeroes it; `delivery_fee_paid` is NOT its column).
+const switchDelivery = (id, data = { method: 'via_host' }) =>
+  admin(`/api/guest-orders/${id}/delivery`, { method: 'patch', data })
+async function switchViaHost(o) {
+  const res = await switchDelivery(o.order.id)
+  expect(res.status(), `the delivery PATCH: ${await res.text()}`).toBe(200)
+  return res.json()
 }
 
 test.describe('GP-T1 · the `delivery_fee_paid` snapshot — frozen at the FIRST of {paid, cancel}, TWO writers', () => {
@@ -732,10 +737,12 @@ test.describe('GP-T1 · the `delivery_fee_paid` snapshot — frozen at the FIRST
     expect((await setPaid(o.order.id, true)).status()).toBe(200)
     expect(snap(o.order.id).delivery_fee_paid).toBe(4)
     // …and an existing snapshot then wins over a later live change (COALESCE, not a copy).
-    // The row is PAID here, so the edit cannot move the fee (fixture stand-in for GP-T5).
+    // The row is PAID here, so the edit cannot move the fee; GP-T5's delivery PATCH does.
     await paidEditRefused(s, o)
     expect(snap(o.order.id).delivery_fee, 'the refused edit wrote nothing').toBe(4)
-    setLiveFee(o.order.id, 5)
+    await switchViaHost(o)
+    expect(snap(o.order.id), 'the PATCH moved the LIVE fee and left the snapshot alone')
+      .toEqual({ paid: 1, status: 'submitted', delivery_fee: 0, delivery_fee_paid: 4 })
     expect((await setPaid(o.order.id, true)).status()).toBe(200)
     expect(snap(o.order.id).delivery_fee_paid).toBe(4)
   })
@@ -745,11 +752,13 @@ test.describe('GP-T1 · the `delivery_fee_paid` snapshot — frozen at the FIRST
     const s = await scenario('snapfirst', { fee: 3.5 })
     const o = await submitOk(s.link.token, packetaBody(s.items))
     expect((await setPaid(o.order.id, true)).status()).toBe(200)
-    await paidEditRefused(s, o) // PAID ⇒ the edit is no writer here (fixture stand-in for GP-T5)
-    setLiveFee(o.order.id, 4)
+    await paidEditRefused(s, o) // PAID ⇒ the edit is no writer here; GP-T5's delivery PATCH is
+    await switchViaHost(o)
+    expect(snap(o.order.id).delivery_fee, 'the live fee really changed').toBe(0)
     expect((await admin(`/api/guest-orders/${o.order.id}/cancel`, { method: 'post' })).status()).toBe(200)
     expect(snap(o.order.id)).toEqual({ paid: 1, status: 'cancelled', delivery_fee: 0, delivery_fee_paid: 3.5 })
-    expect(refundAmount(o.order.id)).toBe(28.4)
+    // …and the switch SETTLED the fee (GP-T5 review, pending PO): the refund is items only.
+    expect(refundAmount(o.order.id)).toBe(24.9)
   })
 
   test('source pin: `delivery_fee_paid` is WRITTEN in exactly TWO places — the soft cancel and the paid route (all of backend/src)', () => {
@@ -803,7 +812,7 @@ test.describe('GP-T1 · the `delivery_fee_paid` snapshot — frozen at the FIRST
 // §6 Ledger — guests have NO balance
 // ═════════════════════════════════════════════════════════════════════════════
 test.describe('GP-T1 · no `transactions` row, ever', () => {
-  test('MAX(transactions.id) is unmoved across a Packeta submit, the edit both ways (GP-T2), the paid toggle both ways and each cancel door', async () => {
+  test('MAX(transactions.id) is unmoved across a Packeta submit, the edit both ways (GP-T2), the paid toggle both ways, the admin delivery PATCH (GP-T5) and each cancel door', async () => {
     test.skip(!DB_PATH, NEEDS_DB)
     const s = await scenario('ledger', { fee: 3.5 })
     const mark = ledgerWatermark()
@@ -817,6 +826,9 @@ test.describe('GP-T1 · no `transactions` row, ever', () => {
     expect((await put({ items: s.items, use_parcel_delivery: true, packeta_address: 'Bod 1' })).status()).toBe(200); check('edit → Packeta')
     expect(guestRow(a.order.id).delivery_fee, 'non-vacuity: the switch wrote').toBe(3.5)
     await setPaid(a.order.id, true); check('paid on')
+    // GP-T5 — the admin delivery PATCH, on the PAID Packeta row (the case that matters)
+    expect((await switchDelivery(a.order.id)).status()).toBe(200); check('admin delivery PATCH')
+    expect(guestRow(a.order.id).packeta_address, 'non-vacuity: the PATCH wrote').toBe(null)
     await setPaid(a.order.id, false); check('paid off')
     await ctx.put(`/api/guest/o/${a.order.order_token}`, { data: { items: [] } }); check('guest cancel')
     const b = await submitOk(s.link.token, packetaBody(s.items))
@@ -2221,5 +2233,518 @@ test.describe('GP-T4 · source pins — one home, and what this row must NOT tou
     const block = comp.slice(comp.indexOf('data-testid="sub-order-badges"'), comp.indexOf('</div>', comp.indexOf('data-testid="sub-order-badges"')))
     expect(block, 'readability gate').toContain('guest-paid-badge')
     expect(block).not.toContain('packeta')
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GP-T5 — 20 §UC-GP-009 the admin delivery correction, §UC-GP-004 (admin) the
+// receivables amount, §UC-GP-006 (refund) items + the paid fee snapshot
+// ═════════════════════════════════════════════════════════════════════════════
+const ERR_ADMIN_CANCELLED = 'Táto objednávka bola zrušená, spôsob prevzatia už nie je možné zmeniť.'
+// The columns the PATCH may touch (two), plus everything it must NOT.
+const deliveryRow = (id) => {
+  const r = guestRow(id)
+  return {
+    status: r.status, total: r.total, delivery_fee: r.delivery_fee, packeta_address: r.packeta_address,
+    delivery_fee_paid: r.delivery_fee_paid, paid: r.paid, paid_at: r.paid_at, delivered: r.delivered,
+    handed_over_at: r.handed_over_at, guest_name: r.guest_name, guest_phone: r.guest_phone,
+    guest_email: r.guest_email, order_token: r.order_token, link_id: r.link_id,
+  }
+}
+const unpaidOf = async (cycleId) => {
+  const res = await admin(`/api/guest-orders/cycle/${cycleId}/unpaid`)
+  expect(res.status()).toBe(200)
+  return res.json()
+}
+
+test.describe('GP-T5 · 20 §UC-GP-009 — PATCH /api/guest-orders/:id/delivery', () => {
+  test('on a PAID Packeta row: fee 0, point NULL, `paid` and the fee snapshot KEPT, response = sub-order + the two flags; the switch SETTLES the fee, so a later cancel refunds items only', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('dpaid', { fee: 3.5 })
+    const o = await submitOk(s.link.token, packetaBody(s.items))
+    expect((await setPaid(o.order.id, true)).status()).toBe(200)
+    const before = deliveryRow(o.order.id)
+    expect(before).toMatchObject({ delivery_fee: 3.5, packeta_address: POINT, paid: 1, delivery_fee_paid: 3.5 })
+    const mark = ledgerWatermark()
+
+    const body = await switchViaHost(o)
+    expect(body.cleared_parcel).toBe(true)
+    expect(body.parcel_fee_removed).toBe(3.5)
+    expect(body.guest_order).toMatchObject({ id: o.order.id, delivery_fee: 0, packeta_address: null, paid: 1, total: 24.9 })
+    expect(Array.isArray(body.guest_order.items) && body.guest_order.items.length, 'the loadSubOrder shape').toBe(1)
+    expect(body.totals, 'the GSO-T5 mutation shape').toEqual({ count: 1, total: 24.9 })
+
+    // Row read back: exactly the two columns moved.
+    expect(deliveryRow(o.order.id)).toEqual({ ...before, delivery_fee: 0, packeta_address: null })
+    expect(ledgerWatermark(), 'no transactions row').toBe(mark)
+
+    // ⚠ ORCHESTRATOR DECISION (GP-T5 review, option (a), PENDING PO; learnings 12 §31): the
+    // switch SETTLES the paid fee — the confirm tells the admin to return it right then —
+    // so a later cancel refunds the ITEMS only, never the fee a second time. The snapshot
+    // stays in the row (no new writer); the refund simply stops counting it.
+    expect((await admin(`/api/guest-orders/${o.order.id}/cancel`, { method: 'post' })).status()).toBe(200)
+    expect(guestRow(o.order.id), 'read back: snapshot kept, address gone')
+      .toMatchObject({ paid: 1, status: 'cancelled', delivery_fee: 0, delivery_fee_paid: 3.5, packeta_address: null })
+    const u = await unpaidOf(s.cycle.id)
+    const refund = u.refunds.find((r) => r.id === o.order.id)
+    expect(refund, 'the cancelled paid row is in the refund queue').toBeTruthy()
+    expect(refund).toMatchObject({ amount: 24.9, refund_fee: 0, delivery_fee: 0, packeta: false, packeta_address: null })
+    expect(u.refund_totals).toEqual({ count: 1, total: 24.9 })
+  })
+
+  test('the five bad bodies (and every other shape) ⇒ 400 `method`, the row byte-identical', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('dbad', { fee: 3.5 })
+    const o = await submitOk(s.link.token, packetaBody(s.items))
+    const before = deliveryRow(o.order.id)
+    const bodies = [
+      {}, [1], { method: 'packeta' }, { method: 'via_host', packeta_address: 'Iné miesto' },
+      { method: 'VIA_HOST' }, { method: ['via_host'] }, { method: null }, { method: true },
+      { method: 'via_host', delivery_fee: 0 }, ['via_host'],
+    ]
+    for (const data of bodies) {
+      const res = await switchDelivery(o.order.id, data)
+      expect(res.status(), JSON.stringify(data)).toBe(400)
+      expect(await res.json(), JSON.stringify(data)).toEqual({ error: ERR_METHOD, field: 'method' })
+    }
+    // Scalar bodies never reach the route (express.json strict) — still a 400, never a 500.
+    // A retrying admin read first, so `adminToken` is current for the raw calls below.
+    await unpaidOf(s.cycle.id)
+    for (const raw of ['true', '"abc"', '1', 'null']) {
+      const res = await ctx.patch(`/api/guest-orders/${o.order.id}/delivery`, {
+        headers: { 'X-Admin-Token': adminToken, 'Content-Type': 'application/json' }, data: raw,
+      })
+      expect(res.status(), raw).toBe(400)
+    }
+    expect(deliveryRow(o.order.id), 'nothing written').toEqual(before)
+  })
+
+  test('404 unknown id (uniform); 409 `cancelled` with the row untouched; an already-via_host row ⇒ 200 `cleared_parcel: false`', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('d404', { fee: 3.5 })
+    const missing = await switchDelivery(987654321)
+    expect(missing.status()).toBe(404)
+    expect(await missing.json()).toEqual({ error: 'Objednávka kolegu nebola nájdená' })
+
+    const c = await submitOk(s.link.token, packetaBody(s.items))
+    expect((await setPaid(c.order.id, true)).status()).toBe(200)
+    expect((await admin(`/api/guest-orders/${c.order.id}/cancel`, { method: 'post' })).status()).toBe(200)
+    const cancelledBefore = deliveryRow(c.order.id)
+    expect(cancelledBefore, 'non-vacuity: the address survived the cancel').toMatchObject({ packeta_address: POINT, delivery_fee: 0 })
+    const refused = await switchDelivery(c.order.id)
+    expect(refused.status()).toBe(409)
+    expect(await refused.json()).toEqual({ error: ERR_ADMIN_CANCELLED, reason: 'cancelled' })
+    expect(deliveryRow(c.order.id), 'the record (address) is kept').toEqual(cancelledBefore)
+
+    const v = await submitOk(s.link.token, { ...identity(), items: s.items })
+    const vBefore = deliveryRow(v.order.id)
+    const same = await switchDelivery(v.order.id)
+    expect(same.status()).toBe(200)
+    expect(await same.json()).toMatchObject({ cleared_parcel: false, parcel_fee_removed: 0 })
+    expect(deliveryRow(v.order.id)).toEqual(vBefore)
+  })
+
+  test('NO cycle-open gate (works after the lock) and a fee-0 Packeta row still clears (the address is the marker)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('dlock', { fee: 0 })
+    const o = await submitOk(s.link.token, packetaBody(s.items))
+    expect(guestRow(o.order.id)).toMatchObject({ delivery_fee: 0, packeta_address: POINT })
+    expect((await setCycle(s.cycle.id, { status: 'locked' })).status()).toBe(200)
+    const body = await switchViaHost(o)
+    expect(body).toMatchObject({ cleared_parcel: true, parcel_fee_removed: 0 })
+    expect(guestRow(o.order.id)).toMatchObject({ delivery_fee: 0, packeta_address: null, status: 'submitted' })
+  })
+
+  test('auth: anonymous, the host\'s Bearer and a stale admin token ⇒ 401; the row is untouched', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('dauth', { fee: 3.5 })
+    const o = await submitOk(s.link.token, packetaBody(s.items))
+    const before = deliveryRow(o.order.id)
+    const url = `/api/guest-orders/${o.order.id}/delivery`
+    const data = { method: 'via_host' }
+    expect((await ctx.patch(url, { data })).status(), 'anonymous').toBe(401)
+    expect((await ctx.patch(url, { data, headers: s.host.auth })).status(), 'the HOST — an admin route').toBe(401)
+    expect((await ctx.patch(url, { data, headers: { 'X-Admin-Token': 'not-a-token' } })).status(), 'stale').toBe(401)
+    expect(deliveryRow(o.order.id)).toEqual(before)
+  })
+
+  test('the correction reaches the host card and the guest status page (fee 0, no point, amount = products)', async () => {
+    const s = await scenario('dreach', { fee: 3.5 })
+    const o = await submitOk(s.link.token, packetaBody(s.items))
+    await switchViaHost(o)
+    const host = await (await ctx.get(`/api/guest-links/cycle/${s.cycle.id}`, { headers: s.host.auth })).json()
+    expect(host.guest_orders.find((x) => x.id === o.order.id)).toMatchObject({ delivery_fee: 0, packeta_address: null })
+    const status = await (await ctx.get(`/api/guest/o/${o.order.order_token}`)).json()
+    expect(status.order).toMatchObject({ delivery_fee: 0, packeta_address: null })
+    expect(status.payment.amount).toBe(24.9)
+  })
+
+  test('⚠ ACCEPTED RISK, pinned as the documented behaviour: a stale guest tab\'s next save (always carries the flag) re-applies Packeta + the fee — last-write-wins', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('dstale', { fee: 3.5 })
+    const o = await submitOk(s.link.token, packetaBody(s.items))
+    await switchViaHost(o)
+    expect(guestRow(o.order.id)).toMatchObject({ delivery_fee: 0, packeta_address: null })
+    // The tab loaded before the correction still holds `packeta` and saves it (20 §UC-GP-007 item 9).
+    const res = await ctx.put(`/api/guest/o/${o.order.order_token}`, {
+      data: { items: s.items, use_parcel_delivery: true, packeta_address: POINT },
+    })
+    expect(res.status()).toBe(200)
+    expect(guestRow(o.order.id), 'no server guard (learnings 12 §GP-T5, 20 §Accepted risks)')
+      .toMatchObject({ delivery_fee: 3.5, packeta_address: POINT })
+  })
+})
+
+test.describe('GP-T5 · 20 §UC-GP-004/006 — /unpaid rows carry the fee, the point and the marker', () => {
+  test('live rows: amount = total + fee, the three fields by name; refunds: items + (paid ? snapshot : 0), and `paid = 1` gates the QUEUE', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('unpaid', { fee: 3.5 })
+    const p = await submitOk(s.link.token, packetaBody(s.items))
+    const v = await submitOk(s.link.token, { ...identity(), items: s.items })
+    // A cancelled PAID Packeta row (refund 28.40) and a cancelled UNPAID one (snapshot
+    // frozen by the cancel, but nothing was received ⇒ not in the queue at all).
+    const r = await submitOk(s.link.token, packetaBody(s.items))
+    expect((await setPaid(r.order.id, true)).status()).toBe(200)
+    expect((await admin(`/api/guest-orders/${r.order.id}/cancel`, { method: 'post' })).status()).toBe(200)
+    const n = await submitOk(s.link.token, packetaBody(s.items))
+    expect((await admin(`/api/guest-orders/${n.order.id}/cancel`, { method: 'post' })).status()).toBe(200)
+    expect(guestRow(n.order.id), 'non-vacuity: the unpaid cancelled row DOES carry a snapshot')
+      .toMatchObject({ paid: 0, status: 'cancelled', delivery_fee_paid: 3.5 })
+
+    const u = await unpaidOf(s.cycle.id)
+    const up = u.unpaid.find((x) => x.id === p.order.id)
+    const uv = u.unpaid.find((x) => x.id === v.order.id)
+    expect(up).toMatchObject({ total: 24.9, delivery_fee: 3.5, packeta_address: POINT, packeta: true, amount: 28.4 })
+    expect(uv).toMatchObject({ total: 24.9, delivery_fee: 0, packeta_address: null, packeta: false, amount: 24.9 })
+    expect(u.totals).toEqual({ count: 2, total: 53.3 })
+    expect(u.refunds.map((x) => x.id)).toEqual([r.order.id])
+    expect(u.refunds[0]).toMatchObject({ amount: 28.4, refund_fee: 3.5, delivery_fee: 0, packeta: true, packeta_address: POINT, total: 0 })
+    expect(up.refund_fee, 'a live row refunds nothing').toBe(0)
+    expect(Object.keys(u.refunds[0]), 'the COUNTED fee is published, never the raw snapshot').not.toContain('delivery_fee_paid')
+    expect(u.refund_totals).toEqual({ count: 1, total: 28.4 })
+    expect(u.unpaid.some((x) => x.id === n.order.id) || u.refunds.some((x) => x.id === n.order.id)).toBe(false)
+
+    // The correction on the live unpaid Packeta row drops the owed amount by the fee.
+    await switchViaHost(p)
+    const after = (await unpaidOf(s.cycle.id)).unpaid.find((x) => x.id === p.order.id)
+    expect(after).toMatchObject({ amount: 24.9, delivery_fee: 0, packeta: false, packeta_address: null })
+  })
+
+  test('⚠ GP-T5 review — the three sequences, each read back: pay→switch→cancel ⇒ 24.90; pay→cancel ⇒ 28.40; unpaid→switch→cancel ⇒ not in refunds', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('seq3', { fee: 3.5 })
+    const cancel = (o) => admin(`/api/guest-orders/${o.order.id}/cancel`, { method: 'post' })
+    // (1) pay → switch → cancel — the switch settled the fee
+    const a = await submitOk(s.link.token, packetaBody(s.items))
+    expect((await setPaid(a.order.id, true)).status()).toBe(200)
+    await switchViaHost(a)
+    expect((await cancel(a)).status()).toBe(200)
+    expect(guestRow(a.order.id)).toMatchObject({ paid: 1, status: 'cancelled', packeta_address: null, delivery_fee_paid: 3.5 })
+    // (2) pay → cancel, no switch — the fee is refunded with the items
+    const b = await submitOk(s.link.token, packetaBody(s.items))
+    expect((await setPaid(b.order.id, true)).status()).toBe(200)
+    expect((await cancel(b)).status()).toBe(200)
+    expect(guestRow(b.order.id)).toMatchObject({ paid: 1, status: 'cancelled', packeta_address: POINT, delivery_fee_paid: 3.5 })
+    // (3) unpaid → switch → cancel — nothing was received
+    const c = await submitOk(s.link.token, packetaBody(s.items))
+    await switchViaHost(c)
+    expect((await cancel(c)).status()).toBe(200)
+    expect(guestRow(c.order.id)).toMatchObject({ paid: 0, status: 'cancelled', packeta_address: null })
+
+    const u = await unpaidOf(s.cycle.id)
+    const byId = Object.fromEntries(u.refunds.map((r) => [r.id, r]))
+    expect(byId[a.order.id]).toMatchObject({ amount: 24.9, refund_fee: 0, packeta: false })
+    expect(byId[b.order.id]).toMatchObject({ amount: 28.4, refund_fee: 3.5, packeta: true })
+    expect(byId[c.order.id], 'unpaid ⇒ not a refund').toBeUndefined()
+    expect(u.refund_totals).toEqual({ count: 2, total: 53.3 })
+    expect(refundAmount(a.order.id)).toBe(24.9)
+    expect(refundAmount(b.order.id)).toBe(28.4)
+  })
+
+  test('⚠ recorded edge (GP-T1 toggle rules): on a switched PAID row, un-tick then re-tick freezes 0 — the server-side trace of the overpayment is gone', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('seqedge', { fee: 3.5 })
+    const o = await submitOk(s.link.token, packetaBody(s.items))
+    expect((await setPaid(o.order.id, true)).status()).toBe(200)
+    await switchViaHost(o)
+    expect(guestRow(o.order.id).delivery_fee_paid, 'the trace survives the switch').toBe(3.5)
+    expect((await setPaid(o.order.id, false)).status()).toBe(200)
+    expect(guestRow(o.order.id).delivery_fee_paid, 'live row ⇒ paid=0 NULLs it').toBe(null)
+    expect((await setPaid(o.order.id, true)).status()).toBe(200)
+    expect(guestRow(o.order.id), 'the re-tick copies the live 0').toMatchObject({ delivery_fee: 0, delivery_fee_paid: 0 })
+  })
+
+  test('source pins: the refund reads the snapshot BY NAME with `paid = 1` in its SQL AND gates the formula on `paid`; the PATCH is admin-gated and writes through pickup.js only', () => {
+    test.skip(!HAS_BACKEND_SRC, NEEDS_BACKEND_SRC)
+    const route = stripComments(readBackend('routes/guest-orders.js'))
+    expect(route, 'readability').toContain('export default router')
+    const unpaid = route.slice(route.indexOf("router.get('/cycle/:cycleId/unpaid'"), route.indexOf('export default router'))
+    expect(unpaid, 'readability: the handler slice').toContain('refund_totals')
+    expect(unpaid).toMatch(/SELECT gord\.id, gord\.delivery_fee_paid[\s\S]*?gord\.paid = 1 AND gord\.status = 'cancelled'/)
+    // ⚠ GP-T5 review: counted only while the order is STILL Packeta (the switch settles it).
+    expect(unpaid).toMatch(/row\.paid && row\.packeta_address \? \(refundFees\.get\(row\.id\) \|\| 0\) : 0/)
+    expect(unpaid, 'amount and refund_fee are the SAME counted value').toMatch(/roundMoney\(itemsAmount\(row\) \+ refundFee\)/)
+    expect(unpaid).toMatch(/refund_fee: refundFee,/)
+    expect(unpaid, 'the queue filter itself').toMatch(/row\.status === 'cancelled' && !!row\.paid/)
+    expect(readBackend('helpers/guest-orders.js'), 'the snapshot stays OFF the shared list')
+      .toMatch(/const GUEST_ORDER_FIELDS = \[[^\]]*\]/)
+    expect(readBackend('helpers/guest-orders.js').match(/const GUEST_ORDER_FIELDS = \[[^\]]*\]/)[0]).not.toContain('delivery_fee_paid')
+
+    const start = route.indexOf("router.patch('/:id/delivery', requireAdmin,")
+    expect(start, 'the route carries its own requireAdmin').toBeGreaterThan(-1)
+    const handler = route.slice(start, route.indexOf('router.get(', start))
+    expect(handler).toContain('applyGuestDelivery(current, { method: \'via_host\' })')
+    expect(handler, 'no hand-written write in the route').not.toMatch(/UPDATE\s+guest_orders/i)
+    expect(handler, 'never spreads the body').not.toMatch(/\.\.\.\s*(req\.)?body/)
+
+    const pickup = stripComments(readBackend('helpers/pickup.js'))
+    const fn = pickup.slice(pickup.indexOf('export function applyGuestDelivery('), pickup.indexOf('export function readPickup('))
+    expect(fn, 'readability').toContain('cleared_parcel')
+    expect(fn.match(/UPDATE\s+guest_orders/g) || []).toHaveLength(1)
+    expect(fn).toContain("UPDATE guest_orders SET packeta_address = NULL, delivery_fee = 0 WHERE id = ?")
+    expect(fn, 'no ledger').not.toMatch(/transactions/)
+    // The ONE writer rule for `applyGuestDelivery`'s concern: no other backend file clears a
+    // guest's point (the guest's own edit writes it through its literal-column statement).
+    expect(pickup, 'pickupTargetFor stays host-keyed').toMatch(/export function pickupTargetFor\(cycleId, friendId\)/)
+  })
+})
+
+// ── GP-T5 UI — the admin orders tab (shadcn skin) ─────────────────────────────
+async function gp5AdminUI(page) {
+  await page.goto('/admin')
+  await page.locator('#password').fill(ADMIN_PASSWORD)
+  await page.getByRole('button', { name: /Prihlásiť sa/ }).click()
+  await expect(page).toHaveURL(/\/admin\/dashboard/)
+}
+async function gp5OrdersTab(page, cycleId) {
+  await page.goto(`/admin/cycle/${cycleId}`)
+  await page.getByRole('tab', { name: 'Objednávky' }).click()
+}
+const isDeliveryPatch = (r) => r.method() === 'PATCH' && /\/api\/guest-orders\/\d+\/delivery$/.test(new URL(r.url()).pathname)
+
+test.describe('GP-T5 · 20 §UC-GP-009 — CycleDetail nested row + GuestDeliverySwitch', () => {
+  test('a Packeta row: badge, 📦 point, fee-inclusive amount + breakdown; „Nie" sends nothing; „Áno, zmeniť" patches the row and the receivables card', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('ui5', { fee: 3.5 })
+    const p = await submitOk(s.link.token, packetaBody(s.items))
+    const v = await submitOk(s.link.token, { ...identity(), items: s.items })
+    await gp5AdminUI(page)
+    await gp5OrdersTab(page, s.cycle.id)
+
+    const row = page.getByTestId(`guest-suborder-${p.order.id}`)
+    await expect(row.getByTestId(`guest-packeta-badge-${p.order.id}`)).toHaveText('Packeta')
+    await expect(row.getByTestId(`guest-packeta-address-${p.order.id}`)).toHaveText(`📦 ${POINT}`)
+    await expect(row.getByTestId(`guest-amount-${p.order.id}`)).toHaveText('28.40 EUR')
+    await expect(row.getByTestId(`guest-amount-breakdown-${p.order.id}`)).toHaveText('(24.90 EUR + 3.50 EUR doručenie)')
+    // The via_host row is today's row: no badge, no switch, no breakdown.
+    const vrow = page.getByTestId(`guest-suborder-${v.order.id}`)
+    await expect(vrow.getByTestId(`guest-amount-${v.order.id}`)).toHaveText('24.90 EUR')
+    await expect(vrow.locator('[data-testid^="guest-packeta-"], [data-testid^="guest-delivery-"], [data-testid^="guest-amount-breakdown-"]')).toHaveCount(0)
+    await expect(vrow.locator('button'), 'the shipped four controls').toHaveCount(4)
+
+    // Receivables card before.
+    const card = page.getByTestId('guest-unpaid-overview')
+    await expect(card.getByTestId(`guest-unpaid-amount-${p.order.id}`)).toHaveText('28.40 EUR')
+    await expect(card.getByTestId(`guest-unpaid-breakdown-${p.order.id}`)).toHaveText('(24.90 EUR + 3.50 EUR doručenie)')
+    await expect(card.getByTestId(`guest-unpaid-packeta-${p.order.id}`)).toContainText('Packeta')
+    await expect(card.getByTestId(`guest-unpaid-packeta-${p.order.id}`)).toContainText(`📦 ${POINT}`)
+    await expect(card.getByTestId(`guest-unpaid-packeta-${v.order.id}`)).toHaveCount(0)
+
+    // The switch names the host; the confirm names the fee.
+    const sw = row.getByTestId(`guest-delivery-switch-${p.order.id}`)
+    await expect(sw).toHaveText(/^Zmeniť na odovzdanie cez Peto$/)
+    const patches = []
+    page.on('request', (r) => { if (isDeliveryPatch(r)) patches.push(r) })
+    await sw.click()
+    const confirm = row.getByTestId(`guest-delivery-confirm-${p.order.id}`)
+    await expect(confirm).toContainText('Zruší sa doručenie Packetou a poplatok 3.50 EUR. Ak hosť poplatok už uhradil, treba mu ho vrátiť.')
+    await row.getByTestId(`guest-delivery-no-${p.order.id}`).click()
+    await expect(confirm).toHaveCount(0)
+    await expect(row.getByTestId(`guest-packeta-badge-${p.order.id}`), '„Nie" changed nothing').toBeVisible()
+    expect(patches, '„Nie" sent no request').toHaveLength(0)
+
+    await sw.click()
+    const [req] = await Promise.all([
+      page.waitForRequest(isDeliveryPatch),
+      row.getByTestId(`guest-delivery-yes-${p.order.id}`).click(),
+    ])
+    expect(req.postDataJSON(), 'exactly the one body').toEqual({ method: 'via_host' })
+    await expect(row.getByTestId(`guest-packeta-badge-${p.order.id}`)).toHaveCount(0)
+    await expect(row.getByTestId(`guest-packeta-address-${p.order.id}`)).toHaveCount(0)
+    await expect(row.getByTestId(`guest-delivery-switch-${p.order.id}`)).toHaveCount(0)
+    await expect(row.getByTestId(`guest-amount-${p.order.id}`)).toHaveText('24.90 EUR')
+    await expect(row.getByTestId(`guest-amount-breakdown-${p.order.id}`)).toHaveCount(0)
+    await expect(card.getByTestId(`guest-unpaid-amount-${p.order.id}`)).toHaveText('24.90 EUR')
+    await expect(card.getByTestId(`guest-unpaid-packeta-${p.order.id}`)).toHaveCount(0)
+    expect(guestRow(p.order.id)).toMatchObject({ delivery_fee: 0, packeta_address: null })
+    expect(patches).toHaveLength(1)
+  })
+
+  test('pending: the yes button disables AND a dispatched second click sends nothing; a refusal stays on the row, the row keeps its Packeta state', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('ui5p', { fee: 3.5 })
+    const p = await submitOk(s.link.token, packetaBody(s.items))
+    await gp5AdminUI(page)
+    let calls = 0
+    let release
+    const held = new Promise((r) => { release = r })
+    await page.route(/\/api\/guest-orders\/\d+\/delivery$/, async (route) => {
+      calls += 1
+      await held
+      await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: ERR_ADMIN_CANCELLED, reason: 'cancelled' }) })
+    })
+    await gp5OrdersTab(page, s.cycle.id)
+    const row = page.getByTestId(`guest-suborder-${p.order.id}`)
+    await row.getByTestId(`guest-delivery-switch-${p.order.id}`).click()
+    const yes = row.getByTestId(`guest-delivery-yes-${p.order.id}`)
+    await yes.click()
+    await expect(yes).toBeDisabled()
+    await expect(yes).toHaveText('Ukladám...')
+    await yes.dispatchEvent('click')
+    await page.waitForTimeout(300)
+    expect(calls, 'the JS guard, not only :disabled').toBe(1)
+    release()
+    await expect(row.getByTestId(`guest-delivery-error-${p.order.id}`)).toHaveText(ERR_ADMIN_CANCELLED)
+    await expect(row.getByTestId(`guest-delivery-confirm-${p.order.id}`), 'the confirm stays open').toBeVisible()
+    await expect(row.getByTestId(`guest-packeta-badge-${p.order.id}`), 'never shown as done').toBeVisible()
+    await expect(row.getByTestId(`guest-amount-${p.order.id}`)).toHaveText('28.40 EUR')
+  })
+
+  test('a cancelled PAID Packeta row: badge + point kept, NO switch; the refund card shows the badge, the point, 28.40 and the informational note', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('ui5r', { fee: 3.5 })
+    const c = await submitOk(s.link.token, packetaBody(s.items))
+    expect((await setPaid(c.order.id, true)).status()).toBe(200)
+    expect((await admin(`/api/guest-orders/${c.order.id}/cancel`, { method: 'post' })).status()).toBe(200)
+    // A fee-0 (free parcel) Packeta refund, built BEFORE the UI login: an API re-login after
+    // it would rotate the ONE admin token out of the browser (CLAUDE.md).
+    const z = await scenario('ui5z', { fee: 0 })
+    const zc = await submitOk(z.link.token, packetaBody(z.items))
+    expect((await setPaid(zc.order.id, true)).status()).toBe(200)
+    expect((await admin(`/api/guest-orders/${zc.order.id}/cancel`, { method: 'post' })).status()).toBe(200)
+    await gp5AdminUI(page)
+    await gp5OrdersTab(page, s.cycle.id)
+    const row = page.getByTestId(`guest-suborder-${c.order.id}`)
+    await expect(row.getByTestId(`guest-packeta-badge-${c.order.id}`)).toBeVisible()
+    await expect(row.getByTestId(`guest-packeta-address-${c.order.id}`)).toHaveText(`📦 ${POINT}`)
+    await expect(row.getByTestId(`guest-delivery-switch-${c.order.id}`)).toHaveCount(0)
+    const refund = page.getByTestId(`guest-refund-row-${c.order.id}`)
+    await expect(refund.getByTestId(`guest-refund-amount-${c.order.id}`)).toHaveText('28.40 EUR')
+    await expect(refund.getByTestId(`guest-refund-packeta-${c.order.id}`)).toContainText(`📦 ${POINT}`)
+    await expect(refund.getByTestId(`guest-refund-packeta-note-${c.order.id}`)).toHaveText('vrátane 3.50 EUR uhradeného poplatku za doručenie Packetou')
+    await expect(refund, 'the superseded „add the fee by hand" line is gone').not.toContainText('suma podľa objednávky')
+
+    // The note is driven by the COUNTED fee, not by the marker: a fee-0 (free parcel)
+    // Packeta refund keeps its badge but gets no „vrátane 0 EUR …" note.
+    await gp5OrdersTab(page, z.cycle.id)
+    const zr = page.getByTestId(`guest-refund-row-${zc.order.id}`)
+    await expect(zr.getByTestId(`guest-refund-packeta-${zc.order.id}`), 'non-vacuity: a Packeta refund row').toBeVisible()
+    await expect(zr.getByTestId(`guest-refund-amount-${zc.order.id}`)).toHaveText('24.90 EUR')
+    await expect(zr.getByTestId(`guest-refund-packeta-note-${zc.order.id}`)).toHaveCount(0)
+  })
+
+  test('source pins: ONE GuestDeliverySwitch home, mounted once in CycleDetail, admin skin only, no PickupLocationPicker for a guest', () => {
+    test.skip(!HAS_SRC, NEEDS_SRC)
+    const comp = assertReadable('components/GuestDeliverySwitch.vue', ['switchGuestDelivery', 'Áno, zmeniť', 'guestOrderId'])
+    expect(comp, 'the JS guard beside :disabled').toMatch(/if \(pending\.value \|\| !confirming\.value\) return/)
+    expect(comp, 'no neo primitive').not.toMatch(/components\/neo\//)
+    const view = assertReadable('views/CycleDetail.vue', ['GuestDeliverySwitch', 'guest-suborder-', 'guest-unpaid-overview'])
+    expect(view.match(/<GuestDeliverySwitch\b/g) || []).toHaveLength(1)
+    expect(view).toMatch(/import GuestDeliverySwitch from '@\/components\/GuestDeliverySwitch\.vue'/)
+    expect(view, 'the switch confirm is not re-inlined in the view').not.toContain('treba mu ho vrátiť')
+    // `PickupLocationPicker` stays (cycle, friend)-keyed — never handed a guest id.
+    expect(view).not.toMatch(/<PickupLocationPicker[^>]*sub\.id/)
+    const api = frontCode('api.js')
+    expect(api).toMatch(/switchGuestDelivery: \(id\) =>\s*adminRequest\(`\/guest-orders\/\$\{id\}\/delivery`, \{ method: 'PATCH', body: \{ method: 'via_host' \} \}\)/)
+  })
+
+  // ⚠ e2e-tester pass (GP-T5 review): the shipped UI tests above only ever CLICK the
+  // switch/confirm buttons. `GuestDeliverySwitch.vue` renders three plain
+  // `<button type="button">`s and no radio/tabindex trickery, so this pins that a
+  // keyboard-only admin can drive the whole correction — both terminal gestures
+  // (Nie via Space, Áno via Enter) — never only the mouse path.
+  test('keyboard: the switch opens the confirm on Enter, „Nie" closes it on Space with no request sent, and „Áno, zmeniť" fires the PATCH on Enter', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('kb5', { fee: 3.5 })
+    const p = await submitOk(s.link.token, packetaBody(s.items))
+    await gp5AdminUI(page)
+    await gp5OrdersTab(page, s.cycle.id)
+    const row = page.getByTestId(`guest-suborder-${p.order.id}`)
+
+    // 1) Enter on the switch opens the confirm — no mouse click anywhere.
+    const sw = row.getByTestId(`guest-delivery-switch-${p.order.id}`)
+    await sw.focus()
+    await expect(sw).toBeFocused()
+    await page.keyboard.press('Enter')
+    const confirm = row.getByTestId(`guest-delivery-confirm-${p.order.id}`)
+    await expect(confirm).toBeVisible()
+
+    // 2) „Nie" via Space: closes the confirm, sends nothing, the row is untouched.
+    const no = row.getByTestId(`guest-delivery-no-${p.order.id}`)
+    await no.focus()
+    await expect(no).toBeFocused()
+    const patches = []
+    page.on('request', (r) => { if (isDeliveryPatch(r)) patches.push(r) })
+    await page.keyboard.press('Space')
+    await expect(confirm).toHaveCount(0)
+    await expect(row.getByTestId(`guest-packeta-badge-${p.order.id}`), '„Nie" changed nothing').toBeVisible()
+    expect(patches, 'Space on „Nie" sent no request').toHaveLength(0)
+
+    // 3) Re-open with the keyboard and drive „Áno, zmeniť" with Enter — the real write.
+    await sw.focus()
+    await page.keyboard.press('Enter')
+    const yes = row.getByTestId(`guest-delivery-yes-${p.order.id}`)
+    await yes.focus()
+    await expect(yes).toBeFocused()
+    const [req] = await Promise.all([
+      page.waitForRequest(isDeliveryPatch),
+      page.keyboard.press('Enter'),
+    ])
+    expect(req.postDataJSON()).toEqual({ method: 'via_host' })
+    await expect(row.getByTestId(`guest-packeta-badge-${p.order.id}`)).toHaveCount(0)
+    await expect(row.getByTestId(`guest-delivery-switch-${p.order.id}`)).toHaveCount(0)
+    await expect(row.getByTestId(`guest-amount-${p.order.id}`)).toHaveText('24.90 EUR')
+  })
+
+  // ⚠ e2e-tester pass: the orchestrator's checklist item 7 (320px on the admin nested
+  // row) — checked against the shipped suite before writing a test, not assumed.
+  // `grep -rn setViewportSize e2e/tests/*.spec.js` finds 320/378px viewports ONLY on
+  // guest/friend-portal specs (order-*, portal-*, guest-status-shell, guest-order-*,
+  // google-auth's LOGIN page); no admin-page spec (`guest-admin-view.spec.js`,
+  // `cycle-stages.spec.js`, `distribution-handover.spec.js`, this file's own GP-T5 UI
+  // block) ever resizes the admin viewport. `CycleDetail.vue`'s orders tab is a
+  // shadcn `<Table>`/`<TabsContent>` grid with no responsive breakpoint classes on the
+  // nested row (`views/CycleDetail.vue:2224-2300`, read for this task) — the same
+  // "Admin = old shadcn skin" split CLAUDE.md's stack section states, with mobile
+  // support living only in the Podpultovka friend/guest skin. Skipping with the
+  // reason on record rather than asserting a claim the admin surface never makes.
+  test('320px admin nested row overflow — SKIPPED: admin is desktop-only, no admin spec in this suite exercises a mobile viewport', () => {
+    test.skip(true, 'admin (CycleDetail orders tab) is desktop-only shadcn UI; no admin spec sets a mobile viewport (verified by grep) and the nested row has no responsive classes to test')
+  })
+})
+
+test.describe('GP-T5 · 20 §UC-GP-004/006 — the `delivery_fee_paid` snapshot never leaks into /unpaid, in EITHER list', () => {
+  test('a JSON-wide sweep: the raw snapshot key never appears in `unpaid[]`, `refunds[]`, `totals` or `refund_totals` — only the derived `refund_fee`', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('nokey', { fee: 3.5 })
+    // One live Packeta row (carries a fee but no snapshot yet) + one PAID-then-cancelled
+    // Packeta row (the one case the snapshot column is actually populated for) — a
+    // vacuous sweep over an all-zero DB would prove nothing.
+    const live = await submitOk(s.link.token, packetaBody(s.items))
+    const refund = await submitOk(s.link.token, packetaBody(s.items))
+    expect((await setPaid(refund.order.id, true)).status()).toBe(200)
+    expect((await admin(`/api/guest-orders/${refund.order.id}/cancel`, { method: 'post' })).status()).toBe(200)
+    expect(guestRow(refund.order.id).delivery_fee_paid, 'non-vacuity: the DB row really carries the snapshot').toBe(3.5)
+
+    const u = await unpaidOf(s.cycle.id)
+    expect(u.unpaid.some((r) => r.id === live.order.id), 'non-vacuity: the live row is listed').toBe(true)
+    expect(u.refunds.some((r) => r.id === refund.order.id), 'non-vacuity: the refund row is listed').toBe(true)
+    const wire = JSON.stringify(u)
+    expect(wire, 'the raw column name must never reach the wire').not.toContain('delivery_fee_paid')
+    // Per-object key check too (a substring match alone would miss a differently-cased
+    // or prefixed key with the same risk): every row in both arrays, by name.
+    for (const row of [...u.unpaid, ...u.refunds]) {
+      expect(Object.keys(row)).not.toContain('delivery_fee_paid')
+    }
   })
 })

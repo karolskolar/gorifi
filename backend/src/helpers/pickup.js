@@ -26,8 +26,9 @@ import { bindValue } from './bind-value.js';
 // screen then reading back its own half. `pickupTargetFor()` answers "does an
 // `orders` row exist", which is a fact about the database and not about the caller.
 //
-// ⚠ NOTHING HERE TOUCHES MONEY except the Packeta clearance below, which is
-// explicitly asked for and provably ledger-neutral (see `applyPickup`).
+// ⚠ NOTHING HERE TOUCHES MONEY except the two Packeta clearances below — the friend
+// one in `applyPickup` and the guest one in `applyGuestDelivery` (GP-T5) — which are
+// explicitly asked for and provably ledger-neutral.
 
 /**
  * The row a party's pickup is stored on, or null when there is nowhere to put one
@@ -143,6 +144,43 @@ export function applyPickup(target, value) {
            packeta_address = NULL, delivery_fee = 0
      WHERE id = ?
   `).run(locationId, note, order.id);
+
+  return { cleared_parcel: clearedParcel, parcel_fee_removed: feeRemoved };
+}
+
+/**
+ * The admin's correction of a GUEST sub-order's delivery back to „cez {host}"
+ * (GP-T5, 20 §UC-GP-009 / D5) — the guest mirror of `applyPickup`'s Packeta clearance
+ * above, and it lives HERE for the reason this module exists: „where does this party
+ * get its bag, and what does that cost" has one home.
+ *
+ * `value` is `{ method: 'via_host' }` — the ONLY method v1 accepts (PO: the admin
+ * cannot SET a Packeta point for a guest; the guest's own edit URL is the recovery
+ * path). The route has already refused every other body.
+ *
+ * Writes exactly TWO literal columns: `packeta_address = NULL, delivery_fee = 0`.
+ * ⚠ It does NOT touch `delivery_fee_paid` — that snapshot has exactly TWO writers
+ * (`softCancelGuestOrder` + the paid toggle, learnings 12 §6, source-pinned). On a PAID
+ * row the snapshot the tick froze survives as a TRACE only: the switch SETTLES the fee
+ * (the admin returns it by hand at the confirm — orchestrator decision 2026-09-23,
+ * option (a), PENDING PO, learnings 12 §31), and `/unpaid` stops counting the snapshot
+ * once `packeta_address` is NULL, so ~~a later cancel still refunds items + the fee~~ a
+ * later cancel refunds the items only.
+ * ⚠ No `transactions` row and nothing else — ledger-neutral by construction (guests
+ * have no ledger at all). `pickupTargetFor()` stays host-keyed and untouched: a guest
+ * is not a pickup party of the link; the via_host bag inherits the host's pickup.
+ *
+ * Returns `{ cleared_parcel, parcel_fee_removed }` exactly like `applyPickup`.
+ */
+export function applyGuestDelivery(guestOrder, value) {
+  if (!value || value.method !== 'via_host') {
+    throw new Error('applyGuestDelivery: only { method: "via_host" } is supported');
+  }
+  const clearedParcel = !!guestOrder.packeta_address || (guestOrder.delivery_fee || 0) > 0;
+  const feeRemoved = clearedParcel ? (guestOrder.delivery_fee || 0) : 0;
+
+  db.prepare('UPDATE guest_orders SET packeta_address = NULL, delivery_fee = 0 WHERE id = ?')
+    .run(guestOrder.id);
 
   return { cleared_parcel: clearedParcel, parcel_fee_removed: feeRemoved };
 }

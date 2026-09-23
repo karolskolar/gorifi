@@ -239,6 +239,7 @@ append the full write-up to the matching learnings file and add at most one line
 - Guest edit PUT delivery block (GP-T2, learnings 12 §9–11): only beside a NON-EMPTY `items` and AFTER the paid 409; flag absent/`null` ⇒ both columns untouched; `guest_email`'s only edit write is the Packeta switch's `… WHERE guest_email IS NULL` (write-once, D3) — a body e-mail beside a stored one is ignored, never validated.
 - Pickup: `orders` row if one exists (any status), else `guest_order_links`; no cycle-open gate; exactly one of
   `pickup_location_id`/`pickup_location_note`; switching Packeta → pickup zeroes `delivery_fee` (ledger-neutral).
+- Guest Packeta → „cez {host}" = admin `PATCH /guest-orders/:id/delivery` (exact `{method:'via_host'}`) via `helpers/pickup.js applyGuestDelivery` — two literal columns, NEVER `delivery_fee_paid` (two writers only), no cycle/paid gate; `/unpaid` refund = items + (paid && packeta_address ? snapshot : 0) — a switch SETTLES a paid fee (pending PO) — with `paid = 1` in the SQL too, counted fee published as `refund_fee` (GP-T5).
 - Guest tables live in `schema.js` CREATEs; new columns on tables already in prod need CREATE **and** ALTER.
 - SQLite: `WHERE col = ""` is an identifier and throws — use `''`. Single-row picks on second-resolution
   `created_at` need `, id DESC`. `orders` has no `UNIQUE(friend_id, cycle_id)` — get-or-create relies on `instances: 1`.

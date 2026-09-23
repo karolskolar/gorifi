@@ -642,6 +642,12 @@ export const api = {
   // has no paid blockade, and a paid + cancelled sub-order lands in the refund queue
   // above on purpose (D4). Soft cancel server-side; the item rows are kept.
   cancelGuestOrderAdmin: (id) => adminRequest(`/guest-orders/${id}/cancel`, { method: 'POST' }),
+  // 20 §UC-GP-009 (GP-T5) — the admin corrects a guest's delivery back to „cez {host}".
+  // ADMIN-only; the body is EXACTLY `{ method: 'via_host' }` (v1 cannot set a Packeta
+  // point for a guest — PO). Ledger-neutral; answers `{ guest_order, totals,
+  // cleared_parcel, parcel_fee_removed }`.
+  switchGuestDelivery: (id) =>
+    adminRequest(`/guest-orders/${id}/delivery`, { method: 'PATCH', body: { method: 'via_host' } }),
 
   // 19 §UC-GL-009 — the guest waitlist, ADMIN side (the whole `/guest-waitlist` mount
   // is requireAdmin). `getGuestWaitlist({ host_friend_id })` → `{ rows: [...] }` in

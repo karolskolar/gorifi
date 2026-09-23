@@ -80,8 +80,12 @@
 1. **R4.7 "cancelling zeroes `delivery_fee` too" vs the refund queue's item-recomputed
    `amount` (GSO-T6).** R4.7 and 01-architecture (newer, PO-reviewed) win: the fee IS
    zeroed on cancel. Consequence recorded, not hidden: a paid Packeta sub-order that is
-   cancelled lands in the refund queue with `amount` = items only — the fee the guest paid
-   has no row to be recomputed from. UC-GP-006 therefore keeps `packeta_address` on the
+   cancelled lands in the refund queue with ~~`amount` = items only — the fee the guest paid
+   has no row to be recomputed from~~ (→ SUPERSEDED, PO 2026-09-19 + the `delivery_fee_paid`
+   clarification at the end of this file; shipped by GP-T1/GP-T5: `amount = items + (paid
+   && packeta_address ? delivery_fee_paid : 0)` — the `&& packeta_address` half: a switch to
+   „cez {host}" settles the fee, orchestrator decision 2026-09-23, PENDING PO, learnings 12
+   §31 / §Accepted risks). UC-GP-006 therefore keeps `packeta_address` on the
    cancelled row (the record, like the item rows) and publishes `packeta: true` on the
    refund row so the admin knows a fee is owed back on top. Whether the refund `amount`
    should include the fee (which needs a column that survives cancel) is `OPEN:` below.
@@ -302,7 +306,7 @@ and need no knowledge of the fee.
 | Confirmation mail (14 §UC-GR-011, `deliverOrderConfirmation`) | The fee is NOT an item line (`itemLines` untouched). When fee > 0 add its own `kv` row **after** the item lines and before `Spolu`: label `MAIL_DELIVERY_LABEL = 'Doručenie Packetou'`, value `<fee> €`; the `MAIL_TOTAL_LABEL` and `MAIL_AMOUNT_LABEL` values become `eur(payment.amount)` (fee-inclusive — for a via_host order that equals `order.total`, so today's mail is byte-identical); one more `kv` row `MAIL_PACKETA_LABEL = 'Výdajné miesto'` ↔ address when Packeta. The plain-text part carries the same lines in the same order. New constants are ADDITIVE (existing ones and their spec mirrors untouched). |
 | Host card total (`GuestSubOrders.vue` `.foot .total`) | `formatPrice(subOrder.total + (subOrder.delivery_fee || 0))`; when fee > 0 a `.sub` under it: `({formatPrice(total)} + {formatPrice(delivery_fee)} doručenie)` (the admin table's wording, `CycleDetail.vue:2104`). `totals` (`{count, total}`) **stays product-only and unchanged** — it is the pinned GSO-T5 shape and a context figure („Kolegovia platia priamo správcovi“), not a charge. |
 | Admin nested row (`CycleDetail.vue:2224-2300`) | amount cell = `total + delivery_fee` with the same breakdown sub-line as friend rows (:2102-2105). |
-| Admin `/unpaid` (`guest-orders.js:437-456`) | row **+= `delivery_fee`, `packeta_address`, `packeta: !!packeta_address`**; `amount` for a live row = `roundMoney(total + delivery_fee)`; for a cancelled (refund) row stays `itemsAmount(row)` (resolved conflict 1). `totals`/`refund_totals` sum `amount` as today. |
+| Admin `/unpaid` (`guest-orders.js:437-456`) | row **+= `delivery_fee`, `packeta_address`, `packeta: !!packeta_address`**; `amount` for a live row = `roundMoney(total + delivery_fee)`; for a cancelled (refund) row ~~stays `itemsAmount(row)` (resolved conflict 1)~~ **= `roundMoney(itemsAmount(row) + (paid && packeta_address ? delivery_fee_paid || 0 : 0))`** (the `packeta_address` condition: GP-T5 review, orchestrator decision pending PO — a switch settles the fee; the counted fee part is published as `refund_fee`) (PO 2026-09-19 + the clarification line at the end of this file; GP-T5 — `delivery_fee_paid` selected BY NAME with `paid = 1` in the query, not only in the formula). `totals`/`refund_totals` sum `amount` as today. |
 | Cycle-level aggregates (`guestCycleItems`, `/summary`, kg, value, rewards, `unpaid_count`) | **untouched** — they are product/kg figures. ⚠ If any cycle-level "delivery fees" sum is ever displayed it must fold guest fees in via the JS-merge rule, never a JOIN; none exists today and none is added (not asked). |
 
 **Business rules:**
@@ -396,12 +400,17 @@ stores 4.00, a PUT without delivery keys keeps 3.50.
   keeps its NO paid blockade (14 D4), the guest's keeps the literal-`[]` rule.
 - **Refund queue** (`/unpaid` `refunds`): a `paid = 1 AND status = 'cancelled'` row whose
   `packeta_address` is set publishes `packeta: true` (UC-GP-004) and `delivery_fee: 0`; its
-  `amount` is items-only (resolved conflict 1). The admin refund card (`CycleDetail.vue`
-  ~:1920-1935) shows the red „Packeta“ badge and the line **„+ poplatok za doručenie
-  Packetou (suma podľa objednávky)“** under the amount when `packeta`. `OPEN:` whether the
-  refund `amount` must include the fee — would require NOT zeroing it (contradicts R4.7 and
-  01-architecture) or a `delivery_fee_paid` column; default = this marker, admin refunds
-  the fee by hand.
+  ~~`amount` is items-only (resolved conflict 1)~~ **`amount` = items + (paid &&
+  packeta_address ? `delivery_fee_paid` : 0)** (SUPERSEDED — PO 2026-09-19 + the clarification
+  line at the end of this file; ⚠ the `&& packeta_address` half is the GP-T5 review's
+  orchestrator decision 2026-09-23, PENDING PO — an admin switch to „cez {host}" settles the
+  fee; learnings 12 §31, §Accepted risks). The admin refund card (`CycleDetail.vue`) shows the red „Packeta“ badge + 📦
+  point and, ~~the line „+ poplatok za doručenie Packetou (suma podľa objednávky)“~~ (that
+  line told the admin to add the fee by hand — with the fee now IN the amount it would refund
+  it twice), the informational line **„vrátane {refund_fee} uhradeného poplatku za doručenie Packetou“**
+  (GP-T5, PO DRAFT) under the amount when `refund_fee > 0`. ~~`OPEN:` whether the refund `amount`
+  must include the fee …; default = this marker, admin refunds the fee by hand.~~ → RESOLVED
+  (PO: yes, via the `delivery_fee_paid` snapshot).
 - Every consumer keeps filtering on status (stock, packing, aggregation, distribution,
   rewards) — a cancelled Packeta row with its address kept must never classify as a
   `packeta` party anywhere (module 16's `delivery.js` filters `status` before type;
@@ -410,7 +419,7 @@ stores 4.00, a PUT without delivery keys keeps 3.50.
 
 **Acceptance criteria:** each of the three doors on a paid Packeta sub-order leaves
 `status='cancelled', total=0, delivery_fee=0, packeta_address=<kept>, paid=1` (row read
-back); `/unpaid.refunds[0]` has `packeta: true`, `amount === items sum`; `MAX(transactions.id)`
+back); `/unpaid.refunds[0]` has `packeta: true`, ~~`amount === items sum`~~ `amount === items sum + the paid fee snapshot` (SUPERSEDED — the clarification line); `MAX(transactions.id)`
 unmoved across all three.
 
 ---
@@ -671,7 +680,7 @@ paths **read the row back** through `withDb`; ledger pins use the FUP-T17
   (a body `guest_name` is still ignored); the write-once e-mail (second PUT with a
   different e-mail ⇒ 200, unchanged row).
 - **Cancel (UC-GP-006):** three doors on a paid Packeta row ⇒ fee 0, address kept, refund
-  row `packeta: true`, `amount` items-only.
+  row `packeta: true`, ~~`amount` items-only~~ `amount` = items + (paid && packeta_address ? snapshot : 0) (SUPERSEDED — the clarification line + the GP-T5 review decision in §Accepted risks; pinned by GP-T1's snapshot sequences + GP-T5's `/unpaid` test).
 - **Ledger:** `MAX(transactions.id)` unmoved across submit, edit, admin paid toggle, admin
   delivery PATCH and each cancel door (one test, six checkpoints).
 - **Admin PATCH (UC-GP-009):** the acceptance list; friend token 401; anonymous 401.
@@ -731,7 +740,7 @@ five `RATE_LIMIT_*_MAX` raised, output to a file, `echo "EXIT: $?"`.
 | D1 | Submit/edit body mirrors the friend route: `use_parcel_delivery` (strict boolean `true`) + `packeta_address`; absent ⇒ via_host. | A `delivery_method: 'packeta'|'via_host'` enum — two vocabularies for one concept across friend and guest routes drift; the boolean is already what `orders.js` accepts. Truthy coercion (the friend route's) — a public write gets the strict type gate instead (`[true]` is the trap). |
 | D2 | A paid sub-order's delivery method is frozen with its items; cancel stays open. | Allowing the switch on a paid order — it changes the amount owed with nowhere to record the difference (the GSO-T6 class). |
 | D3 | `guest_email` may be **set once** on the edit PUT when NULL and Packeta is chosen; never overwritten. | 409 the switch (a dead end the guest cannot resolve alone); allowing e-mail edits generally (reopens the GSO-T4 rewrite risk). `OPEN:` PO sign-off. |
-| D4 | Cancel zeroes `delivery_fee`, keeps `packeta_address`; the refund row carries `packeta: true`, ~~`amount` items-only~~ (→ SUPERSEDED by the PO decision 2026-09-19 + the orchestrator decision 2026-09-23 (GP-T1 review), PENDING PO confirmation — learnings 12 §6: `amount = itemsAmount + (paid ? delivery_fee_paid || 0 : 0)`, the snapshot frozen by cancel or the paid tick, whichever is first). | Keeping the fee on cancel (contradicts R4.7 + 01-architecture); clearing the address (destroys the record the admin needs to refund the fee). |
+| D4 | Cancel zeroes `delivery_fee`, keeps `packeta_address`; the refund row carries `packeta: true`, ~~`amount` items-only~~ (→ SUPERSEDED by the PO decision 2026-09-19 + the orchestrator decision 2026-09-23 (GP-T1 review), PENDING PO confirmation — learnings 12 §6: `amount = itemsAmount + (paid ? delivery_fee_paid || 0 : 0)`, the snapshot frozen by cancel or the paid tick, whichever is first; ⚠ + `&& packeta_address` since the GP-T5 review — an admin switch to „cez {host}" settles the fee, orchestrator decision 2026-09-23, PENDING PO, learnings 12 §31). | Keeping the fee on cancel (contradicts R4.7 + 01-architecture); clearing the address (destroys the record the admin needs to refund the fee). |
 | D5 | Admin correction is `PATCH /api/guest-orders/:id/delivery` `{ method: 'via_host' }` via a new `pickup.js` export; setting a Packeta address for a guest is not a v1 admin capability. | Reusing the host-keyed pickup PATCH / `PickupLocationPicker` (they address a party by `cycleId`+`friendId`, "never an order id"); a free-form `packeta_address` write by the admin (not asked; the guest's own edit URL, resendable per module 14, is the recovery path). |
 | D6 | A Packeta guest is its own distribution party (`kind:'guest'`), excluded from the host's `guest_orders[]`, the host's packing gate and the host's hand-over inheritance. | Leaving it nested under the host — the host's „Zabaliť“ would wait on a bag they never touch, and 16's inheritance would stamp a bag that was not handed to the host. |
 | D7 | The host's `delivered` tick is hidden on Packeta rows in the UI; the endpoint is unchanged. | A server 409 — a harmless write is not worth a new refusal path; the flag stays host-owned. |
@@ -768,6 +777,24 @@ five `RATE_LIMIT_*_MAX` raised, output to a file, `echo "EXIT: $?"`.
 - ~~**The fee of a cancelled paid Packeta order is not in the refund `amount`** (D4) — the
   admin refunds it by hand from the marker. Resolve via the OPEN below if it bites.~~
   → RESOLVED (PO 2026-09-19 + orchestrator decision 2026-09-23 (GP-T1 review), PENDING PO confirmation — learnings 12 §6): the refund includes `delivery_fee_paid`.
+- **A stale guest status tab re-applies Packeta after the admin correction** (GP-T4 review,
+  decided GP-T5 — learnings 12 §GP-T5): a tab opened BEFORE `PATCH …/delivery` still holds
+  the Packeta choice, and its next save (§UC-GP-007 item 9 — the flag is ALWAYS sent) writes
+  Packeta + the fee back while parcels are on. Last-write-wins, like the item cart. **No
+  server guard:** the edit only accepts an open, unpaid order, the saved value is the guest's
+  own visible choice, and a guard would need a version/ETag the spec does not have (or would
+  turn the always-sent flag into a refusal for the ordinary case). The admin re-corrects; the
+  refund snapshot is unaffected (an unpaid row). Pinned as documented behaviour.
+- **Switching a PAID Packeta guest to „cez {host}" SETTLES its fee** (ORCHESTRATOR DECISION
+  2026-09-23, GP-T5 review option (a), PENDING PO — learnings 12 §31): the live fee is zeroed,
+  `paid` stays 1, and the inline confirm tells the admin to return the fee THEN. So the refund
+  counts the snapshot only while the order is still Packeta — `refund = items + (paid &&
+  packeta_address IS NOT NULL ? delivery_fee_paid || 0 : 0)` — and a later cancel refunds the
+  items only (~~„a LATER cancel still refunds items + the paid fee"~~ refunded it twice). No new
+  writer of `delivery_fee_paid`; `paid = 1` stays in the query. `/unpaid` rows publish
+  `refund_fee` (the counted fee part) and the refund card's note reads it. ⚠ Related edge
+  (GP-T1's toggle rules): on a switched paid row, un-tick then re-tick freezes 0 and erases the
+  server-side trace of the overpayment.
 - **A URL holder can add an e-mail to an e-mail-less order once** (D3) — gains Packeta
   notifications for someone else's bag, nothing more; same class as the accepted
   "host/admin holding `order_token` can act as the guest" risk in module 14.
@@ -851,4 +878,4 @@ write-up (§Supersedes list).
 - **Admin sets a guest's Packeta point** = not in v1.
 - **Hero badge „Packeta +{fee}“** = YES. **Cartbar** = product-only; fee appears at checkout, confirmation and status.
 - **Slovak strings** = staging sign-off.
-- **Orchestrator clarification 2026-09-19 (refund mechanics):** cancel still zeroes the live `delivery_fee`, so the PO's „items + fee“ refund needs a value that survives cancel: add `guest_orders.delivery_fee_paid REAL` (CREATE + ALTER, lands with UC-GP-001's schema row), ~~written ONLY by the admin paid toggle (`paid=1` copies `delivery_fee`, `paid=0` sets NULL)~~ → SUPERSEDED, orchestrator decision 2026-09-23 (GP-T1 review), PENDING PO confirmation — learnings 12 §6: the fee part of what the guest was asked to pay, frozen at the FIRST of {paid, cancel}, with TWO writers — `softCancelGuestOrder` (`delivery_fee_paid = COALESCE(delivery_fee_paid, delivery_fee)` in the same statement that zeroes the fee; SQLite reads the OLD row) and the paid toggle (`paid=1` `COALESCE(delivery_fee_paid, delivery_fee)`, `paid=0` NULL on a live row but KEPT on a cancelled one). Closes the cancel-before-tick hole: pay 28.40 → cancel → admin ticks paid ⇒ refund 28.40, not 24.90. Refund `amount = ~~itemsAmount(row) + (delivery_fee_paid || 0)~~ itemsAmount(row) + (paid ? delivery_fee_paid || 0 : 0)` (paid-gated — GP-T1 review round 2); the `packeta:true` marker stays. The UC-GP-006 / D4 / e2e „items-only“ wording is SUPERSEDED by this line.
+- **Orchestrator clarification 2026-09-19 (refund mechanics):** cancel still zeroes the live `delivery_fee`, so the PO's „items + fee“ refund needs a value that survives cancel: add `guest_orders.delivery_fee_paid REAL` (CREATE + ALTER, lands with UC-GP-001's schema row), ~~written ONLY by the admin paid toggle (`paid=1` copies `delivery_fee`, `paid=0` sets NULL)~~ → SUPERSEDED, orchestrator decision 2026-09-23 (GP-T1 review), PENDING PO confirmation — learnings 12 §6: the fee part of what the guest was asked to pay, frozen at the FIRST of {paid, cancel}, with TWO writers — `softCancelGuestOrder` (`delivery_fee_paid = COALESCE(delivery_fee_paid, delivery_fee)` in the same statement that zeroes the fee; SQLite reads the OLD row) and the paid toggle (`paid=1` `COALESCE(delivery_fee_paid, delivery_fee)`, `paid=0` NULL on a live row but KEPT on a cancelled one). Closes the cancel-before-tick hole: pay 28.40 → cancel → admin ticks paid ⇒ refund 28.40, not 24.90. Refund `amount = ~~itemsAmount(row) + (delivery_fee_paid || 0)~~ itemsAmount(row) + (paid ? delivery_fee_paid || 0 : 0)` (paid-gated — GP-T1 review round 2; ⚠ and, since the GP-T5 review, Packeta-gated: `paid && packeta_address IS NOT NULL` — an admin switch to „cez {host}" settles the fee, orchestrator decision PENDING PO, §Accepted risks); the `packeta:true` marker stays. The UC-GP-006 / D4 / e2e „items-only“ wording is SUPERSEDED by this line.

@@ -72,6 +72,10 @@ const ADMIN_ENDPOINTS = [
   // has NO paid blockade (D4), so it is strictly more powerful than the host route
   // on the same prefix and must never be reachable without an admin token.
   { method: 'post', path: '/api/guest-orders/1/cancel' },
+  // 20 §UC-GP-009 (GP-T5): the admin's delivery correction of a guest sub-order back to
+  // „cez {host}" — zeroes the fee on any row, paid ones included, so it must never be
+  // reachable without an admin token (a host Bearer is 401 too — guest-packeta.spec.js).
+  { method: 'patch', path: '/api/guest-orders/1/delivery', data: { method: 'via_host' } },
   // 14 §UC-GR-004 / §UC-GR-010 item 1 (GR-T3): the admin half of the now-MIXED
   // /api/guest-links router — READ every host's share link for a cycle, CREATE one
   // for a friend who has not shared yet, and REGENERATE an existing one. ⚠ The three

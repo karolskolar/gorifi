@@ -100,8 +100,9 @@ against a later change); pay → fee changes → cancel ⇒ the cancel keeps the
 Mutation-checked per writer: cancel writer removed (5 red), paid=1 plain copy (4), paid=0 always
 NULL (2), paid=0 always kept (3), cancel overwriting instead of COALESCE (2 — only the source pin
 until the pay→fee change→cancel test was added). An unpaid cancelled row now carries a snapshot too — harmless, the
-refund formula gates on `paid`. The live-fee step writes the column from the test (node:sqlite,
-read-write) because no route can change a live fee until GP-T2 / GP-T5. ⚠ **When GP-T2 (the edit
+refund formula gates on `paid`. ~~The live-fee step writes the column from the test (node:sqlite,
+read-write) because no route can change a live fee until GP-T2 / GP-T5.~~ → every live-fee step
+now goes through a real writer (GP-T2 §12, GP-T5 §33); `setLiveFee()` is deleted. ⚠ **When GP-T2 (the edit
 PUT re-reading `parcel_fee`) and GP-T5 (the delivery PATCH zeroing it) land, re-point the
 `setLiveFee()` steps at those real writers** — a fixture write proves the SQL, not the route (noted
 in the GP-T2 row). → **GP-T2 DONE for the one UNPAID step (§12); the two PAID-row steps cannot be
@@ -457,3 +458,170 @@ parcels-gone banner (1). All 15 red.
 - GP-T5: the admin nested row / receivables are untouched here; `GuestDeliverySwitch.vue` is its.
 - GP-T6: the host card still lists a Packeta sub-order under the host (this module's host view is
   `GUEST_ORDER_FIELDS`-driven); only the `/distribution` payload splits it into its own party.
+
+---
+
+## GP-T5 — the admin delivery correction, the receivables amount, the refund, the admin nested row (2026-09-23)
+
+**What shipped.** `helpers/pickup.js applyGuestDelivery(row, { method: 'via_host' })` (NEW —
+the guest mirror of `applyPickup`'s Packeta clearance, one statement: `UPDATE guest_orders SET
+packeta_address = NULL, delivery_fee = 0 WHERE id = ?`, returns `{ cleared_parcel,
+parcel_fee_removed }`), `PATCH /api/guest-orders/:id/delivery` (per-route `requireAdmin`,
+`ADMIN_ENDPOINTS`), `/unpaid` rows += `delivery_fee` / `packeta_address` / `packeta` with the
+live amount `total + fee` and the refund `items + (paid ? delivery_fee_paid : 0)`,
+`components/GuestDeliverySwitch.vue` (NEW — the ONE correction control; GP-T6's Distribution
+row is its second consumer), `api.switchGuestDelivery(id)`, and `CycleDetail.vue` (nested row:
+red „Packeta" badge + 📦 point + fee-inclusive amount with the friend rows' breakdown +
+the switch; receivables card: badge + point + breakdown; refund card: badge + point + an
+informational note). `guest-packeta.spec.js` +16 tests after review (89 total), the ledger test extended,
+both remaining `setLiveFee()` calls re-pointed, the fixture writer DELETED.
+
+### 30. The PATCH contract, in gate order
+
+`requireAdmin` (401 anonymous / host Bearer / stale token) → body EXACTLY `{ method:
+'via_host' }` (plain object, one own key, strict equality — `{}`, `[1]`, `['via_host']`,
+`{method:'packeta'}`, `'VIA_HOST'`, `[x]`, `null`, `true`, a stray `packeta_address` or
+`delivery_fee` beside it ⇒ 400 `Neplatný spôsob prevzatia` · `method`; scalar JSON bodies never
+reach the route, express.json strict ⇒ 400) → 404 uniform → 409 `cancelled` (`Táto objednávka
+bola zrušená, spôsob prevzatia už nie je možné zmeniť.` — PO DRAFT; admin audience, so the
+vocabulary guard does not apply, and it says „objednávka" anyway) → a transaction that
+re-reads the row (gone ⇒ 404, cancelled ⇒ 409) and calls the helper. **No cycle gate** (pinned
+on a LOCKED round), **no paid gate**. An already-via_host row ⇒ 200 `cleared_parcel: false,
+parcel_fee_removed: 0`, row byte-identical. A fee-0 Packeta row clears too (`cleared_parcel:
+true`, removed 0) — the address is the marker (§1). Response = `mutationPayload()` (the GSO-T5
+`{ guest_order, totals }` shape) + the two flags.
+
+### 31. The PATCH does NOT write `delivery_fee_paid` — and a paid switch SETTLES the fee (refund counts the snapshot only while `packeta_address IS NOT NULL`; orchestrator decision, pending PO)
+
+The two-writer walk (§6) stays green: the snapshot is still frozen only by the first of {paid,
+cancel}. ~~Consequence on a PAID Packeta row: … a LATER cancel refunds 28.40 (pay → PATCH →
+cancel ⇒ refund 28.40).~~ → **SUPERSEDED in the GP-T5 review — that refunded the fee TWICE**:
+the confirm tells the admin to return the 3.50 at the switch, and the later cancel then queued
+28.40 again. **ORCHESTRATOR DECISION 2026-09-23 (option (a), PENDING PO): switching a PAID row
+to „cez {host}" SETTLES its fee**, so the refund counts the snapshot only while the order is
+still Packeta:
+`refund = items + (paid && packeta_address IS NOT NULL ? delivery_fee_paid || 0 : 0)`.
+The switch NULLs the address and the cancel keeps it, so the address is exactly „never
+switched". No new writer — the snapshot stays in the row, the refund just stops counting it;
+`paid = 1` stays in the QUERY. Pinned, each read back: pay → switch → cancel ⇒ 24.90 (snapshot
+still 3.5, address NULL); pay → cancel ⇒ 28.40; unpaid → switch → cancel ⇒ not in `refunds`.
+⚠ **Reviewer's edge, recorded (GP-T1's toggle rules, not fixed):** on a switched PAID row an
+un-tick NULLs the snapshot (a live row) and the re-tick copies the live 0 — the server-side
+trace of the settled overpayment is gone (pinned as documented behaviour).
+**Refund note (review minor):** `/unpaid` rows publish `refund_fee` — EXACTLY the fee part
+`amount` counts (0 on live, unpaid, switched and fee-0 rows); the raw `delivery_fee_paid` is
+never published (pinned by key) and stays off `GUEST_ORDER_FIELDS`. The refund card's note is
+driven by `refund_fee > 0` and prints it: „vrátane 3.50 EUR uhradeného poplatku za doručenie
+Packetou" (PO DRAFT). §36's fee-0 caveat is thereby fixed.
+
+### 32. The refund: `paid = 1` in the SQL AND in the formula — two layers, source-pinned
+
+`delivery_fee_paid` is off `GUEST_ORDER_FIELDS` (deliberately), so `/unpaid` selects it BY
+NAME in its own query — `WHERE glink.cycle_id = ? AND gord.paid = 1 AND gord.status =
+'cancelled'` — and the formula still reads `row.paid ? snapshot : 0`. Since GP-T1 an UNPAID
+cancelled row carries a snapshot (pinned non-vacuously in the `/unpaid` test), but the JS
+queue filter (`status === 'cancelled' && !!row.paid`) already keeps it out of `refunds`, so
+**neither layer is behaviourally observable on its own** — M1/M2 below red only the source pin,
+the same class as §4's in-tx re-read. The live amount is now `roundMoney(total + fee)` (was the
+bare `total`; identical for every via_host row, whose total is already rounded).
+
+### 33. `setLiveFee()` is GONE — the PATCH models both remaining steps
+
+GP-T2 left two fixture writes that moved the fee of a PAID row (§12). The delivery PATCH is a
+real writer of exactly that — it moves the live fee to 0 — and 0 is the DISCRIMINATING value
+for both COALESCE writers: a plain copy freezes 0 and the refund loses the fee. So:
+„live pay → unpay → reprice → pay → PATCH → re-tick" asserts the snapshot stays 4 after the
+live fee went to 0 (paid=1 plain-copy mutation reds it), and „pay → PATCH → cancel" asserts the
+cancel keeps the tick's 3.5 (cancel-overwrite mutation reds it). The node:sqlite read-WRITE
+open is gone from the file (every remaining `DatabaseSync` is `readOnly`).
+
+### 34. The stale guest tab — DECIDED: accepted risk, no server guard
+
+GP-T4's review: a guest status tab opened BEFORE the admin's correction still shows Packeta;
+its next save ALWAYS sends `use_parcel_delivery` (20 §UC-GP-007 item 9), so it writes Packeta +
+the fee back while parcels are on. Last-write-wins, exactly like the item cart. Decision: **no
+guard.** The spec is silent; the edit only accepts an open, unpaid order (409 `closed` / `paid`
+otherwise, so the paid-row case cannot recur and a locked round cannot be re-Packeta'd); the
+value written is the guest's own visible choice; and a guard would need a version/ETag the
+payload does not carry, or would turn the always-sent flag into a refusal for the ordinary
+save. The admin re-corrects if needed. Pinned as documented behaviour (the API test re-applies
+Packeta after the PATCH) and recorded in 20 §Accepted risks.
+
+### 35. `GuestDeliverySwitch.vue` — built for its second consumer
+
+Props `guestOrderId` (the guest's OWN id — `PickupLocationPicker` is never handed one, its key
+is (cycle, friend)), `hostName` (first name), `deliveryFee`, `testidPrefix` (default
+`guest-delivery` ⇒ `guest-delivery-switch|confirm|warning|yes|no|error-{id}`). It OWNS its
+mutation (the `PickupLocationPicker` reasoning: two views that never coexist), so pending is per
+instance = per `guest_orders.id`; a `seq` counter + a `guestOrderId` watch drop a late response
+and reset a re-bound slot. `:disabled` AND a JS guard (`if (pending.value || !confirming.value)
+return`) — pinned by holding the request and dispatching a second click (1 call). A refusal
+stays next to the control, the confirm stays open, the row keeps its Packeta state. The
+PARENT renders it only on a LIVE Packeta row and patches its row from `updated`
+(`onGuestDeliveryUpdated`: point + fee from `guest_order`, then `loadGuestUnpaid()` +
+`loadDistributionPlan()` — the receivables amount and the header plan both move). Fee 0 ⇒ the
+confirm reads „Zruší sa doručenie Packetou." (the picker's own fallback). Admin skin only —
+the PI-T12 admin-invariance sweep reads it through the admin import closure.
+
+### 36. Admin rendering
+
+Nested row: badge + 📦 point on EVERY Packeta row, cancelled included (the record — same rule
+as the host card); amount `formatPrice(total + fee)` + `(X EUR + Y EUR doručenie)` when fee >
+0 (the friend rows' wording); the via_host row is byte-identical (its 4-button count pin in
+`guest-admin-view.spec.js` holds; the switch never renders there). Receivables: badge + point
+under the phone line, amount + breakdown. Refund: badge + point, amount, and „vrátane
+uhradeného poplatku za doručenie Packetou" when `packeta` (PO DRAFT) — ~~„+ poplatok za
+doručenie Packetou (suma podľa objednávky)"~~ is superseded in 20 §UC-GP-006 because the fee
+is now IN the amount (adding it by hand would refund it twice). ~~⚠ A fee-0 Packeta refund would
+still show the note~~ → fixed in review: the note reads `refund_fee` (§31).
+
+### 37. Harness trap met
+
+A Python `str.index`-then-splice done twice with the SAME needle, where the replacement starts
+with the needle, hits the first site twice: both new blocks landed in the receivables card and
+the refund card got none. One UI test caught it. Replace from the END, or search after the
+first insertion. ⚠ **Second trap (review round):** a fixture built with the API AFTER the UI
+admin login made `makeAdmin` re-login on a 401, which rotated the ONE `admin_token` out of the
+browser — the page dropped to logged-out and the test timed out on the tab. The first R4
+mutation run was „red" for THAT reason, not for R4; the fixture was moved before the UI login
+and R4 re-measured (red on the intended assertion: note count 1, expected 0).
+
+### Mutations (fresh server boot / rebuild per mutation; GP-T5 + snapshot + ledger + admin-authorization)
+
+Each backend mutation restarted the server on the same DB, each frontend one rebuilt
+`backend/public`; the file was restored and byte-compared after each.
+
+| # | Mutation | Red |
+|---|---|---|
+| M1 | `paid = 1` dropped from the snapshot SQL | 1 (source pin only — §32) |
+| M2 | refund formula not paid-gated | 1 (source pin only — §32) |
+| M4 | live `/unpaid` amount product-only | 2 |
+| M5 | refund items-only | 4 |
+| M6 | the PATCH also NULLs `delivery_fee_paid` | 5 (incl. the two-writer walk) |
+| M7 | no `requireAdmin` on the PATCH | 3 (incl. `ADMIN_ENDPOINTS`) |
+| M8 | extra body keys tolerated | 1 |
+| M9 / M9b | the 409 `cancelled` pre-check / the in-tx re-check dropped ALONE | 0 / 0 — redundant layers by design (the GA-T8 note) |
+| M9c | BOTH cancelled layers dropped | 1 |
+| M10 | a cycle-open gate added | 1 |
+| M11 | `packeta` marker from `fee > 0` | 2 |
+| M12 | the PATCH keeps the point | 8 |
+| M13 | paid=1 plain copy (not COALESCE) | 4 (incl. the re-pointed §33 test) |
+| M14 | cancel overwrites the snapshot | 3 (incl. the re-pointed §33 test) |
+| F1 | no JS guard in the switch | 2 |
+| F2 | row not patched in place | 1 |
+| F3 | switch on every live row | 1 |
+| F4 | confirm without the fee | 1 |
+| F5 | receivables not reloaded after the switch | 1 |
+| F6 | nested amount product-only | 2 |
+| R1 | (review) refund formula without the `packeta_address` condition | 3 |
+| R2 | (review) refund formula without `paid` (SQL keeps `paid = 1`) | 1 (source pin only — §32) |
+| R3 | (review) `refund_fee` = the raw snapshot | 3 |
+| R4 | (review) note driven by `packeta` instead of `refund_fee` | 1 (the fee-0 refund row) |
+
+### Seams
+
+- GP-T6: mount `GuestDeliverySwitch` on the Distribution Packeta guest party (`guest-order-id`
+  = the party's `guest_order_id`, `host-name` = first name of `host_name`), patch the party from
+  `updated`, re-fetch the plan. Do NOT copy the confirm.
+- WA-T5: a PATCH after a hand-over leaves a queued Packeta-segment message on its frozen
+  `segment_key` (DP-T3's note) — same class, same owner.

@@ -17,6 +17,7 @@ import { deliveryOf } from '../helpers/delivery.js';
 import { readHandedOverFlag, partyDelivery, guestOrderStage } from '../helpers/handover.js';
 import { enqueueForHandOver, cancelForUnHandOver } from '../helpers/outbox.js';
 import { markCycleReady } from '../helpers/cycle-stage.js';
+import { applyGuestDelivery } from '../helpers/pickup.js';
 
 const router = Router();
 
@@ -29,6 +30,7 @@ const router = Router();
 //   ADMIN-only (`requireAdmin`, §UC-GSO-009/010, 14 §UC-GR-005, 16 §UC-DP-005)
 //     PATCH  /:id/paid
 //     PATCH  /:id/handed-over
+//     PATCH  /:id/delivery        (GP-T5, 20 §UC-GP-009)
 //     POST   /:id/cancel
 //     GET    /cycle/:cycleId/unpaid
 // Wrapping the mount in either guard would be wrong in both directions — an admin
@@ -600,6 +602,92 @@ router.post('/:id/cancel', requireAdmin, (req, res) => {
   });
 });
 
+// PATCH /guest-orders/:id/delivery — the ADMIN corrects a guest's delivery back to
+// „cez {host}" (GP-T5, 20 §UC-GP-009 / D5). ADMIN-only (`requireAdmin` on THIS route —
+// the mount is bare and mixed). The guest counterpart of the friend pickup PATCH
+// (`routes/orders.js`), written through the SAME one home, `helpers/pickup.js`.
+//
+// Body: EXACTLY `{ method: 'via_host' }`. Anything else — `{}`, `true`, `[1]`,
+// `{ method: 'packeta' }`, a stray `packeta_address` beside it — ⇒ 400 and nothing is
+// written. Explicit intent, the non-destructive form of the `items: []` rule. ⚠ The
+// admin cannot SET a Packeta point for a guest in v1 (PO 2026-09-19): the guest's own
+// edit URL, resendable via 14 §UC-GR-008, is the recovery path.
+//
+// Status codes:
+//   400 — the body is not exactly `{ method: 'via_host' }`
+//   404 — no such sub-order (uniform)
+//   409 — `cancelled` (the `delivered` PATCH precedent: terminal, and the fee is
+//         already 0 there — the snapshot keeps what the refund needs)
+//   200 — cleared, or already via_host (`cleared_parcel: false` — idempotent)
+//
+// Deliberately NOT gated on the cycle being open (the correction is needed AFTER the
+// lock — parcels switched off, the bag physically going with the host) and NOT on
+// `paid` (the friend route's precedent): a PAID Packeta row loses its live fee behind
+// the UI confirm that names it. ⚠ The switch SETTLES that fee (orchestrator decision
+// 2026-09-23, option (a), PENDING PO — learnings 12 §31): the confirm tells the admin to
+// return it by hand right then, so ~~a later cancel still refunds what was paid~~ a later
+// cancel refunds the ITEMS only — `/unpaid` counts the snapshot only while
+// `packeta_address IS NOT NULL`, and this route NULLs it. `delivery_fee_paid` is still NOT
+// written here (two writers only, learnings 12 §6); it survives as a trace only.
+//
+// ⚠ NO `transactions` ROW — guests have no ledger (the watermark e2e covers it).
+// ⚠ ACCEPTED RISK (GP-T4 review, learnings 12 §GP-T5): a guest status tab opened
+// BEFORE this correction still shows the old Packeta choice, and its next save sends
+// `use_parcel_delivery: true` (20 §UC-GP-007 item 9 — always sent), re-applying
+// Packeta + the fee while parcels are on. Last-write-wins, like the item cart; no
+// guard here — the guest's save is the guest's own current choice on an open, unpaid
+// order (the only state the edit accepts).
+router.patch('/:id/delivery', requireAdmin, (req, res) => {
+  const body = req.body;
+  const exact = body !== null && typeof body === 'object' && !Array.isArray(body)
+    && Object.keys(body).length === 1
+    && Object.prototype.hasOwnProperty.call(body, 'method')
+    && body.method === 'via_host';
+  if (!exact) {
+    return res.status(400).json({ error: 'Neplatný spôsob prevzatia', field: 'method' });
+  }
+
+  const row = loadSubOrder(req.params.id);
+  if (!row) {
+    return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
+  }
+
+  if (guestOrderStatus(row) === 'cancelled') {
+    return res.status(409).json({
+      error: 'Táto objednávka bola zrušená, spôsob prevzatia už nie je možné zmeniť.',
+      reason: 'cancelled',
+    });
+  }
+
+  const apply = db.transaction(() => {
+    // Re-read inside the transaction (the GA-T8 layer that survives cluster mode and a
+    // future `await`): the row must still exist and still be live at the write.
+    const current = db.prepare(
+      'SELECT id, status, packeta_address, delivery_fee FROM guest_orders WHERE id = ?'
+    ).get(row.id);
+    if (!current) return { conflict: 'gone' };
+    if (guestOrderStatus(current) === 'cancelled') return { conflict: 'cancelled' };
+    return { result: applyGuestDelivery(current, { method: 'via_host' }) };
+  });
+
+  const applied = apply();
+  if (applied.conflict === 'gone') {
+    return res.status(404).json({ error: 'Objednávka kolegu nebola nájdená' });
+  }
+  if (applied.conflict === 'cancelled') {
+    return res.status(409).json({
+      error: 'Táto objednávka bola zrušená, spôsob prevzatia už nie je možné zmeniť.',
+      reason: 'cancelled',
+    });
+  }
+
+  res.json({
+    ...mutationPayload(row),
+    cleared_parcel: applied.result.cleared_parcel,
+    parcel_fee_removed: applied.result.parcel_fee_removed,
+  });
+});
+
 // GET /guest-orders/cycle/:cycleId/unpaid — the admin's money overview for a cycle
 // (§UC-GSO-010): who has not paid yet, how much, under which reference, through
 // which host, and how to reach them. ADMIN-only.
@@ -642,15 +730,54 @@ router.get('/cycle/:cycleId/unpaid', requireAdmin, (req, res) => {
   // receivables/refund screen — the one place the admin is actively chasing a guest
   // about money — so it is where a guest who lost their status URL most needs it
   // resent. Everything else in this mapping stays as it was.
+  // ⚠ GP-T5 (20 §UC-GP-004/006, PO 2026-09-19 + learnings 12 §6): the refund of a
+  // cancelled PAID sub-order is „what was paid" = items + the fee snapshot. The live
+  // `delivery_fee` is 0 on a cancelled row (cancel zeroes it), so the fee part comes
+  // from `delivery_fee_paid` — which is deliberately NOT on `GUEST_ORDER_FIELDS` and is
+  // therefore selected here BY NAME, by the one surface that reads it.
+  // ⚠ `paid = 1` is in THIS QUERY, not only in the formula below: since GP-T1 an UNPAID
+  // cancelled row carries a snapshot too (cancel freezes it), and that snapshot is not
+  // money anybody received. Both layers, so dropping either one alone still refunds
+  // nothing that was not paid.
+  const refundFees = new Map(db.prepare(`
+    SELECT gord.id, gord.delivery_fee_paid
+      FROM guest_orders gord
+      JOIN guest_order_links glink ON glink.id = gord.link_id
+     WHERE glink.cycle_id = ? AND gord.paid = 1 AND gord.status = 'cancelled'
+  `).all(cycle.id).map((r) => [r.id, r.delivery_fee_paid]));
+
+  // ⚠ ORCHESTRATOR DECISION 2026-09-23 (GP-T5 review, option (a), PENDING PO; learnings
+  // 12 §31): the snapshot counts ONLY while the order is still Packeta. The admin's
+  // switch of a PAID Packeta row to „cez {host}" (`PATCH /:id/delivery`) SETTLES its fee —
+  // the confirm tells the admin to return it right then — so a later cancel must not
+  // refund it a second time. The switch NULLs `packeta_address` and the cancel keeps it,
+  // so the address is exactly „never switched". No new writer of `delivery_fee_paid`.
+  const refundFeeOf = (row) => (row.paid && row.packeta_address ? (refundFees.get(row.id) || 0) : 0);
+
   const rows = cycleSubOrders(cycle.id).map((row) => {
     const status = guestOrderStatus(row);
+    const fee = row.delivery_fee || 0;
+    const refundFee = status === 'cancelled' ? roundMoney(refundFeeOf(row)) : 0;
     return {
       id: row.id,
       guest_name: row.guest_name,
       guest_phone: row.guest_phone,
       guest_email: row.guest_email,
       total: row.total,
-      amount: status === 'cancelled' ? itemsAmount(row) : row.total,
+      // live: what is owed = products + the fee (UC-GP-004); cancelled: the refund =
+      // the kept item rows + (paid ? the fee snapshot : 0).
+      amount: status === 'cancelled'
+        ? roundMoney(itemsAmount(row) + refundFee)
+        : roundMoney((row.total || 0) + fee),
+      // GP-T5 review — the fee part of the refund, exactly the value `amount` counts (0 on a
+      // live row, 0 on a switched or unpaid one). Admin-only; drives the refund card's note.
+      refund_fee: refundFee,
+      // GP-T5 — extended BY NAME (the hand-picked mapping). `packeta` is THE marker
+      // (`packeta_address IS NOT NULL`, never the fee — a fee of 0 is legal and a
+      // cancelled row keeps its address with a zeroed fee).
+      delivery_fee: fee,
+      packeta_address: row.packeta_address || null,
+      packeta: !!row.packeta_address,
       status,
       paid: row.paid,
       delivered: row.delivered,
