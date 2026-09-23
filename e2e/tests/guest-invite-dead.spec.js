@@ -367,7 +367,8 @@ test.describe('RD-GX-4 · the invite CTA on the neo shell (§UC-GX-009)', () => 
 // ---------------------------------------------------------------------------
 // (B) g-dead — §UC-GX-010
 
-test.describe('RD-GX-4 · g-dead, three variants (§UC-GX-010)', () => {
+// GL-T7: „three variants" → TWO — the `closed` one is SUPERSEDED by 19 §UC-GL-002 (see `COPY.closed`).
+test.describe('RD-GX-4 · g-dead, two variants (§UC-GX-010; `closed` superseded by 19 §UC-GL-002)', () => {
   // Title → the shipped one (unchanged); description → the prototype's, replacing
   // the raw server message the shipped card printed under it.
   const COPY = {
@@ -560,7 +561,8 @@ test.describe('RD-GX-4 · g-dead, three variants (§UC-GX-010)', () => {
   test('a network/5xx failure keeps the SHIPPED fallback — the page does not invent a reason', async ({ page }) => {
     const { link } = await scenario('dead5xx')
 
-    // ⚠ The three variants above are safe only because the server NAMES the reason.
+    // ⚠ The ~~three~~ two variants above (GL-T7: `closed` is the pre-open page since 19
+    // §UC-GL-002) are safe only because the server NAMES the reason.
     // Anything else has no reason to name, so both shipped strings stand: the
     // fallback title, and the server's own message as the description.
     await page.route(`**/api/guest/${link.token}`, (route) => route.fulfill({

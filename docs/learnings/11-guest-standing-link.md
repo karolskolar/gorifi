@@ -1001,3 +1001,131 @@ HEAD (pre-implementation) reds 7 of the 22 selected tests. Mutations, each red t
 mount back on `activeCycleId`; the row back to `state === 'open'`; the closed mount without
 `ref="closedOrder"`; no `dismissStateModal()` in the pending path; the closed branch `return true`;
 the `isReadonly` term dropped.
+
+## GL-T7 — module-19 closeout: the guest surface joins the vocabulary guard, the guest „cyklus" strings are swept (2026-09-23)
+
+19 §UC-GL-011 + the row's five items. Orchestrator copy decision: 18 §UC-PI-017's rule („objednávka",
+never „cyklus"/„kolo") IS the PO's rule, so applying it to the guest strings is in scope. The new
+strings are **PO DRAFTS**.
+
+### 1. Strings changed. Status codes and `reason` values are byte-identical
+
+| file:line (after) | old | new (DRAFT) | status / reason |
+|---|---|---|---|
+| `routes/guest.js:264` `CLOSED` (submit on a pre-open outcome, both token spaces) | Objednávanie v tomto cykle je už uzavreté. | Objednávky sú už uzavreté, objednávku už nie je možné odoslať. | 409 `closed` |
+| `routes/guest.js:1138` (submit, lost lock race inside the tx) | Cyklus bol práve uzavretý, objednávku už nie je možné odoslať. | Objednávky boli práve uzavreté, objednávku už nie je možné odoslať. | 409 `closed` |
+| `routes/guest.js:1227` (status-page PUT, round not open) | Cyklus je už uzavretý, objednávku už nie je možné upraviť. | Objednávky sú už uzavreté, zmenu už nie je možné uložiť. | 409 `closed` |
+| `routes/guest.js:1372` (status-page PUT, lost race) | Cyklus bol práve uzavretý, zmenu už nie je možné uložiť. | Objednávky boli práve uzavreté, zmenu už nie je možné uložiť. | 409 `closed` |
+| `routes/guest-orders.js:200` host `DELETE /:id` (not open) | Cyklus je už uzavretý, objednávku kolegu už nie je možné odstrániť. | Objednávky sú už uzavreté, objednávku kolegu už nie je možné odstrániť. | 409 `closed` |
+| `routes/guest-orders.js:241` host `DELETE /:id` (lost race) | Cyklus bol práve uzavretý, objednávku kolegu už nie je možné odstrániť. | Objednávky boli práve uzavreté, objednávku kolegu už nie je možné odstrániť. | 409 `closed` |
+| `components/GuestProductGrid.vue:91` `emptyMessage` default | V tomto cykle zatiaľ nie sú žiadne produkty. | V ponuke zatiaľ nie sú žiadne produkty. | — |
+
+- **The edit-409 does NOT reuse the read-only sentence.** The first draft was „Objednávky sú už
+  uzavreté, objednávku už nie je možné upraviť.“, which is one word away from CS-T4's
+  `readOnlyReason`. Measured on the page: after a 409 `submitEdit()` reloads into the READ view, and
+  BOTH banners render stacked (`status-readonly` + `status-error`). So the server half now says what
+  failed, the save, worded like its lost-race twin („…zmenu už nie je možné uložiť.“).
+- ⚠ **PO DRAFT QUESTION — „uzavreté" vs „uzamknuté" (review).** The host DELETE 409 (`guest-orders.js:200`/`:241`)
+  says „Objednávky sú už uzavreté / boli práve uzavreté“, but it renders on the FRIEND surface (Kolegovia tab),
+  whose own lock copy says „uzamknuté" („Objednávky sú uzamknuté.“, the lock chip). The guest surface says
+  „uzavreté" (CS-T4's `readOnlyReason`), so the draft matches the guest register, not the friend screen it
+  lands on. The PO picks one register for the host pair; the status code and `reason` do not move either way.
+- **The audience decision on the admin 409s: KEPT.** `POST /api/guest-orders/:id/cancel` (`:530` /
+  `:567`, „Cyklus je už uzavretý / bol práve uzavretý, objednávku kolegu už nie je možné zrušiť.“) is
+  `requireAdmin`, and only `CycleDetail.vue` calls it (`cancelGuestOrderAdmin`). „cyklus“ is the
+  admin's word, the same rule as PI-T11 §3 (`cycles.js` and the admin `guest-links.js` routes). The
+  admin `GET /cycle/:cycleId/unpaid` 404 („Cyklus nebol nájdený“) stays for the same reason. Both
+  halves are pinned: a re-wording of the admin string reds too, so the decision can only move on purpose.
+- **Row inventory vs. what was found.** The row named `CLOSED` plus the four `guest-orders.js`
+  strings. The grep found three more in `routes/guest.js`: the submit race and the two status-page PUT
+  409s. All three render verbatim, through `checkout-error` and through `edit-error`/`status-error`,
+  so they were swept too. `routes/guest.js` is public end to end, so the guard sweeps the whole file.
+
+### 2. The guard: a SEPARATE guest list, unioned. Not two more entries in `FRIEND_SURFACE_ROOTS`
+
+The row (and the `vocabulary.js` header) said to add the guest views to `FRIEND_SURFACE_ROOTS`.
+Deviation: `e2e/helpers/vocabulary.js` now exports `GUEST_SURFACE_ROOTS`
+(`views/GuestOrder.vue`, `views/GuestOrderStatus.vue`) and `VOCABULARY_ROOTS` = friend ∪ guest.
+`importClosure()`'s DEFAULT stays the friend closure. Why:
+- `portal-vocabulary.spec.js` §2 reads `FRIEND_SURFACE_ROOTS` as „the friend surface". Its
+  „derived ⊇ §UC-PI-017's hand list" and admin-only pins are about THAT surface. A guest view in a
+  list named FRIEND is a lie that a later reader acts on.
+- `portal-shell.spec.js` calls `importClosure(roots)` for its own shell rules. Changing the default
+  would have silently changed what those callers measure.
+
+§2's source sweep now walks `importClosure(VOCABULARY_ROOTS)`: 65 friend files plus the guest-only 8
+(`GuestBrandHeader`, `GuestInviteRequest`, `GuestProductGrid`, `GuestRoastersLine`, `GuestSteps`,
+`lib/purposes.js` and the two views). The new §6 of `portal-vocabulary.spec.js`:
+- **Source.** `GUEST_SURFACE_ROOTS` is pinned EQUAL to the components `router.js` maps `/g/…` to. A
+  third guest route reds instead of escaping. It checks that the closure resolves every import and
+  walks through the views. The guest-closure sweep carries `assertReadable` gates.
+- **Server source.** All of `routes/guest.js`, comments stripped. `routes/guest-orders.js` is split
+  per `router.<verb>(` block: the preamble plus the non-`requireAdmin` blocks must be clean, and the
+  admin cancel block must still contain the kept string (the audience pin).
+  (Review:) two gates were added under it. First, the block count must equal every `router.<verb|route|use>(`
+  registration in the RAW file, at any indentation. An indented registration mutation took it from 6 to 5
+  blocks and turned it red. Second, every raw `error:`/`message:` literal must survive `stripComments`:
+  32/32 in `guest.js`, 20/20 in `guest-orders.js`.
+- **Live.** One locked-round fixture exercises the guest submit, the status PUT, the host DELETE and
+  the admin cancel. It checks each exact body (`{error, reason}`) and each status code.
+- **Rendered.** Three screens, each swept with `expectCleanCopy` (the ONE `BANNED`, copy-sweep):
+  - the LIVE listing of an open round with zero products (the grid's empty banner);
+  - the checkout refused by a lock (`CLOSED` in `checkout-error`);
+  - the status page's EDIT mode, and its save refused by a lock (`status-error` after the reload).
+
+**Red first (HEAD strings, new tests):** 7 of 11 selected red for the right reasons: the grid line
+in both source sweeps, the `CLOSED` source token, the live bodies and the three rendered screens.
+**Mutations** (each red, then restored):
+- a banned word in `GuestSteps.vue`, a guest-only file: reds both the union sweep and the guest sweep;
+- `GuestOrderStatus.vue` dropped from `GUEST_SURFACE_ROOTS`: reds the router-equality test and the
+  closure test;
+- the host race 409 restored to „Cyklus bol práve…“: reds the server-source test;
+- the admin cancel re-worded: reds the audience pin;
+- „Kolo“ in the guest edit-race string: reds the server-source test.
+
+### 3. Pins re-pointed
+
+- `guest-standing-link.spec.js` — the GL-T2 probe's `out.submit` body (`CLOSED` text, SANCTIONED
+  comment) + the pre-open sentence comment („not in the source guard yet (GL-T7)" struck).
+- `guest-invite-dead.spec.js` — the describe title „three variants" → „two variants (`closed`
+  superseded by 19 §UC-GL-002)" + its 5xx-test comment. The test NAME changed, not an assertion.
+- Nothing else in `e2e/` pinned any of the seven strings (grepped per message).
+  `guest-order-recovery.spec.js:2653` stubs the ADMIN cancel 409, whose text is kept.
+
+### 4. Supersessions written into every copy (strike + pointer)
+
+- 06: the scope line's „three variants", the §UC-GX-010 title, its acceptance clause, and the
+  §UC-GX-002 empty-state string. The `closed` table row was already struck by GL-T2.
+- 18 §UC-PI-017's hand-off list: the client + `CLOSED` block (ALL SWEPT) and the `guest-orders.js`
+  paragraph (DECIDED).
+- 19: rule 5's „shipped message" (the §208 pin the row names, now at :217) and the „CLAUDE.md
+  staleness" accepted risk (DONE). The OPEN PO sign-off list gains this row's strings.
+- Learnings: 09 (the „THREE → TWO strings" inventory → RESOLVED) and 10 §PI-T11 §2/§3.
+- The PI-T11 PROGRESS row's „to `FRIEND_SURFACE_ROOTS`", the `vocabulary.js` header, and CLAUDE.md's
+  surviving-strings paragraph (→ SWEPT).
+- `routes/guest.js` comments were already struck by GL-T2 (header status-code list, the listing's
+  handler comment). No other `closed`-410 claim survives in `backend/src`.
+
+### 5. CLAUDE.md one-liners — checked, not duplicated
+
+„Two token spaces" and „one resolver" landed with GL-T2's `/g/:token` bullet. „`helpers/standing-link.js`
+mints every link token" landed with GL-T1's `guest_link_token` bullet. GL-T7 adds only the missing
+clause to the resolver bullet: „the per-cycle token NEVER reaches a standing visitor". It adds one new
+rule line for the widened guard. The `guest_link_token` bullet's struck „not in the scrub yet" already
+carries GL-T6's pointer.
+
+### 6. Gate
+
+- `node --check` on `routes/guest.js` and `routes/guest-orders.js`. `npx playwright test --list`:
+  2490 tests in 94 files. Frontend built into `backend/public`.
+- Gate server on :3997 with a fresh template copy per run. The seed ran WITH `DB_PATH` („pre-stamped
+  77 friend(s); 1 left"), all five limiter maxima were at 100000, and the `GOOGLE_*` test env was set.
+- Targeted run (11 files, reconciled against `--list`: 11 of 11, 501 tests): `portal-vocabulary`,
+  `cycle-stages`, `guest-order`, `guest-order-recovery`, `guest-host-view`, `guest-status`,
+  `guest-status-shell`, `guest-standing-link`, `colleagues-panel`, `guest-invite-dead`,
+  `guest-order-shell` — **501 passed**.
+- **FULL SUITE** (`--workers=1`, `DB_PATH` + `SERVER_LOG`): **2486 passed, 4 skipped, 0 failed,
+  14.0 min**. The 4 skips are the documented ones: `forced-change-ui`'s fixme plus the three limiter
+  specs. Files that ran reconcile against `--list`: 94 of 94. Box load average was 1.2–1.7 on 8 cores,
+  so the ~14 min is load, not a regression. The server log has no `disk image is malformed`; its three
+  „malformed" hits are the image-upload specs' own `multipart-malformed` 400s.

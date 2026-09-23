@@ -255,9 +255,13 @@ const INACTIVE = Object.freeze({
 // submit: the LISTING no longer answers `closed` at all (19 resolved conflict 1 —
 // a non-open cycle is the pre-open page), so this string now renders only through
 // GuestOrder.vue's `checkout-error` banner.
+// GL-T7 (19 §UC-GL-011, 18 §UC-PI-017's vocabulary rule): ~~„Objednávanie v tomto
+// cykle je už uzavreté."~~ → the text below (PO DRAFT). Status + `reason` unchanged.
+// Every message in this file is a GUEST's, so the whole file is swept by
+// `portal-vocabulary.spec.js` §6 — no „cyklus"/„kolo" in any string here.
 const CLOSED = Object.freeze({
   status: 409,
-  error: 'Objednávanie v tomto cykle je už uzavreté.',
+  error: 'Objednávky sú už uzavreté, objednávku už nie je možné odoslať.',
   reason: 'closed',
 });
 
@@ -1131,7 +1135,7 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
   const created = create();
   if (created.conflict) {
     return res.status(409).json({
-      error: 'Cyklus bol práve uzavretý, objednávku už nie je možné odoslať.',
+      error: 'Objednávky boli práve uzavreté, objednávku už nie je možné odoslať.',
       reason: 'closed',
     });
   }
@@ -1220,7 +1224,7 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
   // renders it) — it is the request that conflicts with the cycle's state.
   if (cycle.status !== 'open') {
     return res.status(409).json({
-      error: 'Cyklus je už uzavretý, objednávku už nie je možné upraviť.',
+      error: 'Objednávky sú už uzavreté, zmenu už nie je možné uložiť.',
       reason: 'closed',
     });
   }
@@ -1365,7 +1369,7 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
   }
   if (applied.conflict === 'closed') {
     return res.status(409).json({
-      error: 'Cyklus bol práve uzavretý, zmenu už nie je možné uložiť.',
+      error: 'Objednávky boli práve uzavreté, zmenu už nie je možné uložiť.',
       reason: 'closed',
     });
   }

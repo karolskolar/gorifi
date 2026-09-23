@@ -214,8 +214,10 @@ without a second code path — and every shipped guest mechanism keeps operating
      exists per rule 2)` — resolved conflict 6. ⚠ The legacy token does NOT get-or-create anything and
      does NOT resolve to the newer open cycle.
 5. **`forSubmit: true`** (the `POST /:token/orders` caller): a `preopen` outcome is converted to
-   **409 `reason:'closed'`** with the shipped message („Objednávanie v tomto cykle je už uzavreté.“) — the
-   lock-race contract is unchanged, for both token spaces. The `waitlist` caller (UC-GL-004) handles
+   **409 `reason:'closed'`** with ~~the shipped message („Objednávanie v tomto cykle je už uzavreté.“)~~
+   **the `CLOSED` message — re-worded by GL-T7 to „Objednávky sú už uzavreté, objednávku už nie je možné
+   odoslať.“ (18 §UC-PI-017's vocabulary rule, PO draft; status + `reason` byte-identical, learnings 11
+   §GL-T7)** — the lock-race contract is unchanged, for both token spaces. The `waitlist` caller (UC-GL-004) handles
    `order` and `preopen` itself.
 6. **Nothing else moves.** `resolveGuestOrderByOrderToken`, the `/o/:orderToken` routes, the legacy pair
    routes, `statusPayload`, `handleInviteRequest` are untouched — sub-orders created through a standing
@@ -758,7 +760,10 @@ module milestone with `--workers=1`, all five `RATE_LIMIT_*_MAX` raised, output 
   `/g/:token` token is a per-cycle link token OR a `friends.guest_link_token`; `helpers/standing-link.js`
   is the one home for minting both spaces uniquely; the per-cycle token never reaches a standing
   visitor“; and the 06 §UC-GX-010 `closed` variant row must be struck (`~~…~~ SUPERSEDED by 19
-  §UC-GL-002`).
+  §UC-GL-002`). **DONE: the CLAUDE.md line landed with GL-T2 (the resolver bullet) + GL-T1 (the
+  one-home bullet), GL-T7 added „the per-cycle token never reaches a standing visitor“ to it; the 06 row
+  was struck by GL-T2 and its remaining copies (06's scope line, the UC title, the acceptance clause,
+  `guest-invite-dead.spec.js`'s describe) by GL-T7.**
 
 ---
 
@@ -770,7 +775,8 @@ module milestone with `--workers=1`, all five `RATE_LIMIT_*_MAX` raised, output 
   and the `weeksAwayLabel` forms, the waitlist card copy + button + the two success banners, „Minulá
   ponuka“ / „len na prezretie“, the standing-section lines in the dialog + confirm box + „Nový stály
   odkaz“, `waitingLabel` forms, the admin card labels, the server's 409 `open` message, and
-  `document.title`. Roaster texts are Q13.a (PO polishes in `lib/roasters.js`, module 18).
+  `document.title`. **+ GL-T7's vocabulary re-wordings (the four `routes/guest.js` 409s, the two host
+  409s in `routes/guest-orders.js`, `GuestProductGrid`'s empty message — learnings 11 §GL-T7 table).** Roaster texts are Q13.a (PO polishes in `lib/roasters.js`, module 18).
 - `OPEN:` **WhatsApp consent unticked** — default here: the submit is still accepted, the row is stored
   with `whatsapp_opt_in = 0`, module 21's segment excludes it, and the success banner omits WhatsApp.
   Alternative: require the tick to submit (the form then has no purpose without consent, but the admin

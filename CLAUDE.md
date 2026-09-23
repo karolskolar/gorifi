@@ -82,7 +82,8 @@ append the full write-up to the matching learnings file and add at most one line
   modern-mode 409 guard (GA-T5). An admin token is not host identity.
 - `/g/:token` is a per-cycle `guest_order_links.token` OR a standing `friends.guest_link_token`, resolved by ONE
   `routes/guest.js resolveEntry()` (19 §UC-GL-002, GL-T2): a standing hit GETS-OR-CREATES the host's per-cycle row
-  for the newest open round (never echoes either token), a legacy hit on a non-open cycle is the STALE pre-open page
+  for the newest open round (never echoes either token — the per-cycle token NEVER reaches a standing visitor, so a
+  standing rotation fully revokes it for new visitors), a legacy hit on a non-open cycle is the STALE pre-open page
   and never resolves to a newer round (D7); the listing's only 410 is `inactive`, submit keeps 409 `closed`.
 - `order_token` alone resolves a guest order (module 14); `routes/guest.js` is the ONLY place it authenticates.
   It is published to host/admin surfaces via the shared `GUEST_ORDER_FIELDS` but never rendered into DOM
@@ -390,17 +391,14 @@ append the full write-up to the matching learnings file and add at most one line
   `e2e/helpers/vocabulary.js BANNED` (see the PI-T11 rule below), imported by `cycle-stages.spec.js`
   and `portal-vocabulary.spec.js`**, shared by the lib harvest and CS-T4's
   rendered-page sweep. The guest read-only sentence is „Objednávky sú uzavreté, objednávku už nie je
-  možné upraviť." (CS-T4 dropped „cykle"). ⚠ ~~THREE~~ **TWO (GL-T2)** guest-facing „cyklus" strings survive
-  deliberately, and the read-view sweep sees none of them: `routes/guest.js` `CLOSED` („…v tomto cykle je
-  už uzavreté.", served on ~~BOTH~~ a 409 from `POST …/orders` — which DOES render, via
-  `GuestOrder.vue`'s `checkout-error` banner — ~~and a 410 from `GET /:token`~~ **the listing never
-  answers `closed` since GL-T2, 19 resolved conflict 1**; module 19 §208 pins it as the shipped message),
-  ~~`GuestOrder.vue:170`~~ **(REMOVED by GL-T2 with the dead `closed` card variant, 19 §UC-GL-006)** and
-  `GuestProductGrid.vue:88` (~~:76~~, moved by GL-T5; its empty-grid default „V tomto cykle…" renders on
-  TWO surfaces — `GuestOrderStatus.vue`'s own EDIT mode, so §UC-CS-008's „no „kolo"/„cyklus" on the page"
-  holds for the READ view only, AND `GuestOrder.vue`'s LIVE listing (~:832, an open round with zero
-  products); the pre-open preview filters an empty product list out and never shows it). Owned by
-  `18-portal-information-architecture.md`'s hand-off list; PO decision pending.
+  možné upraviť." (CS-T4 dropped „cykle"). ~~⚠ THREE → TWO (GL-T2) guest-facing „cyklus" strings survive
+  deliberately … `routes/guest.js` `CLOSED` („…v tomto cykle je už uzavreté.") and
+  `GuestProductGrid.vue:88` („V tomto cykle…", EDIT mode + the zero-product LIVE listing) … PO decision
+  pending.~~ **— SWEPT by GL-T7 (module-19 closeout, learnings 11 §GL-T7): NO guest-facing „cyklus"
+  survives. `CLOSED` + its three `routes/guest.js` siblings and the two HOST 409s of
+  `routes/guest-orders.js` say „Objednávky sú/boli (práve) uzavreté, …", the grid says „V ponuke zatiaľ
+  nie sú žiadne produkty." (all PO DRAFTS; status + `reason` byte-identical); the ADMIN
+  `POST /guest-orders/:id/cancel` 409s KEEP „Cyklus" (audience rule, pinned).**
 - A dialog/loader reused across entities needs a `loadSeq` guard; per-row mutations need per-id pending state;
   friend-authenticated children of `FriendOrder` need the `ready` gate; its two panels stay `v-show`.
 - `v-model` on `<select>` (never `:value`); a refused change snaps the control back.
@@ -443,6 +441,7 @@ append the full write-up to the matching learnings file and add at most one line
   comment opens a fake block comment that swallowed 16 709 chars and turned a source pin green (PI-T3).
   Every absence pin needs a readability gate (stripped length vs raw) beside it.
 - The „cyklus/kolo" ban has ONE regex, `e2e/helpers/vocabulary.js BANNED` (union of three spellings, all ten case forms incl. „kôl"/„kolám"/„kolami"; JS `\b` is ASCII-only), and the friend source guard's file set is the router's IMPORT CLOSURE (`importClosure()`), never a typed list — a new friend component is guarded by being imported (PI-T11).
+- The ban's source guard covers `VOCABULARY_ROOTS` = friend ∪ GUEST roots (`GUEST_SURFACE_ROOTS`, pinned EQUAL to `router.js`'s `/g/…` components) plus the guest SERVER: all of `routes/guest.js`, the non-`requireAdmin` blocks of `routes/guest-orders.js` — admin strings keep „Cyklus", pinned (GL-T7).
 - A rendered-copy sweep reads the app's OWN copy: `e2e/helpers/copy-sweep.js` (one home, text + `placeholder`/
   `title`/`aria-label`/`alt`) drops every `[data-user-copy]` subtree, and a view marks the person-typed
   interpolation — never the app copy beside it. The test template has a friend NAMED `Prihlasovacie.meno`; a

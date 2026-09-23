@@ -192,9 +192,12 @@ router.delete('/:id', (req, res) => {
     });
   }
 
+  // GL-T7: the HOST reads this (`GuestSubOrders.vue` paints `e.message`), so it says
+  // „objednávky", never „cyklus" (18 §UC-PI-017; PO DRAFT). The admin cancel below keeps
+  // „Cyklus" by the audience rule — both halves pinned in `portal-vocabulary.spec.js` §6.
   if (row.cycle_status !== 'open') {
     return res.status(409).json({
-      error: 'Cyklus je už uzavretý, objednávku kolegu už nie je možné odstrániť.',
+      error: 'Objednávky sú už uzavreté, objednávku kolegu už nie je možné odstrániť.',
       reason: 'closed',
     });
   }
@@ -235,7 +238,7 @@ router.delete('/:id', (req, res) => {
   }
   if (applied.conflict === 'closed') {
     return res.status(409).json({
-      error: 'Cyklus bol práve uzavretý, objednávku kolegu už nie je možné odstrániť.',
+      error: 'Objednávky boli práve uzavreté, objednávku kolegu už nie je možné odstrániť.',
       reason: 'closed',
     });
   }
@@ -520,6 +523,8 @@ router.post('/:id/cancel', requireAdmin, (req, res) => {
     return res.json({ ...mutationPayload(row), already_cancelled: true });
   }
 
+  // ⚠ „Cyklus" STAYS here on purpose (GL-T7): `requireAdmin`, called only by
+  // `CycleDetail.vue` — „cyklus" is the admin's word (the audience rule, PI-T11 §3).
   if (row.cycle_status !== 'open') {
     return res.status(409).json({
       error: 'Cyklus je už uzavretý, objednávku kolegu už nie je možné zrušiť.',

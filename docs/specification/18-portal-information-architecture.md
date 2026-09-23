@@ -1124,15 +1124,19 @@ with every `[data-user-copy]` subtree dropped (FUP-T22)** — on every view, sta
 2026-09-20): it now reads „Objednávky sú uzavreté, objednávku už nie je možné upraviť."** —
 ~~`GuestOrder.vue:170` „Cyklus sa medzičasom uzamkol“~~ **— GONE, removed by GL-T2 with the
 dead `closed` card variant it belonged to (19 §UC-GL-006: the listing never answers 410 `closed`
-any more)** —, `GuestProductGrid.vue:88` (~~:76~~ moved by GL-T5; „:73" was
+any more)** —, ~~`GuestProductGrid.vue:88` (:76 until GL-T5; „:73" was
 stale) „V tomto cykle zatiaľ nie sú žiadne produkty.“. The guard's file list widens to the
 two REMAINING files when 19 lands. ⚠ A third, server-side: `backend/src/routes/guest.js:216`
 „Objednávanie v tomto cykle je už uzavreté." (since GL-T2 served by the submit's 409 ONLY — the
 listing's 410 `closed` is retired) — left standing because
 `19-guest-standing-link.md:208` pins it as the shipped message; see the PO note in
-`docs/learnings/09-cycle-stages.md`.
+`docs/learnings/09-cycle-stages.md`.~~ **— ALL SWEPT by GL-T7 (19 §UC-GL-011, module-19 closeout):
+`GuestProductGrid.vue` → „V ponuke zatiaľ nie sú žiadne produkty.“; `routes/guest.js` `CLOSED` and its
+three siblings (submit race, edit 409, edit race) → „Objednávky sú/boli (práve) uzavreté, …“; 19's
+rule-5 pin struck with a pointer. PO drafts, listed in learnings 11 §GL-T7. The guard now covers the
+guest routes' import closure (`e2e/helpers/vocabulary.js GUEST_SURFACE_ROOTS`, `portal-vocabulary.spec.js` §6).**
 ⚠ **And a FRIEND-facing server set, found in PI-T11's review and handed to GL-T7** (the row routes
-`guest-orders.js` strings to the GL/GP rows, so PI-T11 did not re-word them): `routes/guest-orders.js:197` („Cyklus je už uzavretý, objednávku kolegu už nie je možné odstrániť.") and `:238` („Cyklus bol práve uzavretý, …odstrániť.") — the HOST's `DELETE /api/guest-orders/:id` 409s (not-open + the lost-race re-check), which DO reach a friend: `GuestSubOrders.vue removeSubOrder()` → `error.value = e.message` → the `.banner.danger.slim` at `GuestSubOrders.vue:378-380` on the Kolegovia tab of `FriendOrder`; plus `:525`/`:562` („…zrušiť.") on `POST /api/guest-orders/:id/cancel`, which is `requireAdmin` (only `CycleDetail.vue` calls it via `cancelGuestOrderAdmin`) and so may keep „cyklus" by the audience rule — named so the sweep decides both halves on purpose.
+`guest-orders.js` strings to the GL/GP rows, so PI-T11 did not re-word them): `routes/guest-orders.js:197` („Cyklus je už uzavretý, objednávku kolegu už nie je možné odstrániť.") and `:238` („Cyklus bol práve uzavretý, …odstrániť.") — the HOST's `DELETE /api/guest-orders/:id` 409s (not-open + the lost-race re-check), which DO reach a friend: `GuestSubOrders.vue removeSubOrder()` → `error.value = e.message` → the `.banner.danger.slim` at `GuestSubOrders.vue:378-380` on the Kolegovia tab of `FriendOrder`; plus `:525`/`:562` („…zrušiť.") on `POST /api/guest-orders/:id/cancel`, which is `requireAdmin` (only `CycleDetail.vue` calls it via `cancelGuestOrderAdmin`) and so may keep „cyklus" by the audience rule — named so the sweep decides both halves on purpose. **DECIDED by GL-T7: the two HOST 409s → „Objednávky sú už uzavreté / boli práve uzavreté, objednávku kolegu už nie je možné odstrániť.“ (PO drafts); the two ADMIN cancel 409s KEEP „Cyklus“ (audience rule) — both halves pinned in `portal-vocabulary.spec.js` §6.**
 
 **Not covered (by design):** `routes/*.js` error strings a friend may see (e.g.
 `'Cyklus nie je otvorený'`-style 409s) — `OPEN:` sweep server messages returned to friend

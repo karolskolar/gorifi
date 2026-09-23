@@ -2608,8 +2608,10 @@ this set:
 
 ⚠ Run as written, the spec's literal `grep` still returns hits. They are lines inside
 multi-line `<!-- … -->` comments, which the grep's trailing `-vE` filter cannot recognise.
-The Node guard is the authoritative form. GL-T7 widens it by adding the two guest roots
-to `FRIEND_SURFACE_ROOTS`.
+The Node guard is the authoritative form. ~~GL-T7 widens it by adding the two guest roots
+to `FRIEND_SURFACE_ROOTS`.~~ **GL-T7 widened it with a SEPARATE `GUEST_SURFACE_ROOTS` list (pinned equal
+to the router's `/g/…` components) and sweeps `VOCABULARY_ROOTS` = the union — a guest view in a list
+named FRIEND would have been read as friend surface by §2's pins (learnings 11 §GL-T7).**
 
 ### 3. Server messages — audience-scoped
 Only messages that reach a FRIEND were re-worded. Every status code was kept.
@@ -2635,6 +2637,8 @@ at `GuestSubOrders.vue:378-380` on the Kolegovia tab. `:525`/`:562` („…zruš
 `POST /:id/cancel`, which is `requireAdmin` and called only by `CycleDetail.vue`, so they
 may keep „cyklus". All four are named in the GL-T7 row and in 18 §UC-PI-017's hand-off
 list. The DOM sweep does not see the two host 409s: no fixture drives a refused removal.
+**→ DECIDED by GL-T7: the host pair re-worded („Objednávky sú už / boli práve uzavreté, …odstrániť."),
+the admin pair kept; both pinned in source AND live in `portal-vocabulary.spec.js` §6 (learnings 11 §GL-T7).**
 
 ### 4. The DOM sweep, and `data-user-copy`
 `portal-vocabulary.spec.js` imports `helpers/copy-sweep.js` and has no copy of its own.

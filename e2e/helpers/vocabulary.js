@@ -100,12 +100,19 @@ export const BANNED_CASES = {
 // roots, taken straight from `router.js`, and everything they can reach. A new component
 // joins the guard by being imported, which is the only way it can reach a friend anyway.
 //
-// ⚠ WHAT IS DELIBERATELY NOT A ROOT. `views/GuestOrder.vue` and
-// `views/GuestOrderStatus.vue` are the GUEST surface, and ~~three~~ TWO „cyklus" strings
-// there survive on purpose pending a PO decision (`routes/guest.js`'s submit-409 `CLOSED`,
-// `GuestProductGrid.vue:88` (~~:76~~, moved by GL-T5) — CLAUDE.md names both; ~~`GuestOrder.vue:170`~~ was REMOVED by
-// GL-T2 together with the dead `closed` card variant, 19 §UC-GL-006). GL-T7 widens the guard by
-// adding those two roots to `FRIEND_SURFACE_ROOTS` — one line, no list to re-derive.
+// ~~⚠ WHAT IS DELIBERATELY NOT A ROOT. `views/GuestOrder.vue` and
+// `views/GuestOrderStatus.vue` are the GUEST surface, and TWO „cyklus" strings there
+// survive on purpose pending a PO decision …~~ **SUPERSEDED by GL-T7 (19 §UC-GL-011,
+// module-19 closeout): the guest surface IS guarded now.** The last client offender
+// (`GuestProductGrid.vue:88`'s empty-grid default) and the guest-facing server
+// messages (`routes/guest.js` ×4, the host 409s in `routes/guest-orders.js` ×2) were
+// swept in the same row; learnings 11 §GL-T7 has the table. The two guest roots are a
+// SEPARATE list rather than two more entries in `FRIEND_SURFACE_ROOTS` — the row said
+// „add them to FRIEND_SURFACE_ROOTS", but that name is read by §2 of
+// `portal-vocabulary.spec.js` as „the FRIEND surface" (its superset/admin-only pins),
+// and a guest view in a list called FRIEND is the kind of lie a later reader acts on.
+// The ban covers the UNION (`VOCABULARY_ROOTS`); `importClosure()`'s default stays
+// the friend closure so `portal-shell.spec.js`'s callers keep measuring what they did.
 //
 // ⚠ The closure reaches `components/ui/*` (shadcn) and `api.js`. That is correct, not
 // over-collection: they render on a friend's screen, so a Slovak string in them is a
@@ -115,6 +122,17 @@ export const BANNED_CASES = {
 
 /** The two routes a friend can be on. `router.js` `/`+3 views → FriendPortal, `/cycle/:id` → FriendOrder. */
 export const FRIEND_SURFACE_ROOTS = ['views/FriendPortal.vue', 'views/FriendOrder.vue']
+
+/**
+ * The public guest routes' components — `router.js` `/g/:token` → GuestOrder,
+ * `/g/o/:orderToken` + `/g/:token/o/:orderToken` → GuestOrderStatus (GL-T7).
+ * `portal-vocabulary.spec.js` §6 pins this list EQUAL to what the router maps `/g/…` to,
+ * so a new guest route reds instead of escaping the guard.
+ */
+export const GUEST_SURFACE_ROOTS = ['views/GuestOrder.vue', 'views/GuestOrderStatus.vue']
+
+/** Every surface the ban applies to: the friend portal AND the guest pages. */
+export const VOCABULARY_ROOTS = [...FRIEND_SURFACE_ROOTS, ...GUEST_SURFACE_ROOTS]
 
 const RESOLVE_SUFFIXES = ['', '.js', '.ts', '.vue', '/index.js', '/index.ts']
 

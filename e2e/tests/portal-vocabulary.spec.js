@@ -1,13 +1,17 @@
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { test, expect, request as playwrightRequest } from '@playwright/test'
 import { ADMIN_PASSWORD } from '../fixtures.js'
 import { makeAdmin } from '../helpers/admin.js'
 import { collectAllCopy, collectAppCopy, collectMarkedData } from '../helpers/copy-sweep.js'
-import { assertReadable, HAS_SRC, NEEDS_SRC } from '../helpers/source-pins.js'
+import { assertReadable, FRONTEND_SRC, HAS_SRC, NEEDS_SRC, stripComments } from '../helpers/source-pins.js'
 import {
   ackExplainer, dismissLandingState, drawer, expectLanding, gotoCycle,
   landingStateModal, openInvite, openMenu, openProfile,
 } from '../helpers/portal.js'
-import { BANNED, BANNED_CASES, FRIEND_SURFACE_ROOTS, bannedLines, importClosure } from '../helpers/vocabulary.js'
+import {
+  BANNED, BANNED_CASES, FRIEND_SURFACE_ROOTS, GUEST_SURFACE_ROOTS, VOCABULARY_ROOTS, bannedLines, importClosure,
+} from '../helpers/vocabulary.js'
 
 // PI-T11 — 18 §UC-PI-017 (the vocabulary rule, its guard and its copy-edit table) and
 // §UC-PI-018 (the `/cycle/:id` deep link).
@@ -23,6 +27,10 @@ import { BANNED, BANNED_CASES, FRIEND_SURFACE_ROOTS, bannedLines, importClosure 
 //   §4 the RENDERED PAGE — every view, state and modal of module 18.
 // §5 is §UC-PI-018's regression net for the deep link, which is where most of the
 // re-worded copy lives.
+// §6 (GL-T7, 19 §UC-GL-011 — the module-19 closeout) widens all three altitudes to the
+// GUEST surface: the `/g/…` routes' import closure, the guest-facing server messages
+// (`routes/guest.js`, the host 409s of `routes/guest-orders.js`), and the guest screens
+// that render them. The new strings are PO DRAFTS (learnings 11 §GL-T7).
 //
 // ⚠ §2 AND §4 ANSWER DIFFERENT QUESTIONS. Source can hold a banned word in a branch
 // no fixture reaches; the page can hold one that came from the SERVER (a 4xx banner)
@@ -348,7 +356,12 @@ test.describe('PI-T11 · 18 §UC-PI-017 — the source guard', () => {
   })
 
   test('⚠ no file in the derived set says „kolo" or „cyklus" (comments stripped)', () => {
-    const files = importClosure()
+    // GL-T7 (19 §UC-GL-011): the set is the FRIEND closure ∪ the GUEST closure — one
+    // guard, one regex, both surfaces. §6 below pins the guest half's own structure.
+    const files = importClosure(VOCABULARY_ROOTS)
+    expect(files, 'the guest half is really in the swept set').toEqual(expect.arrayContaining([
+      ...GUEST_SURFACE_ROOTS, 'components/GuestProductGrid.vue',
+    ]))
     const offenders = []
     for (const file of files) {
       for (const [n, line] of bannedLines(file)) offenders.push(`${file}:${n} ${line}`)
@@ -365,7 +378,8 @@ test.describe('PI-T11 · 18 §UC-PI-017 — the source guard', () => {
     assertReadable('views/FriendPortalSession.vue', ['Zostatok a platby', 'portal-landing'])
     assertReadable('views/FriendOrder.vue', ['Späť na ponuku', 'uzamknutia objednávok'])
     assertReadable('lib/cycle-stages.js', ['Objednávky otvorené', 'Zabalené, rozvážame'])
-    expect(files.length, 'and the sweep really visited every one of them').toBe(importClosure().length)
+    assertReadable('components/GuestProductGrid.vue', ['emptyMessage', 'product-'])
+    expect(files.length, 'and the sweep really visited every one of them').toBe(importClosure(VOCABULARY_ROOTS).length)
   })
 })
 
@@ -1001,4 +1015,262 @@ test.describe('PI-T11 · 18 §UC-PI-018 — the deep link', () => {
       await expect(page).toHaveURL(/\/$/)
       await expectLanding(page)
     })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 6. THE GUEST SURFACE — GL-T7, 19 §UC-GL-011 (module-19 closeout)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// PI-T11 left the guest pages out of the guard on purpose (two „cyklus" strings there
+// were waiting for a PO decision); 18 §UC-PI-017's rule — „objednávka", never
+// „cyklus"/„kolo" — IS the PO's rule, so GL-T7 applies it and widens the guard.
+//
+// ⚠ AUDIENCE, exactly like §3: `POST /api/guest-orders/:id/cancel` is `requireAdmin`
+// (only `CycleDetail.vue` calls it) and KEEPS „Cyklus" — the admin's word. That half is
+// PINNED below, so the decision cannot drift either way without a red.
+//
+// Every new string is a PO DRAFT (learnings 11 §GL-T7). Status codes and `reason`
+// values are byte-identical to what shipped.
+const GUEST_COPY = Object.freeze({
+  /** `routes/guest.js CLOSED` — the submit 409 (preopen on submit, both token spaces). */
+  closed: 'Objednávky sú už uzavreté, objednávku už nie je možné odoslať.',
+  /**
+   * `PUT /api/guest/o/:orderToken` on a non-open round. Deliberately NOT the read-only
+   * notice's sentence („…objednávku už nie je možné upraviť."): after the 409 the page
+   * reloads and shows BOTH banners stacked, so the server half says what failed — the
+   * save — worded like its lost-race twin („Objednávky boli práve uzavreté, zmenu…").
+   */
+  editClosed: 'Objednávky sú už uzavreté, zmenu už nie je možné uložiť.',
+  /** Host `DELETE /api/guest-orders/:id` on a non-open round (renders in `GuestSubOrders`). */
+  hostDeleteClosed: 'Objednávky sú už uzavreté, objednávku kolegu už nie je možné odstrániť.',
+  /** `GuestProductGrid.vue` `emptyMessage` default. */
+  empty: 'V ponuke zatiaľ nie sú žiadne produkty.',
+})
+/** Admin-only — deliberately unchanged (the audience rule). */
+const ADMIN_CANCEL_CLOSED = 'Cyklus je už uzavretý, objednávku kolegu už nie je možné zrušiť.'
+
+const BACKEND_SRC = resolve(FRONTEND_SRC, '../../backend/src')
+const readBackend = (rel) => readFileSync(join(BACKEND_SRC, rel), 'utf8')
+
+/**
+ * A backend router split into its route handlers: `{ header, body, admin }` per
+ * `router.<verb>(…)` registration, plus the shared preamble. `admin` = the
+ * registration line itself names `requireAdmin` (the MIXED-mount rule: gate per route).
+ */
+function routeBlocks(rel) {
+  const lines = stripComments(readBackend(rel)).split('\n')
+  const starts = lines.flatMap((l, i) => (/^router\.(get|post|put|patch|delete)\(/.test(l) ? [i] : []))
+  const blocks = [{ header: '(preamble)', body: lines.slice(0, starts[0]).join('\n'), admin: false }]
+  starts.forEach((start, n) => {
+    blocks.push({
+      header: lines[start].trim(),
+      body: lines.slice(start, starts[n + 1] ?? lines.length).join('\n'),
+      admin: lines[start].includes('requireAdmin'),
+    })
+  })
+  return blocks
+}
+
+/**
+ * Every route REGISTRATION in the RAW file, at any indentation and any verb (incl.
+ * `route`/`use`). `routeBlocks()` only splits on column-0 `router.<verb>(`; this count
+ * proves no registration escaped that split (review, GL-T7).
+ */
+const rawRegistrations = (rel) =>
+  (readBackend(rel).match(/^\s*router\.(get|post|put|patch|delete|route|use)\(/gm) || []).length
+
+/**
+ * Every raw `error:` / `message:` string literal, as written in the file (comments
+ * included — a literal the strip ate would show up here as missing).
+ */
+const rawMessageLiterals = (rel) =>
+  [...readBackend(rel).matchAll(/(?:error|message):\s*(['`"])((?:(?!\1)[^\\]|\\.)*)\1/g)].map((m) => m[0])
+
+const offendingLines = (text) => text.split('\n').map((l) => l.trim()).filter((l) => BANNED.test(l))
+
+test.describe('GL-T7 · 19 §UC-GL-011 — the guest source guard', () => {
+  test.skip(!HAS_SRC, NEEDS_SRC)
+
+  test('⚠ the guest roots ARE the router\'s `/g/…` components — a new guest route cannot escape the guard', () => {
+    const router = stripComments(readFileSync(join(FRONTEND_SRC, 'router.js'), 'utf8'))
+    const routes = [...router.matchAll(/path:\s*'(\/g\/[^']*)'[\s\S]*?import\(\s*'\.\/([^']+)'\s*\)/g)]
+      .map(([, path, file]) => ({ path, file }))
+    expect(routes.map((r) => r.path), 'non-vacuity: the three shipped guest routes were parsed')
+      .toEqual(['/g/:token', '/g/o/:orderToken', '/g/:token/o/:orderToken'])
+    expect([...new Set(routes.map((r) => r.file))].sort()).toEqual([...GUEST_SURFACE_ROOTS].sort())
+  })
+
+  test('the guest closure walks THROUGH the views and resolves every import', () => {
+    const files = importClosure(GUEST_SURFACE_ROOTS)
+    expect(files.filter((f) => f.startsWith('UNRESOLVED:')), 'every relative import resolves').toEqual([])
+    for (const deep of [
+      'components/GuestProductGrid.vue', 'components/GuestSteps.vue', 'components/GuestRoastersLine.vue',
+      'components/GuestBrandHeader.vue', 'components/GuestInviteRequest.vue', 'components/CycleTimeline.vue',
+      'lib/guest-cart.js',
+    ]) {
+      expect(files, `the walk reached ${deep}`).toContain(deep)
+    }
+  })
+
+  test('⚠ no file in the guest closure says „kolo" or „cyklus" (comments stripped)', () => {
+    const files = importClosure(GUEST_SURFACE_ROOTS)
+    const offenders = []
+    for (const file of files) {
+      for (const [n, line] of bannedLines(file)) offenders.push(`${file}:${n} ${line}`)
+    }
+    expect(offenders, 'a guest-facing source file carries a banned word').toEqual([])
+    assertReadable('views/GuestOrder.vue', ['preopen-hero', 'checkout-error'])
+    assertReadable('views/GuestOrderStatus.vue', ['start-edit', 'edit-error'])
+    assertReadable('components/GuestProductGrid.vue', ['emptyMessage', GUEST_COPY.empty])
+  })
+
+  test('⚠ the guest-facing SERVER source: `routes/guest.js` whole, `guest-orders.js` per audience', () => {
+    // `routes/guest.js` is PUBLIC end to end — every message in it is a guest's.
+    const guestSrc = stripComments(readBackend('routes/guest.js'))
+    for (const token of ['resolveEntry', 'Tento odkaz na objednávku neexistuje', GUEST_COPY.closed, GUEST_COPY.editClosed]) {
+      expect(guestSrc, `routes/guest.js: \`${token}\` survives the strip`).toContain(token)
+    }
+    expect(offendingLines(guestSrc), 'routes/guest.js: a guest-facing message says a banned word').toEqual([])
+
+    // `routes/guest-orders.js` is a MIXED mount: the host's routes (and the shared
+    // preamble) are swept; the `requireAdmin` routes are the admin's and may say „Cyklus".
+    const blocks = routeBlocks('routes/guest-orders.js')
+    // ⚠ The split is complete: one block per registration in the RAW file (an indented
+    // or `router.use`/`router.route` registration would otherwise hide in its neighbour).
+    expect(blocks.length - 1, 'guest-orders.js: every router registration starts its own block')
+      .toBe(rawRegistrations('routes/guest-orders.js'))
+    expect(blocks.length - 1, 'non-vacuity: the split found the shipped routes').toBeGreaterThanOrEqual(6)
+
+    // ⚠ READABILITY, the strong form: every raw `error:`/`message:` literal of both
+    // files survives the comment strip — the strings the sweep exists for were really read.
+    for (const rel of ['routes/guest.js', 'routes/guest-orders.js']) {
+      const stripped = stripComments(readBackend(rel))
+      const literals = rawMessageLiterals(rel)
+      expect(literals.length, `${rel}: non-vacuity — message literals found`).toBeGreaterThanOrEqual(10)
+      const lost = literals.filter((lit) => !stripped.includes(lit))
+      expect(lost, `${rel}: message literals eaten by the comment strip`).toEqual([])
+    }
+    const host = blocks.filter((b) => !b.admin)
+    const adminBlocks = blocks.filter((b) => b.admin)
+    expect(host.some((b) => b.header.startsWith("router.delete('/:id'")), 'non-vacuity: the host DELETE is a host block').toBe(true)
+    expect(host.find((b) => b.header.startsWith("router.delete('/:id'")).body).toContain(GUEST_COPY.hostDeleteClosed)
+    for (const b of host) {
+      expect(offendingLines(b.body), `guest-orders.js ${b.header}: a friend-facing message says a banned word`).toEqual([])
+    }
+    // ⚠ THE AUDIENCE DECISION, PINNED: the admin cancel keeps „Cyklus". If this reds
+    // because someone re-worded it, that is a PO/audience decision — change this pin
+    // and learnings 11 §GL-T7 together, never one of them.
+    const cancel = adminBlocks.find((b) => b.header.startsWith("router.post('/:id/cancel'"))
+    expect(cancel, 'the admin cancel is registered with requireAdmin').toBeTruthy()
+    expect(cancel.body).toContain(ADMIN_CANCEL_CLOSED)
+  })
+})
+
+test.describe('GL-T7 · 19 §UC-GL-011 — the guest-facing server messages, live', () => {
+  test('a locked round: guest submit, guest edit, host remove (swept) — and the admin cancel (kept)', async () => {
+    const host = await makeFriend('GuestSrv')
+    const cycle = await makeCycle(`GL7 Srv ${uniq}`)
+    const product = await addProduct(cycle.id, { name: `GL7 Srv Bean ${uniq}`, purpose: 'Espresso', price_250g: 8 })
+    const shared = await ctx.post(`/api/guest-links/cycle/${cycle.id}`, {
+      headers: { Authorization: `Bearer ${host.token}` }, timeout: TIMEOUT,
+    })
+    expect([200, 201], 'share link').toContain(shared.status())
+    const { link } = await shared.json()
+    const items = [{ product_id: product.id, variant: '250g', quantity: 1 }]
+    const identity = { guest_name: 'Marek GL7', guest_phone: '0901 234 567' }
+    const submitted = await ctx.post(`/api/guest/${link.token}/orders`, { data: { ...identity, items }, timeout: TIMEOUT })
+    expect(submitted.status(), 'guest submit while open').toBe(201)
+    const { order } = await submitted.json()
+
+    expect((await admin(`/api/cycles/${cycle.id}`, { method: 'patch', data: { status: 'locked' } })).status()).toBe(200)
+
+    // `routes/guest.js CLOSED` — rendered by `GuestOrder.vue`'s checkout-error banner.
+    const late = await ctx.post(`/api/guest/${link.token}/orders`, { data: { ...identity, items }, timeout: TIMEOUT })
+    expect(late.status(), 'status unchanged').toBe(409)
+    expect(await late.json()).toEqual({ error: GUEST_COPY.closed, reason: 'closed' })
+
+    // The status page's edit — rendered by `GuestOrderStatus.vue`'s edit-error banner.
+    const edit = await ctx.put(`/api/guest/o/${order.order_token}`, { data: { items }, timeout: TIMEOUT })
+    expect(edit.status(), 'status unchanged').toBe(409)
+    expect(await edit.json()).toEqual({ error: GUEST_COPY.editClosed, reason: 'closed' })
+
+    // The HOST's removal — `GuestSubOrders.vue` paints `e.message` on the Kolegovia tab.
+    const removed = await ctx.delete(`/api/guest-orders/${order.id}`, {
+      headers: { Authorization: `Bearer ${host.token}` }, timeout: TIMEOUT,
+    })
+    expect(removed.status(), 'status unchanged').toBe(409)
+    expect(await removed.json()).toEqual({ error: GUEST_COPY.hostDeleteClosed, reason: 'closed' })
+
+    // The ADMIN's cancel keeps „Cyklus" — the audience rule, decided on purpose.
+    const cancelled = await admin(`/api/guest-orders/${order.id}/cancel`, { method: 'post' })
+    expect(cancelled.status(), 'status unchanged').toBe(409)
+    expect(await cancelled.json()).toEqual({ error: ADMIN_CANCEL_CLOSED, reason: 'closed' })
+
+    for (const msg of Object.values(GUEST_COPY)) expect(BANNED.test(msg), `„${msg}" is clean`).toBe(false)
+    expect(BANNED.test(ADMIN_CANCEL_CLOSED), 'non-vacuity: the kept admin string IS an offender').toBe(true)
+  })
+})
+
+test.describe('GL-T7 · 19 §UC-GL-011 — the guest screens, rendered', () => {
+  async function guestLink(label, { products = 1 } = {}) {
+    const host = await makeFriend(label)
+    const cycle = await makeCycle(`GL7 ${label} ${uniq}`)
+    const made = []
+    for (let i = 0; i < products; i++) {
+      made.push(await addProduct(cycle.id, { name: `GL7 ${label} Bean ${i} ${uniq}`, purpose: 'Espresso', price_250g: 8 }))
+    }
+    const shared = await ctx.post(`/api/guest-links/cycle/${cycle.id}`, {
+      headers: { Authorization: `Bearer ${host.token}` }, timeout: TIMEOUT,
+    })
+    expect([200, 201], 'share link').toContain(shared.status())
+    return { host, cycle, products: made, link: (await shared.json()).link }
+  }
+  const lock = async (cycle) => expect((await admin(`/api/cycles/${cycle.id}`, {
+    method: 'patch', data: { status: 'locked' },
+  })).status()).toBe(200)
+
+  test('the LIVE listing of an open round with zero products — the grid\'s empty message', async ({ page }) => {
+    const { link } = await guestLink('Empty', { products: 0 })
+    await page.goto(`/g/${link.token}`)
+    await expect(page.getByText(GUEST_COPY.empty)).toBeVisible()
+    await expectCleanCopy(page, 'the live guest listing, zero products', [GUEST_COPY.empty, 'Objednávka cez odkaz'])
+  })
+
+  test('the checkout refused by a lock — `CLOSED` in the checkout-error banner', async ({ page }) => {
+    const { cycle, products: [product], link } = await guestLink('Checkout')
+    await page.goto(`/g/${link.token}`)
+    await page.getByTestId(`product-${product.id}`).getByTestId('inc-250g').click()
+    await page.getByTestId('open-checkout').click()
+    const dialog = page.getByRole('dialog')
+    await dialog.getByTestId('guest-name').fill('Marek GL7')
+    await dialog.getByTestId('guest-phone').fill('0901 234 567')
+    await lock(cycle)
+    await dialog.getByTestId('guest-submit').click()
+    await expect(dialog.getByTestId('checkout-error')).toHaveText(GUEST_COPY.closed)
+    await expectCleanCopy(page, 'the guest checkout, refused', [GUEST_COPY.closed])
+  })
+
+  test('the status page\'s EDIT mode, and its save refused by a lock', async ({ page }) => {
+    const { cycle, products: [product], link } = await guestLink('Edit')
+    const submitted = await ctx.post(`/api/guest/${link.token}/orders`, {
+      data: { guest_name: 'Marek GL7', guest_phone: '0901 234 567', items: [{ product_id: product.id, variant: '250g', quantity: 1 }] },
+      timeout: TIMEOUT,
+    })
+    expect(submitted.status()).toBe(201)
+    const { order } = await submitted.json()
+
+    await page.goto(`/g/o/${order.order_token}`)
+    await page.getByTestId('start-edit').click()
+    // Edit mode mounts `GuestProductGrid` — the second surface 88's string rendered on.
+    await expectCleanCopy(page, 'the guest status page, edit mode', ['Upravujete objednávku pre', 'Uložiť zmeny'])
+
+    await lock(cycle)
+    await page.getByTestId(`product-${product.id}`).getByTestId('inc-250g').click()
+    await page.getByTestId('save-edit').click()
+    // A 409 RELOADS the page into its read view (`submitEdit`), so the server's message
+    // lands in the read view's `status-error` banner, beside the read-only notice.
+    await expect(page.getByTestId('status-error')).toHaveText(GUEST_COPY.editClosed)
+    await expectCleanCopy(page, 'the guest edit, refused',
+      [GUEST_COPY.editClosed, 'Objednávky sú uzavreté, objednávku už nie je možné upraviť.'])
+  })
 })

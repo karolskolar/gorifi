@@ -4,7 +4,7 @@
 > `/g/:token` (g-order) with its hero, product grid, cart footer and checkout modal; the
 > post-submit confirmation (g-confirm); the personal status/edit page
 > `/g/:token/o/:orderToken` (g-status, four states: editable / paid-frozen / read-only
-> locked / cancelled, plus its edit mode); the dead-link screen (g-dead, three variants);
+> locked / cancelled, plus its edit mode); the dead-link screen (g-dead, ~~three~~ **two** variants — the `closed` one SUPERSEDED by 19 §UC-GL-002, GL-T7);
 > the invite-CTA restyle; and the restyle of the shared **Platba** payment modal. This is
 > a **re-skin plus the UX changes listed here** — no API, schema or business-logic change;
 > every GSO invariant in repo `CLAUDE.md` (GSO-T3/T4/T6/T10) holds verbatim.
@@ -194,7 +194,8 @@ GSO-T4: extend, never fork) renders the prototype's cat-tabs and product cards.
 - Bakery grouping by `source_bakery_product_id`, `variant_label` rows, composition
   behind `<details>` ("Zloženie") — all unchanged.
 - Empty state: `banner slim` with the existing text
-  "V tomto cykle zatiaľ nie sú žiadne produkty." (`emptyMessage` prop kept).
+  ~~"V tomto cykle zatiaľ nie sú žiadne produkty."~~ **„V ponuke zatiaľ nie sú žiadne produkty."
+  (GL-T7, 18 §UC-PI-017's vocabulary rule — PO draft)** (`emptyMessage` prop kept).
 - **Pinned test hooks preserved verbatim:** `product-{id}` on each card;
   `inc-{variant}` / `dec-{variant}` / `qty-{variant}` on coffee steppers;
   `inc-unit-{id}` / `dec-unit-{id}` / `qty-unit-{id}` on bakery rows
@@ -608,7 +609,7 @@ regex update in UC-GX-011.
 
 ---
 
-## UC-GX-010 g-dead — dead link (3 variants) and the status-404 card (Guest)
+## UC-GX-010 g-dead — dead link (~~3~~ **2** variants — `closed` SUPERSEDED by 19 §UC-GL-002) and the status-404 card (Guest)
 
 **Goal:** the dead-end screens per prototype `GDead` and `screenshots/16-shot.png`.
 
@@ -650,8 +651,9 @@ objednávku organizuje."** The prototype does not design this screen — recorde
 composition decision (reuse g-dead's visual), not new behavior.
 
 **Acceptance criteria:** 378 px side-by-side with `16-shot.png` (card floats centered
-in the halftone background, rotated danger badge with padlock); the three variants
-selectable in the live prototype match; dead-link e2e (`guest-order.spec.js` 404/410
+in the halftone background, rotated danger badge with padlock); the ~~three~~ variants
+selectable in the live prototype match (**the prototype's `closed` variant is SUPERSEDED by 19
+§UC-GL-002 — that state is the pre-open page, `preopen-hero`; only `notfound` + `inactive` remain**); dead-link e2e (`guest-order.spec.js` 404/410
 paths asserting `guest-unavailable`) stays green — titles are unchanged from shipped,
 only descriptions change and no spec pins those.
 

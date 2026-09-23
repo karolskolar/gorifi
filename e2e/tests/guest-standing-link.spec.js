@@ -1250,8 +1250,10 @@ test.describe('GL-T2 · 19 §UC-GL-003 — the pre-open payload (throwaway boot)
       expect(out.afterLocked.body.next.cycle_name, 'a locked cycle is not „next"').toBe('dated sooner')
       expect(out.afterLocked.body.preview.cycle.name, '…it is the preview').toBe('newer locked')
 
+      // SANCTIONED RETARGET (GL-T7, 19 §UC-GL-011 / 18 §UC-PI-017): the `CLOSED` text lost
+      // „v tomto cykle" (PO DRAFT); status and `reason` are byte-identical.
       expect(out.submit, 'rule 5 — the lock-race contract, for the standing space too').toEqual({
-        status: 409, error: 'Objednávanie v tomto cykle je už uzavreté.', reason: 'closed',
+        status: 409, error: 'Objednávky sú už uzavreté, objednávku už nie je možné odoslať.', reason: 'closed',
       })
       expect(out.links, 'no open round ⇒ the standing visit created NO per-cycle row').toEqual([])
 
@@ -1771,8 +1773,9 @@ test.describe('GL-T2 · GuestOrder.vue — the preopen-hero placeholder', () => 
       await expect(hero.locator('h1'), body.next.kind).toHaveText(title)
       await expect(page.getByTestId('preopen-next'), body.next.kind).toHaveText(sentence)
       if (body.next.kind !== 'open_elsewhere') await expect(hero).toContainText('Janka vás pozýva do spoločnej objednávky výberovej kávy.')
-      // The ONE vocabulary regex (PI-T11). The guest files are not in the friend
-      // source guard yet (GL-T7), so the new copy is swept here, rendered.
+      // The ONE vocabulary regex (PI-T11), rendered. ~~The guest files are not in the
+      // friend source guard yet (GL-T7)~~ — they are since GL-T7 (`portal-vocabulary.spec.js`
+      // §6); this rendered check stays as the composed-sentence half.
       expect(await hero.innerText(), 'no „cyklus"/„kolo" in the new guest copy').not.toMatch(BANNED)
     }
   })

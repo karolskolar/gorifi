@@ -85,7 +85,10 @@ const props = defineProps({
   isBakery: { type: Boolean, default: false },
   // GL-T5 — the pre-open page's read-only preview (see fact 4 in the header).
   readonly: { type: Boolean, default: false },
-  emptyMessage: { type: String, default: 'V tomto cykle zatiaľ nie sú žiadne produkty.' }
+  // GL-T7 (19 §UC-GL-011): was „V tomto cykle zatiaľ…" — the guest surface is under the
+  // vocabulary guard now (PO DRAFT). Renders on the LIVE listing with zero products and
+  // in `GuestOrderStatus` edit mode.
+  emptyMessage: { type: String, default: 'V ponuke zatiaľ nie sú žiadne produkty.' }
 })
 
 const cart = defineModel({ type: Object, required: true })

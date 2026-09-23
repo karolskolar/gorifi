@@ -522,7 +522,11 @@ proof for both readers.
   PO decision has to be made on the real inventory, which is THREE strings (**TWO since GL-T2:
   `GuestOrder.vue:170` went with the dead `closed` card, and the server string is served by
   the submit 409 only — see `11-guest-standing-link.md` GL-T2 §6**) plus a read-view
-  caveat, not one.
+  caveat, not one. **→ RESOLVED by GL-T7 (2026-09-23): both survivors are SWEPT under
+  18 §UC-PI-017's rule (the PO's own rule) — `GuestProductGrid.vue` → „V ponuke zatiaľ nie sú
+  žiadne produkty.“, `CLOSED` → „Objednávky sú už uzavreté, objednávku už nie je možné
+  odoslať.“ (PO drafts) — so the edit-mode caveat is gone too, and the guest routes' import
+  closure is under the source guard (`11-guest-standing-link.md` §GL-T7).**
 
 The supersession was written into every copy: `06-guest-flow.md:48` (conflict #1) and
 `:456` (the `readOnlyReason` table) both carry ~~strike~~ + pointer, the view carries
@@ -595,7 +599,8 @@ finish, each with an owner, so the chain does not end at „the next row inherit
    is correct — 19 §208 pins the server one and 18's hand-off list owns the two client ones
    — but §UC-CS-008's „the page contains neither „kolo" nor „cyklus"" is therefore true of
    the READ VIEW ONLY, because the third renders in `GuestOrderStatus.vue`'s own edit mode.
-   PO decision pending; the inventory above is the real one.
+   PO decision pending; the inventory above is the real one. **→ RESOLVED by GL-T7 (learnings 11
+   §GL-T7): all swept, guest surface under the source guard.**
 3. **The vertical `when` line for step 0 („otvorí sa {opens_at}") is pinned at lib level
    only** — no module-17 surface renders a vertical timeline for a planned round (the admin
    header is compact; a guest sub-order cannot exist on a planned cycle). Module 18's
