@@ -96,6 +96,12 @@ const ADMIN_ENDPOINTS = [
   // one helper, two guards, two sweeps.
   { method: 'get', path: '/api/friends/1/guest-link/standing' },
   { method: 'post', path: '/api/friends/1/guest-link/standing/regenerate' },
+  // 19 §UC-GL-009 (GL-T3): the guest WAITLIST, admin side — non-member names and
+  // phones in full, and a delete. A single-audience router, so the WHOLE mount is
+  // requireAdmin. ⚠ The public signup `POST /api/guest/:token/waitlist` must NEVER
+  // join this list (the URL token is its credential).
+  { method: 'get', path: '/api/guest-waitlist' },
+  { method: 'delete', path: '/api/guest-waitlist/1' },
   // 07 §UC-IA-008 item 1: the approval endpoint MINTS A LOGIN for a new friend, and
   // it lives on the MIXED /api/invitations mount (GET /code/:code and POST /register
   // are public), so its guard is per-route rather than on the mount. Anonymous must

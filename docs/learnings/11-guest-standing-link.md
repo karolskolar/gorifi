@@ -228,8 +228,10 @@ production, and only once production already has the column.
   in `resolveEntry`, never in `LINK_SELECT`.
 - GL-T3: the first `guest_waitlist` writer; `waitingCount()` already counts it (un-notified
   rows). ⚠ BLOCKING: `guest_waitlist.name` / `phone` / `phone_e164` are NON-MEMBER PII — the
-  scrub + verify pair must cover them before the public writer reaches production (§13; ask the
-  PO whether the „names are kept" rule, made for friends, extends to strangers).
+  scrub + verify pair must cover them before the public writer reaches production (§13; ~~ask the
+  PO whether the „names are kept" rule, made for friends, extends to strangers~~ **resolved by the
+  orchestrator in GL-T3: the STRICTER default, all three scrubbed, no PO question — and the exact
+  lines MOVED to the GL-T6 row, to land with the token pair; see GL-T3 §6 below**).
 - GL-T6: `api.getStandingGuestLink` / `regenerateStandingGuestLink` (host dialog) and
   `adminGetFriendStandingLink` / `adminRegenerateFriendStandingLink` (AdminFriends) exist.
   ⚠ BLOCKING: `scrub-template.sql` + `verify-scrub.sql` must NULL / check
@@ -391,3 +393,129 @@ SUBJECT is something else — grep `e2e/` for the retired status, not for the te
 - `preview` is the newest locked/completed cycle GLOBALLY (the spec's rule), so a stale link can
   preview a different round than its own `stale_cycle`. ~~`stock_limit_g` still rides the product
   columns~~ **stripped on review (§10)**; availability does not ride either.
+
+---
+
+## GL-T3 — the waitlist write path: `toE164()`, the public signup, the purges, the admin routes (2026-09-23)
+
+**What shipped.** `helpers/phone.js toE164()` (21 §UC-WA-002's contract — `libphonenumber-js/min`,
+`isValid()` gate, never throws; `libphonenumber-js` added to `backend/package.json`);
+`helpers/guest-waitlist.js`, the ONE home of every statement that writes `guest_waitlist`
+(`joinWaitlist`, `purgeWaitlistOnOrder`, `purgeWaitlistAfterTwoCompletions`, `deleteWaitlistRow`)
+plus the admin list reader and the module-21 segment SQL as a code-comment contract; public
+`POST /api/guest/:token/waitlist` (`guestWriteLimiter`, pure core `waitlistResponse()`); the
+on-order purge inside the guest submit transaction; the after-two-completions purge in the admin
+`PATCH /api/cycles/:id` (transition only, same transaction as the status write); admin
+`routes/guest-waitlist.js` (`GET /`, `DELETE /:id`) behind a `requireAdmin` MOUNT; three `api.js`
+clients (`joinGuestWaitlist`, `getGuestWaitlist`, `deleteGuestWaitlistRow`). API-only: **no screen
+changes** (GL-T5 builds the form, GL-T6 the admin card). New `e2e/tests/guest-waitlist.spec.js`
+(26 tests); `rate-limit-isolation.spec.js` alternates the two guest writes; `api-security` +2.
+
+### 1. ⚠ The happy path is UNREACHABLE over HTTP on the shared target — so the core is a pure function
+
+The signup is accepted only in the pre-open state, and the shared e2e target always has an open
+round — so every valid token answers 409 `open` BEFORE the body is read (rule 1 precedes rule 2).
+Over HTTP that leaves the 404/409/410 refusals, the parser-level 400s, and nothing else. The handler
+is therefore `waitlistResponse(token, body) → { status, body }`, exported beside GL-T2's
+`listingResponse()` and driven in throwaway boots for the happy path, the idempotency key, the
+bounds, consent, the state gates and `cycle_id`. HTTP proves only what the core cannot: the status
+plumbing, the admin routes, the purge hooks in the REAL submit and the REAL complete PATCH, and the
+host's count. HTTP-level rows are PLANTED through `DB_PATH` — there is no public writer the shared
+target can reach — and every refusal reads the rows back.
+
+### 2. Idempotency: the key is (host, E.164), else (host, exact raw phone)
+
+`0905 123 456` then `+421 905 123 456` ⇒ two byte-identical 200s, ONE row, the second NAME, the
+FIRST phone (rule 4's UPDATE names `name`/`whatsapp_opt_in`/`cycle_id`/`notified_at` only —
+`phone` as first entered and `created_at` stay). The raw lookup adds `AND phone_e164 IS NULL`
+(`toE164()` is deterministic, so a raw-phone row never has one) and compares the TRIMMED phone
+(`asString()` trims): `'0000 000 000'` and `'  0000 000 000 '` are one row, `'0000000000'` is a
+second — pinned as the rule reads. The partial unique index backs the E.164 half; its
+`SQLITE_CONSTRAINT*` is translated into the UPDATE path only when the message names
+`guest_waitlist.host_friend_id, guest_waitlist.phone_e164` (a FOREIGN KEY failure is re-thrown —
+pinned). The lost race is forced with GL-T2's `db.prepare` patch (§2 of GL-T2), with the
+`armedLeft === false` non-vacuity gate.
+
+### 3. `notified_at`: RESET here, WRITTEN by module 21 only
+
+The one assignment in `backend/src` is `notified_at = NULL` in the re-arm UPDATE — a source pin
+walks every file and expects exactly that, so a module-19 timestamp write reds. Re-signup also
+moves `cycle_id` to the CURRENT `lastClosedCycle()`, which restarts the two-completion clock —
+the rule's intent (the guest asked again), recorded here because it means an eager re-signer is
+never purged by rule 2.
+
+### 4. The purges
+
+- **On order**, inside the submit's `db.transaction`, after the item rows: E.164 ⇒ every host's row
+  (D5); no E.164 ⇒ this host's row with the exact raw phone. A refused submit (empty cart) purges
+  nothing — pinned as a counter-pin. The raw path is proven with `0000 xxxxxx` (10 digits passes
+  `validateIdentity`, fails `isValid()`).
+- **After two completions**, on `status === 'completed' && cycle.status !== 'completed'` only:
+  `completed → completed` re-saves and name edits purge nothing (pinned with a NULL row that
+  already qualifies on the shared target — the one fixture that tells transition from any-save).
+  ⚠ `POST /api/cycles` accepts a `status` and can CREATE a cycle already `completed`: that runs no
+  purge (19 names the PATCH only), but the cycle COUNTS at the next transition. Recorded, not
+  changed.
+- Helper-level semantics (N survives N+1, goes at N+2; NULL goes at the SECOND completion ever;
+  locked never counts) run in a throwaway boot — on the shared target „completion #2 ever" is long
+  past.
+
+### 5. `validateIdentity()` grew one branch, not a copy
+
+The waitlist field map has no `email`. Without a guard `body?.[undefined]` reads the key
+`"undefined"`, so `{ "undefined": {} }` would 400 „Neplatný e-mail" on a form with no e-mail
+field. `if (!fields.email) return { identity: { name, phone, email: null } }` — the two shipped
+maps both carry `email`, so checkout and lead-capture are unchanged; an e-mail sent to the
+waitlist (even an unbindable one) is ignored, pinned.
+
+### 6. The scrub: the STRICTER default, and the lines live on GL-T6
+
+Orchestrator decision: `name` / `phone` / `phone_e164` are all scrubbed (name included — the
+„names are kept" rule was made for friends), which is stricter than the friends rule and so needs
+no PO question. Sequencing is §13's problem again: an unconditional `UPDATE guest_waitlist` fails
+every template build from a production that predates GL-T1. So NOTHING was added to either SQL
+file; the exact UPDATE and three verify lines (each a `SELECT '<name>'` line, so EXPECTED rises by
+3) are on the GL-T6 row's BLOCKING note, to land in one change with the token pair. Measured on a
+copy with node:sqlite: a real-shaped row + a non-normalising one ⇒ verify `2|2|1` before, `0|0|0`
+after. ⚠ `phone_e164` is re-derived from the SAME expression as `phone`, because an UPDATE's
+right-hand side reads the OLD value of `phone`; the verify ties it to the scrubbed phone
+(`'+421' || substr(phone, 2)`), so a real number cannot survive in it.
+
+⚠ Considered and NOT taken — reported to the orchestrator: a pure-SQL conditional exists for the
+TABLE half (`CREATE TABLE IF NOT EXISTS guest_waitlist (…)` at the top of the scrub makes the
+UPDATE and the verify valid on any snapshot, in BOTH drivers). It was not used because it is half
+a solution (SQL has no `ADD COLUMN IF NOT EXISTS`, so the `friends.guest_link_token` pair still
+needs the sequencing), and because it changes the template's SHAPE — a pre-GL-T1 template would
+arrive with the table but without the column/index, and GL-T1 §6's „the template IS a pre-GL-T1
+database" migration proof would then only half hold.
+
+### 7. Gate notes
+
+- `guest-order-recovery.spec.js`'s D11 pin greps `routes/guest.js` RAW — comments included — for
+  `async`/`await`. The first gate run went red on a COMMENT that quoted „zero async in
+  routes/guest.js". Reworded. ⚠ Any comment in that file must avoid both words.
+- `rate-limit-isolation.spec.js` self-skips under the gate's 100000 caps. Run separately on a
+  throwaway :3998 server with `RATE_LIMIT_GUEST_WRITE_MAX=3`: green, and the mutant „waitlist on
+  `guestReadLimiter`" reds it (`guest write limiter should engage past its max`).
+- Mutations run (each red, then restored): raw-only lookup; re-arm without `notified_at = NULL`;
+  consent defaulting to 1; no 409 for `openCycle`; re-throw every constraint; `cycle_id: null`;
+  waitlist on the read limiter (source pin); on-order purge deleted; per-host E.164 purge;
+  purge on every `completed` save; `parseInt` id on DELETE (`12x` deleted row 12); mount without
+  `requireAdmin`.
+
+### Seams left for the next rows
+
+- GL-T5: `api.joinGuestWaitlist(token, { name, phone, whatsapp_opt_in })` — the 200 is the SAME
+  for a new and a repeat signup (render one success state); 409 `reason:'open'` means reload into
+  the live page; 400 carries `field` (`name`/`phone`) for the inline error; mirror `maxlength`
+  120/32.
+- GL-T6: `api.getGuestWaitlist({ host_friend_id })` / `deleteGuestWaitlistRow(id)`; rows carry
+  `host_name`, `cycle_name`, `phone_e164`, `notified_at`, ordered host NOCASE → newest first.
+  ⚠ BLOCKING: the scrub lines (token + waitlist) are on the GL-T6 row.
+- WA-T1: adopt `helpers/phone.js` UNCHANGED (`grep -rn parsePhoneNumber backend/src` → that file
+  only — pinned in `guest-waitlist.spec.js`). The waitlist INSERT already writes `phone_e164`
+  through it, so WA-T1's writer table row for module 19 is DONE; the segment SQL is in the header
+  of `helpers/guest-waitlist.js`. ⚠ The contract's `String(raw ?? '')` coercion is literal: an
+  ARRAY stringifies and parses (`['0905123456','x']` ⇒ `+421905123456`) — callers pass
+  validated strings; pinned as written.
+

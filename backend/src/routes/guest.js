@@ -14,6 +14,8 @@ import { resolveLoginUrl } from '../helpers/credentials-message.js';
 // 19 §UC-GL-002: the link-token generator for BOTH spaces (the get-or-create below
 // mints a per-cycle row) and „the current round".
 import { uniqueGuestToken, currentOpenCycle } from '../helpers/standing-link.js';
+// 19 §UC-GL-004/005: the waitlist's one writer home (signup + the on-order purge).
+import { joinWaitlist, purgeWaitlistOnOrder } from '../helpers/guest-waitlist.js';
 
 const router = Router();
 
@@ -147,6 +149,12 @@ function validateIdentity(body, fields) {
     return { error: 'Zadajte telefónne číslo (aspoň 9 číslic)', field: fields.phone };
   }
 
+  // A surface that accepts NO e-mail (the waitlist, 19 §UC-GL-004 rule 2) has no
+  // `email` in its field map: whatever the body carries under any key is ignored.
+  if (!fields.email) {
+    return { identity: { name, phone, email: null } };
+  }
+
   // E-mail is optional, so '' is fine — but `null` means "present and not text",
   // which is invalid input rather than an omitted field.
   const emailInput = asString(body?.[fields.email]);
@@ -163,6 +171,8 @@ function validateIdentity(body, fields) {
 
 const CHECKOUT_IDENTITY_FIELDS = { name: 'guest_name', phone: 'guest_phone', email: 'guest_email' };
 const INVITE_IDENTITY_FIELDS = { name: 'name', phone: 'phone', email: 'email' };
+// 19 §UC-GL-004 rule 2 — name + phone ONLY; an e-mail is not accepted (ignored if sent).
+const WAITLIST_IDENTITY_FIELDS = { name: 'name', phone: 'phone' };
 
 // Only the host's first name is published to strangers — the guest needs to know
 // whose order they are joining, not the host's contact details.
@@ -211,8 +221,9 @@ function findCycle(cycleId) {
 //      variant, never the newer round (D7: an old per-cycle link must not become an
 //      evergreen door). It creates nothing.
 //
-// Returns `{ kind: 'order', link, cycle }`, `{ kind: 'preopen', host, staleCycle,
-// openCycle }` (`openCycle` = the open round a stale link does NOT resolve to, or
+// Returns `{ kind: 'order', link, cycle }`, `{ kind: 'preopen', hostId, host,
+// staleCycle, openCycle }` (`hostId` = the friend the door belongs to — the waitlist's
+// `host_friend_id`, never published; `openCycle` = the open round a stale link does NOT resolve to, or
 // null — `openElsewhere` in the spec is `!!openCycle`), or a refusal
 // `{ status, error, reason? }`.
 //
@@ -297,7 +308,9 @@ function resolveStanding(host, forSubmit) {
   if (!host.active) return INACTIVE;
   const open = currentOpenCycle();
   if (!open) {
-    return orderOrPreopen({ kind: 'preopen', host: { name: host.name }, staleCycle: null, openCycle: null }, forSubmit);
+    return orderOrPreopen({
+      kind: 'preopen', hostId: host.id, host: { name: host.name }, staleCycle: null, openCycle: null,
+    }, forSubmit);
   }
   const link = getOrCreateCycleLink(host.id, open.id);
   // D4: the round's own `active` flag still decides. A host who deactivated this
@@ -320,6 +333,7 @@ function resolveLegacy(link, forSubmit) {
   // page can say „ask the host for the current link" instead of offering a waitlist.
   return orderOrPreopen({
     kind: 'preopen',
+    hostId: link.host_friend_id,
     host: { name: link.host_name },
     staleCycle: { id: cycle.id, name: cycle.name },
     openCycle: currentOpenCycle(),
@@ -792,6 +806,72 @@ router.get('/:token', guestReadLimiter, (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /guest/:token/waitlist — „Dajte mi vedieť" (19 §UC-GL-004). ⚠ PUBLIC, the
+// app's second unauthenticated write: the URL token is the only credential and the
+// body is hostile. `guestWriteLimiter`, the existing guest WRITE bucket (CLAUDE.md:
+// five buckets, never collapsed, no new one). Never in ADMIN_ENDPOINTS.
+//
+//   1. `resolveEntry()` — the ONE resolver, so 404 (uniform, the listing's own
+//      message) / 410 `inactive` are exactly the listing's. A round open for this
+//      host (`kind: 'order'`), or open ELSEWHERE for a stale legacy link, is 409
+//      `open`: the guest should be ordering, not waiting (the server half of
+//      UC-GL-003 rule 3 — the same condition as `waitlist.available`).
+//   2. `validateIdentity()` with name + phone only (the shipped bounds 120 / 32 and
+//      messages). Consent is `whatsapp_opt_in ? 1 : 0` — ABSENT ⇒ 0 (PO: consent is
+//      never implied by omission, although the UI checkbox defaults on).
+//   3. `cycle_id` = `lastClosedCycle()` — THAT function (the preview's „last round"),
+//      never a second copy of the query; null when no round has closed.
+//   4. Create OR re-arm (idempotent per host + E.164, else host + raw phone) —
+//      helpers/guest-waitlist.js.
+//   5. ⚠ `200 { success: true }` for BOTH create and duplicate — no ids, no count,
+//      nothing about other rows: the response is no oracle about who signed up.
+//
+// No ledger row, no invitation, no mail, no notification — a contact record only.
+// ⚠ Synchronous — UC-GR-011's zero-concurrency-keyword pin covers this file (GA-T8). Note that a
+// STANDING token with an open round get-or-creates the per-cycle row inside
+// `resolveEntry()` before the 409 — the same row a page load creates (19 §Accepted
+// risks: „a public GET writes a row").
+const OPEN = Object.freeze({
+  status: 409,
+  error: 'Objednávka je práve otvorená — môžete si objednať rovno.',
+  reason: 'open',
+});
+
+// The signup's whole answer as `{ status, body }` — a pure function of the token, the
+// body and the database (the `listingResponse()` pattern), so
+// e2e/tests/guest-waitlist.spec.js can drive the PRE-OPEN states the shared e2e target
+// never reaches (it always has an open round, and an open round is a 409).
+function waitlistResponse(token, reqBody) {
+  const resolved = resolveEntry(token);
+  if (resolved.status) {
+    return { status: resolved.status, body: { error: resolved.error, reason: resolved.reason } };
+  }
+  if (resolved.kind === 'order' || resolved.openCycle) {
+    return { status: OPEN.status, body: { error: OPEN.error, reason: OPEN.reason } };
+  }
+
+  const validated = validateIdentity(reqBody, WAITLIST_IDENTITY_FIELDS);
+  if (validated.error) {
+    return { status: 400, body: { error: validated.error, field: validated.field } };
+  }
+  const { name, phone } = validated.identity;
+
+  joinWaitlist({
+    hostId: resolved.hostId,
+    cycleId: lastClosedCycle()?.id ?? null,
+    name,
+    phone,
+    optIn: reqBody?.whatsapp_opt_in ? 1 : 0,
+  });
+  return { status: 200, body: { success: true } };
+}
+
+router.post('/:token/waitlist', guestWriteLimiter, (req, res) => {
+  const { status, body } = waitlistResponse(req.params.token, req.body);
+  res.status(status).json(body);
+});
+
+// ---------------------------------------------------------------------------
 // THE CONFIRMATION MAIL (14 §UC-GR-011)
 //
 // The THIRD consumer of module 08's `renderEmail` / `sendMail` seam. The
@@ -1038,6 +1118,12 @@ router.post('/:token/orders', guestWriteLimiter, (req, res) => {
 
     const total = replaceItems(guestOrderId, lines);
     db.prepare('UPDATE guest_orders SET total = ? WHERE id = ?').run(total, guestOrderId);
+
+    // 19 §UC-GL-005 rule 1 — the guest is now a customer of this round, so their
+    // waitlist rows go: ACROSS ALL HOSTS by E.164 (D5), else this host's row by the
+    // exact raw phone. ⚠ INSIDE this transaction, after the sub-order rows — one
+    // extra statement, so a rolled-back submit purges nothing.
+    purgeWaitlistOnOrder(guestPhone, link.host_friend_id);
 
     return { guestOrderId };
   });
@@ -1422,8 +1508,9 @@ router.post('/:token/orders/:orderToken/invite-request', guestWriteLimiter, (req
   handleInviteRequest(req, res, resolved);
 });
 
-// The listing's pure core, for guest-standing-link.spec.js's throwaway-boot probes
-// only (DB states the shared e2e target cannot reach). No other module imports it.
-export { listingResponse, resolveEntry };
+// The listing's and the waitlist signup's pure cores, for guest-standing-link.spec.js's
+// and guest-waitlist.spec.js's throwaway-boot probes only (DB states the shared e2e
+// target cannot reach). No other module imports them.
+export { listingResponse, resolveEntry, waitlistResponse };
 
 export default router;

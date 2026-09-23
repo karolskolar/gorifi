@@ -18,6 +18,7 @@ import {
 } from '../helpers/handover.js';
 import { enqueueForHandOver } from '../helpers/outbox.js';
 import { markCycleReady, CYCLE_STAGES, LOCKED_STAGE_DEFAULT } from '../helpers/cycle-stage.js';
+import { purgeWaitlistAfterTwoCompletions } from '../helpers/guest-waitlist.js';
 
 const router = Router();
 
@@ -627,9 +628,18 @@ router.patch('/:id', requireAdmin, (req, res) => {
     values.push(roundMoney(parcel_fee || 0));
   }
 
+  // 19 §UC-GL-005 rule 2 — the TRANSITION into `completed` (the admin's „Ukončiť";
+  // module 17 never auto-completes) purges every waitlist row whose guest has now been
+  // offered two openings and ordered in neither. Once per transition, never on a
+  // `completed → completed` re-save, and in the SAME transaction as the status write.
+  const completing = status === 'completed' && cycle.status !== 'completed';
+
   if (updates.length > 0) {
     values.push(req.params.id);
-    db.prepare(`UPDATE order_cycles SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    db.transaction(() => {
+      db.prepare(`UPDATE order_cycles SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+      if (completing) purgeWaitlistAfterTwoCompletions();
+    })();
   }
 
   const updated = db.prepare('SELECT * FROM order_cycles WHERE id = ?').get(req.params.id);

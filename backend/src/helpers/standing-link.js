@@ -205,8 +205,9 @@ export function currentOpenCycle() {
  * odkaz" — says they are still waiting for the link. A notified row stays in the
  * table (the admin sees it until a purge, UC-GL-005) but no longer counts here.
  *
- * `guest_waitlist` is INERT until GL-T3 ships its public writer, so this is 0
- * everywhere today — but it counts the real table, never a placeholder.
+ * ~~`guest_waitlist` is INERT until GL-T3 ships its public writer, so this is 0
+ * everywhere today~~ — GL-T3 shipped the writers (helpers/guest-waitlist.js); it
+ * always counted the real table, never a placeholder.
  */
 export function waitingCount(friendId) {
   return db.prepare(

@@ -1148,12 +1148,12 @@ function initDb() {
   // guest-tables rule); a later task adds a migration for it only for a column that is
   // genuinely new once this table is in prod.
   //
-  // ⚠ INERT FROM GL-T1 UNTIL GL-T3: no writer exists yet. It is created now so the
-  // host's `waiting_count` (helpers/standing-link.js `waitingCount()`) counts the real
-  // table from the first day, never a placeholder. Writers, when they land: GL-T3's
-  // public `POST /api/guest/:token/waitlist` (INSERT/UPDATE), the two purges
-  // (UC-GL-005: on order, after two completions), the admin DELETE (UC-GL-009), and
-  // module 21 — the ONLY writer of `notified_at`.
+  // Created by GL-T1 (inert then, so `waiting_count` counted the real table from day
+  // one); ~~no writer exists yet~~ — GL-T3 shipped them. Every statement that writes
+  // it lives in `helpers/guest-waitlist.js`: the public `POST /api/guest/:token/waitlist`
+  // (INSERT / re-arm UPDATE), the two purges (UC-GL-005: on order, after two
+  // completions), the admin DELETE (UC-GL-009). Module 21 is the ONLY writer of a
+  // `notified_at` timestamp (GL-T3 only resets it to NULL on re-signup).
   //
   // `cycle_id` = the LAST closed round at signup, the anchor of the two-round purge
   // (PO 2026-09-19: as specified); NULL when no round existed yet. `phone` is as

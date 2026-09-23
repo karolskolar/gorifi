@@ -558,6 +558,14 @@ export const api = {
       method: 'POST',
       body: data
     }),
+  // 19 §UC-GL-004 — „Dajte mi vedieť" on the pre-open page. `{ name, phone,
+  // whatsapp_opt_in }`; no auth headers (the URL token is the credential). Answers
+  // `{ success: true }` for a new signup AND a repeat one alike (no oracle); 409
+  // `reason:'open'` when a round is open (order instead). GL-T5 builds the form.
+  joinGuestWaitlist: (token, data) => guestRequest(`/guest/${encodeURIComponent(token)}/waitlist`, {
+    method: 'POST',
+    body: data
+  }),
 
   // Guest share links (host = the authenticated friend; Bearer token required)
   getGuestLink: (cycleId) => request(`/guest-links/cycle/${cycleId}`),
@@ -634,6 +642,20 @@ export const api = {
   // has no paid blockade, and a paid + cancelled sub-order lands in the refund queue
   // above on purpose (D4). Soft cancel server-side; the item rows are kept.
   cancelGuestOrderAdmin: (id) => adminRequest(`/guest-orders/${id}/cancel`, { method: 'POST' }),
+
+  // 19 §UC-GL-009 — the guest waitlist, ADMIN side (the whole `/guest-waitlist` mount
+  // is requireAdmin). `getGuestWaitlist({ host_friend_id })` → `{ rows: [...] }` in
+  // full (names + phones — the admin's view only; the host sees a COUNT). There is no
+  // admin create and no admin write of `notified_at` (module 21 owns it).
+  getGuestWaitlist: (params = {}) => {
+    const query = new URLSearchParams()
+    if (Number.isInteger(params?.host_friend_id) && params.host_friend_id > 0) {
+      query.set('host_friend_id', String(params.host_friend_id))
+    }
+    const qs = query.toString()
+    return adminRequest(`/guest-waitlist${qs ? `?${qs}` : ''}`)
+  },
+  deleteGuestWaitlistRow: (id) => adminRequest(`/guest-waitlist/${id}`, { method: 'DELETE' }),
 
   // Coffee product catalog (admin) — module 12. The whole /coffee-products
   // mount is requireAdmin server-side; all calls ride X-Admin-Token.
