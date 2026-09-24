@@ -18,6 +18,7 @@ import { readHandedOverFlag, partyDelivery, guestOrderStage } from '../helpers/h
 import { enqueueForHandOver, cancelForUnHandOver } from '../helpers/outbox.js';
 import { markCycleReady } from '../helpers/cycle-stage.js';
 import { applyGuestDelivery } from '../helpers/pickup.js';
+import { hostOwnOrder } from '../helpers/packing.js';
 
 const router = Router();
 
@@ -618,6 +619,7 @@ router.post('/:id/cancel', requireAdmin, (req, res) => {
 //   404 — no such sub-order (uniform)
 //   409 — `cancelled` (the `delivered` PATCH precedent: terminal, and the fee is
 //         already 0 there — the snapshot keeps what the refund needs)
+//   409 — `host_handed_over` / `host_packed` (GP-T6 review — the REJOIN gate below)
 //   200 — cleared, or already via_host (`cleared_parcel: false` — idempotent)
 //
 // Deliberately NOT gated on the cycle being open (the correction is needed AFTER the
@@ -667,6 +669,43 @@ router.patch('/:id/delivery', requireAdmin, (req, res) => {
     ).get(row.id);
     if (!current) return { conflict: 'gone' };
     if (guestOrderStatus(current) === 'cancelled') return { conflict: 'cancelled' };
+
+    // ⚠ THE REJOIN GATE (GP-T6 review; ORCHESTRATOR DECISION 2026-09-24, PENDING PO —
+    // learnings 12 §46). Switching a Packeta guest to „cez {host}" puts their bag INSIDE
+    // the host's (20 §UC-GP-010: it rejoins `guest_orders[]`, `packingItemStats()` and
+    // `inheritingGuests()`). If the host's bag has already LEFT, the guest would be
+    // inherited as handed over without ever being handed to anyone; if it is PACKED
+    // while the guest still has unticked bags, those bags sit inside a closed parcel —
+    // the board folds a packed friend's checklist away (`item-packed.spec.js`), so they
+    // are unreachable, and the host's hand-over would inherit them unpacked. REFUSE,
+    // never auto-unpack (an unpack posts a ledger reversal of the host's total — a
+    // money move this route must not make). Only when the row IS Packeta (an
+    // already-via_host row is the idempotent 200 and moves nothing), and only against
+    // the host's OWN SUBMITTED order — `hostOwnOrder()`, the one the gate and the
+    // auto-unpack use. A host with NO own order (synthetic party) has no `packed` column
+    // and no stamp of its own: its stage and hand-over are DERIVED from its bags, so a
+    // rejoined unticked bag simply makes it `to_pack` again with the checklist in reach
+    // (a synthetic row never folds) — nothing to gate. Inside the transaction, so the
+    // check and the write agree (the GA-T8 layer).
+    if (current.packeta_address) {
+      const link = db.prepare(`
+        SELECT glink.host_friend_id, glink.cycle_id, f.name AS host_name
+          FROM guest_orders gord
+          JOIN guest_order_links glink ON glink.id = gord.link_id
+          JOIN friends f ON f.id = glink.host_friend_id
+         WHERE gord.id = ?
+      `).get(current.id);
+      const hostOrder = link ? hostOwnOrder(link.host_friend_id, link.cycle_id) : null;
+      if (hostOrder && hostOrder.handed_over_at) {
+        return { conflict: 'host_handed_over', hostName: link.host_name };
+      }
+      if (hostOrder && hostOrder.packed) {
+        const unticked = db.prepare(
+          'SELECT 1 FROM guest_order_items WHERE guest_order_id = ? AND COALESCE(packed, 0) = 0 LIMIT 1'
+        ).get(current.id);
+        if (unticked) return { conflict: 'host_packed', hostName: link.host_name };
+      }
+    }
     return { result: applyGuestDelivery(current, { method: 'via_host' }) };
   });
 
@@ -678,6 +717,19 @@ router.patch('/:id/delivery', requireAdmin, (req, res) => {
     return res.status(409).json({
       error: 'Táto objednávka bola zrušená, spôsob prevzatia už nie je možné zmeniť.',
       reason: 'cancelled',
+    });
+  }
+  // PO DRAFT copy (admin audience, vy-form, says what to do next).
+  if (applied.conflict === 'host_handed_over') {
+    return res.status(409).json({
+      error: `Balíček ${applied.hostName} je už odovzdaný, hosťa už nie je možné presunúť k nemu.`,
+      reason: 'host_handed_over',
+    });
+  }
+  if (applied.conflict === 'host_packed') {
+    return res.status(409).json({
+      error: `Balíček ${applied.hostName} je už zabalený — najprv dobaľte položky hosťa alebo rozbaľte balíček ${applied.hostName}.`,
+      reason: 'host_packed',
     });
   }
 

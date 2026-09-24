@@ -568,6 +568,18 @@ router: `requireAdmin` **per route**, never on the mount; joins `ADMIN_ENDPOINTS
 - Receivables / refund cards (~:1880-1935): red „Packeta“ badge + address + phone on rows
   with `packeta`; the refund marker line per UC-GP-006.
 - The „Hosťovské odkazy (všetci priatelia)“ fold renders no guest data — unchanged.
+- ⚠ **The rejoin gate** (GP-T6 review, orchestrator decision 2026-09-24, PENDING PO —
+  §OPEN, learnings 12 §46). A switch puts the bag INSIDE the host's (§UC-GP-010), so inside
+  the transaction and after the `cancelled` check, on a row that is still Packeta:
+  - the host's own submitted order has `handed_over_at` set ⇒ **409 `host_handed_over`**
+    („Balíček {host} je už odovzdaný, hosťa už nie je možné presunúť k nemu.");
+  - the host's order has `packed = 1` and the sub-order has any unticked item ⇒ **409
+    `host_packed`** („Balíček {host} je už zabalený — najprv dobaľte položky hosťa alebo
+    rozbaľte balíček {host}.").
+  It never auto-unpacks the host (that would post a ledger reversal). It writes no ledger row
+  and leaves `delivery_fee_paid` untouched. A host with no own order is not gated, because
+  its stage is derived and its checklist never folds. `GuestDeliverySwitch` shows the message
+  by the row with the confirm kept open, in both views.
 
 **Acceptance criteria:** the PATCH on a paid Packeta guest zeroes the fee and NULLs the
 address (row read back), `paid` stays 1, `MAX(transactions.id)` unmoved; the five bad
@@ -646,6 +658,15 @@ the payload has H with `guest_orders = [A]` and a separate `kind:'guest'` party 
 of H's own + A's items ticked ⇒ `PATCH /api/orders/:hId/packed` 200 while B's items are
 unticked; unticking B's item after H is packed leaves `orders.packed = 1`; a host with only
 B (no own order) is not listed; the print media lists B under Packeta with address + phone.
+
+> **Shipped (GP-T6, 2026-09-24 — learnings 12 §38–45).** As specified, plus three findings: (1)
+> the hand-over inheritance seam was NOT a no-op — `inheritingGuests()` never SELECTed
+> `packeta_address`, so Packeta guests were inherited until this row; (2) ORCHESTRATOR/PO to confirm:
+> the host's hand-over no longer locks a Packeta bag's checklist either (the §UC-DP-007 host clause
+> exists only because the uncheck would un-pack the host, which it no longer does — both halves read
+> one `hostBag`); (3) board testids for the party are `…-guest-<guest_order_id>` (`bag-row-guest-5`,
+> `handover-toggle-guest-5`, `bag-guest-badge-…`, `bag-packeta-badge-…`, `bag-amount-…`), the switch is
+> `dist-guest-delivery-*-<id>`; every friend row's testid is unchanged.
 
 ---
 
@@ -826,10 +847,22 @@ five `RATE_LIMIT_*_MAX` raised, output to a file, `echo "EXIT: $?"`.
   warn banner, the host sentence „Tento kolega dostane balík Packetou — nemusíte nič
   odovzdávať.“ (R4.6 paraphrase), the admin switch button + confirm, the refund marker
   line, the mail labels `Doručenie Packetou` / `Výdajné miesto`.
-- `OPEN:` **Refund of the fee** (resolved conflict 1 / D4): should a cancelled paid Packeta
+- ~~`OPEN:` **Refund of the fee** (resolved conflict 1 / D4): should a cancelled paid Packeta
   sub-order's refund `amount` include the fee? Default = no (marker only). Yes would need a
   column that survives cancel (contradicts R4.7's "zeroes `delivery_fee` too" — the PO
-  would have to amend that line).
+  would have to amend that line).~~ → RESOLVED: PO 2026-09-19 said items + fee, through the
+  `delivery_fee_paid` snapshot. See D4 and the PO decisions at the end of this file.
+- `OPEN:` **A switch to „cez {host}" SETTLES a paid fee** (ORCHESTRATOR DECISION 2026-09-23,
+  GP-T5 review, PENDING PO — learnings 12 §31): the refund counts the snapshot only while
+  `packeta_address IS NOT NULL`; the confirm tells the admin to return the fee at the switch.
+- `OPEN:` **The host's hand-over does not lock a Packeta bag's checklist** (ORCHESTRATOR
+  DECISION, GP-T6, PENDING PO — learnings 12 §41): only the guest's own stamp locks it, and
+  its uncheck never un-packs the host.
+- `OPEN:` **The rejoin gate** (ORCHESTRATOR DECISION 2026-09-24, GP-T6 review, PENDING PO —
+  learnings 12 §46): `PATCH …/delivery` refuses with 409 `host_handed_over` when the host's
+  own order has been handed over, and with 409 `host_packed` when the host's order is packed
+  and the guest has any unticked item. It never auto-unpacks. A synthetic host (no own order)
+  is not gated. Both messages are PO drafts.
 - `OPEN:` **D3 (write-once e-mail on edit)** — confirm, or choose the 409 alternative.
 - `OPEN:` **An unshaped checkout e-mail blocks Packeta mail forever** (GP-T2 review,
   2026-09-23; learnings 12 §10). A via_host checkout accepts an unshaped optional e-mail

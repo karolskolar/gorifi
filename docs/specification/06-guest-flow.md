@@ -216,6 +216,10 @@ GSO-T4: extend, never fork) renders the prototype's cat-tabs and product cards.
 
 ## UC-GX-003 g-order — sticky cartbar + checkout modal (Guest)
 
+> ⚠ **Amended by module 20 (`20-guest-packeta.md` §UC-GP-003, shipped GP-T3):** when the round sends
+> parcels the checkout gains the delivery choice (`GuestDeliveryChoice.vue`), the e-mail label flips to
+> required for Packeta, and the hero carries „Packeta +{fee}“. The cartbar stays product-only (PO).
+
 **Goal:** the cart footer and the "Dokončiť objednávku" checkout, per prototype
 `GOrder` and `screenshots/10-shot.png`.
 
@@ -290,6 +294,9 @@ title, 3px-ink inputs, mono sum in the subtitle); the e2e submit flow
 ---
 
 ## UC-GX-004 g-confirm — confirmation screen (Guest)
+
+> ⚠ **Amended by module 20 (§UC-GP-003/004, shipped GP-T3):** a Packeta order shows the fee line
+> (`confirm-delivery-fee`), the fee-inclusive sum (`payment.amount`) and the point.
 
 **Goal:** the post-submit confirmation per prototype `GConfirm` and
 `screenshots/11-shot.png`. Same route (in-page state on `GuestOrder.vue`), brand-header
@@ -411,6 +418,9 @@ Pay-by-Square payload as before the restyle; `guest-status.spec.js:653–665` (o
 
 ## UC-GX-006 g-status — read view, four states (Guest)
 
+> ⚠ **Amended by module 20 (§UC-GP-007, shipped GP-T4):** the „Doručí Packeta“ pill REPLACES the
+> delivered pill, the fee line + fee-inclusive total, and the point card (kept on a cancelled order).
+
 **Goal:** `/g/:token/o/:orderToken` (`GuestOrderStatus.vue`) per prototype `GStatus`,
 `screenshots/14-shot.png` (paid) and `15-shot.png` (cancelled). Brand-header subtitle
 **"Vaša objednávka"**. Column max-width **520 px**, padding 16/28, gap 14.
@@ -498,6 +508,10 @@ with the UC-GX-011 updates only.
 ---
 
 ## UC-GX-007 g-status — edit mode (Guest)
+
+> ⚠ **Amended by module 20 (§UC-GP-005/007, shipped GP-T2/T4):** edit mode gains the delivery card,
+> the write-once „E-mail *“ input (D3) and the parcels-gone banner; every non-cancel save carries
+> `use_parcel_delivery`. The cancel payload is still exactly `{ items: [] }`.
 
 **Goal:** the in-place edit flow per prototype `GStatus` editing branch. Brand-header
 subtitle switches to **"Úprava objednávky"**; column widens to the grid layout

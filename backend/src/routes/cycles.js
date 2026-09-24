@@ -171,6 +171,9 @@ function derivedHandedOver(subOrders) {
 function partyStage(party, cycleId) {
   if (party.handed_over_at) return 'handed';
   if (party.has_own_order) return orderStage(party);
+  // GP-T6: a Packeta guest party is ONE sub-order — the shared guest stage rule, the
+  // one `PATCH /guest-orders/:id/handed-over` gates on (never the host's union).
+  if (party.kind === 'guest') return guestOrderStage(party);
   const stats = packingItemStats({ orderId: null, friendId: party.id, cycleId });
   const total = Number(stats?.total || 0);
   const packedCount = Number(stats?.packed_count || 0);
@@ -809,6 +812,20 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
   const liveSubOrders = (hostFriendId) =>
     (subOrdersByHost.get(hostFriendId) || []).filter((sub) => guestOrderStatus(sub) !== 'cancelled');
 
+  // ⚠ GP-T6 (20 §UC-GP-010 / D6): A PACKETA GUEST IS ITS OWN PARTY, not a bag inside
+  // its host's. Which sub-orders those are is asked of `helpers/delivery.js` — the one
+  // home of the classification — and asked AFTER the status filter above (a cancelled
+  // row keeps its address, UC-GP-006, and must be neither nested nor a party). The
+  // classifier checks the guest's OWN address first, so no host delivery is needed to
+  // tell the two apart; everything that is not `packeta` stays nested, exactly as
+  // before this row. `hostBagSubOrders()` is therefore what every HOST-side read below
+  // uses: the nested `guest_orders[]`, the synthetic host's existence, its kg and its
+  // derived hand-over — the same set `packingItemStats()` gates on and
+  // `inheritingGuests()` stamps.
+  const isPacketaSubOrder = (sub) => deliveryOf(sub).type === 'packeta';
+  const hostBagSubOrders = (hostFriendId) =>
+    liveSubOrders(hostFriendId).filter((sub) => !isPacketaSubOrder(sub));
+
   const distribution = friendsWithOrders.map(friend => {
     const items = db.prepare(`
       SELECT oi.id, oi.packed, p.name as product_name, p.purpose, p.roast_type, p.variant_label, oi.variant, oi.quantity, oi.price
@@ -825,7 +842,17 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
         p.name
     `).all(friend.order_id);
 
-    return { ...friend, has_own_order: true, items, guest_orders: liveSubOrders(friend.id) };
+    // `kind` / `key` (GP-T6, additive): `friends.id` and `guest_orders.id` are
+    // INDEPENDENT sequences, so a board keyed on a bare id would let friend 7 and
+    // Packeta guest 7 share a row key — the GSO-T7 `own:`/`guest:` collision lesson.
+    return {
+      kind: 'friend',
+      key: `friend:${friend.id}`,
+      ...friend,
+      has_own_order: true,
+      items,
+      guest_orders: hostBagSubOrders(friend.id),
+    };
   });
 
   // §Edge Cases, "host has no own order at lock time": the query above starts
@@ -845,8 +872,11 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
   const listedFriends = new Set(distribution.map((party) => party.id));
   for (const hostFriendId of subOrdersByHost.keys()) {
     if (listedFriends.has(hostFriendId)) continue;
-    const subOrders = liveSubOrders(hostFriendId);
-    // Only cancelled bags left ⇒ nothing to hand over, so not a pickup party.
+    const subOrders = hostBagSubOrders(hostFriendId);
+    // Only cancelled bags left ⇒ nothing to hand over, so not a pickup party. ⚠ And
+    // (GP-T6, 20 §UC-GP-010 item 2) only PACKETA bags left ⇒ nothing to COLLECT either:
+    // those guests are their own parties below, so a host with no own order and no
+    // via_host colleague is absent.
     if (subOrders.length === 0) continue;
 
     // ⚠ `phone` rides along with the balance rather than in a second query: this
@@ -859,6 +889,8 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
     `).get(hostFriendId);
 
     distribution.push({
+      kind: 'friend',
+      key: `friend:${hostFriendId}`,
       id: hostFriendId,
       name: subOrders[0].host_name,
       phone: balance ? balance.phone : null,
@@ -892,6 +924,63 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
   }
 
   distribution.sort((a, b) => a.name.localeCompare(b.name));
+
+  // ── GP-T6 (20 §UC-GP-010 item 1): the Packeta guest parties ─────────────────
+  //
+  // ⚠ BUILT FROM NAMED KEYS — the use case's literal list — and never spread from the
+  // sub-order row: that row carries `order_token`, the guest's only credential, which
+  // this party has no use for (CLAUDE.md: published to host/admin surfaces via the
+  // shared field list, never more widely than needed). The nested via_host rows keep
+  // the shared `GUEST_ORDER_FIELDS` shape exactly as before.
+  //
+  // `id: null` — the party is not a friend; `guest_order_id` is its identity and
+  // `key` is what the board keys its rows by. `packed` is DERIVED (every item
+  // checked, and at least one — `guest_orders` has no whole-order flag and none is
+  // added), through the SAME stage rule the hand-over routes use, so the 409
+  // `not_packed` of `PATCH /guest-orders/:id/handed-over` and this flag cannot
+  // disagree. `balance: null` — guests have no ledger (Decision 1). `status` is
+  // `'submitted'` because only live rows reach here.
+  //
+  // Sort (item 3): after every friend/host party, by name among themselves — the
+  // print sheet and the board's Packeta group read them together.
+  const guestParties = [];
+  for (const subOrders of subOrdersByHost.values()) {
+    for (const sub of subOrders) {
+      if (guestOrderStatus(sub) === 'cancelled' || !isPacketaSubOrder(sub)) continue;
+      const items = Array.isArray(sub.items) ? sub.items : [];
+      guestParties.push({
+        kind: 'guest',
+        key: `guest:${sub.id}`,
+        id: null,
+        guest_order_id: sub.id,
+        name: sub.guest_name,
+        host_friend_id: sub.host_friend_id,
+        host_name: sub.host_name,
+        phone: sub.guest_phone,
+        email: sub.guest_email,
+        order_id: null,
+        has_own_order: false,
+        status: 'submitted',
+        paid: sub.paid,
+        total: sub.total,
+        delivery_fee: sub.delivery_fee,
+        packeta_address: sub.packeta_address,
+        pickup_location_id: null,
+        pickup_location_note: null,
+        pickup_location_name: null,
+        packed: guestOrderStage({ items }) === 'packed' ? 1 : 0,
+        packed_at: null,
+        // ⚠ A real column on THIS party (unlike the synthetic host's derived one): the
+        // guest's own `guest_orders.handed_over_at`, written by the per-bag route.
+        handed_over_at: sub.handed_over_at,
+        balance: null,
+        items,
+        guest_orders: [],
+      });
+    }
+  }
+  guestParties.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+  distribution.push(...guestParties);
 
   // ── DP-T2 (§UC-DP-003): delivery, stage, weight, and the cycle's plan ───────
   //
@@ -941,7 +1030,10 @@ router.get('/:id/distribution', requireAdmin, (req, res) => {
     // (cycle progress, analytics, rewards) still must not fold guests in.
     party.kg = itemsGrams(party.items) + guestGrams;
 
-    if (!party.has_own_order) {
+    // ⚠ The synthetic host's hand-over is DERIVED from its bags; a Packeta guest
+    // party's is its own column, already on the row — deriving it from its (empty)
+    // `guest_orders[]` would erase it.
+    if (!party.has_own_order && party.kind !== 'guest') {
       party.handed_over_at = derivedHandedOver(party.guest_orders);
     }
     party.stage = partyStage(party, cycle.id);

@@ -191,6 +191,11 @@ cycle lock, delivered checklist survives it").
 
 ## UC-KG-003 Sub-order card — fold, badges, items, cancelled (Friend/host)
 
+> ⚠ **Amended by module 20 (`20-guest-packeta.md` §UC-GP-008, shipped GP-T4):** a Packeta sub-order
+> carries a red „Packeta“ badge OUTSIDE `sub-order-badges`, its point, and „Tento kolega dostane balík
+> Packetou — nemusíte nič odovzdávať.“; the foot total is fee-inclusive with a breakdown; `totals`
+> stays product-only. Recorded at the module-20 closeout (GP-T6).
+
 **Goal:** each guest sub-order renders as a `.suborder` card (3px ink border, radius
 12, `3px 3px 0` shadow, padding `12px 14px`; `.cancelled` adds dashed border, no
 shadow, opacity .6 — all from `friends-theme.css`).
@@ -265,6 +270,11 @@ shadow, opacity .6 — all from `friends-theme.css`).
 ---
 
 ## UC-KG-004 "Odovzdané" — the host's hand-over checkbox (Friend/host)
+
+> ⚠ **Amended by module 20 (§UC-GP-008, shipped GP-T4):** the checkbox is ABSENT on a Packeta
+> row (nothing to hand over — the admin posts that parcel; D7: the endpoint is unchanged), and
+> `pendingDelivery` excludes Packeta rows. `guest-delivered-{id}` therefore means „live via_host
+> rows only“ (UC-KG-007 stays valid). Recorded at the module-20 closeout (GP-T6).
 
 **Goal:** the big green checkbox in each live row's foot, the ONLY writer of
 `delivered` in the system.

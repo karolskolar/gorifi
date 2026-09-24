@@ -132,8 +132,9 @@ append the full write-up to the matching learnings file and add at most one line
   (PO 2026-09-19: the API still completes a cycle with un-handed bags — an escape hatch, pinned by e2e).
 - ONE HOME each — never re-inline: `helpers/stock.js` (stock UNION own+guest), `helpers/pricing.js` (variant→price;
   unknown variant is DROPPED, never fallback-priced; `unit` is priceable but zero-gram), `helpers/packing.js`
-  (packed gate), `helpers/guest-aggregation.js` (guest UNION for aggregates), `rewards.js` (reward volume),
-  `helpers/pickup.js` (which row stores a party's pickup — and `pickupLocationInUse()`, the same
+  (packed gate — its guest half counts `packeta_address IS NULL` sub-orders only, GP-T6), `helpers/guest-aggregation.js` (guest UNION for aggregates), `rewards.js` (reward volume),
+  `helpers/pickup.js` (which row stores a party's pickup, + the guest Packeta clearance `applyGuestDelivery`
+  (GP-T5) — and `pickupLocationInUse()`, the same
   two-store rule asked as "is this point referenced?"; `DELETE /api/pickup-locations/:id` soft-deletes
   off THAT answer and never counts `orders` alone — FUP-T23; plus `activeLocation()`, the SEPARATE
   question "is this point choosable?" (`active = 1`) — the two are NEVER merged: one is broad and fails
@@ -239,7 +240,10 @@ append the full write-up to the matching learnings file and add at most one line
 - Guest edit PUT delivery block (GP-T2, learnings 12 §9–11): only beside a NON-EMPTY `items` and AFTER the paid 409; flag absent/`null` ⇒ both columns untouched; `guest_email`'s only edit write is the Packeta switch's `… WHERE guest_email IS NULL` (write-once, D3) — a body e-mail beside a stored one is ignored, never validated.
 - Pickup: `orders` row if one exists (any status), else `guest_order_links`; no cycle-open gate; exactly one of
   `pickup_location_id`/`pickup_location_note`; switching Packeta → pickup zeroes `delivery_fee` (ledger-neutral).
-- Guest Packeta → „cez {host}" = admin `PATCH /guest-orders/:id/delivery` (exact `{method:'via_host'}`) via `helpers/pickup.js applyGuestDelivery` — two literal columns, NEVER `delivery_fee_paid` (two writers only), no cycle/paid gate; `/unpaid` refund = items + (paid && packeta_address ? snapshot : 0) — a switch SETTLES a paid fee (pending PO) — with `paid = 1` in the SQL too, counted fee published as `refund_fee` (GP-T5).
+- Guest Packeta → „cez {host}" = admin `PATCH /guest-orders/:id/delivery` (exact `{method:'via_host'}`) via `helpers/pickup.js applyGuestDelivery` — two literal columns, NEVER `delivery_fee_paid` (two writers only), no cycle/paid gate; `/unpaid` refund = items + (paid && packeta_address ? snapshot : 0) — a switch SETTLES a paid fee (pending PO) — with `paid = 1` in the SQL too, counted fee published as `refund_fee` (GP-T5). It 409s `host_handed_over` / `host_packed` (+ an unticked guest item) instead of rejoining a closed host bag — never auto-unpacks (GP-T6 review, pending PO).
+- A LIVE Packeta guest is its OWN `/distribution` party (`kind:'guest'`, `key` `guest:<id>`, `id:null`, derived `packed`) —
+  never nested, never in the host's pack gate, auto-unpack (`hostBag`) or hand-over inheritance; `inheritingGuests()`
+  must SELECT `packeta_address` or the classifier reads every guest `via_host` (it did until GP-T6; learnings 12 §38).
 - Guest tables live in `schema.js` CREATEs; new columns on tables already in prod need CREATE **and** ALTER.
 - SQLite: `WHERE col = ""` is an identifier and throws — use `''`. Single-row picks on second-resolution
   `created_at` need `, id DESC`. `orders` has no `UNIQUE(friend_id, cycle_id)` — get-or-create relies on `instances: 1`.

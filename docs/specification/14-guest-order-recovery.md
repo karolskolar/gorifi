@@ -732,6 +732,10 @@ rate-limit env vars raised and output piped to a file, never `| tail`.
 
 ## UC-GR-011 Guest order-confirmation e-mail on submit (Guest)
 
+> ⚠ **Amended by module 20 (`20-guest-packeta.md` §UC-GP-004, shipped GP-T1):** two additive kv rows —
+> `Doručenie Packetou: X.XX €` (fee > 0) and `Výdajné miesto: …` (address set); `Spolu`/`Suma` quote
+> `payment.amount`. A via_host mail is byte-identical to before. D10/D11 unchanged.
+
 *(Added by the same-session PO follow-up, after UC-GR-010 was drafted — hence the
 number; UC-GR-010 item 10 carries its e2e obligations.)*
 

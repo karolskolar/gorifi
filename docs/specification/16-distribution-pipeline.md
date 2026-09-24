@@ -218,7 +218,8 @@ the three `pickup_location_*`, `delivery_fee`, `packeta_address`, `balance`, `it
 **Additions per GUEST sub-order row (inside `guest_orders[]`):** `handed_over_at`,
 `stage` (`'handed'` if its own `handed_over_at`; else `'packed'` if it has ≥1 item and all
 its `guest_order_items.packed = 1`; else `'to_pack'`), `delivery` (`deliveryOf(guest,
-{ host: party.delivery })` — `via_host` today, `packeta` after module 20), `kg`.
+{ host: party.delivery })` — ~~`via_host` today, `packeta` after module 20~~ always `via_host`:
+since GP-T6 a Packeta sub-order is never nested — it is its own `kind:'guest'` party, 20 §UC-GP-010), `kg`.
 
 **Additions at the top level:**
 
@@ -299,7 +300,11 @@ absent-field-toggles convenience: hand-over fires notifications, so the intent m
      mis-click is fully undone. ⚠ A module-20 **Packeta guest is NOT inherited** either way:
      the predicate additionally requires the guest's own `packeta_address` to be empty
      (`COALESCE(packeta_address,'') = ''` once the column exists; until then the predicate is
-     a no-op by construction — implement it now so module 20 changes nothing here).
+     a no-op by construction — implement it now so module 20 changes nothing here). ⚠ **GP-T6
+     (2026-09-24): module 20 DID have to change it.** DP-T3 asked `helpers/delivery.js`
+     instead of writing the SQL (right), but `inheritingGuests()` never SELECTed the column,
+     so the classifier saw no address and every guest was inherited. Fixed by selecting
+     `gord.packeta_address` there; learnings 12 §38.
   3. The outbox enqueue / dequeue of UC-DP-008 for the order and each inherited guest.
   4. The cycle-stage hook of UC-DP-009 on the `true` path.
 - ⚠ **NO `transactions` row. No `total` / `paid` / `packed` / `delivered` / `delivery_fee`
@@ -416,8 +421,11 @@ admin's hands without the admin first taking the hand-over back (resolved confli
   ⇒ the same 409, and the item stays checked (the auto-unpack at order-items.js:40 is never
   reached). Checking is unaffected.
 - `PATCH /api/guest-order-items/:id/packed` **un**checking an item ⇒ 409 `handed_over` if the
-  guest sub-order's own `handed_over_at` is set OR the host's own order (`hostOwnOrder()`) is
-  handed over (guest-order-items.js:61-67 would otherwise un-pack the host).
+  guest sub-order's own `handed_over_at` is set OR ~~the host's own order (`hostOwnOrder()`) is
+  handed over~~ **— for a `via_host` parent only —** the host's own order (`hostOwnOrder()`) is
+  handed over (guest-order-items.js:61-67 would otherwise un-pack the host). ⚠ A module-20
+  PACKETA parent is not in the host's bag: only its own stamp locks it, and its uncheck never
+  un-packs the host (20 §UC-GP-010, GP-T6; learnings 12 §41 — pending PO).
 - The gate is a READ + 409 in each route before its transaction, AND repeated as a predicate
   inside it — never a change to `packOrder`/`unpackOrder` themselves (`helpers/packing.js`'s
   two ledger writes are out of scope). ⚠ Refusal tests read the row back.
@@ -590,7 +598,8 @@ prototype as drawn.
   „zásielky odovzdáte na pobočke / Z-BOXe“), each pickup location (title = name, sub =
   address or nothing), „Osobné odovzdanie“ (sub „dohodnete individuálne“). A party lands in
   the group of ITS `delivery.target_key`; nested `via_host` guests travel with their host; a
-  module-20 Packeta guest is its own row under Packeta with badge „hosť · {host}“. With filter
+  module-20 Packeta guest is its own row under Packeta with badge ~~„hosť · {host}“~~ „Hosť • cez
+  {host_name}“ + red „Packeta“ (shipped GP-T6, 20 §UC-GP-010's wording). With filter
   „Všetko“ every group renders even when empty („Nič v tejto skupine.“); with any other
   filter, empty groups are hidden.
 - **Podľa stavu:** exactly three groups „Na zabalenie“ / „Zabalené“ / „Odovzdané“; a party
@@ -627,7 +636,8 @@ checkboxes gating „Zabaliť“, guest folds, the pickup picker) survive inside
 
 - **Kto:** name; badge „+{n} hostia“ on a host with nested guests (plural per `lib/plural.js`
   `colleaguesLabel`-style rule: „+1 hosť“ / „+2 hostia“ / „+5 hostí“); badge „hosť“ on a nested
-  guest row; „hosť · {host}“ on a module-20 Packeta guest row; the existing „Bez vlastnej
+  guest row; ~~„hosť · {host}“~~ „Hosť • cez {host_name}“ (20 §UC-GP-010's wording, the later spec
+  — plus the red „Packeta“ badge) on a module-20 Packeta guest row; the existing „Bez vlastnej
   objednávky“ badge on a synthetic host.
 - **Doručenie / obsah:** `packeta` → „{address} · {phone}“ (phone in the mono class; both
   needed on the bag and on the label); `pickup` → „{items} pol. · {kg} kg“; `in_person` → the

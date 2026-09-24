@@ -172,14 +172,19 @@ export function partyDelivery(cycleId, friendId, locationsById) {
  *     written as SQL. ⚠ THIS IS THE MODULE-20 PACKETA EXCLUSION (§UC-DP-004): a
  *     guest with their own `packeta_address` is their OWN party and is never
  *     inherited in either direction. Expressing it as `COALESCE(packeta_address,'')
- *     = ''` would not even parse today (the column arrives with module 20) and
- *     would be a second home for the classification when it did. Asking the
- *     classifier is a no-op by construction now and correct the day GP-T6 lands,
- *     with nothing to change here.
+ *     = ''` would be a second home for the classification. ~~Asking the classifier
+ *     is a no-op by construction now and correct the day GP-T6 lands, with nothing
+ *     to change here.~~ **GP-T6 (20 §UC-GP-010) FOUND THAT FALSE**: the classifier
+ *     can only see what it is HANDED, and this SELECT did not hand it the column —
+ *     so every guest classified `via_host` and a Packeta guest WAS inherited (stamped
+ *     with the host's hand-over and enqueued an „odovzdané priateľovi" message) once
+ *     module 20 shipped the column. `gord.packeta_address` is selected below for
+ *     exactly that reason; pinned by `guest-packeta.spec.js` GP-T6 (per bag + bulk).
+ *     A seam "correct with nothing to change" still needs its INPUT to exist.
  */
 export function inheritingGuests(hostFriendId, cycleId, hostDelivery) {
   const rows = db.prepare(`
-    SELECT gord.id, gord.link_id, gord.status, gord.handed_over_at
+    SELECT gord.id, gord.link_id, gord.status, gord.handed_over_at, gord.packeta_address
       FROM guest_orders gord
       JOIN guest_order_links glink ON glink.id = gord.link_id
      WHERE glink.host_friend_id = ? AND glink.cycle_id = ?

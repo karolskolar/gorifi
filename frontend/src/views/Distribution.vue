@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dialog'
 import BalanceBadge from '@/components/BalanceBadge.vue'
 import PickupLocationPicker from '@/components/PickupLocationPicker.vue'
+import GuestDeliverySwitch from '@/components/GuestDeliverySwitch.vue'
 import { bagsLabel, packedAdjective, handedAdjective, guestsLabel, bagsMoveVerb } from '../lib/plural'
 import { planLineText, allPartiesHandedOver } from '../lib/distribution-plan'
 import { kgLabel } from '../lib/kg'
@@ -32,6 +33,47 @@ const packingOrderId = ref(null)
 const pendingItems = ref({})
 
 const cycleId = route.params.id
+
+// ── GP-T6 (20 §UC-GP-010): a party is a FRIEND or a PACKETA GUEST ─────────────
+//
+// A guest who chose Packeta is its own bag and its own party (`kind: 'guest'`,
+// `id: null`, `guest_order_id`), so `friend.id` no longer names every row. Two
+// identities, and each has one job:
+//
+//   • `partyKey()` — the server's `party.key` (`friend:<id>` / `guest:<id>`), the
+//     `v-for` key AND the key of every per-row map below (pending, row error,
+//     expansion override, refusal highlights). `friends.id` and `guest_orders.id` are
+//     INDEPENDENT sequences, so a bare id would let friend 7 and guest 7 share a
+//     pending flag — the GSO-T7 `own:`/`guest:` lesson, one level up.
+//   • `rowTid()` — the testid suffix. A friend row keeps its SHIPPED `<friend.id>`
+//     (`bag-row-12`, `handover-toggle-12`, … — pinned across the suite); a guest
+//     party reads `guest-<id>` (`bag-row-guest-5`, `handover-toggle-guest-5`). A
+//     Packeta guest is never ALSO nested under its host, so its row never coexists
+//     with the nested mirror of the same id.
+function isGuestParty(party) {
+  return party?.kind === 'guest'
+}
+
+function partyKey(party) {
+  if (party?.key) return String(party.key)
+  return isGuestParty(party) ? `guest:${party.guest_order_id}` : `friend:${party?.id}`
+}
+
+function rowTid(party) {
+  return isGuestParty(party) ? `guest-${party.guest_order_id}` : String(party.id)
+}
+
+// The whole-order `orders.packed` flag — a FRIEND's ledger moment. A guest party's
+// `packed` is DERIVED (all items ticked) and must not fold its checklist away: it has
+// no „Zabaliť" to press, so its checklist is the only way back, exactly like a
+// synthetic host's (whose `packed` is always 0).
+function isOrderPacked(party) {
+  return !isGuestParty(party) && !!party.packed
+}
+
+function firstName(name) {
+  return String(name || '').trim().split(/\s+/)[0] || ''
+}
 
 onMounted(async () => {
   await loadData()
@@ -106,8 +148,11 @@ async function loadPickupLocations() {
 // whole-order `packed` flag — but they ARE the party who collects, so the sheet has to
 // say where. Their pickup lives on the share link; the route is keyed on
 // (cycle, friend) and picks the store itself, so nothing here needs to know which.
-function canEditPickup() {
-  return true
+function canEditPickup(party) {
+  // ⚠ GP-T6: NOT on a Packeta guest party. The picker is keyed (cycle, friend) —
+  // „never an order id" — and a guest is not a pickup party of the host's link; its
+  // one correction is `GuestDeliverySwitch` (20 §UC-GP-009/010), mounted instead.
+  return !isGuestParty(party)
 }
 
 // ⚠ PATCH IN PLACE, **THEN RE-FETCH** (DP-T6, 16 §UC-DP-011). Two halves, and both
@@ -132,6 +177,25 @@ async function onPickupUpdated(friend, updated) {
   if (updated.cleared_parcel) {
     friend.packeta_address = null
     friend.delivery_fee = 0
+  }
+  await loadData()
+}
+
+// ⚠ GP-T6 (20 §UC-GP-010) — the admin switched a Packeta guest back to „cez {host}"
+// through `GuestDeliverySwitch` (the ONE control, shared with CycleDetail — its
+// confirm is never copied here). Same two halves as `onPickupUpdated()`: patch the
+// row in place from `updated` so it stops claiming a parcel the server just cleared,
+// THEN re-fetch — the guest REJOINS its host's bag, i.e. it leaves this group, stops
+// being a party and reappears nested under the host, and that regrouping (plus the
+// plan cards) is the server's answer, never re-derived here.
+async function onGuestDeliveryUpdated(party, data) {
+  const row = data?.guest_order
+  if (row) {
+    party.packeta_address = row.packeta_address
+    party.delivery_fee = row.delivery_fee
+  } else if (data?.cleared_parcel) {
+    party.packeta_address = null
+    party.delivery_fee = 0
   }
   await loadData()
 }
@@ -161,11 +225,11 @@ async function togglePacked(friend) {
   // ready to hand over is worse than no line at all. Cleared here and in
   // `toggleItem()` — the two doors that act on the advice — exactly where the
   // global `error` is cleared.
-  setRowError(String(friend.id), '')
+  setRowError(partyKey(friend), '')
   // ⚠ And so does the GROUP's refusal highlight (DP-T7): „Niektoré balíčky už nie
   // sú zabalené" points at THIS row, and packing it is the admin taking that
   // advice — same rule, one line up.
-  clearRefusal(friend.id)
+  clearRefusal(partyKey(friend))
   try {
     await api.togglePacked(friend.order_id)
     await loadData()
@@ -201,6 +265,28 @@ function setItemPending(key, value) {
 // called-off bag is neither handed over nor a blocker for the gate.
 function itemGroups(friend) {
   const groups = []
+  // GP-T6: a Packeta guest party's items ARE `guest_order_items` — toggled through the
+  // guest route, pending-keyed `guest:<id>` — so they form ONE guest group. `self`
+  // marks it as the row's own bag: no fold header (the row already names the guest)
+  // and never folded, because it is the only list on the row.
+  if (isGuestParty(friend)) {
+    if (friend.items && friend.items.length > 0) {
+      groups.push({
+        key: `guest-${friend.guest_order_id}`,
+        kind: 'guest',
+        self: true,
+        guest: {
+          id: friend.guest_order_id,
+          guest_name: friend.name,
+          handed_over_at: friend.handed_over_at,
+          total: friend.total,
+          paid: friend.paid,
+        },
+        items: friend.items,
+      })
+    }
+    return groups
+  }
   if (friend.items && friend.items.length > 0) {
     groups.push({ key: 'own', kind: 'own', guest: null, items: friend.items })
   }
@@ -246,7 +332,7 @@ function guestGroupPacked(group) {
 }
 
 function isGuestCollapsed(group) {
-  if (group.kind !== 'guest') return false
+  if (group.kind !== 'guest' || group.self) return false
   return !!guestCollapse.value[group.key]
 }
 
@@ -277,16 +363,25 @@ async function toggleItem(friend, group, item) {
   error.value = ''
   // Same reason as in `togglePacked()`: ticking the item that was holding the
   // gate closed is the admin acting on the row's refusal, so the refusal goes.
-  setRowError(String(friend.id), '')
-  clearRefusal(friend.id)
+  setRowError(partyKey(friend), '')
+  clearRefusal(partyKey(friend))
   try {
     const updated = group.kind === 'guest'
       ? await api.toggleGuestItemPacked(item.id)
       : await api.toggleItemPacked(item.id)
     item.packed = updated.packed ? 1 : 0
-    // Unchecking either kind of item un-packs the host's order server-side; both
-    // endpoints answer with the resulting flag.
-    friend.packed = updated.order_packed ? 1 : 0
+    if (isGuestParty(friend)) {
+      // ⚠ GP-T6: a PACKETA guest's tick is ITS OWN packing moment — the server no
+      // longer touches the host for it, and `order_packed` (the host's flag) is not
+      // this row's. Its `packed` / `stage` are derived SERVER-side (the same rule the
+      // hand-over 409 uses), and the plan card's packed count moves with it, so the
+      // board re-fetches — the `togglePacked()` rule, never a client re-derivation.
+      await loadData()
+    } else {
+      // Unchecking either kind of item un-packs the host's order server-side; both
+      // endpoints answer with the resulting flag.
+      friend.packed = updated.order_packed ? 1 : 0
+    }
   } catch (e) {
     error.value = e.message
     // Never leave the UI claiming a state that was not persisted.
@@ -597,14 +692,13 @@ function setGroupBy(key) {
 // the pickup picker) kept verbatim inside a click-to-expand body.
 //
 // ⚠ What is deliberately NOT here:
-//   • the module-20 PACKETA GUEST ROW. A guest carrying its OWN `packeta_address`
-//     becomes its own party under Packeta („Hosť • cez {host}") instead of nesting
-//     under its host. `helpers/delivery.js` already classifies it; nothing EMITS it
-//     as a standalone party yet, so today `friend.guest_orders[]` holds via_host
-//     guests only and the nested-row block below is the whole story. GP-T6 fills
-//     the slot; the seam is that a Packeta guest simply stops arriving in
-//     `guest_orders[]` and starts arriving as a party, which this row renders
-//     without a new branch (the nested block iterates what it is given).
+//   • ~~the module-20 PACKETA GUEST ROW … which this row renders without a new
+//     branch (the nested block iterates what it is given).~~ **FILLED BY GP-T6, and
+//     „without a new branch" did not survive contact**: the party has `id: null`,
+//     its items are GUEST items (another toggle route), it has no „Zabaliť", no
+//     balance, no pickup picker, and its hand-over is the per-GUEST route — see
+//     `isGuestParty()` and every call site of it. What DID hold: it stops arriving in
+//     `guest_orders[]`, so the nested read-only block needs no change.
 //   • the per-GROUP „Odovzdať zabalené (n)" CALL — DP-T7's.
 
 /**
@@ -616,7 +710,7 @@ function setGroupBy(key) {
  * party for whom „collapsed once done" is a fold rather than an unmount.
  */
 function hasRowBody(friend) {
-  return !friend.packed && totalItemCount(friend) > 0
+  return !isOrderPacked(friend) && totalItemCount(friend) > 0
 }
 
 // ⚠ A local OVERRIDE map over a DERIVED default, not a state map seeded on load.
@@ -628,7 +722,7 @@ function hasRowBody(friend) {
 const rowExpandOverride = ref({})
 
 function isRowExpanded(friend) {
-  const key = String(friend.id)
+  const key = partyKey(friend)
   if (Object.prototype.hasOwnProperty.call(rowExpandOverride.value, key)) {
     return !!rowExpandOverride.value[key]
   }
@@ -637,7 +731,7 @@ function isRowExpanded(friend) {
 
 function toggleRow(friend) {
   if (!hasRowBody(friend)) return
-  rowExpandOverride.value = { ...rowExpandOverride.value, [String(friend.id)]: !isRowExpanded(friend) }
+  rowExpandOverride.value = { ...rowExpandOverride.value, [partyKey(friend)]: !isRowExpanded(friend) }
 }
 
 // ⚠ PER-ROW, NEVER ONE GLOBAL FLAG. This is a money-adjacent admin screen worked
@@ -649,7 +743,7 @@ const pendingParties = ref({})
 const rowErrors = ref({})
 
 function isPartyPending(friend) {
-  return !!pendingParties.value[String(friend.id)]
+  return !!pendingParties.value[partyKey(friend)]
 }
 
 function setPartyPending(key, value) {
@@ -667,7 +761,7 @@ function setRowError(key, message) {
 }
 
 function rowError(friend) {
-  return rowErrors.value[String(friend.id)] || ''
+  return rowErrors.value[partyKey(friend)] || ''
 }
 
 function isHandedOver(friend) {
@@ -742,7 +836,7 @@ function liveGuestIds(friend) {
  */
 async function toggleHandover(friend, event) {
   const wanted = !!event?.target?.checked
-  const key = String(friend.id)
+  const key = partyKey(friend)
   if (isPartyPending(friend)) {
     snapBackHandover(friend, event)
     return
@@ -751,7 +845,14 @@ async function toggleHandover(friend, event) {
   setPartyPending(key, true)
   setRowError(key, '')
   try {
-    if (friend.order_id) {
+    if (isGuestParty(friend)) {
+      // ⚠ GP-T6: a PACKETA guest hands over ON ITS OWN — the per-guest route
+      // (§UC-DP-005 case a), both ways. It is never inherited from its host (the
+      // inheritance stamps via_host sub-orders only), so this is its only Krok 2.
+      const result = await api.setGuestOrderHandedOver(friend.guest_order_id, wanted)
+      friend.handed_over_at = result?.guest_order?.handed_over_at ?? null
+      friend.stage = result?.stage || friend.stage
+    } else if (friend.order_id) {
       const result = await api.setOrderHandedOver(friend.order_id, wanted)
       friend.handed_over_at = result?.order?.handed_over_at ?? null
       friend.stage = result?.order?.stage || friend.stage
@@ -811,24 +912,28 @@ async function toggleHandover(friend, event) {
  * Sending A's nested guest alongside A's order would buy nothing and could turn a
  * batch that must succeed into a 409 over a bag that travels inside another one.
  *
- * ⚠ Module-20 seam: when GP-T6 emits a Packeta guest as its OWN party, it arrives
- * here as a party with no `order_id` and its own sub-order in `guest_orders[]` —
- * i.e. the synthetic-host branch already sends it, with no new case.
+ * ⚠ ~~Module-20 seam: … it arrives here as a party with no `order_id` and its own
+ * sub-order in `guest_orders[]` — i.e. the synthetic-host branch already sends it,
+ * with no new case.~~ **GP-T6: FALSE as written** — 20 §UC-GP-010 gives the party
+ * `guest_orders: []` (its items are its own), so the synthetic branch would send an
+ * EMPTY list for it. It has its own case: its `guest_order_id`.
  */
 function groupBatch(group) {
   const orderIds = []
   const guestOrderIds = []
-  const partyIds = []
+  const partyKeys = []
   for (const party of group.parties) {
     // `stage === 'packed'` ONLY — the same rule `groupReadyCount()` counts by, so
     // the button's number and the batch can never disagree. A `handed` party is
     // done, not ready.
     if ((party.stage || 'to_pack') !== 'packed') continue
-    partyIds.push(party.id)
-    if (party.order_id) orderIds.push(party.order_id)
+    partyKeys.push(partyKey(party))
+    // GP-T6: a Packeta guest party IS one sub-order — its own id, never inherited.
+    if (isGuestParty(party)) guestOrderIds.push(party.guest_order_id)
+    else if (party.order_id) orderIds.push(party.order_id)
     else guestOrderIds.push(...liveGuestIds(party))
   }
-  return { orderIds, guestOrderIds, partyIds }
+  return { orderIds, guestOrderIds, partyKeys }
 }
 
 // ⚠ PER GROUP, NEVER ONE GLOBAL FLAG (DP-T5 named this as the trap). Two drops can
@@ -880,7 +985,7 @@ function setGroupError(key, message) {
 }
 
 function isRefused(friend) {
-  const id = String(friend.id)
+  const id = partyKey(friend)
   return Object.values(refusedParties.value).some((named) => named[id])
 }
 
@@ -905,8 +1010,8 @@ function clearGroupRefusal(key) {
  * ⚠ Deliberately NOT cleared in `loadData()`: that runs on the FAILURE path too
  * (right after the refusal is written) and would wipe the message in the same tick.
  */
-function clearRefusal(friendId) {
-  const id = String(friendId)
+function clearRefusal(partyKeyValue) {
+  const id = String(partyKeyValue)
   const next = {}
   let touched = false
   for (const [key, named] of Object.entries(refusedParties.value)) {
@@ -1002,9 +1107,9 @@ const handoverSubtitle = computed(() => {
 function patchHandedOver(snapshot, result) {
   const stamp = result?.handed_over_at
   if (!stamp) return
-  const ids = new Set(snapshot.partyIds)
+  const ids = new Set(snapshot.partyKeys)
   for (const party of distribution.value) {
-    if (!ids.has(party.id)) continue
+    if (!ids.has(partyKey(party))) continue
     if (!party.handed_over_at) {
       party.handed_over_at = stamp
       party.stage = 'handed'
@@ -1035,9 +1140,10 @@ function markRefusedParties(key, err) {
   let count = 0
   for (const party of distribution.value) {
     const hit = (party.order_id && orderIds.has(Number(party.order_id)))
+      || (isGuestParty(party) && guestIds.has(Number(party.guest_order_id)))
       || (party.guest_orders || []).some((guest) => guestIds.has(Number(guest.id)))
     if (!hit) continue
-    named[String(party.id)] = true
+    named[partyKey(party)] = true
     count += 1
   }
   if (count > 0) refusedParties.value = { ...refusedParties.value, [String(key)]: named }
@@ -1363,13 +1469,13 @@ async function confirmHandover() {
              group assertions locate it by role too. -->
         <Card
           v-for="friend in group.parties"
-          :key="friend.id"
-          :data-testid="`bag-row-${friend.id}`"
+          :key="partyKey(friend)"
+          :data-testid="`bag-row-${rowTid(friend)}`"
           :data-stage="friend.stage || 'to_pack'"
           :data-refused="isRefused(friend) ? 'true' : 'false'"
           :class="[
             'print:shadow-none print:border print:break-inside-avoid',
-            friend.packed || isHandedOver(friend) ? 'opacity-50' : '',
+            isOrderPacked(friend) || isHandedOver(friend) ? 'opacity-50' : '',
             // §UC-DP-012 step 4: the rows the SERVER named in its 409, so the
             // admin knows which bag to go back to. `print:ring-0` — a highlight is
             // a screen tool, the sheet is the bags.
@@ -1380,11 +1486,11 @@ async function confirmHandover() {
             <!-- ── the five columns ──────────────────────────────────────── -->
             <div class="flex flex-wrap items-start gap-x-4 gap-y-2">
               <!-- Kto -->
-              <div class="flex items-start gap-2 min-w-0 flex-1 basis-48" :data-testid="`bag-who-${friend.id}`">
+              <div class="flex items-start gap-2 min-w-0 flex-1 basis-48" :data-testid="`bag-who-${rowTid(friend)}`">
                 <button
                   v-if="hasRowBody(friend)"
                   type="button"
-                  :data-testid="`bag-row-toggle-${friend.id}`"
+                  :data-testid="`bag-row-toggle-${rowTid(friend)}`"
                   :aria-expanded="isRowExpanded(friend) ? 'true' : 'false'"
                   :title="isRowExpanded(friend) ? 'Skryť položky' : 'Zobraziť položky'"
                   @click="toggleRow(friend)"
@@ -1418,16 +1524,37 @@ async function confirmHandover() {
                     <!-- A host with no own order (§Edge Cases) is still the pickup
                          party, but has nothing of their own to pay for. -->
                     <Badge
-                      v-if="friend.has_own_order === false"
+                      v-if="friend.has_own_order === false && !isGuestParty(friend)"
                       variant="outline"
                       class="text-xs border-violet-400 text-violet-700 bg-violet-50"
                     >
                       Bez vlastnej objednávky
                     </Badge>
+                    <!-- GP-T6 (20 §UC-GP-010): the Packeta guest's own row — whose
+                         colleague it is (violet, the T6 vocabulary) and the red
+                         „Packeta" badge, on screen AND on the sheet (it is this row's
+                         only statement of how the bag leaves, so unlike a friend's
+                         print-only twin below it is never hidden). -->
+                    <template v-if="isGuestParty(friend)">
+                      <Badge
+                        variant="outline"
+                        class="text-xs border-violet-400 text-violet-700 bg-violet-50"
+                        :data-testid="`bag-guest-badge-${rowTid(friend)}`"
+                      >
+                        Hosť • cez {{ friend.host_name }}
+                      </Badge>
+                      <Badge
+                        variant="outline"
+                        class="text-xs border-red-400 text-red-600 bg-red-50 print:inline-flex"
+                        :data-testid="`bag-packeta-badge-${rowTid(friend)}`"
+                      >
+                        Packeta
+                      </Badge>
+                    </template>
                     <span
                       v-if="handedExceptCount(friend) > 0"
                       class="text-xs text-amber-700"
-                      :data-testid="`bag-handed-except-${friend.id}`"
+                      :data-testid="`bag-handed-except-${rowTid(friend)}`"
                     >
                       odovzdané okrem {{ handedExceptCount(friend) }}
                     </span>
@@ -1436,7 +1563,7 @@ async function confirmHandover() {
               </div>
 
               <!-- Doručenie / obsah -->
-              <div class="min-w-0 flex-1 basis-56" :data-testid="`bag-delivery-${friend.id}`">
+              <div class="min-w-0 flex-1 basis-56" :data-testid="`bag-delivery-${rowTid(friend)}`">
                 <div
                   class="text-sm text-muted-foreground"
                   :class="hasRowBody(friend) ? 'row-expand select-none' : ''"
@@ -1448,14 +1575,14 @@ async function confirmHandover() {
                   <template v-if="friend.delivery?.type === 'packeta'">
                     📦 {{ friend.delivery.target_detail }}
                     <template v-if="friend.delivery.phone">
-                      · <span class="font-mono" :data-testid="`bag-phone-${friend.id}`">{{ friend.delivery.phone }}</span>
+                      · <span class="font-mono" :data-testid="`bag-phone-${rowTid(friend)}`">{{ friend.delivery.phone }}</span>
                     </template>
                   </template>
                   <template v-else-if="friend.delivery?.type === 'in_person' && friend.delivery.target_detail">
                     {{ friend.delivery.target_detail }}
                   </template>
                   <template v-else>{{ contentLine(friend) }}</template>
-                  <span v-if="!friend.packed && totalItemCount(friend) > 0" class="text-xs">
+                  <span v-if="!isOrderPacked(friend) && totalItemCount(friend) > 0" class="text-xs">
                     · {{ checkedCount(friend) }}/{{ totalItemCount(friend) }} ✓
                   </span>
                 </div>
@@ -1482,6 +1609,19 @@ async function confirmHandover() {
                     :delivery-fee="friend.delivery_fee || 0"
                     @updated="onPickupUpdated(friend, $event)"
                   />
+                  <!-- GP-T6: the guest party's ONE correction — the shared component,
+                       keyed on the sub-order's own id (never the picker, never a copy
+                       of its confirm). Screen-only: the sheet states the bag, not the
+                       control. -->
+                  <GuestDeliverySwitch
+                    v-if="isGuestParty(friend)"
+                    class="print:hidden"
+                    testid-prefix="dist-guest-delivery"
+                    :guest-order-id="friend.guest_order_id"
+                    :host-name="firstName(friend.host_name)"
+                    :delivery-fee="friend.delivery_fee || 0"
+                    @updated="onGuestDeliveryUpdated(friend, $event)"
+                  />
                   <Badge
                     v-if="friend.pickup_location_name || friend.pickup_location_note"
                     variant="outline"
@@ -1494,7 +1634,7 @@ async function confirmHandover() {
                        red "Packeta", so both would be the same word twice — but the
                        printed sheet has no pill and still has to say it. -->
                   <Badge
-                    v-if="friend.packeta_address"
+                    v-if="friend.packeta_address && !isGuestParty(friend)"
                     variant="outline"
                     class="border-red-400 text-red-600 bg-red-50 hidden print:inline-flex"
                   >
@@ -1506,9 +1646,22 @@ async function confirmHandover() {
               <!-- Platba -->
               <div
                 class="flex items-center gap-2 flex-wrap shrink-0 text-sm text-muted-foreground"
-                :data-testid="`bag-pay-${friend.id}`"
+                :data-testid="`bag-pay-${rowTid(friend)}`"
               >
-                <BalanceBadge :balance="friend.balance || 0" />
+                <!-- A guest has NO ledger (Decision 1): no balance badge, and its
+                     amount is the one it was asked to pay — products + the Packeta fee
+                     (20 §UC-GP-004), with CycleDetail's breakdown wording. -->
+                <template v-if="isGuestParty(friend)">
+                  <Badge v-if="friend.paid" variant="default" class="bg-green-600">Zaplat.</Badge>
+                  <Badge v-else variant="destructive">Nezapl.</Badge>
+                  <span :data-testid="`bag-amount-${rowTid(friend)}`">{{ formatPrice((friend.total || 0) + (friend.delivery_fee || 0)) }}</span>
+                  <span
+                    v-if="(friend.delivery_fee || 0) > 0"
+                    class="text-xs"
+                    :data-testid="`bag-amount-breakdown-${rowTid(friend)}`"
+                  >({{ formatPrice(friend.total) }} + {{ formatPrice(friend.delivery_fee) }} doručenie)</span>
+                </template>
+                <BalanceBadge v-else :balance="friend.balance || 0" />
                 <!-- A red „Nezapl." on a synthetic host's 0 EUR non-order would be a
                      lie — the shipped rule, kept. -->
                 <template v-if="friend.has_own_order !== false">
@@ -1531,7 +1684,7 @@ async function confirmHandover() {
                   :disabled="packingOrderId === friend.order_id || isHandedOver(friend) || (!friend.packed && !allItemsChecked(friend))"
                   :title="isHandedOver(friend) ? 'Najprv zrušte odovzdanie' : ''"
                   size="sm"
-                  :data-testid="`packed-toggle-${friend.id}`"
+                  :data-testid="`packed-toggle-${rowTid(friend)}`"
                   :class="[
                     'print:hidden shrink-0',
                     friend.packed ? 'bg-green-600 hover:bg-green-700' : ''
@@ -1544,7 +1697,7 @@ async function confirmHandover() {
                     type="checkbox"
                     disabled
                     :checked="(friend.stage || 'to_pack') !== 'to_pack'"
-                    :data-testid="`packed-mirror-${friend.id}`"
+                    :data-testid="`packed-mirror-${rowTid(friend)}`"
                     title="Zabalené sa označuje na jednotlivých vreckách"
                     class="w-4 h-4 accent-green-600"
                   />
@@ -1565,7 +1718,7 @@ async function confirmHandover() {
                     :disabled="!canHandOver(friend)"
                     :title="handOverTitle(friend)"
                     :aria-busy="isPartyPending(friend)"
-                    :data-testid="`handover-toggle-${friend.id}`"
+                    :data-testid="`handover-toggle-${rowTid(friend)}`"
                     @change="toggleHandover(friend, $event)"
                     class="w-4 h-4 accent-green-600"
                   />
@@ -1578,7 +1731,7 @@ async function confirmHandover() {
             <div
               v-if="rowError(friend)"
               class="mt-2 text-sm text-destructive print:hidden"
-              :data-testid="`bag-row-error-${friend.id}`"
+              :data-testid="`bag-row-error-${rowTid(friend)}`"
             >
               {{ rowError(friend) }}
             </div>
@@ -1588,9 +1741,11 @@ async function confirmHandover() {
                  (§UC-DP-005), the board does not offer one. Their bag travels
                  inside the host's, so both steps are inherited state, never a
                  control: no button, and every checkbox `disabled`.
-                 ⚠ Module-20 seam: a guest with its OWN `packeta_address` will not
-                 arrive here at all — GP-T6 emits it as its own party, which the
-                 row block above renders with no new branch. -->
+                 ⚠ Module-20 seam, SHIPPED (GP-T6): a guest with its OWN
+                 `packeta_address` never arrives here — the server emits it as its
+                 own `kind: 'guest'` party, which the row block above renders
+                 through `isGuestParty()` (~~with no new branch~~ — it needed
+                 several; see the note at `isGuestParty`). -->
             <div v-if="guestCount(friend) > 0" class="mt-2 pl-2 border-l-2 border-violet-200 flex flex-col gap-1">
               <div
                 v-for="guest in friend.guest_orders"
@@ -1638,7 +1793,7 @@ async function confirmHandover() {
               </div>
             </div>
 
-            <div v-if="!friend.packed && totalItemCount(friend) === 0" class="text-muted-foreground italic mt-3">
+            <div v-if="!isOrderPacked(friend) && totalItemCount(friend) === 0" class="text-muted-foreground italic mt-3">
               Žiadne položky
             </div>
             <!-- ── the expandable body: the SHIPPED card body, verbatim ─────
@@ -1646,7 +1801,7 @@ async function confirmHandover() {
                  expanded (CLAUDE.md §Frontend, §UC-DP-011 print rules). -->
             <div
               v-if="hasRowBody(friend)"
-              :data-testid="`bag-row-body-${friend.id}`"
+              :data-testid="`bag-row-body-${rowTid(friend)}`"
               class="mt-3"
               :class="isRowExpanded(friend) ? '' : 'hidden print:block'"
             >
@@ -1659,7 +1814,7 @@ async function confirmHandover() {
                        target. `print:hidden` on the chevron only — the header itself
                        still labels the bags on a printed sheet. -->
                   <button
-                    v-if="group.kind === 'guest'"
+                    v-if="group.kind === 'guest' && !group.self"
                     type="button"
                     @click="toggleGuestCollapsed(group)"
                     :aria-expanded="isGuestCollapsed(group) ? 'false' : 'true'"
@@ -1793,7 +1948,7 @@ async function confirmHandover() {
             <!-- Print-only table fallback. The "Pre" column names whose bag each
                  line goes into — a printed sheet is what the bags are separated
                  against, so the per-guest grouping has to survive the print. -->
-            <template v-if="!friend.packed && totalItemCount(friend) > 0">
+            <template v-if="!isOrderPacked(friend) && totalItemCount(friend) > 0">
               <table class="hidden print:table w-full text-sm mt-2">
                 <thead>
                   <tr class="border-b">

@@ -625,3 +625,205 @@ Each backend mutation restarted the server on the same DB, each frontend one reb
   `updated`, re-fetch the plan. Do NOT copy the confirm.
 - WA-T5: a PATCH after a hand-over leaves a queued Packeta-segment message on its frozen
   `segment_key` (DP-T3's note) — same class, same owner.
+
+---
+
+## GP-T6 — the Packeta guest as its own distribution party, and the module-20 closeout (2026-09-24)
+
+**What shipped.** `GET /api/cycles/:id/distribution` EMITS a live Packeta sub-order as its own
+party (`kind:'guest'`, `key:'guest:<id>'`, `id:null`, `guest_order_id`, the rest of 20
+§UC-GP-010 item 1's literal list) and removes it from its host's `guest_orders[]`; every other
+party gains `kind:'friend'` + `key:'friend:<id>'`; guest parties sort AFTER the hosts; a host
+whose only live sub-orders are Packeta (no own order) is absent. `helpers/packing.js
+packingItemStats()` guest half `+= AND gord.packeta_address IS NULL`;
+`routes/guest-order-items.js` routes both the auto-unpack AND the host-handed-over refusal
+through one `hostBag` (null for a Packeta parent); `helpers/handover.js inheritingGuests()`
+SELECTs `gord.packeta_address`. `Distribution.vue` renders the party in DP-T6's reserved
+Packeta slot. `guest-packeta.spec.js` +17 tests (109 in the file).
+
+### 38. „Correct the day GP-T6 lands, with nothing to change" was FALSE — the classifier was never handed the column
+
+DP-T3 did the right thing structurally: `inheritingGuests()` asks `helpers/delivery.js` („is this
+guest `via_host`?") instead of re-stating the rule as SQL, and its comment promised the seam was
+„a no-op by construction now and correct the day GP-T6 lands, with nothing to change here". But its
+SELECT listed `id, link_id, status, handed_over_at` — no `packeta_address` — and `deliveryOf()`'s
+own-property reader sees an absent key as „no address" ⇒ `via_host`. So from GP-T1 (the column)
+until this row, **a host's hand-over stamped their Packeta colleague's bag and queued an
+„odovzdané priateľovi" message for it**, per bag and in bulk. Nothing was red because no fixture
+combined a Packeta guest with a host hand-over. Mutation M2 (drop the column from the SELECT) reds
+the per-bag, bulk and source-pin tests. **Lesson: a seam that „delegates to the one home" is only
+as correct as the row it hands that home — check the SELECT, not just the call.** The 16 spec's
+§UC-DP-004 sentence and the handover.js comment are struck + pointed here.
+
+### 39. Two predicates, one question — and why they are allowed to be written twice
+
+„Is this sub-order in the host's bag?" is asked in three places: the payload split and the item
+toggle ask `delivery.js` (`deliveryOf(sub).type === 'packeta'`, which checks the guest's OWN
+address first, so no host delivery is needed); `packingItemStats()` asks it in SQL
+(`packeta_address IS NULL`, the spec's literal predicate — a JS classifier cannot run inside the
+UNION). The two agree because every writer stores NULL or a trimmed non-blank string (submit /
+edit validate it; `applyGuestDelivery` NULLs it) — `delivery.js` trims, SQL does not. Recorded,
+not unified: a whitespace-only address would be `via_host` to the classifier and outside the gate
+to the SQL, and no writer can produce one.
+
+### 40. `packed` is the HOST's ledger moment — both directions pinned
+
+The gate change lets the host pack WITHOUT the Packeta bag (acceptance: H + A ticked ⇒ `PATCH
+/orders/H/packed` 200 while B is unticked; exactly ONE charge, `-24.90`, the host's own total).
+Its twin is the item toggle: unticking B's bag on a packed host leaves `orders.packed = 1` and the
+ledger watermark unmoved (M3 reds it). And the via_host half is pinned UNCHANGED beside it (A
+unticked still 409s the pack; unticking A on a packed host still un-packs with the `[-24.90,
++24.90]` pair). A guest party being packed writes NO ledger row (watermark pinned).
+
+### 41. Decision: the HOST's hand-over no longer locks a Packeta bag's checklist
+
+§UC-DP-007's third door refuses unchecking a guest item when „the guest sub-order's own
+`handed_over_at` is set OR the host's own order is handed over". The second clause exists because
+the uncheck „would otherwise un-pack the host" — for a Packeta item it no longer does, and the bag
+is not in the host's parcel. So both halves read `hostBag` (the host's order for a via_host item,
+`null` for a Packeta one) and the only lock on a Packeta checklist is the guest's OWN stamp
+(pinned: host handed ⇒ untick B → 200, host stamp and `packed` unchanged; B handed ⇒ untick → 409
+`handed_over`, items read back). M4 (keep the host clause) reds it. Not spelled out in 20
+§UC-GP-010, which names only the auto-unpack — orchestrator/reviewer: confirm.
+
+### 42. The payload shape is the spec's literal list — built from NAMED keys, never a spread
+
+`order_token` rides every nested sub-order (the shared `GUEST_ORDER_FIELDS`) but is not in
+§UC-GP-010's party list, so the party is built key by key (pinned: `order_token` absent; source
+pin: no `...sub` in the route). `packed` is derived through `guestOrderStage()` — the SAME rule
+the per-guest hand-over's 409 `not_packed` uses — and `partyStage()` gained a guest branch for the
+same reason (M9 without it: the synthetic-host union with `friendId: null` reads `to_pack`
+forever). The synthetic host's `derivedHandedOver()` must skip a guest party (M8: it would erase
+the party's own stamp from its empty `guest_orders[]`).
+
+### 43. The board: „renders without a new branch" did not survive contact
+
+DP-T6's seam note said the party would render with no new branch; DP-T7's said the group batch's
+synthetic-host path „already sends it". Both assumed the party carried its own sub-order in
+`guest_orders[]`; the spec gives it `guest_orders: []` and its items directly, so the synthetic
+path would have sent an EMPTY id list. What the row needed (`isGuestParty()` call sites):
+
+- **identity** — `partyKey()` (the server's `key`) keys the `v-for` AND every per-row map
+  (pending, row error, expansion override, refusal highlights); `rowTid()` keeps every FRIEND
+  testid byte-identical and gives the guest party `…-guest-<id>` (`bag-row-guest-5`,
+  `handover-toggle-guest-5`, `packed-mirror-guest-5` — the nested mirror of the same id never
+  coexists, the guest is never both);
+- **checklist** — the items are `guest_order_items`: ONE `kind:'guest'` group marked `self` (no fold
+  header, never folded), toggled through the guest route; after a tick the board RE-FETCHES (the
+  tick is this bag's packing moment and moves the plan's packed count — the `togglePacked()` rule),
+  and never applies the response's `order_packed` (the host's flag);
+- **no „Zabaliť", checklist kept when packed** — `isOrderPacked()` (a friend's `orders.packed`
+  only) replaces `friend.packed` in the fold/dim/print conditions, like the synthetic host whose
+  `packed` is always 0 (F7 reds);
+- **Krok 2** — the per-guest `PATCH /guest-orders/:id/handed-over` both ways (§UC-DP-005 case a);
+  the group batch sends its `guest_order_id` (F2/F3 red);
+- **Kto** — „Hosť • cez {host_name}" (violet) + red „Packeta" VISIBLE on screen and in print (the
+  friend row's print-only red twin is skipped for it, F5); **Doručenie** — 📦 point · mono phone
+  from `party.delivery`, `GuestDeliverySwitch` (`testid-prefix="dist-guest-delivery"`,
+  `host-name` = first name) instead of the picker (`canEditPickup()` refuses a guest party, F6);
+  **Platba** — no `BalanceBadge` (no ledger), paid badge, `total + fee` + CycleDetail's
+  „(X EUR + Y EUR doručenie)" breakdown;
+- **the switch** — patch the row from `updated`, then `loadData()`: the guest REJOINS the host
+  (nested again, the Packeta group gone) and only the server can say so (F4 reds).
+
+### 44. Mutations (fresh server boot per backend mutation, fresh build per frontend one; `-g GP-T6`)
+
+| # | Mutation | Red |
+|---|---|---|
+| M1 | gate predicate dropped | 8 |
+| M2 | `inheritingGuests` SELECT without `packeta_address` | 3 |
+| M3 | `hostBag = ownOrder` (auto-unpack a Packeta parent) | 1 |
+| M4 | host-handed refusal on a Packeta item kept | 2 (after the test gained the UN-check — the first cut only re-ticked, and a refusal guards only an un-check: 0 red) |
+| M5 | every live sub-order nested | 7 |
+| M6 | synthetic host from every live sub-order | 1 |
+| M7 | one name sort across kinds | 1 |
+| M8 | guest party's stamp derived from `guest_orders[]` | 4 |
+| M9 | no guest branch in `partyStage` | 3 |
+| M10 | `packed: 0` literal | 1 |
+| F1 | no re-fetch after a guest-party tick | 1 |
+| F2 | group batch through `liveGuestIds` | 1 |
+| F3 | Krok 2 through the synthetic/bulk path | 1 |
+| F4 | no re-fetch after the switch | 1 |
+| F5 | red badge print-only | 1 |
+| F6 | picker on the guest party | 1 |
+| F7 | fold on `friend.packed` | 1 |
+
+⚠ **Harness trap met (twice in one run):** a mutation loop that restores the FILE does not restore
+what was BUILT or STARTED from it. The backend mutations restarted the server with the mutant and
+the next (frontend) mutations ran against it — every F row showed M10's red too; and the last F
+mutant's build stayed in `backend/public` into the next batch. Restart AND rebuild after the loop,
+and subtract the previous mutant's reds (attribution per row above is after that correction).
+
+### 45. Module-20 closeout — what was checked, and where each item landed
+
+- CLAUDE.md: the cancel statement (`delivery_fee=0`, `packeta_address` KEPT — already there since
+  GP-T1), „point 160" on the guest bounds line (already there), `helpers/pickup.js`'s ONE-HOME entry
+  gains `applyGuestDelivery`, `helpers/packing.js`'s gains the Packeta half, + ONE new line (the
+  guest party + the `inheritingGuests` SELECT trap).
+- `02-guest-shared-orders.md` GSO-T7 bullet: „all own+guest items packed" → „via_host guests only".
+- `01-architecture.md` already read „every non-cancelled **via_host** guest sub-order" — no edit.
+- 16 spec: §UC-DP-003 (nested `delivery` is always `via_host` now), §UC-DP-004 (the no-op claim, §38),
+  §UC-DP-011 (the badge wording — 20's „Hosť • cez {host_name}" wins). 05 §UC-KG-003/004, 06
+  §UC-GX-003/004/006/007 and 14 §UC-GR-011 carry an „Amended by module 20" pointer each (20 §Supersedes
+  asked for them „when this lands"; none existed).
+- The module's learnings live HERE, not in `02-guest-shared-orders.md` as 20 §Deliverables says —
+  the per-module learnings-file convention (CLAUDE.md index) postdates that sentence.
+- ⚠ **Still OPEN for the PO** (unchanged by this row): all DRAFT strings (staging sign-off), the
+  refund-settles-on-switch decision (§31), the unshaped-e-mail question (§10), the pre-open steps
+  card (§18), and now §41.
+- ⚠ **Recorded, not fixed (pre-existing, DP-T6):** a SYNTHETIC host's Krok 2 stays disabled after
+  its last guest item is ticked until the next re-fetch — `toggleItem()` patches `item.packed` and
+  `friend.packed` only, and a synthetic host's `stage` is server-derived. The guest party does not
+  have this problem (it re-fetches, §43); the synthetic host was left as shipped (no row owns it).
+
+### Seams
+
+- WA-T3/T5 (module 21): a Packeta guest's hand-over enqueues `packeta` / segment `packeta` with
+  `recipient_kind: 'guest'` (pinned); it is never in a host's `host:<id>` segment any more.
+- A future admin „set a Packeta point for a guest" (D5, not v1) would make a nested guest LEAVE
+  its host on the next re-fetch — the board already handles that direction (the switch is the
+  mirror image).
+
+**Full suite at the module-20 milestone (2026-09-24):** 2600 listed / 95 files, all 95 ran; **2594
+passed, 5 skipped** (the 4 documented rate-limit/forced-change skips + GP-T5's admin-desktop-only
+one), **1 failed**: `google-auth.spec.js:1803` (a 10 s `expectLanding` timeout, a file this row does
+not touch). Green twice alone on fresh DBs (126/126 ×2), so it is a flake, not a regression. The run
+took 14.8 min against the ~12 min idle baseline, which is the loaded-box tell. Server log: 3
+`multipart-malformed` 400s (deliberate test input), no `disk image is malformed`.
+
+### 46. GP-T6 review: the REJOIN gate on the delivery switch (orchestrator decision 2026-09-24, pending PO)
+
+Review finding: GP-T6 made the switch mean „this bag moves INTO the host's", and GP-T5's PATCH
+had no idea what state the host's bag was in. Two ways it went wrong:
+- A Packeta guest with unticked items, switched after the host had PACKED, landed inside a closed
+  parcel. The board folds a packed friend's checklist away, so those items were unreachable.
+- The host's hand-over then inherited the guest unpacked.
+
+Decision: **refuse, never auto-unpack.** An unpack posts the host's ledger reversal, and a
+delivery correction must not move money. Inside the transaction, after `cancelled`, and only
+while the row still has `packeta_address`:
+- the host's own submitted order (`hostOwnOrder()`, the order the gate and auto-unpack use)
+  already has `handed_over_at` ⇒ 409 `host_handed_over`. This applies even when every guest
+  bag is ticked, because the bag was never handed to anyone.
+- that order has `packed = 1` and the guest has ANY unticked item ⇒ 409 `host_packed`.
+  All ticked ⇒ 200, and the guest nests as a ticked read-only mirror under a still-`packed`
+  host, which can still be handed over (pinned on the board).
+
+An already-via_host row stays the idempotent 200. A SYNTHETIC host (no own order) is not gated:
+it has no `packed` column, its stage and hand-over are derived from its bags, and its checklist
+never folds. So a rejoined unticked bag just re-opens its stage to `to_pack` (pinned). Both
+messages are vy-form PO drafts that tell the admin what to do. `GuestDeliverySwitch` already kept
+the confirm open with the server's sentence under it, and this is now pinned with a REAL 409 in
+both views (GP-T5 had pinned it with a mocked one). There is no ledger row and no
+`delivery_fee_paid` write (row read back, including the snapshot).
+
+Mutations (fresh boot each, `-g "GP-T6 review"`):
+- R1, `host_packed` gate dropped: 2 red
+- R2, `host_handed_over` gate dropped: 1 red
+- R3, `host_packed` whenever packed (the unticked predicate ignored): 2 red (the allowed API and board cases)
+- R4, the whole gate off: 3 red
+
+Also struck in this pass: 16 §UC-DP-007's host clause (now scoped to a via_host parent) and
+16's badge wording at the grouping rule. 20 §OPEN gains the §31, §41 and §46 decisions (all
+pending PO), and its superseded „Refund of the fee … Default = no" entry is struck with a
+pointer to D4.

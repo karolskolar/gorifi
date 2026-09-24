@@ -2748,3 +2748,692 @@ test.describe('GP-T5 · 20 §UC-GP-004/006 — the `delivery_fee_paid` snapshot 
     }
   })
 })
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GP-T6 (20 §UC-GP-010) — a Packeta guest is ITS OWN distribution party.
+//
+// The contract, in the order the use case states it: the payload EMITS the guest as a
+// `kind: 'guest'` party (and every other party gains `kind: 'friend'` + `key`), it is
+// REMOVED from its host's `guest_orders[]`, parties sort hosts-then-guests, and a host
+// whose only live sub-orders are Packeta is absent. Then the three places that used to
+// treat every guest as „inside the host's bag": the host's packing gate
+// (`packingItemStats`), the guest item toggle's auto-unpack of the host, and the host's
+// hand-over inheritance. ⚠ `packed` is the ledger moment for the HOST's own order, so
+// every gate test reads the host's `transactions` back — the predicate change must
+// neither let a host pack early nor unpack late — and every hand-over is watermarked.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const GP6_VIA = 'Zora Viahost'
+const GP6_PACK = 'Adam Packeta' // sorts BEFORE every host („Peto …") — the sort pin needs that
+
+async function gp6OwnOrder(host, cycleId, items) {
+  const put = await ctx.put(`/api/orders/cycle/${cycleId}/friend/${host.id}`, { headers: host.auth, data: { items } })
+  expect(put.status(), `own cart: ${await put.text()}`).toBe(200)
+  const res = await ctx.post(`/api/orders/cycle/${cycleId}/friend/${host.id}/submit`, { headers: host.auth, data: {} })
+  expect(res.status(), `own submit: ${await res.text()}`).toBe(200)
+  return (await res.json()).order
+}
+
+// H (own order, optional) + A (via_host, optional) + B (Packeta, TWO lines so „all items
+// packed" has a partial state), then the round is LOCKED — distribution happens after
+// the lock.
+async function gp6Scenario(label, { own = true, via = true, packeta = true, lock = true } = {}) {
+  const s = await scenario(label, { fee: 3.5 })
+  const product2 = await addProduct(s.cycle.id, { name: `GP6b ${label} ${uniq}`, purpose: 'Filter', price_250g: 10 })
+  const bItems = [...s.items, { product_id: product2.id, variant: '250g', quantity: 1 }]
+  const hostOrder = own ? await gp6OwnOrder(s.host, s.cycle.id, s.items) : null
+  const A = via ? (await submitOk(s.link.token, { ...identity({ guest_name: GP6_VIA }), items: s.items })).order : null
+  const B = packeta
+    ? (await submitOk(s.link.token, packetaBody(bItems, { guest_name: GP6_PACK }))).order
+    : null
+  if (lock) {
+    expect((await admin(`/api/cycles/${s.cycle.id}`, { method: 'patch', data: { status: 'locked' } })).status(), 'lock').toBe(200)
+  }
+  return { ...s, product2, hostOrder, A, B }
+}
+
+async function gp6Dist(cycleId) {
+  const res = await admin(`/api/cycles/${cycleId}/distribution`)
+  expect(res.status(), 'distribution').toBe(200)
+  return res.json()
+}
+const gp6Host = (body, hostId) => body.distribution.find((p) => p.kind === 'friend' && p.id === hostId)
+const gp6Guest = (body, guestId) => body.distribution.find((p) => p.kind === 'guest' && p.guest_order_id === guestId)
+const gp6ToggleGuestItem = (itemId) => admin(`/api/guest-order-items/${itemId}/packed`, { method: 'patch' })
+const gp6ToggleOwnItem = (itemId) => admin(`/api/order-items/${itemId}/packed`, { method: 'patch' })
+const gp6Pack = (orderId) => admin(`/api/orders/${orderId}/packed`, { method: 'patch' })
+const gp6OrderRow = (id) => withDb((db) => db.prepare('SELECT id, packed, handed_over_at FROM orders WHERE id = ?').get(Number(id)))
+const gp6Charges = (orderId) =>
+  withDb((db) => db.prepare('SELECT id, amount, note FROM transactions WHERE order_id = ? ORDER BY id').all(Number(orderId)))
+const gp6Notifications = (guestOrderId) =>
+  withDb((db) => db.prepare('SELECT template_key, segment_key, recipient_kind, recipient_id, status FROM notifications WHERE guest_order_id = ? ORDER BY id').all(Number(guestOrderId)))
+const gp6GuestItems = (guestOrderId) =>
+  withDb((db) => db.prepare('SELECT id, packed FROM guest_order_items WHERE guest_order_id = ? ORDER BY id').all(Number(guestOrderId)))
+
+// Tick every item the HOST's gate counts: own lines + every nested via_host guest's.
+async function gp6TickHostBag(party) {
+  for (const item of party.items) expect((await gp6ToggleOwnItem(item.id)).status()).toBe(200)
+  for (const sub of party.guest_orders) {
+    for (const item of sub.items) expect((await gp6ToggleGuestItem(item.id)).status()).toBe(200)
+  }
+}
+
+test.describe('GP-T6 · 20 §UC-GP-010 — the /distribution payload emits a Packeta guest as its own party', () => {
+  test('H + A (via_host) + B (Packeta): H nests exactly [A], B is a `kind:"guest"` party with the use case\'s literal shape, sorted AFTER the hosts, counted under Packeta', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('shape')
+    const body = await gp6Dist(s.cycle.id)
+
+    const H = gp6Host(body, s.host.id)
+    expect(H, 'the host is a party').toBeTruthy()
+    expect(H).toMatchObject({ kind: 'friend', key: `friend:${s.host.id}`, has_own_order: true, order_id: s.hostOrder.id })
+    expect(H.guest_orders.map((g) => g.id), 'H nests A ONLY — B left the host\'s bag').toEqual([s.A.id])
+
+    const B = gp6Guest(body, s.B.id)
+    expect(B, 'B is its own party').toBeTruthy()
+    // The use case's literal list, value by value (20 §UC-GP-010 item 1).
+    expect(B).toMatchObject({
+      kind: 'guest', key: `guest:${s.B.id}`, id: null, guest_order_id: s.B.id, name: GP6_PACK,
+      host_friend_id: s.host.id, host_name: s.host.name, phone: s.B.guest_phone, email: s.B.guest_email,
+      order_id: null, has_own_order: false, status: 'submitted', paid: 0, total: 34.9, delivery_fee: 3.5,
+      packeta_address: POINT, pickup_location_id: null, pickup_location_note: null, pickup_location_name: null,
+      packed: 0, packed_at: null, balance: null, guest_orders: [],
+    })
+    expect(B.items.map((i) => i.product_name).sort(), 'its own items, with the T7 label fields').toEqual(
+      [`GP1 shape ${uniq}`, `GP6b shape ${uniq}`].sort())
+    for (const item of B.items) {
+      for (const key of ['id', 'packed', 'product_name', 'purpose', 'roast_type', 'variant', 'quantity']) {
+        expect(Object.prototype.hasOwnProperty.call(item, key), `item key ${key}`).toBe(true)
+      }
+    }
+    // ⚠ `order_token` is the guest's credential and is NOT in the literal list: the
+    // party is built from named keys, never spread from the sub-order row.
+    expect(Object.keys(B)).not.toContain('order_token')
+    // module 16's derived fields ride on it like on every party
+    expect(B.delivery).toMatchObject({ type: 'packeta', target_key: 'packeta', target_detail: POINT, phone: s.B.guest_phone })
+    expect(B.stage).toBe('to_pack')
+    expect(B.handed_over_at).toBeNull()
+    expect(B.kg, 'two 250 g bags').toBe(500)
+
+    // Sort: every friend party before every guest party, even though „Adam" < „Peto".
+    const kinds = body.distribution.map((p) => p.kind)
+    expect(kinds.lastIndexOf('friend')).toBeLessThan(kinds.indexOf('guest'))
+    expect(new Set(body.distribution.map((p) => p.key)).size, 'keys are unique').toBe(body.distribution.length)
+
+    // Counted as its own bag, under Packeta; the host's kg no longer carries B's bags.
+    expect(body.totals.count).toBe(2)
+    const packetaPlan = body.plan.find((e) => e.target_key === 'packeta')
+    expect(packetaPlan).toMatchObject({ count: 1, packed_count: 0, handed_count: 0, kg: 500 })
+    expect(H.kg, 'own 250 g + A\'s 250 g').toBe(500)
+    expect(H.delivery.type).not.toBe('packeta')
+  })
+
+  test('a host whose ONLY live sub-orders are Packeta (and no own order) is ABSENT; with one via_host colleague beside it the synthetic host nests only that one', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const only = await gp6Scenario('onlyp', { own: false, via: false })
+    const body = await gp6Dist(only.cycle.id)
+    expect(body.distribution.filter((p) => p.kind === 'friend'), 'nothing to collect ⇒ no host party').toHaveLength(0)
+    expect(gp6Guest(body, only.B.id), 'the Packeta guest is still listed').toBeTruthy()
+    expect(body.totals.count).toBe(1)
+
+    const mixed = await gp6Scenario('synth', { own: false })
+    const mb = await gp6Dist(mixed.cycle.id)
+    const H = gp6Host(mb, mixed.host.id)
+    expect(H).toMatchObject({ kind: 'friend', key: `friend:${mixed.host.id}`, has_own_order: false, order_id: null })
+    expect(H.guest_orders.map((g) => g.id)).toEqual([mixed.A.id])
+    // The synthetic host's DERIVED stage is the gate's union — B's unticked bags are not in it.
+    for (const item of H.guest_orders[0].items) expect((await gp6ToggleGuestItem(item.id)).status()).toBe(200)
+    const after = await gp6Dist(mixed.cycle.id)
+    expect(gp6Host(after, mixed.host.id).stage, 'A ticked ⇒ packed, B untouched').toBe('packed')
+    expect(gp6Guest(after, mixed.B.id).stage).toBe('to_pack')
+  })
+
+  test('a CANCELLED Packeta sub-order is neither a party nor nested (status is filtered BEFORE classification)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('cxl', { lock: false })
+    expect((await admin(`/api/guest-orders/${s.B.id}/cancel`, { method: 'post' })).status()).toBe(200)
+    expect(guestRow(s.B.id).packeta_address, 'non-vacuity: the cancelled row keeps its address').toBe(POINT)
+    const body = await gp6Dist(s.cycle.id)
+    expect(gp6Guest(body, s.B.id)).toBeUndefined()
+    expect(gp6Host(body, s.host.id).guest_orders.map((g) => g.id)).toEqual([s.A.id])
+  })
+})
+
+test.describe('GP-T6 · 20 §UC-GP-010 — the packing gate and the auto-unpack skip a Packeta bag', () => {
+  test('acceptance: H own + A ticked ⇒ PATCH /orders/H/packed 200 while B is unticked; unticking B after H is packed leaves orders.packed = 1 and the ledger unmoved; B packs on its own', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('gate')
+    const body = await gp6Dist(s.cycle.id)
+    const H = gp6Host(body, s.host.id)
+    const B = gp6Guest(body, s.B.id)
+
+    // Tick ONE of B's two bags first, so the „untick after pack" step below has
+    // something to untick without B ever being complete.
+    expect((await gp6ToggleGuestItem(B.items[0].id)).status()).toBe(200)
+    await gp6TickHostBag(H)
+    const res = await gp6Pack(s.hostOrder.id)
+    expect(res.status(), `the host packs without B: ${await res.text()}`).toBe(200)
+    expect(gp6OrderRow(s.hostOrder.id).packed).toBe(1)
+    // The ledger moment is the HOST's own total — exactly one charge, B's money nowhere.
+    const charges = gp6Charges(s.hostOrder.id)
+    expect(charges).toHaveLength(1)
+    expect(charges[0].amount).toBe(-24.9)
+
+    const mark = ledgerWatermark()
+    const untick = await gp6ToggleGuestItem(B.items[0].id)
+    expect(untick.status(), 'unticking a Packeta bag is never refused').toBe(200)
+    expect((await untick.json()).packed).toBe(0)
+    expect(gp6OrderRow(s.hostOrder.id).packed, 'the host is NOT un-packed — the bag is not theirs').toBe(1)
+    expect(ledgerWatermark(), 'no reversal row').toBe(mark)
+    expect(gp6Charges(s.hostOrder.id)).toHaveLength(1)
+
+    // B's own packed state is DERIVED from its items (no whole-order flag exists).
+    for (const item of B.items) expect((await gp6ToggleGuestItem(item.id)).status()).toBe(200)
+    const packedB = gp6Guest(await gp6Dist(s.cycle.id), s.B.id)
+    expect(packedB).toMatchObject({ packed: 1, stage: 'packed' })
+    expect(ledgerWatermark(), 'a guest party being packed writes NO ledger row').toBe(mark)
+  })
+
+  test('the via_host half is UNCHANGED: A unticked blocks the pack (409, row + ledger read back), and unticking A on a packed host still un-packs it with the reversal', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('viagate')
+    const H = gp6Host(await gp6Dist(s.cycle.id), s.host.id)
+    for (const item of H.items) expect((await gp6ToggleOwnItem(item.id)).status()).toBe(200)
+    const mark = ledgerWatermark()
+    const refused = await gp6Pack(s.hostOrder.id)
+    expect(refused.status(), 'A still gates the host').toBe(409)
+    expect(gp6OrderRow(s.hostOrder.id).packed).toBe(0)
+    expect(ledgerWatermark()).toBe(mark)
+
+    for (const item of H.guest_orders[0].items) expect((await gp6ToggleGuestItem(item.id)).status()).toBe(200)
+    expect((await gp6Pack(s.hostOrder.id)).status()).toBe(200)
+    expect((await gp6ToggleGuestItem(H.guest_orders[0].items[0].id)).status()).toBe(200)
+    expect(gp6OrderRow(s.hostOrder.id).packed, 'A is inside the host\'s bag — unticking it un-packs the host').toBe(0)
+    expect(gp6Charges(s.hostOrder.id).map((t) => t.amount)).toEqual([-24.9, 24.9])
+  })
+
+  test('after the admin switches B to „cez {host}" it REJOINS the host: nested again, no guest party, and its bags gate the host\'s pack again', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('rejoin')
+    const before = await gp6Dist(s.cycle.id)
+    expect(gp6Guest(before, s.B.id), 'non-vacuity: B starts as its own party').toBeTruthy()
+    expect((await admin(`/api/guest-orders/${s.B.id}/delivery`, { method: 'patch', data: { method: 'via_host' } })).status()).toBe(200)
+
+    const after = await gp6Dist(s.cycle.id)
+    expect(gp6Guest(after, s.B.id)).toBeUndefined()
+    const H = gp6Host(after, s.host.id)
+    expect(H.guest_orders.map((g) => g.id).sort((a, b) => a - b)).toEqual([s.A.id, s.B.id].sort((a, b) => a - b))
+    expect(after.totals.count).toBe(1)
+    expect(after.plan.find((e) => e.target_key === 'packeta'), 'the Packeta plan card is gone').toBeUndefined()
+
+    for (const item of H.items) expect((await gp6ToggleOwnItem(item.id)).status()).toBe(200)
+    for (const item of H.guest_orders.find((g) => g.id === s.A.id).items) {
+      expect((await gp6ToggleGuestItem(item.id)).status()).toBe(200)
+    }
+    expect((await gp6Pack(s.hostOrder.id)).status(), 'B is inside the host\'s bag again').toBe(409)
+    expect(gp6OrderRow(s.hostOrder.id).packed).toBe(0)
+  })
+})
+
+test.describe('GP-T6 · 20 §UC-GP-010 — hand-over inheritance stamps via_host sub-orders ONLY', () => {
+  test('per bag: the host\'s hand-over stamps A and NOT B (no queued row for B); B hands over on its own with template `packeta`; the host\'s reversal leaves B alone; ledger unmoved', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('inherit')
+    const body = await gp6Dist(s.cycle.id)
+    await gp6TickHostBag(gp6Host(body, s.host.id))
+    expect((await gp6Pack(s.hostOrder.id)).status()).toBe(200)
+    const mark = ledgerWatermark()
+
+    const res = await admin(`/api/orders/${s.hostOrder.id}/handed-over`, { method: 'patch', data: { handed_over: true } })
+    expect(res.status()).toBe(200)
+    const out = await res.json()
+    expect(out.guests.map((g) => g.id), 'only A is inherited').toEqual([s.A.id])
+    expect(guestRow(s.A.id).handed_over_at, 'A travels in the host\'s bag').toBeTruthy()
+    expect(guestRow(s.B.id).handed_over_at, 'B is NOT in the host\'s bag').toBeNull()
+    expect(gp6Notifications(s.B.id), 'and B is not told it left').toEqual([])
+
+    // B — not packed yet ⇒ its own route refuses; packed ⇒ it hands over as a Packeta bag.
+    const early = await admin(`/api/guest-orders/${s.B.id}/handed-over`, { method: 'patch', data: { handed_over: true } })
+    expect(early.status()).toBe(409)
+    expect(guestRow(s.B.id).handed_over_at).toBeNull()
+    const bItems = gp6Guest(body, s.B.id).items
+    for (const item of bItems) {
+      const t = await gp6ToggleGuestItem(item.id)
+      expect(t.status(), 'the HOST\'s hand-over does not lock B\'s checklist').toBe(200)
+    }
+    // ⚠ The refusal only ever guards an UN-check — so un-check one of B's bags while
+    // the host's bag is out: B is not in it, so this is 200, not 409 `handed_over`,
+    // and neither the host's stamp nor its `packed` moves. Then tick it back.
+    const untick = await gp6ToggleGuestItem(bItems[0].id)
+    expect(untick.status(), 'the host\'s stamp does not lock a Packeta bag').toBe(200)
+    expect(gp6GuestItems(s.B.id).map((i) => i.packed)).toEqual([0, 1])
+    expect(gp6OrderRow(s.hostOrder.id)).toMatchObject({ packed: 1 })
+    expect(gp6OrderRow(s.hostOrder.id).handed_over_at).toBeTruthy()
+    expect((await gp6ToggleGuestItem(bItems[0].id)).status()).toBe(200)
+    const own = await admin(`/api/guest-orders/${s.B.id}/handed-over`, { method: 'patch', data: { handed_over: true } })
+    expect(own.status()).toBe(200)
+    expect(guestRow(s.B.id).handed_over_at).toBeTruthy()
+    expect(gp6Notifications(s.B.id)).toEqual([
+      { template_key: 'packeta', segment_key: 'packeta', recipient_kind: 'guest', recipient_id: s.B.id, status: 'queued' },
+    ])
+    const party = gp6Guest(await gp6Dist(s.cycle.id), s.B.id)
+    expect(party.stage).toBe('handed')
+
+    // The host's reversal clears A and leaves B's own hand-over standing.
+    const back = await admin(`/api/orders/${s.hostOrder.id}/handed-over`, { method: 'patch', data: { handed_over: false } })
+    expect(back.status()).toBe(200)
+    expect(guestRow(s.A.id).handed_over_at).toBeNull()
+    expect(guestRow(s.B.id).handed_over_at, 'B\'s own stamp survives the host\'s reversal').toBeTruthy()
+    expect(gp6Notifications(s.B.id)).toHaveLength(1)
+    expect(ledgerWatermark(), 'hand-over is ledger-neutral, in every direction').toBe(mark)
+  })
+
+  test('bulk: `order_ids:[H]` inherits A only; `guest_order_ids:[B]` — the Packeta group\'s batch — stamps B with its own template; ledger unmoved', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('bulk')
+    const body = await gp6Dist(s.cycle.id)
+    await gp6TickHostBag(gp6Host(body, s.host.id))
+    expect((await gp6Pack(s.hostOrder.id)).status()).toBe(200)
+    for (const item of gp6Guest(body, s.B.id).items) expect((await gp6ToggleGuestItem(item.id)).status()).toBe(200)
+    const mark = ledgerWatermark()
+
+    const hosts = await admin(`/api/cycles/${s.cycle.id}/distribution/hand-over`, {
+      method: 'post', data: { order_ids: [s.hostOrder.id], guest_order_ids: [] },
+    })
+    expect(hosts.status()).toBe(200)
+    expect((await hosts.json()).guests_inherited, 'A only').toBe(1)
+    expect(guestRow(s.B.id).handed_over_at).toBeNull()
+
+    const packeta = await admin(`/api/cycles/${s.cycle.id}/distribution/hand-over`, {
+      method: 'post', data: { order_ids: [], guest_order_ids: [s.B.id] },
+    })
+    expect(packeta.status()).toBe(200)
+    expect((await packeta.json()).handed_over).toBe(1)
+    expect(guestRow(s.B.id).handed_over_at).toBeTruthy()
+    expect(gp6Notifications(s.B.id).map((n) => n.template_key)).toEqual(['packeta'])
+    expect(ledgerWatermark()).toBe(mark)
+    const after = await gp6Dist(s.cycle.id)
+    expect(after.plan.find((e) => e.target_key === 'packeta')).toMatchObject({ count: 1, packed_count: 1, handed_count: 1 })
+  })
+
+  test('B\'s OWN hand-over still locks B\'s checklist (409 `handed_over`, the item read back)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('lockb', { own: false, via: false })
+    const B = gp6Guest(await gp6Dist(s.cycle.id), s.B.id)
+    for (const item of B.items) expect((await gp6ToggleGuestItem(item.id)).status()).toBe(200)
+    expect((await admin(`/api/guest-orders/${s.B.id}/handed-over`, { method: 'patch', data: { handed_over: true } })).status()).toBe(200)
+    const refused = await gp6ToggleGuestItem(B.items[0].id)
+    expect(refused.status()).toBe(409)
+    expect((await refused.json()).reason).toBe('handed_over')
+    expect(gp6GuestItems(s.B.id).map((i) => i.packed)).toEqual([1, 1])
+  })
+})
+
+test.describe('GP-T6 · source pins — the three predicates and their one homes', () => {
+  test('packing.js guest half filters `packeta_address IS NULL`; inheritingGuests hands delivery.js the address; the item toggle skips a Packeta parent; rewards never read the address', () => {
+    test.skip(!HAS_BACKEND_SRC, NEEDS_BACKEND_SRC)
+    const strip = (s) => stripComments(s)
+    const packing = strip(readBackend('helpers/packing.js'))
+    expect(packing, 'the one gate predicate (20 §UC-GP-010)').toMatch(/AND gord\.packeta_address IS NULL/)
+    const handover = strip(readBackend('helpers/handover.js'))
+    const inherit = handover.slice(handover.indexOf('export function inheritingGuests'))
+    expect(inherit, 'the classifier must SEE the address, or every guest reads via_host').toMatch(/SELECT[^;]*gord\.packeta_address/)
+    expect(inherit, 'and the rule is still asked of delivery.js, never re-stated as SQL').toMatch(/delivery\.type === 'via_host'/)
+    expect(inherit).not.toMatch(/packeta_address,\s*''\)/)
+    const items = strip(readBackend('routes/guest-order-items.js'))
+    expect(items).toMatch(/deliveryOf\(/)
+    expect(items, 'the auto-unpack reaches the host only through `hostBag`').toMatch(/unpackOrder\(hostBag\)/)
+    expect(items).not.toMatch(/unpackOrder\(ownOrder\)/)
+    // GSO-T9: a Packeta guest's kilos still credit the host — neither rewards home learns the column.
+    for (const rel of ['helpers/guest-aggregation.js', 'routes/rewards.js']) {
+      if (!existsSync(join(BACKEND_SRC, rel))) continue
+      expect(strip(readBackend(rel)), `${rel} is untouched by module 20`).not.toMatch(/packeta_address/)
+    }
+  })
+
+  test('the /distribution route builds the guest party from NAMED keys and classifies the split through delivery.js', () => {
+    test.skip(!HAS_BACKEND_SRC, NEEDS_BACKEND_SRC)
+    const cycles = stripComments(readBackend('routes/cycles.js'))
+    const route = cycles.slice(cycles.indexOf("router.get('/:id/distribution'"), cycles.indexOf("router.post('/:id/distribution/hand-over'"))
+    expect(route).toMatch(/kind: 'guest'/)
+    expect(route).toMatch(/kind: 'friend'/)
+    expect(route).toMatch(/`guest:\$\{/)
+    expect(route).toMatch(/`friend:\$\{/)
+    expect(route, 'never a spread of the sub-order row (order_token would ride along)').not.toMatch(/\.\.\.sub\b/)
+    expect(route).toMatch(/type === 'packeta'/)
+  })
+})
+
+// ── GP-T6 · the board row in DP-T6's reserved Packeta slot ──────────────────────
+// ⚠ Every fixture is built BEFORE the UI admin login, and the file adopts the
+// browser's token after it (learnings 12 §37: an API re-login after the UI login
+// rotates the ONE admin token out of the page).
+async function gp6Board(page, cycleId) {
+  await gp5AdminUI(page)
+  adminToken = await page.evaluate(() => localStorage.getItem('adminToken'))
+  await page.goto(`/admin/cycle/${cycleId}/distribution`)
+  await expect(page.getByTestId('board-title')).toBeVisible()
+}
+const isGuestHandover = (r) => r.method() === 'PATCH' && /\/api\/guest-orders\/\d+\/handed-over$/.test(new URL(r.url()).pathname)
+const isBulkHandover = (r) => r.method() === 'POST' && /\/api\/cycles\/\d+\/distribution\/hand-over$/.test(new URL(r.url()).pathname)
+
+test.describe('GP-T6 · 20 §UC-GP-010 — Distribution.vue renders the Packeta guest as its own row', () => {
+  test('the row sits under Packeta: „Hosť • cez {host}", red badge, 📦 point · phone, fee-inclusive amount, no picker and no „Zabaliť"; the host row no longer nests it', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('ui6')
+    await gp6Board(page, s.cycle.id)
+    const tid = `guest-${s.B.id}`
+
+    const group = page.getByTestId('dist-group-packeta')
+    const row = group.getByTestId(`bag-row-${tid}`)
+    await expect(row).toBeVisible()
+    await expect(row.getByRole('heading', { name: GP6_PACK })).toBeVisible()
+    await expect(row.getByTestId(`bag-guest-badge-${tid}`)).toHaveText(`Hosť • cez ${s.host.name}`)
+    await expect(row.getByTestId(`bag-packeta-badge-${tid}`)).toHaveText('Packeta')
+    await expect(row.getByTestId(`bag-packeta-badge-${tid}`)).toBeVisible()
+    await expect(row.getByTestId(`bag-delivery-${tid}`)).toContainText(`📦 ${POINT}`)
+    await expect(row.getByTestId(`bag-phone-${tid}`)).toHaveText(s.B.guest_phone)
+    await expect(row.getByTestId(`bag-phone-${tid}`)).toHaveClass(/font-mono/)
+    await expect(row.getByTestId(`bag-amount-${tid}`)).toHaveText('38.40 EUR')
+    await expect(row.getByTestId(`bag-amount-breakdown-${tid}`)).toHaveText('(34.90 EUR + 3.50 EUR doručenie)')
+    await expect(row.getByTestId(`bag-pay-${tid}`)).toContainText('Nezapl.')
+    // Absences, each behind a presence on the same row (non-vacuity above).
+    await expect(row.locator('[data-testid^="dist-pickup-"]'), 'no host-keyed picker').toHaveCount(0)
+    await expect(row.locator('[data-testid^="packed-toggle-"]'), 'no „Zabaliť"').toHaveCount(0)
+    await expect(row.getByTestId(`packed-mirror-${tid}`)).not.toBeChecked()
+    await expect(row.getByText('Bez vlastnej objednávky')).toHaveCount(0)
+    await expect(row.getByTestId(`dist-guest-delivery-switch-${s.B.id}`)).toHaveText(/^Zmeniť na odovzdanie cez Peto$/)
+
+    // The host row: nests A only, and does not count B.
+    const hostRow = page.getByTestId(`bag-row-${s.host.id}`)
+    await expect(hostRow.getByTestId(`guest-row-${s.A.id}`)).toBeVisible()
+    await expect(page.getByTestId(`guest-row-${s.B.id}`), 'B is not nested anywhere').toHaveCount(0)
+    await expect(hostRow).toContainText('+1 hosť')
+    await expect(page.getByTestId('plan-count-packeta')).toHaveText('1')
+    await expect(page.getByTestId('board-totals')).toContainText('2 balíčky')
+  })
+
+  test('B\'s checklist ticks through the GUEST route (host untouched), Krok 2 unlocks and hands over through PATCH /guest-orders/:id/handed-over', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('ui6k')
+    // Pack the host first (API, before the UI login) — its row must not move.
+    const H = gp6Host(await gp6Dist(s.cycle.id), s.host.id)
+    await gp6TickHostBag(H)
+    expect((await gp6Pack(s.hostOrder.id)).status()).toBe(200)
+    await gp6Board(page, s.cycle.id)
+    const tid = `guest-${s.B.id}`
+    const row = page.getByTestId(`bag-row-${tid}`)
+    const toggle = row.getByTestId(`handover-toggle-${tid}`)
+    await expect(toggle).toBeDisabled()
+    await expect(row.getByTestId(`bag-row-body-${tid}`), 'to_pack ⇒ expanded').toBeVisible()
+
+    const itemRows = row.locator('div.cursor-pointer')
+    await expect(itemRows).toHaveCount(2)
+    const guestItemCalls = []
+    page.on('request', (r) => {
+      if (r.method() === 'PATCH' && /\/api\/(guest-order-items|order-items)\/\d+\/packed$/.test(r.url())) guestItemCalls.push(new URL(r.url()).pathname)
+    })
+    await itemRows.nth(0).click()
+    await expect(itemRows.nth(0)).toHaveClass(/bg-green-50/)
+    await itemRows.nth(1).click()
+    await expect(toggle, 'all ticked ⇒ stage packed (server-derived, re-fetched)').toBeEnabled()
+    expect(guestItemCalls.every((p) => p.startsWith('/api/guest-order-items/')), 'only the guest route').toBe(true)
+    expect(guestItemCalls).toHaveLength(2)
+    await expect(row.getByTestId(`packed-mirror-${tid}`)).toBeChecked()
+    await expect(row.getByTestId(`bag-row-body-${tid}`), 'packed but checklist kept (no Zabaliť to undo it)').toHaveCount(1)
+    expect(gp6OrderRow(s.hostOrder.id).packed, 'the host stays packed').toBe(1)
+
+    const [req] = await Promise.all([page.waitForRequest(isGuestHandover), toggle.check()])
+    expect(new URL(req.url()).pathname).toBe(`/api/guest-orders/${s.B.id}/handed-over`)
+    expect(req.postDataJSON()).toEqual({ handed_over: true })
+    await expect(row).toHaveAttribute('data-stage', 'handed')
+    await expect(toggle).toBeChecked()
+    expect(guestRow(s.B.id).handed_over_at).toBeTruthy()
+    expect(gp6OrderRow(s.hostOrder.id).handed_over_at, 'the host is NOT handed over by it').toBeNull()
+  })
+
+  test('keyboard: B\'s two native item checkboxes each toggle on a focused Space (PATCH per item), and Krok 2 fires its PATCH on a focused Space once both are ticked', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('ui6kb')
+    await gp6Board(page, s.cycle.id)
+    const tid = `guest-${s.B.id}`
+    const row = page.getByTestId(`bag-row-${tid}`)
+    const checkboxes = row.locator('div.cursor-pointer input[type="checkbox"]')
+    await expect(checkboxes).toHaveCount(2)
+    const toggle = row.getByTestId(`handover-toggle-${tid}`)
+    await expect(toggle).toBeDisabled()
+
+    const itemPatches = []
+    page.on('request', (r) => { if (r.method() === 'PATCH' && /\/api\/guest-order-items\/\d+\/packed$/.test(r.url())) itemPatches.push(r) })
+
+    // Each checkbox is a real native `<input>` — focusing it directly (never the
+    // enclosing `div.cursor-pointer`, which carries no tabindex/keydown of its own)
+    // and pressing Space fires a real `click` that bubbles to the div's handler.
+    await checkboxes.nth(0).focus()
+    await expect(checkboxes.nth(0)).toBeFocused()
+    await page.keyboard.press('Space')
+    await expect.poll(() => itemPatches.length, 'Space on the focused checkbox reached toggleItem via bubbling').toBe(1)
+    await expect(checkboxes.nth(0)).toBeChecked()
+    await expect(toggle, 'one of two ticked ⇒ still disabled').toBeDisabled()
+
+    await checkboxes.nth(1).focus()
+    await page.keyboard.press('Space')
+    await expect.poll(() => itemPatches.length).toBe(2)
+    await expect(checkboxes.nth(1)).toBeChecked()
+    await expect(toggle, 'both ticked ⇒ stage packed (re-fetched), Krok 2 enabled').toBeEnabled()
+
+    await toggle.focus()
+    await expect(toggle).toBeFocused()
+    const [req] = await Promise.all([page.waitForRequest(isGuestHandover), page.keyboard.press('Space')])
+    expect(req.postDataJSON()).toEqual({ handed_over: true })
+    await expect(toggle).toBeChecked()
+    expect(guestRow(s.B.id).handed_over_at, 'the keyboard Space genuinely fired the hand-over').toBeTruthy()
+  })
+
+  test('the Packeta group\'s „Odovzdať zabalené (1)" sends exactly `guest_order_ids:[B]` and nothing for the host', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('ui6g')
+    const body = await gp6Dist(s.cycle.id)
+    await gp6TickHostBag(gp6Host(body, s.host.id))
+    expect((await gp6Pack(s.hostOrder.id)).status()).toBe(200)
+    for (const item of gp6Guest(body, s.B.id).items) expect((await gp6ToggleGuestItem(item.id)).status()).toBe(200)
+    await gp6Board(page, s.cycle.id)
+
+    const btn = page.getByTestId('handover-group-packeta')
+    await expect(btn).toHaveText('Odovzdať zabalené (1)')
+    await btn.click()
+    await expect(page.getByTestId('handover-subtitle')).toContainText('Packeta · 1 balíček')
+    const [req] = await Promise.all([page.waitForRequest(isBulkHandover), page.getByTestId('handover-confirm').click()])
+    expect(req.postDataJSON()).toEqual({ order_ids: [], guest_order_ids: [s.B.id] })
+    await expect(page.getByTestId('handover-toast')).toHaveText('1 balíček odovzdaný')
+    await expect(page.getByTestId(`bag-row-guest-${s.B.id}`)).toHaveAttribute('data-stage', 'handed')
+    expect(guestRow(s.B.id).handed_over_at).toBeTruthy()
+    expect(gp6OrderRow(s.hostOrder.id).handed_over_at).toBeNull()
+  })
+
+  test('GuestDeliverySwitch on the row: „Áno, zmeniť" PATCHes the delivery, then the board RE-FETCHES and B reappears nested under its host', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('ui6s')
+    await gp6Board(page, s.cycle.id)
+    const tid = `guest-${s.B.id}`
+    const row = page.getByTestId(`bag-row-${tid}`)
+    await row.getByTestId(`dist-guest-delivery-switch-${s.B.id}`).click()
+    await expect(row.getByTestId(`dist-guest-delivery-warning-${s.B.id}`)).toHaveText(
+      'Zruší sa doručenie Packetou a poplatok 3.50 EUR. Ak hosť poplatok už uhradil, treba mu ho vrátiť.')
+    const distGets = []
+    page.on('request', (r) => { if (r.method() === 'GET' && /\/api\/cycles\/\d+\/distribution$/.test(r.url())) distGets.push(r) })
+    const [req] = await Promise.all([
+      page.waitForRequest(isDeliveryPatch),
+      row.getByTestId(`dist-guest-delivery-yes-${s.B.id}`).click(),
+    ])
+    expect(req.postDataJSON()).toEqual({ method: 'via_host' })
+    await expect(page.getByTestId(`bag-row-${tid}`)).toHaveCount(0)
+    await expect(page.getByTestId(`bag-row-${s.host.id}`).getByTestId(`guest-row-${s.B.id}`)).toBeVisible()
+    await expect(page.getByTestId('dist-group-packeta')).toHaveCount(0)
+    expect(distGets.length, 'the regrouping came from a re-fetch').toBeGreaterThanOrEqual(1)
+    expect(guestRow(s.B.id)).toMatchObject({ packeta_address: null, delivery_fee: 0 })
+  })
+
+  test('print: the Packeta group lists B with its point, phone and the red badge; the switch and the checkboxes are hidden', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('ui6p')
+    await gp6Board(page, s.cycle.id)
+    const tid = `guest-${s.B.id}`
+    await page.emulateMedia({ media: 'print' })
+    const group = page.getByTestId('dist-group-packeta')
+    const row = group.getByTestId(`bag-row-${tid}`)
+    await expect(row).toBeVisible()
+    await expect(row.getByTestId(`bag-packeta-badge-${tid}`)).toBeVisible()
+    await expect(row.getByTestId(`bag-delivery-${tid}`)).toContainText(POINT)
+    await expect(row.getByTestId(`bag-phone-${tid}`)).toBeVisible()
+    await expect(row.getByTestId(`dist-guest-delivery-switch-${s.B.id}`)).toBeHidden()
+    await expect(row.getByTestId(`handover-toggle-${tid}`)).toBeHidden()
+    // the print-only item table names B's bag
+    await expect(row.locator('table').getByText(GP6_PACK).first()).toBeVisible()
+    await page.emulateMedia({ media: 'screen' })
+  })
+
+  test('source pins: `party.key` is the v-for key, ONE GuestDeliverySwitch mount, never a PickupLocationPicker for a guest party', () => {
+    test.skip(!HAS_SRC, NEEDS_SRC)
+    const view = assertReadable('views/Distribution.vue', ['GuestDeliverySwitch', 'isGuestParty', 'bag-row-'])
+    expect(view).toMatch(/v-for="friend in group\.parties"\s*:key="partyKey\(friend\)"/)
+    expect(view.match(/<GuestDeliverySwitch\b/g) || []).toHaveLength(1)
+    expect(view).toMatch(/import GuestDeliverySwitch from '@\/components\/GuestDeliverySwitch\.vue'/)
+    expect(view, 'the confirm is not re-inlined').not.toContain('treba mu ho vrátiť')
+    expect(view, 'the picker stays (cycle, friend)-keyed').toMatch(/return !isGuestParty\(party\)/)
+    expect(view).not.toMatch(/<PickupLocationPicker[^>]*guest_order_id/)
+  })
+})
+
+// ── GP-T6 review: the REJOIN gate on PATCH /guest-orders/:id/delivery ───────────
+// ORCHESTRATOR DECISION 2026-09-24 (pending PO): switching a Packeta guest to „cez
+// {host}" puts its bag INSIDE the host's. Refuse — never auto-unpack — when the host's
+// own bag has left (`host_handed_over`) or is packed while the guest still has an
+// unticked bag (`host_packed`). Every refusal reads the row back; ledger unmoved;
+// `delivery_fee_paid` untouched.
+const gp6Switch = (id) => admin(`/api/guest-orders/${id}/delivery`, { method: 'patch', data: { method: 'via_host' } })
+const GP6_ERR_PACKED = (host) => `Balíček ${host} je už zabalený — najprv dobaľte položky hosťa alebo rozbaľte balíček ${host}.`
+const GP6_ERR_HANDED = (host) => `Balíček ${host} je už odovzdaný, hosťa už nie je možné presunúť k nemu.`
+
+async function gp6PackHost(s) {
+  await gp6TickHostBag(gp6Host(await gp6Dist(s.cycle.id), s.host.id))
+  expect((await gp6Pack(s.hostOrder.id)).status()).toBe(200)
+}
+
+test.describe('GP-T6 review · the rejoin gate — a Packeta guest cannot land in a packed or handed-over host bag', () => {
+  test('host PACKED + an unticked guest bag ⇒ 409 `host_packed`, the row byte-identical, host still packed, ledger unmoved', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('rjpk')
+    expect((await setPaid(s.B.id, true)).status()).toBe(200)
+    await gp6PackHost(s)
+    // ONE of B's two bags ticked — „any unticked item" is the predicate, not „none ticked".
+    const B = gp6Guest(await gp6Dist(s.cycle.id), s.B.id)
+    expect((await gp6ToggleGuestItem(B.items[0].id)).status()).toBe(200)
+    const before = guestRow(s.B.id)
+    expect(before.delivery_fee_paid, 'non-vacuity: a snapshot exists to be left alone').toBe(3.5)
+    const mark = ledgerWatermark()
+
+    const res = await gp6Switch(s.B.id)
+    expect(res.status()).toBe(409)
+    expect(await res.json()).toEqual({ error: GP6_ERR_PACKED(s.host.name), reason: 'host_packed' })
+    expect(guestRow(s.B.id), 'nothing written').toEqual(before)
+    expect(gp6OrderRow(s.hostOrder.id).packed, 'never an auto-unpack').toBe(1)
+    expect(ledgerWatermark()).toBe(mark)
+    expect(gp6Guest(await gp6Dist(s.cycle.id), s.B.id), 'still its own party').toBeTruthy()
+  })
+
+  test('host PACKED + every guest bag ticked ⇒ 200; the guest nests under a still-packed host whose stage stays `packed`', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('rjok')
+    await gp6PackHost(s)
+    for (const item of gp6Guest(await gp6Dist(s.cycle.id), s.B.id).items) {
+      expect((await gp6ToggleGuestItem(item.id)).status()).toBe(200)
+    }
+    const mark = ledgerWatermark()
+    expect((await gp6Switch(s.B.id)).status()).toBe(200)
+    expect(guestRow(s.B.id)).toMatchObject({ packeta_address: null, delivery_fee: 0 })
+    const body = await gp6Dist(s.cycle.id)
+    const H = gp6Host(body, s.host.id)
+    expect(H.guest_orders.map((g) => g.id)).toContain(s.B.id)
+    expect(H).toMatchObject({ packed: 1, stage: 'packed' })
+    expect(gp6Guest(body, s.B.id)).toBeUndefined()
+    expect(ledgerWatermark()).toBe(mark)
+  })
+
+  test('host HANDED OVER ⇒ 409 `host_handed_over` even with every guest bag ticked; the row read back unchanged', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('rjho')
+    await gp6PackHost(s)
+    for (const item of gp6Guest(await gp6Dist(s.cycle.id), s.B.id).items) {
+      expect((await gp6ToggleGuestItem(item.id)).status()).toBe(200)
+    }
+    expect((await admin(`/api/orders/${s.hostOrder.id}/handed-over`, { method: 'patch', data: { handed_over: true } })).status()).toBe(200)
+    const before = guestRow(s.B.id)
+    const mark = ledgerWatermark()
+    const res = await gp6Switch(s.B.id)
+    expect(res.status()).toBe(409)
+    expect(await res.json()).toEqual({ error: GP6_ERR_HANDED(s.host.name), reason: 'host_handed_over' })
+    expect(guestRow(s.B.id)).toEqual(before)
+    expect(ledgerWatermark()).toBe(mark)
+  })
+
+  test('host UNPACKED ⇒ 200 with B unticked; a SYNTHETIC host (no own order) is never gated', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('rjun')
+    expect((await gp6Switch(s.B.id)).status()).toBe(200)
+    expect(guestRow(s.B.id).packeta_address).toBeNull()
+
+    const syn = await gp6Scenario('rjsy', { own: false })
+    // The synthetic host is DERIVED-packed (A ticked) — still no gate: its checklist never folds.
+    for (const item of gp6Host(await gp6Dist(syn.cycle.id), syn.host.id).guest_orders[0].items) {
+      expect((await gp6ToggleGuestItem(item.id)).status()).toBe(200)
+    }
+    expect(gp6Host(await gp6Dist(syn.cycle.id), syn.host.id).stage, 'non-vacuity').toBe('packed')
+    expect((await gp6Switch(syn.B.id)).status()).toBe(200)
+    const H = gp6Host(await gp6Dist(syn.cycle.id), syn.host.id)
+    expect(H.guest_orders.map((g) => g.id)).toContain(syn.B.id)
+    expect(H.stage, 'the rejoined unticked bag re-opens the derived stage').toBe('to_pack')
+  })
+
+  test('the ALLOWED rejoin on the board: the guest nests under the packed host as a ticked, read-only mirror; no party row, no dead checklist', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('rjbd')
+    await gp6PackHost(s)
+    for (const item of gp6Guest(await gp6Dist(s.cycle.id), s.B.id).items) {
+      expect((await gp6ToggleGuestItem(item.id)).status()).toBe(200)
+    }
+    await gp6Board(page, s.cycle.id)
+    const row = page.getByTestId(`bag-row-guest-${s.B.id}`)
+    await row.getByTestId(`dist-guest-delivery-switch-${s.B.id}`).click()
+    await row.getByTestId(`dist-guest-delivery-yes-${s.B.id}`).click()
+    await expect(page.getByTestId(`bag-row-guest-${s.B.id}`)).toHaveCount(0)
+    const hostRow = page.getByTestId(`bag-row-${s.host.id}`)
+    await expect(hostRow).toHaveAttribute('data-stage', 'packed')
+    await expect(hostRow.getByTestId(`guest-row-${s.B.id}`)).toBeVisible()
+    await expect(hostRow.getByTestId(`packed-mirror-guest-${s.B.id}`)).toBeChecked()
+    await expect(hostRow).toContainText('+2 hostia')
+    await expect(hostRow.getByTestId(`handover-toggle-${s.host.id}`), 'the host can still be handed over').toBeEnabled()
+  })
+
+  test('both UIs show the 409 by the row with the confirm kept open — the board AND CycleDetail', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await gp6Scenario('rjui')
+    await gp6PackHost(s)
+    await gp6Board(page, s.cycle.id)
+    const row = page.getByTestId(`bag-row-guest-${s.B.id}`)
+    await row.getByTestId(`dist-guest-delivery-switch-${s.B.id}`).click()
+    await row.getByTestId(`dist-guest-delivery-yes-${s.B.id}`).click()
+    await expect(row.getByTestId(`dist-guest-delivery-error-${s.B.id}`)).toHaveText(GP6_ERR_PACKED(s.host.name))
+    await expect(row.getByTestId(`dist-guest-delivery-confirm-${s.B.id}`)).toBeVisible()
+    await expect(row.getByTestId(`bag-packeta-badge-guest-${s.B.id}`)).toBeVisible()
+
+    await gp5OrdersTab(page, s.cycle.id)
+    const sub = page.getByTestId(`guest-suborder-${s.B.id}`)
+    await sub.getByTestId(`guest-delivery-switch-${s.B.id}`).click()
+    await sub.getByTestId(`guest-delivery-yes-${s.B.id}`).click()
+    await expect(sub.getByTestId(`guest-delivery-error-${s.B.id}`)).toHaveText(GP6_ERR_PACKED(s.host.name))
+    await expect(sub.getByTestId(`guest-delivery-confirm-${s.B.id}`)).toBeVisible()
+    await expect(sub.getByTestId(`guest-packeta-badge-${s.B.id}`)).toBeVisible()
+    expect(guestRow(s.B.id).packeta_address).toBe(POINT)
+  })
+})

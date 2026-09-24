@@ -68,6 +68,19 @@ export function hostOwnOrder(friendId, cycleId) {
 // Cancelled sub-orders keep their item rows (GSO-T4: the status predicate is the
 // mechanism, not deletion), so excluding them here is what stops a called-off bag
 // from blocking the pack forever.
+//
+// ⚠ AND A PACKETA SUB-ORDER IS NOT IN THE HOST'S BAG (GP-T6, 20 §UC-GP-010 / D6). A
+// guest with their own `packeta_address` is their OWN party on the distribution board —
+// the admin posts that parcel, the host never touches it — so it must not gate the
+// host's „Zabaliť". `gord.packeta_address IS NULL` is the module-20 marker (learnings 12
+// §1: the address, never the fee — a fee of 0 is legal); every writer stores either NULL
+// or a trimmed non-blank string (submit/edit validate it, `applyGuestDelivery` NULLs
+// it), which is what keeps this SQL agreeing with `helpers/delivery.js`'s trimmed test.
+// Status is filtered FIRST by the line above, so a cancelled Packeta row (which KEEPS
+// its address) is excluded by status, not by this. ⚠ `packed` is the LEDGER moment of
+// the host's own order: this line lets the host pack WITHOUT the Packeta bag, and its
+// twin in `routes/guest-order-items.js` stops unticking that bag from un-packing the
+// host — change one without the other and a host packs early or un-packs late.
 export function packingItemStats({ orderId = null, friendId, cycleId }) {
   return db.prepare(`
     SELECT COUNT(*) AS total,
@@ -83,6 +96,7 @@ export function packingItemStats({ orderId = null, friendId, cycleId }) {
       JOIN guest_order_links glink ON glink.id = gord.link_id
       WHERE glink.host_friend_id = ? AND glink.cycle_id = ?
         AND COALESCE(gord.status, 'submitted') <> 'cancelled'
+        AND gord.packeta_address IS NULL
     )
   `).get(orderId, friendId, cycleId);
 }
