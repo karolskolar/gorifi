@@ -578,7 +578,7 @@ test.describe('PI-T12 · 18 §UC-PI-019 item 13 — the landing computes the can
   test('LOCKED with no own order: the state modal and the locked banner', async ({ page }) => {
     await openLanding(page, 'locked-no-order')
     const modal = page.getByTestId('landing-state-modal')
-    await expect(modal.locator('.m-title')).toHaveText('Objednávky sú uzamknuté')
+    await expect(modal.locator('.m-title')).toHaveText('Objednávky sú uzavreté')
     await allCompute(modal.locator('.sub'), 'normal', 'the modal\'s `.sub` lines')
     await page.getByRole('button', { name: 'Prezrieť ponuku' }).click()
 

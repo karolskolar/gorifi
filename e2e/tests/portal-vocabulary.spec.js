@@ -376,7 +376,8 @@ test.describe('PI-T11 · 18 §UC-PI-017 — the source guard', () => {
     // length ratio alone — the `//`-before-`/* */` ordering trap once swallowed 16 709
     // characters of `FriendPortalSession.vue` and turned a source pin green.
     assertReadable('views/FriendPortalSession.vue', ['Zostatok a platby', 'portal-landing'])
-    assertReadable('views/FriendOrder.vue', ['Späť na ponuku', 'uzamknutia objednávok'])
+    // GP-T7 (PO decision (2) 2026-09-24): ~~'uzamknutia objednávok'~~ → the „uzavreté" register.
+    assertReadable('views/FriendOrder.vue', ['Späť na ponuku', 'uzavretia objednávok'])
     assertReadable('lib/cycle-stages.js', ['Objednávky otvorené', 'Zabalené, rozvážame'])
     assertReadable('components/GuestProductGrid.vue', ['emptyMessage', 'product-'])
     expect(files.length, 'and the sweep really visited every one of them').toBe(importClosure(VOCABULARY_ROOTS).length)
@@ -675,7 +676,7 @@ test.describe('PI-T11 · 18 §UC-PI-017 — the DOM sweep', () => {
       await dismissLandingState(page)
       const banner = page.getByTestId('landing-locked-banner')
       await expect(banner).toContainText(note)
-      await expectCleanCopy(page, 'the locked warn banner carrying a poisoned note', ['Objednávky sú uzamknuté.'])
+      await expectCleanCopy(page, 'the locked warn banner carrying a poisoned note', ['Objednávky sú uzavreté.'])
       await expectExcluded(page, 'the locked warn banner', note)
     })
 
@@ -767,7 +768,7 @@ test.describe('PI-T11 · 18 §UC-PI-017 — the DOM sweep', () => {
     await open(page)
     await expect(landingStateModal(page)).toBeVisible()
     await expectCleanCopy(page, 'the locked landing (no own order)',
-      ['Objednávky sú uzamknuté', 'Prezrieť ponuku'])
+      ['Objednávky sú uzavreté', 'Prezrieť ponuku'])
   })
 
   test('⚠ the poisoned round: every screen that renders a cycle NAME, and the exclusion that makes it pass',
@@ -818,7 +819,7 @@ test.describe('PI-T11 · 18 §UC-PI-017 — the DOM sweep', () => {
       await gotoCycle(page, cycle.id)
       await expect(page.locator('.appbar .titles .t')).toHaveText(cycle.name)
       await expectCleanCopy(page, 'the deep link carrying the poisoned name',
-        ['Objednávky sú uzamknuté.'])
+        ['Objednávky sú uzavreté.'])
     })
 
   test('the LOCKED landing with an own order, „Moje objednávky", „Zostatok a platby" and the explainer',
@@ -970,14 +971,14 @@ test.describe('PI-T11 · 18 §UC-PI-018 — the deep link', () => {
       await gotoCycle(page, cycle.id)
 
       // 04 §UC-FO-014 treats `completed` like `locked`.
-      await expect(page.locator('.appbar .chip[title="Objednávky sú uzamknuté"]')).toHaveCount(1)
+      await expect(page.locator('.appbar .chip[title="Objednávky sú uzavreté"]')).toHaveCount(1)
       await expect(page.locator('.appbar .chip.acc')).toHaveCount(0)
-      await expect(page.locator('.app .banner.warn')).toContainText('Objednávky sú uzamknuté.')
+      await expect(page.locator('.app .banner.warn')).toContainText('Objednávky sú uzavreté.')
       await expect(page.getByTestId('product-card').filter({ hasText: product.name })
         .getByRole('button', { name: 'viac' }).first()).toBeDisabled()
 
       await expectCleanCopy(page, 'the deep link, completed',
-        ['Objednávky sú uzamknuté.', 'Už nie je možné meniť objednávku.'])
+        ['Objednávky sú uzavreté.', 'Už nie je možné meniť objednávku.'])
     })
 
   test('the fatal-error state on an unknown id: the server\'s clean 404 and „Späť na ponuku" → `/`',
@@ -1272,5 +1273,50 @@ test.describe('GL-T7 · 19 §UC-GL-011 — the guest screens, rendered', () => {
     await expect(page.getByTestId('status-error')).toHaveText(GUEST_COPY.editClosed)
     await expectCleanCopy(page, 'the guest edit, refused',
       [GUEST_COPY.editClosed, 'Objednávky sú uzavreté, objednávku už nie je možné upraviť.'])
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GP-T7 · PO decision (2) 2026-09-24 — the lock copy is „uzavreté", never „uzamknuté"
+// ═════════════════════════════════════════════════════════════════════════════
+// On EVERY friend/guest surface (the SAME derived import closure as the ban above, so
+// a new component is guarded by being imported) and in the friend-facing server
+// messages. The ADMIN labels („Uzamknúť" / „Odomknúť" / „Uzamknutý", the board's
+// „· uzamknuté", `cycles.js`) are deliberately untouched and outside this set.
+test.describe('GP-T7 · the lock copy is „uzavreté" on every friend/guest surface', () => {
+  test.skip(!HAS_SRC, NEEDS_SRC)
+  const LOCK_OLD = /uzamk/iu
+
+  test('no file in the friend + guest import closure says „uzamkn…" (comments stripped), and the new copy is really there', () => {
+    const files = importClosure(VOCABULARY_ROOTS)
+    expect(files, 'non-vacuity: the four PO-named files are in the swept set').toEqual(expect.arrayContaining([
+      'views/FriendOrder.vue', 'views/FriendPortalSession.vue', 'components/LandingStateModal.vue', 'components/PortalExplainer.vue',
+    ]))
+    const offenders = []
+    for (const file of files) {
+      stripComments(readFileSync(join(FRONTEND_SRC, file), 'utf8')).split('\n').forEach((line, i) => {
+        if (LOCK_OLD.test(line)) offenders.push(`${file}:${i + 1} ${line.trim()}`)
+      })
+    }
+    expect(offenders, 'a friend/guest source file still says „uzamknuté"').toEqual([])
+    assertReadable('views/FriendOrder.vue', ['+++ OBJEDNÁVKY UZAVRETÉ +++ DRŽ JAZYK ZA ZUBAMI +++',
+      'title="Objednávky sú uzavreté"', '<b>Objednávky sú uzavreté.</b>', 'Stále ju môžete upraviť až do uzavretia.',
+      'Môžete ju upraviť až do uzavretia objednávok.'])
+    assertReadable('views/FriendPortalSession.vue', ['+++ OBJEDNÁVKY UZAVRETÉ +++ KÁVA JE NA CESTE +++',
+      "'Objednávky sú uzavreté' : 'Objednávky sú zatvorené'", 'title="Objednávky sú uzavreté"', '<b>Objednávky sú uzavreté.</b>'])
+    assertReadable('components/PortalExplainer.vue', ['odošlete, do uzavretia môžete meniť.'])
+  })
+
+  test('the friend-facing order routes\' two lock 403s say „Objednávky sú uzavreté"; the ADMIN strings stay', () => {
+    const backend = (rel) => stripComments(readFileSync(resolve(FRONTEND_SRC, '../../backend/src', rel), 'utf8'))
+    const orders = backend('routes/orders.js')
+    expect(orders.match(/res\.status\(403\)\.json\(\{ error: 'Objednávky sú uzavreté' \}\)/g), 'both friend 403s').toHaveLength(2)
+    expect(orders).not.toMatch(/uzamkn|Objednavky su/i)
+    // Admin copy is OUT of the decision — pinned so a broad sed cannot „fix" it.
+    expect(backend('routes/cycles.js')).toContain('Fázu možno meniť len pri uzamknutom cykle')
+    const admin = (rel) => readFileSync(join(FRONTEND_SRC, rel), 'utf8')
+    expect(admin('views/CycleDetail.vue')).toContain("'Odomknúť' : 'Uzamknúť'")
+    expect(admin('views/AdminDashboard.vue')).toContain("return 'Uzamknutý'")
+    expect(admin('views/Distribution.vue')).toContain("return '· uzamknuté'")
   })
 })

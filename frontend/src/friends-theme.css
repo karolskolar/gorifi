@@ -24,7 +24,7 @@
 :where(.app, .modal-layer) .mono{font-family:var(--font-mono);letter-spacing:0.01em}
 :where(.app, .modal-layer) .display{font-family:var(--font-display);text-transform:uppercase;font-weight:800}
 /* product description — Figtree, the body face (product decision 2026-08-18):
-   match the status banner's typeface ("Objednávky sú uzamknuté…") — bold for
+   match the status banner's typeface ("Objednávky sú uzavreté…") — bold for
    description1 (.pspec), regular for description2 (.pnotes). This RETIRES the
    2026-08-13 Noto Sans Condensed canon sync: these two rules plus the portal
    cycle card's date/plan rows were its only consumers, so `--font-cond`, the

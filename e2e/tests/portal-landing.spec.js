@@ -1586,7 +1586,7 @@ test.describe('PI-T5 · 18 §UC-PI-007 — the landing, locked state', () => {
 
     const modal = landingStateModal(page)
     await expect(modal).toBeVisible()
-    await expect(modal.locator('.m-title')).toHaveText('Objednávky sú uzamknuté')
+    await expect(modal.locator('.m-title')).toHaveText('Objednávky sú uzavreté')
     await expect(modal).toContainText('Táto objednávka je už uzavretá — káva je objednaná v pražiarni.')
     // The shared card and the shared dots — one component, three strings.
     await expect(modal.getByTestId('next-round-card')).toBeVisible()
@@ -1607,7 +1607,7 @@ test.describe('PI-T5 · 18 §UC-PI-007 — the landing, locked state', () => {
     await dismissLandingState(page)
 
     // …then the warn banner with this state's words, and no own-order surface at all.
-    await expect(page.getByTestId('landing-locked-banner')).toContainText('Objednávky sú uzamknuté.')
+    await expect(page.getByTestId('landing-locked-banner')).toContainText('Objednávky sú uzavreté.')
     await expect(page.getByTestId('own-order-card')).toHaveCount(0)
     await expect(page.getByTestId('where-is-my-coffee')).toHaveCount(0)
     await expect(page.getByTestId('landing-next-round')).toHaveCount(0)
@@ -1626,7 +1626,7 @@ test.describe('PI-T5 · 18 §UC-PI-007 — the landing, locked state', () => {
     const fx = await lockedRound('Subtitle')
     await openLocked(page, fx)
     await expect(page.locator('.appbar .titles .s')).toHaveText('Vaša objednávka')
-    await expect(page.locator('.appbar .chip.p2-lock')).toHaveAttribute('title', 'Objednávky sú uzamknuté')
+    await expect(page.locator('.appbar .chip.p2-lock')).toHaveAttribute('title', 'Objednávky sú uzavreté')
 
     await page.unroute('**/api/friends/cycles*')
     await stubCycles(page, [cycleRow({

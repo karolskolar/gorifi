@@ -185,7 +185,7 @@ router.put('/cycle/:cycleId/friend/:friendId', (req, res) => {
 
   // Check if cycle is locked
   if (cycle.status === 'locked' || cycle.status === 'completed') {
-    return res.status(403).json({ error: 'Objednavky su uzamknute' });
+    return res.status(403).json({ error: 'Objednávky sú uzavreté' });
   }
 
   // Validate friend exists and is active (global, no cycle check)
@@ -355,7 +355,7 @@ router.post('/cycle/:cycleId/friend/:friendId/submit', (req, res) => {
 
   // Check if cycle is locked
   if (cycle.status === 'locked' || cycle.status === 'completed') {
-    return res.status(403).json({ error: 'Objednavky su uzamknute' });
+    return res.status(403).json({ error: 'Objednávky sú uzavreté' });
   }
 
   // Validate friend exists and is active (global, no cycle check)

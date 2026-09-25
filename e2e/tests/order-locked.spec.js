@@ -331,7 +331,7 @@ test.describe('UC-FO-014 — the warn banner is the ONLY status banner', () => {
     await expect(page.locator('.app .banner'), 'locked: exactly one banner in the whole scope').toHaveCount(1)
     const only = page.locator('.app .banner')
     await expect(only).toHaveClass(/\bwarn\b/)
-    await expect(only).toContainText('Objednávky sú uzamknuté.')
+    await expect(only).toContainText('Objednávky sú uzavreté.')
   })
 })
 

@@ -3,8 +3,9 @@
 //
 // ⚠ IT IS PARAMETRISED BECAUSE IT HAS TWO CONSUMERS, AND THE SECOND ONE IS THE
 // REASON THIS IS A COMPONENT AT ALL. §UC-PI-007's „locked, NO own order" branch is
-// „the closed-state treatment with the modal title „Objednávky sú uzamknuté" and
-// intro „Táto objednávka je už uzavretá — káva je objednaná v pražiarni."" — i.e.
+// „the closed-state treatment with the modal title „Objednávky sú uzavreté" and
+// intro „Táto objednávka je už uzavretá — káva je objednaná v pražiarni."" (title
+// ~~„…uzamknuté"~~ → „…uzavreté", GP-T7, PO decision 2026-09-24) — i.e.
 // the same card, the same dots, the same footer, three different strings. PI-T5
 // passes those strings; a second modal component would be the defect.
 //
@@ -44,7 +45,7 @@ import { stageIndex } from '../lib/cycle-stages.js'
 import { nextTextIsNote } from '../lib/portal-state.js'
 
 const props = defineProps({
-  // „Objednávky sú zatvorené" (§UC-PI-006) / „Objednávky sú uzamknuté" (PI-T5).
+  // „Objednávky sú zatvorené" (§UC-PI-006) / „Objednávky sú uzavreté" (PI-T5).
   title: { type: String, required: true },
   // The `div.sub` under the title.
   intro: { type: String, required: true },

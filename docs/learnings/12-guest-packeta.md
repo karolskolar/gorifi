@@ -189,12 +189,15 @@ the spec names; unreachable over HTTP under sync handlers, so SOURCE-pinned — 
 predicate alone dropped, stays green behaviourally and reds only the pin). ⚠ A via_host row
 whose checkout e-mail was unshaped (`'x'` — the submit shape-checks only Packeta) satisfies
 the rule as-is: the spec says „`order.guest_email` non-null", and the freeze forbids
-rewriting it. ⚠ **OPEN — PO question (review, 2026-09-23; also 20 §OPEN):** because of D3's
+rewriting it. ~~⚠ **OPEN — PO question (review, 2026-09-23; also 20 §OPEN):** because of D3's
 write-once rule the guest can NEVER correct such an address, so Packeta may get an
 undeliverable e-mail. Options: (a) a stored e-mail counts only if it passes `EMAIL_SHAPE`
 (an unshaped one is then treated as missing and the body's replaces it — a narrow widening of
 the write-once exception, the predicate would become „NULL or unshaped"); (b) the admin can
-correct a guest e-mail (a new admin write). Shipped as-is (neither) pending the answer.
+correct a guest e-mail (a new admin write). Shipped as-is (neither) pending the answer.~~
+→ **RESOLVED, PO decision (1) 2026-09-24 = option (a)** — GP-T7 (§47 below): an UNSHAPED stored
+e-mail is ABSENT for Packeta, the body's valid one replaces it, the predicate is now a
+compare-and-swap `AND guest_email IS ?` on the value read; a VALID stored e-mail stays write-once.
 
 ### 11. The fee re-read and the one-statement write
 
@@ -296,7 +299,12 @@ build their rounds WITHOUT `parcel_enabled` (default 0), so the fourth badge nev
 there; the pre-open hero is a different card and gets no badge. No retarget needed. The new
 test pins count 4 on a parcel round with the shipped three unchanged in order.
 
-### 18. The `GuestSteps` seam — one computed, three mounts, and why the pre-open card stays off
+### 18. The `GuestSteps` seam — one computed, three mounts, and why the pre-open card ~~stays off~~
+
+> **RESOLVED, PO decision (3) 2026-09-24 — GP-T7 (§48 below):** the pre-open payload's `next`
+> gained `parcel_enabled`, and the pre-open card shows the clause ALWAYS, except the stale
+> `open_elsewhere` variant, which follows the open round's flag (§48, orchestrator 2026-09-25).
+> The paragraph below is the history.
 
 GL-T4's source pin „GuestOrder.vue does not pass packeta" was the sanctioned retarget: it now
 asserts all three mounts bind `:packeta="stepsPacketa"`. `stepsPacketa = !preopen &&
@@ -404,7 +412,8 @@ reds only the parcels-gone test, which is the one that proves the guard.
 
 ### 25. The write-once e-mail input asks the LOADED order, never the form
 
-`editNeedsEmail = editIsPacketa && !order.guest_email`. After a save that stored an e-mail the
+~~`editNeedsEmail = editIsPacketa && !order.guest_email`~~ → GP-T7: `editIsPacketa &&
+!EMAIL_SHAPE.test(order.guest_email || '')` (missing OR unshaped, §47). After a save that stored an e-mail the
 re-entered edit shows no input (pinned). The server ignores a body e-mail beside a stored one
 (GP-T2 §10), so this is UX — but the spec's „never shown when an e-mail exists" is the identity
 freeze on this surface. `guest-status-shell.spec.js:513`'s „`input` count 0 in edit mode" holds
@@ -769,8 +778,8 @@ and subtract the previous mutant's reds (attribution per row above is after that
 - The module's learnings live HERE, not in `02-guest-shared-orders.md` as 20 §Deliverables says —
   the per-module learnings-file convention (CLAUDE.md index) postdates that sentence.
 - ⚠ **Still OPEN for the PO** (unchanged by this row): all DRAFT strings (staging sign-off), the
-  refund-settles-on-switch decision (§31), the unshaped-e-mail question (§10), the pre-open steps
-  card (§18), and now §41.
+  refund-settles-on-switch decision (§31), ~~the unshaped-e-mail question (§10), the pre-open steps
+  card (§18)~~ (both RESOLVED by the PO 2026-09-24 — GP-T7 §47/§48), and now §41.
 - ⚠ **Recorded, not fixed (pre-existing, DP-T6):** a SYNTHETIC host's Krok 2 stays disabled after
   its last guest item is ticked until the next re-fetch — `toggleItem()` patches `item.packed` and
   `friend.packed` only, and a synthetic host's `stage` is server-derived. The guest party does not
@@ -827,3 +836,119 @@ Also struck in this pass: 16 §UC-DP-007's host clause (now scoped to a via_host
 16's badge wording at the grouping rule. 20 §OPEN gains the §31, §41 and §46 decisions (all
 pending PO), and its superseded „Refund of the fee … Default = no" entry is struck with a
 pointer to D4.
+
+---
+
+## GP-T7 — the PO decisions of 2026-09-24: unshaped e-mail, „uzavreté", the pre-open clause, „o n dní" (2026-09-25)
+
+**What shipped.** Four PO decisions, each superseding shipped text (struck + pointed in every copy:
+20 §UC-GP-005 rule 3 / resolved conflict 2 / §OPEN + a new „PO decisions 2026-09-24" section,
+19 §UC-GL-003 `next` shape / §UC-GL-006 item 2–3 / §UC-GL-007 / §OPEN, 17 §UC-CS-005 item 6 + the
+§→19 hand-off, 04 + 18 copy tables, learnings 10/11/12, PROGRESS CS-T2/GL-T5 lines, CLAUDE.md).
+Backend: `routes/guest.js` (`storedEmailUsable()`, the CAS write, `next.parcel_enabled`),
+`routes/orders.js` (two 403s). Frontend: `GuestOrderStatus.vue` (`editNeedsEmail`),
+`GuestOrder.vue` (`stepsPacketa`, `inWeeksText`), `lib/plural.js` (`weeksAwayLabel` DELETED),
+the lock copy in `FriendOrder.vue` / `FriendPortalSession.vue` / `PortalExplainer.vue` (+ comment
+quotes in `LandingStateModal.vue`, `friends-theme.css`, `cycle-stages.js`).
+
+### 47. (1) An unshaped stored e-mail is ABSENT for Packeta — and the write is a compare-and-swap
+
+`storedEmailUsable(v) = typeof v === 'string' && EMAIL_SHAPE.test(v)` (the mailer's regex, one
+home). The edit's gate is now `delivery.packeta && !storedEmailUsable(order.guest_email)`: NULL,
+`''` or an unshaped value ⇒ the body's e-mail is required through the unchanged
+`packetaEditEmail()` (same 400 strings) and stored. A VALID stored e-mail keeps GP-T2's write-once
+rule (body ignored, 200). ⚠ **The SQL guard had to change shape, not just widen.** SQLite has no
+regex, so „NULL or unshaped" cannot be said in the predicate without registering a function or
+approximating the regex with `LIKE` (which would drift from `EMAIL_SHAPE`). The predicate is now
+`WHERE id = ? AND guest_email IS ?`, bound to `emailToReplace = order.guest_email ?? null` — the
+exact value the handler READ and judged unusable (`IS` matches NULL too). It can only replace what
+was checked, never a value it did not see. What it does NOT do: protect a VALID e-mail against a
+broken handler gate (M1 below shows the handler test is what reds then). Same two-guard layout as
+GP-T2 §10: the handler check is behavioural, the predicate is source-pinned (M2b).
+Checkout submit: no change — a Packeta submit already refuses a missing/unshaped e-mail (400
+matrix rows „e-mail x", „e-mail no dot"), so an unshaped value only ever enters via_host.
+Client: `editNeedsEmail = editIsPacketa && !EMAIL_SHAPE.test(order.guest_email || '')` (the ONE
+client mirror). The input starts EMPTY (the unshaped stored value is not pre-filled).
+The admin delivery PATCH (GP-T5) only ever switches TO via_host, so it has no Packeta e-mail rule.
+
+### 48. (3) The pre-open clause is ALWAYS on — only `open_elsewhere` reads a flag
+
+**First cut (superseded):** `next.parcel_enabled` = the flag of the round `next` names (planned ⇒
+that row's), and the card hid the clause on an explicit 0. ~~Shipped literally.~~ **Orchestrator
+decision 2026-09-25 (on this row's PO flag):** `order_cycles.parcel_enabled` DEFAULTS to 0 and
+`POST /cycles` never writes it, so a PLANNED round's 0 is „never touched", not „off" — reading it
+hid the clause on almost every planned round, the opposite of the PO's intent (Packeta in ~all
+rounds, advertise it). Now:
+- `planned_date` / `planned_note` / `unknown` ⇒ the clause ALWAYS shows; the planned row's flag is
+  not read at all (`nextPlannedCycle()` no longer selects it) and `next.parcel_enabled` is `null`.
+- `open_elsewhere` ⇒ follows the OPEN round's real flag (that round is live, its flag is a
+  decision): `next.parcel_enabled: 0|1` (one extra `SELECT parcel_enabled` by id;
+  `currentOpenCycle()` in `standing-link.js` untouched). Client: `Number(flag) === 1`, so a missing
+  key there hides it (fail to the shipped state of that variant).
+The field is KEPT (additive) because the stale variant still needs it; for every other kind it is
+`null` by design. `GuestOrder.vue`: `stepsPacketa = preopen ? preopenParcelAllowed(preopen.next) :
+parcelEnabled`. Re-pointed pins: `NEXT_KEYS` + nine exact `next` objects in
+`guest-standing-link.spec.js` (planned ones `parcel_enabled: null`, open_elsewhere ones `0`), the
+GL-T5 steps-card test („Od Janka." → the clause), a UI matrix where a stray planned `0` is IGNORED.
+
+### 49. (4) One register: `inWeeksText` — and why `weeksAwayLabel` was DELETED, not delegated
+
+The row asked for delegation. `cycle-stages.js` imports `plural.js` (`daysLabel`/`weeksLabel`), so
+a `plural.js → cycle-stages.js` delegation is a circular import — it would work in ESM only by
+hoisting luck. „Or be replaced by it" is the clean half: the view calls `inWeeksText(opens_at)`
+directly and the function is gone (pinned: `plural.weeksAwayLabel === undefined`, the view has no
+`weeksAwayLabel`/„už tento týždeň"). Behaviour change: 1–6 days ⇒ „o 1 deň / o 3 dni / o 6 dní";
+TODAY ⇒ `null` (was „už tento týždeň"), past ⇒ `null` (was `''`). The template's
+`v-if="preopenNext.away"` already dropped the parenthesis on a falsy value, so the sentence stays
+„…približne {date}." — pinned with an explicit „no `()`" assertion. The 20-case node test is now
+20 cases of `inWeeksText` (5 raw non-dates + 15 day offsets against a fixed `today`).
+
+### 50. (2) „uzamknuté" → „uzavreté" — every string, and the one collision it creates
+
+Changed (old → new): `FriendOrder.vue` ticker „+++ OBJEDNÁVKY UZAMKNUTÉ +++ DRŽ JAZYK ZA ZUBAMI +++"
+→ „…UZAVRETÉ…", chip `title` „Objednávky sú uzamknuté" → „…uzavreté", warn banner „<b>Objednávky
+sú uzamknuté.</b> Už nie je možné…" → „…uzavreté.", ok banner „…až do uzamknutia." → „…až do
+uzavretia.", success-modal subtitle „…až do uzamknutia objednávok." → „…až do uzavretia
+objednávok."; `FriendPortalSession.vue` ticker „+++ OBJEDNÁVKY UZAMKNUTÉ +++ KÁVA JE NA CESTE +++"
+→ „…UZAVRETÉ…", appbar chip `title`, the `LandingStateModal` title „Objednávky sú uzamknuté" →
+„…uzavreté", `landing-locked-banner` „<b>Objednávky sú uzamknuté.</b>" → „…uzavreté.";
+`PortalExplainer.vue` „…do uzamknutia môžete meniť." → „…do uzavretia môžete meniť.";
+`routes/orders.js` both friend 403s `'Objednavky su uzamknute'` → `'Objednávky sú uzavreté'`
+(diacritics added — it is friend-facing copy). Admin copy unchanged and now PINNED as unchanged
+(`cycles.js` „…pri uzamknutom cykle", `CycleDetail` „Odomknúť/Uzamknúť", `AdminDashboard`
+„Uzamknutý", `Distribution` „· uzamknuté"). NOT changed: `PortalExplainer.vue`'s Pauza step „košík
+je zamknutý" — a different word („zamknutý", the cart during the pause, not the order lock) in PO
+copy that is reproduced, never improved; flagged for the PO instead.
+Guard: `portal-vocabulary.spec.js` GP-T7 — no `/uzamk/i` in the friend+guest IMPORT CLOSURE
+(comments stripped, the PI-T11 derivation, so a new component is guarded by being imported).
+⚠ **Collision created:** the LOCKED-landing, no-own-order `LandingStateModal` now stacks its title
+„Objednávky sú uzavreté" directly over its intro „Táto objednávka je už uzavretá — káva je
+objednaná v pražiarni." — two near-identical sentences. PO copy on both sides; not resolved at the
+call site. Pre-existing, NOT created here: the guest status page's read-only „Objednávky sú
+uzavreté, objednávku už nie je možné upraviť." sits above the „Kde je vaša káva" timeline whose
+current step reads „Objednávky uzavreté, káva objednaná v pražiarni" (same pair now also on the
+friend's locked landing with an own order: ticker/chip „uzavreté" + that timeline step — a
+ticker and a tooltip, not stacked sentences).
+
+### 51. Mutations (fresh server per backend mutation, rebuild per frontend one; `-g GP-T7` unless noted)
+
+M1 gate back to `!order.guest_email` (4 red: both unshaped-e-mail API tests, the source pin, the UI
+test) · M2 predicate back to `IS NULL` (4 red — now BEHAVIOURAL: the row keeps „x") · M2b predicate
+dropped (1 red, source pin only — the §47 two-guard layout) · M3 `editNeedsEmail` back to
+`!order.guest_email` (2 red: UI + pin) · ~~M4–M6 of the first cut~~ → re-run for the 2026-09-25
+rule: M4' the planned row's flag published again (1 red, the probe) · M5' `stepsPacketa` back to
+`!preopen && parcelEnabled` (7 red: five ON cases, stale 1, pin) · M6' the planned row's flag honoured (`kind !== 'open_elsewhere'`
+⇒ `flag !== 0`) (3 red: the two stray-0 cases + pin) · M6'' `open_elsewhere` ignored (always on)
+(2 red: stale variant + pin) · M7 the old „už tento týždeň"
+register restored in the view (2 red: node table via the view pin, the page parenthesis) · M8
+PortalExplainer „uzamknutia" + one orders.js 403 reverted (2 red).
+
+### 52. Still for the PO's staging sign-off (added by GP-T7)
+
+- **The locked-landing modal's stacking:** title „Objednávky sú uzavreté" directly over the intro
+  „Táto objednávka je už uzavretá — káva je objednaná v pražiarni." (`FriendPortalSession.vue`,
+  `LandingStateModal` no-own-order variant) — two near-identical sentences since decision (2).
+- **„košík je zamknutý"** in `PortalExplainer.vue`'s Pauza step — a different word from the order
+  lock, left as PO copy; does it follow the „uzavreté" register too?
+- The planned-round parcel default (§48) is DECIDED (always show), but a PO who wants a per-round
+  „no Packeta" on the pre-open card would need the flag to be written at plan time first.

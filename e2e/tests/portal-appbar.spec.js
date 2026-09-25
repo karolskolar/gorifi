@@ -275,11 +275,11 @@ test.describe('Portal appbar — menu · wordmark + view subtitle · Pozvať · 
     // LOCKED with the friend's own order ⇒ „Vaša objednávka".
     await page.unroute('**/api/friends/cycles*')
     await openPortalWith(page, [cycleRow({ n: 3, status: 'locked', hasOrder: true })])
-    await expect(page.locator('.ticker')).toContainText('+++ OBJEDNÁVKY UZAMKNUTÉ +++ KÁVA JE NA CESTE +++')
+    await expect(page.locator('.ticker')).toContainText('+++ OBJEDNÁVKY UZAVRETÉ +++ KÁVA JE NA CESTE +++')
     await expect(page.locator('.appbar .titles .s')).toHaveText('Vaša objednávka')
     const lock = page.locator('.appbar .chip.p2-lock')
     await expect(lock).toHaveCount(1)
-    await expect(lock).toHaveAttribute('title', 'Objednávky sú uzamknuté')
+    await expect(lock).toHaveAttribute('title', 'Objednávky sú uzavreté')
     // Decorative: the state is spoken by the landing banner, never twice.
     await expect(lock).toHaveAttribute('aria-hidden', 'true')
     await expect(lock).not.toHaveClass(/acc/)

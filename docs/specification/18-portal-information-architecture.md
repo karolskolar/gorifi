@@ -282,10 +282,10 @@ chip (not open)**; nothing else.
 - `#trailing`: `span.chip.acc` with `NeoIcon name="invite"` + text **„Pozvať“**,
   `role="button" tabindex="0" title="Pozvi priateľa"` → `openInviteModal()` (03 UC-FL-011
   verbatim); then, when `state !== 'open'`, `span.chip.p2-lock` with `NeoIcon name="lock"`,
-  `title` = **„Objednávky sú uzamknuté“** (locked) / **„Objednávky sú zatvorené“** (closed),
+  `title` = **„Objednávky sú ~~uzamknuté~~ uzavreté“** (locked) / **„Objednávky sú zatvorené“** (closed),
   `aria-hidden="true"` (decorative; the state is spoken by the banner). No logout glyph.
 - `ticker` (authenticated): open **„+++ OBJEDNÁVKY OTVORENÉ +++ NEHOVOR O TOM NAHLAS +++“**;
-  locked **„+++ OBJEDNÁVKY UZAMKNUTÉ +++ KÁVA JE NA CESTE +++“**; closed
+  locked **„+++ OBJEDNÁVKY ~~UZAMKNUTÉ~~ UZAVRETÉ +++ KÁVA JE NA CESTE +++“**; closed
   **„+++ OBJEDNÁVKY ZATVORENÉ +++ ĎALŠIA OBJEDNÁVKA {suffix} +++“** where suffix =
   `O {n} TÝŽDNE|TÝŽDEŇ|TÝŽDŇOV` when `nextCycle.opens_at` yields `n ≥ 1`, else
   **„DÁME VEDIEŤ“** (the prototype's „ĎALŠIE KOLO“ is rewritten — resolved conflict 1).
@@ -520,9 +520,9 @@ persisted), drawer reachable; tab switch works while cards are inert; no `.cartb
    (Kolegovia hand-over ticks happen precisely now — module 05 UC-KG-004).
 
 **Locked, NO own order:** the closed-state treatment (UC-PI-006) with the modal title
-**„Objednávky sú uzamknuté“** and intro **„Táto objednávka je už uzavretá — káva je
+**„Objednávky sú ~~uzamknuté~~ uzavreté“** and intro **„Táto objednávka je už uzavretá — káva je
 objednaná v pražiarni.“**, the next-round card, the dots; then the warn banner
-**„<b>Objednávky sú uzamknuté.</b> {nextText}“** and the read-only grid of `currentCycle`.
+**„<b>Objednávky sú ~~uzamknuté~~ uzavreté.</b> {nextText}“** and the read-only grid of `currentCycle`.
 Subtitle stays „Aktuálna ponuka“.
 
 ⚠ **PI-T5 decisions on this branch, recorded because the paragraph above is silent on
@@ -538,14 +538,14 @@ both (2026-09-20):**
   Hiding Kolegovia from them would hide it from the one person who needs it.
 
 **Business rules:** `own-order-card` renders from FriendOrder's loaded `order` (no second
-loader); the shipped locked `.banner.warn` „Objednávky sú uzamknuté. Už nie je možné meniť
+loader); the shipped locked `.banner.warn` „Objednávky sú ~~uzamknuté~~ uzavreté. Už nie je možné meniť
 objednávku.“ and the locked cartbar (04 UC-FO-014) are **replaced on the landing only**;
 they stay on the `/cycle/:id` deep link. Money: `paymentTotal` includes `delivery_fee`
 (04 resolved conflict #9). The `paid` flag is read-only here (admin-only write).
 
 **Acceptance criteria:** locked + submitted order ⇒ card with lines, total, pickup badge,
 „Nezaplatené“ + „Zaplatiť“ opening PaymentModal with the order total; admin marks paid ⇒
-„Zaplatené“, no button; locked without order ⇒ modal „Objednávky sú uzamknuté“; grid inert,
+„Zaplatené“, no button; locked without order ⇒ modal „Objednávky sú ~~uzamknuté~~ uzavreté“; grid inert,
 tabs live, no cartbar.
 
 ---
@@ -753,7 +753,7 @@ self-hosted, no external request.
 3. **Six phases** (`.p2-step`, numbered `.n` 1–6, `.display` 20px title + `.sub` 14px):
    1 **Pauza** — „Väčšinu času sa neobjednáva. Ponuku si môžete prezrieť, košík je zamknutý.“
    2 **Ohlásenie objednávky** — „Pár dní vopred sa dozviete, kedy sa objednávky otvoria. V appke aj cez WhatsApp.“
-   3 **Objednávanie** — „Zvyčajne 5–7 dní. Naklikáte si kávu, odošlete, do uzamknutia môžete meniť.“
+   3 **Objednávanie** — „Zvyčajne 5–7 dní. Naklikáte si kávu, odošlete, do ~~uzamknutia~~ uzavretia môžete meniť.“
    4 **Čakáme na pražiareň** — „Objednávky uzavrieme, kávu objednáme. Praží sa na čerstvo, trvá to okolo týždňa.“
    5 **Balíme** — „Káva dorazila, každému zabalíme jeho objednávku. Vtedy je čas zaplatiť.“
    6 **Odovzdanie** — „Vyzdvihnete si ju na odbernom mieste, od priateľa alebo príde Packetou.“
@@ -1115,7 +1115,7 @@ with every `[data-user-copy]` subtree dropped (FUP-T22)** — on every view, sta
 | `FriendPortalSession.vue:1679` „…zobrazia sa všetky cykly.“ | — | removed with the modal (UC-PI-016) |
 | `FriendPortalSession.vue:2350` voucher modal „Za tvoju objednávku z cyklu {name} ti patrí zľavový voucher.“ | | **„Za tvoju objednávku ({name}) ti patrí zľavový voucher.“** — copy-only; the voucher modal's markup, ty-form and look stay out of scope (00-overview) |
 | `FriendOrder.vue:1025` „Späť na zoznam cyklov“ | | **„Späť na ponuku“** (UC-PI-018) |
-| `FriendOrder.vue:1833` „…až do uzamknutia cyklu.“ | | **„…až do uzamknutia objednávok.“** |
+| `FriendOrder.vue:1833` „…až do uzamknutia cyklu.“ | | ~~**„…až do uzamknutia objednávok.“**~~ → **„…až do uzavretia objednávok.“** (GP-T7, PO decision (2) 2026-09-24: the lock copy is „uzavreté“ on every friend/guest surface) |
 | `GuestShareDialog.vue:182` share-sheet fallback „objednávkový cyklus“ | | **„objednávka“** |
 | prototype tickers/banners „ĎALŠIE KOLO“, „z minulého kola“ | | rewritten in UC-PI-003/008 |
 

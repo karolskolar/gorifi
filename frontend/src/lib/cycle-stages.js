@@ -2,9 +2,10 @@
 // coffee is (17 §UC-CS-005): the six steps, their labels, the dates under them and
 // the „o n týždňov" derivation. Three modules print from here — `CycleTimeline.vue`
 // (this row), module 18's landing/closed modal/banner, module 19's pre-open page
-// (⚠ GL-T5: that page takes `fmtDay()` + `daysUntil()` from here but its „(…)" from
-// `plural.js weeksAwayLabel()` — 19 §UC-GL-006's own draft register, which differs
-// from `inWeeksText()` under a week; PO question open, see learnings 11 §GL-T5) —
+// (~~⚠ GL-T5: that page takes `fmtDay()` + `daysUntil()` from here but its „(…)" from
+// `plural.js weeksAwayLabel()` — 19 §UC-GL-006's own draft register; PO question
+// open~~ → RESOLVED, PO decision (4) 2026-09-24 / GP-T7: it takes `fmtDay()` +
+// `inWeeksText()` from here, one register, see learnings 12 §GP-T7) —
 // and the whole point of the file is that they cannot disagree about a word or a
 // date format. A consumer lays the pieces out; it never re-composes a sentence from
 // `opens_at` / `closes_at` / `stage` by hand.

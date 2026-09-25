@@ -9,7 +9,7 @@ import { ADMIN_PASSWORD } from '../fixtures.js'
 // The product-description face — Figtree, the body face (product decision,
 // 2026-08-18). This REPLACED the 2026-08-13 Noto Sans Condensed brief: the owner
 // asked for the typeface of the order screen's status banner ("Objednávky sú
-// uzamknuté…" — Figtree, bold lead-in + regular body) on these two lines.
+// uzavreté…" — GP-T7, ~~uzamknuté~~ — Figtree, bold lead-in + regular body) on these two lines.
 //
 // Two lines under the badges in a COFFEE product card:
 //   `description1` (the spec line)     → `.pspec`  Figtree 700, 14.5px, lh 1.25, --ink

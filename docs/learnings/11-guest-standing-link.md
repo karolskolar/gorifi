@@ -350,7 +350,8 @@ right under GL-T5's full page too.
 
 Badge „Zatvorené", the kind's headline, the host sentence and the `next` sentence —
 `planned_date` uses module 17's LONG `fmtDay()` („3. októbra"), so the date variant renders from
-day one; the „(o N týždňov)" parenthesis is GL-T5's `weeksAwayLabel()`. No ticker flip, no
+day one; the „(o N týždňov)" parenthesis is ~~GL-T5's `weeksAwayLabel()`~~ `cycle-stages.js inWeeksText()` (GP-T7,
+PO 2026-09-24 — §GL-T5 §2). No ticker flip, no
 steps, no roasters line, no waitlist form, no preview, no `document.title` — all GL-T5. The
 host name is marked `data-user-copy` (FUP-T22) for the day the guest views join a sweep.
 
@@ -638,13 +639,18 @@ into the component (source pin + §7 importer set); `overflow-wrap` removed from
   stays browsable); `user-select:none` is a scoped `.gx-ro` in the view, not a theme edit.
   Product fields (name, descriptions, composition, roast type, roastery, a real `variant_label`)
   now carry `data-user-copy` on BOTH guest screens (admin-typed data, FUP-T22).
-- `lib/plural.js weeksAwayLabel(days)` — 19's rule verbatim; `days` from `cycle-stages.js
-  daysUntil()`, the weeks declined by the existing `weeksLabel`.
+- ~~`lib/plural.js weeksAwayLabel(days)` — 19's rule verbatim; `days` from `cycle-stages.js
+  daysUntil()`, the weeks declined by the existing `weeksLabel`.~~ → DELETED by GP-T7 (§2 below).
 - `self-hosted-fonts.spec.js`: `/g/:token (preopen)` in BOTH sweeps (third-party allowlist `[]`,
   and the Google-host sweep `false`), fixture = a legacy per-cycle link on a LOCKED cycle with one
   product; the row asserts `preopen-hero` rendered before sweeping (a 404 card would sweep clean).
 
-### 2. ⚠ `weeksAwayLabel` vs 17's `inWeeksText` — two drafted registers for ONE sentence
+### 2. ~~⚠ `weeksAwayLabel` vs 17's `inWeeksText` — two drafted registers for ONE sentence~~ → RESOLVED
+
+> **RESOLVED — PO decision (4) 2026-09-24, GP-T7 (learnings 12 §GP-T7):** ONE register, the friend
+> one (17 O6, „o n dní"). `weeksAwayLabel` is DELETED and the pre-open page takes
+> `cycle-stages.js inWeeksText(opens_at)`; today and the past print no parenthesis. The text below
+> is the history.
 
 „Ďalšia objednávka sa otvorí približne {d. mmmm} (…)." exists on the friend side too
 (`nextOpeningText()`), and 17 §UC-CS-005 item 6 said 19's page would print it from there. 19
@@ -699,7 +705,7 @@ is struck with a pointer. Garbage / non-object JSON ⇒ `{}`.
 
 ### 6. Tests (`guest-standing-link.spec.js`, six `GL-T5 ·` describes, 28 tests)
 
-`weeksAwayLabel` (plain-node import, 20 cases); mocked-payload page: chrome + title, hero
+~~`weeksAwayLabel`~~ (→ `inWeeksText`, GP-T7) (plain-node import, 20 cases); mocked-payload page: chrome + title, hero
 structure/order/bold/`.hl`, the parenthesis (3 / −2 / 10 days), steps card, card order, form
 fidelity + three-zone toggle, submit (disabled rules, trimmed body, NO auth headers, `button:enabled`
 1 → 0, banner replaces card, reload keeps it), unticked consent (second banner, reload keeps
@@ -715,7 +721,7 @@ source pins (`readonly` prop, grid mounted twice, no forked grid file; `closed` 
 no ticker prop).
 
 Mutations (each red, then restored): stepper kept in readonly; JS guard removed; unguarded
-storage READ; closed ticker ignored; lock chip dropped; `weeksAwayLabel` counting days;
+storage READ; closed ticker ignored; lock chip dropped; `weeksAwayLabel` counting days (function deleted by GP-T7);
 memory ignoring the round; `.p2-ro` dropped; consent default off; 409 not reloading; empty
 preview shown; form ignoring `available`; tab stops kept in readonly; `role=button` kept on the
 photo. **Survivors (recorded):** an unguarded storage WRITE is caught by `joinWaitlist`'s own
@@ -1025,11 +1031,14 @@ strings are **PO DRAFTS**.
   `readOnlyReason`. Measured on the page: after a 409 `submitEdit()` reloads into the READ view, and
   BOTH banners render stacked (`status-readonly` + `status-error`). So the server half now says what
   failed, the save, worded like its lost-race twin („…zmenu už nie je možné uložiť.“).
-- ⚠ **PO DRAFT QUESTION — „uzavreté" vs „uzamknuté" (review).** The host DELETE 409 (`guest-orders.js:200`/`:241`)
+- ~~⚠ **PO DRAFT QUESTION — „uzavreté" vs „uzamknuté" (review).**~~ → **RESOLVED by the PO 2026-09-24
+  (GP-T7, learnings 12 §GP-T7): „uzavreté" on EVERY friend/guest surface** — the friend lock copy moved to
+  the guest register, so the host pair below now matches the screen it lands on. The host DELETE 409 (`guest-orders.js:200`/`:241`)
   says „Objednávky sú už uzavreté / boli práve uzavreté“, but it renders on the FRIEND surface (Kolegovia tab),
-  whose own lock copy says „uzamknuté" („Objednávky sú uzamknuté.“, the lock chip). The guest surface says
+  ~~whose own lock copy says „uzamknuté" („Objednávky sú uzamknuté.“, the lock chip). The guest surface says
   „uzavreté" (CS-T4's `readOnlyReason`), so the draft matches the guest register, not the friend screen it
-  lands on. The PO picks one register for the host pair; the status code and `reason` do not move either way.
+  lands on. The PO picks one register for the host pair;~~ (historical — the friend lock copy says „uzavreté"
+  since GP-T7) the status code and `reason` do not move either way.
 - **The audience decision on the admin 409s: KEPT.** `POST /api/guest-orders/:id/cancel` (`:530` /
   `:567`, „Cyklus je už uzavretý / bol práve uzavretý, objednávku kolegu už nie je možné zrušiť.“) is
   `requireAdmin`, and only `CycleDetail.vue` calls it (`cancelGuestOrderAdmin`). „cyklus“ is the

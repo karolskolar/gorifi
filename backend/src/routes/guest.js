@@ -233,13 +233,23 @@ function validateDeliveryChoice(body, cycle) {
   return { delivery: { packeta: true, address } };
 }
 
+// GP-T7 — PO decision (1) 2026-09-24: does a STORED `guest_email` satisfy Packeta?
+// Only when it passes the mailer's `EMAIL_SHAPE` (one home). A via_host checkout may
+// store an UNSHAPED optional e-mail (§Accepted risks — the submit shape-checks only
+// Packeta), and Packeta must never proceed on it: an unshaped stored value is treated
+// as ABSENT. ~~GP-T2: „any non-null stored e-mail counts"~~ → SUPERSEDED here.
+function storedEmailUsable(value) {
+  return typeof value === 'string' && EMAIL_SHAPE.test(value);
+}
+
 // 20 §UC-GP-005 rule 3 — the edit's e-mail for a switch to Packeta on an order that
-// has NONE stored (D3, PO 2026-09-19: write-once). Called ONLY then: when the row
-// already carries an e-mail, the body's value is ignored — never validated, never an
+// has no USABLE e-mail stored (D3, PO 2026-09-19: write-once; GP-T7: „usable" =
+// `storedEmailUsable()`, so NULL or unshaped). Called ONLY then: when the row already
+// carries a valid e-mail, the body's value is ignored — never validated, never an
 // error, never written — because identity is frozen on edit (GSO-T4) and the freeze's
-// one exception is filling a hole, not rewriting a contact. Returns `{ error, field }`
-// or `{ email }`. Same bounds and messages as the submit: 160 chars
-// (`validateIdentity`'s), the mailer's `EMAIL_SHAPE` (one home).
+// one exception is filling a hole (or replacing an address Packeta cannot use), not
+// rewriting a contact. Returns `{ error, field }` or `{ email }`. Same bounds and
+// messages as the submit: 160 chars (`validateIdentity`'s), `EMAIL_SHAPE` (one home).
 function packetaEditEmail(raw) {
   if (raw === undefined || raw === null) {
     return { error: PACKETA_EMAIL_MISSING_ERROR, field: 'guest_email' };
@@ -469,18 +479,30 @@ function lastClosedCycle() {
   `).get();
 }
 
+// GP-T7 — PO decision (3) 2026-09-24 + orchestrator decision 2026-09-25:
+// `next.parcel_enabled` (ADDITIVE) is published ONLY where it is a real flag — the
+// OPEN round an `open_elsewhere` names (`0|1`). Every other kind carries `null`: a
+// PLANNED round's `parcel_enabled` is not a decision yet (the column DEFAULTS to 0 and
+// `POST /cycles` never writes it), so the pre-open card ALWAYS shows the Packeta clause
+// for planned_date / planned_note / unknown (PO: Packeta in ~all future rounds).
+const parcelFlag = (value) => (value ? 1 : 0);
+
 function preopenNext(openCycle) {
   if (openCycle) {
-    return { kind: 'open_elsewhere', opens_at: null, plan_note: null, cycle_name: openCycle.name };
+    const open = db.prepare('SELECT parcel_enabled FROM order_cycles WHERE id = ?').get(openCycle.id);
+    return {
+      kind: 'open_elsewhere', opens_at: null, plan_note: null, cycle_name: openCycle.name,
+      parcel_enabled: open ? parcelFlag(open.parcel_enabled) : null,
+    };
   }
   const planned = nextPlannedCycle();
-  if (!planned) return { kind: 'unknown', opens_at: null, plan_note: null, cycle_name: null };
+  if (!planned) return { kind: 'unknown', opens_at: null, plan_note: null, cycle_name: null, parcel_enabled: null };
   const opensAt = planned.opens_at || null;
   const planNote = planned.plan_note || null;
   let kind = 'unknown';
   if (opensAt) kind = 'planned_date';
   else if (planNote) kind = 'planned_note';
-  return { kind, opens_at: opensAt, plan_note: planNote, cycle_name: planned.name };
+  return { kind, opens_at: opensAt, plan_note: planNote, cycle_name: planned.name, parcel_enabled: null };
 }
 
 function preopenPreview() {
@@ -1350,8 +1372,10 @@ function handleStatusRead(res, { link, cycle, order }) {
 // (host, GSO-T5), `status`, `total` and `order_token` are all server-owned too.
 // ⚠ Module 20 (GP-T2) adds the DELIVERY block (`use_parcel_delivery` +
 // `packeta_address`, §UC-GP-005) and the freeze's ONE exception: a switch to Packeta
-// on an order with NO e-mail stores the body's `guest_email` once (D3, write-once —
-// `WHERE guest_email IS NULL`). A body e-mail beside a stored one is ignored (200).
+// on an order with NO usable e-mail stores the body's `guest_email` (D3, write-once;
+// GP-T7: NULL or an UNSHAPED stored value counts as none, and is replaced — the write
+// is a compare-and-swap `WHERE guest_email IS ?` on the value read). A body e-mail
+// beside a stored VALID one is ignored (200).
 //
 // Status codes:
 //   404 — the order token does not resolve (applied by the callers, before this)
@@ -1451,20 +1475,24 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
   // Before pricing, as on the submit.
   let delivery = null;
   let emailToStore = null;
+  let emailToReplace = null;
   if (requestedCount > 0 && req.body.use_parcel_delivery !== undefined && req.body.use_parcel_delivery !== null) {
     const chosen = validateDeliveryChoice(req.body, cycle);
     if (chosen.error) {
       return res.status(400).json({ error: chosen.error, field: chosen.field });
     }
     delivery = chosen.delivery;
-    // R4.3 — Packeta needs an e-mail. A stored one satisfies it (whatever the body
-    // says); otherwise the body's is REQUIRED and stored ONCE (D3, see the helper).
-    if (delivery.packeta && !order.guest_email) {
+    // R4.3 — Packeta needs an e-mail. A stored SHAPED one satisfies it (whatever the
+    // body says); otherwise — NULL or unshaped (GP-T7) — the body's is REQUIRED and
+    // stored (D3, see the helper). `emailToReplace` is the exact value read, the
+    // compare-and-swap operand of the write below.
+    if (delivery.packeta && !storedEmailUsable(order.guest_email)) {
       const mail = packetaEditEmail(req.body.guest_email);
       if (mail.error) {
         return res.status(400).json({ error: mail.error, field: mail.field });
       }
       emailToStore = mail.email;
+      emailToReplace = order.guest_email ?? null;
     }
   }
 
@@ -1556,11 +1584,14 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
         db.prepare(
           "UPDATE guest_orders SET total = ?, status = 'submitted', delivery_fee = ?, packeta_address = ? WHERE id = ?"
         ).run(total, deliveryFee, delivery.address, order.id);
-        // D3 write-once: the PREDICATE is the guard — an e-mail that is already there
-        // is never overwritten, whatever the handler above concluded.
+        // D3 write-once, GP-T7 widened: the PREDICATE is the guard. ~~`AND guest_email
+        // IS NULL`~~ → `AND guest_email IS ?` bound to the value the handler READ and
+        // judged unusable (NULL, or that one unshaped string — `IS` matches NULL too):
+        // a compare-and-swap, so this statement can only replace the exact value that
+        // was checked, never an e-mail it did not see.
         if (emailToStore) {
-          db.prepare('UPDATE guest_orders SET guest_email = ? WHERE id = ? AND guest_email IS NULL')
-            .run(emailToStore, order.id);
+          db.prepare('UPDATE guest_orders SET guest_email = ? WHERE id = ? AND guest_email IS ?')
+            .run(emailToStore, order.id, emailToReplace);
         }
       } else {
         db.prepare("UPDATE guest_orders SET total = ?, status = 'submitted' WHERE id = ?").run(total, order.id);

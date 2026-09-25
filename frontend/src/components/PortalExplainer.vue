@@ -98,7 +98,7 @@ const hide = ref(true)
 const PHASES = [
   { n: 1, icon: 'pause', title: 'Pauza', text: 'Väčšinu času sa neobjednáva. Ponuku si môžete prezrieť, košík je zamknutý.' },
   { n: 2, icon: 'bell', title: 'Ohlásenie objednávky', text: 'Pár dní vopred sa dozviete, kedy sa objednávky otvoria. V appke aj cez WhatsApp.' },
-  { n: 3, icon: 'cup', title: 'Objednávanie', text: 'Zvyčajne 5–7 dní. Naklikáte si kávu, odošlete, do uzamknutia môžete meniť.' },
+  { n: 3, icon: 'cup', title: 'Objednávanie', text: 'Zvyčajne 5–7 dní. Naklikáte si kávu, odošlete, do uzavretia môžete meniť.' },
   { n: 4, icon: 'truck', title: 'Čakáme na pražiareň', text: 'Objednávky uzavrieme, kávu objednáme. Praží sa na čerstvo, trvá to okolo týždňa.' },
   { n: 5, icon: 'box', title: 'Balíme', text: 'Káva dorazila, každému zabalíme jeho objednávku. Vtedy je čas zaplatiť.' },
   { n: 6, icon: 'hand', title: 'Odovzdanie', text: 'Vyzdvihnete si ju na odbernom mieste, od priateľa alebo príde Packetou.' }

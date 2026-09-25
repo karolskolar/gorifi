@@ -18,8 +18,8 @@ import { fmtEur } from '@/lib/money'
 import { EMAIL_SHAPE } from '@/lib/email-shape'
 import { deliveryExtras } from '@/lib/order-lines'
 import { purposeOrder } from '@/lib/purposes'
-import { itemsLabel, weeksAwayLabel } from '@/lib/plural'
-import { fmtDay, daysUntil } from '@/lib/cycle-stages'
+import { itemsLabel } from '@/lib/plural'
+import { fmtDay, inWeeksText } from '@/lib/cycle-stages'
 import {
   availabilityMap,
   cartLines,
@@ -112,12 +112,18 @@ const checkoutFee = computed(() => (isPacketa.value ? parcelFee.value : 0))
 
 // 19 §UC-GL-007 / GL-T4's seam — step 3's „…, alebo si ju nechajte poslať cez Packetu."
 // is true exactly when the guest could choose Packeta here. ONE computed for all three
-// `GuestSteps` mounts so none can drift. ⚠ The PRE-OPEN page has no round to read a
-// parcel flag from (its payload carries no `cycle` — 19 §UC-GL-003 — and `cycle` is
-// never loaded on that branch), so the clause stays off there until the server
-// publishes a flag for the next round; that is a server-contract addition this row
-// does not make (recorded in learnings 12, GP-T3).
-const stepsPacketa = computed(() => !preopen.value && parcelEnabled.value)
+// `GuestSteps` mounts so none can drift. ~~⚠ The PRE-OPEN page has no round to read a
+// parcel flag from … the clause stays off there~~ → GP-T7 (PO decision (3) 2026-09-24):
+// the pre-open card ALWAYS shows the clause (PO: Packeta in ~all future rounds) —
+// EXCEPT the stale `open_elsewhere` variant, which follows that OPEN round's real
+// `next.parcel_enabled` (orchestrator decision 2026-09-25: a PLANNED round's flag is
+// the column default 0, never a decision, so it is not read). The open page keeps
+// reading the live round's `parcel_enabled`.
+function preopenParcelAllowed(next) {
+  if (next?.kind === 'open_elsewhere') return Number(next.parcel_enabled) === 1
+  return true
+}
+const stepsPacketa = computed(() => (preopen.value ? preopenParcelAllowed(preopen.value.next) : parcelEnabled.value))
 
 // Confirmation state (§UC-GSO-003)
 const confirmation = ref(null) // { order, items, payment, status_url }
@@ -252,9 +258,11 @@ const unavailableText = computed(() => {
 // („Požiadajte Janka") exactly as 19 drafts it — a PO question, not a fix here.
 //
 // The `planned_date` date is module 17's LONG form (`fmtDay`, „3. októbra"); the
-// parenthesis is `lib/plural.js weeksAwayLabel(daysUntil(opens_at))` — 19's own
-// draft register („už tento týždeň" under a week), NOT 17's `inWeeksText` („o 3
-// dni"): see the note on `weeksAwayLabel`. A past `opens_at` omits it.
+// parenthesis is ~~`lib/plural.js weeksAwayLabel(daysUntil(opens_at))` — 19's own
+// draft register („už tento týždeň" under a week)~~ → GP-T7 (PO decision (4)
+// 2026-09-24): `lib/cycle-stages.js inWeeksText(opens_at)`, the friend register
+// („o 3 dni", 17 O6) — ONE home. It is `null` for TODAY and a past `opens_at`, and
+// `null` omits the parenthesis (never an empty „()").
 const preopenStale = computed(() => preopen.value?.next?.kind === 'open_elsewhere')
 const preopenTitle = computed(() => (preopenStale.value
   ? { lead: 'Táto objednávka je už', hl: 'uzavretá' }
@@ -265,7 +273,7 @@ const preopenNext = computed(() => {
   const next = preopen.value?.next
   if (next?.kind === 'planned_date') {
     const date = fmtDay(next.opens_at)
-    if (date) return { kind: 'date', date, away: weeksAwayLabel(daysUntil(next.opens_at)) }
+    if (date) return { kind: 'date', date, away: inWeeksText(next.opens_at) }
   }
   if (next?.kind === 'planned_note' && next.plan_note) return { kind: 'note', note: next.plan_note }
   return { kind: 'unknown' }
@@ -591,7 +599,8 @@ function goToStatus() {
 
         <!-- ② „Ako to funguje" — the FULL `GuestSteps` (GL-T4's component, its default
              layout). `packeta` = `stepsPacketa`, like the two open-page mounts (GP-T3) —
-             which is false on this branch: no round, no parcel flag (see its note). -->
+             ~~which is false on this branch: no round, no parcel flag~~ → GP-T7: ON on
+             this branch, except `open_elsewhere` follows the open round's flag (see its note). -->
         <div class="card" style="padding:16px" data-testid="preopen-steps">
           <div class="field-lbl" style="margin-bottom:12px">Ako to funguje</div>
           <GuestSteps :host-name="preopenHost" :packeta="stepsPacketa" />

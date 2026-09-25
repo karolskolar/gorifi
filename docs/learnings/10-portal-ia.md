@@ -1030,7 +1030,7 @@ where 17's vocabulary shows in the DOM, plus computed `font-weight` on the three
 ### What PI-T4 LEAVES BEHIND
 
 1. **`LandingStateModal.vue` is PI-T5's, ready.** The no-order LOCKED variant passes
-   `title="Objednávky sú uzamknuté"` and the §UC-PI-007 intro and changes nothing else;
+   `title="Objednávky sú ~~uzamknuté~~ uzavreté"` (GP-T7) and the §UC-PI-007 intro and changes nothing else;
    a second modal component is the defect this parametrisation exists to prevent.
 2. **`FriendOrder`'s `readonly` is PI-T5's too** — but §UC-PI-007 keeps the TABGROUP on the
    locked landing („Kolegovia hand-over ticks happen precisely now"), so that row needs a

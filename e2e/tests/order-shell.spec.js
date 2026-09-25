@@ -60,7 +60,7 @@ let host = null
 const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
 
 const TICKER_OPEN = '+++ OBJEDNÁVKY OTVORENÉ +++ NEHOVOR O TOM NAHLAS +++'
-const TICKER_LOCKED = '+++ OBJEDNÁVKY UZAMKNUTÉ +++ DRŽ JAZYK ZA ZUBAMI +++'
+const TICKER_LOCKED = '+++ OBJEDNÁVKY UZAVRETÉ +++ DRŽ JAZYK ZA ZUBAMI +++'
 
 // Enough purposes to overflow a phone strip, in the shipped order (Espresso,
 // Filter, Kapsule first, then encounter order) so the rendered sequence is
@@ -242,7 +242,7 @@ test.describe('UC-FO-001 — brand chrome', () => {
     const ticker = page.locator('.app .ticker span')
     const tickerText = await ticker.textContent()
     expect(tickerText.split(TICKER_OPEN).length - 1, 'the open-cycle ticker, 3×').toBe(3)
-    expect(tickerText).not.toContain('UZAMKNUTÉ')
+    expect(tickerText).not.toContain('UZAVRETÉ')
   })
 
   test('a LOCKED cycle: the lock chip and the locked ticker', async ({ page }) => {
@@ -353,7 +353,7 @@ test.describe('UC-FO-002 — status banners', () => {
 
     const green = page.locator('.app .banner.ok').filter({ hasText: 'Vaša objednávka bola odoslaná!' })
     await expect(green).toBeVisible()
-    await expect(green).toContainText('Stále ju môžete upraviť až do uzamknutia.')
+    await expect(green).toContainText('Stále ju môžete upraviť až do uzavretia.')
     // Theme contract: every `.banner` carries its `span.dot` as the first child.
     expect(await green.evaluate((el) => el.firstElementChild.className)).toBe('dot')
     expect(await green.evaluate((el) => getComputedStyle(el).borderTopWidth), 'full banner, not `.slim`').toBe('3px')
@@ -403,7 +403,7 @@ test.describe('UC-FO-002 — status banners', () => {
 
     const warn = page.locator('.app .banner.warn')
     await expect(warn).toBeVisible()
-    await expect(warn).toContainText('Objednávky sú uzamknuté.')
+    await expect(warn).toContainText('Objednávky sú uzavreté.')
     await expect(warn).toContainText('Už nie je možné meniť objednávku.')
     expect(await warn.evaluate((el) => el.firstElementChild.className)).toBe('dot')
     await expect(

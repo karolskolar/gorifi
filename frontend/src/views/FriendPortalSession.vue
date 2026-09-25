@@ -1096,7 +1096,7 @@ const showClosedModal = computed(() => (
 
 /**
  * §UC-PI-007's „Locked, NO own order" branch — „the closed-state treatment with the
- * modal title „Objednávky sú uzamknuté"".
+ * modal title „Objednávky sú uzavreté"" (GP-T7, PO decision 2026-09-24: ~~„uzamknuté"~~).
  *
  * ⚠ `hasOrder` is the ONE discriminator, and it is the cycles payload's (a SUBMITTED
  * order, `routes/friends.js`) rather than anything this view derives: a friend who
@@ -1469,7 +1469,7 @@ const appbarSubtitle = computed(() => {
 const appbarTicker = computed(() => {
   const state = landing.value.state
   if (state === 'open') return '+++ OBJEDNÁVKY OTVORENÉ +++ NEHOVOR O TOM NAHLAS +++'
-  if (state === 'locked') return '+++ OBJEDNÁVKY UZAMKNUTÉ +++ KÁVA JE NA CESTE +++'
+  if (state === 'locked') return '+++ OBJEDNÁVKY UZAVRETÉ +++ KÁVA JE NA CESTE +++'
   const weeks = weeksUntil(landing.value.nextCycle?.opens_at)
   const suffix = weeks !== null && weeks >= 1 ? `O ${weeksLabel(weeks).toUpperCase()}` : 'DÁME VEDIEŤ'
   return `+++ OBJEDNÁVKY ZATVORENÉ +++ ĎALŠIA OBJEDNÁVKA ${suffix} +++`
@@ -1491,7 +1491,7 @@ const appbar = computed(() => ({
   // (`aria-hidden`) — the state is spoken by the banner, not by a glyph.
   lock: landing.value.state === 'open'
     ? null
-    : landing.value.state === 'locked' ? 'Objednávky sú uzamknuté' : 'Objednávky sú zatvorené',
+    : landing.value.state === 'locked' ? 'Objednávky sú uzavreté' : 'Objednávky sú zatvorené',
 }))
 
 // ── the drawer's rows (§UC-PI-004) ───────────────────────────────────────────
@@ -2601,7 +2601,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
       <!-- 1. THE STATE MODAL — once per session (see `closedModalDismissed`).
            ⚠ Its title/intro are passed as PROPS, not baked into the component:
            §UC-PI-007's no-order LOCKED variant is the same modal with „Objednávky
-           sú uzamknuté" / „Táto objednávka je už uzavretá — káva je objednaná
+           sú uzavreté" (GP-T7, PO 2026-09-24: ~~uzamknuté~~) / „Táto objednávka je už uzavretá — káva je objednaná
            v pražiarni." and PI-T5 must not need a second one.
 
            ⚠ `timelineCycle` is `nextCycle ?? catalogCycle` (§UC-PI-006) and it is
@@ -2689,7 +2689,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
          R1.4: the friend ordered, the round is locked ⇒ „where is my coffee".
 
          ⚠ THE SHIPPED LOCKED TREATMENT IS REPLACED HERE AND NOWHERE ELSE. 04
-         §UC-FO-014's `.banner.warn` („Objednávky sú uzamknuté. Už nie je možné
+         §UC-FO-014's `.banner.warn` („Objednávky sú uzavreté. Už nie je možné
          meniť objednávku.") and the locked cartbar stay on the `/cycle/:id` deep
          link, byte for byte — §UC-PI-007's business rule says „replaced on the
          landing only", `order-locked.spec.js` still pins them there, and
@@ -2844,7 +2844,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
       <template v-else>
         <LandingStateModal
           v-if="showLockedModal"
-          title="Objednávky sú uzamknuté"
+          title="Objednávky sú uzavreté"
           intro="Táto objednávka je už uzavretá — káva je objednaná v pražiarni."
           :next-cycle="landing.nextCycle"
           :next-opening="landing.nextOpening"
@@ -2858,7 +2858,7 @@ defineExpose({ openProfileModal, openInviteModal, openMenu, backHome, appbar })
              must NOT be reformatted at this call site (learnings 10 §1). -->
         <div v-else class="banner warn slim" data-testid="landing-locked-banner">
           <span class="dot"></span>
-          <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Objednávky sú uzamknuté.</b> <span v-if="nextIsNote" data-user-copy>{{ landing.nextText }}</span><template v-else>{{ landing.nextText }}</template></div>
+          <div style="min-width:0;overflow-wrap:anywhere;white-space:pre-line"><b>Objednávky sú uzavreté.</b> <span v-if="nextIsNote" data-user-copy>{{ landing.nextText }}</span><template v-else>{{ landing.nextText }}</template></div>
         </div>
       </template>
 

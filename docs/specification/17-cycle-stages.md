@@ -351,10 +351,12 @@ consumer may pass its own.
    (verbatim, multiline preserved by the consumer's `white-space: pre-line`); no planned
    cycle ⇒ `{ date: null, inWeeks: null, text: 'O ďalšej objednávke dáme vedieť.' }`.
    Consumers (18's modal/banner, ~~19's pre-open page~~) lay the pieces out; they never
-   re-compose the sentence from raw fields. **(GL-T5: 19 §UC-GL-006 item 2 specifies its OWN
+   re-compose the sentence from raw fields. ~~**(GL-T5: 19 §UC-GL-006 item 2 specifies its OWN
    parenthesis, `plural.js weeksAwayLabel()` — „už tento týždeň“ under a week, where O6 says
    „o n dní“ — so the pre-open page composes the same sentence from `fmtDay()` + `daysUntil()` +
-   that label. Two drafted registers for one sentence; PO question raised in the GL-T5 report.)**
+   that label. Two drafted registers for one sentence; PO question raised in the GL-T5 report.)**~~
+   **→ RESOLVED, PO 2026-09-24 (GP-T7): ONE register (O6) — the pre-open page takes `fmtDay()` +
+   `inWeeksText()`; `weeksAwayLabel` is deleted (20 §PO decisions 2026-09-24 (4)).**
 7. `openUntilText(cycle)` ⇒ `closes_at` ? `Objednávky otvorené · do {fmtDay(closes_at)}`
    : `Objednávky otvorené`.
 8. `currentCycleFor(cycles)` ⇒ the round a landing/link should describe from a
@@ -618,9 +620,9 @@ every changed backend file, then Playwright.
   cartbar deadline prints now that `closes_at` exists (§OPEN O2). Fills `desc` if it
   wants the prototype's sentences.
 - **→ 19 Standing guest link:** ~~pre-open page prints `nextOpeningText()`~~ **pre-open page
-  composes „Ďalšia objednávka sa otvorí približne {date} (…)“ from `fmtDay()` + `daysUntil()` +
+  composes „Ďalšia objednávka sa otvorí približne {date} (…)“ from `fmtDay()` + ~~`daysUntil()` +
   19's own `plural.js weeksAwayLabel()` (GL-T5; see learnings 11 §GL-T5 §2 — PO question on the two
-  registers)** („Ďalšia objednávka sa otvorí približne {date} ({o n týždňov})“).
+  registers)~~ `inWeeksText()` (GP-T7 — RESOLVED, PO 2026-09-24: one register)** („Ďalšia objednávka sa otvorí približne {date} ({o n týždňov})“).
 - **→ 21 WhatsApp:** the „closing soon“ template reads `closes_at`; the „arrived“ /
   „ready“ stage changes are NOT notification triggers (hand-over is — §11).
 

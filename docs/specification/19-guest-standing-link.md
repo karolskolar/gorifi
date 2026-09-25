@@ -258,7 +258,10 @@ no open cycle ⇒ 409 `closed`.
     kind: 'planned_date' | 'planned_note' | 'unknown' | 'open_elsewhere',
     opens_at: 'YYYY-MM-DD' | null,            // module 17 column; null when absent
     plan_note: string | null,
-    cycle_name: string | null                 // the planned (or, for open_elsewhere, the open) cycle
+    cycle_name: string | null,                // the planned (or, for open_elsewhere, the open) cycle
+    parcel_enabled: 0 | 1 | null              // GP-T7 (20 §PO decisions 2026-09-24 (3)), ADDITIVE: the OPEN
+                                              // round's flag for open_elsewhere; null for every other kind
+                                              // (a planned round's flag is the column default — not read)
   },
   stale_cycle: { id, name } | null,           // legacy-token case only (UC-GL-002 rule 4)
   preview: { cycle: { id, name }, products: [...] } | null,
@@ -429,14 +432,17 @@ scaffold):**
    `.sub` 14.5px: **„<b>{host.first_name}</b> vás pozýva do spoločnej objednávky výberovej kávy.“**
    followed by the `next` sentence:
    - `planned_date`: **„Ďalšia objednávka sa otvorí približne <b>{d. mmmm}</b> ({o N týždňov}).“** —
-     date formatted `sk-SK` day + month name (`3. októbra`); the parenthesis via a new
+     date formatted `sk-SK` day + month name (`3. októbra`); the parenthesis ~~via a new
      `lib/plural.js` `weeksAwayLabel(days)`: days ≤ 6 ⇒ „už tento týždeň“, else N = `Math.round(days/7)`
      ⇒ „o 1 týždeň“ / „o 2–4 týždne“ / „o 5+ týždňov“; a past `opens_at` ⇒ omit the parenthesis.
      **(GL-T5: shipped as written, `days` = `lib/cycle-stages.js daysUntil()`. ⚠ It DIFFERS from 17's
      `inWeeksText()` for the same sentence on the friend side — 17's PO decision O6 prints „o n dní“
      under a week and nothing for today; this draft prints „už tento týždeň“ for 0–6. Two registers,
      one shared declension (`weeksLabel`); PO question raised in the GL-T5 report, not resolved at a
-     call site.)**
+     call site.)**~~ → **RESOLVED, PO 2026-09-24 (GP-T7, 20 §PO decisions 2026-09-24 (4)): ONE register —
+     the parenthesis is `lib/cycle-stages.js inWeeksText(opens_at)` („o 1 deň“ / „o 3 dni“ / „o 6 dní“
+     under a week, then „o N týždeň/týždne/týždňov“); TODAY and a past `opens_at` ⇒ `null` ⇒ the
+     parenthesis is omitted. `weeksAwayLabel` is deleted.**
    - `planned_note`: **„Ďalšia objednávka: {plan_note}“** (admin text verbatim).
    - `unknown`: **„O ďalšej objednávke dáme vedieť.“** (resolved conflict 5).
    - `open_elsewhere` (stale legacy link): h1 becomes **„Táto objednávka je už uzavretá“**, `.sub`:
@@ -444,6 +450,8 @@ scaffold):**
      odkaz.“** (name repeated to avoid a gendered pronoun for the host).
    Then the **roasters line** (UC-GL-007 rule 4).
 3. **„Ako to funguje“ card** — `div.field-lbl` „Ako to funguje“ + `GuestSteps` full layout (UC-GL-007).
+   **GP-T7 (20 §PO decisions 2026-09-24 (3)):** step 3's Packeta clause is ~~ON unless `next.parcel_enabled`
+   is an explicit `0`~~ ALWAYS on for planned_date / planned_note / unknown; the stale `open_elsewhere` variant follows the OPEN round's real flag (orchestrator decision 2026-09-25: a planned round's `parcel_enabled` is the column default 0, never written at plan time, so it is not a real „off").
 4. **Waitlist card** (`data-testid="waitlist-form"`, rendered only when `waitlist.available`):
    `.display` 22px **„Dajte mi vedieť“** · `.sub` **„Pošleme jednu správu, keď sa objednávka otvorí. Nič
    viac.“** · field **Meno** (`inp`, placeholder „Meno a priezvisko“, `maxlength=120`, required) · field
@@ -511,7 +519,8 @@ Content (prototype `G2.steps`, verbatim; `{host}` interpolated with `hostName`):
   centred, gap 8, titles only.
 - ⚠ Step 3's Packeta clause is TRUE only once module 20 ships guest Packeta. Until then the text reads
   **„Od {host}.“** — implemented as a prop `packeta: Boolean` (default `false`) that appends the clause;
-  module 20 flips it on when `cycle.parcel_enabled`. Named here so 20 does not have to rediscover it.
+  module 20 flips it on when `cycle.parcel_enabled` (GP-T3) — and, on the pre-open page, unless
+  ~~`next.parcel_enabled === 0`~~ → always, except `open_elsewhere` follows the open round's flag (GP-T7). Named here so 20 does not have to rediscover it.
 - Content source: the step texts are constants in this component (they are guest-specific and do not
   exist in module 18's six-step content). The **roasters line** (rule 4) is NOT: it reads
   `lib/roasters.js` (module 18's one home for Goriffee / Robo texts). Open dependency: if 19 lands
@@ -772,7 +781,7 @@ module milestone with `--workers=1`, all five `RATE_LIMIT_*_MAX` raised, output 
 - `OPEN:` PO sign-off on ALL drafted Slovak strings (hoist them as constants in the new spec files, the
   14-module two-place-edit precedent): the closed ticker, „Zatvorené“ / „Objednávky sú zatvorené“ /
   „Táto objednávka je už uzavretá“, the four `next` sentences incl. „O ďalšej objednávke dáme vedieť.“
-  and the `weeksAwayLabel` forms, the waitlist card copy + button + the two success banners, „Minulá
+  and the ~~`weeksAwayLabel` forms~~ (→ `inWeeksText`, PO 2026-09-24, GP-T7), the waitlist card copy + button + the two success banners, „Minulá
   ponuka“ / „len na prezretie“, the standing-section lines in the dialog + confirm box + „Nový stály
   odkaz“, `waitingLabel` forms, the admin card labels, the server's 409 `open` message, and
   `document.title`. **+ GL-T7's vocabulary re-wordings (the four `routes/guest.js` 409s, the two host

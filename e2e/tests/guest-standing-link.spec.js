@@ -1180,7 +1180,10 @@ test.describe('GL-T1 · source pins', () => {
 // ═════════════════════════════════════════════════════════════════════════════
 
 const PREOPEN_KEYS = ['host', 'next', 'page', 'preview', 'stale_cycle', 'waitlist']
-const NEXT_KEYS = ['cycle_name', 'kind', 'opens_at', 'plan_note']
+// ⚠ RE-POINTED by GP-T7 (PO decision (3) 2026-09-24): + `parcel_enabled` (ADDITIVE —
+// the OPEN round's `0|1` for `open_elsewhere`, `null` for every other kind: a planned
+// round's flag is the column default, not a decision — orchestrator 2026-09-25).
+const NEXT_KEYS = ['cycle_name', 'kind', 'opens_at', 'parcel_enabled', 'plan_note']
 // UC-GL-003 rule 4 / acceptance — keys the pre-open body must NEVER carry.
 const PREOPEN_FORBIDDEN_KEYS = ['iban', 'revolut_username', 'token', 'invite_code', 'availability', 'guest_link_token', 'payment', 'stock_limit_g']
 
@@ -1236,17 +1239,17 @@ test.describe('GL-T2 · 19 §UC-GL-003 — the pre-open payload (throwaway boot)
       expect(none.body.page).toBe('preopen')
       expect(none.body.host, 'first name only (firstName(), the shipped rule)').toEqual({ first_name: 'Janka' })
       expect(Object.keys(none.body.next).sort()).toEqual(NEXT_KEYS)
-      expect(none.body.next, 'no planned cycle at all').toEqual({ kind: 'unknown', opens_at: null, plan_note: null, cycle_name: null })
+      expect(none.body.next, 'no planned cycle at all').toEqual({ kind: 'unknown', opens_at: null, plan_note: null, cycle_name: null, parcel_enabled: null })
       expect(none.body.stale_cycle, 'a standing token is never stale (rule 6)').toBe(null)
       expect(none.body.waitlist).toEqual({ available: true })
 
       expect(out.blank.body.next, 'a planned cycle with neither a date nor a note is still `unknown`')
-        .toEqual({ kind: 'unknown', opens_at: null, plan_note: null, cycle_name: 'blank' })
-      expect(out.note.body.next).toEqual({ kind: 'planned_note', opens_at: null, plan_note: 'po Vianociach', cycle_name: 'note only' })
+        .toEqual({ kind: 'unknown', opens_at: null, plan_note: null, cycle_name: 'blank', parcel_enabled: null })
+      expect(out.note.body.next).toEqual({ kind: 'planned_note', opens_at: null, plan_note: 'po Vianociach', cycle_name: 'note only', parcel_enabled: null })
       expect(out.dated.body.next, 'a DATED planned cycle beats an undated one with a lower id')
-        .toEqual({ kind: 'planned_date', opens_at: '2026-11-20', plan_note: null, cycle_name: 'dated later' })
+        .toEqual({ kind: 'planned_date', opens_at: '2026-11-20', plan_note: null, cycle_name: 'dated later', parcel_enabled: null })
       expect(out.sooner.body.next, 'the EARLIEST date wins; its plan_note rides along')
-        .toEqual({ kind: 'planned_date', opens_at: '2026-11-05', plan_note: 'aj poznámka', cycle_name: 'dated sooner' })
+        .toEqual({ kind: 'planned_date', opens_at: '2026-11-05', plan_note: 'aj poznámka', cycle_name: 'dated sooner', parcel_enabled: null })
       expect(out.afterLocked.body.next.cycle_name, 'a locked cycle is not „next"').toBe('dated sooner')
       expect(out.afterLocked.body.preview.cycle.name, '…it is the preview').toBe('newer locked')
 
@@ -1478,13 +1481,13 @@ test.describe('GL-T2 · 19 §UC-GL-002 — resolveEntry (throwaway boot)', () =>
       expect(a.status).toBe(200)
       expect(a.body.page).toBe('preopen')
       expect(a.body.stale_cycle, 'rule 6 — {id, name} only').toEqual({ id: out.ids.old, name: 'old round' })
-      expect(a.body.next, 'nothing open elsewhere ⇒ the planned round, like a standing token').toEqual({ kind: 'planned_date', opens_at: '2026-12-01', plan_note: null, cycle_name: 'coming' })
+      expect(a.body.next, 'nothing open elsewhere ⇒ the planned round, like a standing token').toEqual({ kind: 'planned_date', opens_at: '2026-12-01', plan_note: null, cycle_name: 'coming', parcel_enabled: null })
       expect(a.body.waitlist.available).toBe(true)
 
       const b = out.lockedNewerOpen
       expect(b.status).toBe(200)
       expect(b.body.page).toBe('preopen')
-      expect(b.body.next, 'open_elsewhere: the OPEN round\'s name, no date, no note').toEqual({ kind: 'open_elsewhere', opens_at: null, plan_note: null, cycle_name: 'new round' })
+      expect(b.body.next, 'open_elsewhere: the OPEN round\'s name, no date, no note').toEqual({ kind: 'open_elsewhere', opens_at: null, plan_note: null, cycle_name: 'new round', parcel_enabled: 0 })
       expect(b.body.waitlist, 'no contacts for a round already in progress').toEqual({ available: false })
       expect(b.body.stale_cycle).toEqual({ id: out.ids.old, name: 'old round' })
       expect(JSON.stringify(b.body), 'NEVER the newer round\'s catalogue').not.toContain(`"cycle":{"id":${out.ids.newer}`)
@@ -1641,7 +1644,7 @@ test.describe('GL-T2 · 19 §UC-GL-002 — the resolver matrix over HTTP', () =>
     expect(Object.keys(body).sort()).toEqual(PREOPEN_KEYS)
     expect(body.page).toBe('preopen')
     expect(body.stale_cycle).toEqual({ id: old.id, name: old.name })
-    expect(body.next).toEqual({ kind: 'open_elsewhere', opens_at: null, plan_note: null, cycle_name: newer.name })
+    expect(body.next).toEqual({ kind: 'open_elsewhere', opens_at: null, plan_note: null, cycle_name: newer.name, parcel_enabled: 0 })
     expect(body.waitlist).toEqual({ available: false })
     expect(body.host).toEqual({ first_name: host.name.split(' ')[0] })
     for (const key of PREOPEN_FORBIDDEN_KEYS) expect(text, `no "${key}" key`).not.toContain(`"${key}"`)
@@ -1717,7 +1720,8 @@ function preopenBody(next, extra = {}) {
   return {
     page: 'preopen',
     host: { first_name: 'Janka' },
-    next: { opens_at: null, plan_note: null, cycle_name: null, ...next },
+    // GP-T7: + `parcel_enabled: null` — the server's shape (NEXT_KEYS) for a round-less `next`.
+    next: { opens_at: null, plan_note: null, cycle_name: null, parcel_enabled: null, ...next },
     stale_cycle: null,
     preview: null,
     waitlist: { available: next.kind !== 'open_elsewhere' },
@@ -1756,8 +1760,8 @@ test.describe('GL-T2 · GuestOrder.vue — the preopen-hero placeholder', () => 
     await page.setViewportSize(GL2_PHONE)
     const TOKEN = 'PREOPENMOCKED2'
     const cases = [
-      // GL-T5 retarget: a PAST `opens_at` — GL-T5's `weeksAwayLabel()` adds „(o N týždňov)"
-      // to a FUTURE one, so a fixed calendar date would change this sentence with the
+      // GL-T5 retarget: a PAST `opens_at` — ~~GL-T5's `weeksAwayLabel()`~~ `inWeeksText()`
+      // (GP-T7, PO decision (4)) adds „(o N dní/týždňov)" to a FUTURE one, so a fixed calendar date would change this sentence with the
       // wall clock. A past date omits the parenthesis (19 §UC-GL-006 item 2) and keeps
       // GL-T2's exact sentence; the parenthesis is pinned by the GL-T5 describes.
       [preopenBody({ kind: 'planned_date', opens_at: '2020-10-03', cycle_name: 'X' }), 'Objednávky sú zatvorené', 'Ďalšia objednávka sa otvorí približne 3. októbra.'],
@@ -2366,18 +2370,38 @@ async function gl5Open(page, token, body, opts = {}, viewport = GL2_PHONE) {
   return seen
 }
 
-test.describe('GL-T5 · 19 §UC-GL-006 — weeksAwayLabel() (lib/plural.js, imported by plain node)', () => {
+// ⚠ RE-POINTED by GP-T7 (PO decision (4) 2026-09-24 — the friend register „o n dní",
+// 17 O6, on the guest pre-open page too): ~~`plural.js weeksAwayLabel(days)` — past ⇒
+// "", 0–6 ⇒ „už tento týždeň", else „o N týždňov"~~ is DELETED; the pre-open „(…)" is
+// `lib/cycle-stages.js inWeeksText(opens_at)`, ONE home. The same 20 day offsets, now
+// through the one function: today and the past ⇒ `null` (the view prints no
+// parenthesis), 1–6 ⇒ days, else weeks rounded.
+test.describe('GP-T7 · 19 §UC-GL-006 — the pre-open „(…)" is inWeeksText() (lib/cycle-stages.js, imported by plain node)', () => {
   test.skip(!HAS_FRONTEND_SRC, NEEDS_FRONTEND_SRC)
 
-  test('every branch: not-a-number / past ⇒ "", 0–6 ⇒ „už tento týždeň", else „o N" rounded, declined by weeksLabel', async () => {
-    const { weeksAwayLabel } = await import('file://' + join(FRONTEND_SRC_DIR, 'lib', 'plural.js'))
-    const cases = [
-      [null, ''], [undefined, ''], [NaN, ''], [Infinity, ''], ['7', ''], [-1, ''], [-30, ''],
-      [0, 'už tento týždeň'], [1, 'už tento týždeň'], [6, 'už tento týždeň'],
+  test('every branch: unparsable / past / today ⇒ null, 1–6 ⇒ „o n dni/dní", else „o N" weeks rounded; `weeksAwayLabel` is gone', async () => {
+    const { inWeeksText } = await import('file://' + join(FRONTEND_SRC_DIR, 'lib', 'cycle-stages.js'))
+    const plural = await import('file://' + join(FRONTEND_SRC_DIR, 'lib', 'plural.js'))
+    expect(plural.weeksAwayLabel, 'no second three-branch copy in plural.js').toBeUndefined()
+    const view = stripComments(readFileSync(join(FRONTEND_SRC_DIR, 'views', 'GuestOrder.vue'), 'utf8'))
+    expect(view, 'readability gate').toContain('preopen-next')
+    expect(view, 'the view takes the parenthesis from the ONE home').toContain('away: inWeeksText(next.opens_at)')
+    expect(view).not.toMatch(/weeksAwayLabel|už tento týždeň/)
+    const today = new Date(2026, 8, 25, 12, 0, 0)
+    const iso = (n) => {
+      const d = new Date(2026, 8, 25 + n)
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    }
+    // [label, argument, expected] — five raw non-dates, then day offsets from `today`
+    const raw = [null, undefined, '2026-02-30', 'zajtra', 7].map((v) => [`raw ${String(v)}`, v, null])
+    const days = [
+      [-1, null], [-30, null], [0, null], [1, 'o 1 deň'], [3, 'o 3 dni'], [6, 'o 6 dní'],
       [7, 'o 1 týždeň'], [10, 'o 1 týždeň'], [11, 'o 2 týždne'], [14, 'o 2 týždne'], [21, 'o 3 týždne'],
-      [28, 'o 4 týždne'], [31, 'o 4 týždne'], [32, 'o 5 týždňov'], [35, 'o 5 týždňov'], [70, 'o 10 týždňov'],
-    ]
-    for (const [days, want] of cases) expect(weeksAwayLabel(days), String(days)).toBe(want)
+      [28, 'o 4 týždne'], [31, 'o 4 týždne'], [32, 'o 5 týždňov'], [70, 'o 10 týždňov'],
+    ].map(([n, want]) => [`${n} days`, iso(n), want])
+    const cases = [...raw, ...days]
+    expect(cases).toHaveLength(20)
+    for (const [label, arg, want] of cases) expect(inWeeksText(arg, today), label).toBe(want)
   })
 })
 
@@ -2425,15 +2449,18 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
     await expect(hero.locator('.mono'), 'nothing new in the hero carries .mono (GL-T4 rule)').toHaveCount(0)
   })
 
-  test('the date parenthesis: 3 days ⇒ „(už tento týždeň)", a PAST date ⇒ none, 10 days ⇒ „(o 1 týždeň)"', async ({ page }) => {
+  // ⚠ RE-POINTED by GP-T7 (PO decision (4)): ~~3 days ⇒ „(už tento týždeň)"~~ → „(o 3 dni)";
+  // TODAY now prints no parenthesis (`inWeeksText` ⇒ null) — the sentence stays well formed.
+  test('the date parenthesis: 3 days ⇒ „(o 3 dni)", 1 ⇒ „(o 1 deň)", TODAY and a PAST date ⇒ none, 10 days ⇒ „(o 1 týždeň)"', async ({ page }) => {
     const TOKEN = 'GLFIVEWEEKS222'
-    for (const [n, tail] of [[3, ' (už tento týždeň).'], [-2, '.'], [10, ' (o 1 týždeň).']]) {
+    for (const [n, tail] of [[3, ' (o 3 dni).'], [1, ' (o 1 deň).'], [0, '.'], [-2, '.'], [10, ' (o 1 týždeň).']]) {
       const iso = gl5Day(n)
       await page.unroute(`**/api/guest/${TOKEN}`)
       await page.unroute(`**/api/guest/${TOKEN}/waitlist`)
       await gl5Open(page, TOKEN, gl5Body({ kind: 'planned_date', opens_at: iso, cycle_name: 'X' }))
       const day = new Date(`${iso}T00:00:00`).toLocaleDateString('sk-SK', { day: 'numeric', month: 'long' })
       await expect(page.getByTestId('preopen-next'), `${n} days`).toHaveText(`Ďalšia objednávka sa otvorí približne ${day}${tail}`)
+      await expect(page.getByTestId('preopen-next'), `${n} days: never an empty parenthesis`).not.toContainText('()')
     }
   })
 
@@ -2462,7 +2489,9 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
     await expect(card.locator('.field-lbl')).toHaveText('Ako to funguje')
     await expect(card.getByTestId('guest-step')).toHaveCount(3)
     await expect(card.getByTestId('guest-step-title')).toHaveText(GL4_STEPS)
-    await expect(card.getByTestId('guest-step-detail')).toHaveText([...GL4_DETAILS, 'Od Janka.'])
+    // ⚠ RE-POINTED by GP-T7 (PO decision (3)): ~~„Od Janka."~~ — the default body's
+    // an unknown/planned `next` kind ALWAYS shows the Packeta clause (GP-T7, learnings 12 §48).
+    await expect(card.getByTestId('guest-step-detail')).toHaveText([...GL4_DETAILS, 'Od Janka, alebo si ju nechajte poslať cez Packetu.'])
     const tile = await card.getByTestId('guest-step').first().evaluate((s) => {
       const r = s.firstElementChild.getBoundingClientRect()
       return [r.width, r.height]
@@ -3630,5 +3659,91 @@ test.describe('GL-T6b/T6c · source pins — cycleId = null, one mount', () => {
     expect(mount[0]).toContain(':cycle-id="shareCycleId"')
     expect(mount[0]).not.toContain('activeCycleId')
     expect(mount[0], 'the name goes with the id').toContain(`:cycle-name="shareCycleId ? (cycle?.name || '') : ''"`)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GP-T7 · PO decision (3) 2026-09-24 — the pre-open „Ako to funguje" Packeta clause
+// ═════════════════════════════════════════════════════════════════════════════
+// `next.parcel_enabled` (ADDITIVE). ~~The card shows the clause UNLESS it is an explicit `0`.~~
+// → FINAL RULE (2026-09-25, learnings 12 §48): planned/unknown kinds ALWAYS show the clause
+// (a planned round's flag defaults to 0 and is not a real „off", so it is published `null`);
+// `open_elsewhere` follows the OPEN round's real flag (PO: Packeta in ~all future rounds).
+test.describe('GP-T7 · (3) the pre-open payload publishes the next round\'s parcel flag (throwaway boot)', () => {
+  test.skip(!HAS_BACKEND_SRC, NEEDS_BACKEND_SRC)
+
+  test('a PLANNED round never publishes its flag (null, ON or OFF — the column default is not a decision); nothing planned ⇒ null; open_elsewhere carries the OPEN round\'s real flag', () => {
+    const { file, cleanup } = tempDb()
+    try {
+      const out = probe(file, GL2_FIXTURE() + `
+        const host = mkF('Janka Hostiteľová');
+        const tok = sl.ensureStandingToken(host);
+        const r = {};
+        r.none = L(tok).body.next;
+        const p = cyc('planned', 'planned', { opens_at: '2026-11-20' });
+        r.off = L(tok).body.next;
+        db.run('UPDATE order_cycles SET parcel_enabled = 1 WHERE id = ?', [p]);
+        r.on = L(tok).body.next;
+        // a legacy link on a locked round while a newer one is OPEN (D7's stale variant)
+        const old = cyc('old', 'locked');
+        const legacy = 'GPSEVENLEGACY2';
+        db.run('INSERT INTO guest_order_links (token, host_friend_id, cycle_id) VALUES (?, ?, ?)', [legacy, host, old]);
+        const open = cyc('open one', 'open');
+        r.elsewhereOff = L(legacy).body.next;
+        db.run('UPDATE order_cycles SET parcel_enabled = 1 WHERE id = ?', [open]);
+        r.elsewhereOn = L(legacy).body.next;
+        return r;
+      `, { helper: true, guest: true })
+      expect(out.none, 'no planned round ⇒ null (the card then SHOWS the clause)').toEqual({ kind: 'unknown', opens_at: null, plan_note: null, cycle_name: null, parcel_enabled: null })
+      expect(out.off.parcel_enabled, 'a planned round with the column default 0 ⇒ null').toBe(null)
+      expect(out.on, 'a planned round switched ON is not published either').toEqual({ kind: 'planned_date', opens_at: '2026-11-20', plan_note: null, cycle_name: 'planned', parcel_enabled: null })
+      expect(out.elsewhereOff).toEqual({ kind: 'open_elsewhere', opens_at: null, plan_note: null, cycle_name: 'open one', parcel_enabled: 0 })
+      expect(out.elsewhereOn.parcel_enabled, 'the open round\'s own flag').toBe(1)
+      for (const n of [out.none, out.off, out.on, out.elsewhereOff, out.elsewhereOn]) {
+        expect(Object.keys(n).sort()).toEqual(NEXT_KEYS)
+      }
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+test.describe('GP-T7 · (3) the pre-open „Ako to funguje" card ALWAYS shows the Packeta clause, except a stale link whose OPEN round has parcels off', () => {
+  // Orchestrator decision 2026-09-25: a PLANNED round's `parcel_enabled` is the column
+  // default 0 (never written at plan time), so it is not read — planned_date /
+  // planned_note / unknown ALWAYS show the clause, even with a (stray) 0 in the payload.
+  const ON = 'Od Janka, alebo si ju nechajte poslať cez Packetu.'
+  const OFF = 'Od Janka.'
+  const cases = [
+    ['planned_date, parcel_enabled null', { kind: 'planned_date', opens_at: gl5Day(28), cycle_name: 'X', parcel_enabled: null }, ON],
+    ['planned_date, a stray 0 is IGNORED', { kind: 'planned_date', opens_at: gl5Day(28), cycle_name: 'X', parcel_enabled: 0 }, ON],
+    ['planned_note, a stray 0 is IGNORED', { kind: 'planned_note', plan_note: 'po Vianociach', cycle_name: 'X', parcel_enabled: 0 }, ON],
+    ['unknown, nothing planned (null)', { kind: 'unknown', parcel_enabled: null }, ON],
+    ['an OLDER server without the key', { kind: 'unknown', parcel_enabled: undefined }, ON],
+  ]
+  for (const [label, next, want] of cases) {
+    test(`${label} ⇒ the clause`, async ({ page }) => {
+      await gl5Open(page, 'GPSEVENSTEPS22', gl5Body(next))
+      const detail = page.getByTestId('preopen-steps').getByTestId('guest-step-detail')
+      await expect(detail, 'non-vacuity: three details').toHaveCount(3)
+      await expect(detail.nth(2)).toHaveText(want)
+    })
+  }
+
+  test('the STALE variant (open_elsewhere) follows the OPEN round\'s real flag: 0 / missing ⇒ no clause, 1 ⇒ the clause', async ({ page }) => {
+    for (const [flag, want] of [[0, OFF], [undefined, OFF], [1, ON]]) {
+      await page.unroute('**/api/guest/GPSEVENSTALE22')
+      await page.unroute('**/api/guest/GPSEVENSTALE22/waitlist')
+      await gl5Open(page, 'GPSEVENSTALE22', gl5Body({ kind: 'open_elsewhere', cycle_name: 'Nové', parcel_enabled: flag }, { stale_cycle: { id: 1, name: 'Staré' } }))
+      await expect(page.getByTestId('preopen-steps').getByTestId('guest-step-detail').nth(2), String(flag)).toHaveText(want)
+    }
+  })
+
+  test('source pin: ONE computed still feeds all three mounts; only open_elsewhere reads the flag', () => {
+    test.skip(!HAS_FRONTEND_SRC, NEEDS_FRONTEND_SRC)
+    const view = stripComments(readFileSync(join(FRONTEND_SRC_DIR, 'views', 'GuestOrder.vue'), 'utf8'))
+    expect(view, 'readability gate').toContain('preopen-steps')
+    expect(view).toMatch(/const stepsPacketa = computed\(\(\) => \(preopen\.value\s*\?\s*preopenParcelAllowed\(preopen\.value\.next\)\s*:\s*parcelEnabled\.value\)\)/)
+    expect(view).toMatch(/function preopenParcelAllowed\(next\) \{\s*if \(next\?\.kind === 'open_elsewhere'\) return Number\(next\.parcel_enabled\) === 1\s*return true\s*\}/)
   })
 })

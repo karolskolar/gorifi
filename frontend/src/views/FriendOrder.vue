@@ -208,7 +208,7 @@ const showSuccessModal = ref(false)
 // ⚠ `successModalMessage` ("Vaša objednávka bola úspešne odoslaná!" /
 // "…bola aktualizovaná!") is RETIRED, for the same reason `successMessage` was one
 // row earlier: 04 resolved conflict #4 gives the success modal ONE subtitle on both
-// paths — "Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia objednávok." —
+// paths — "Objednávka bola odoslaná. Môžete ju upraviť až do uzavretia objednávok." —
 // so the ref had a writer, a reader and no remaining variation to carry.
 // `wasAlreadySubmitted` in `doSubmitOrder()` went with it; nothing else read it.
 const showCancelModal = ref(false)
@@ -1459,7 +1459,7 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
       :title="cycle?.name || ''"
       :subtitle="friend?.name || ''"
       :ticker="isLocked
-        ? '+++ OBJEDNÁVKY UZAMKNUTÉ +++ DRŽ JAZYK ZA ZUBAMI +++'
+        ? '+++ OBJEDNÁVKY UZAVRETÉ +++ DRŽ JAZYK ZA ZUBAMI +++'
         : '+++ OBJEDNÁVKY OTVORENÉ +++ NEHOVOR O TOM NAHLAS +++'"
     >
       <template #leading>
@@ -1476,7 +1476,7 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
         </span>
       </template>
       <template #trailing>
-        <span v-if="isLocked" class="chip" title="Objednávky sú uzamknuté">
+        <span v-if="isLocked" class="chip" title="Objednávky sú uzavreté">
           <NeoIcon name="lock" />
         </span>
         <span v-else class="chip acc">Otvorené</span>
@@ -1538,11 +1538,11 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
            „bola odoslaná!" would be about a DIFFERENT round. -->
       <div v-if="isLocked && !isReadonly" class="banner warn">
         <span class="dot"></span>
-        <div style="min-width:0"><b>Objednávky sú uzamknuté.</b> Už nie je možné meniť objednávku.</div>
+        <div style="min-width:0"><b>Objednávky sú uzavreté.</b> Už nie je možné meniť objednávku.</div>
       </div>
       <div v-else-if="!isReadonly && isSubmitted && cartItems.length > 0 && !hasUnsubmittedChanges" class="banner ok">
         <span class="dot"></span>
-        <div style="min-width:0"><b>Vaša objednávka bola odoslaná!</b> Stále ju môžete upraviť až do uzamknutia.</div>
+        <div style="min-width:0"><b>Vaša objednávka bola odoslaná!</b> Stále ju môžete upraviť až do uzavretia.</div>
       </div>
 
       <!-- Messages. Page-level, so they sit ABOVE the switch: the order can be
@@ -2434,7 +2434,7 @@ defineExpose({ openShareDialog, cartTotal, ownOrder, openPaymentModal })
     <NeoModal
       v-if="showSuccessModal"
       title="Hotovo!"
-      subtitle="Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia objednávok."
+      subtitle="Objednávka bola odoslaná. Môžete ju upraviť až do uzavretia objednávok."
       @close="handleSuccessModalClose"
     >
       <!-- Payment block only when the admin configured payment settings at all;

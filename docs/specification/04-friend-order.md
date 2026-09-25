@@ -60,7 +60,7 @@
 4. **Success-modal copy.** The repo distinguishes "Vaša objednávka bola úspešne
    odoslaná!" vs "Vaša objednávka bola aktualizovaná!". The prototype uses one static
    subtitle for both paths. Prototype copy is final → both first submit and update show
-   ~~"…až do uzamknutia cyklu."~~ **"Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia objednávok."**
+   ~~"…až do uzamknutia cyklu."~~ **"Objednávka bola odoslaná. Môžete ju upraviť až do ~~uzamknutia~~ uzavretia objednávok."**
    (re-worded by 18 §UC-PI-017, PI-T11); the
    "aktualizovaná" variant is **dropped**.
 5. **Dirty-warning dismissability.** The prototype's cartbar warning has no close
@@ -117,7 +117,7 @@ the auth restore this view depends on) landed.
    - `#trailing`: locked/planned/completed → `span.chip` with `NeoIcon name="lock"`;
      open → `span.chip.acc` with text **"Otvorené"**.
    - `ticker`: open → `"+++ OBJEDNÁVKY OTVORENÉ +++ NEHOVOR O TOM NAHLAS +++"`;
-     locked → `"+++ OBJEDNÁVKY UZAMKNUTÉ +++ DRŽ JAZYK ZA ZUBAMI +++"` (verbatim).
+     locked → `"+++ OBJEDNÁVKY ~~UZAMKNUTÉ~~ UZAVRETÉ +++ DRŽ JAZYK ZA ZUBAMI +++"` (verbatim).
    - The chrome is NOT sticky and scrolls away (02 UC-DS-005/006). This **removes** the
      current sticky header — the top edge belongs to `.cat-tabs` (UC-FO-004).
 3. Page column below the chrome: `max-width:760px`, centered, `width:100%`, padding
@@ -159,8 +159,8 @@ the auth restore this view depends on) landed.
 
 | Condition (shipped, unchanged) | Renders |
 |---|---|
-| `isLocked` | `.banner.warn`: `<b>Objednávky sú uzamknuté.</b> Už nie je možné meniť objednávku.` |
-| `isSubmitted && !isLocked && cartItems.length > 0 && !hasUnsubmittedChanges` | `.banner.ok`: `<b>Vaša objednávka bola odoslaná!</b> Stále ju môžete upraviť až do uzamknutia.` |
+| `isLocked` | `.banner.warn`: `<b>Objednávky sú ~~uzamknuté~~ uzavreté.</b> Už nie je možné meniť objednávku.` |
+| `isSubmitted && !isLocked && cartItems.length > 0 && !hasUnsubmittedChanges` | `.banner.ok`: `<b>Vaša objednávka bola odoslaná!</b> Stále ju môžete upraviť až do ~~uzamknutia~~ uzavretia.` |
 | otherwise | nothing |
 
 Below it (independent, unchanged conditions): transient `error` → `.banner.danger.slim`
@@ -681,7 +681,7 @@ the profile default updates only when the checkbox was ticked.
 **Goal:** the post-submit modal with inline payment.
 
 **Composition:** `NeoModal`, `closable`, `title="Hotovo!"`,
-`subtitle="Objednávka bola odoslaná. Môžete ju upraviť až do uzamknutia objednávok."` (was „…cyklu.", 18 §UC-PI-017)
+`subtitle="Objednávka bola odoslaná. Môžete ju upraviť až do ~~uzamknutia~~ uzavretia objednávok."` (was „…cyklu.", 18 §UC-PI-017)
 (both paths — resolved conflict #4). Footer: `button.btn` "OK".
 
 **Body (top to bottom; payment block only when `hasPaymentSettings`):**
@@ -771,7 +771,7 @@ completed}` — shipped definition, unchanged).
 **Business rules (deltas from the open state; everything else renders identically):**
 
 - Chrome: `chip` with lock icon instead of "Otvorené"; locked ticker copy (UC-FO-001).
-- `.banner.warn` "Objednávky sú uzamknuté…" as the only status banner (UC-FO-002).
+- `.banner.warn` "Objednávky sú ~~uzamknuté~~ uzavreté…" as the only status banner (UC-FO-002).
 - Every `NeoStepper` gets `disabled` (`.stepper.disabled` — 0.35 opacity,
   pointer-events none, plus the `disabled` attribute); `setQuantity` guards stay as
   belt-and-braces.

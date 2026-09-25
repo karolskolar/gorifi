@@ -228,6 +228,7 @@ append the full write-up to the matching learnings file and add at most one line
 - Guest aggregates: CYCLE-level totals include guests; per-FRIEND aggregates never do. Merge the guest half in
   JS, never as a second `LEFT JOIN` on `orders` (row multiplication corrupts `orders_count`); cycle-level guest
   counts use correlated subqueries. Guest kg lives in its own map (`guestKgMap`) — folding it in doubles money.
+- A stored `guest_email` satisfies Packeta ONLY if `storedEmailUsable()` (`EMAIL_SHAPE`) — an unshaped via_host e-mail is ABSENT and the edit's body e-mail replaces it through the compare-and-swap `AND guest_email IS ?` (bound to the value read); a VALID one stays write-once. Client mirror: `GuestOrderStatus.vue editNeedsEmail` via `lib/email-shape.js` (GP-T7).
 - Guest cancel = `status='cancelled'`, `total=0`, `delivery_fee=0` (GP-T1), item rows AND `packeta_address` KEPT;
   every consumer filters on status. `cancelled` is terminal. Destructive guest edits require a literal `items: []`. A paid sub-order is frozen for item edits
   (`items_editable`) but cancellable → refund queue; host DELETE refuses 409 `paid`.
@@ -364,7 +365,7 @@ append the full write-up to the matching learnings file and add at most one line
   = `currentCycle ?? catalogCycle` (`currentCycle` is NULL under `closed`), ways from
   `api.getPickupLocations('coffee')` — the argument is load-bearing. The WhatsApp mention, „(PayMe)",
   „— Karol" and both roaster texts are PO copy: reproduce, never improve — PI-T8),
-  `LandingStateModal.vue` (the landing's „Objednávky sú zatvorené/uzamknuté" modal; `title`/`intro`/`lead` are
+  `LandingStateModal.vue` (the landing's „Objednávky sú zatvorené/~~uzamknuté~~ uzavreté" modal — GP-T7; `title`/`intro`/`lead` are
   PROPS because PI-T5's no-order locked variant is the same modal with three strings — never a second one),
   `PickupLocationPicker.vue` (props `cycleId`+`friendId`, never an order id), `lib/plural.js`,
   `CycleTimeline.vue` (props `cycle`/`variant` `vertical|compact`/`steps`; ONE component for both
@@ -453,6 +454,7 @@ append the full write-up to the matching learnings file and add at most one line
 - A spec that greps `.vue` SOURCE must strip `//` comments BEFORE `/* */`: `@/components/ui/*` in a line
   comment opens a fake block comment that swallowed 16 709 chars and turned a source pin green (PI-T3).
   Every absence pin needs a readability gate (stripped length vs raw) beside it.
+- Friend/guest lock copy is „uzavreté" (PO 2026-09-24): no `/uzamk/i` anywhere in the friend+guest import closure or the friend 403s (`portal-vocabulary.spec.js` GP-T7); ADMIN labels „Uzamknúť/Odomknúť/Uzamknutý"/„· uzamknuté" stay and are pinned as staying. The pre-open „(…)" is `cycle-stages.js inWeeksText()` (`plural.js weeksAwayLabel` is DELETED — a delegation would be a circular import), and the pre-open Packeta clause is ALWAYS on except `open_elsewhere`, which follows the OPEN round's `next.parcel_enabled` — a PLANNED round's flag is the column default 0, never read (GP-T7).
 - The „cyklus/kolo" ban has ONE regex, `e2e/helpers/vocabulary.js BANNED` (union of three spellings, all ten case forms incl. „kôl"/„kolám"/„kolami"; JS `\b` is ASCII-only), and the friend source guard's file set is the router's IMPORT CLOSURE (`importClosure()`), never a typed list — a new friend component is guarded by being imported (PI-T11).
 - The ban's source guard covers `VOCABULARY_ROOTS` = friend ∪ GUEST roots (`GUEST_SURFACE_ROOTS`, pinned EQUAL to `router.js`'s `/g/…` components) plus the guest SERVER: all of `routes/guest.js`, the non-`requireAdmin` blocks of `routes/guest-orders.js` — admin strings keep „Cyklus", pinned (GL-T7).
 - A rendered-copy sweep reads the app's OWN copy: `e2e/helpers/copy-sweep.js` (one home, text + `placeholder`/

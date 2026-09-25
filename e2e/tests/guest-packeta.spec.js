@@ -1221,8 +1221,10 @@ test.describe('GP-T1 · source pins', () => {
     expect(edit).toContain('.run(total, deliveryFee, delivery.address, order.id)')
     // the items-only write (absent flag ⇒ untouched) is still there
     expect(edit).toContain(`UPDATE guest_orders SET total = ?, status = 'submitted' WHERE id = ?`)
-    // the write-once predicate IS the guard (D3)
-    expect(edit).toContain('UPDATE guest_orders SET guest_email = ? WHERE id = ? AND guest_email IS NULL')
+    // the write-once predicate IS the guard (D3). ⚠ RE-POINTED by GP-T7 (PO decision (1)
+    // 2026-09-24): ~~`AND guest_email IS NULL`~~ → a compare-and-swap on the value read,
+    // so an UNSHAPED stored e-mail can be replaced too (the GP-T7 describe below).
+    expect(edit).toContain('UPDATE guest_orders SET guest_email = ? WHERE id = ? AND guest_email IS ?')
     expect(guest.match(/guest_email\s*=/g), 'guest_email is SET in exactly one place in the public route').toHaveLength(1)
     expect(edit, 'never a spread body').not.toMatch(/\.\.\.\s*req\.body/)
     expect(edit, 'no ledger').not.toMatch(/transactions/)
@@ -3435,5 +3437,135 @@ test.describe('GP-T6 review · the rejoin gate — a Packeta guest cannot land i
     await expect(sub.getByTestId(`guest-delivery-confirm-${s.B.id}`)).toBeVisible()
     await expect(sub.getByTestId(`guest-packeta-badge-${s.B.id}`)).toBeVisible()
     expect(guestRow(s.B.id).packeta_address).toBe(POINT)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GP-T7 · PO decision (1) 2026-09-24 — an UNSHAPED stored e-mail blocks Packeta
+// ═════════════════════════════════════════════════════════════════════════════
+// Supersedes GP-T2's „any non-null stored e-mail counts" (learnings 12 §10 / 20 §OPEN):
+// wherever Packeta is chosen and the row already carries a `guest_email` that fails
+// `EMAIL_SHAPE`, that value is treated as ABSENT — the body must supply a valid one
+// (the existing 400 messages otherwise), and it REPLACES the unshaped one. A VALID
+// stored e-mail stays write-once. The checkout half needed no change: a Packeta
+// submit already requires a shaped e-mail (the 400 matrix above, rows „e-mail x" and
+// „e-mail no dot"), so an unshaped value can only have entered through via_host.
+test.describe('GP-T7 · (1) an unshaped stored e-mail is ABSENT for Packeta', () => {
+  for (const stored of ['x', 'jana@localhost']) {
+    test(`a via_host order stored with „${stored}": the Packeta switch requires a valid body e-mail and REPLACES it (both URL forms); the new one is then write-once`, async () => {
+      test.skip(!DB_PATH, NEEDS_DB)
+      const s = await scenario(`gp7m${stored.length}`, { fee: 3.5 })
+      for (const form of ['canonical', 'legacy']) {
+        const o = await submitOk(s.link.token, viaHostBody(s.items, { guest_email: stored }))
+        expect(guestRow(o.order.id).guest_email, 'the via_host checkout keeps its unshaped optional e-mail').toBe(stored)
+        const put = form === 'canonical' ? editCanonical(o) : editLegacy(s.link, o)
+        const before = editRow(o.order.id)
+        const packeta = { items: twoBags(s), use_parcel_delivery: true, packeta_address: POINT }
+
+        // No body e-mail / blank / unshaped ⇒ the existing Packeta messages, nothing written.
+        for (const [extra, err] of [[{}, ERR_EMAIL_MISSING], [{ guest_email: '  ' }, ERR_EMAIL_MISSING],
+          [{ guest_email: 'y' }, ERR_EMAIL_SHAPE], [{ guest_email: 42 }, ERR_EMAIL_SHAPE]]) {
+          const res = await put({ ...packeta, ...extra })
+          expect(res.status(), `${form} ${JSON.stringify(extra)}`).toBe(400)
+          expect(await res.json(), `${form} ${JSON.stringify(extra)}`).toEqual({ error: err, field: 'guest_email' })
+          expect(editRow(o.order.id), `${form}: a refusal writes nothing`).toEqual(before)
+        }
+
+        const valid = `gp7.${form}.${uniq}.${++phoneSeq}@example.test`
+        const ok = await put({ ...packeta, guest_email: `  ${valid}  ` })
+        expect(ok.status(), await ok.text()).toBe(200)
+        expect(editRow(o.order.id), `${form}: the unshaped value is REPLACED`).toMatchObject({
+          guest_email: valid, packeta_address: POINT, delivery_fee: 3.5, total: 49.8,
+          guest_name: before.guest_name, guest_phone: before.guest_phone,
+        })
+
+        // …and the now-VALID e-mail is write-once again (GP-T2's rule, unchanged).
+        const again = await put({ ...packeta, guest_email: `gp7.other.${uniq}.${++phoneSeq}@example.test` })
+        expect(again.status(), await again.text()).toBe(200)
+        expect(editRow(o.order.id).guest_email, `${form}: a valid stored e-mail is never rewritten`).toBe(valid)
+      }
+    })
+  }
+
+  test('a VALID stored e-mail stays write-once: a Packeta PUT with a garbage OR a different valid body e-mail ⇒ 200, the stored one untouched', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('gp7valid', { fee: 3.5 })
+    const mine = `gp7.mine.${uniq}.${++phoneSeq}@example.test`
+    const o = await submitOk(s.link.token, viaHostBody(s.items, { guest_email: mine }))
+    for (const guest_email of [undefined, 'x', `gp7.theirs.${uniq}@example.test`]) {
+      const res = await editCanonical(o)({ items: s.items, use_parcel_delivery: true, packeta_address: POINT, guest_email })
+      expect(res.status(), `${guest_email}: ${await res.text()}`).toBe(200)
+      expect(editRow(o.order.id).guest_email, String(guest_email)).toBe(mine)
+    }
+  })
+
+  test('an unshaped stored e-mail is NOT touched by a via_host PUT or an items-only PUT (the exception is the Packeta choice only)', async () => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('gp7keep', { fee: 3.5 })
+    const o = await submitOk(s.link.token, viaHostBody(s.items, { guest_email: 'x' }))
+    for (const extra of [{ use_parcel_delivery: false }, {}]) {
+      const res = await editCanonical(o)({ items: twoBags(s), guest_email: `gp7.nope.${uniq}@example.test`, ...extra })
+      expect(res.status(), JSON.stringify(extra)).toBe(200)
+      expect(editRow(o.order.id).guest_email, JSON.stringify(extra)).toBe('x')
+    }
+  })
+
+  test('source pins: the gate asks EMAIL_SHAPE of the STORED value, and the write is a compare-and-swap on the value the handler read', () => {
+    const guest = stripComments(readBackend('routes/guest.js'))
+    const edit = guest.slice(guest.indexOf('function handleStatusEdit('), guest.indexOf('function handleInviteRequest('))
+    expect(edit, 'readability gate').toContain('res.json(statusPayload(link, cycle, loadOrder(order.id)))')
+    expect(edit, 'the gate asks the shape of the stored value').toContain('delivery.packeta && !storedEmailUsable(order.guest_email)')
+    expect(edit, 'the old „any non-null counts" gate is gone').not.toContain('delivery.packeta && !order.guest_email')
+    expect(guest).toMatch(/function storedEmailUsable\(value\) \{\s*return typeof value === 'string' && EMAIL_SHAPE\.test\(value\);\s*\}/)
+    // SQL guard: replaces ONLY the exact value the handler judged absent (NULL or that
+    // one unshaped string) — it can never clobber a value it did not read.
+    expect(edit).toContain('UPDATE guest_orders SET guest_email = ? WHERE id = ? AND guest_email IS ?')
+    expect(edit).toContain('.run(emailToStore, order.id, emailToReplace)')
+    expect(edit).toContain('emailToReplace = order.guest_email ?? null')
+    expect(guest.match(/guest_email\s*=/g), 'guest_email is SET in exactly one place in the public route').toHaveLength(1)
+  })
+})
+
+test.describe('GP-T7 · (1) the status-page edit UI mirrors the rule', () => {
+  test('a via_host order stored with an UNSHAPED e-mail: switching to Packeta shows „E-mail *", refuses client-side, then one save carrying the new e-mail', async ({ page }) => {
+    test.skip(!DB_PATH, NEEDS_DB)
+    const s = await scenario('gp7ui', { fee: 3.5 })
+    const o = await submitOk(s.link.token, viaHostBody(s.items, { guest_email: 'x' }))
+    const writes = gp4Writes(page, o.order.order_token)
+
+    await gp4Status(page, o)
+    await page.getByTestId('start-edit').click()
+    await expect(page.getByTestId('guest-delivery-via-host'), 'seeded via_host').toBeChecked()
+    await expect(page.getByTestId('edit-guest-email'), 'via_host — no e-mail input').toHaveCount(0)
+    await gp4EditRow(page, 'guest-delivery-packeta').click()
+    const input = page.getByTestId('edit-guest-email')
+    await expect(input, 'the stored „x" counts as absent').toBeVisible()
+    await expect(page.locator('label[for="edit-guest-email"]')).toHaveText(GP3_EMAIL_REQ)
+    await page.getByTestId('guest-packeta-address').fill(POINT)
+    await page.getByTestId('save-edit').click()
+    await expect(page.getByTestId('edit-error')).toHaveText(GP3_MSG_EMAIL)
+    expect(writes, 'no request for a client-side refusal').toEqual([])
+
+    const email = gp4Email()
+    await input.fill(email)
+    await page.getByTestId('save-edit').click()
+    await expect(page.getByTestId('status-packeta-address')).toHaveText(POINT)
+    expect(writes).toEqual([{
+      items: [{ product_id: s.product.id, variant: '250g', quantity: 1 }],
+      use_parcel_delivery: true, packeta_address: POINT, guest_email: email,
+    }])
+    await expect(page.locator('.card', { has: page.getByTestId('status-packeta-address') }).locator('.sub'))
+      .toHaveText(GP4_POINT_SUB(email))
+    expect(guestRow(o.order.id)).toMatchObject({ guest_email: email, packeta_address: POINT })
+    await page.getByTestId('start-edit').click()
+    await expect(page.getByTestId('guest-delivery-packeta')).toBeChecked()
+    await expect(page.getByTestId('edit-guest-email'), 'now shaped ⇒ write-once, no input').toHaveCount(0)
+  })
+
+  test('source pin: `editNeedsEmail` asks the ONE client EMAIL_SHAPE of the loaded order', () => {
+    test.skip(!HAS_SRC, NEEDS_SRC)
+    const view = frontCode('views/GuestOrderStatus.vue')
+    expect(view, 'readability gate').toContain('edit-guest-email')
+    expect(view).toContain("const editNeedsEmail = computed(() => editIsPacketa.value && !EMAIL_SHAPE.test(order.value?.guest_email || ''))")
   })
 })

@@ -172,9 +172,12 @@ const editAddress = ref('')
 const editEmail = ref('')
 const editIsPacketa = computed(() => parcelEnabled.value && editMethod.value === 'packeta')
 // ⚠ WRITE-ONCE (20 resolved conflict 2 / GP-T2 §10): the ONE identity field this PUT
-// may set, and only while the loaded order has none. Never shown when an e-mail
-// exists — no edit of an existing e-mail anywhere on this surface.
-const editNeedsEmail = computed(() => editIsPacketa.value && !order.value?.guest_email)
+// may set, and only while the loaded order has no USABLE one — ~~none~~ → GP-T7 (PO
+// decision (1) 2026-09-24): missing OR failing the ONE client `EMAIL_SHAPE`, the
+// mirror of the server's `storedEmailUsable()` (an unshaped via_host e-mail is
+// ABSENT for Packeta, and the body's replaces it). Never shown when a valid e-mail
+// exists — no edit of a valid e-mail anywhere on this surface.
+const editNeedsEmail = computed(() => editIsPacketa.value && !EMAIL_SHAPE.test(order.value?.guest_email || ''))
 // §UC-GP-005 rule 5: parcels switched OFF after the guest chose Packeta. The card is
 // hidden, the warn banner explains, and the save sends `false` (it clears both columns).
 const editParcelGone = computed(() => !parcelEnabled.value && isPacketaOrder.value)
@@ -520,7 +523,7 @@ async function submitEdit(body) {
            ~~Items-only by construction: there is no name/phone/email field anywhere in
            here.~~ → AMENDED by GP-T4 (20 §UC-GP-007 items 6-7): the delivery card and
            ONE write-once „E-mail *" input, shown only while the loaded order has NO
-           e-mail. Name/phone stay absent and an existing e-mail is never editable:
+           usable e-mail (GP-T7: missing or unshaped). Name/phone stay absent and an existing e-mail is never editable:
            identity is frozen at submit (GSO-T4) precisely because anyone holding the
            URL could otherwise rewrite someone else's contact details.
 
@@ -552,7 +555,7 @@ async function submitEdit(body) {
               :parcel-fee="parcelFee"
               :parcel-enabled="parcelEnabled"
             />
-            <!-- The write-once e-mail (GP-T2 §10): only while the loaded order has none. -->
+            <!-- The write-once e-mail (GP-T2 §10): only while the loaded order has no usable one (GP-T7). -->
             <div v-if="editNeedsEmail">
               <label class="field-lbl" for="edit-guest-email">E-mail *</label>
               <input

@@ -1734,7 +1734,7 @@ test.describe('⚠ PI-T10 — the profile modal auto-opens until Mobil is filled
 
     await expect(page.getByRole('dialog')).toHaveCount(1)
     const state = page.getByRole('dialog')
-    await expect(state.locator('.m-title')).toHaveText('Objednávky sú uzamknuté')
+    await expect(state.locator('.m-title')).toHaveText('Objednávky sú uzavreté')
     await expect(state).not.toContainText(PROFILE_TITLE)
 
     await state.getByRole('button', { name: 'Prezrieť ponuku' }).click()

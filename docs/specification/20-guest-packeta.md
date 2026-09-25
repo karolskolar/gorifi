@@ -92,7 +92,8 @@
 2. **GSO-T4 "identity is frozen on edit" vs R4.3 "e-mail mandatory when Packeta".** A guest
    who submitted „Prevezmem od {host}“ without an e-mail and later switches to Packeta in
    edit mode has no e-mail to require. Resolution (spec-author decision D3, PO sign-off
-   `OPEN:`): the edit PUT may **set `guest_email` once, only when it is currently NULL and
+   `OPEN:`): the edit PUT may **set `guest_email` once, only when it is currently ~~NULL~~
+   NULL or fails `EMAIL_SHAPE` (GP-T7, PO decision (1) 2026-09-24 — §PO decisions 2026-09-24) and
    `use_parcel_delivery === true`**. It is a write-once addition, never a rewrite — the
    freeze exists so a URL holder cannot rewrite *somebody else's* contact details, and an
    existing e-mail stays immutable. The alternative (409 the switch) recreates the "ask
@@ -350,11 +351,13 @@ delivery block under the friend rules (R4.5), additively.
    - `false` ⇒ `delivery_fee = 0`, `packeta_address = NULL`.
    - `true` ⇒ `cycle.parcel_enabled` must be truthy (else 400, the UC-GP-002 string);
      `packeta_address` validated exactly as UC-GP-002 (string, non-blank, ≤ 160);
-     **e-mail**: `order.guest_email` non-null, OR the body's `guest_email` is a string
-     passing `EMAIL_SHAPE` and ≤ 160 — then it is **stored once** (`UPDATE … SET guest_email
-     = ? WHERE id = ? AND guest_email IS NULL` — the predicate is the write-once guard; a
-     body `guest_email` while one already exists is **ignored**, never an error, never a
-     write). Missing on both sides ⇒ 400 `'Pri doručení Packetou zadajte e-mail'`.
+     **e-mail**: `order.guest_email` ~~non-null~~ **passing `EMAIL_SHAPE`** (GP-T7, PO decision
+     (1) 2026-09-24: an unshaped stored e-mail is ABSENT), OR the body's `guest_email` is a string
+     passing `EMAIL_SHAPE` and ≤ 160 — then it is **stored once** (~~`UPDATE … SET guest_email
+     = ? WHERE id = ? AND guest_email IS NULL`~~ → `UPDATE … SET guest_email = ? WHERE id = ?
+     AND guest_email IS ?` bound to the value read — a compare-and-swap, GP-T7; the predicate is
+     the write-once guard; a body `guest_email` while a VALID one already exists is **ignored**,
+     never an error, never a write). Missing on both sides ⇒ 400 `'Pri doručení Packetou zadajte e-mail'`.
      Then `delivery_fee = roundMoney(cycle.parcel_fee || 0)` **re-read inside the write
      transaction**, `packeta_address = <trimmed>`.
    - any other type ⇒ 400 `'Neplatný spôsob prevzatia'`.
@@ -864,20 +867,21 @@ five `RATE_LIMIT_*_MAX` raised, output to a file, `echo "EXIT: $?"`.
   and the guest has any unticked item. It never auto-unpacks. A synthetic host (no own order)
   is not gated. Both messages are PO drafts.
 - `OPEN:` **D3 (write-once e-mail on edit)** — confirm, or choose the 409 alternative.
-- `OPEN:` **An unshaped checkout e-mail blocks Packeta mail forever** (GP-T2 review,
+- ~~`OPEN:` **An unshaped checkout e-mail blocks Packeta mail forever** (GP-T2 review,
   2026-09-23; learnings 12 §10). A via_host checkout accepts an unshaped optional e-mail
   (§Accepted risks), and a later switch to Packeta treats it as „has e-mail" (§UC-GP-005
   rule 3: `order.guest_email` non-null). Because of D3 (write-once) the guest can never
   correct it, so Packeta may get an undeliverable address. Options: (a) a stored e-mail
   counts only if it passes `EMAIL_SHAPE` (an unshaped one is replaced by the body's on the
-  Packeta switch); (b) the admin can correct a guest's e-mail. Shipped: neither, pending PO.
+  Packeta switch); (b) the admin can correct a guest's e-mail. Shipped: neither, pending PO.~~
+  → **RESOLVED, PO 2026-09-24: option (a)** — GP-T7, §PO decisions 2026-09-24, learnings 12 §GP-T7.
 - `OPEN:` **Admin sets a Packeta point for a guest** (D5) — not in v1; confirm it can wait
   (the guest can do it via their edit URL while the cycle is open; after lock the admin
   has today no way to make a guest Packeta — is that acceptable for the first round?).
 - `OPEN:` Hero badge — show „Packeta +{fee}“ on the ordering page at all, or leave the
   fee to the checkout modal only? Default = show (portal2.jsx:160 shows the friend the
   same badge).
-- `OPEN:` **Pre-open steps card** (GP-T3, learnings 12 §18) — should the pre-open payload publish the next round's parcel flag so the pre-open `GuestSteps` card can show the Packeta clause? Off until decided.
+- ~~`OPEN:` **Pre-open steps card** (GP-T3, learnings 12 §18) — should the pre-open payload publish the next round's parcel flag so the pre-open `GuestSteps` card can show the Packeta clause? Off until decided.~~ → **RESOLVED, PO 2026-09-24**: the clause shows ~~UNLESS it is an explicit 0~~ ALWAYS, except a stale `open_elsewhere` link follows the open round's `next.parcel_enabled` (GP-T7 + orchestrator 2026-09-25, §PO decisions 2026-09-24).
 - `OPEN:` Should the guest see any Packeta-specific line in the **cartbar** (UC-GP-003 rule
   3 keeps the cartbar product-only and states the amount in the subtitle)? Default = no
   cartbar change.
@@ -912,3 +916,26 @@ write-up (§Supersedes list).
 - **Hero badge „Packeta +{fee}“** = YES. **Cartbar** = product-only; fee appears at checkout, confirmation and status.
 - **Slovak strings** = staging sign-off.
 - **Orchestrator clarification 2026-09-19 (refund mechanics):** cancel still zeroes the live `delivery_fee`, so the PO's „items + fee“ refund needs a value that survives cancel: add `guest_orders.delivery_fee_paid REAL` (CREATE + ALTER, lands with UC-GP-001's schema row), ~~written ONLY by the admin paid toggle (`paid=1` copies `delivery_fee`, `paid=0` sets NULL)~~ → SUPERSEDED, orchestrator decision 2026-09-23 (GP-T1 review), PENDING PO confirmation — learnings 12 §6: the fee part of what the guest was asked to pay, frozen at the FIRST of {paid, cancel}, with TWO writers — `softCancelGuestOrder` (`delivery_fee_paid = COALESCE(delivery_fee_paid, delivery_fee)` in the same statement that zeroes the fee; SQLite reads the OLD row) and the paid toggle (`paid=1` `COALESCE(delivery_fee_paid, delivery_fee)`, `paid=0` NULL on a live row but KEPT on a cancelled one). Closes the cancel-before-tick hole: pay 28.40 → cancel → admin ticks paid ⇒ refund 28.40, not 24.90. Refund `amount = ~~itemsAmount(row) + (delivery_fee_paid || 0)~~ itemsAmount(row) + (paid ? delivery_fee_paid || 0 : 0)` (paid-gated — GP-T1 review round 2; ⚠ and, since the GP-T5 review, Packeta-gated: `paid && packeta_address IS NOT NULL` — an admin switch to „cez {host}" settles the fee, orchestrator decision PENDING PO, §Accepted risks); the `packeta:true` marker stays. The UC-GP-006 / D4 / e2e „items-only“ wording is SUPERSEDED by this line.
+
+## PO decisions 2026-09-24 — follow-up before the staging test (GP-T7)
+
+> Recorded by the orchestrator; implemented by GP-T7 (learnings 12 §GP-T7). Each line
+> supersedes the text it names above, which carries a strike + pointer.
+
+- **(1) An unshaped stored e-mail blocks Packeta.** Wherever Packeta is chosen and the
+  order already has a stored `guest_email` that fails `EMAIL_SHAPE`, that value is treated
+  as ABSENT: the body must supply a valid one (400 with the existing Packeta e-mail messages
+  otherwise), and it REPLACES the stored one. A VALID stored e-mail stays write-once.
+  Supersedes GP-T2's „any non-null stored e-mail counts" (§UC-GP-005 rule 3, resolved
+  conflict 2 / D3). The submit already required a shaped e-mail for Packeta (unchanged);
+  `routes/guest.js storedEmailUsable()` + the compare-and-swap `AND guest_email IS ?`;
+  `GuestOrderStatus.vue editNeedsEmail` mirrors it through `lib/email-shape.js`.
+- **(2) Lock copy „uzamknuté" → „uzavreté"** on every friend/guest surface and the
+  friend-facing server messages (module 04/18 copy; admin labels unchanged).
+- **(3) Pre-open „Ako to funguje" Packeta clause** — ~~shown UNLESS the next round is an
+  explicit `parcel_enabled = 0` (also when nothing is planned)~~ → ALWAYS on for planned_date / planned_note / unknown; the stale `open_elsewhere` variant follows the OPEN round's real flag (orchestrator decision 2026-09-25: a planned round's `parcel_enabled` is the column default 0, never written at plan time, so it is not a real „off"). The pre-open
+  payload's `next` gains `parcel_enabled` (additive; `0|1` on `open_elsewhere`, `null` otherwise;
+  19 §UC-GL-003).
+- **(4) Next-opening wording under 7 days** — the guest pre-open page uses the friend
+  register „o n dní" (17 O6): `lib/cycle-stages.js inWeeksText()`; `plural.js
+  weeksAwayLabel` is deleted (19 §UC-GL-006).
