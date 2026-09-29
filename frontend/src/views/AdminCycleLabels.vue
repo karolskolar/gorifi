@@ -176,7 +176,7 @@ function printSheet() {
             <div class="contact" :class="{ missing: !label.phone }">{{ label.phone || '—' }}</div>
             <div v-if="label.place" class="place">Odber: {{ label.place }}</div>
             <div class="rule"></div>
-            <div class="items" data-role="items">
+            <div class="lbl-items" data-role="items">
               <div v-for="(item, k) in label.items" :key="k" class="item">
                 <span class="qty">{{ item.quantity }}×</span>
                 <span class="what">{{ itemLine(item) }}</span>
@@ -267,7 +267,7 @@ function printSheet() {
   margin: 2mm 0 1.6mm;
 }
 
-.items {
+.lbl-items {
   font-size: 8.5pt;
   line-height: 1.28;
   flex: 1;
@@ -282,7 +282,7 @@ function printSheet() {
 /* Auto-fit fallback — see fitAll(). Applied per label, never globally, so one
    long order does not shrink the type on everyone else's sticker. */
 .label.dense .name { font-size: 11.5pt; }
-.label.dense .items { font-size: 7pt; line-height: 1.18; }
+.label.dense .lbl-items { font-size: 7pt; line-height: 1.18; }
 
 .packeta-tag {
   align-self: flex-start;

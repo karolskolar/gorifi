@@ -310,3 +310,24 @@ the admin skin; it is not a defect this row should fix silently under a closeout
 
 **Full suite at the milestone:** see the DP-T8 log entry in `PROGRESS.md` for the exact
 totals and the skip list of the run this row gated on.
+
+## §F7-wired — the labels sheet meets the board (delivery merge, 2026-09-29)
+
+`order-labels-pdf` (the A4 8-up sheet: `AdminCycleLabels.vue`, `GET /api/cycles/:id/labels`,
+`requireAdmin`) was merged on GitHub and deployed to production on 2026-09-06. Local `main`
+had moved on by then. It was merged into local main BEFORE the module 15–20 delivery, because a
+production deploy rsyncs local files and would otherwise have deleted the feature.
+
+What changed at that merge:
+- The board header's „Vytlačiť štítky" is no longer the DP-T5 disabled placeholder. It opens
+  `/admin/cycle/:id/labels` (`data-testid="board-labels"`).
+- The per-GROUP „Štítky" buttons are still placeholders carrying `LABELS_ROUTE`, because the
+  sheet only prints a whole cycle.
+- `api-security.spec.js` gained the labels route in `ADMIN_ENDPOINTS`.
+- `cycle-labels.spec.js` adopted `makeAdmin()` (FUP-T27 §5 reddened on its private helper).
+- The sheet's `.items` class became `.lbl-items`, because PI-T12's admin-invariance sweep reads
+  `items` as a friends-theme class.
+
+⚠ NOT DONE, recorded: the labels route predates module 20. It was not reviewed for guest
+Packeta parties (`packeta_address IS NOT NULL` sub-orders are their own party since GP-T6),
+so whether a Packeta guest gets an address label is unverified.
