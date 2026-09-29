@@ -1062,6 +1062,9 @@ function goToStatus() {
         />
         <!-- 20 §UC-GP-003 item 2 (roadmap §19, recast) — only while Packeta is chosen. -->
         <div v-if="isPacketa" class="field-help" data-testid="guest-email-help">Packeta ti naň pošle informácie o zásielke.</div>
+        <!-- PO 2026-09-29: what the OPTIONAL e-mail buys — the UC-GR-011 confirmation mail
+             carrying the status link. The Packeta branch keeps its own line above. -->
+        <div v-else class="field-help" data-testid="guest-email-confirm-help">Pošleme ti naň potvrdenie s odkazom, kde uvidíš stav objednávky.</div>
       </div>
 
       <!-- Client-side messages verbatim (§UC-GX-003); server errors keep the

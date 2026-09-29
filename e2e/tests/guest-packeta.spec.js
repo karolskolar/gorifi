@@ -1259,6 +1259,7 @@ const GP3_POINT_HELP = (host) => `Názov Z-BOXu alebo pobočky a mesto. Balík t
 const GP3_EMAIL_OPT = 'E-mail (nepovinné)'
 const GP3_EMAIL_REQ = 'E-mail *'
 const GP3_EMAIL_HELP = 'Packeta ti naň pošle informácie o zásielke.'
+const GP3_EMAIL_CONFIRM_HELP = 'Pošleme ti naň potvrdenie s odkazom, kde uvidíš stav objednávky.'
 const GP3_SUB_HOST = (amount, host) => `Suma na úhradu: ${amount}. Platba prevodom, tovar ti odovzdá ${host}.`
 const GP3_SUB_PACKETA = (amount) => `Suma na úhradu: ${amount}. Platba prevodom, balík ti doručí Packeta.`
 const GP3_MSG_POINT = 'Zadaj výdajné miesto Packety.'
@@ -1336,7 +1337,9 @@ test.describe('GP-T3 · 20 §UC-GP-003 — a parcel-OFF round renders today\'s p
     await expect(dialog.locator('input[type="radio"]')).toHaveCount(0)
     await expect(dialog.getByTestId('guest-packeta-address')).toHaveCount(0)
     await expect(dialog.getByText(GP3_GROUP_LBL)).toHaveCount(0)
-    await expect(dialog.locator('.field-help')).toHaveCount(0)
+    // PO 2026-09-29: the optional e-mail carries ONE help line — what it buys.
+    await expect(dialog.locator('.field-help')).toHaveCount(1)
+    await expect(dialog.getByTestId('guest-email-confirm-help')).toHaveText(GP3_EMAIL_CONFIRM_HELP)
     await expect(dialog.locator('label.field-lbl[for="guest-email"]')).toHaveText(GP3_EMAIL_OPT)
     await expect(dialog.locator('.m-head .sub')).toHaveText(GP3_SUB_HOST('24.90 EUR', s.first))
   })
@@ -1389,6 +1392,7 @@ test.describe('GP-T3 · 20 §UC-GP-003 — the delivery choice on a parcel-ON ro
 
     await expect(dialog.locator('label.field-lbl[for="guest-email"]')).toHaveText(GP3_EMAIL_REQ)
     await expect(dialog.getByTestId('guest-email-help')).toHaveText(GP3_EMAIL_HELP)
+    await expect(dialog.getByTestId('guest-email-confirm-help'), 'Packeta keeps its own line only').toHaveCount(0)
     await expect(dialog.getByTestId('guest-email')).toHaveAttribute('maxlength', '160')
     await expect(dialog.locator('.m-head .sub')).toHaveText(GP3_SUB_PACKETA('28.40 EUR'))
     await expect(dialog.locator('.m-head .sub b')).toHaveClass(/\bmono\b/)
@@ -1399,6 +1403,7 @@ test.describe('GP-T3 · 20 §UC-GP-003 — the delivery choice on a parcel-ON ro
     await gp3ChooseViaHost(dialog)
     await expect(dialog.getByTestId('guest-packeta-address')).toHaveCount(0)
     await expect(dialog.getByTestId('guest-email-help')).toHaveCount(0)
+    await expect(dialog.getByTestId('guest-email-confirm-help')).toHaveText(GP3_EMAIL_CONFIRM_HELP)
     await expect(dialog.locator('label.field-lbl[for="guest-email"]')).toHaveText(GP3_EMAIL_OPT)
     await expect(dialog.locator('.m-head .sub')).toHaveText(GP3_SUB_HOST('24.90 EUR', s.first))
   })

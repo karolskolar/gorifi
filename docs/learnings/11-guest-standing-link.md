@@ -1211,3 +1211,12 @@ guest-status line in `cycle-stages.spec.js`.
 one row per roaster, badge then text. These are the same words a member reads on „Ako to
 funguje". `ROASTERS[].short` is deleted, and the GL-T4 test compares rows against
 `[label, text]` from the library.
+
+## §E-mail-help — what the optional checkout e-mail buys (PO 2026-09-29)
+
+The via-host checkout's optional e-mail now carries one help line:
+`data-testid="guest-email-confirm-help"`, reading „Pošleme ti naň potvrdenie s odkazom, kde uvidíš
+stav objednávky." It sits in the `v-else` of the Packeta line, so exactly one `.field-help`
+renders under the field in either branch. The Packeta branch keeps its own „Packeta ti naň pošle
+informácie o zásielke." unchanged (PO). `guest-packeta.spec.js` GP-T3 pins both directions: the
+parcel-off body now has ONE `.field-help` (it was zero), and the Packeta branch has no confirm line.
