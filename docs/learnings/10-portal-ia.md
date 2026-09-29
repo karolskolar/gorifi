@@ -3094,5 +3094,8 @@ The PO rewrote the explainer's copy. `PortalExplainer.vue` changed as follows:
    with the Packeta fee badge ON.
 4. The note now ends „…napíš mi na WhatsApp a určite doriešime." and is signed **„— Lego"**,
    with an **„L"** avatar (it used to be „— Karol" / „K").
-5. „Ak si tu nový/á" is the PO's own slash form. Reproduce it; do not „fix" it into the
+5. Round 2 (same day): the Bratislava sentence says „v okolí **mojej** práce" (it said „Legovej"), the
+   intro is first-person singular („otvorím objednávky, nakúpim …", but still „rozdáme si"), and way 2
+   is titled **„Cez priateľa / kolegu"**. `portal-explainer.spec.js` pins the full intro and that title.
+6. „Ak si tu nový/á" is the PO's own slash form. Reproduce it; do not „fix" it into the
    gender-neutral rule.

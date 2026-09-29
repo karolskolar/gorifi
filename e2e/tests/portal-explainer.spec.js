@@ -399,10 +399,11 @@ test.describe('PI-T8 · 18 §UC-PI-012 item 4 — the three ways', () => {
     await expect(ways(page)).toHaveCount(3)
     await expect(ways(page).nth(0)).toContainText('Odberné miesto v Bratislave')
     await expect(page.getByTestId('explainer-pickup-line')).toHaveText(
-      'Ak si z Petržalky, alebo v okolí Legovej práce, môžem ti kávu doniesť cestou. Ak si tu nový/á, '
+      'Ak si z Petržalky, alebo v okolí mojej práce, môžem ti kávu doniesť cestou. Ak si tu nový/á, '
       + 'over si vopred, či mám kapacitu doručovať kam potrebuješ. Stále však môžeš počítať s donáškou cez Packetu.')
     await expect(ways(page).nth(0).locator('.badge')).toHaveText('zdarma')
     await expect(ways(page).nth(1)).toContainText('Objednávaš cez odkaz od priateľa? Kávu prevezme on/ona a odovzdá ti ju.')
+    await expect(ways(page).nth(1).locator('b')).toHaveText('Cez priateľa / kolegu')
     await expect(ways(page).nth(1).locator('.badge')).toHaveText('zdarma')
     await expect(ways(page).nth(2)).toContainText(
       'Nie si z Bratislavy? Objednaj si a nechaj poslať cez Packetu — na ľubovoľný Z-BOX alebo výdajné miesto.')
@@ -497,7 +498,8 @@ test.describe('PI-T8 · 18 §UC-PI-012 — heading, payment, the note, the actio
     await expect(page.getByRole('heading', { name: /Káva\s*pod\s*pultom\s*,\s*spolu\./ })).toBeVisible()
     await expect(page.getByRole('heading', { level: 1 }).locator('.p2-hl')).toHaveText('pultom')
     await expect(explainer(page)).toContainText(
-      'Podpultovka je spoločná objednávka výberovej kávy pre okruh priateľov.')
+      'Podpultovka je spoločná objednávka výberovej kávy pre okruh priateľov. Raz za pár týždňov otvorím objednávky, '
+      + 'nakúpim priamo v pražiarni za lepšiu cenu a rozdáme si to medzi sebou.')
   })
 
   test('⚠ „(PayMe)" STAYS in „Ako platím" — 15 shipped it deliberately', async ({ page }) => {

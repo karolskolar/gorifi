@@ -149,7 +149,7 @@ function done() {
 
     <p class="sub" style="font-size:15px;line-height:1.45;margin:0">
       Podpultovka je spoločná objednávka výberovej kávy pre okruh priateľov. Raz za pár
-      týždňov otvoríme objednávky, nakúpime priamo v pražiarni za lepšiu cenu a rozdáme si
+      týždňov otvorím objednávky, nakúpim priamo v pražiarni za lepšiu cenu a rozdáme si
       to medzi sebou.
     </p>
 
@@ -190,7 +190,7 @@ function done() {
             <!-- PO copy 2026-09-29: the Bratislava row is a personal delivery offer, no
                  longer the list of pickup points (the checkout picker still lists them). -->
             <div class="sub" style="font-size:13.5px;line-height:1.4;margin-top:3px" data-testid="explainer-pickup-line">
-              Ak si z Petržalky, alebo v okolí Legovej práce, môžem ti kávu doniesť cestou. Ak si
+              Ak si z Petržalky, alebo v okolí mojej práce, môžem ti kávu doniesť cestou. Ak si
               tu nový/á, over si vopred, či mám kapacitu doručovať kam potrebuješ. Stále však
               môžeš počítať s donáškou cez Packetu.
             </div>
@@ -203,7 +203,7 @@ function done() {
           <span style="display:flex;flex-shrink:0;padding-top:2px"><NeoIcon name="invite" /></span>
           <div style="min-width:0;flex:1;overflow-wrap:anywhere">
             <div style="display:flex;align-items:center;gap:8px">
-              <b style="font-size:15px">Cez priateľa</b>
+              <b style="font-size:15px">Cez priateľa / kolegu</b>
               <span class="badge ok" style="margin-left:auto;flex-shrink:0">zdarma</span>
             </div>
             <div class="sub" style="font-size:13.5px;line-height:1.4;margin-top:3px">
