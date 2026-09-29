@@ -230,7 +230,7 @@ const unavailableTitle = computed(() => {
 })
 
 watchEffect(() => {
-  document.title = cycle.value?.name ? `${cycle.value.name} - Vaša objednávka` : 'Vaša objednávka'
+  document.title = cycle.value?.name ? `${cycle.value.name} - Tvoja objednávka` : 'Tvoja objednávka'
 })
 
 onMounted(load)
@@ -384,11 +384,11 @@ function stopEditing() {
 // `{ items: [] }` and nothing else (delivery keys in a cancel are ignored anyway).
 function editDeliveryProblem() {
   if (!editIsPacketa.value) return ''
-  if (!editAddress.value.trim()) return 'Zadajte výdajné miesto Packety.'
+  if (!editAddress.value.trim()) return 'Zadaj výdajné miesto Packety.'
   if (editNeedsEmail.value) {
     const email = editEmail.value.trim()
-    if (!email) return 'Pri doručení Packetou zadajte e-mail.'
-    if (!EMAIL_SHAPE.test(email)) return 'Zadajte platný e-mail.'
+    if (!email) return 'Pri doručení Packetou zadaj e-mail.'
+    if (!EMAIL_SHAPE.test(email)) return 'Zadaj platný e-mail.'
   }
   return ''
 }
@@ -486,7 +486,7 @@ async function submitEdit(body) {
          resolver is deliberately 404-only), so they land on the read-only banner
          below — never here. -->
     <template v-if="unavailable">
-      <GuestBrandHeader subtitle="Vaša objednávka" />
+      <GuestBrandHeader subtitle="Tvoja objednávka" />
 
       <div class="flex-1 flex items-center justify-center p-5 sm:p-10">
         <div
@@ -502,7 +502,7 @@ async function submitEdit(body) {
           <span class="badge danger" style="font-size:13px;padding:6px 14px;transform:rotate(-2deg);display:inline-flex;align-items:center;gap:4px"><NeoIcon name="lock" /><span>Slepá ulička</span></span>
           <h1 class="h-screen text-[32px] sm:text-[38px]">{{ unavailableTitle }}</h1>
           <div class="sub" style="font-size:14px">{{ unavailable.message }}</div>
-          <div class="sub" style="font-size:13.5px">Skontrolujte, či je odkaz skopírovaný celý. Ak nie, požiadajte kolegu, ktorý objednávku organizuje.</div>
+          <div class="sub" style="font-size:13.5px">Skontroluj, či je odkaz skopírovaný celý. Ak nie, požiadaj kolegu, ktorý objednávku organizuje.</div>
         </div>
       </div>
     </template>
@@ -513,7 +513,7 @@ async function submitEdit(body) {
            `GuestBrandHeader`s under separate `v-if`s would remount the ticker on
            every entry into edit mode. Also mounted ABOVE the loading state, so the
            chrome never flashes in and out. -->
-      <GuestBrandHeader :subtitle="editing ? 'Úprava objednávky' : 'Vaša objednávka'" />
+      <GuestBrandHeader :subtitle="editing ? 'Úprava objednávky' : 'Tvoja objednávka'" />
 
       <div v-if="loading" class="mx-auto w-full max-w-[520px] px-4 sm:px-7 py-4 sm:py-7 flex-1">
         <div class="sub" style="text-align:center;padding:32px 0">Načítavam…</div>
@@ -533,7 +533,7 @@ async function submitEdit(body) {
         <div class="mx-auto w-full max-w-[760px] px-4 sm:px-7 py-4 sm:py-7 pb-2 sm:pb-2 flex flex-col gap-[14px] flex-1">
           <div class="banner slim">
             <span class="dot"></span>
-            <span style="min-width:0">Upravujete objednávku pre <b>{{ order?.guest_name }}</b>. Zmeny sa prejavia po uložení.</span>
+            <span style="min-width:0">Upravuješ objednávku pre <b>{{ order?.guest_name }}</b>. Zmeny sa prejavia po uložení.</span>
           </div>
 
           <!-- A 400 (bounds, or a stock limit whose per-product detail lines ride in
@@ -568,12 +568,12 @@ async function submitEdit(body) {
                 inputmode="email"
                 maxlength="160"
               />
-              <div class="field-help" data-testid="edit-guest-email-help">Packeta vám naň pošle informácie o zásielke.</div>
+              <div class="field-help" data-testid="edit-guest-email-help">Packeta ti naň pošle informácie o zásielke.</div>
             </div>
           </div>
           <!-- §UC-GP-005 rule 5 — parcels OFF, order still Packeta: the save sends `false`. -->
           <div v-else-if="editParcelGone" class="banner warn slim" data-testid="edit-parcel-unavailable">
-            <span class="dot"></span><span style="min-width:0">Doručenie Packetou už nie je dostupné — objednávku vám odovzdá <span data-user-copy>{{ host?.first_name }}</span>.</span>
+            <span class="dot"></span><span style="min-width:0">Doručenie Packetou už nie je dostupné — objednávku ti odovzdá <span data-user-copy>{{ host?.first_name }}</span>.</span>
           </div>
 
           <!-- The SHARED grid (GSO-T4: one home, two screens — extend, never fork).
@@ -646,7 +646,7 @@ async function submitEdit(body) {
           <!-- The prototype adds "a odovzdá" to the shipped line; the separate
                "Tovar vám odovzdá {host}." footer line is dropped as a result. -->
           <!-- 20 §UC-GP-007 item 1 — ONE line each (Vue's condense would eat a newline). -->
-          <div class="sub" style="margin-top:8px"><template v-if="isPacketaOrder">Vaša objednávka · organizuje {{ host?.first_name }} · doručí Packeta</template><template v-else>Vaša objednávka · organizuje a odovzdá {{ host?.first_name }}</template></div>
+          <div class="sub" style="margin-top:8px"><template v-if="isPacketaOrder">Tvoja objednávka · organizuje {{ host?.first_name }} · doručí Packeta</template><template v-else>Tvoja objednávka · organizuje a odovzdá {{ host?.first_name }}</template></div>
           <div style="font-weight:700;margin-top:4px">{{ order?.guest_name }}</div>
         </div>
 
@@ -655,7 +655,7 @@ async function submitEdit(body) {
              replaces the pills outright rather than adding a third one. -->
         <div v-if="isCancelled" class="banner danger" data-testid="status-cancelled">
           <span class="dot"></span>
-          <span style="min-width:0">Táto objednávka bola <b>zrušená</b>. Ak si chcete objednať znova, požiadajte kolegu o odkaz na spoločnú objednávku.</span>
+          <span style="min-width:0">Táto objednávka bola <b>zrušená</b>. Ak si chceš objednať znova, požiadaj kolegu o odkaz na spoločnú objednávku.</span>
         </div>
 
         <!-- Flags with SINGLE OWNERS (GSO-T6 Decision 2): `paid` is the ADMIN's,
@@ -695,7 +695,7 @@ async function submitEdit(body) {
           style="padding:16px"
           data-testid="guest-timeline-card"
         >
-          <div class="field-lbl">Kde je vaša káva</div>
+          <div class="field-lbl">Kde je tvoja káva</div>
           <CycleTimeline :cycle="cycle" />
         </div>
 
@@ -741,7 +741,7 @@ async function submitEdit(body) {
         <div v-if="isPacketaOrder" class="card" style="padding:16px" data-testid="status-packeta-card">
           <span class="field-lbl">Výdajné miesto Packeta</span>
           <div style="font-weight:700;overflow-wrap:anywhere" data-testid="status-packeta-address" data-user-copy>{{ order.packeta_address }}</div>
-          <div v-if="order.guest_email" class="sub" style="margin-top:6px;overflow-wrap:anywhere">Packeta vám pošle informácie o zásielke na <span data-user-copy>{{ order.guest_email }}</span>.</div>
+          <div v-if="order.guest_email" class="sub" style="margin-top:6px;overflow-wrap:anywhere">Packeta ti pošle informácie o zásielke na <span data-user-copy>{{ order.guest_email }}</span>.</div>
         </div>
 
         <!-- ================= actions, by state (§UC-GX-006 item 4) =================
@@ -839,7 +839,7 @@ async function submitEdit(body) {
     <NeoModal
       v-if="showCancelConfirm"
       title="Zrušiť objednávku?"
-      subtitle="Objednávka sa zruší a už ju nebude možné obnoviť. Ak si budete chcieť objednať znova, požiadajte kolegu o odkaz."
+      subtitle="Objednávka sa zruší a už ju nebude možné obnoviť. Ak si budeš chcieť objednať znova, požiadaj kolegu o odkaz."
       @close="showCancelConfirm = false"
     >
       <div class="banner danger slim">

@@ -214,7 +214,7 @@ test.describe('RD-GX-1 · g-order scaffold, brand header and hero (§UC-GX-001)'
 
     // Prototype copy — "Účet netreba" now lives in the appbar chip, so the shipped
     // sentence that repeated it is gone.
-    await expect(hero).toContainText('Vyberte si tovar, na konci zadáte len meno a telefón.')
+    await expect(hero).toContainText('Vyberieš si tovar, na konci zadáš len meno a telefón.')
     await expect(hero).not.toContainText('Účet netreba.')
   })
 })
@@ -426,7 +426,7 @@ test.describe('RD-GX-1 · the checkout modal (§UC-GX-003)', () => {
     await expect(dialog).toHaveCount(1)
     await expect(dialog.locator('.m-title')).toHaveText('Dokončiť objednávku')
     // Rich subtitle: the sum is mono and ink-coloured inside a `.sub` row.
-    await expect(dialog.locator('.m-head .sub')).toHaveText('Suma na úhradu: 12.50 EUR. Platba prevodom, tovar vám odovzdá Peto.')
+    await expect(dialog.locator('.m-head .sub')).toHaveText('Suma na úhradu: 12.50 EUR. Platba prevodom, tovar ti odovzdá Peto.')
     await expect(dialog.locator('.m-head .sub b')).toHaveClass(/\bmono\b/)
 
     // The × is a deliberate SYNONYM — Playwright matches accessible names as a
@@ -464,14 +464,14 @@ test.describe('RD-GX-1 · the checkout modal (§UC-GX-003)', () => {
     // Client messages verbatim (§UC-GX-003); the server re-validates anyway.
     await dialog.getByTestId('guest-submit').click()
     const err = dialog.getByTestId('checkout-error')
-    await expect(err).toHaveText('Zadajte svoje meno.')
+    await expect(err).toHaveText('Zadaj svoje meno.')
     await expect(dialog.locator('.banner.danger.slim')).toHaveCount(1)
     await expect(dialog.locator('.banner.danger.slim .dot')).toHaveCount(1)
 
     await dialog.getByTestId('guest-name').fill('Marek Shell')
     await dialog.getByTestId('guest-phone').fill('0901 23')
     await dialog.getByTestId('guest-submit').click()
-    await expect(err).toHaveText('Zadajte telefónne číslo (aspoň 9 číslic).')
+    await expect(err).toHaveText('Zadaj telefónne číslo (aspoň 9 číslic).')
   })
 
   test('⚠ the footer FITS at 320px — measured against min-content, not the flex-resolved width', async ({ page }) => {

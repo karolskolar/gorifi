@@ -61,7 +61,7 @@ import { stripComments } from '../helpers/source-pins.js'
 import { BANNED } from '../helpers/vocabulary.js'
 import { collectAppCopy } from '../helpers/copy-sweep.js'
 import { gotoCycle } from '../helpers/portal.js'
-import { STANDING_GUEST_LINK, STANDING_PARKED } from '../helpers/features.js'
+import { STANDING_GUEST_LINK, STANDING_PARKED, GUEST_WAITLIST, WAITLIST_PARKED } from '../helpers/features.js'
 
 const DB_PATH = process.env.DB_PATH || ''
 const NEEDS_DB = 'needs direct DB access — set DB_PATH to the database the server runs on'
@@ -1440,7 +1440,7 @@ test.describe('GL-T2 · 19 §UC-GL-002 — resolveEntry (throwaway boot)', () =>
         r.empty = L('');
         return r;
       `, { helper: true, guest: true })
-      const INACTIVE = { error: 'Tento odkaz už nie je aktívny. Požiadajte kolegu o nový.', reason: 'inactive' }
+      const INACTIVE = { error: 'Tento odkaz už nie je aktívny. Požiadaj kolegu o nový.', reason: 'inactive' }
       expect(out.inactiveHost).toEqual({ status: 410, body: INACTIVE })
       expect(out.inactiveHostSubmit).toEqual({ status: 410, ...INACTIVE })
       expect(out.inactiveRows, 'a deactivated host\'s standing token opens NO door and writes nothing').toEqual([])
@@ -1602,7 +1602,7 @@ test.describe('GL-T2 · 19 §UC-GL-002 — the resolver matrix over HTTP', () =>
     const res = await ctx.get(`/api/guest/${s}`)
     expect(res.status()).toBe(410)
     expect(res.headers()['cache-control'], 'refusals are no-store too').toContain('no-store')
-    expect(await res.json()).toEqual({ error: 'Tento odkaz už nie je aktívny. Požiadajte kolegu o nový.', reason: 'inactive' })
+    expect(await res.json()).toEqual({ error: 'Tento odkaz už nie je aktívny. Požiadaj kolegu o nový.', reason: 'inactive' })
     const sub = await ctx.post(`/api/guest/${s}/orders`, {
       data: { guest_name: 'Kolega', guest_phone: '0905 111 222', items: [{ product_id: product.id, variant: '250g', quantity: 1 }] },
     })
@@ -1768,7 +1768,7 @@ test.describe('GL-T2 · GuestOrder.vue — the preopen-hero placeholder', () => 
       [preopenBody({ kind: 'planned_date', opens_at: '2020-10-03', cycle_name: 'X' }), 'Objednávky sú zatvorené', 'Ďalšia objednávka sa otvorí približne 3. októbra.'],
       [preopenBody({ kind: 'planned_note', plan_note: 'po Vianociach', cycle_name: 'X' }), 'Objednávky sú zatvorené', 'Ďalšia objednávka: po Vianociach'],
       [preopenBody({ kind: 'unknown' }), 'Objednávky sú zatvorené', 'O ďalšej objednávke dáme vedieť.'],
-      [preopenBody({ kind: 'open_elsewhere', cycle_name: 'Nové' }, { stale_cycle: { id: 1, name: 'Staré' } }), 'Táto objednávka je už uzavretá', 'Janka má práve otvorenú novú objednávku. Požiadajte Janka o aktuálny odkaz.'],
+      [preopenBody({ kind: 'open_elsewhere', cycle_name: 'Nové' }, { stale_cycle: { id: 1, name: 'Staré' } }), 'Táto objednávka je už uzavretá', 'Janka má práve otvorenú novú objednávku. Požiadaj Janka o aktuálny odkaz.'],
     ]
     for (const [body, title, sentence] of cases) {
       await page.unroute(`**/api/guest/${TOKEN}`)
@@ -1777,7 +1777,7 @@ test.describe('GL-T2 · GuestOrder.vue — the preopen-hero placeholder', () => 
       const hero = page.getByTestId('preopen-hero')
       await expect(hero.locator('h1'), body.next.kind).toHaveText(title)
       await expect(page.getByTestId('preopen-next'), body.next.kind).toHaveText(sentence)
-      if (body.next.kind !== 'open_elsewhere') await expect(hero).toContainText('Janka vás pozýva do spoločnej objednávky výberovej kávy.')
+      if (body.next.kind !== 'open_elsewhere') await expect(hero).toContainText('Janka ťa pozýva do spoločnej objednávky výberovej kávy.')
       // The ONE vocabulary regex (PI-T11), rendered. ~~The guest files are not in the
       // friend source guard yet (GL-T7)~~ — they are since GL-T7 (`portal-vocabulary.spec.js`
       // §6); this rendered check stays as the composed-sentence half.
@@ -1862,10 +1862,10 @@ test.describe('GL-T2 · source pins', () => {
 // `hero.locator('.mono')` strictly. The tests below prove BOTH halves: the shipped
 // counts still hold with the fold OPEN (the worst case), and the substitutes are
 // computed-style-equal to the real classes, so the deviation is a selector, not pixels.
-const GL4_STEPS = ['Objednáte', 'Zabalíme', 'Prevezmete']
+const GL4_STEPS = ['Objednáš', 'Zabalíme', 'Prevezmeš']
 const GL4_DETAILS = [
-  'Vyberiete kávu, zadáte meno a mobil. Bez registrácie.',
-  'Kávu nakúpime v pražiarni a zabalíme. Vtedy zaplatíte cez QR alebo Revolut.',
+  'Vyberieš kávu, zadáš meno a mobil. Bez registrácie.',
+  'Kávu nakúpime v pražiarni a zabalíme. Vtedy zaplatíš cez QR alebo Revolut.',
 ]
 const GL4_TOGGLE_OPEN = 'Viac o tom, ako to funguje'
 const GL4_TOGGLE_CLOSE = 'Skryť'
@@ -2073,18 +2073,19 @@ test.describe('GL-T4 · 19 §UC-GL-007 — the open hero: compact strip, roaster
     }
   })
 
-  test('the roasters line: „Káva od [Goriffee] (pražiareň) a [Robo] (domáci pražič, SCA výbery)." — every roaster word from lib/roasters.js, badges pixel-equal to a real `.badge`', async ({ page }) => {
+  test('the roasters line: one row per roaster, badge + the FULL `text` a member reads (PO 2026-09-29) — every word from lib/roasters.js, badges pixel-equal to a real `.badge`', async ({ page }) => {
     const { hero } = await gl4OpenPage(page, 'Roasters')
     const line = hero.getByTestId('guest-roasters')
     await expect(line).toHaveCount(1)
-    const runs = await line.evaluate((el) => [...el.children].map((c) => c.textContent.trim()))
-    expect(runs).toEqual(['Káva od', 'Goriffee', '(pražiareň) a', 'Robo', '(domáci pražič, SCA výbery).'])
+    const rows = await line.evaluate((el) => [...el.children].map((row) => [...row.children].map((c) => c.textContent.trim())))
 
-    // The words are the LIBRARY's (one home, 18 §UC-PI-014): read it and compare.
+    // The words are the LIBRARY's (one home, 18 §UC-PI-014): read it and compare —
+    // the SAME `text` the explainer's „Kto sme a odkiaľ je káva" cards render.
     const lib = await import('file://' + GL4_ROASTERS_LIB)
     expect(lib.ROASTERS.map((r) => r.label)).toEqual(['Goriffee', 'Robo'])
-    expect(lib.ROASTERS.map((r) => r.short)).toEqual(['pražiareň', 'domáci pražič, SCA výbery'])
-    expect(runs.filter((_, i) => i % 2 === 1)).toEqual(lib.ROASTERS.map((r) => r.label))
+    expect('short' in lib.ROASTERS[0], 'the short parenthesis is gone with the one-liner').toBe(false)
+    expect(rows).toEqual(lib.ROASTERS.map((r) => [r.label, r.text]))
+    expect(rows[1][1], 'non-vacuity: the full Robo text, not the old „SCA výbery"').toContain('Specialty Coffee Association')
 
     // Line style (canon: `.sub` 13px) and the two badges vs the hero's own real `.badge`.
     await expect(line).toHaveCSS('font-size', '13px')
@@ -2238,7 +2239,7 @@ test.describe('GL-T4 · 19 §UC-GL-007 — phone floor, CSP, vocabulary', () => 
     await hero.getByTestId('guest-steps-toggle').click()
     const text = await hero.innerText()
     expect(text, 'non-vacuity: the swept text holds the new copy').toContain('ZABALÍME')
-    expect(text).toContain('SCA výbery')
+    expect(text).toContain('Specialty Coffee Association')
     expect(text).not.toMatch(BANNED)
   })
 })
@@ -2268,7 +2269,7 @@ test.describe('GL-T4 · source pins — one home for the roaster words, one icon
     for (const name of ['cup', 'box', 'hand']) expect(steps).toContain(`icon: '${name}'`)
     expect(steps, 'no inline SVG outside the ONE icon module').not.toContain('<svg')
     expect(steps).toMatch(/packeta:\s*\{\s*type:\s*Boolean,\s*default:\s*false\s*\}/)
-    expect(steps, 'the clause is the prototype\'s, byte for byte').toContain("', alebo si ju nechajte poslať cez Packetu.'")
+    expect(steps, 'the clause is the prototype\'s, byte for byte').toContain("', alebo si ju nechaj poslať cez Packetu.'")
     const icons = src('components/neo/icons.js')
     for (const name of ['cup', 'box', 'hand']) expect(icons).toMatch(new RegExp(`\\n\\s{2}${name}:\\s*\\{`))
 
@@ -2304,13 +2305,13 @@ const GL5_TICKER_CLOSED = '+++ OBJEDNÁVKY ZATVORENÉ +++ DÁME VEDIEŤ, KEĎ SA
 const GL5_DOC_TITLE = 'Objednávky sú zatvorené – Podpultovka'
 const GL5_LOCK_TITLE = 'Objednávky sú zatvorené'
 const GL5_FORM = {
-  title: 'Dajte mi vedieť',
+  title: 'Daj mi vedieť',
   sub: 'Pošleme jednu správu, keď sa objednávka otvorí. Nič viac.',
   consent: 'Súhlasím so správou cez WhatsApp',
   button: 'Chcem vedieť, keď sa otvorí',
 }
-const GL5_DONE_WA = (host) => `Dáme vedieť. Keď sa objednávka otvorí, príde vám správa na WhatsApp s odkazom od ${host}.`
-const GL5_DONE_NO_WA = (host) => `Dáme vedieť. Keď sa objednávka otvorí, ${host} vám pošle odkaz.`
+const GL5_DONE_WA = (host) => `Dáme vedieť. Keď sa objednávka otvorí, príde ti správa na WhatsApp s odkazom od ${host}.`
+const GL5_DONE_NO_WA = (host) => `Dáme vedieť. Keď sa objednávka otvorí, ${host} ti pošle odkaz.`
 const GL5_STORAGE_KEY = 'gorifi_guest_waitlist'
 
 /** The local ISO date `n` calendar days from NOW (the page computes against its own clock). */
@@ -2438,7 +2439,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
     await expect(page.getByTestId('preopen-next')).toHaveText(`Ďalšia objednávka sa otvorí približne ${day} (o 4 týždne).`)
     await expect(page.getByTestId('preopen-next').locator('b'), 'the date is bold').toHaveText(day)
     await expect(hero.locator('b[data-user-copy]').first(), 'the host is bold and marked as person copy').toHaveText('Janka')
-    await expect(hero).toContainText('Janka vás pozýva do spoločnej objednávky výberovej kávy.')
+    await expect(hero).toContainText('Janka ťa pozýva do spoločnej objednávky výberovej kávy.')
     // Order: badge → h1 → sentence → roasters line (DOM and geometry).
     const order = await hero.evaluate((el) => {
       const parts = [el.querySelector('.badge'), el.querySelector('h1'), el.querySelector('[data-testid="preopen-next"]'), el.querySelector('[data-testid="guest-roasters"]')]
@@ -2492,7 +2493,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
     await expect(card.getByTestId('guest-step-title')).toHaveText(GL4_STEPS)
     // ⚠ RE-POINTED by GP-T7 (PO decision (3)): ~~„Od Janka."~~ — the default body's
     // an unknown/planned `next` kind ALWAYS shows the Packeta clause (GP-T7, learnings 12 §48).
-    await expect(card.getByTestId('guest-step-detail')).toHaveText([...GL4_DETAILS, 'Od Janka, alebo si ju nechajte poslať cez Packetu.'])
+    await expect(card.getByTestId('guest-step-detail')).toHaveText([...GL4_DETAILS, 'Od Janka, alebo si ju nechaj poslať cez Packetu.'])
     const tile = await card.getByTestId('guest-step').first().evaluate((s) => {
       const r = s.firstElementChild.getBoundingClientRect()
       return [r.width, r.height]
@@ -2500,9 +2501,26 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
     expect(tile, 'full layout tile 44×44').toEqual([44, 44])
   })
 
-  test('the card ORDER is the prototype\'s: hero → Ako to funguje → Dajte mi vedieť → Minulá ponuka header → faded preview', async ({ page }) => {
+  test('PARKED waitlist (PO 2026-09-29): the pre-open page shows NO form and no „Dáme vedieť" banner, even with a stored signup — the rest of the page stays', async ({ page }) => {
+    test.skip(GUEST_WAITLIST, 'only while the waitlist form is parked')
+    const TOKEN = 'GLFIVEPARKED22'
+    await gl5Open(page, TOKEN, gl5Body())
+    // Non-vacuity: the pre-open page really rendered its other cards.
+    for (const id of ['preopen-hero', 'preopen-steps', 'preopen-preview']) await expect(page.getByTestId(id), id).toBeVisible()
+    await expect(page.getByTestId('waitlist-form')).toHaveCount(0)
+    await expect(page.getByText('Daj mi vedieť')).toHaveCount(0)
+    await expect(page.getByText('Súhlasím so správou cez WhatsApp')).toHaveCount(0)
+    // A signup remembered from before the parking must not resurface as the banner.
+    await page.evaluate((k) => localStorage.setItem(k, JSON.stringify({ at: Date.now(), whatsapp_opt_in: true, cycle_id: null })), GL5_STORAGE_KEY)
+    await page.reload()
+    await expect(page.getByTestId('preopen-steps')).toBeVisible()
+    await expect(page.getByTestId('waitlist-done')).toHaveCount(0)
+  })
+
+  test('the card ORDER is the prototype\'s: hero → Ako to funguje → Daj mi vedieť → Minulá ponuka header → faded preview', async ({ page }) => {
     await gl5Open(page, 'GLFIVEORDER222', gl5Body())
-    const ids = ['preopen-hero', 'preopen-steps', 'waitlist-form', 'preopen-preview-head', 'preopen-preview']
+    // Parked waitlist (lib/features.js, PO 2026-09-29): the form card drops out of the order.
+    const ids = ['preopen-hero', 'preopen-steps', ...(GUEST_WAITLIST ? ['waitlist-form'] : []), 'preopen-preview-head', 'preopen-preview']
     const tops = []
     for (const id of ids) {
       const box = await page.getByTestId(id).boundingBox()
@@ -2513,6 +2531,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
   })
 
   test('the form: copy, fields (placeholders, maxlength 120/32 mirrored, inputmode tel), consent CHECKED by default, one accent block button', async ({ page }) => {
+    test.skip(!GUEST_WAITLIST, WAITLIST_PARKED)
     await gl5Open(page, 'GLFIVEFORM2222', gl5Body())
     const form = page.getByTestId('waitlist-form')
     await expect(form.locator('.display')).toHaveText(GL5_FORM.title)
@@ -2544,6 +2563,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
   })
 
   test('the submit: disabled until BOTH fields hold text; posts {name, phone, whatsapp_opt_in:true} trimmed with NO auth header; the ok banner REPLACES the card; a reload keeps it', async ({ page }) => {
+    test.skip(!GUEST_WAITLIST, WAITLIST_PARKED)
     const TOKEN = 'GLFIVESUBMIT22'
     const seen = await gl5Open(page, TOKEN, gl5Body())
     const form = page.getByTestId('waitlist-form')
@@ -2583,6 +2603,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
   })
 
   test('consent UNTICKED ⇒ whatsapp_opt_in:false and the second banner, which does not promise WhatsApp; a reload keeps THAT banner', async ({ page }) => {
+    test.skip(!GUEST_WAITLIST, WAITLIST_PARKED)
     const seen = await gl5Open(page, 'GLFIVENOWA2222', gl5Body())
     const form = page.getByTestId('waitlist-form')
     await form.getByTestId('waitlist-name').fill('Peter')
@@ -2597,6 +2618,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
   })
 
   test('the JS guard: a DISPATCHED click on the disabled button posts nothing; while PENDING the button is disabled and a second click posts nothing', async ({ page }) => {
+    test.skip(!GUEST_WAITLIST, WAITLIST_PARKED)
     let release
     const hold = new Promise((r) => { release = r })
     const seen = await gl5Open(page, 'GLFIVEGUARD222', gl5Body(), { holdPost: hold })
@@ -2620,6 +2642,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
   })
 
   test('a server 400 renders its message in the card\'s danger banner and keeps the form (and what was typed); nothing is remembered', async ({ page }) => {
+    test.skip(!GUEST_WAITLIST, WAITLIST_PARKED)
     const seen = await gl5Open(page, 'GLFIVEERR40022', gl5Body(), { post: { status: 400, body: { error: 'Telefón je príliš dlhý (max 32 znakov)', field: 'phone' } } })
     const form = page.getByTestId('waitlist-form')
     await form.getByTestId('waitlist-name').fill('Ema')
@@ -2636,6 +2659,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
   })
 
   test('a 409 `open` (the round opened meanwhile) RELOADS into the live page — the listing is fetched again', async ({ page }) => {
+    test.skip(!GUEST_WAITLIST, WAITLIST_PARKED)
     const TOKEN = 'GLFIVEOPEN4092'
     const live = {
       cycle: { id: 1, name: 'Živá objednávka GL5', type: 'coffee', status: 'open', expected_date: null, plan_note: null },
@@ -2644,7 +2668,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
       availability: [],
     }
     const seen = await gl5Open(page, TOKEN, (n) => (n === 1 ? gl5Body() : live), {
-      post: { status: 409, body: { error: 'Objednávka je práve otvorená — môžete si objednať rovno.', reason: 'open' } },
+      post: { status: 409, body: { error: 'Objednávka je práve otvorená — môžeš si objednať rovno.', reason: 'open' } },
     })
     const form = page.getByTestId('waitlist-form')
     await form.getByTestId('waitlist-name').fill('Ema')
@@ -2656,6 +2680,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
   })
 
   test('localStorage THROWING (private mode) breaks nothing: the form renders, the submit still flips to the banner', async ({ page }) => {
+    test.skip(!GUEST_WAITLIST, WAITLIST_PARKED)
     await page.addInitScript(() => {
       Storage.prototype.getItem = () => { throw new Error('denied') }
       Storage.prototype.setItem = () => { throw new Error('denied') }
@@ -2669,6 +2694,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
   })
 
   test('the memory is per TOKEN and per preview ROUND: another token\'s entry, a different round\'s entry and garbage all show the form', async ({ page }) => {
+    test.skip(!GUEST_WAITLIST, WAITLIST_PARKED)
     const TOKEN = 'GLFIVEMEMORY22'
     await page.addInitScript(({ key, token }) => {
       // Only once per test (a reload must see what the PAGE wrote, not this seed).
@@ -2701,7 +2727,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — the pre-open page, transcribed (mocke
   test('no cartbar, no checkout, no invite CTA, and the token is never composed into the DOM', async ({ page }) => {
     const TOKEN = 'GLFIVENOCART22'
     await gl5Open(page, TOKEN, gl5Body())
-    await expect(page.getByTestId('waitlist-form'), 'non-vacuity').toBeVisible()
+    await expect(page.getByTestId(GUEST_WAITLIST ? 'waitlist-form' : 'preopen-steps'), 'non-vacuity').toBeVisible()
     for (const id of ['cartbar', 'open-checkout', 'cart-total', 'invite-cta', 'guest-submit']) {
       await expect(page.getByTestId(id), id).toHaveCount(0)
     }
@@ -2769,7 +2795,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — phone floor, A12, tap targets, vocabu
     test(`${width}px: no horizontal overflow — every card, the form, the preview, a long host name and a long plan note`, async ({ page }) => {
       const longHost = { first_name: 'Alžbeta-Kristínamária Novosadová-Hrušovská' }
       await gl5Open(page, `GLFIVEWIDTH${width}`, gl5Body(undefined, { host: longHost }), {}, { width, height: 900 })
-      await expect(page.getByTestId('waitlist-form')).toBeVisible()
+      await expect(page.getByTestId(GUEST_WAITLIST ? 'waitlist-form' : 'preopen-steps')).toBeVisible()
       expect(await hOverflow(page), 'planned_date').toBeLessThanOrEqual(0)
       // The page COLUMN (the ticker's 3× repeated span is clipped by design and would
       // be a false offender); the preview's tab strip is a scroller of its own.
@@ -2782,6 +2808,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — phone floor, A12, tap targets, vocabu
   }
 
   test('every control on the page is ≥ 44 px tall: both inputs, the consent row, the button', async ({ page }) => {
+    test.skip(!GUEST_WAITLIST, WAITLIST_PARKED)
     await gl5Open(page, 'GLFIVETAP22222', gl5Body())
     const form = page.getByTestId('waitlist-form')
     for (const loc of [form.getByTestId('waitlist-name'), form.getByTestId('waitlist-phone'), form.getByTestId('waitlist-consent'), form.getByTestId('waitlist-submit')]) {
@@ -2791,6 +2818,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — phone floor, A12, tap targets, vocabu
   })
 
   test('A12: under `pointer: coarse` both inputs compute 16px (no iOS focus zoom); on desktop the canon 15px', async ({ browser, baseURL }) => {
+    test.skip(!GUEST_WAITLIST, WAITLIST_PARKED)
     const TOKEN = 'GLFIVECOARSE22'
     const coarse = await browser.newContext({ baseURL, viewport: { width: 378, height: 800 }, hasTouch: true, isMobile: true })
     try {
@@ -2820,8 +2848,8 @@ test.describe('GL-T5 · 19 §UC-GL-006 — phone floor, A12, tap targets, vocabu
       expect(copy, 'non-vacuity').toContain('AKO TO FUNGUJE')
       expect(copy, body.next.kind).not.toMatch(BANNED)
     }
-    // Both success banners.
-    for (const tick of [true, false]) {
+    // Both success banners — only while the form exists (lib/features.js GUEST_WAITLIST).
+    for (const tick of GUEST_WAITLIST ? [true, false] : []) {
       await page.evaluate((k) => localStorage.removeItem(k), GL5_STORAGE_KEY)
       await page.unroute(`**/api/guest/${TOKEN}`)
       await page.unroute(`**/api/guest/${TOKEN}/waitlist`)
@@ -2901,7 +2929,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — against the real server (a legacy lin
     await expect(page.locator('.app .appbar .chip.p2-lock'), 'the lock chip').toHaveCount(1)
     await expect(page.locator('.app .ticker span'), 'the closed ticker').toContainText(GL5_TICKER_CLOSED)
     await expect(hero.locator('h1'), 'the stale headline, not the planned/unknown one').toHaveText('Táto objednávka je už uzavretá')
-    await expect(hero, 'the host is named twice, no gendered pronoun').toContainText(`${firstName} má práve otvorenú novú objednávku. Požiadajte ${firstName} o aktuálny odkaz.`)
+    await expect(hero, 'the host is named twice, no gendered pronoun').toContainText(`${firstName} má práve otvorenú novú objednávku. Požiadaj ${firstName} o aktuálny odkaz.`)
     await expect(page.getByTestId('waitlist-form'), 'no form once a newer round is open').toHaveCount(0)
     await expect(page.getByTestId('waitlist-done')).toHaveCount(0)
     expect(await page.content()).not.toContain(link.token)
@@ -2910,6 +2938,7 @@ test.describe('GL-T5 · 19 §UC-GL-006 — against the real server (a legacy lin
 
 test.describe('GL-T5 · 19 §UC-GL-006 — keyboard (against the running server\'s own payload, mocked listing)', () => {
   test('Tab walks name → phone → consent → submit in order; Enter on the focused submit button submits', async ({ page }) => {
+    test.skip(!GUEST_WAITLIST, WAITLIST_PARKED)
     const TOKEN = 'GLFIVEKEYBOARD'
     const seen = await gl5Open(page, TOKEN, gl5Body())
     const form = page.getByTestId('waitlist-form')
@@ -3748,7 +3777,7 @@ test.describe('GP-T7 · (3) the pre-open „Ako to funguje" card ALWAYS shows th
   // Orchestrator decision 2026-09-25: a PLANNED round's `parcel_enabled` is the column
   // default 0 (never written at plan time), so it is not read — planned_date /
   // planned_note / unknown ALWAYS show the clause, even with a (stray) 0 in the payload.
-  const ON = 'Od Janka, alebo si ju nechajte poslať cez Packetu.'
+  const ON = 'Od Janka, alebo si ju nechaj poslať cez Packetu.'
   const OFF = 'Od Janka.'
   const cases = [
     ['planned_date, parcel_enabled null', { kind: 'planned_date', opens_at: gl5Day(28), cycle_name: 'X', parcel_enabled: null }, ON],

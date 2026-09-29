@@ -644,7 +644,7 @@ test.describe('RD-GX-2 · g-confirm (§UC-GX-004)', () => {
     // `.field-help` paragraph under the copy row is GONE (the screen was too
     // crowded). The absence is asserted, not just the new copy — otherwise a revert
     // of the removal passes silently.
-    await expect(col.getByText('Na tomto odkaze uvidíte stav objednávky - uložte si ho!')).toBeVisible()
+    await expect(col.getByText('Na tomto odkaze uvidíš stav objednávky - ulož si ho!')).toBeVisible()
     await expect(col.locator('.field-help'), 'no help paragraph on this screen any more').toHaveCount(0)
 
     // ⚠ §UC-GX-004 item 6 — a NEW prototype affordance: pure client-side navigation

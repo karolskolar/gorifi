@@ -2146,7 +2146,7 @@ test.describe('CS-T4 · 17 §UC-CS-008 — „Kde je vaša káva" on the guest s
     await expect(card).toBeVisible()
     // `textContent`, so the label reads as it is typed — `.field-lbl` is uppercased
     // by the theme and `toHaveText` resolves from `textContent`, not `innerText`.
-    await expect(card.locator('.field-lbl')).toHaveText('Kde je vaša káva')
+    await expect(card.locator('.field-lbl')).toHaveText('Kde je tvoja káva')
 
     const steps = await verticalSteps(page)
     expect(steps.map((s) => s.state), 'the whole state vector, not just a count')

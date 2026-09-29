@@ -8,7 +8,7 @@
 //                                           popover (§UC-PI-014)
 //     · `components/GuestRoastersLine.vue` — module 19 §UC-GL-007, GL-T4 (SHIPPED).
 //                                           It imports THIS file — labels, badge
-//                                           classes AND the `short` parenthesis; a
+//                                           classes AND the full texts; a
 //                                           second copy of the texts on the guest
 //                                           surface is the defect this module exists
 //                                           to prevent. Mounted on the open guest hero
@@ -52,13 +52,8 @@
  *                badge), `acc-o` for Robo. §UC-PI-014: an unknown roastery keeps
  *                today's `acc-o`, which is the CALLER's fallback, not a row here.
  * - `text`       the description, shown in the explainer card and in the popover.
- * - `short`      the PARENTHESIS after the badge on the guest roasters line (19
- *                §UC-GL-007 rule 4, prototype `G2Roasters`: „Káva od [Goriffee]
- *                (pražiareň) a [Robo] (domáci pražič, SCA výbery).") — GL-T4. Added HERE,
- *                not typed into `GuestRoastersLine.vue`, because 19 names this file the
- *                one home of the Goriffee / Robo texts: a second, shorter description in
- *                a component is the second copy this module exists to prevent. PO copy
- *                (Q13.a) — reproduce, never improve.
+ * - ~~`short`~~  the guest line's parenthesis — REMOVED, PO 2026-09-29: the guest now
+ *                reads the full `text` too (`GuestRoastersLine.vue`).
  */
 export const ROASTERS = [
   {
@@ -66,16 +61,14 @@ export const ROASTERS = [
     match: /^goriffee$/i,
     label: 'Goriffee',
     badgeClass: '',
-    text: 'Pražiareň — stály základ ponuky. Espresso aj filter, čerstvo pražené na objednávku.',
-    short: 'pražiareň'
+    text: 'Pražiareň — stály základ ponuky. Espresso aj filter, čerstvo pražené na objednávku.'
   },
   {
     key: 'robo',
     match: /^robo$/i,
     label: 'Robo',
     badgeClass: 'acc-o',
-    text: 'Domáci pražič. Hľadá zelenú kávu s vysokým hodnotením SCA (Specialty Coffee Association) a praží ju sám, v malých dávkach — všetko pod jeho značkou je ručne pražené doma.',
-    short: 'domáci pražič, SCA výbery'
+    text: 'Domáci pražič. Hľadá zelenú kávu s vysokým hodnotením SCA (Specialty Coffee Association) a praží ju sám, v malých dávkach — všetko pod jeho značkou je ručne pražené doma.'
   }
 ]
 

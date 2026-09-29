@@ -121,7 +121,7 @@ function dotStyle(value) {
         placeholder="napr. Z-BOX Hlavná 15, Bratislava"
         maxlength="160"
       />
-      <div class="field-help" style="overflow-wrap:anywhere">Názov Z-BOXu alebo pobočky a mesto. Balík vám doručí Packeta, nie <span data-user-copy>{{ hostFirstName }}</span>.</div>
+      <div class="field-help" style="overflow-wrap:anywhere">Názov Z-BOXu alebo pobočky a mesto. Balík ti doručí Packeta, nie <span data-user-copy>{{ hostFirstName }}</span>.</div>
     </div>
   </div>
 </template>

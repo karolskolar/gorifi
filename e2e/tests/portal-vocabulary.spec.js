@@ -1263,7 +1263,7 @@ test.describe('GL-T7 · 19 §UC-GL-011 — the guest screens, rendered', () => {
     await page.goto(`/g/o/${order.order_token}`)
     await page.getByTestId('start-edit').click()
     // Edit mode mounts `GuestProductGrid` — the second surface 88's string rendered on.
-    await expectCleanCopy(page, 'the guest status page, edit mode', ['Upravujete objednávku pre', 'Uložiť zmeny'])
+    await expectCleanCopy(page, 'the guest status page, edit mode', ['Upravuješ objednávku pre', 'Uložiť zmeny'])
 
     await lock(cycle)
     await page.getByTestId(`product-${product.id}`).getByTestId('inc-250g').click()

@@ -253,14 +253,14 @@ test.describe('RD-GX-3 · the `.app` root (§UC-GX-006)', () => {
 
     const subtitle = page.locator('.appbar .titles .s')
     await expect(page.locator('.appbar'), 'one chrome, not one per branch').toHaveCount(1)
-    await expect(subtitle).toHaveText('Vaša objednávka')
+    await expect(subtitle).toHaveText('Tvoja objednávka')
 
     await page.getByTestId('start-edit').click()
     await expect(subtitle).toHaveText('Úprava objednávky')
     await expect(page.locator('.appbar'), 'remounting would restart the ticker').toHaveCount(1)
 
     await page.getByTestId('abort-edit').click()
-    await expect(subtitle).toHaveText('Vaša objednávka')
+    await expect(subtitle).toHaveText('Tvoja objednávka')
   })
 })
 
@@ -444,7 +444,7 @@ test.describe('RD-GX-3 · the read view, four states (§UC-GX-006)', () => {
     await page.goto(`/g/${link.token}/o/${created.order.order_token}`)
 
     const first = host.name.split(' ')[0]
-    await expect(page.locator('.sub').first()).toHaveText(`Vaša objednávka · organizuje a odovzdá ${first}`)
+    await expect(page.locator('.sub').first()).toHaveText(`Tvoja objednávka · organizuje a odovzdá ${first}`)
 
     // ⚠ 2026-08-12: this list is `components/CartLineList.vue` — the same component
     // the host's colleague view and both cart bars render. The size left the name
@@ -483,7 +483,7 @@ test.describe('RD-GX-3 · edit mode (§UC-GX-007)', () => {
 
     // The intro banner names whose order is being edited.
     const intro = page.locator('.banner.slim').first()
-    await expect(intro).toContainText('Upravujete objednávku pre')
+    await expect(intro).toContainText('Upravuješ objednávku pre')
     await expect(intro.locator('b')).toHaveText(IDENTITY.guest_name)
 
     // Seeded from the PERSISTED items, not from an empty grid.

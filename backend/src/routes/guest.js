@@ -136,7 +136,7 @@ function validateIdentity(body, fields) {
   // one check covers "not text" and "not filled in".
   const name = asString(body?.[fields.name]);
   if (!name) {
-    return { error: 'Zadajte meno', field: fields.name };
+    return { error: 'Zadaj meno', field: fields.name };
   }
   if (name.length > MAX_NAME_LENGTH) {
     return { error: `Meno je príliš dlhé (najviac ${MAX_NAME_LENGTH} znakov)`, field: fields.name };
@@ -144,13 +144,13 @@ function validateIdentity(body, fields) {
 
   const phone = asString(body?.[fields.phone]);
   if (!phone) {
-    return { error: 'Zadajte telefónne číslo (aspoň 9 číslic)', field: fields.phone };
+    return { error: 'Zadaj telefónne číslo (aspoň 9 číslic)', field: fields.phone };
   }
   if (phone.length > MAX_PHONE_LENGTH) {
     return { error: `Telefónne číslo je príliš dlhé (najviac ${MAX_PHONE_LENGTH} znakov)`, field: fields.phone };
   }
   if (phone.replace(/\D/g, '').length < 9) {
-    return { error: 'Zadajte telefónne číslo (aspoň 9 číslic)', field: fields.phone };
+    return { error: 'Zadaj telefónne číslo (aspoň 9 číslic)', field: fields.phone };
   }
 
   // A surface that accepts NO e-mail (the waitlist, 19 §UC-GL-004 rule 2) has no
@@ -206,10 +206,10 @@ function publishedParcelFlags(cycle) {
 // ⚠ Guest-facing copy says „objednávka", never „cyklus" (resolved conflict 5 / D10).
 const DELIVERY_METHOD_ERROR = 'Neplatný spôsob prevzatia';
 const PARCEL_UNAVAILABLE_ERROR = 'Doručenie Packetou nie je pre túto objednávku dostupné';
-const PACKETA_ADDRESS_MISSING_ERROR = 'Zadajte výdajné miesto Packety';
+const PACKETA_ADDRESS_MISSING_ERROR = 'Zadaj výdajné miesto Packety';
 const PACKETA_ADDRESS_TOO_LONG_ERROR =
   `Výdajné miesto je príliš dlhé (najviac ${MAX_PACKETA_ADDRESS_LENGTH} znakov)`;
-const PACKETA_EMAIL_MISSING_ERROR = 'Pri doručení Packetou zadajte e-mail';
+const PACKETA_EMAIL_MISSING_ERROR = 'Pri doručení Packetou zadaj e-mail';
 
 function validateDeliveryChoice(body, cycle) {
   const flag = body?.use_parcel_delivery;
@@ -342,7 +342,7 @@ const NOT_FOUND = Object.freeze({ status: 404, error: 'Tento odkaz na objednávk
 // UC-GL-002 rule 3): it is a resolver, not a second door around them.
 const INACTIVE = Object.freeze({
   status: 410,
-  error: 'Tento odkaz už nie je aktívny. Požiadajte kolegu o nový.',
+  error: 'Tento odkaz už nie je aktívny. Požiadaj kolegu o nový.',
   reason: 'inactive',
 });
 // The submit's lock race (UC-GL-002 rule 5). ⚠ The ONLY remaining caller is the
@@ -953,7 +953,7 @@ router.get('/:token', guestReadLimiter, (req, res) => {
 // risks: „a public GET writes a row").
 const OPEN = Object.freeze({
   status: 409,
-  error: 'Objednávka je práve otvorená — môžete si objednať rovno.',
+  error: 'Objednávka je práve otvorená — môžeš si objednať rovno.',
   reason: 'open',
 });
 
@@ -1029,10 +1029,10 @@ const ORDER_CONFIRMATION_SUBJECT = 'Potvrdenie objednávky - Podpultovka';
 // ⚠ DRAFT copy, PO sign-off pending (14 §OPEN). Mirrored as constants at the top of
 // the UC-GR-011 describe in e2e/tests/guest-order-recovery.spec.js, so sign-off is a
 // known TWO-PLACE edit rather than a grep for quoted Slovak across the suite.
-// Vy-form, no participle addressing the reader. The save-the-link line is the
+// TY-form since PO 2026-09-29 (the whole guest surface), no participle addressing the reader. The save-the-link line is the
 // confirmation screen's own signed copy (plain hyphen), recast declaratively — one
 // voice for one fact across mail and screen.
-const MAIL_INTRO = 'Dobrý deň, vaša objednávka bola prijatá.';
+const MAIL_INTRO = 'Ahoj, tvoja objednávka bola prijatá.';
 const MAIL_ORDER_HEADING = 'Objednávka:';
 const MAIL_TOTAL_LABEL = 'Spolu';
 const MAIL_PAYMENT_HEADING = 'Platba:';
@@ -1048,7 +1048,7 @@ const MAIL_AMOUNT_LABEL = 'Suma';
 // untouched. The fee is its own row, never an item line; the point follows `Spolu`.
 const MAIL_DELIVERY_LABEL = 'Doručenie Packetou';
 const MAIL_PACKETA_LABEL = 'Výdajné miesto';
-const MAIL_SAVE_LINK = 'Stav objednávky uvidíte na tomto odkaze - uložte si ho:';
+const MAIL_SAVE_LINK = 'Stav objednávky uvidíš na tomto odkaze - ulož si ho:';
 
 function eur(value) {
   return Number(value || 0).toFixed(2);
@@ -1428,7 +1428,7 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
   // So: `items` must be an array, and only a literal `items: []` cancels.
   if (!Array.isArray(req.body?.items)) {
     return res.status(400).json({
-      error: 'Chýba zoznam položiek objednávky. Ak chcete objednávku zrušiť, pošlite prázdny zoznam.',
+      error: 'Chýba zoznam položiek objednávky. Ak chceš objednávku zrušiť, pošli prázdny zoznam.',
       field: 'items',
     });
   }
@@ -1455,7 +1455,7 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
   // admin may mark it paid mid-request.
   if (order.paid && requestedCount > 0) {
     return res.status(409).json({
-      error: 'Objednávka je už zaplatená, jej obsah už nie je možné zmeniť. Zmenu vyriešte so správcom.',
+      error: 'Objednávka je už zaplatená, jej obsah už nie je možné zmeniť. Zmenu vyrieš so správcom.',
       reason: 'paid',
     });
   }
@@ -1508,7 +1508,7 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
   // order" is never what the caller meant — refuse instead, non-destructively.
   if (lines.length === 0 && requestedCount > 0) {
     return res.status(400).json({
-      error: 'Žiadnu z položiek sa nepodarilo spracovať. Obnovte stránku a skúste to znova.',
+      error: 'Žiadnu z položiek sa nepodarilo spracovať. Obnov stránku a skús to znova.',
       field: 'items',
     });
   }
@@ -1618,7 +1618,7 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
   }
   if (applied.conflict === 'paid') {
     return res.status(409).json({
-      error: 'Objednávka bola práve označená ako zaplatená, jej obsah už nie je možné zmeniť. Zmenu vyriešte so správcom.',
+      error: 'Objednávka bola práve označená ako zaplatená, jej obsah už nie je možné zmeniť. Zmenu vyrieš so správcom.',
       reason: 'paid',
     });
   }
@@ -1664,7 +1664,7 @@ function handleStatusEdit(req, res, { link, cycle, order }) {
 function handleInviteRequest(req, res, { link }) {
   if (!link.active || !link.host_active) {
     return res.status(410).json({
-      error: 'Tento odkaz už nie je aktívny. Požiadajte kolegu o nový.',
+      error: 'Tento odkaz už nie je aktívny. Požiadaj kolegu o nový.',
       reason: 'inactive',
     });
   }
@@ -1680,7 +1680,7 @@ function handleInviteRequest(req, res, { link }) {
 
   if (pendingInvitationByPhone(phone)) {
     return res.status(409).json({
-      error: 'Žiadosť o účet s týmto telefónnym číslom už evidujeme. Správca sa vám ozve.',
+      error: 'Žiadosť o účet s týmto telefónnym číslom už evidujeme. Správca sa ti ozve.',
       reason: 'exists',
     });
   }
@@ -1704,12 +1704,12 @@ function handleInviteRequest(req, res, { link }) {
     // message must not surface at all.
     if (/UNIQUE/i.test(e.message || '')) {
       return res.status(409).json({
-        error: 'Žiadosť o účet s týmto telefónnym číslom už evidujeme. Správca sa vám ozve.',
+        error: 'Žiadosť o účet s týmto telefónnym číslom už evidujeme. Správca sa ti ozve.',
         reason: 'exists',
       });
     }
     console.error('Error creating guest invite request:', e.message);
-    return res.status(500).json({ error: 'Žiadosť sa nepodarilo odoslať. Skúste to znova.' });
+    return res.status(500).json({ error: 'Žiadosť sa nepodarilo odoslať. Skús to znova.' });
   }
 
   // A bare acknowledgement: this is an anonymous write, so the response carries no

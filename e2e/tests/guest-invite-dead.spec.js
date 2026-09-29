@@ -200,7 +200,7 @@ test.describe('RD-GX-4 · the invite CTA on the neo shell (§UC-GX-009)', () => 
 
     // Resolved conflict #2 — the prototype's fold line, uppercased by `.display`.
     // The word this line dropped ("nabudúce") must still exist, one fold deeper.
-    await expect(cta).toContainText(/Chcete si objednať sami\?/i)
+    await expect(cta).toContainText(/Chceš si objednávať priamo\?/i)
     await expect(cta).not.toContainText(/nabudúce/i)
     await page.getByTestId('invite-cta-open').click()
     await expect(cta, 'the body still says when the account starts paying off').toContainText(/nabudúce/i)
@@ -243,13 +243,13 @@ test.describe('RD-GX-4 · the invite CTA on the neo shell (§UC-GX-009)', () => 
     // Client validation strings verbatim, rendered in the neo error banner.
     await page.getByTestId('invite-name').fill('   ')
     await page.getByTestId('invite-submit').click()
-    await expect(page.getByTestId('invite-error')).toHaveText('Zadajte meno.')
+    await expect(page.getByTestId('invite-error')).toHaveText('Zadaj meno.')
     expect(await page.locator('.banner.danger.slim').first().evaluate((el) => getComputedStyle(el).borderTopWidth)).toBe('2px')
 
     await page.getByTestId('invite-name').fill('Kolega Testovaci')
     await page.getByTestId('invite-phone').fill('123')
     await page.getByTestId('invite-submit').click()
-    await expect(page.getByTestId('invite-error')).toHaveText('Zadajte telefónne číslo (aspoň 9 číslic).')
+    await expect(page.getByTestId('invite-error')).toHaveText('Zadaj telefónne číslo (aspoň 9 číslic).')
 
     // Späť folds it back without submitting anything.
     await page.getByRole('button', { name: 'Späť', exact: true }).click()
@@ -273,7 +273,7 @@ test.describe('RD-GX-4 · the invite CTA on the neo shell (§UC-GX-009)', () => 
     await expect(done).toHaveClass(/\bslim\b/)
     await expect(done.locator('.dot')).toHaveCount(1)
     await expect(page.getByTestId('invite-done')).toContainText('Žiadosť o účet je odoslaná.')
-    await expect(page.getByTestId('invite-done')).toContainText('Správca sa vám ozve.')
+    await expect(page.getByTestId('invite-done')).toContainText('Správca sa ti ozve.')
     // The first sentence is bolded (prototype), so it is not one flat paragraph.
     await expect(page.getByTestId('invite-done').locator('b')).toHaveText('Žiadosť o účet je odoslaná.')
     await expect(page.getByTestId('invite-cta-open'), 'no second submission on offer').toHaveCount(0)
@@ -287,7 +287,7 @@ test.describe('RD-GX-4 · the invite CTA on the neo shell (§UC-GX-009)', () => 
     await expect(queued).toHaveClass(/\bslim\b/)
     await expect(queued, 'neutral accent-soft, not the green success wash').not.toHaveClass(/\bok\b/)
     expect(await queued.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(255, 227, 239)')
-    await expect(page.getByTestId('invite-requested')).toHaveText('Žiadosť o účet už evidujeme. Správca sa vám ozve.')
+    await expect(page.getByTestId('invite-requested')).toHaveText('Žiadosť o účet už evidujeme. Správca sa ti ozve.')
     // ⚠ 409 → the requested state, NEVER a retry invitation (GSO-T10). A form here
     // could only ever be answered with another 409.
     await expect(page.getByTestId('invite-cta-open')).toHaveCount(0)
@@ -374,7 +374,7 @@ test.describe('RD-GX-4 · g-dead, two variants (§UC-GX-010; `closed` superseded
   const COPY = {
     notfound: {
       title: 'Odkaz neexistuje',
-      text: 'Tento odkaz sme nenašli. Skontrolujte, či je skopírovaný celý.',
+      text: 'Tento odkaz sme nenašli. Skontroluj, či je skopírovaný celý.',
     },
     inactive: {
       title: 'Odkaz už nie je aktívny',
@@ -431,12 +431,12 @@ test.describe('RD-GX-4 · g-dead, two variants (§UC-GX-010; `closed` superseded
     await expect(card).toContainText(COPY.inactive.title)
     await expect(card).toContainText(COPY.inactive.text)
     // ⚠ The old card printed the server's own message here, which for this variant
-    // read "Tento odkaz už nie je aktívny. Požiadajte kolegu o nový." — i.e. the
+    // read "Tento odkaz už nie je aktívny. Požiadaj kolegu o nový." — i.e. the
     // title restated, plus a duplicate of the closing line below it.
-    await expect(card).not.toContainText('Požiadajte kolegu o nový.')
+    await expect(card).not.toContainText('Požiadaj kolegu o nový.')
 
     // The closing line is on both dead variants, and the ordering surface on neither.
-    await expect(card).toContainText('Ak ste odkaz dostali od kolegu, požiadajte ho o nový.')
+    await expect(card).toContainText('Ak máš odkaz od kolegu, požiadaj ho o nový.')
     await expect(page.getByTestId('open-checkout')).toHaveCount(0)
 
     // ⚠ SANCTIONED RETARGET (19 §UC-GL-011 item 2): a LIVE link on a cycle that
@@ -596,7 +596,7 @@ test.describe('RD-GX-4 · the status-404 card (§UC-GX-010)', () => {
     // The COPY is shipped copy — this failure has an actionable cause the g-dead
     // variants do not share, so the server line and the instruction both stand.
     await expect(card).toContainText('Táto objednávka neexistuje')
-    await expect(card).toContainText('Skontrolujte, či je odkaz skopírovaný celý. Ak nie, požiadajte kolegu, ktorý objednávku organizuje.')
+    await expect(card).toContainText('Skontroluj, či je odkaz skopírovaný celý. Ak nie, požiadaj kolegu, ktorý objednávku organizuje.')
 
     const shape = await card.evaluate((el) => {
       const badge = el.querySelector('.badge')
@@ -617,7 +617,7 @@ test.describe('RD-GX-4 · the status-404 card (§UC-GX-010)', () => {
     expect(shape.badgeGlyph).toBe(true)
     expect(shape.titleSize).toBe('32px')
     // ⚠ THIS route's subtitle, not the ordering route's.
-    expect(shape.subtitle).toBe('Vaša objednávka')
+    expect(shape.subtitle).toBe('Tvoja objednávka')
 
     await expect(page.getByTestId('guest-status')).toHaveCount(0)
   })

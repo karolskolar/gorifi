@@ -2035,7 +2035,7 @@ test.describe('FUP-T13 — no stack reaches the log for any site in this row', (
 
 // Messages copied verbatim from the handlers — never re-worded here.
 const GUEST_CART_EMPTY = 'Košík je prázdny'
-const GUEST_NOTHING_PRICED = 'Žiadnu z položiek sa nepodarilo spracovať. Obnovte stránku a skúste to znova.'
+const GUEST_NOTHING_PRICED = 'Žiadnu z položiek sa nepodarilo spracovať. Obnov stránku a skús to znova.'
 const FRIEND_NOT_FOUND_OR_INACTIVE = 'Priateľ nebol nájdený alebo je neaktívny'
 const FRIEND_NOT_FOUND = 'Priateľ nebol nájdený'
 const PICKUP_NOT_FOUND = 'Vybrané miesto vyzdvihnutia neexistuje alebo nie je aktívne'

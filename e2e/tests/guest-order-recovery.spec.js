@@ -2693,7 +2693,7 @@ const MAIL_SUBJECT = 'Potvrdenie objednávky - Podpultovka'
 // ⚠ DRAFT copy pending PO sign-off (14 §OPEN), hoisted for the GR-T7/T5/T6 reason:
 // sign-off is then a known TWO-PLACE edit (these constants + `routes/guest.js`),
 // never a grep for quoted Slovak across the suite.
-const MAIL_INTRO = 'Dobrý deň, vaša objednávka bola prijatá.'
+const MAIL_INTRO = 'Ahoj, tvoja objednávka bola prijatá.'
 const MAIL_ORDER_HEADING = 'Objednávka:'
 const MAIL_PAYMENT_HEADING = 'Platba:'
 const MAIL_TOTAL_LABEL = 'Spolu'
@@ -2713,7 +2713,7 @@ const MAIL_DELIVERY_LABEL = 'Doručenie Packetou'
 const MAIL_PACKETA_LABEL = 'Výdajné miesto'
 // Reuses the confirmation screen's own signed line, recast declaratively — one voice
 // for one fact across mail and screen (plain hyphen, as on the screen).
-const MAIL_SAVE_LINK = 'Stav objednávky uvidíte na tomto odkaze - uložte si ho:'
+const MAIL_SAVE_LINK = 'Stav objednávky uvidíš na tomto odkaze - ulož si ho:'
 
 const MAIL_ENV = { MAILGUN_API_KEY: FAKE_MAILGUN_KEY, MAILGUN_DOMAIN: STUB_MAILGUN_DOMAIN }
 const NEEDS_SOURCE = 'needs the backend source beside e2e/ (skipped against a deployment)'

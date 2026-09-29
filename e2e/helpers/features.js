@@ -19,4 +19,9 @@ function flag(name, fallback) {
 /** Module 19's standing guest link on the friend surface (PO 2026-09-29: parked). */
 export const STANDING_GUEST_LINK = flag('STANDING_GUEST_LINK', false)
 
+/** Module 19's pre-open waitlist form on the guest page (PO 2026-09-29: parked). */
+export const GUEST_WAITLIST = flag('GUEST_WAITLIST', false)
+
+export const WAITLIST_PARKED = 'guest waitlist form parked (frontend/src/lib/features.js, PO 2026-09-29)'
+
 export const STANDING_PARKED = 'standing guest link parked (frontend/src/lib/features.js, PO 2026-09-29)'

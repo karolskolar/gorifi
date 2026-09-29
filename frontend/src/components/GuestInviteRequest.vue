@@ -80,8 +80,8 @@ function openForm() {
 // Mirrors the server's rule (Decision 7) so the guest finds out immediately; the
 // backend validates it again regardless.
 function validate() {
-  if (!form.value.name.trim()) return 'Zadajte meno.'
-  if (form.value.phone.replace(/\D/g, '').length < 9) return 'Zadajte telefónne číslo (aspoň 9 číslic).'
+  if (!form.value.name.trim()) return 'Zadaj meno.'
+  if (form.value.phone.replace(/\D/g, '').length < 9) return 'Zadaj telefónne číslo (aspoň 9 číslic).'
   return ''
 }
 
@@ -132,7 +132,7 @@ async function submit() {
          bolded first sentence. -->
   <div v-if="done" class="banner ok slim" data-testid="invite-cta">
     <span class="dot"></span>
-    <span data-testid="invite-done" style="min-width:0"><b>Žiadosť o účet je odoslaná.</b> Správca sa vám ozve.</span>
+    <span data-testid="invite-done" style="min-width:0"><b>Žiadosť o účet je odoslaná.</b> Správca sa ti ozve.</span>
   </div>
 
   <!-- 4. Already queued — server-known (`invite_request.requested`) or learned from a
@@ -142,7 +142,7 @@ async function submit() {
          deliberately NOT an invitation to retry: the server would only 409 again. -->
   <div v-else-if="alreadyRequested" class="banner slim" data-testid="invite-cta">
     <span class="dot"></span>
-    <span data-testid="invite-requested" style="min-width:0">Žiadosť o účet už evidujeme. Správca sa vám ozve.</span>
+    <span data-testid="invite-requested" style="min-width:0">Žiadosť o účet už evidujeme. Správca sa ti ozve.</span>
   </div>
 
   <!-- 1 + 2. One `.card` for both the folded and the unfolded state (prototype:
@@ -162,7 +162,7 @@ async function submit() {
       <!-- `.display` is uppercase by class; `line-height:.95` is the prototype's and
            overrides A10's `normal` for this one headline. `min-width:0` lets the
            headline shrink instead of pushing the button off a 320px card. -->
-      <div class="display" style="flex:1;min-width:0;font-size:17px;line-height:.95">Chcete si objednať sami?</div>
+      <div class="display" style="flex:1;min-width:0;font-size:17px;line-height:.95">Chceš si objednávať priamo?</div>
       <button
         type="button"
         class="btn sm"
@@ -179,7 +179,7 @@ async function submit() {
       <div class="display" style="font-size:21px;line-height:.95">Žiadosť o vlastný účet</div>
       <!-- Prototype copy — it drops the shipped ", bez kolegu", which said the same
            thing about the host twice. -->
-      <div class="sub" style="font-size:13px">Správca vás pridá medzi priateľov a nabudúce si objednáte priamo.</div>
+      <div class="sub" style="font-size:13px">Správca ťa pridá medzi priateľov a nabudúce si objednáš priamo.</div>
 
       <!-- The GSO-T3 bounds mirrored as `maxlength` (120 / 32 / 160). The server
            re-validates through the SHARED `validateIdentity()` the checkout also

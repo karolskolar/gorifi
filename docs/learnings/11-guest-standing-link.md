@@ -1177,3 +1177,37 @@ else needs editing.
 ⚠ **Still reachable while parked:** a *per-cycle* link opened after its round closed shows the
 stale pre-open page. With no other round open, that page carries the waitlist form, including the
 WhatsApp consent. This was put to the PO on 2026-09-29 as an open question.
+
+## §WAITLIST-parked — the guest waitlist form is hidden too (PO 2026-09-29)
+
+The PO answered the open question at the end of §PARKED: hide the form. A second switch,
+`lib/features.js GUEST_WAITLIST = false`, gates `GuestOrder.vue`'s „Daj mi vedieť" `<template>`
+(the form AND the „Dáme vedieť" success banner). `joinWaitlist()` carries the same guard in JS.
+The rest of the pre-open page stays: hero, steps, next-round sentence and preview. The public
+`POST /api/guest/:token/waitlist` route and `helpers/guest-waitlist.js` are untouched.
+`e2e/helpers/features.js` exports `GUEST_WAITLIST` / `WAITLIST_PARKED`. The form's UI tests
+skip on it, and a `PARKED` test pins the form's absence on the pre-open page.
+
+## §TY-guest — the guest surface speaks in the TY-form (PO 2026-09-29)
+
+Every string a guest reads moved from vy to ty. That covers `GuestOrder.vue`,
+`GuestOrderStatus.vue`, `GuestSteps` („Objednáš · Zabalíme · Prevezmeš"), `GuestDeliveryChoice`,
+`GuestInviteRequest`, the guest-facing error strings in `routes/guest.js`, and the confirmation
+mail's `MAIL_INTRO` („Ahoj, tvoja objednávka bola prijatá.") and `MAIL_SAVE_LINK`. „Vaša
+objednávka" is now „Tvoja objednávka" and „Kde je vaša káva" is now „Kde je tvoja káva". The
+friend surface keeps its own vy-form „Vaša objednávka" / „Kde je vaša káva". The two share no
+string, so every e2e edit was scoped to `guest-*.spec.js`, `nonstring-body-shape`, and the ONE
+guest-status line in `cycle-stages.spec.js`.
+- Two strings avoid a gendered form the ty-form would otherwise force (the no-gendered-participle
+  rule):
+  - „Ak ste odkaz dostali od kolegu" → „Ak máš odkaz od kolegu".
+  - „Chcete si objednať sami?" → „Chceš si objednávať priamo?". The literal „sám/sama" is gendered.
+- NOT converted:
+  - `PaymentModal.vue` („uveďte ju pri platbe") and `CycleTimeline` / `lib/cycle-stages.js`: they
+    are shared with the friend surface, which stays vy-form.
+  - `middleware/rate-limit.js`'s 429 („skúste to neskôr"): one limiter message for every bucket.
+
+**The roasters line** (`GuestRoastersLine.vue`) now shows the FULL `lib/roasters.js` `text`,
+one row per roaster, badge then text. These are the same words a member reads on „Ako to
+funguje". `ROASTERS[].short` is deleted, and the GL-T4 test compares rows against
+`[label, text]` from the library.

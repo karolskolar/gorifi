@@ -48,9 +48,9 @@ const readBackend = (rel) => readFileSync(join(BACKEND_SRC, rel), 'utf8')
 // 2026-09-19) — hoisted so sign-off is a known two-place edit (these + routes/guest.js).
 const ERR_METHOD = 'Neplatný spôsob prevzatia'
 const ERR_PARCEL_OFF = 'Doručenie Packetou nie je pre túto objednávku dostupné'
-const ERR_ADDRESS_MISSING = 'Zadajte výdajné miesto Packety'
+const ERR_ADDRESS_MISSING = 'Zadaj výdajné miesto Packety'
 const ERR_ADDRESS_LONG = 'Výdajné miesto je príliš dlhé (najviac 160 znakov)'
-const ERR_EMAIL_MISSING = 'Pri doručení Packetou zadajte e-mail'
+const ERR_EMAIL_MISSING = 'Pri doručení Packetou zadaj e-mail'
 const ERR_EMAIL_SHAPE = 'Neplatný e-mail'
 // The confirmation-mail labels (20 §UC-GP-004) — mirrored in guest-order-recovery.spec.js.
 const MAIL_DELIVERY_LABEL = 'Doručenie Packetou'
@@ -1255,18 +1255,18 @@ const GP3_VIA_HOST = (host) => `Prevezmem od ${host}`
 const GP3_PACKETA = 'Poslať Packetou (+3.50 EUR)'
 const GP3_POINT_LBL = 'Výdajné miesto Packeta *'
 const GP3_POINT_PH = 'napr. Z-BOX Hlavná 15, Bratislava'
-const GP3_POINT_HELP = (host) => `Názov Z-BOXu alebo pobočky a mesto. Balík vám doručí Packeta, nie ${host}.`
+const GP3_POINT_HELP = (host) => `Názov Z-BOXu alebo pobočky a mesto. Balík ti doručí Packeta, nie ${host}.`
 const GP3_EMAIL_OPT = 'E-mail (nepovinné)'
 const GP3_EMAIL_REQ = 'E-mail *'
-const GP3_EMAIL_HELP = 'Packeta vám naň pošle informácie o zásielke.'
-const GP3_SUB_HOST = (amount, host) => `Suma na úhradu: ${amount}. Platba prevodom, tovar vám odovzdá ${host}.`
-const GP3_SUB_PACKETA = (amount) => `Suma na úhradu: ${amount}. Platba prevodom, balík vám doručí Packeta.`
-const GP3_MSG_POINT = 'Zadajte výdajné miesto Packety.'
-const GP3_MSG_EMAIL = 'Pri doručení Packetou zadajte e-mail.'
-const GP3_MSG_SHAPE = 'Zadajte platný e-mail.'
+const GP3_EMAIL_HELP = 'Packeta ti naň pošle informácie o zásielke.'
+const GP3_SUB_HOST = (amount, host) => `Suma na úhradu: ${amount}. Platba prevodom, tovar ti odovzdá ${host}.`
+const GP3_SUB_PACKETA = (amount) => `Suma na úhradu: ${amount}. Platba prevodom, balík ti doručí Packeta.`
+const GP3_MSG_POINT = 'Zadaj výdajné miesto Packety.'
+const GP3_MSG_EMAIL = 'Pri doručení Packetou zadaj e-mail.'
+const GP3_MSG_SHAPE = 'Zadaj platný e-mail.'
 const GP3_STEP3_OFF = (host) => `Od ${host}.`
-const GP3_STEP3_ON = (host) => `Od ${host}, alebo si ju nechajte poslať cez Packetu.`
-const GP3_CONFIRM_POINT = (point) => `Balík vám doručí Packeta: ${point}`
+const GP3_STEP3_ON = (host) => `Od ${host}, alebo si ju nechaj poslať cez Packetu.`
+const GP3_CONFIRM_POINT = (point) => `Balík ti doručí Packeta: ${point}`
 
 async function gp3Page(page, label, opts = {}) {
   const s = await scenario(label, opts)
@@ -1729,13 +1729,13 @@ test.describe('GP-T3 · source pins — one home, and what this row must NOT tou
 // ⚠ PO copy (DRAFT, staging sign-off — PO 2026-09-19), transcribed from the spec and
 // hoisted so a sign-off edit is a known two-place change (these + the two .vue files).
 // ═════════════════════════════════════════════════════════════════════════════
-const GP4_SUB_HOST = (host) => `Vaša objednávka · organizuje a odovzdá ${host}`
-const GP4_SUB_PACKETA = (host) => `Vaša objednávka · organizuje ${host} · doručí Packeta`
+const GP4_SUB_HOST = (host) => `Tvoja objednávka · organizuje a odovzdá ${host}`
+const GP4_SUB_PACKETA = (host) => `Tvoja objednávka · organizuje ${host} · doručí Packeta`
 const GP4_PILL = 'Doručí Packeta'
 const GP4_FEE_LINE = 'Doručenie Packetou'
 const GP4_POINT_LBL = 'Výdajné miesto Packeta'
-const GP4_POINT_SUB = (email) => `Packeta vám pošle informácie o zásielke na ${email}.`
-const GP4_PARCEL_GONE = (host) => `Doručenie Packetou už nie je dostupné — objednávku vám odovzdá ${host}.`
+const GP4_POINT_SUB = (email) => `Packeta ti pošle informácie o zásielke na ${email}.`
+const GP4_PARCEL_GONE = (host) => `Doručenie Packetou už nie je dostupné — objednávku ti odovzdá ${host}.`
 const GP4_EDIT_FEE = (fee) => `+ ${fee} doručenie Packetou`
 const GP4_HOST_NOTE = 'Tento kolega dostane balík Packetou — nemusíte nič odovzdávať.'
 const GP4_BREAKDOWN = (total, fee) => `(${total} + ${fee} doručenie)`
@@ -2001,7 +2001,7 @@ test.describe('GP-T4 · 20 §UC-GP-007 — the status page EDIT mode', () => {
     await page.getByTestId('start-edit').click()
     await gp4EditRow(page, 'guest-delivery-packeta').click()
     let copy = await page.evaluate(collectAppCopy())
-    expect(copy.toLowerCase(), 'non-vacuity: the e-mail branch rendered').toContain('packeta vám naň pošle')
+    expect(copy.toLowerCase(), 'non-vacuity: the e-mail branch rendered').toContain('packeta ti naň pošle')
     expect(BANNED.test(copy), copy).toBe(false)
 
     await page.getByTestId('guest-packeta-address').fill(POINT)

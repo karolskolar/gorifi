@@ -40,7 +40,7 @@ const url = (rel) => 'file://' + join(BACKEND_SRC, rel)
 
 // The uniform guest 404 (UC-GL-002 rule 1) and the new 409 (UC-GL-004 rule 1).
 const GUEST_404 = 'Tento odkaz na objednávku neexistuje'
-const OPEN_409 = { error: 'Objednávka je práve otvorená — môžete si objednať rovno.', reason: 'open' }
+const OPEN_409 = { error: 'Objednávka je práve otvorená — môžeš si objednať rovno.', reason: 'open' }
 const OK = { success: true }
 // The admin list row, exactly (19 §UC-GL-009).
 const ROW_KEYS = [
@@ -291,15 +291,15 @@ test.describe('GL-T3 · 19 §UC-GL-004 — waitlistResponse() (throwaway boot)',
     const expected = {
       name121: { error: 'Meno je príliš dlhé (najviac 120 znakov)', field: 'name' },
       phone33: { error: 'Telefónne číslo je príliš dlhé (najviac 32 znakov)', field: 'phone' },
-      digits8: { error: 'Zadajte telefónne číslo (aspoň 9 číslic)', field: 'phone' },
-      noName: { error: 'Zadajte meno', field: 'name' },
-      noPhone: { error: 'Zadajte telefónne číslo (aspoň 9 číslic)', field: 'phone' },
-      nameObject: { error: 'Zadajte meno', field: 'name' },
-      phoneArray: { error: 'Zadajte telefónne číslo (aspoň 9 číslic)', field: 'phone' },
-      emptyObject: { error: 'Zadajte meno', field: 'name' },
-      bareTrue: { error: 'Zadajte meno', field: 'name' },
-      oneElementArray: { error: 'Zadajte meno', field: 'name' },
-      bareString: { error: 'Zadajte meno', field: 'name' },
+      digits8: { error: 'Zadaj telefónne číslo (aspoň 9 číslic)', field: 'phone' },
+      noName: { error: 'Zadaj meno', field: 'name' },
+      noPhone: { error: 'Zadaj telefónne číslo (aspoň 9 číslic)', field: 'phone' },
+      nameObject: { error: 'Zadaj meno', field: 'name' },
+      phoneArray: { error: 'Zadaj telefónne číslo (aspoň 9 číslic)', field: 'phone' },
+      emptyObject: { error: 'Zadaj meno', field: 'name' },
+      bareTrue: { error: 'Zadaj meno', field: 'name' },
+      oneElementArray: { error: 'Zadaj meno', field: 'name' },
+      bareString: { error: 'Zadaj meno', field: 'name' },
     }
     for (const [k, body] of Object.entries(expected)) {
       expect(out[k], k).toEqual({ status: 400, body })
@@ -341,7 +341,7 @@ test.describe('GL-T3 · 19 §UC-GL-004 — waitlistResponse() (throwaway boot)',
     expect(out.standingOpen, 'rule 1 — a round is open: order instead').toEqual({ status: 409, body: OPEN_409 })
     expect(out.standingOpenBadBody, 'the state gate comes FIRST (rule 1 before rule 2)').toEqual({ status: 409, body: OPEN_409 })
     expect(out.staleOpenElsewhere, 'rule 1 — preopen WITH openElsewhere is the same 409').toEqual({ status: 409, body: OPEN_409 })
-    expect(out.inactive).toEqual({ status: 410, body: { error: 'Tento odkaz už nie je aktívny. Požiadajte kolegu o nový.', reason: 'inactive' } })
+    expect(out.inactive).toEqual({ status: 410, body: { error: 'Tento odkaz už nie je aktívny. Požiadaj kolegu o nový.', reason: 'inactive' } })
     expect(out.unknown.status).toBe(404)
     expect(out.unknown.body.error, 'the uniform 404 — the listing\'s own message').toBe(GUEST_404)
     expect(out.unknown.body, 'byte-identical to the listing\'s 404').toEqual(out.listing404.body)

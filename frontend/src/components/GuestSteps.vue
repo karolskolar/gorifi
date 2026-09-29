@@ -46,14 +46,14 @@ const props = defineProps({
 })
 
 const HOST = '{host}'
-const PACKETA_CLAUSE = ', alebo si ju nechajte poslať cez Packetu.'
+const PACKETA_CLAUSE = ', alebo si ju nechaj poslať cez Packetu.'
 
 // `G2.steps`, verbatim. Step 3's detail is split at the Packeta clause so the prop
 // can append it; `props.packeta` true ⇒ the prototype sentence byte for byte.
 const STEPS = [
-  { icon: 'cup', title: 'Objednáte', detail: 'Vyberiete kávu, zadáte meno a mobil. Bez registrácie.' },
-  { icon: 'box', title: 'Zabalíme', detail: 'Kávu nakúpime v pražiarni a zabalíme. Vtedy zaplatíte cez QR alebo Revolut.' },
-  { icon: 'hand', title: 'Prevezmete', detail: `Od ${HOST}`, packetaTail: true }
+  { icon: 'cup', title: 'Objednáš', detail: 'Vyberieš kávu, zadáš meno a mobil. Bez registrácie.' },
+  { icon: 'box', title: 'Zabalíme', detail: 'Kávu nakúpime v pražiarni a zabalíme. Vtedy zaplatíš cez QR alebo Revolut.' },
+  { icon: 'hand', title: 'Prevezmeš', detail: `Od ${HOST}`, packetaTail: true }
 ]
 
 // [before, after] around the host name — the name renders in its own

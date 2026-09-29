@@ -2,7 +2,9 @@
 
 Group coffee + bakery order management for a circle of friends. UI is **Slovak, impersonal vy-form**
 (never gendered participles addressing the reader: "nevytvoril si" ✗, "ešte nie je vytvorený" ✓).
-**One exception:** „Ako to funguje" (`PortalExplainer.vue`) speaks in the TY-form, PO 2026-09-29 (learnings 10 §PO-copy).
+**Exceptions (PO 2026-09-29) speak in the TY-form:** „Ako to funguje" (`PortalExplainer.vue`, learnings 10 §PO-copy) and the
+WHOLE GUEST surface — `GuestOrder.vue`, `GuestOrderStatus.vue`, the `Guest*` components, the guest-facing `routes/guest.js`
+strings and the confirmation mail (learnings 11 §TY-guest). Shared components (`PaymentModal`, `CycleTimeline`) stay vy-form.
 
 ## Stack & layout
 
@@ -480,7 +482,7 @@ append the full write-up to the matching learnings file and add at most one line
   halves, so whichever way the PO rules, exactly one of those expectations is the edit (PI-T1 §1, PI-T4).
 - Guest surface (`GuestOrder.vue`, `GuestOrderStatus.vue`) deliberately lags the friend skin in places; it is
   not the reference when restyling.
-- ⚠ **The standing link is PARKED on the friend surface** (PO 2026-09-29, until module 21's WhatsApp ships): `frontend/src/lib/features.js STANDING_GUEST_LINK = false` hides the dialog's standing section (and skips its minting GET), shares the per-cycle URL, and puts the drawer row back to `state === 'open'`; specs read the SAME value via `e2e/helpers/features.js` (GL-T6b/GL-T6c UI tests skip, `PARKED` tests pin the hidden state). Backend, admin and issued tokens are untouched (learnings 11 §PARKED).
+- ⚠ **The standing link is PARKED on the friend surface** (PO 2026-09-29, until module 21's WhatsApp ships): `frontend/src/lib/features.js STANDING_GUEST_LINK = false` hides the dialog's standing section (and skips its minting GET), shares the per-cycle URL, and puts the drawer row back to `state === 'open'`; its sibling `GUEST_WAITLIST = false` hides the guest pre-open waitlist form; specs read the SAME value via `e2e/helpers/features.js` (GL-T6b/GL-T6c UI tests skip, `PARKED` tests pin the hidden state). Backend, admin and issued tokens are untouched (learnings 11 §PARKED).
 - `GuestShareDialog.vue` = standing section (`standing-link`, own `standingSeq`, the ONE native-share button, URL rendered by spec) THEN the per-cycle one; per-cycle assertions scope to `per-cycle-link`, whose loading `.sub` stays a DIRECT `.m-body` child (pinned) and whose error banner stays first (GL-T6b).
 - ~~Nothing new inside a guest hero (`.card.hl`, `preopen-hero`) may carry `.badge` or `.mono`~~ → nothing new may, **except 20 §UC-GP-003 item 6's parcel-only 4th badge (GP-T3); the shipped count pins hold only because their rounds are parcel-off (`parcel_enabled` DEFAULT 0)**: shipped pins count/strict-resolve them. `GuestSteps`/`GuestRoastersLine` re-declare those rules in scoped classes, pinned computed-style-equal (GL-T4).
 - The pre-open preview is `GuestProductGrid readonly` (GL-T5) — REMOVES steppers/stock bar/lightbox/tab stops (each JS-guarded); the `.p2-ro` fade is the CALLER's wrapper over strip AND cards; `gorifi_guest_waitlist` memory is `{at, whatsapp_opt_in, cycle_id}` and expires with the preview round (learnings 11 §GL-T5).

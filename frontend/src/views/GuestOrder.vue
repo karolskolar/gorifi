@@ -12,6 +12,7 @@ import GuestInviteRequest from '@/components/GuestInviteRequest.vue'
 import CartLineList from '@/components/CartLineList.vue'
 import GuestSteps from '@/components/GuestSteps.vue'
 import GuestRoastersLine from '@/components/GuestRoastersLine.vue'
+import { GUEST_WAITLIST } from '@/lib/features'
 import GuestDeliveryChoice from '@/components/GuestDeliveryChoice.vue'
 import NeoCheckbox from '@/components/neo/NeoCheckbox.vue'
 import { fmtEur } from '@/lib/money'
@@ -239,7 +240,7 @@ const unavailableTitle = computed(() => {
 
 const unavailableText = computed(() => {
   if (!unavailable.value) return ''
-  if (unavailable.value.status === 404) return 'Tento odkaz sme nenašli. Skontrolujte, či je skopírovaný celý.'
+  if (unavailable.value.status === 404) return 'Tento odkaz sme nenašli. Skontroluj, či je skopírovaný celý.'
   if (unavailable.value.reason === 'inactive') return 'Kolega, ktorý objednávku organizuje, tento odkaz deaktivoval.'
   return unavailable.value.message
 })
@@ -304,7 +305,7 @@ const waitlistDone = ref(null)
 const waitlistReady = computed(() => Boolean(waitlistName.value.trim() && waitlistPhone.value.trim()))
 
 async function joinWaitlist() {
-  if (waitlistPending.value || !waitlistReady.value || !waitlistAvailable.value) return
+  if (!GUEST_WAITLIST || waitlistPending.value || !waitlistReady.value || !waitlistAvailable.value) return
   waitlistPending.value = true
   waitlistError.value = ''
   const optIn = waitlistConsent.value === true
@@ -325,7 +326,7 @@ async function joinWaitlist() {
       load()
       return
     }
-    waitlistError.value = e.message || 'Nepodarilo sa odoslať. Skúste to znova.'
+    waitlistError.value = e.message || 'Nepodarilo sa odoslať. Skús to znova.'
   } finally {
     waitlistPending.value = false
   }
@@ -390,16 +391,16 @@ function openCheckout() {
 // Decision 7: name + mobile required (>= 9 digits), email optional. The server
 // validates the same rule — this is only so the guest finds out immediately.
 function validateIdentity() {
-  if (!guestName.value.trim()) return 'Zadajte svoje meno.'
+  if (!guestName.value.trim()) return 'Zadaj svoje meno.'
   const digits = guestPhone.value.replace(/\D/g, '')
-  if (digits.length < 9) return 'Zadajte telefónne číslo (aspoň 9 číslic).'
+  if (digits.length < 9) return 'Zadaj telefónne číslo (aspoň 9 číslic).'
   // 20 §UC-GP-003 item 4 — Packeta only, in this position; the server re-checks
   // (GP-T1: the same three rules, the mailer's `EMAIL_SHAPE` mirrored in `lib/`).
   if (isPacketa.value) {
-    if (!packetaAddress.value.trim()) return 'Zadajte výdajné miesto Packety.'
+    if (!packetaAddress.value.trim()) return 'Zadaj výdajné miesto Packety.'
     const email = guestEmail.value.trim()
-    if (!email) return 'Pri doručení Packetou zadajte e-mail.'
-    if (!EMAIL_SHAPE.test(email)) return 'Zadajte platný e-mail.'
+    if (!email) return 'Pri doručení Packetou zadaj e-mail.'
+    if (!EMAIL_SHAPE.test(email)) return 'Zadaj platný e-mail.'
   }
   return ''
 }
@@ -556,7 +557,7 @@ function goToStatus() {
           <span class="badge danger" style="font-size:13px;padding:6px 14px;transform:rotate(-2deg);display:inline-flex;align-items:center;gap:4px"><NeoIcon name="lock" /><span>Slepá ulička</span></span>
           <h1 class="h-screen text-[32px] sm:text-[38px]">{{ unavailableTitle }}</h1>
           <div class="sub" style="font-size:14px">{{ unavailableText }}</div>
-          <div class="sub" style="font-size:13.5px">Ak ste odkaz dostali od kolegu, požiadajte ho o nový.</div>
+          <div class="sub" style="font-size:13.5px">Ak máš odkaz od kolegu, požiadaj ho o nový.</div>
         </div>
       </div>
     </template>
@@ -584,10 +585,10 @@ function goToStatus() {
                sentence („Objednávky sú zatvorené") for every reader of textContent. -->
           <h1 class="h-screen text-[30px] sm:text-[38px]" style="line-height:1.12">{{ preopenTitle.lead }} <br /><span class="hl" style="display:inline-block;line-height:.95;margin-top:4px">{{ preopenTitle.hl }}</span></h1>
           <div v-if="preopenStale" class="sub" style="font-size:14.5px;line-height:1.45;overflow-wrap:anywhere" data-testid="preopen-next">
-            <span data-user-copy>{{ preopenHost }}</span> má práve otvorenú novú objednávku. Požiadajte <span data-user-copy>{{ preopenHost }}</span> o aktuálny odkaz.
+            <span data-user-copy>{{ preopenHost }}</span> má práve otvorenú novú objednávku. Požiadaj <span data-user-copy>{{ preopenHost }}</span> o aktuálny odkaz.
           </div>
           <div v-else class="sub" style="font-size:14.5px;line-height:1.45;overflow-wrap:anywhere">
-            <b style="color:var(--ink)" data-user-copy>{{ preopenHost }}</b> vás pozýva do spoločnej objednávky výberovej kávy.
+            <b style="color:var(--ink)" data-user-copy>{{ preopenHost }}</b> ťa pozýva do spoločnej objednávky výberovej kávy.
             <span data-testid="preopen-next">
               <template v-if="preopenNext.kind === 'date'">Ďalšia objednávka sa otvorí približne <b style="color:var(--ink)">{{ preopenNext.date }}</b><template v-if="preopenNext.away"> ({{ preopenNext.away }})</template>.</template>
               <template v-else-if="preopenNext.kind === 'note'">Ďalšia objednávka: <span data-user-copy style="white-space:pre-line" data-testid="preopen-plan-note">{{ preopenNext.note }}</span></template>
@@ -609,17 +610,18 @@ function goToStatus() {
         <!-- ③ „Dajte mi vedieť" — only when the server says the signup is possible
              (`waitlist.available`, 19 §UC-GL-003 rule 3). Success REPLACES the card
              with the ok banner (one of two, by the consent the guest sent). -->
-        <template v-if="waitlistAvailable">
+        <!-- Parked while `GUEST_WAITLIST` is off (lib/features.js, PO 2026-09-29). -->
+        <template v-if="GUEST_WAITLIST && waitlistAvailable">
           <div v-if="waitlistDone" class="banner ok" data-testid="waitlist-done" role="status">
             <span class="dot"></span>
             <div style="min-width:0;overflow-wrap:anywhere;line-height:normal">
-              <template v-if="waitlistDone.whatsapp_opt_in"><b>Dáme vedieť.</b> Keď sa objednávka otvorí, príde vám správa na WhatsApp s odkazom od <span data-user-copy>{{ preopenHost }}</span>.</template>
-              <template v-else><b>Dáme vedieť.</b> Keď sa objednávka otvorí, <span data-user-copy>{{ preopenHost }}</span> vám pošle odkaz.</template>
+              <template v-if="waitlistDone.whatsapp_opt_in"><b>Dáme vedieť.</b> Keď sa objednávka otvorí, príde ti správa na WhatsApp s odkazom od <span data-user-copy>{{ preopenHost }}</span>.</template>
+              <template v-else><b>Dáme vedieť.</b> Keď sa objednávka otvorí, <span data-user-copy>{{ preopenHost }}</span> ti pošle odkaz.</template>
             </div>
           </div>
           <div v-else class="card" style="padding:16px;display:flex;flex-direction:column;gap:12px" data-testid="waitlist-form">
             <div style="line-height:normal">
-              <div class="display" style="font-size:22px;line-height:1">Dajte mi vedieť</div>
+              <div class="display" style="font-size:22px;line-height:1">Daj mi vedieť</div>
               <div class="sub" style="margin-top:4px">Pošleme jednu správu, keď sa objednávka otvorí. Nič viac.</div>
             </div>
             <div>
@@ -776,7 +778,7 @@ function goToStatus() {
           class="sub"
           style="margin-top:-4px;overflow-wrap:anywhere;line-height:normal"
           data-testid="confirm-packeta-address"
-        >Balík vám doručí Packeta: <span data-user-copy>{{ confirmationPoint }}</span></div>
+        >Balík ti doručí Packeta: <span data-user-copy>{{ confirmationPoint }}</span></div>
 
         <!-- Shipped gate kept (§UC-GX-004 item 3): with neither IBAN nor Revolut
              there is nothing for the modal to open onto — the reference alone is a
@@ -803,7 +805,7 @@ function goToStatus() {
              link token) but is now undocumented on screen, deliberately. Do not
              "restore" it without asking — it was cut on purpose. -->
         <div>
-          <label class="field-lbl">Na tomto odkaze uvidíte stav objednávky - uložte si ho!</label>
+          <label class="field-lbl">Na tomto odkaze uvidíš stav objednávky - ulož si ho!</label>
           <NeoCopyRow :value="confirmation.status_url" data-testid="guest-status-url" />
         </div>
 
@@ -908,7 +910,7 @@ function goToStatus() {
             <!-- Prototype copy, replacing the shipped "Účet netreba. Vyberte si
                  tovar, na konci zadajte meno a telefón." — "Účet netreba" now lives
                  in the appbar chip, so repeating it here would be twice. -->
-            <div class="sub" style="margin-top:10px;font-size:13px">Vyberte si tovar, na konci zadáte len meno a telefón.</div>
+            <div class="sub" style="margin-top:10px;font-size:13px">Vyberieš si tovar, na konci zadáš len meno a telefón.</div>
             <!-- Admin-entered copy: the prototype is silent on it, but dropping it
                  would be a behaviour regression, so it is retained as one more
                  `.sub` line (§UC-GX-001 item 4, last bullet). -->
@@ -1007,7 +1009,7 @@ function goToStatus() {
       <!-- 20 §UC-GP-003 item 3 — the amount is cart + fee; the tail names who hands the
            goods over. ⚠ ONE LINE: the two branches are `<template>`s so a via_host
            subtitle stays byte-identical to the shipped one. -->
-      <template #subtitle>Suma na úhradu: <b class="mono" style="color:var(--ink)">{{ fmtEur(cartTotal + checkoutFee) }}</b>. Platba prevodom, <template v-if="isPacketa">balík vám doručí Packeta.</template><template v-else>tovar vám odovzdá {{ host?.first_name }}.</template></template>
+      <template #subtitle>Suma na úhradu: <b class="mono" style="color:var(--ink)">{{ fmtEur(cartTotal + checkoutFee) }}</b>. Platba prevodom, <template v-if="isPacketa">balík ti doručí Packeta.</template><template v-else>tovar ti odovzdá {{ host?.first_name }}.</template></template>
 
       <!-- `.m-body` is itself a 12px-gap flex column, so each field is a bare
            wrapper with a native `label.field-lbl` (no `ui/label`) — the same
@@ -1059,7 +1061,7 @@ function goToStatus() {
           maxlength="160"
         />
         <!-- 20 §UC-GP-003 item 2 (roadmap §19, recast) — only while Packeta is chosen. -->
-        <div v-if="isPacketa" class="field-help" data-testid="guest-email-help">Packeta vám naň pošle informácie o zásielke.</div>
+        <div v-if="isPacketa" class="field-help" data-testid="guest-email-help">Packeta ti naň pošle informácie o zásielke.</div>
       </div>
 
       <!-- Client-side messages verbatim (§UC-GX-003); server errors keep the
