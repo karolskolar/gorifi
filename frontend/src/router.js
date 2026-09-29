@@ -147,6 +147,11 @@ const routes = [
     name: 'distribution',
     component: () => import('./views/Distribution.vue')
   },
+  {
+    path: '/admin/cycle/:id/labels',
+    name: 'cycle-labels',
+    component: () => import('./views/AdminCycleLabels.vue')
+  },
   // Legacy route for backward compatibility
   {
     path: '/order/:cycleId',
